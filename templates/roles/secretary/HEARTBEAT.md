@@ -47,9 +47,9 @@ Check `task_list` for tasks recently completed by you or your team members. For 
 - **Any reviewer feedback worth preserving?** — Positive signals indicate proven practices.
 
 For identified best practices:
-- Save via `memory_save` with `tags: ["lesson", "best-practice", "secretary"]` and `[BEST-PRACTICE]` format.
-- If it is a multi-step workflow (e.g., "new agent onboarding procedure", "org knowledge audit process"), promote it to an SOP via `memory_update_longterm({ section: "sops", ... })`.
-- When 3+ related best practices accumulate, update your ROLE.md with the new guideline (read first via `file_read`, append only, log with `tags: ["lesson", "role-evolution"]`).
+- Save via `memory_save` with `tags: ["insight", "secretary"]` and `[INSIGHT]` format.
+- If it is a multi-step workflow (e.g., "new agent onboarding procedure", "org knowledge audit process"), promote it to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
+- When 3+ related insights accumulate, update your ROLE.md with the new guideline (read first via `file_read`, append only, log with `tags: ["insight", "role-evolution"]`).
 
 ## Self-Evolution Reflection
 

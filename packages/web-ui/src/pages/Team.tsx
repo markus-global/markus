@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore, type RefObject } from 'react';
 import {
   api, wsClient,
-  type AgentInfo, type AgentToolEvent, type HumanUserInfo, type ExternalAgentInfo,
+  type AgentInfo, type AgentToolEvent, type StreamCommitEvent, type HumanUserInfo, type ExternalAgentInfo,
   type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo, type ChannelMsgMetadata,
   type TaskInfo, type TeamInfo, type AuthUser, type StoredSegment,
 } from '../api.ts';
@@ -36,7 +36,9 @@ export type MsgSegment =
 interface ChatMsg {
   id: string;
   sender: 'user' | 'agent';
-  text: string;          // plain text (used for DB-loaded messages without segments)
+  text: string;
+  /** Server-committed clean per-turn segments (thinking/text/tools), populated from thinking_commit/text_commit SSE events */
+  committedSegments?: MsgSegment[];
   time: string;
   /** Raw ISO timestamp from DB */
   rawCreatedAt?: string;
@@ -82,7 +84,7 @@ function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
     base.segments = m.metadata.segments.map((s: StoredSegment, i: number) =>
       s.type === 'tool'
         ? { type: 'tool' as const, key: `${s.tool}_${i}`, tool: s.tool, status: s.status, args: s.arguments, result: s.result, error: s.error, durationMs: s.durationMs, createdAt: s.createdAt }
-        : { type: 'text' as const, content: s.content, createdAt: s.createdAt }
+        : { type: 'text' as const, content: s.content, thinking: s.thinking, createdAt: s.createdAt }
     );
   }
   if (m.metadata?.isError || (m.role === 'assistant' && m.content.startsWith('⚠'))) {
@@ -526,6 +528,7 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
   return entries;
 }
 
+
 function AgentMessageBody({
   msg, isStreaming, liveActivities, onViewModeChange,
 }: {
@@ -564,6 +567,15 @@ function AgentMessageBody({
           .trim() || null
       : null;
 
+    // For the full execution log, prefer server-committed clean segments
+    // (populated from thinking_commit/text_commit SSE events) over fragmented
+    // delta-built segments. committedSegments contain complete per-turn
+    // text/thinking entries, matching how the Work page renders.
+    const committed = msg.committedSegments;
+    const fullLogEntries = committed && committed.length > 0
+      ? segmentsToStreamEntries(committed, msg.agentId, msg.rawCreatedAt)
+      : streamEntries;
+
     const inlineCards: Array<{ key: string } & ({ kind: 'task'; info: TaskApprovalInfo } | { kind: 'req'; info: RequirementApprovalInfo })> = [];
     if (viewMode === 'compact') {
       for (const seg of segments) {
@@ -588,7 +600,7 @@ function AgentMessageBody({
             />
           ) : (
             <FullExecutionLog
-              entries={streamEntries}
+              entries={fullLogEntries}
               streamingText={streamingText}
               isActive={isStreaming}
               onCollapse={() => setViewMode('compact')}
@@ -602,7 +614,7 @@ function AgentMessageBody({
           : <RequirementApprovalCard key={c.key} info={c.info} />
         )}
 
-        {displayText && (
+        {viewMode === 'compact' && displayText && (
           <MarkdownMessage content={displayText} />
         )}
 
@@ -1465,18 +1477,20 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       if (options?.isResume) {
         // Resume: don't add a duplicate user message — just append the
         // agent continuation placeholder after the existing partial response.
+        const agentCreatedAt = new Date().toISOString();
         updateConvMsgs(sendKey, prev => [
           ...prev,
-          { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), segments: [] },
+          { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt, segments: [] },
         ]);
       } else {
+        const agentCreatedAt = new Date().toISOString();
         const userMsg: ChatMsg = { id: `u_${Date.now()}`, sender: 'user', text, time: new Date().toLocaleTimeString() };
         if (imagesToSend?.length) userMsg.images = imagesToSend;
         if (replyCtx) { userMsg.replyToId = replyCtx.id; userMsg.replyToSender = replyCtx.sender; userMsg.replyToText = replyCtx.text; }
         updateConvMsgs(sendKey, prev => [
           ...prev,
           userMsg,
-          { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), segments: [] },
+          { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt, segments: [] },
         ]);
       }
 
@@ -1526,9 +1540,26 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           const mergedThinking = (prevThinking + thinking) || undefined;
 
           const newSegs: MsgSegment[] = last?.type === 'text'
-            ? [...segs.slice(0, -1), { type: 'text', content: last.content + content, thinking: mergedThinking }]
-            : [...segs, { type: 'text', content, thinking: mergedThinking }];
+            ? [...segs.slice(0, -1), { type: 'text', content: last.content + content, thinking: mergedThinking, createdAt: last.createdAt }]
+            : [...segs, { type: 'text', content, thinking: mergedThinking, createdAt: new Date().toISOString() }];
           u[idx] = { ...u[idx]!, text: u[idx]!.text + content, segments: newSegs };
+          return u;
+        });
+      };
+
+      /** Handle server-committed per-turn text/thinking entries (clean, non-fragmented) */
+      const handleCommitEvent = (event: StreamCommitEvent) => {
+        updateConvMsgs(sendKey, prev => {
+          const u = [...prev];
+          const idx = u.findIndex(m => m.id === agentMsgId);
+          if (idx < 0) return prev;
+          const committed = [...(u[idx]!.committedSegments ?? [])];
+          if (event.type === 'thinking_commit') {
+            committed.push({ type: 'text', content: '', thinking: event.content, createdAt: event.createdAt });
+          } else {
+            committed.push({ type: 'text', content: event.content, createdAt: event.createdAt });
+          }
+          u[idx] = { ...u[idx]!, committedSegments: committed };
           return u;
         });
       };
@@ -1544,8 +1575,6 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
             const idx = u.findIndex(m => m.id === agentMsgId);
             if (idx < 0) return prev;
             const segs = [...(u[idx]!.segments ?? [])];
-            // If there's already a running segment for this tool (from tool_call_start),
-            // update it with the arguments instead of creating a duplicate
             let updated = false;
             if (event.arguments) {
               for (let i = segs.length - 1; i >= 0; i--) {
@@ -1557,15 +1586,17 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                 }
               }
             }
+            const toolKey = `${event.tool}_${Date.now()}`;
+            const now = new Date().toISOString();
             if (!updated) {
-              const toolKey = `${event.tool}_${Date.now()}`;
-              segs.push({ type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments });
+              segs.push({ type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments, createdAt: now });
             }
-            u[idx] = { ...u[idx]!, segments: segs };
+            const committed = [...(u[idx]!.committedSegments ?? [])];
+            committed.push({ type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments, createdAt: now });
+            u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed };
             return u;
           });
         } else if (event.phase === 'output') {
-          // Streaming output from a running tool — append to liveOutput
           updateConvMsgs(sendKey, prev => {
             const u = [...prev];
             const idx = u.findIndex(m => m.id === agentMsgId);
@@ -1598,20 +1629,28 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
             return u;
           });
         } else {
-          // Find the most recent running segment for this tool and mark it done/error
           updateConvMsgs(sendKey, prev => {
             const u = [...prev];
             const idx = u.findIndex(m => m.id === agentMsgId);
             if (idx < 0) return prev;
+            const now = new Date().toISOString();
             const segs = [...(u[idx]!.segments ?? [])];
             for (let i = segs.length - 1; i >= 0; i--) {
               const s = segs[i]!;
               if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
-                segs[i] = { ...s, status: event.success === false ? 'error' : 'done', args: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs, liveOutput: undefined };
+                segs[i] = { ...s, status: event.success === false ? 'error' : 'done', args: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs, liveOutput: undefined, createdAt: now };
                 break;
               }
             }
-            u[idx] = { ...u[idx]!, segments: segs };
+            const committed = [...(u[idx]!.committedSegments ?? [])];
+            for (let i = committed.length - 1; i >= 0; i--) {
+              const s = committed[i]!;
+              if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
+                committed[i] = { ...s, status: event.success === false ? 'error' : 'done', args: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs, liveOutput: undefined, createdAt: now };
+                break;
+              }
+            }
+            u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed };
             return u;
           });
         }
@@ -1631,6 +1670,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           effectiveSessionId,
           options?.isRetry,
           options?.isResume,
+          handleCommitEvent,
         );
         if (currentConvKeyRef.current === sendKey) {
           if (streamResult.sessionId) {

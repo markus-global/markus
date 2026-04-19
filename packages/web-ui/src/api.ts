@@ -18,6 +18,12 @@ export interface AgentToolEvent {
   subagentEvent?: SubagentProgressEvent;
 }
 
+export interface StreamCommitEvent {
+  type: 'thinking_commit' | 'text_commit';
+  content: string;
+  createdAt: string;
+}
+
 export interface AuthUser {
   id: string;
   name: string;
@@ -37,7 +43,7 @@ export interface ChatSessionInfo {
 }
 
 export type StoredSegment =
-  | { type: 'text'; content: string; createdAt?: string }
+  | { type: 'text'; content: string; thinking?: string; createdAt?: string }
   | { type: 'tool'; tool: string; status: 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number; createdAt?: string };
 
 export interface ChatMessageInfo {
@@ -820,7 +826,7 @@ export const api = {
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
     message: (id: string, text: string, images?: string[], sessionId?: string | null) =>
       request<{ reply: string; sessionId?: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, sessionId: sessionId ?? undefined }) }),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean): Promise<{ content: string; sessionId?: string }> => {
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void): Promise<{ content: string; sessionId?: string }> => {
       return new Promise(async (resolve, reject) => {
         let fullContent = '';
         let resultSessionId: string | undefined;
@@ -864,6 +870,10 @@ export const api = {
                   reject(err);
                   reader.cancel().catch(() => {});
                   return;
+                } else if (event.type === 'thinking_commit' && event.thinking) {
+                  onCommit?.({ type: 'thinking_commit', content: event.thinking, createdAt: (event as Record<string, unknown>).createdAt as string ?? new Date().toISOString() });
+                } else if (event.type === 'text_commit' && event.text) {
+                  onCommit?.({ type: 'text_commit', content: event.text, createdAt: (event as Record<string, unknown>).createdAt as string ?? new Date().toISOString() });
                 } else if (event.type === 'tool_call_start' && event.toolCall?.name) {
                   onActivity?.({ tool: event.toolCall.name, phase: 'start' });
                 } else if (event.type === 'agent_tool' && event.tool && event.phase) {
@@ -1004,6 +1014,8 @@ export const api = {
       request<{ type: string; name: string; content: string; mimeType?: string }>(`/files/preview?path=${encodeURIComponent(filePath)}`),
     reveal: (filePath: string) =>
       request<{ ok: boolean; path: string }>('/files/reveal', { method: 'POST', body: JSON.stringify({ path: filePath }) }),
+    check: (paths: string[]) =>
+      request<{ results: Record<string, { exists: boolean; isFile: boolean; type: string }> }>('/files/check', { method: 'POST', body: JSON.stringify({ paths }) }),
   },
   requirements: {
     list: (filters?: { orgId?: string; status?: string; source?: string; projectId?: string }) => {

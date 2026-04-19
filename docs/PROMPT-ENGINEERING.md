@@ -1,12 +1,26 @@
 # Prompt Engineering & Context Assembly
 
-This document specifies how Markus constructs prompts, manages context, and orchestrates LLM interactions across all scenarios. It complements [STATE-MACHINES.md](./STATE-MACHINES.md) (task lifecycle) and [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) (storage layers).
+This document specifies how Markus constructs prompts, manages context, and orchestrates LLM interactions across all scenarios. It complements [STATE-MACHINES.md](./STATE-MACHINES.md) (task lifecycle), [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) (storage layers), and [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) (cognitive preparation pipeline).
 
 ---
 
 ## 1. LLM Call Taxonomy
 
-Every LLM invocation falls into one of eight categories:
+### 1.1 Two-Tier Call Model
+
+LLM calls are organized in two tiers:
+
+**Tier 1 -- Cognitive Preparation Calls**: Lightweight LLM calls that prepare context for the main call. These use persona-aware prompts and the cheapest available model. See [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for theoretical foundations and full design.
+
+| # | Phase | Purpose | Model | Tools | Max Output |
+|---|-------|---------|-------|-------|-----------|
+| P1 | **Appraisal** | Assess situation, plan context retrieval | Cheapest tier | No | 512 tokens |
+| P3 | **Reflection** | Extract persona-specific patterns and insights from retrieved context | Cheapest tier | No | 512 tokens |
+| P5 | **Evaluation** (D3 only) | Post-response assessment of context adequacy | Cheapest tier | No | 256 tokens |
+
+P2 (Directed Retrieval) and P4 (Assembly) are code-only phases with no LLM call.
+
+**Tier 2 -- Main Processing Calls**: The primary LLM calls that produce agent actions and responses. These use the full model and have access to tools.
 
 | # | Scenario | Entry Point | Method | Streaming | Tools | Network Retry | Loop Limit |
 |---|----------|-------------|--------|-----------|-------|---------------|------------|
@@ -19,7 +33,16 @@ Every LLM invocation falls into one of eight categories:
 | 7 | **Comment Response** | Mailbox `task_comment` / `requirement_update` | `handleMessage(scenario:'comment_response')` | No | Yes | Yes (via handleMessage) | 200 |
 | 8 | **Internal (Lightweight)** | Various | `handleMessage(scenario:'heartbeat')` | No | Varies | Yes (via handleMessage) | 200 |
 
-### Lightweight Internal Calls (Scenario 8)
+**Cognitive depth** determines how many Tier 1 calls precede each Tier 2 call:
+
+| Depth | Tier 1 Calls | When |
+|-------|-------------|------|
+| D0 Reflexive | 0 | HEARTBEAT_OK, acks, dream cycle |
+| D1 Reactive | 0-1 (Appraisal) | Most chats, A2A, comments |
+| D2 Deliberative | 2 (Appraisal + Reflection) | Task execution, complex questions |
+| D3 Meta-cognitive | 2-3 (Appraisal + Reflection + post-Evaluation) | High-stakes decisions |
+
+### 1.2 Lightweight Internal Calls (Scenario 8)
 
 These are `handleMessage()` calls with `scenario: 'heartbeat'` and typed session IDs (e.g. `sys_<agentId>_<ts>`). Each call creates a persisted session for full traceability.
 
@@ -51,19 +74,20 @@ The system prompt is assembled by `ContextEngine.buildSystemPrompt()`. Sections 
 │ 11. Human Feedback                          │
 │ 12. Project Deliverables                    │
 │ 13. Policies                                │
-│ 14. Long-term Knowledge (MEMORY.md)         │
-│ 15. Lessons from Past Experience            │
-│ 16. Shared Deliverables                     │
-│ 17. Relevant Memories (semantic search)     │
-│ 18. Recent Activity Summary (daily-logs)    │
-│ 19. Task Board (capped)                     │
-│ 20. Task & Requirement Workflow             │
-│ 21. Environment Profile                     │
-│ 22. Current Conversation (sender info)      │
-│ 23. Tool Usage Rules                        │
-│ 24. Mailbox & Attention Context             │
-│ 25. Scenario Section (mode-specific)        │  ← Volatile: changes per call
-│ 26. Timestamp                               │
+│ 14. Your Knowledge (MEMORY.md — unified)    │  ← Was 5 sections, now 1
+│ 15. Shared Deliverables                     │
+│ 16. Relevant Memories (legacy fallback)     │  ← Replaced by §16a-c when CPP active
+│16a. Cognitive Context (Phase 1 Appraisal)   │  ← CPP active (D1+)
+│16b. Retrieved Context (Phase 2 Retrieval)   │  ← CPP active (D2+)
+│16c. Reflection (Phase 3 Reflection)         │  ← CPP active (D2+)
+│ 17. Task Board (capped)                     │
+│ 18. Task & Requirement Workflow             │
+│ 19. Environment Profile                     │
+│ 20. Current Conversation (sender info)      │
+│ 21. Tool Usage Rules                        │
+│ 22. Mailbox & Attention Context             │
+│ 23. Scenario Section (mode-specific)        │  ← Volatile: changes per call
+│ 24. Timestamp                               │
 └─────────────────────────────────────────────┘
 ```
 
@@ -95,7 +119,7 @@ Contains:
 - Human team members
 - **Manager Responsibilities** (for managers): Routing, Coordination, Reporting, Cross-team, Escalation, Hiring
 
-#### Task Board (§19)
+#### Task Board (§17)
 Source: `opts.assignedTasks`.  
 Displays the agent's active tasks and team tasks, **capped to prevent prompt bloat**:
 - **My active tasks**: Top 15 by priority (critical → high → medium → low), each with title, ID, priority, and truncated description (150 chars).
@@ -104,7 +128,7 @@ Displays the agent's active tasks and team tasks, **capped to prevent prompt blo
 - Completed/closed tasks are only shown as a count.
 
 #### Mailbox & Attention Context (§22)
-Source: `getMailboxContext()` → `buildMailboxSection()` in `ContextEngine`.
+Source: `getMailboxContext()` → `buildMailboxSection()` in `ContextEngine`.  
 Every LLM call passes through the mailbox, so this section is always populated. It injects:
 - **Current focus**: What the agent is currently working on (item type, summary, time elapsed).
 - **Pending queue**: Count and top items in the mailbox, so the agent knows what's waiting.
@@ -117,9 +141,9 @@ Every LLM call passes through the mailbox, so this section is always populated. 
 
 All 12 mailbox item types (`human_chat`, `task_status_update`, `session_reply`, `daily_report`, `memory_consolidation`, `heartbeat`, etc.) route through this section. Internal agent processes like heartbeats, daily reports, and memory consolidation also enqueue to the mailbox, meaning the agent always has full situational awareness about its own cognitive state. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the full design.
 
-#### Scenario Section (§25)
+#### Scenario Section (§23)
 Source: `buildScenarioSection()`.  
-Five distinct instruction sets depending on `scenario` parameter. Each scenario is slim and references the global Task Workflow (§20) and Tool Usage Rules (§23) rather than re-explaining them:
+Five distinct instruction sets depending on `scenario` parameter. Each scenario is slim and references the global Task Workflow (§18) and Tool Usage Rules (§21) rather than re-explaining them:
 
 | Scenario | Key Instructions |
 |----------|-----------------|
@@ -233,7 +257,12 @@ The "harness" is the while-loop that drives agentic tool use: LLM → tool calls
 ### 4.2 Common Harness Flow
 
 ```
-1. Build system prompt (contextEngine.buildSystemPrompt)
+0. Cognitive Preparation (when CPP enabled, depth D1+):
+   0a. Appraisal — persona-aware LLM call → context plan (D1+)
+   0b. Directed Retrieval — execute plan against indexed stores (D2+)
+   0c. Reflection — persona-aware LLM call → insights (D2+)
+   0d. Assembly — merge prepared context (code only)
+1. Build system prompt (contextEngine.buildSystemPrompt + PreparedContext)
 2. Build tool definitions (toolSelector.selectTools)
 3. Prepare messages (contextEngine.prepareMessages — compress to fit budget)
 4. LLM call (llmRouter.chat / chatStream, wrapped in withNetworkRetry)
@@ -242,7 +271,10 @@ The "harness" is the while-loop that drives agentic tool use: LLM → tool calls
    b. If max_tokens: append continuation prompt → re-prepare messages → LLM call
 6. Output guardrail check
 7. Persist final reply to session
+8. Post-response evaluation (D3 only) — LLM assesses context adequacy
 ```
+
+Step 0 is the Cognitive Preparation Pipeline. It runs once before the main harness loop (steps 1-7) begins. The preparation prompts are persona-aware: they include the agent's role description, current state, and recent activity, so different agents produce different context preparation plans for the same stimulus. See [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for the full design.
 
 ### 4.3 Tool Execution
 
@@ -320,23 +352,24 @@ The heartbeat prompt is assembled inline (not via `buildSystemPrompt`) and inclu
 4. Failed task recovery instructions
 5. Requirement monitoring section
 6. Daily report section (managers, after 20:00)
-7. Self-evolution reflection instructions — includes Knowledge Lifecycle decision matrix (intake buffer vs curated knowledge vs skill creation)
-8. Quality signal check — revision rate self-assessment, SOP/lesson effectiveness
+7. Self-evolution reflection instructions — includes Knowledge Lifecycle decision matrix (observation buffer vs curated knowledge vs skill creation)
+8. Quality signal check — revision rate self-assessment, knowledge effectiveness
 9. "Patrol, Don't Build" rules — lightweight actions allowed, complex work → create task
 10. When `background_exec` sessions have finished since the last turn, a `## Background Processes Completed` section is included so the model sees completion summaries on the next heartbeat
 11. Conditional actions (failed bg processes, blocked tasks, completed dependencies, patterns)
 
-Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `notify_user`, `request_user_approval`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`, `team_hire_agent`, `team_list_templates`, `builder_install`, `builder_list`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
+Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `notify_user`, `request_user_approval`, `recall_activity`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`, `team_hire_agent`, `team_list_templates`, `builder_install`, `builder_list`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
 
 Agent-to-user communication:
 | Situation | Tool | Example |
 |-----------|------|---------|
-| Status report, finding, alert | `notify_user` | "Daily report: completed 3 tasks today" |
+| Status report, finding, alert | `notify_user` (appears in chat, user may reply) | "Daily report: completed 3 tasks today" |
 | Task completed notification | `notify_user` + `related_task_id` | "Task X is ready for review" (clicks to task) |
 | Need user to approve/reject | `request_user_approval` | "Approve deployment to production?" |
 | Need user to choose between options | `request_user_approval` with custom `options` | "Should I use approach A or B for the auth refactor?" |
 | Need user freeform input | `request_user_approval` with `allow_freeform: true` | "What credentials should I use?" |
 | Want to discuss interactively | Mention user via task/requirement comment | Use `task_comment` or `requirement_comment` |
+| Need to review past execution details | `recall_activity` | `recall_activity({ task_id: "tsk_abc" })` to find what happened |
 | Routine heartbeat, nothing notable | Neither | Agent responds with `HEARTBEAT_OK` |
 
 Retry: 3 retries with exponential backoff (3s base).
@@ -477,7 +510,7 @@ For Claude Opus 4.x and Sonnet 4.x models, Anthropic's server-side `compact_2026
 | Document | Relationship |
 |----------|-------------|
 | [STATE-MACHINES.md](./STATE-MACHINES.md) | Task state transitions trigger different LLM call paths (§5.2 task execution, §5.3 heartbeat review) |
-| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Memory layers feed into system prompt (§2: long-term knowledge, lessons, daily logs, relevant memories) and are maintained by lightweight internal LLM calls (§5.6-5.8) |
+| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Memory stores feed into system prompt (§14: Your Knowledge, §16a-c: CPP-directed context) and are maintained by lightweight internal LLM calls (§5.6-5.8) |
 | `packages/core/src/agent.ts` | Implementation of all 7 LLM call scenarios and 4 harness variants |
 | `packages/core/src/context-engine.ts` | `buildSystemPrompt()` and `prepareMessages()` implementation |
 | `packages/core/src/llm/router.ts` | Provider routing, circuit breaker, model catalog, output token resolution |

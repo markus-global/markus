@@ -654,25 +654,28 @@ When a notification is created (via `HITLService.notify()`), a WebSocket `notifi
 
 Agents have two distinct modes for communicating with users, reflecting different conversational intents:
 
-### 13.1 `notify_user` — One-Way Notification
+### 13.1 `notify_user` — Proactive Chat Message + Notification
 
-Fire-and-forget informational updates. Creates a persistent notification in the user's notification bell.
+Proactive messages that appear in the agent's chat **and** the user's notification bell. The user can reply in chat, and the agent has full context of what it sent.
 
 ```typescript
 // Tool schema
 {
   name: 'notify_user',
   parameters: {
-    title: string,     // Short notification headline
-    message: string,   // Notification body
-    priority: 'low' | 'normal' | 'high' | 'urgent'  // optional, default 'normal'
+    title: string,     // Short headline (1 line)
+    body: string,      // Full message content (visible in chat)
+    priority: 'low' | 'normal' | 'high' | 'urgent',  // optional, default 'normal'
+    related_task_id?: string  // deep-link to task if applicable
   }
 }
 ```
 
-**When to use**: Status updates, task completion notices, FYI messages, non-blocking announcements.
+**When to use**: Status updates, task completion notices, FYI messages, findings, alerts — any proactive communication where the user may want to reply.
 
-**Flow**: `agent.executeTool('notify_user')` → `agent.userNotifier(title, message, priority)` → `HITLService.notify()` → SQLite + WebSocket → NotificationBell
+**Flow**: `agent.executeTool('notify_user')` → `memory.appendMessage()` (full `**title**\n\nbody` as regular assistant message) → `eventBus.emit('agent:notify-user')` → `start.ts` handler: `chatSessionRepo.appendMessage()` (no `activityLog` metadata) + `ws.broadcastProactiveMessage()` + `hitlService.notify()`
+
+**Notification routing**: With `related_task_id` → `actionType: 'navigate'` to Work page. Without task → `actionType: 'open_chat'` with `sessionId` to agent's chat.
 
 ### 13.2 `request_user_approval` — Blocking Decision Request
 
@@ -710,12 +713,13 @@ The system prompt includes scenario-specific guidance on which tool to use:
 
 | Situation | Tool |
 |-----------|------|
-| Status report, progress update, FYI alert | `notify_user` |
+| Status report, progress update, FYI alert | `notify_user` (appears in chat, user may reply) |
 | Task completed notification | `notify_user` with `related_task_id` |
 | Need user to approve/reject something | `request_user_approval` (default options) |
 | Need user to choose between approaches | `request_user_approval` with custom `options` |
 | Need user freeform input | `request_user_approval` with `allow_freeform: true` |
 | Want to discuss interactively | Mention user via task/requirement comment |
+| Need to review past execution details | `recall_activity` (list activities or get logs) |
 
 ---
 
@@ -931,9 +935,11 @@ Examples:
 
 ### Frontend Rendering
 
-Activity messages are rendered as compact system-style cards (colored dot + text) rather than full chat bubbles. The `[ACTIVITY: type]` prefix is stripped for display. Messages with a `mailboxItemId` show a "Details" button on hover.
+Activity log entries (marked with `activityLog: true` metadata) are hidden from the chat interface and visible only in the Agent Profile Mind tab. This reduces noise in the chat while keeping full traceability in the agent's profile.
 
-When the user opens an agent's chat, the frontend loads sessions via `getSessionsByAgent()`, which returns the main session first (sorted by `is_main DESC`). The main session's messages include both user conversations and activity entries, displayed chronologically.
+**Exception — `notify_user` and escalation**: These messages bypass `injectActivityToMainSession` entirely and are instead injected as regular chat messages (no `activityLog` metadata) via their own `agent:notify-user` and `agent:escalation` event handlers. They render as normal agent chat bubbles, allowing users to see and reply to them directly.
+
+When the user opens an agent's chat, the frontend loads sessions via `getSessionsByAgent()`, which returns the main session first (sorted by `is_main DESC`). The main session's messages include both user conversations and notify/escalation messages, displayed chronologically.
 
 ### Completion Marker
 

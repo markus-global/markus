@@ -85,6 +85,14 @@ export class DelegationManager {
     return { accepted: true, delegatedTo: targetId };
   }
 
+  updateAgentStatus(agentId: string, status: string): void {
+    const card = this.agentCards.get(agentId);
+    if (card) {
+      card.status = status as AgentCard['status'];
+      log.debug('Updated agent card status', { agentId, status });
+    }
+  }
+
   getAgentCards(): AgentCard[] {
     return [...this.agentCards.values()];
   }

@@ -142,21 +142,18 @@ export const PREEMPT_REQUEUE_DELAY_MS = 3_000;
 // These control how much memory context is injected into the system prompt.
 // All agents see this on every LLM call — tuning affects quality vs. token cost.
 
-/** Max characters for the SOPs section extracted from MEMORY.md.
- *  SOPs are high-value procedural memory — agents must see them fully.
- *  A typical SOP is ~200-300 chars; 3000 chars fits ~10 SOPs comfortably.
- *  Loaded independently from the general MEMORY.md cap. */
-export const SYSTEM_SOPS_CHARS = 3000;
+/** Max characters for the unified "## Your Knowledge" section from MEMORY.md.
+ *  MEMORY.md is loaded as a single section — no separate SOPs/lessons/etc.
+ *  8000 chars ≈ ~2000 tokens — fits ~5 sections of agent-organized knowledge. */
+export const SYSTEM_KNOWLEDGE_CHARS = 8000;
 
-/** Max characters for the full MEMORY.md (Long-term Knowledge).
- *  Contains lessons-learned, tool-preferences, role-evolution-log, etc.
- *  Note: SOPs are loaded separately above, so this budget is for everything else.
- *  5000 chars ≈ ~1200 tokens — moderate cost, good coverage. */
+/** @deprecated Use SYSTEM_KNOWLEDGE_CHARS. Kept for backward compat. */
+export const SYSTEM_SOPS_CHARS = 3000;
+/** @deprecated Use SYSTEM_KNOWLEDGE_CHARS. Kept for backward compat. */
 export const SYSTEM_LONGTERM_MEMORY_CHARS = 5000;
 
 /** Hard cap on individual MEMORY.md section content (chars).
- *  Prevents any single section from growing unbounded.
- *  3000 chars ≈ 10-15 SOP entries or ~20 lessons. */
+ *  Prevents any single section from growing unbounded. */
 export const MEMORY_MD_SECTION_MAX_CHARS = 3000;
 
 /** Hard cap on total MEMORY.md file size (chars).
@@ -164,14 +161,9 @@ export const MEMORY_MD_SECTION_MAX_CHARS = 3000;
  *  keeps creating new sections.  15 000 chars ≈ 5 sections × 3 000. */
 export const MEMORY_MD_TOTAL_MAX_CHARS = 15_000;
 
-/** Max recent lesson entries (tagged "lesson") injected into system prompt.
- *  These are individual memory_save entries from self-evolution.
- *  10 entries × ~150 chars = ~1500 chars ≈ ~375 tokens. */
+/** @deprecated Lesson/best-practice taxonomy removed. Use unified knowledge. */
 export const SYSTEM_LESSON_ENTRIES_MAX = 10;
-
-/** Max recent best-practice entries (tagged "best-practice") injected.
- *  These come from heartbeat task reviews; same budget as lessons.
- *  10 entries × ~200 chars = ~2000 chars ≈ ~500 tokens. */
+/** @deprecated Lesson/best-practice taxonomy removed. Use unified knowledge. */
 export const SYSTEM_BEST_PRACTICE_ENTRIES_MAX = 10;
 
 /** Max characters for shared deliverables context in system prompt.
@@ -374,3 +366,32 @@ export const SHELL_TIMEOUT_MAX_MS = 300_000;
  *  request_user_approval can wait indefinitely for the user. 24 hours is a
  *  generous safety net while allowing realistic human response times. */
 export const APPROVAL_WAIT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
+// ─── Heartbeat Startup ──────────────────────────────────────────────────────
+
+/** Minimum initial delay (ms) before an agent's first heartbeat fires.
+ *  Prevents the first agent from firing immediately at startup, giving the
+ *  system time to settle and avoiding a burst of LLM requests at boot. */
+export const HEARTBEAT_MIN_INITIAL_DELAY_MS = 5_000;
+
+/** Random jitter (ms) added to deterministic heartbeat stagger on startup.
+ *  When multiple agents start together, each gets a stagger offset plus
+ *  this random jitter to avoid deterministic collisions across restarts. */
+export const HEARTBEAT_STARTUP_JITTER_MS = 10_000;
+
+// ─── LLM Router Circuit Breaker ─────────────────────────────────────────────
+
+/** Circuit-breaker cooldown (ms) specifically for rate-limit (HTTP 429) errors.
+ *  Much shorter than the generic 5-minute cooldown because rate limits
+ *  typically clear within seconds. */
+export const LLM_CIRCUIT_RESET_RATE_LIMIT_MS = 30 * 1000;
+
+/** Max concurrent in-flight LLM requests per provider before jitter kicks in.
+ *  When exceeded, additional requests add a random delay to spread the load
+ *  and avoid thundering-herd 429 cascades. */
+export const LLM_MAX_CONCURRENT_PER_PROVIDER = 5;
+
+/** Base delay (ms) for the random jitter applied when per-provider concurrency
+ *  exceeds LLM_MAX_CONCURRENT_PER_PROVIDER.  Actual delay is in the range
+ *  [JITTER_BASE, JITTER_BASE * 3]. */
+export const LLM_CONCURRENCY_JITTER_BASE_MS = 500;

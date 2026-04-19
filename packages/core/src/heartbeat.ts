@@ -1,4 +1,4 @@
-import { createLogger } from '@markus/shared';
+import { createLogger, HEARTBEAT_MIN_INITIAL_DELAY_MS } from '@markus/shared';
 import type { EventBus } from './events.js';
 
 const log = createLogger('heartbeat');
@@ -40,7 +40,8 @@ export class HeartbeatScheduler {
     this.running = true;
     this.startTime = Date.now();
 
-    const delay = initialDelayMs ?? Math.floor(Math.random() * this.config.intervalMs);
+    const rawDelay = initialDelayMs ?? Math.floor(Math.random() * this.config.intervalMs);
+    const delay = Math.max(rawDelay, HEARTBEAT_MIN_INITIAL_DELAY_MS);
     this.effectiveInitialDelayMs = delay;
 
     log.info('Starting heartbeat scheduler', {

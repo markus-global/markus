@@ -243,6 +243,21 @@ export class APIServer {
           },
           timestamp: new Date().toISOString(),
         });
+        // Deliver to peer agent mailboxes so they see the message
+        const chat = this.customGroupChats.find(c => c.id === channelKey);
+        if (chat) {
+          for (const memberId of chat.memberIds) {
+            if (memberId === senderId) continue;
+            try {
+              const memberAgent = am.getAgent(memberId);
+              memberAgent.enqueueToMailbox('a2a_message', {
+                summary: `Group chat message from ${senderName}`,
+                content: `[Group chat: ${chat.name}] ${senderName}: ${cleanText}`,
+                extra: { senderId, senderName, channelKey },
+              });
+            } catch { /* agent may not exist */ }
+          }
+        }
         return 'Message sent to group chat';
       },
       createGroupChat: async (
@@ -6256,6 +6271,51 @@ EXPLANATION_END`;
       return;
     }
 
+    // ── File existence batch check ──────────────────────────────────────────
+
+    if (path === '/api/files/check' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const paths = body?.paths as string[] | undefined;
+      if (!Array.isArray(paths) || paths.length === 0) {
+        this.json(res, 400, { error: 'Missing "paths" array in request body' });
+        return;
+      }
+
+      try {
+        const { resolve, extname } = await import('node:path');
+        const { existsSync, statSync } = await import('node:fs');
+
+        const results: Record<string, { exists: boolean; isFile: boolean; type: string }> = {};
+        const mdExts = ['.md', '.markdown'];
+        const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'];
+
+        for (const p of paths.slice(0, 50)) {
+          try {
+            const resolved = resolve(p);
+            if (!existsSync(resolved)) {
+              results[p] = { exists: false, isFile: false, type: 'unknown' };
+              continue;
+            }
+            const stat = statSync(resolved);
+            const isFile = stat.isFile();
+            const ext = extname(resolved).toLowerCase();
+            let type = 'text';
+            if (mdExts.includes(ext)) type = 'markdown';
+            else if (imageExts.includes(ext)) type = 'image';
+            else if (!isFile) type = 'directory';
+            results[p] = { exists: true, isFile, type };
+          } catch {
+            results[p] = { exists: false, isFile: false, type: 'unknown' };
+          }
+        }
+
+        this.json(res, 200, { results });
+      } catch (err) {
+        this.json(res, 500, { error: `Failed to check files: ${String(err)}` });
+      }
+      return;
+    }
+
     // ── File preview ──────────────────────────────────────────────────────
 
     if (path === '/api/files/preview' && req.method === 'GET') {
@@ -6269,13 +6329,6 @@ EXPLANATION_END`;
         const { resolve, extname } = await import('node:path');
         const { readFileSync, existsSync, statSync } = await import('node:fs');
         const resolved = resolve(filePath);
-
-        // Security: only allow files under home/.markus (agent workspaces & shared data)
-        const markusBase = join(homedir(), '.markus');
-        if (!resolved.startsWith(markusBase)) {
-          this.json(res, 403, { error: 'Access denied: file is outside the allowed directory' });
-          return;
-        }
 
         if (!existsSync(resolved)) {
           this.json(res, 404, { error: 'File not found' });

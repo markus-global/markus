@@ -9,9 +9,9 @@
   - What went well? (clean incident resolution, effective monitoring, smooth deployments)
   - What operational patterns worked? (troubleshooting approaches, automation strategies, monitoring setups)
   - Did the review process reveal better operational practices?
-  - Save best practices via `memory_save` with `tags: ["lesson", "best-practice", "operations"]` and `[BEST-PRACTICE]` format.
-  - If you found a repeatable operational workflow (e.g., "incident response runbook", "service health check procedure"), promote it to an SOP via `memory_update_longterm({ section: "sops", ... })`.
-  - When 3+ related best practices accumulate, consider updating your ROLE.md with the new guideline.
-- **Self-evolution**: Reflect on what happened since last heartbeat. Save specific, actionable lessons via `memory_save` with key `evolution:lessons`. Format: `[YYYY-MM-DD] lesson`. Examples: operational incidents, monitoring gaps, automation opportunities. Skip if nothing meaningful happened.
+  - Save insights via `memory_save` with `tags: ["insight", "operations"]` and `[INSIGHT]` format.
+  - If you found a repeatable operational workflow (e.g., "incident response runbook", "service health check procedure"), promote it to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
+  - When 3+ related insights accumulate, consider updating your ROLE.md with the new guideline.
+- **Self-evolution**: Reflect on what happened since last heartbeat. Save specific, actionable insights via `memory_save` with tags `["insight"]`. Format: `[INSIGHT] <summary>`. Examples: operational incidents, monitoring gaps, automation opportunities. Skip if nothing meaningful happened.
 - Once per day, compile a daily summary (check memory to avoid duplicates).
 - If nothing changed since last summary, respond HEARTBEAT_OK.
