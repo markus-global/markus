@@ -1,6 +1,6 @@
 {
   "name": "@markus/org-manager",
-  "version": "0.4.19",
+  "version": "0.4.20",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
