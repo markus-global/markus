@@ -547,6 +547,7 @@ export class Agent {
       sessionId?: string;
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
+      fileNames?: string[];
       allowedTools?: Set<string>;
       scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review';
       toolEventCollector?: Array<{
@@ -572,6 +573,7 @@ export class Agent {
         sessionId: options?.sessionId,
         channelContext: options?.channelContext,
         images: options?.images,
+        fileNames: options?.fileNames,
         allowedTools: options?.allowedTools
           ? [...options.allowedTools]
           : undefined,
@@ -605,12 +607,14 @@ export class Agent {
     senderInfo?: { name: string; role: string },
     cancelToken?: { cancelled: boolean },
     images?: string[],
+    fileNames?: string[],
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: userMessage.slice(0, 100),
       content: userMessage,
       extra: {
         images,
+        fileNames,
         stream: true,
         onEvent,
         cancelToken,
@@ -829,6 +833,7 @@ export class Agent {
       if (extra.sessionId !== undefined) opts.sessionId = extra.sessionId;
       if (extra.channelContext !== undefined) opts.channelContext = extra.channelContext;
       if (extra.images !== undefined) opts.images = extra.images;
+      if (extra.fileNames !== undefined) opts.fileNames = extra.fileNames;
       if (extra.scenario !== undefined) opts.scenario = extra.scenario;
       if (extra.toolEventCollector !== undefined) opts.toolEventCollector = extra.toolEventCollector;
       if (extra.allowedTools !== undefined) {
@@ -849,6 +854,7 @@ export class Agent {
               senderInfo,
               extra.cancelToken as { cancelled: boolean } | undefined,
               extra.images as string[] | undefined,
+              extra.fileNames as string[] | undefined,
             );
             resolveResponse(reply);
             return reply;
@@ -2158,6 +2164,7 @@ export class Agent {
       sessionId?: string;
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
+      fileNames?: string[];
       allowedTools?: Set<string>;
       scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review';
       maxToolIterations?: number;
@@ -2237,7 +2244,7 @@ export class Agent {
       sessionId = options?.sessionId ?? `${scenario}_${this.id}_${Date.now()}`;
     }
     this.memory.getOrCreateSession(this.id, sessionId);
-    const userContent = this.buildUserContent(userMessage, options?.images);
+    const userContent = await this.buildUserContent(userMessage, options?.images, options?.fileNames);
     this.memory.appendMessage(sessionId, { role: 'user', content: userContent });
 
     // Inject channel context: on first turn, prepend all messages.
@@ -2595,6 +2602,7 @@ export class Agent {
     senderInfo?: { name: string; role: string },
     cancelToken?: { cancelled: boolean },
     images?: string[],
+    fileNames?: string[],
   ): Promise<string> {
     if (this.activeTasks.size === 0) {
       this.setStatus('working');
@@ -2623,7 +2631,7 @@ export class Agent {
       this.currentSessionId = session.id;
     }
 
-    const userContent = this.buildUserContent(userMessage, images);
+    const userContent = await this.buildUserContent(userMessage, images, fileNames);
     this.memory.appendMessage(this.currentSessionId, { role: 'user', content: userContent });
 
     const systemPrompt = await this.contextEngine.buildSystemPrompt({
@@ -3929,6 +3937,10 @@ export class Agent {
     return state;
   }
 
+  getModelSupportsVision(): boolean {
+    return this.llmRouter.modelSupportsVision(this.getEffectiveProvider());
+  }
+
   getEventBus(): EventBus {
     return this.eventBus;
   }
@@ -3960,13 +3972,25 @@ export class Agent {
     };
   }
 
-  private buildUserContent(text: string, images?: string[]): string | LLMContentPart[] {
+  private async buildUserContent(text: string, images?: string[], fileNames?: string[]): Promise<string | LLMContentPart[]> {
     if (!images?.length) return text;
-    const parts: LLMContentPart[] = [{ type: 'text', text }];
-    for (const img of images) {
-      parts.push({ type: 'image_url', image_url: { url: img } });
+
+    const supportsVision = this.llmRouter.modelSupportsVision(this.getEffectiveProvider());
+
+    if (supportsVision) {
+      const parts: LLMContentPart[] = [{ type: 'text', text }];
+      for (const img of images) {
+        parts.push({ type: 'image_url', image_url: { url: img } });
+      }
+      return parts;
     }
-    return parts;
+
+    const { convertFilesToText } = await import('./file-converter.js');
+    const converted = await convertFilesToText(images, fileNames);
+    const attachmentText = converted
+      .map(d => `\n\n<attached_file name="${d.name}" type="${d.mimeType}">\n${d.text}\n</attached_file>`)
+      .join('');
+    return text + attachmentText;
   }
 
   private buildToolDefinitions(context?: {

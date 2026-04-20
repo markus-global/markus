@@ -1392,6 +1392,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     }
 
     const imagesToSend = pendingImages.length > 0 ? pendingImages.map(img => img.dataUrl) : undefined;
+    const fileNamesToSend = pendingImages.length > 0 ? pendingImages.map(img => img.name) : undefined;
     const sendKey = makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId);
     const replyCtx = chatReplyTo;
 
@@ -1671,6 +1672,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           options?.isRetry,
           options?.isResume,
           handleCommitEvent,
+          fileNamesToSend,
         );
         if (currentConvKeyRef.current === sendKey) {
           if (streamResult.sessionId) {
@@ -1998,27 +2000,59 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     setMentionSelectedIndex(0);
   };
 
-  // ── Image handling ──────────────────────────────────────────────────────────
-  const MAX_IMAGE_SIZE = 4 * 1024 * 1024;
-  const MAX_IMAGES = 5;
+  // ── File attachment handling ─────────────────────────────────────────────────
+  const MAX_FILE_SIZE = 10 * 1024 * 1024;
+  const MAX_FILES = 5;
+  const SUPPORTED_DOC_TYPES = new Set([
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/vnd.ms-excel',
+    'application/msword',
+    'text/csv',
+    'text/html',
+    'application/json',
+    'application/xml',
+    'text/xml',
+    'application/epub+zip',
+  ]);
 
-  const addImageFiles = useCallback((files: FileList | File[]) => {
-    const fileArr = Array.from(files).filter(f => f.type.startsWith('image/'));
+  const isFileSupported = useCallback((f: File) => {
+    return f.type.startsWith('image/') || SUPPORTED_DOC_TYPES.has(f.type);
+  }, []);
+
+  const isImageFile = (f: { name: string; dataUrl: string }) => {
+    return f.dataUrl.startsWith('data:image/');
+  };
+
+  const getFileIcon = (name: string, dataUrl: string) => {
+    if (isImageFile({ name, dataUrl })) return null;
+    const ext = name.split('.').pop()?.toLowerCase() ?? '';
+    const iconMap: Record<string, string> = {
+      pdf: '📄', docx: '📝', doc: '📝', xlsx: '📊', xls: '📊',
+      pptx: '📎', csv: '📊', json: '🔧', xml: '🔧', html: '🌐', epub: '📚',
+    };
+    return iconMap[ext] ?? '📁';
+  };
+
+  const addFiles = useCallback((files: FileList | File[]) => {
+    const fileArr = Array.from(files).filter(isFileSupported);
     if (fileArr.length === 0) return;
     for (const file of fileArr) {
-      if (file.size > MAX_IMAGE_SIZE) continue;
+      if (file.size > MAX_FILE_SIZE) continue;
       const reader = new FileReader();
       reader.onload = () => {
         const dataUrl = reader.result as string;
         setPendingImages(p => {
-          if (p.length >= MAX_IMAGES) return p;
+          if (p.length >= MAX_FILES) return p;
           if (p.some(img => img.dataUrl === dataUrl)) return p;
           return [...p, { id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, dataUrl, name: file.name }];
         });
       };
       reader.readAsDataURL(file);
     }
-  }, []);
+  }, [isFileSupported]);
 
   const removeImage = useCallback((id: string) => {
     setPendingImages(prev => prev.filter(img => img.id !== id));
@@ -2027,21 +2061,21 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const files = e.clipboardData?.files;
     if (files && files.length > 0) {
-      const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
-      if (imageFiles.length > 0) {
+      const supported = Array.from(files).filter(isFileSupported);
+      if (supported.length > 0) {
         e.preventDefault();
-        addImageFiles(imageFiles);
+        addFiles(supported);
       }
     }
-  }, [addImageFiles]);
+  }, [addFiles, isFileSupported]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     const files = e.dataTransfer?.files;
     if (files && files.length > 0) {
-      addImageFiles(Array.from(files).filter(f => f.type.startsWith('image/')));
+      addFiles(Array.from(files).filter(isFileSupported));
     }
-  }, [addImageFiles]);
+  }, [addFiles, isFileSupported]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -2559,7 +2593,14 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
             <div className="flex items-center gap-2 mb-2 overflow-x-auto pb-1">
               {pendingImages.map(img => (
                 <div key={img.id} className="relative group/img shrink-0">
-                  <img src={img.dataUrl} alt={img.name} className="w-16 h-16 rounded-lg object-cover border border-border-default" />
+                  {isImageFile(img) ? (
+                    <img src={img.dataUrl} alt={img.name} className="w-16 h-16 rounded-lg object-cover border border-border-default" />
+                  ) : (
+                    <div className="w-16 h-16 rounded-lg border border-border-default bg-surface-elevated flex flex-col items-center justify-center gap-0.5" title={img.name}>
+                      <span className="text-xl leading-none">{getFileIcon(img.name, img.dataUrl)}</span>
+                      <span className="text-[9px] text-fg-tertiary truncate max-w-[56px] px-0.5">{img.name.split('.').pop()?.toUpperCase()}</span>
+                    </div>
+                  )}
                   <button
                     onClick={() => removeImage(img.id)}
                     className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-surface-secondary border border-gray-600 rounded-full flex items-center justify-center text-fg-secondary hover:text-red-500 hover:border-red-500 text-xs opacity-0 group-hover/img:opacity-100 transition-opacity"
@@ -2568,18 +2609,24 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                   </button>
                 </div>
               ))}
-              {pendingImages.length < MAX_IMAGES && (
+              {pendingImages.length < MAX_FILES && (
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   className="w-16 h-16 rounded-lg border border-dashed border-gray-600 flex items-center justify-center text-fg-tertiary hover:text-fg-secondary hover:border-gray-400 transition-colors shrink-0"
-                  title="Add more images"
+                  title="Add more files"
                 >
                   <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14" /></svg>
                 </button>
               )}
             </div>
           )}
-          <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={e => { if (e.target.files) addImageFiles(e.target.files); e.target.value = ''; }} />
+          {pendingImages.length > 0 && pendingImages.some(f => isImageFile(f)) && currentAgent && currentAgent.modelSupportsVision === false && (
+            <div className="text-[10px] text-amber-500/80 mb-1.5 flex items-center gap-1">
+              <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 9v4m0 4h.01M12 2L2 22h20L12 2z" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              Images will be converted to text (model does not support vision)
+            </div>
+          )}
+          <input ref={fileInputRef} type="file" accept="image/*,.pdf,.docx,.xlsx,.pptx,.xls,.doc,.csv,.json,.xml,.html,.epub" multiple className="hidden" onChange={e => { if (e.target.files) addFiles(e.target.files); e.target.value = ''; }} />
           {chatReplyTo && (
             <div className="flex items-center gap-2 mb-2 px-3 py-1.5 bg-surface-elevated rounded-lg border border-border-default/50">
               <div className="flex-1 min-w-0 pl-2 border-l-2 border-brand-500/50">
@@ -2596,12 +2643,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               onClick={() => fileInputRef.current?.click()}
               disabled={chatMode === 'direct' && !selectedAgent}
               className="px-2.5 py-2.5 text-fg-tertiary hover:text-fg-secondary disabled:opacity-40 transition-colors rounded-xl hover:bg-surface-elevated"
-              title="Attach images"
+              title="Attach files (images, PDF, Word, Excel, PowerPoint...)"
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <rect x="3" y="3" width="18" height="18" rx="3" />
-                <circle cx="8.5" cy="8.5" r="1.5" />
-                <path d="M21 15l-5-5L5 21" />
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>
             <textarea

@@ -12,6 +12,7 @@ export interface SSEMessageHandlerOptions {
   agent: Agent;
   userText: string;
   images?: string[];
+  fileNames?: string[];
   senderId?: string;
   sessionId?: string;
   senderInfo?: { name: string; role: string };
@@ -100,6 +101,7 @@ export class SSEHandler {
         this.options.senderInfo,
         this.cancelToken,
         this.options.images,
+        this.options.fileNames,
       );
 
       const finalNow = new Date().toISOString();

@@ -2095,6 +2095,7 @@ export class AgentManager {
     currentActivity?: AgentActivity;
     mailboxDepth?: number;
     attentionState?: string;
+    modelSupportsVision?: boolean;
   }> {
     return [...this.agents.values()].map(a => {
       const state = a.getState();
@@ -2119,6 +2120,7 @@ export class AgentManager {
         currentActivity: state.currentActivity,
         mailboxDepth,
         attentionState,
+        modelSupportsVision: a.getModelSupportsVision(),
       };
     });
   }
