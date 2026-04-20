@@ -1320,6 +1320,7 @@ export class APIServer {
         const senderId = body['senderId'] as string | undefined;
         const sessionId = body['sessionId'] as string | undefined ?? undefined;
         const images = (body['images'] as string[] | undefined)?.filter(Boolean);
+        const fileNames = (body['fileNames'] as string[] | undefined)?.filter(Boolean);
         const isRetry = body['isRetry'] as boolean | undefined;
         const isResume = body['isResume'] as boolean | undefined;
         const senderInfo = this.orgService.resolveHumanIdentity(senderId);
@@ -1368,6 +1369,7 @@ export class APIServer {
             agent,
             userText,
             images,
+            fileNames,
             senderId,
             senderInfo,
             sessionId,
@@ -1384,7 +1386,7 @@ export class APIServer {
           const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
           let reply: string;
           try {
-            reply = await agent.sendMessage(userText, senderId, senderInfo, { images, toolEventCollector: toolEvents });
+            reply = await agent.sendMessage(userText, senderId, senderInfo, { images, fileNames, toolEventCollector: toolEvents });
           } catch (err) {
             const errText = `⚠ AI service error: ${String(err).slice(0, 500)}`;
             void this.persistAssistantMessage(

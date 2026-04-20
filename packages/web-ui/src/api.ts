@@ -432,6 +432,7 @@ export interface AgentInfo {
   currentActivity?: AgentActivityInfo;
   mailboxDepth?: number;
   attentionState?: string;
+  modelSupportsVision?: boolean;
 }
 
 export interface HumanUserInfo {
@@ -824,9 +825,9 @@ export const api = {
     },
     getDecisions: (id: string, limit = 50) =>
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
-    message: (id: string, text: string, images?: string[], sessionId?: string | null) =>
-      request<{ reply: string; sessionId?: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, sessionId: sessionId ?? undefined }) }),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void): Promise<{ content: string; sessionId?: string }> => {
+    message: (id: string, text: string, images?: string[], sessionId?: string | null, fileNames?: string[]) =>
+      request<{ reply: string; sessionId?: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, fileNames, sessionId: sessionId ?? undefined }) }),
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[]): Promise<{ content: string; sessionId?: string }> => {
       return new Promise(async (resolve, reject) => {
         let fullContent = '';
         let resultSessionId: string | undefined;
@@ -835,7 +836,7 @@ export const api = {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ text, stream: true, images, sessionId: sessionId ?? undefined, isRetry: isRetry || undefined, isResume: isResume || undefined }),
+            body: JSON.stringify({ text, stream: true, images, fileNames, sessionId: sessionId ?? undefined, isRetry: isRetry || undefined, isResume: isResume || undefined }),
             signal,
           });
           if (!res.ok) { reject(new Error(`API error: ${res.status}`)); return; }

@@ -946,6 +946,20 @@ export class LLMRouter {
     return provider?.model ?? '';
   }
 
+  getModelInputTypes(providerName?: string): Array<'text' | 'image'> {
+    const name = providerName ?? this.defaultProvider;
+    const provider = this.providers.get(name);
+    if (!provider) return ['text'];
+    const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model && m.provider === name)
+      ?? BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model)
+      ?? this.customModelCatalog.get(name)?.find(m => m.id === provider.model);
+    return catalogEntry?.inputTypes ?? ['text', 'image'];
+  }
+
+  modelSupportsVision(providerName?: string): boolean {
+    return this.getModelInputTypes(providerName).includes('image');
+  }
+
   isAutoSelectEnabled(): boolean {
     return this.autoSelect;
   }
