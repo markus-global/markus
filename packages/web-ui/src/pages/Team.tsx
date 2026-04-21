@@ -569,8 +569,7 @@ function AgentMessageBody({
 
     // For the full execution log, prefer server-committed clean segments
     // (populated from thinking_commit/text_commit SSE events) over fragmented
-    // delta-built segments. committedSegments contain complete per-turn
-    // text/thinking entries, matching how the Work page renders.
+    // delta-built segments.
     const committed = msg.committedSegments;
     const fullLogEntries = committed && committed.length > 0
       ? segmentsToStreamEntries(committed, msg.agentId, msg.rawCreatedAt)
