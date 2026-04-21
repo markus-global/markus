@@ -601,7 +601,6 @@ function AgentMessageBody({
           ) : (
             <FullExecutionLog
               entries={fullLogEntries}
-              streamingText={streamingText}
               isActive={isStreaming}
               onCollapse={() => setViewMode('compact')}
               embedded
@@ -1592,8 +1591,13 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
             if (!updated) {
               segs.push({ type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments, createdAt: now });
             }
+            // Only add to committedSegments from agent_tool start (has arguments,
+            // arrives AFTER thinking_commit/text_commit) — NOT from tool_call_start
+            // (no arguments, arrives before commits, would cause wrong ordering).
             const committed = [...(u[idx]!.committedSegments ?? [])];
-            committed.push({ type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments, createdAt: now });
+            if (event.arguments !== undefined) {
+              committed.push({ type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments, createdAt: now });
+            }
             u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed };
             return u;
           });
