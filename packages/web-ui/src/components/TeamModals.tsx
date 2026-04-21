@@ -77,8 +77,11 @@ export function AddHumanModal({
   const submit = () => {
     setError('');
     if (!name.trim()) { setError('Name is required'); return; }
+    if (password && !email.trim()) { setError('Email is required when setting a password'); return; }
+    if (email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { setError('Please enter a valid email address'); return; }
+    if (password && password.length < 6) { setError('Password must be at least 6 characters'); return; }
     if (password && password !== confirmPassword) { setError('Passwords do not match'); return; }
-    onAdd(name.trim(), role, email || undefined, password || undefined, selectedTeam || undefined);
+    onAdd(name.trim(), role, email.trim() || undefined, password || undefined, selectedTeam || undefined);
   };
 
   return (
@@ -106,7 +109,7 @@ export function AddHumanModal({
           </Field>
         </div>
         <Field label="Email">
-          <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="Optional (required for login)" className="input" />
+          <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="Required for login access" className="input" />
         </Field>
         <div className="border-t border-border-default pt-3">
           <div className="text-xs text-fg-tertiary mb-3">Set a password to allow this person to log in.</div>

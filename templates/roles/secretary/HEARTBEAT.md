@@ -63,6 +63,6 @@ Skip if nothing meaningful happened.
 
 ## Daily Report (after 20:00 only)
 
-The system will tell you if a report is due. If the "Daily Report Required" section appears in the prompt, produce the report via `deliverable_create`. The report must be concise (<500 words), timestamped, and cover: your work, team progress, blockers, and tomorrow's priorities. Do NOT create the report before 20:00.
+The system will tell you if a report is due. If the "Daily Report Required" section appears in the prompt, write the report content to a file first (using `shell_execute`), then register it via `deliverable_create` with a brief summary. The report must be concise (<500 words), timestamped, and cover: your work, team progress, blockers, and tomorrow's priorities. Do NOT create the report before 20:00.
 
 - If nothing changed since last summary, respond HEARTBEAT_OK.

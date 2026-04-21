@@ -471,7 +471,7 @@ agent_decisions (id, agent_id, mailbox_item_id, decision, reason, context, decid
 ## 6. Authentication
 
 - JWT Cookie (`markus_token`, 7-day validity)
-- Default account: `admin@markus.local` / `markus123` (must change password on first login)
+- Initial account: `admin@markus.local` / `markus123` (onboarding wizard prompts user to set real name, email, and password)
 - Roles: owner > admin > member > guest
 - Only `owner` / `admin` can manage team members and Agents
 

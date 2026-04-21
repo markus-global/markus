@@ -1,10 +1,45 @@
-import { useState, useEffect, useCallback, createContext, useContext, useRef, useMemo, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useRef, useSyncExternalStore, lazy, Suspense } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../api.ts';
 
 const LazyMarkdownMessage = lazy(() => import('./MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage })));
 
-// ─── File check cache context ────────────────────────────────────────────────
+// ─── Modal stack for nested preview modals ───────────────────────────────────
+
+let modalCloseStack: (() => void)[] = [];
+let modalZCounter = 60;
+
+function useModalStack(onClose: () => void) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const [zIndex] = useState(() => ++modalZCounter);
+
+  useEffect(() => {
+    const closeFn = () => closeRef.current();
+    modalCloseStack.push(closeFn);
+
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && modalCloseStack[modalCloseStack.length - 1] === closeFn) {
+        e.preventDefault();
+        closeFn();
+      }
+    };
+    window.addEventListener('keydown', handleKey, true);
+    return () => {
+      window.removeEventListener('keydown', handleKey, true);
+      modalCloseStack = modalCloseStack.filter(fn => fn !== closeFn);
+      if (modalCloseStack.length === 0) modalZCounter = 60;
+    };
+  }, []);
+
+  return zIndex;
+}
+
+// ─── Global file-check store (singleton) ─────────────────────────────────────
+// Replaces per-message Context providers. All FilePathLink components across
+// the entire app share one cache and one batched API call queue. Each component
+// subscribes only to its own path via useSyncExternalStore, so cache updates
+// never cause unrelated re-renders.
 
 interface FileInfo {
   exists: boolean;
@@ -12,62 +47,60 @@ interface FileInfo {
   type: string;
 }
 
-type FileCheckState = FileInfo | 'pending';
+const fileCache = new Map<string, FileInfo>();
+const pendingPaths = new Set<string>();
+const subscribers = new Map<string, Set<() => void>>();
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
-interface FileCheckContextValue {
-  getFileInfo: (path: string) => FileCheckState | undefined;
-  requestCheck: (path: string) => void;
+function notifyPath(path: string) {
+  const subs = subscribers.get(path);
+  if (subs) for (const fn of subs) fn();
 }
 
-const FileCheckContext = createContext<FileCheckContextValue | null>(null);
+function flush() {
+  flushTimer = null;
+  const batch = [...pendingPaths];
+  pendingPaths.clear();
+  if (batch.length === 0) return;
 
-/**
- * Provider that batches file existence checks into a single API call.
- * Wrap the markdown renderer with this to avoid N+1 requests.
- */
-export function FileCheckProvider({ children }: { children: React.ReactNode }) {
-  const cacheRef = useRef<Map<string, FileCheckState>>(new Map());
-  const pendingRef = useRef<Set<string>>(new Set());
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [, forceUpdate] = useState(0);
+  api.files.check(batch).then(({ results }) => {
+    for (const [p, info] of Object.entries(results)) {
+      fileCache.set(p, info);
+      notifyPath(p);
+    }
+  }).catch(() => {
+    for (const p of batch) {
+      fileCache.set(p, { exists: false, isFile: false, type: 'unknown' });
+      notifyPath(p);
+    }
+  });
+}
 
-  const flush = useCallback(() => {
-    const paths = [...pendingRef.current];
-    pendingRef.current.clear();
-    if (paths.length === 0) return;
+function requestFileCheck(path: string) {
+  if (fileCache.has(path) || pendingPaths.has(path)) return;
+  pendingPaths.add(path);
+  if (flushTimer) clearTimeout(flushTimer);
+  flushTimer = setTimeout(flush, 30);
+}
 
-    api.files.check(paths).then(({ results }) => {
-      for (const [p, info] of Object.entries(results)) {
-        cacheRef.current.set(p, info);
-      }
-      forceUpdate(n => n + 1);
-    }).catch(() => {
-      for (const p of paths) {
-        cacheRef.current.set(p, { exists: false, isFile: false, type: 'unknown' });
-      }
-      forceUpdate(n => n + 1);
-    });
-  }, []);
+function subscribeToPath(path: string, cb: () => void) {
+  let set = subscribers.get(path);
+  if (!set) { set = new Set(); subscribers.set(path, set); }
+  set.add(cb);
+  return () => {
+    set!.delete(cb);
+    if (set!.size === 0) subscribers.delete(path);
+  };
+}
 
-  const requestCheck = useCallback((path: string) => {
-    if (cacheRef.current.has(path)) return;
-    cacheRef.current.set(path, 'pending');
-    pendingRef.current.add(path);
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(flush, 50);
-  }, [flush]);
+function useFileInfo(path: string): FileInfo | undefined {
+  const subscribe = useCallback((cb: () => void) => subscribeToPath(path, cb), [path]);
+  const getSnapshot = useCallback(() => fileCache.get(path), [path]);
+  const info = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
-  const getFileInfo = useCallback((path: string) => {
-    return cacheRef.current.get(path);
-  }, []);
+  useEffect(() => { requestFileCheck(path); }, [path]);
 
-  const value = useMemo(() => ({ getFileInfo, requestCheck }), [getFileInfo, requestCheck]);
-
-  return (
-    <FileCheckContext.Provider value={value}>
-      {children}
-    </FileCheckContext.Provider>
-  );
+  return info;
 }
 
 // ─── File path detection ─────────────────────────────────────────────────────
@@ -82,6 +115,7 @@ export function looksLikeFilePath(text: string): boolean {
 // ─── File preview modal ──────────────────────────────────────────────────────
 
 function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: () => void }) {
+  const zIndex = useModalStack(onClose);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [content, setContent] = useState('');
@@ -102,18 +136,10 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
     });
   }, [filePath]);
 
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [onClose]);
-
   const displayName = fileName || filePath.split(/[/\\]/).pop() || filePath;
 
   return createPortal(
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60]" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center" style={{ zIndex }} onClick={onClose}>
       <div
         className="bg-surface-secondary border border-border-default rounded-xl shadow-2xl w-[90vw] max-w-3xl max-h-[85vh] flex flex-col overflow-hidden"
         onClick={e => e.stopPropagation()}
@@ -184,17 +210,11 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
 // ─── FilePathLink component ──────────────────────────────────────────────────
 
 export function FilePathLink({ path: filePath }: { path: string }) {
-  const ctx = useContext(FileCheckContext);
+  const info = useFileInfo(filePath);
   const [previewPath, setPreviewPath] = useState<string | null>(null);
 
-  useEffect(() => {
-    ctx?.requestCheck(filePath);
-  }, [ctx, filePath]);
-
-  const info = ctx?.getFileInfo(filePath);
-  const isPending = info === 'pending' || info === undefined;
-  const exists = !isPending && info.exists;
-  const isMarkdown = !isPending && info.type === 'markdown';
+  const exists = info?.exists ?? false;
+  const isMarkdown = info?.type === 'markdown';
 
   const handleClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -207,23 +227,18 @@ export function FilePathLink({ path: filePath }: { path: string }) {
     }
   }, [exists, isMarkdown, filePath]);
 
-  const baseName = filePath.split(/[/\\]/).pop() || filePath;
-  const dirPart = filePath.slice(0, filePath.length - baseName.length);
+  const iconCls = 'inline w-3 h-3 align-[-0.125em]';
+  const fileIcon = isMarkdown
+    ? <svg className={iconCls} viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" /></svg>
+    : <svg className={iconCls} viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" /></svg>;
 
-  if (isPending) {
-    return (
-      <code className="bg-surface-secondary px-1.5 py-0.5 rounded text-xs font-mono text-fg-secondary break-all">
-        {filePath}
-      </code>
-    );
+  if (!info) {
+    return <code className="bg-surface-secondary px-1.5 py-0.5 rounded text-xs font-mono text-fg-secondary break-all">{filePath}</code>;
   }
 
   if (!exists) {
     return (
-      <code
-        className="bg-surface-secondary/50 px-1.5 py-0.5 rounded text-xs font-mono text-fg-tertiary break-all border border-border-default/30 line-through decoration-fg-tertiary/30"
-        title="File not found"
-      >
+      <code className="bg-surface-secondary/50 px-1.5 py-0.5 rounded text-xs font-mono text-fg-tertiary border border-border-default/30 line-through decoration-fg-tertiary/30 break-all" title="File not found">
         {filePath}
       </code>
     );
@@ -232,21 +247,12 @@ export function FilePathLink({ path: filePath }: { path: string }) {
   return (
     <>
       <code
-        className="inline-flex items-center gap-1 bg-brand-500/10 px-1.5 py-0.5 rounded text-xs font-mono text-brand-500 break-all cursor-pointer hover:bg-brand-500/20 transition-colors border border-brand-500/20 hover:border-brand-500/40"
+        className="bg-brand-500/10 px-1.5 py-0.5 rounded text-xs font-mono text-brand-500 cursor-pointer hover:bg-brand-500/20 transition-colors border border-brand-500/20 hover:border-brand-500/40 break-all"
         onClick={handleClick}
         title={isMarkdown ? 'Click to preview' : 'Click to reveal in file explorer'}
         role="button"
         tabIndex={0}
-      >
-        <svg className="w-3 h-3 shrink-0 inline-block" viewBox="0 0 20 20" fill="currentColor">
-          {isMarkdown ? (
-            <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
-          ) : (
-            <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
-          )}
-        </svg>
-        <span className="text-fg-tertiary">{dirPart}</span><span>{baseName}</span>
-      </code>
+      ><span className="whitespace-nowrap">{fileIcon}{filePath.charAt(0)}</span>{filePath.slice(1)}</code>
       {previewPath && <FilePreviewModal filePath={previewPath} onClose={() => setPreviewPath(null)} />}
     </>
   );

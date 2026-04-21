@@ -575,6 +575,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'agent_activities', column: 'keywords', sql: "ALTER TABLE agent_activities ADD COLUMN keywords TEXT DEFAULT ''" },
     { table: 'chat_sessions', column: 'is_main', sql: "ALTER TABLE chat_sessions ADD COLUMN is_main INTEGER NOT NULL DEFAULT 0" },
     { table: 'mailbox_items', column: 'retry_count', sql: "ALTER TABLE mailbox_items ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0" },
+    { table: 'users', column: 'avatar_url', sql: "ALTER TABLE users ADD COLUMN avatar_url TEXT" },
+    { table: 'agents', column: 'avatar_url', sql: "ALTER TABLE agents ADD COLUMN avatar_url TEXT" },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -780,6 +782,10 @@ export class SqliteAgentRepo {
     this.db.prepare('DELETE FROM agents WHERE id = ?').run(id);
   }
 
+  updateAvatarUrl(id: string, avatarUrl: string | null) {
+    this.db.prepare('UPDATE agents SET avatar_url = ?, updated_at = ? WHERE id = ?').run(avatarUrl, now(), id);
+  }
+
   updateConfig(id: string, data: { name?: string; agentRole?: string; skills?: unknown; llmConfig?: unknown; computeConfig?: unknown; heartbeatIntervalMs?: number }) {
     const sets: string[] = ['updated_at = ?'];
     const vals: SqlParams = [now()];
@@ -812,6 +818,7 @@ export class SqliteAgentRepo {
       tokensUsedToday: r['tokens_used_today'],
       activeTaskIds: fromJson(r['active_task_ids'] as string),
       profile: fromJson(r['profile'] as string),
+      avatarUrl: r['avatar_url'] as string | null,
       lastHeartbeat: toDate(r['last_heartbeat'] as string),
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),
@@ -2056,7 +2063,7 @@ export class SqliteUserRepo {
     this.db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, id);
   }
 
-  updateProfile(id: string, data: { name?: string; email?: string; role?: string }) {
+  updateProfile(id: string, data: { name?: string; email?: string; role?: string; avatarUrl?: string | null }) {
     const sets: string[] = [];
     const vals: SqlParams = [];
     if (data.name !== undefined) {
@@ -2071,6 +2078,10 @@ export class SqliteUserRepo {
       sets.push('role = ?');
       vals.push(data.role);
     }
+    if (data.avatarUrl !== undefined) {
+      sets.push('avatar_url = ?');
+      vals.push(data.avatarUrl);
+    }
     if (sets.length === 0) return null;
     vals.push(id);
     this.db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
@@ -2084,6 +2095,10 @@ export class SqliteUserRepo {
     return r.cnt;
   }
 
+  updateAvatarUrl(id: string, avatarUrl: string | null) {
+    this.db.prepare('UPDATE users SET avatar_url = ? WHERE id = ?').run(avatarUrl, id);
+  }
+
   private _map(r: Record<string, unknown>) {
     return {
       id: r['id'],
@@ -2093,6 +2108,7 @@ export class SqliteUserRepo {
       role: r['role'],
       teamId: r['team_id'],
       passwordHash: r['password_hash'],
+      avatarUrl: r['avatar_url'] as string | null,
       createdAt: toDate(r['created_at'] as string),
       lastLoginAt: toDate(r['last_login_at'] as string),
     };
@@ -2993,6 +3009,8 @@ export class SqliteDeliverableRepo {
     if (patch.type !== undefined) { sets.push('type = ?'); vals.push(patch.type as SQLInputValue); }
     if (patch.artifactType !== undefined) { sets.push('artifact_type = ?'); vals.push(patch.artifactType as SQLInputValue); }
     if (patch.artifactData !== undefined) { sets.push('artifact_data = ?'); vals.push(toJson(patch.artifactData)); }
+    if (patch.diffStats !== undefined) { sets.push('diff_stats = ?'); vals.push(toJson(patch.diffStats)); }
+    if (patch.testResults !== undefined) { sets.push('test_results = ?'); vals.push(toJson(patch.testResults)); }
     vals.push(id);
     this.db.prepare(`UPDATE deliverables SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
     return this.findById(id);

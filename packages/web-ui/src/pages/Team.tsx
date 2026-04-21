@@ -25,6 +25,7 @@ import { TeamProfile } from './TeamProfile.tsx';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
+import { Avatar } from '../components/Avatar.tsx';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -180,9 +181,7 @@ function ChatAgentLink({ name, agentId, agents, onViewProfile }: { name: string;
       {open && (
         <div className="absolute left-0 top-full mt-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-40 w-56 p-3 space-y-2">
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-full bg-brand-500/15 flex items-center justify-center text-[10px] font-bold text-brand-600">
-              {agentInitials(agent.name)}
-            </div>
+            <Avatar name={agent.name} avatarUrl={agent.avatarUrl} size={28} bgClass="bg-brand-500/15 text-brand-600" />
             <div className="flex-1 min-w-0">
               <div className="text-xs text-fg-primary font-medium truncate">{agent.name}</div>
               <div className="text-[10px] text-fg-tertiary">{agent.role} · {agent.agentRole ?? 'worker'}</div>
@@ -239,9 +238,7 @@ function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
       style={{ top: anchorRect.top + 40, left: anchorRect.left }}
     >
       <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-full bg-brand-500/15 flex items-center justify-center text-sm font-bold text-brand-600">
-          {agentInitials(agent.name)}
-        </div>
+        <Avatar name={agent.name} avatarUrl={agent.avatarUrl} size={40} bgClass="bg-brand-500/15 text-brand-600" />
         <div className="flex-1 min-w-0">
           <div className="text-sm text-fg-primary font-medium truncate">{agent.name}</div>
           <div className="text-[11px] text-fg-tertiary">{agent.role}</div>
@@ -2411,9 +2408,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
             ? messages.map(msg => (
                 <div key={msg.id} id={`msg-${msg.id}`} className="group/msg flex gap-3 transition-colors rounded-lg">
                   <div
-                    className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 cursor-pointer ${
-                      msg.sender === 'user' ? 'bg-brand-600 text-white' : 'bg-brand-500/15 text-brand-600 hover:ring-1 hover:ring-brand-500/40'
-                    }`}
+                    className="shrink-0 cursor-pointer"
                     onClick={(e) => {
                       if (msg.sender === 'agent' && msg.agentId) {
                         const rect = e.currentTarget.getBoundingClientRect();
@@ -2421,7 +2416,13 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                       }
                     }}
                   >
-                    {msg.sender === 'user' ? (currentUserName?.[0] ?? 'Y') : (msg.agentName?.[0] ?? 'A')}
+                    <Avatar
+                      name={msg.sender === 'user' ? (currentUserName ?? 'You') : (msg.agentName ?? 'Agent')}
+                      avatarUrl={msg.sender === 'user' ? authUser?.avatarUrl : agents.find(a => a.id === msg.agentId)?.avatarUrl}
+                      size={32}
+                      bgClass={msg.sender === 'user' ? 'bg-brand-600' : 'bg-brand-500/15 text-brand-600'}
+                      className={msg.sender === 'agent' ? 'hover:ring-1 hover:ring-brand-500/40 rounded-lg' : 'rounded-lg'}
+                    />
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
@@ -2583,9 +2584,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                     i === mentionSelectedIndex ? 'bg-brand-500/15 text-brand-500' : 'text-fg-secondary hover:bg-surface-overlay'
                   }`}
                 >
-                  <span className="w-6 h-6 rounded-full bg-brand-500/20 flex items-center justify-center text-[10px] font-bold text-brand-500 shrink-0">
-                    {a.name.slice(0, 2).toUpperCase()}
-                  </span>
+                  <Avatar name={a.name} avatarUrl={a.avatarUrl} size={24} bgClass="bg-brand-500/20 text-brand-500" />
                   <span className="flex-1 min-w-0">{a.name}</span>
                   <span className="text-xs text-fg-tertiary ml-auto">{a.role}</span>
                 </button>

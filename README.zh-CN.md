@@ -69,7 +69,7 @@ curl -fsSL https://markus.global/install.sh | bash
 markus start
 ```
 
-打开 **http://localhost:8056** — 使用 `admin@markus.local` / `markus123` 登录。
+打开 **http://localhost:8056** — 引导向导将引导你设置姓名、邮箱和密码。初始登录：`admin@markus.local` / `markus123`。
 
 就这样。SQLite 数据库，内置 Web 界面，无需额外安装任何依赖。
 

@@ -290,7 +290,11 @@ export class SSEHandler {
   private handleStreamEvent(event: AgentStreamEvent): void {
     if (!this.sseBuffer || this.sseDisconnected) return;
 
-    this.sseBuffer.send({ ...event });
+    // Delay agent_tool start events until AFTER thinking_commit/text_commit
+    // flushes, so the client receives them in correct order.
+    if (!(event.type === 'agent_tool' && event.phase === 'start')) {
+      this.sseBuffer.send({ ...event });
+    }
     
     if (event.type === 'thinking_delta' && event.thinking) {
       this.thinkingBuf += event.thinking;
@@ -332,6 +336,8 @@ export class SSEHandler {
         } else if (turnThinking) {
           this.msgSegments.push({ type: 'text', content: '', thinking: turnThinking, createdAt: now });
         }
+        // Send agent_tool start AFTER thinking/text commits
+        this.sseBuffer.send({ ...event });
         if (event.tool) {
           this.runningTools.push({ tool: event.tool, arguments: event.arguments, startedAt: Date.now() });
         }

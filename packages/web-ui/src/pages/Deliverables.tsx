@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { api, wsClient, type DeliverableInfo, type ProjectInfo, type AgentInfo } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { copyPlainText } from '../components/markdown-copy.ts';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
@@ -84,10 +85,7 @@ export function DeliverablesPage() {
   const [previewImage, setPreviewImage] = useState<{ src: string; name: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [showCopyPath, setShowCopyPath] = useState(false);
-  const [copyMenuOpen, setCopyMenuOpen] = useState(false);
   const [copiedPath, setCopiedPath] = useState(false);
-  const previewRef = useRef<HTMLDivElement>(null);
-  const copyMenuRef = useRef<HTMLDivElement>(null);
   const [sharedDir, setSharedDir] = useState('');
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -97,26 +95,8 @@ export function DeliverablesPage() {
     setTimeout(() => setFlash(null), 3000);
   };
 
-  const copyToClipboard = async (text: string): Promise<boolean> => {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0';
-        document.body.appendChild(ta);
-        ta.select();
-        const ok = document.execCommand('copy');
-        document.body.removeChild(ta);
-        return ok;
-      } catch { return false; }
-    }
-  };
-
   const copyPath = async (text: string) => {
-    const ok = await copyToClipboard(text);
+    const ok = await copyPlainText(text);
     if (ok) {
       setCopiedPath(true);
       setTimeout(() => setCopiedPath(false), 1500);
@@ -172,8 +152,10 @@ export function DeliverablesPage() {
   useEffect(() => { refresh(); }, [refresh]);
 
   useEffect(() => {
-    const unsub = wsClient.on('deliverable:created', () => refresh());
-    return unsub;
+    const unsub1 = wsClient.on('deliverable:created', () => refresh());
+    const unsub2 = wsClient.on('deliverable:updated', () => refresh());
+    const unsub3 = wsClient.on('deliverable:removed', () => refresh());
+    return () => { unsub1(); unsub2(); unsub3(); };
   }, [refresh]);
 
   const checkNeedMore = useCallback(() => {
@@ -305,85 +287,9 @@ export function DeliverablesPage() {
     setPreviewContent(null);
     setPreviewImage(null);
     setShowCopyPath(false);
-    setCopyMenuOpen(false);
     if (selected) loadPreview(selected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id]);
-
-  useEffect(() => {
-    if (!copyMenuOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (copyMenuRef.current && !copyMenuRef.current.contains(e.target as Node)) setCopyMenuOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [copyMenuOpen]);
-
-  const copyAsHtml = async (theme: 'light' | 'dark', sourceText: string) => {
-    const sourceEl = previewRef.current?.firstElementChild as HTMLElement | null;
-    if (!sourceEl) return;
-    const html = buildStyledHtml(sourceEl, theme);
-    try {
-      await navigator.clipboard.write([
-        new ClipboardItem({
-          'text/html': new Blob([html], { type: 'text/html' }),
-          'text/plain': new Blob([sourceText], { type: 'text/plain' }),
-        }),
-      ]);
-      flashMsg('success', theme === 'light' ? 'HTML (light) copied' : 'HTML (dark) copied');
-    } catch {
-      const ok = await copyToClipboard(sourceText);
-      flashMsg(ok ? 'success' : 'error', ok ? 'Text copied (HTML not supported)' : 'Copy failed');
-    }
-    setCopyMenuOpen(false);
-  };
-
-  const renderMarkdownPreview = (content: string) => (
-    <div className="relative group/preview">
-      <div
-        className="absolute -top-1 -right-1 z-10"
-        ref={copyMenuRef}
-      >
-        <button
-          onClick={() => setCopyMenuOpen(o => !o)}
-          className="p-1.5 rounded-lg bg-surface-elevated/80 hover:bg-surface-overlay text-fg-secondary hover:text-fg-primary backdrop-blur-sm border border-border-default/50 transition-all"
-          title="Copy content"
-        >
-          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-          </svg>
-        </button>
-        {copyMenuOpen && (
-          <div className="absolute right-0 top-full mt-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 min-w-[180px]">
-            <button
-              onClick={async () => { const ok = await copyToClipboard(content); flashMsg(ok ? 'success' : 'error', ok ? 'Markdown source copied' : 'Copy failed'); setCopyMenuOpen(false); }}
-              className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
-            >
-              <span className="w-4 text-center text-fg-tertiary shrink-0 font-mono text-[10px]">Md</span>
-              Copy Markdown Source
-            </button>
-            <button
-              onClick={() => copyAsHtml('light', content)}
-              className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
-            >
-              <span className="w-4 text-center shrink-0">☀️</span>
-              Copy HTML (Light)
-            </button>
-            <button
-              onClick={() => copyAsHtml('dark', content)}
-              className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
-            >
-              <span className="w-4 text-center shrink-0">🌙</span>
-              Copy HTML (Dark)
-            </button>
-          </div>
-        )}
-      </div>
-      <div ref={previewRef}>
-        <MarkdownMessage content={content} className="text-fg-secondary text-sm" />
-      </div>
-    </div>
-  );
 
   const toggleGroup = useCallback((key: string) => {
     setCollapsedGroups(prev => {
@@ -683,7 +589,7 @@ export function DeliverablesPage() {
                     <span className="text-xs text-fg-tertiary">{previewImage.name}</span>
                   </div>
                 ) : previewContent ? (
-                  renderMarkdownPreview(previewContent)
+                  <MarkdownMessage content={previewContent} className="text-fg-secondary text-sm" />
                 ) : showCopyPath ? (
                   <div className="space-y-3">
                     <p className="text-sm text-fg-secondary">This {selected.type} cannot be previewed in the browser.</p>
@@ -700,7 +606,7 @@ export function DeliverablesPage() {
                     </div>
                   </div>
                 ) : selected.summary ? (
-                  renderMarkdownPreview(selected.summary)
+                  <MarkdownMessage content={selected.summary} className="text-fg-secondary text-sm" />
                 ) : (
                   <p className="text-sm text-fg-tertiary italic">No content</p>
                 )}
@@ -845,76 +751,6 @@ export function DeliverablesPage() {
       )}
     </div>
   );
-}
-
-function buildStyledHtml(sourceEl: HTMLElement, theme: 'light' | 'dark'): string {
-  const clone = sourceEl.cloneNode(true) as HTMLElement;
-  const t = theme === 'light'
-    ? {
-        bg: '#ffffff', text: '#24292f', heading: '#1f2328', strong: '#1f2328',
-        link: '#0969da', codeBg: '#eff1f3', codeText: '#24292f',
-        preBg: '#f6f8fa', preText: '#24292f', preBorder: '#d0d7de',
-        border: '#d0d7de', blockquoteBorder: '#d0d7de', blockquoteText: '#656d76',
-        tableBorder: '#d0d7de', tableHeaderBg: '#f6f8fa', tableHeaderText: '#24292f',
-        hrColor: '#d8dee4',
-      }
-    : {
-        bg: '#0d1117', text: '#e6edf3', heading: '#f0f6fc', strong: '#f0f6fc',
-        link: '#58a6ff', codeBg: '#161b22', codeText: '#e6edf3',
-        preBg: '#161b22', preText: '#e6edf3', preBorder: '#30363d',
-        border: '#30363d', blockquoteBorder: '#3b82f6', blockquoteText: '#8b949e',
-        tableBorder: '#30363d', tableHeaderBg: '#161b22', tableHeaderText: '#e6edf3',
-        hrColor: '#21262d',
-      };
-
-  const styleMap: Record<string, string> = {
-    'p': `margin:0 0 10px;color:${t.text};line-height:1.7;`,
-    'h1': `font-size:1.6em;font-weight:700;color:${t.heading};margin:20px 0 10px;line-height:1.3;border-bottom:1px solid ${t.border};padding-bottom:6px;`,
-    'h2': `font-size:1.35em;font-weight:700;color:${t.heading};margin:18px 0 8px;line-height:1.3;`,
-    'h3': `font-size:1.15em;font-weight:600;color:${t.heading};margin:14px 0 6px;line-height:1.3;`,
-    'h4': `font-size:1em;font-weight:600;color:${t.heading};margin:12px 0 4px;`,
-    'strong': `font-weight:600;color:${t.strong};`,
-    'em': `font-style:italic;`,
-    'a': `color:${t.link};text-decoration:underline;`,
-    'ul': `padding-left:1.5em;margin:0 0 10px;`,
-    'ol': `padding-left:1.5em;margin:0 0 10px;`,
-    'li': `margin:3px 0;line-height:1.7;color:${t.text};`,
-    'blockquote': `border-left:3px solid ${t.blockquoteBorder};padding:2px 0 2px 14px;margin:10px 0;color:${t.blockquoteText};`,
-    'hr': `border:none;border-top:1px solid ${t.hrColor};margin:20px 0;`,
-    'table': `border-collapse:collapse;width:100%;margin:10px 0;`,
-    'thead': `background:${t.tableHeaderBg};`,
-    'th': `border:1px solid ${t.tableBorder};padding:8px 12px;text-align:left;font-weight:600;color:${t.tableHeaderText};`,
-    'td': `border:1px solid ${t.tableBorder};padding:8px 12px;color:${t.text};`,
-    'img': 'max-width:100%;height:auto;',
-  };
-
-  function processNode(el: Element) {
-    el.removeAttribute('class');
-    const tag = el.tagName.toLowerCase();
-
-    if (tag === 'pre') {
-      el.setAttribute('style', `background:${t.preBg};color:${t.preText};padding:14px;border-radius:6px;overflow-x:auto;margin:10px 0;font-size:0.88em;line-height:1.5;border:1px solid ${t.preBorder};`);
-      const codeChild = el.querySelector('code');
-      if (codeChild) {
-        codeChild.removeAttribute('class');
-        codeChild.setAttribute('style', `background:transparent;padding:0;border-radius:0;color:inherit;font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;font-size:inherit;`);
-      }
-      return;
-    }
-
-    if (tag === 'code') {
-      el.setAttribute('style', `background:${t.codeBg};color:${t.codeText};padding:2px 6px;border-radius:4px;font-size:0.9em;font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;`);
-    } else if (styleMap[tag]) {
-      el.setAttribute('style', styleMap[tag]!);
-    }
-
-    Array.from(el.children).forEach(processNode);
-  }
-
-  clone.removeAttribute('class');
-  Array.from(clone.children).forEach(child => processNode(child as Element));
-
-  return `<div style="background:${t.bg};color:${t.text};padding:20px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.7;max-width:800px;">${clone.innerHTML}</div>`;
 }
 
 function FilterPill({ label, value, current, onClick }: { label: string; value: string; current: string; onClick: (v: string) => void }) {

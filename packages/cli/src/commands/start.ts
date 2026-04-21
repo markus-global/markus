@@ -429,6 +429,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // One-time migration: sync existing task.deliverables into the unified deliverables table
   const allTasks = taskService.listTasks({ orgId: 'default' });
   await deliverableService.migrateFromTasks(allTasks);
+  await deliverableService.deduplicateByReference();
 
   const reportService = new ReportService(taskService, billingService, auditService, knowledgeService);
   const _trustService = new TrustService();
@@ -443,6 +444,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   agentManager.setProjectService(projectService);
   agentManager.setKnowledgeService(knowledgeService);
   agentManager.setDeliverableService(deliverableService);
+  agentManager.setWebUiBaseUrl(`http://localhost:${apiPort}`);
   requirementService.setAgentManager(agentManager);
   requirementService.setHITLService(hitlService);
   apiServer.setProjectService(projectService);

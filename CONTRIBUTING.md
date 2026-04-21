@@ -29,7 +29,7 @@ pnpm dev
 **Services:**
 - Web UI: http://localhost:8057
 - API: http://localhost:8056
-- Default admin: `admin@markus.local` / `markus123`
+- Initial admin: `admin@markus.local` / `markus123` (onboarding will prompt to set your own credentials)
 
 **Databases:** SQLite by default (zero config). PostgreSQL is optional for production.
 

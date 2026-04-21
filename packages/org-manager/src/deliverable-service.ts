@@ -1,7 +1,6 @@
 import { createLogger, generateId, type Deliverable, type TaskDeliverable, type Task } from '@markus/shared';
 import type { DeliverableRepo } from '@markus/storage';
 import type { WSBroadcaster } from './ws-server.ts';
-
 const log = createLogger('deliverable-service');
 
 export class DeliverableService {
@@ -38,6 +37,35 @@ export class DeliverableService {
     diffStats?: Deliverable['diffStats'];
     testResults?: Deliverable['testResults'];
   }): Promise<Deliverable> {
+    // Upsert: if reference is non-empty and an active deliverable with the same
+    // reference (scoped to projectId) already exists, update it instead of creating a duplicate.
+    const ref = opts.reference?.trim();
+    if (ref) {
+      const existing = this.findByReference(ref, opts.projectId);
+      if (existing) {
+        const patch: Parameters<typeof this.update>[1] = {
+          type: opts.type,
+          title: opts.title,
+          summary: opts.summary,
+          tags: opts.tags ?? existing.tags,
+        };
+        if (opts.artifactType !== undefined) patch.artifactType = opts.artifactType;
+        if (opts.artifactData !== undefined) patch.artifactData = opts.artifactData;
+        if (opts.diffStats !== undefined) patch.diffStats = opts.diffStats;
+        if (opts.testResults !== undefined) patch.testResults = opts.testResults;
+        const updated = await this.update(existing.id, patch);
+        log.info('Deliverable upserted (updated existing)', { id: existing.id, reference: ref });
+        this.ws?.broadcastDeliverableUpdate(existing.id, 'updated', {
+          type: opts.type,
+          title: opts.title,
+          agentId: opts.agentId,
+          projectId: opts.projectId,
+          taskId: opts.taskId,
+        });
+        return updated ?? existing;
+      }
+    }
+
     const id = generateId('dlv');
     const now = new Date().toISOString();
     const deliverable: Deliverable = {
@@ -45,7 +73,7 @@ export class DeliverableService {
       type: opts.type,
       title: opts.title,
       summary: opts.summary,
-      reference: opts.reference ?? '',
+      reference: ref ?? '',
       tags: opts.tags ?? [],
       status: 'active',
       taskId: opts.taskId,
@@ -66,7 +94,7 @@ export class DeliverableService {
       type: opts.type,
       title: opts.title,
       summary: opts.summary,
-      reference: opts.reference ?? '',
+      reference: ref ?? '',
       tags: opts.tags ?? [],
       status: 'active',
       taskId: opts.taskId,
@@ -158,6 +186,10 @@ export class DeliverableService {
     reference: string;
     tags: string[];
     status: Deliverable['status'];
+    artifactType: Deliverable['artifactType'];
+    artifactData: Deliverable['artifactData'];
+    diffStats: Deliverable['diffStats'];
+    testResults: Deliverable['testResults'];
   }>): Promise<Deliverable | undefined> {
     const d = this.cache.get(id);
     if (!d) return undefined;
@@ -169,10 +201,21 @@ export class DeliverableService {
     if (data.reference !== undefined) d.reference = data.reference;
     if (data.tags !== undefined) d.tags = data.tags;
     if (data.status !== undefined) d.status = data.status;
+    if (data.artifactType !== undefined) d.artifactType = data.artifactType;
+    if (data.artifactData !== undefined) d.artifactData = data.artifactData;
+    if (data.diffStats !== undefined) d.diffStats = data.diffStats;
+    if (data.testResults !== undefined) d.testResults = data.testResults;
     d.updatedAt = now;
 
     await this.repo?.update(id, data);
     log.info('Deliverable updated', { id, fields: Object.keys(data) });
+    this.ws?.broadcastDeliverableUpdate(id, 'updated', {
+      type: d.type,
+      title: d.title,
+      agentId: d.agentId,
+      projectId: d.projectId,
+      taskId: d.taskId,
+    });
     return d;
   }
 
@@ -183,10 +226,25 @@ export class DeliverableService {
     d.updatedAt = new Date().toISOString();
     await this.repo?.update(id, { status: 'outdated' });
     log.info('Deliverable flagged outdated', { id });
+    this.ws?.broadcastDeliverableUpdate(id, 'removed', {
+      type: d.type,
+      title: d.title,
+      projectId: d.projectId,
+    });
   }
 
   async remove(id: string): Promise<void> {
     await this.flagOutdated(id);
+  }
+
+  findByReference(reference: string, projectId?: string): Deliverable | undefined {
+    for (const d of this.cache.values()) {
+      if (d.status === 'outdated') continue;
+      if (d.reference !== reference) continue;
+      if (projectId !== undefined && d.projectId !== projectId) continue;
+      return d;
+    }
+    return undefined;
   }
 
   findByTask(taskId: string): Deliverable[] {
@@ -217,6 +275,29 @@ export class DeliverableService {
       type: opts.type as Deliverable['type'],
       status: opts.status as Deliverable['status'],
     }).results;
+  }
+
+  async deduplicateByReference(): Promise<number> {
+    const byRef = new Map<string, Deliverable[]>();
+    for (const d of this.cache.values()) {
+      if (d.status === 'outdated' || !d.reference) continue;
+      const key = `${d.reference}||${d.projectId ?? ''}`;
+      if (!byRef.has(key)) byRef.set(key, []);
+      byRef.get(key)!.push(d);
+    }
+    let cleaned = 0;
+    for (const [, dupes] of byRef) {
+      if (dupes.length <= 1) continue;
+      dupes.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      for (let i = 1; i < dupes.length; i++) {
+        await this.flagOutdated(dupes[i]!.id);
+        cleaned++;
+      }
+    }
+    if (cleaned > 0) {
+      log.info('Deduplicated deliverables by reference', { cleaned });
+    }
+    return cleaned;
   }
 
   /**
@@ -278,6 +359,18 @@ export class DeliverableService {
     return migrated;
   }
 
+  private parseTags(raw: unknown): string[] {
+    if (Array.isArray(raw)) return raw.map(String);
+    if (typeof raw !== 'string' || !raw) return [];
+    try {
+      let parsed = JSON.parse(raw);
+      // Handle double-encoded JSON: if parse result is a string, parse again
+      if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+      if (Array.isArray(parsed)) return parsed.map(String);
+    } catch { /* fall through */ }
+    return [];
+  }
+
   private mapTaskDeliverableType(type: TaskDeliverable['type']): Deliverable['type'] {
     switch (type) {
       case 'file': return 'file';
@@ -311,7 +404,7 @@ export class DeliverableService {
       title: r.title,
       summary: r.summary,
       reference: r.reference,
-      tags: Array.isArray(r.tags) ? r.tags : JSON.parse(String(r.tags || '[]')),
+      tags: this.parseTags(r.tags),
       status: r.status as Deliverable['status'],
       taskId: r.taskId ?? undefined,
       agentId: r.agentId ?? undefined,
