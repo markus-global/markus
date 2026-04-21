@@ -8,6 +8,7 @@ import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 
 interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string }
 
@@ -74,7 +75,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
     <div className="flex-1 overflow-y-auto bg-surface-primary">
       <div className="px-5 py-3.5 border-b border-border-default bg-surface-secondary sticky top-0 z-10">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-brand-600 text-white flex items-center justify-center text-lg font-bold shrink-0">{agent.name.charAt(0)}</div>
+          <Avatar name={agent.name} avatarUrl={agent.avatarUrl} size={40} className="rounded-xl" />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-base font-semibold">{agent.name}</h2>
@@ -296,6 +297,20 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
             </div>
           : <button onClick={() => { setEditing(true); setEditName(agent.name); setEditRole(agent.agentRole); setEditModelMode((agent.config?.llmConfig as Record<string, unknown>)?.modelMode as 'default' | 'custom' ?? 'default'); setEditModel(agent.config?.llmConfig.primary ?? ''); setEditFallback(agent.config?.llmConfig.fallback ?? ''); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">Edit</button>
       }>
+        <div className="flex items-start gap-4 mb-3">
+          <AvatarUpload
+            currentUrl={agent.avatarUrl}
+            name={agent.name}
+            size={48}
+            targetType="agent"
+            targetId={agent.id}
+            onUploaded={() => onUpdate()}
+          />
+          <div className="flex-1 min-w-0 pt-1">
+            <div className="text-sm font-medium text-fg-primary">{agent.name}</div>
+            <div className="text-xs text-fg-tertiary mt-0.5">{agent.role} · {agent.agentRole ?? 'worker'}</div>
+          </div>
+        </div>
         <div className="grid grid-cols-2 gap-x-6 gap-y-3">
           <KV label="Name">{editing ? <input className="input-sm" value={editName} onChange={e => setEditName(e.target.value)} /> : agent.name}</KV>
           <KV label="Agent Role">

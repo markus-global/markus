@@ -30,6 +30,7 @@ export interface AuthUser {
   email?: string;
   role: string;
   orgId: string;
+  avatarUrl?: string;
 }
 
 export interface ChatSessionInfo {
@@ -433,6 +434,7 @@ export interface AgentInfo {
   mailboxDepth?: number;
   attentionState?: string;
   modelSupportsVision?: boolean;
+  avatarUrl?: string;
 }
 
 export interface HumanUserInfo {
@@ -442,6 +444,7 @@ export interface HumanUserInfo {
   orgId: string;
   email?: string;
   teamId?: string;
+  avatarUrl?: string;
 }
 
 export interface RoleInfo {
@@ -460,6 +463,7 @@ export interface TeamMemberInfo {
   status?: string;
   teamId?: string;
   currentTaskId?: string;
+  avatarUrl?: string;
 }
 
 export interface ExternalAgentInfo {
@@ -672,6 +676,7 @@ export interface AgentDetail {
   availableSkills?: AvailableSkillInfo[];
   activeTaskCount?: number;
   activeTaskIds?: string[];
+  avatarUrl?: string;
   proficiency?: Record<string, { uses: number; successes: number; lastUsed?: string }>;
   config?: AgentConfigInfo;
   tools?: AgentToolInfo[];
@@ -1149,6 +1154,10 @@ export const api = {
     me: () => request<{ user: AuthUser }>('/auth/me'),
     changePassword: (currentPassword: string, newPassword: string) =>
       request<{ ok: boolean }>('/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
+    updateProfile: (name: string, email: string) =>
+      request<{ user: AuthUser }>('/auth/profile', { method: 'PUT', body: JSON.stringify({ name, email }) }),
+    uploadAvatar: (image: string, type: 'user' | 'agent' = 'user', id?: string) =>
+      request<{ avatarUrl: string }>('/avatars/upload', { method: 'POST', body: JSON.stringify({ image, type, id }) }),
   },
   sessions: {
     listByAgent: (agentId: string, limit = 20) =>

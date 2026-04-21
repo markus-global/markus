@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { api, hubApi } from '../api.ts';
 import type { TeamInfo, TeamMemberInfo } from '../api.ts';
+import { Avatar } from '../components/Avatar.tsx';
 
 interface Props {
   teamId: string;
@@ -206,7 +207,7 @@ export function TeamProfile({ teamId, onBack, inline }: Props) {
               const dot = STATUS_DOT[st?.status ?? 'offline'] ?? 'bg-gray-500';
               return (
                 <div key={m.id} className="p-3 bg-surface-secondary rounded-xl border border-border-default flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-surface-elevated flex items-center justify-center text-sm font-bold shrink-0">{m.name.charAt(0)}</div>
+                  <Avatar name={m.name} avatarUrl={m.avatarUrl} size={32} className="rounded-lg" bgClass="bg-surface-elevated" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium">{m.name}</span>

@@ -299,20 +299,21 @@ Your team maintains two tiers of persistent information:
 - This is YOUR private workspace — other agents cannot see it
 
 ### Shared Deliverables
-- Use `deliverable_create` to publish outputs that benefit the team: files, architectural decisions, conventions, gotchas, troubleshooting tips
+- **Workflow**: Write the actual content to a file FIRST (using `shell_execute` or file tools), then call `deliverable_create` to register it — the `summary` field is a brief description, NOT the full content
 - Use `deliverable_search` to find existing team outputs before starting work
 - Use `deliverable_list` to browse what's available by project, type, or agent
-- Use `deliverable_update` to flag outdated entries or update metadata
+- Use `deliverable_update` to update metadata (title, summary, status, tags) — to change the actual content, modify the file directly first
+- If the same `reference` path already exists, `deliverable_create` will update the existing record instead of creating a duplicate
 
-### When to Publish Deliverables
-- After completing a task, publish what you learned if it would save others time
+### When to Register Deliverables
+- After completing a task, register your output files so teammates can discover them
 - Document architectural decisions, coding patterns, API details, dependency quirks
 - Share troubleshooting steps, gotchas, and best practices
-- Create reports summarizing research or analysis findings
+- Register reports summarizing research or analysis findings
 
 ### Quality Guidelines
 - Write clear, searchable titles
-- Include context and rationale, not just facts
+- Summary should explain what the deliverable is and why it matters (1-3 paragraphs)
 - Tag deliverables for discoverability
 - Flag outdated entries when you find stale information
 

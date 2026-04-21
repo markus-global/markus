@@ -907,6 +907,7 @@ export class APIServer {
           email: userRow.email,
           role: userRow.role,
           orgId: userRow.orgId,
+          avatarUrl: userRow.avatarUrl ?? undefined,
         },
       });
       return;
@@ -942,6 +943,7 @@ export class APIServer {
           email: userRow.email,
           role: userRow.role,
           orgId: userRow.orgId,
+          avatarUrl: userRow.avatarUrl ?? undefined,
         },
       });
       return;
@@ -987,6 +989,118 @@ export class APIServer {
         `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
       );
       this.json(res, 200, { ok: true });
+      return;
+    }
+
+    if (path === '/api/auth/profile' && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Storage not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const name = (body['name'] as string)?.trim();
+      const email = (body['email'] as string)?.trim().toLowerCase();
+      if (!name) {
+        this.json(res, 400, { error: 'Name is required' });
+        return;
+      }
+      if (email) {
+        const existing = this.storage.userRepo.findByEmail(email);
+        if (existing && existing.id !== authUser.userId) {
+          this.json(res, 409, { error: 'Email already in use' });
+          return;
+        }
+      }
+      const updated = this.storage.userRepo.updateProfile(authUser.userId, {
+        name,
+        ...(email ? { email } : {}),
+      });
+      if (!updated) {
+        this.json(res, 404, { error: 'User not found' });
+        return;
+      }
+      // Update in-memory human user as well
+      const human = this.orgService.getHumanUser(authUser.userId);
+      if (human) {
+        human.name = name;
+        if (email) human.email = email;
+      }
+      // Re-issue token with updated info
+      const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
+      const token = await signToken(
+        { userId: updated.id, orgId: updated.orgId, role: updated.role, exp },
+        this.jwtSecret
+      );
+      res.setHeader(
+        'Set-Cookie',
+        `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
+      );
+      this.json(res, 200, {
+        user: {
+          id: updated.id,
+          name: updated.name,
+          email: updated.email,
+          role: updated.role,
+          orgId: updated.orgId,
+          avatarUrl: updated.avatarUrl ?? undefined,
+        },
+      });
+      return;
+    }
+
+    // ── Avatar upload / serve ────────────────────────────────────────────
+    if (path === '/api/avatars/upload' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const body = await this.readBody(req);
+      const targetType = (body['type'] as string) ?? 'user';
+      const targetId = (body['id'] as string) ?? authUser.userId;
+      const imageData = body['image'] as string;
+      if (!imageData) {
+        this.json(res, 400, { error: 'image is required (base64 data URL)' });
+        return;
+      }
+      const match = imageData.match(/^data:image\/(png|jpeg|jpg|webp|gif);base64,(.+)$/);
+      if (!match) {
+        this.json(res, 400, { error: 'Invalid image format. Must be a base64 data URL (png/jpeg/webp/gif)' });
+        return;
+      }
+      const ext = match[1] === 'jpeg' ? 'jpg' : match[1]!;
+      const buf = Buffer.from(match[2]!, 'base64');
+      if (buf.length > 2 * 1024 * 1024) {
+        this.json(res, 400, { error: 'Image too large (max 2MB)' });
+        return;
+      }
+      const avatarDir = join(homedir(), '.markus', 'avatars');
+      mkdirSync(avatarDir, { recursive: true });
+      const filename = `${targetType}_${targetId}.${ext}`;
+      writeFileSync(join(avatarDir, filename), buf);
+      const avatarUrl = `/api/avatars/${filename}`;
+      if (targetType === 'user' && this.storage) {
+        this.storage.userRepo.updateAvatarUrl(targetId, avatarUrl);
+        const human = this.orgService.getHumanUser(targetId);
+        if (human) (human as any).avatarUrl = avatarUrl;
+      } else if (targetType === 'agent' && this.storage) {
+        this.storage.agentRepo.updateAvatarUrl(targetId, avatarUrl);
+      }
+      this.json(res, 200, { avatarUrl });
+      return;
+    }
+
+    if (path.startsWith('/api/avatars/') && req.method === 'GET') {
+      const filename = decodeURIComponent(path.split('/')[3] ?? '');
+      if (!filename || filename.includes('..')) {
+        this.json(res, 400, { error: 'Invalid filename' });
+        return;
+      }
+      const filePath = join(homedir(), '.markus', 'avatars', filename);
+      if (existsSync(filePath) && statSync(filePath).isFile()) {
+        this.serveStaticFile(res, filePath);
+      } else {
+        this.json(res, 404, { error: 'Avatar not found' });
+      }
       return;
     }
 
@@ -1229,16 +1343,27 @@ export class APIServer {
 
     // Agents
     if (path === '/api/agents' && req.method === 'GET') {
-      const agents = this.orgService.getAgentManager().listAgents();
+      let agents = this.orgService.getAgentManager().listAgents() as Array<Record<string, unknown>>;
+      // Merge avatarUrl from storage
+      if (this.storage) {
+        const dbAgents = this.storage.agentRepo.listAll();
+        const avatarMap = new Map(dbAgents.filter((a: any) => a.avatarUrl).map((a: any) => [a.id, a.avatarUrl]));
+        if (avatarMap.size > 0) {
+          agents = agents.map(a => {
+            const av = avatarMap.get(a.id as string);
+            return av ? { ...a, avatarUrl: av } : a;
+          });
+        }
+      }
       if (this.gateway) {
         const extRegs = this.gateway.listRegistrations();
         const disconnectedIds = new Set(
           extRegs.filter(r => !r.connected && r.markusAgentId).map(r => r.markusAgentId!)
         );
-        const adjusted = agents.map(a =>
-          disconnectedIds.has(a.id) ? { ...a, status: 'offline' } : a
+        agents = agents.map(a =>
+          disconnectedIds.has(a.id as string) ? { ...a, status: 'offline' } : a
         );
-        this.json(res, 200, { agents: adjusted });
+        this.json(res, 200, { agents });
       } else {
         this.json(res, 200, { agents });
       }
@@ -1505,7 +1630,15 @@ export class APIServer {
       const orgId = url.searchParams.get('orgId') ?? 'default';
       const teams = this.orgService.listTeamsWithMembers(orgId);
       const ungrouped = this.orgService.listUngroupedMembers(orgId);
-      this.json(res, 200, { teams, ungrouped });
+      const enrichMember = (m: Record<string, unknown>) => {
+        const avatarUrl = m.type === 'agent'
+          ? this.storage?.agentRepo.findById(m.id as string)?.avatarUrl
+          : this.storage?.userRepo.findById(m.id as string)?.avatarUrl;
+        return avatarUrl ? { ...m, avatarUrl } : m;
+      };
+      const enrichedTeams = teams.map(t => ({ ...t, members: (t.members as unknown as Record<string, unknown>[]).map(enrichMember) }));
+      const enrichedUngrouped = (ungrouped as unknown as Record<string, unknown>[]).map(enrichMember);
+      this.json(res, 200, { teams: enrichedTeams, ungrouped: enrichedUngrouped });
       return;
     }
 
@@ -3042,12 +3175,14 @@ EXPLANATION_END`;
         } catch {
           /* ok */
         }
+        const storedAgent = this.storage?.agentRepo.findById(agentId);
         this.json(res, 200, {
           id: agent.id,
           name: agent.config.name,
           role: agent.role.name,
           roleDescription: agent.role.description,
           agentRole: agent.config.agentRole,
+          avatarUrl: storedAgent?.avatarUrl ?? undefined,
           state,
           activeTaskCount: state.activeTaskCount,
           activeTaskIds: state.activeTaskIds,
@@ -3433,7 +3568,9 @@ EXPLANATION_END`;
         const d = await this.deliverableService.update(delivId, {
           title: body['title'] as string | undefined,
           summary: body['summary'] as string | undefined,
+          reference: body['reference'] as string | undefined,
           status: body['status'] as any,
+          type: body['type'] as any,
           tags: body['tags'] as string[] | undefined,
         });
         if (!d) { this.json(res, 404, { error: 'Deliverable not found' }); return; }
@@ -3539,7 +3676,17 @@ EXPLANATION_END`;
     // Human Users
     if (path === '/api/users' && req.method === 'GET') {
       const targetOrgId = url.searchParams.get('orgId') ?? 'default';
-      const users = this.orgService.listHumanUsers(targetOrgId);
+      let users = this.orgService.listHumanUsers(targetOrgId) as unknown as Array<Record<string, unknown>>;
+      if (this.storage) {
+        const dbUsers = await this.storage.userRepo.listByOrg(targetOrgId);
+        const avatarMap = new Map(dbUsers.filter((u: any) => u.avatarUrl).map((u: any) => [u.id, u.avatarUrl]));
+        if (avatarMap.size > 0) {
+          users = users.map(u => {
+            const av = avatarMap.get(u.id as string);
+            return av ? { ...u, avatarUrl: av } : u;
+          });
+        }
+      }
       this.json(res, 200, { users });
       return;
     }
@@ -3554,14 +3701,18 @@ EXPLANATION_END`;
       const teamId = body['teamId'] as string | undefined;
       const userId = (body['id'] as string | undefined) ?? generateId('usr');
 
-      // Persist to DB if storage is available and password is provided (for login-capable users)
+      // Persist to DB if storage is available and login credentials are provided
       if (this.storage && (email || password)) {
+        if (password && !email) {
+          this.json(res, 400, { error: 'Email is required when setting a password' });
+          return;
+        }
         const passwordHash = password ? await hashPassword(password) : undefined;
         await this.storage.userRepo.create({
           id: userId,
           orgId,
           name,
-          email: email ?? `${userId}@markus.local`,
+          email: email ?? undefined,
           role,
           passwordHash,
         });

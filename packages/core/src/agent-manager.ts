@@ -307,6 +307,7 @@ export class AgentManager {
   private projectService?: ProjectServiceBridge;
   private knowledgeService?: KnowledgeServiceBridge;
   private deliverableService?: DeliverableServiceBridge;
+  private webUiBaseUrl?: string;
   private semanticSearch?: SemanticMemorySearch;
   private requirementService?: RequirementServiceBridge;
   private agentAuditCallback?: (
@@ -446,6 +447,7 @@ export class AgentManager {
         return ds.update(id, {
           title: data.title,
           summary: data.summary,
+          reference: data.reference,
           status: data.status,
           tags,
         });
@@ -593,6 +595,10 @@ export class AgentManager {
 
   setDeliverableService(deliverableService: DeliverableServiceBridge): void {
     this.deliverableService = deliverableService;
+  }
+
+  setWebUiBaseUrl(url: string): void {
+    this.webUiBaseUrl = url.replace(/\/+$/, '');
   }
 
   setSkillSearcher(cb: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>): void {
@@ -1109,6 +1115,7 @@ export class AgentManager {
       for (const tool of createProjectTools({
         agentId: id,
         orgId: config.orgId,
+        webUiBaseUrl: this.webUiBaseUrl,
         projectService: this.projectService,
         ...this.buildKnowledgeCallbacks(id, config.orgId),
         ...this.buildDeliverableCallbacks(id, config.orgId),
@@ -1722,6 +1729,7 @@ export class AgentManager {
       for (const tool of createProjectTools({
         agentId: id,
         orgId: config.orgId,
+        webUiBaseUrl: this.webUiBaseUrl,
         projectService: this.projectService,
         ...this.buildKnowledgeCallbacks(id, config.orgId),
         ...this.buildDeliverableCallbacks(id, config.orgId),
