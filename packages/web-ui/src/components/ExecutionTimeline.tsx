@@ -517,25 +517,23 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
 
 function ThinkingRow({ content, time, showTime }: { content: string; time?: string; showTime?: boolean }) {
   const [expanded, setExpanded] = useState(false);
-  const firstLine = content.split('\n')[0] ?? '';
-  const preview = firstLine.length > 60 ? firstLine.slice(0, 60) + '...' : firstLine;
-  const hasMore = content.length > firstLine.length || firstLine.length > 60;
+  const preview = content.split('\n')[0] ?? '';
   return (
     <div className="flex items-start gap-2">
       {showTime && time && (
         <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-2.5 hidden md:inline">{time}</span>
       )}
-      <div className="flex-1 min-w-0 my-1 overflow-hidden">
+      <div className="flex-1 min-w-0 my-1 overflow-hidden bg-purple-500/[0.06] border border-purple-500/15 rounded-lg px-3 py-2 transition-colors hover:bg-purple-500/[0.1]">
         <button
           onClick={() => setExpanded(!expanded)}
-          className="flex items-center gap-1.5 text-xs text-purple-400 hover:text-purple-300 transition-colors max-w-full"
+          className="flex items-center gap-1.5 text-xs text-purple-400 w-full"
         >
           <svg className={`w-3 h-3 transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
           <span className="font-medium shrink-0">Thinking</span>
-          <span className="text-fg-tertiary text-[11px] truncate">{preview}</span>
+          {!expanded && <span className="text-fg-tertiary text-[11px] truncate">{preview}</span>}
         </button>
         {expanded && (
-          <div className="mt-1.5 bg-purple-500/[0.06] border border-purple-500/15 rounded-lg px-3 py-2.5 overflow-hidden">
+          <div className="mt-2 pt-2 border-t border-purple-500/15 overflow-hidden">
             <MarkdownMessage content={content} className="text-xs text-fg-tertiary break-words" />
           </div>
         )}
