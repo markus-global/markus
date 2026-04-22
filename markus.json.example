@@ -45,20 +45,6 @@
     "adminPassword": "markus123",
     "gatewaySecret": "change-me-in-production"
   },
-  "integrations": {
-    "feishu": {
-      "appId": "",
-      "appSecret": ""
-    },
-    "search": {
-      "serperApiKey": "",
-      "braveApiKey": ""
-    },
-    "embedding": {
-      "apiKey": ""
-    }
-  },
-  "database": {},
   "hub": {
     "url": "https://markus.global"
   }

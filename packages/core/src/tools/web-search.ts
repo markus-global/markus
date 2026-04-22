@@ -7,9 +7,58 @@ interface SearchResult {
   date?: string;
 }
 
+const SEARCH_TIMEOUT_MS = 15_000;
+
+// ── Proxy-aware fetch ──────────────────────────────────────────────────────
+
+// Opaque handle — we only need to pass it through to fetch's `dispatcher` option.
+let _dispatcher: Record<string, unknown> | undefined | false = false; // false = not yet resolved
+
+async function resolveProxyDispatcher(): Promise<Record<string, unknown> | undefined> {
+  if (_dispatcher !== false) return _dispatcher || undefined;
+  const proxyUrl =
+    process.env['HTTPS_PROXY'] || process.env['HTTP_PROXY'] ||
+    process.env['https_proxy'] || process.env['http_proxy'];
+  if (!proxyUrl) {
+    _dispatcher = undefined;
+    return undefined;
+  }
+  try {
+    // Node.js 22+ re-exports undici; use indirect eval to dodge TS module resolution.
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+    const load = new Function('id', 'return import(id)') as (id: string) => Promise<{ ProxyAgent: new (url: string) => Record<string, unknown> }>;
+    const { ProxyAgent } = await load('undici');
+    _dispatcher = new ProxyAgent(proxyUrl);
+  } catch {
+    _dispatcher = undefined;
+  }
+  return _dispatcher || undefined;
+}
+
+/**
+ * Fetch wrapper that respects HTTPS_PROXY / HTTP_PROXY env vars (via undici
+ * ProxyAgent on Node 22+) and enforces a default timeout.
+ */
+async function proxyFetch(url: string | URL, init?: RequestInit): Promise<Response> {
+  const dispatcher = await resolveProxyDispatcher();
+  const signal = init?.signal ?? AbortSignal.timeout(SEARCH_TIMEOUT_MS);
+  const opts: Record<string, unknown> = { ...init, signal };
+  if (dispatcher) opts['dispatcher'] = dispatcher;
+  return fetch(url, opts as RequestInit);
+}
+
+function hasProxy(): boolean {
+  return !!(
+    process.env['HTTPS_PROXY'] || process.env['HTTP_PROXY'] ||
+    process.env['https_proxy'] || process.env['http_proxy']
+  );
+}
+
+// ── Tool definition ────────────────────────────────────────────────────────
+
 /**
  * Multi-backend web search tool.
- * Priority: Serper (Google) > Brave Search > DuckDuckGo Lite fallback.
+ * Priority: Serper (Google) > Brave Search > DuckDuckGo Lite/HTML fallback.
  * API keys are read from environment variables.
  */
 export const WebSearchTool: AgentToolHandler = {
@@ -36,11 +85,10 @@ export const WebSearchTool: AgentToolHandler = {
     const query = args['query'] as string;
     const maxResults = (args['maxResults'] as number) ?? 8;
 
-    // Try backends in priority order, collecting per-backend errors for diagnostics
     const backends: Array<{ name: string; fn: typeof searchSerper }> = [
       { name: 'Serper', fn: searchSerper },
       { name: 'Brave', fn: searchBrave },
-      { name: 'DuckDuckGo', fn: searchDuckDuckGoLite },
+      { name: 'DuckDuckGo', fn: searchDuckDuckGo },
     ];
     const errors: Array<{ backend: string; error: string }> = [];
 
@@ -57,13 +105,31 @@ export const WebSearchTool: AgentToolHandler = {
       }
     }
 
+    const hasNetworkErr = errors.some(e => e.error.includes('Network error') || e.error.includes('timed out'));
+    const hints: string[] = [];
+    if (hasNetworkErr && !hasProxy()) {
+      hints.push(
+        'All network requests failed and no HTTP proxy is configured. ' +
+        'If you are behind a firewall or in a restricted network, set HTTPS_PROXY (e.g. export HTTPS_PROXY=http://127.0.0.1:7890).',
+      );
+    }
+    if (hasNetworkErr && hasProxy()) {
+      hints.push(
+        `HTTP proxy is configured (${process.env['HTTPS_PROXY'] || process.env['HTTP_PROXY'] || process.env['https_proxy'] || process.env['http_proxy']}), ` +
+        'but network requests still failed. Verify the proxy is reachable and allows outbound HTTPS.',
+      );
+    }
+
     return JSON.stringify({
       status: 'error',
       error: 'All search backends failed.',
       details: errors,
+      ...(hints.length > 0 ? { hints } : {}),
     });
   },
 };
+
+// ── Serper (Google) backend ────────────────────────────────────────────────
 
 async function searchSerper(query: string, maxResults: number): Promise<SearchResult[]> {
   const apiKey = process.env['SERPER_API_KEY'];
@@ -71,7 +137,7 @@ async function searchSerper(query: string, maxResults: number): Promise<SearchRe
 
   let res: Response;
   try {
-    res = await fetch('https://google.serper.dev/search', {
+    res = await proxyFetch('https://google.serper.dev/search', {
       method: 'POST',
       headers: {
         'X-API-KEY': apiKey,
@@ -97,6 +163,8 @@ async function searchSerper(query: string, maxResults: number): Promise<SearchRe
   }));
 }
 
+// ── Brave Search backend ───────────────────────────────────────────────────
+
 async function searchBrave(query: string, maxResults: number): Promise<SearchResult[]> {
   const apiKey = process.env['BRAVE_SEARCH_API_KEY'];
   if (!apiKey) throw new Error('BRAVE_SEARCH_API_KEY not configured');
@@ -104,7 +172,7 @@ async function searchBrave(query: string, maxResults: number): Promise<SearchRes
   const params = new URLSearchParams({ q: query, count: String(maxResults) });
   let res: Response;
   try {
-    res = await fetch(`https://api.search.brave.com/res/v1/web/search?${params}`, {
+    res = await proxyFetch(`https://api.search.brave.com/res/v1/web/search?${params}`, {
       headers: {
         'Accept': 'application/json',
         'Accept-Encoding': 'gzip',
@@ -129,38 +197,54 @@ async function searchBrave(query: string, maxResults: number): Promise<SearchRes
   }));
 }
 
+// ── DuckDuckGo fallback (no API key) ───────────────────────────────────────
+
+const DDG_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+const DDG_ENDPOINTS = [
+  'https://lite.duckduckgo.com/lite/',
+  'https://html.duckduckgo.com/html/',
+] as const;
+
 /**
- * DuckDuckGo Lite fallback — no API key required.
- * Uses the lightweight HTML version which is more stable than the full HTML endpoint.
+ * Try DuckDuckGo Lite first, then HTML endpoint. Both are scraped so neither
+ * needs an API key. Each endpoint gets its own attempt with independent timeout.
  */
-async function searchDuckDuckGoLite(query: string, maxResults: number): Promise<SearchResult[]> {
+async function searchDuckDuckGo(query: string, maxResults: number): Promise<SearchResult[]> {
   const encoded = encodeURIComponent(query);
+  let lastError: Error | undefined;
 
-  let res: Response;
-  try {
-    res = await fetch(`https://lite.duckduckgo.com/lite/?q=${encoded}`, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-    });
-  } catch (err: unknown) {
-    throw new Error(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+  for (const base of DDG_ENDPOINTS) {
+    try {
+      const res = await proxyFetch(`${base}?q=${encoded}`, {
+        headers: { 'User-Agent': DDG_UA },
+      });
+
+      if (!res.ok) {
+        lastError = new Error(`HTTP ${res.status} ${res.statusText}`);
+        continue;
+      }
+
+      const html = await res.text();
+      const results = base.includes('lite')
+        ? parseDDGLite(html, maxResults)
+        : parseDDGHtml(html, maxResults);
+      if (results.length > 0) return results;
+      lastError = new Error(`Parsed 0 results from ${base}`);
+    } catch (err: unknown) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+    }
   }
 
-  if (!res.ok) {
-    return searchDuckDuckGoHtml(query, maxResults);
-  }
-
-  const html = await res.text();
-  return parseDDGLite(html, maxResults);
+  throw new Error(`Network error: ${lastError?.message ?? 'all DuckDuckGo endpoints failed'}`);
 }
+
+// ── DDG HTML parsers ───────────────────────────────────────────────────────
 
 function parseDDGLite(html: string, max: number): SearchResult[] {
   const results: SearchResult[] = [];
 
-  // DDG Lite uses a table layout. Each result is in a <tr> with class "result-link" and "result-snippet"
-  // The structure is: link row, then snippet row, then spacer row
   const linkRegex = /<a[^>]+rel="nofollow"[^>]*href="([^"]*)"[^>]*class="result-link"[^>]*>([\s\S]*?)<\/a>/g;
   const snippetRegex = /<td[^>]*class="result-snippet"[^>]*>([\s\S]*?)<\/td>/g;
 
@@ -177,7 +261,6 @@ function parseDDGLite(html: string, max: number): SearchResult[] {
     snippets.push(stripHtml(match[1] ?? ''));
   }
 
-  // If DDG Lite parsing yields nothing, try the general anchor approach
   if (links.length === 0) {
     const generalLink = /<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
     const seen = new Set<string>();
@@ -202,23 +285,7 @@ function parseDDGLite(html: string, max: number): SearchResult[] {
   return results;
 }
 
-async function searchDuckDuckGoHtml(query: string, maxResults: number): Promise<SearchResult[]> {
-  const encoded = encodeURIComponent(query);
-  let res: Response;
-  try {
-    res = await fetch(`https://html.duckduckgo.com/html/?q=${encoded}`, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-    });
-  } catch (err: unknown) {
-    throw new Error(`Network error: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-
-  const html = await res.text();
+function parseDDGHtml(html: string, maxResults: number): SearchResult[] {
   const results: SearchResult[] = [];
   const linkRegex = /<a[^>]+class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g;
   const snippetRegex = /<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
@@ -246,6 +313,8 @@ async function searchDuckDuckGoHtml(query: string, maxResults: number): Promise<
 
   return results;
 }
+
+// ── Helpers ────────────────────────────────────────────────────────────────
 
 function stripHtml(html: string): string {
   return html
