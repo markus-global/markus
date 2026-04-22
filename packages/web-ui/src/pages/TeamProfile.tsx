@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { api, hubApi } from '../api.ts';
+import { api, hubApi, kebab } from '../api.ts';
 import type { TeamInfo, TeamMemberInfo } from '../api.ts';
 import { Avatar } from '../components/Avatar.tsx';
 
@@ -125,7 +125,7 @@ export function TeamProfile({ teamId, onBack, inline }: Props) {
               const agentMembers = team.members.filter(m => m.type === 'agent');
               const config = {
                 type: 'team' as const,
-                name: team.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || team.name,
+                name: kebab(team.name, team.name),
                 displayName: team.name,
                 version: '1.0.0',
                 description: team.description ?? '',

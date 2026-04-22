@@ -21,7 +21,7 @@ This skill teaches you how to create Markus agent packages — self-contained di
 
 **Do NOT write artifacts to `~/.markus/shared/`, your working directory, or any other location.** Only `~/.markus/builder-artifacts/agents/` is recognized by the system.
 
-When the user **installs** the artifact, files are deployed to `~/.markus/agents/{agentId}/role/`. The `ROLE.md` is loaded as the agent's system prompt and **overrides** the base role template's default prompt.
+When the user **installs** the artifact, files are deployed to `~/.markus/agents/{agentId}/role/`. The `ROLE.md` becomes the agent's system prompt — it IS the agent's identity, not an override of a template.
 
 ## Two-Step Workflow
 
@@ -55,7 +55,6 @@ This JSON contains ONLY metadata — **no file content**.
     "env": ["git", "node"]
   },
   "agent": {
-    "roleName": "developer",
     "agentRole": "manager | worker",
     "llmProvider": "anthropic | openai | google | (empty for default)",
     "llmModel": "model name or empty for default",
@@ -109,13 +108,14 @@ file_write("~/.markus/builder-artifacts/agents/code-reviewer/POLICIES.md", "# Po
 - **`dependencies.env`**: Required CLI tools (e.g., `["git", "node"]`). Omit if none needed.
 
 ### `agent` section (REQUIRED)
-- **`roleName`**: Base role template from the dynamic context. Determines default tools. Use `developer` as fallback.
 - **`agentRole`**: `"worker"` (executes tasks) or `"manager"` (coordinates, assigns, reviews)
 - **`llmProvider`**, **`llmModel`**, **`temperature`**: LLM configuration. Leave empty for system defaults.
 
+**Note**: The `roleName` field is **not needed**. The agent's identity is fully defined by its `ROLE.md` file. Do NOT include `roleName` unless you specifically want to inherit default tools from a built-in role template (rare).
+
 ## Tool Access Philosophy
 
-**All agents have access to all tools provided by their role template.** Security is controlled through the agent's `ROLE.md` and `POLICIES.md`, not through tool restrictions.
+**All agents have access to all built-in tools.** Security is controlled through the agent's `ROLE.md` and `POLICIES.md`, not through tool restrictions.
 
 If an agent needs to be cautious with certain tools, write that into `POLICIES.md`:
 - "Only use `shell_execute` for read-only commands unless explicitly asked"
@@ -134,7 +134,7 @@ Once all files are written, tell the user:
 
 ## Rules
 
-- **DO NOT** invent role names or skill IDs. Only use values from the dynamic context.
+- **DO NOT** invent skill IDs. Only use values from the dynamic context.
 - **DO NOT** put file content in the JSON. Always use `file_write` for files.
 - **DO NOT** default skills to `[]` when relevant skills are available. Check the skills list!
 - **DO NOT** write artifacts to `~/.markus/shared/` or your working directory. Always use `~/.markus/builder-artifacts/agents/{name}/`.

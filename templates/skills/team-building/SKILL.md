@@ -37,7 +37,7 @@ This skill teaches you how to create Markus team packages — self-contained dir
 |---|---|---|
 | `ANNOUNCEMENT.md` | `~/.markus/teams/{teamId}/ANNOUNCEMENT.md` | Injected into every member's context |
 | `NORMS.md` | `~/.markus/teams/{teamId}/NORMS.md` | Injected into every member's context |
-| `members/{name}/ROLE.md` | `~/.markus/agents/{agentId}/role/ROLE.md` | Overrides base role template prompt |
+| `members/{name}/ROLE.md` | `~/.markus/agents/{agentId}/role/ROLE.md` | Agent's identity and system prompt |
 | `members/{name}/POLICIES.md` | `~/.markus/agents/{agentId}/role/POLICIES.md` | Additional agent constraints |
 
 ## Two-Step Workflow
@@ -72,14 +72,12 @@ This JSON contains ONLY metadata and structure — **no file content**.
       {
         "name": "Manager Name",
         "role": "manager",
-        "roleName": "project-manager",
         "count": 1,
         "skills": ["skill-id-1"]
       },
       {
         "name": "Worker Name",
         "role": "worker",
-        "roleName": "developer",
         "count": 1,
         "skills": ["skill-id-1", "skill-id-2"]
       }
@@ -148,9 +146,10 @@ file_write("~/.markus/builder-artifacts/teams/research-team/members/senior-resea
 ### `team.members[]` — Member Specifications (REQUIRED)
 - **`name`**: Display name (the slug for file paths is derived from this)
 - **`role`**: `"manager"` or `"worker"`
-- **`roleName`**: Base role template from the dynamic context
 - **`count`**: Number of instances (default 1)
 - **`skills`**: Skill IDs from the dynamic context. **Actively assign skills — don't leave empty!**
+
+**Note**: The `roleName` field is **not needed** for team members. Each member's identity is fully defined by their `ROLE.md` file under `members/{slug}/`. Do NOT include `roleName` unless you specifically want to inherit defaults from a built-in role template (rare).
 
 ### `team.workflow` — Workflow Configuration (recommended)
 - **`phases`**: Array of phase names defining the team's workflow (e.g., `["plan", "implement", "review", "validate"]`)
@@ -170,7 +169,7 @@ Once all files are written, tell the user:
 
 ## Rules
 
-- **DO NOT** invent role names or skill IDs. Only use values from the dynamic context.
+- **DO NOT** invent skill IDs. Only use values from the dynamic context.
 - **DO NOT** leave skills empty when relevant skills are available. Review the skills list!
 - **DO NOT** put file content in the JSON. Always use `file_write` for files.
 - **DO NOT** write artifacts to `~/.markus/shared/` or your working directory. Always use `~/.markus/builder-artifacts/teams/{name}/`.

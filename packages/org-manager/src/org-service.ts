@@ -523,7 +523,7 @@ export class OrganizationService {
     });
   }
 
-  async hireAgent(request: CreateAgentRequest & { orgId: string }) {
+  async hireAgent(request: CreateAgentRequest & { orgId: string; skipAutoStart?: boolean }) {
     let org = this.orgs.get(request.orgId);
     if (!org && request.orgId === 'default') {
       org = this.getDefaultOrganization();
@@ -576,16 +576,19 @@ export class OrganizationService {
 
     this.refreshIdentityContextsForOrg(request.orgId);
 
-    // Onboard = always online. Auto-start the agent immediately.
-    try {
-      await this.agentManager.startAgent(agent.id);
-      log.info(`Agent onboarded: ${request.name} (auto-started)`, {
-        orgId: request.orgId,
-        agentId: agent.id,
-        agentRole: request.agentRole ?? 'worker',
-      });
-    } catch (error) {
-      log.warn(`Agent created but auto-start failed: ${request.name}`, { error: String(error) });
+    // Onboard = always online. Auto-start the agent immediately
+    // (unless skipAutoStart is set, e.g. when caller will copy custom role files first).
+    if (!request.skipAutoStart) {
+      try {
+        await this.agentManager.startAgent(agent.id);
+        log.info(`Agent onboarded: ${request.name} (auto-started)`, {
+          orgId: request.orgId,
+          agentId: agent.id,
+          agentRole: request.agentRole ?? 'worker',
+        });
+      } catch (error) {
+        log.warn(`Agent created but auto-start failed: ${request.name}`, { error: String(error) });
+      }
     }
 
     return agent;
@@ -954,13 +957,13 @@ export class OrganizationService {
       parts.push('Only use skill IDs from this table. Assign at least one skill to each agent when a match exists.');
     }
 
-    // Available roles
+    // Available role templates (for reference only — roleName is optional)
     const roleNames = this.listAvailableRoles();
     if (roleNames.length > 0) {
       parts.push('');
-      parts.push('## Available Role Templates (live from system)');
+      parts.push('## Built-in Role Templates (for reference only)');
       parts.push('');
-      parts.push('The `roleName` field must be one of:');
+      parts.push('These templates are available for reading as **reference** when writing custom ROLE.md files. You do NOT need to set `roleName` — the agent\'s identity is fully defined by its ROLE.md.');
       parts.push('');
       for (const r of roleNames) {
         parts.push(`- \`${r}\``);
@@ -969,9 +972,9 @@ export class OrganizationService {
       const templateDirs = this.roleLoader.getTemplateDirs();
       if (templateDirs.length > 0) {
         parts.push('');
-        parts.push('**Tip**: You can read existing role templates for reference when writing custom ROLE.md files.');
+        parts.push('**Tip**: Read existing templates for inspiration when writing custom ROLE.md files.');
         parts.push(`Use \`file_read\` to inspect any template, e.g.: \`file_read("${templateDirs[0]}/developer/ROLE.md")\``);
-        parts.push('This is especially useful for understanding the level of detail and workflow guidance expected in a good ROLE.md.');
+        parts.push('This is useful for understanding the level of detail and workflow guidance expected in a good ROLE.md.');
       }
     }
 
