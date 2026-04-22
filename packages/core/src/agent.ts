@@ -406,8 +406,9 @@ export class Agent {
       });
     });
 
-    // Auto-reload role when agent modifies its own ROLE.md
+    // Auto-reload role / heartbeat when agent modifies its own files
     const roleFilePath = join(this.dataDir, 'role', 'ROLE.md');
+    const heartbeatFilePath = join(this.dataDir, 'role', 'HEARTBEAT.md');
     this.toolHooks.register({
       name: 'role-auto-reload',
       after: async (ctx) => {
@@ -416,6 +417,10 @@ export class Agent {
           if (targetPath === roleFilePath || targetPath.endsWith('/role/ROLE.md')) {
             log.info('Agent modified its own ROLE.md — reloading role definition');
             this.reloadRole();
+          }
+          if (targetPath === heartbeatFilePath || targetPath.endsWith('/role/HEARTBEAT.md')) {
+            log.info('Agent modified its own HEARTBEAT.md — reloading heartbeat checklist');
+            this.reloadHeartbeat();
           }
         }
       },
@@ -1105,6 +1110,25 @@ export class Agent {
       log.info(`Role reloaded from disk for agent ${this.config.name}`);
     } catch (err) {
       log.warn(`Failed to reload role for agent ${this.config.name}`, { error: String(err) });
+    }
+  }
+
+  /**
+   * Reload the agent's heartbeat checklist from its HEARTBEAT.md file on disk.
+   * Called when the agent modifies its own HEARTBEAT.md via file_edit/file_write.
+   */
+  reloadHeartbeat(): void {
+    const heartbeatFile = join(this.dataDir, 'role', 'HEARTBEAT.md');
+    if (!existsSync(heartbeatFile)) return;
+    try {
+      const content = readFileSync(heartbeatFile, 'utf-8');
+      this.role = {
+        ...this.role,
+        heartbeatChecklist: content,
+      };
+      log.info(`Heartbeat checklist reloaded from disk for agent ${this.config.name}`);
+    } catch (err) {
+      log.warn(`Failed to reload heartbeat for agent ${this.config.name}`, { error: String(err) });
     }
   }
 
@@ -4601,6 +4625,10 @@ export class Agent {
       '- Check existing skills first: `discover_tools({ mode: "list_skills" })` and `builder_list`.',
       '- To update an existing skill: edit files in `~/.markus/builder-artifacts/skills/{name}/`, bump version, re-install with `builder_install`.',
       '',
+      '**Direct self-evolution** (simplest and most impactful):',
+      '- **Update ROLE.md** — When you discover a behavioral rule, working style, or guiding principle that should always apply, append it to your ROLE.md via `file_edit`. ROLE.md is loaded into every conversation, so changes take effect immediately. Read first, then append. No need to accumulate 3 insights — even a single validated lesson can warrant a role update if it is fundamental.',
+      '- **Update HEARTBEAT.md** — When you realize your patrol routine should include a new recurring check (or remove an obsolete one), modify your HEARTBEAT.md via `file_edit`. This is your personal checklist — customize it to match your actual responsibilities. Changes take effect at the next heartbeat.',
+      '',
       '**Decision guide — where does this insight go?**',
       '| Observation type | Action |',
       '|---|---|',
@@ -4608,7 +4636,8 @@ export class Agent {
       '| Tool tip or preference | `memory_save` with tags: `["insight", "tool:<name>"]` |',
       '| Multi-step repeatable workflow | `memory_update_longterm({ section: "procedures", mode: "patch" })` |',
       '| Practice worth sharing with the team | Create skill via **skill-building**, then install with `builder_install` |',
-      '| 3+ related insights → behavioral rule | Update ROLE.md (read first, append, log change) |',
+      '| Behavioral rule or guiding principle | Update ROLE.md (`file_read` → `file_edit` to append) |',
+      '| New recurring check for your patrol | Update HEARTBEAT.md (`file_read` → `file_edit`) |',
       '',
       'Quality bar: Only record insights that are **specific**, **actionable**, and **non-obvious**.',
       'Skip if nothing meaningful happened since last heartbeat.',
@@ -4638,7 +4667,8 @@ export class Agent {
       '- Tasks with `executionRound > 1` required revision — your initial approach had issues.',
       '- A high revision rate (>30%) suggests your knowledge is not being applied effectively.',
       '- Check: does your MEMORY.md knowledge actually cover the failure patterns you see?',
-      '- If you keep making the same type of mistake, escalate: save as insight → add to MEMORY.md → update ROLE.md.',
+      '- If you keep making the same type of mistake, escalate: save as insight → add to MEMORY.md → update ROLE.md or HEARTBEAT.md.',
+      '- Consider: would a ROLE.md rule or a HEARTBEAT.md check have prevented any recent failures?',
     ].join('\n');
 
     const prompt = [
