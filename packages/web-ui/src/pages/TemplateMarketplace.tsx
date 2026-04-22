@@ -349,6 +349,11 @@ function HubAgentCard({ item, localInfo, onStatusChange }: { item: HubItem; loca
           <span>{item.author?.displayName ?? item.author?.username}</span>
         </div>
         <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border-default/50">
+          {item.slug && item.author?.username && (
+            <a href={`${hubApi.getUrl()}/${encodeURIComponent(item.author.username)}/${encodeURIComponent(item.slug)}`}
+              target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+              className="text-[10px] text-brand-500 hover:text-brand-400 mr-auto">View on Hub →</a>
+          )}
           {canUpgrade ? (
             <button
               onClick={e => void handleInstall(e)}
