@@ -127,7 +127,7 @@ export class CognitivePreparation {
       `Current status: ${agent.status}`,
       agent.currentTask ? `Current task: ${agent.currentTask}` : '',
       agent.recentActivity.length > 0
-        ? `Recent activity:\n${agent.recentActivity.slice(-5).map(a => `- ${a}`).join('\n')}`
+        ? `Recent activity:\n${agent.recentActivity.slice(-5).map((a: string) => `- ${a}`).join('\n')}`
         : '',
       '',
       'An incoming stimulus requires your attention:',
@@ -212,7 +212,7 @@ export class CognitivePreparation {
 
     // Deduplicate memories by content
     const seen = new Set<string>();
-    result.memories = result.memories.filter(m => {
+    result.memories = result.memories.filter((m: { content: string; relevance: number }) => {
       const key = m.content.slice(0, 100);
       if (seen.has(key)) return false;
       seen.add(key);
@@ -238,13 +238,13 @@ export class CognitivePreparation {
   ): Promise<ReflectionResult> {
     const contextSummary = [
       retrieved.memories.length > 0
-        ? `Relevant knowledge:\n${retrieved.memories.slice(0, 5).map(m => `- ${m.content}`).join('\n')}`
+        ? `Relevant knowledge:\n${retrieved.memories.slice(0, 5).map((m: { content: string; relevance: number }) => `- ${m.content}`).join('\n')}`
         : '',
       retrieved.activities.length > 0
-        ? `Past activities:\n${retrieved.activities.slice(0, 5).map(a => `- [${a.type}] ${a.summary}`).join('\n')}`
+        ? `Past activities:\n${retrieved.activities.slice(0, 5).map((a: { summary: string; type: string }) => `- [${a.type}] ${a.summary}`).join('\n')}`
         : '',
       retrieved.tasks.length > 0
-        ? `Related tasks:\n${retrieved.tasks.slice(0, 5).map(t => `- [${t.status}] ${t.title} (${t.id})`).join('\n')}`
+        ? `Related tasks:\n${retrieved.tasks.slice(0, 5).map((t: { title: string; status: string; id: string }) => `- [${t.status}] ${t.title} (${t.id})`).join('\n')}`
         : '',
     ].filter(Boolean).join('\n\n');
 
