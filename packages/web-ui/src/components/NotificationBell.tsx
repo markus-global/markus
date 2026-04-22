@@ -103,7 +103,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
   const [responding, setResponding] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectComment, setRejectComment] = useState('');
-  const [freeformText, setFreeformText] = useState('');
+  const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>({});
   const [unreadCount, setUnreadCount] = useState(0);
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -301,7 +301,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
       setApprovals(prev => prev.map(a => a.id === id ? approval : a));
       setRejectingId(null);
       setRejectComment('');
-      setFreeformText('');
+      setFreeformTexts(prev => { const next = { ...prev }; delete next[id]; return next; });
 
       const relatedNotif = notifications.find(
         n => n.type === 'approval_request' && n.metadata?.approvalId === id
@@ -448,14 +448,14 @@ export function NotificationBell({ collapsed, userId }: Props) {
                             <input
                               type="text"
                               placeholder="Or type your own instruction..."
-                              value={freeformText}
-                              onChange={e => setFreeformText(e.target.value)}
-                              onKeyDown={e => { if (e.key === 'Enter' && freeformText.trim()) handleApprovalResponse(a.id, true, freeformText.trim(), 'custom'); }}
+                              value={freeformTexts[a.id] ?? ''}
+                              onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
+                              onKeyDown={e => { if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom'); }}
                               className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
                             />
                             <button
-                              disabled={responding === a.id || !freeformText.trim()}
-                              onClick={() => handleApprovalResponse(a.id, true, freeformText.trim(), 'custom')}
+                              disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
+                              onClick={() => handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom')}
                               className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
                             >Send</button>
                           </div>
@@ -486,14 +486,14 @@ export function NotificationBell({ collapsed, userId }: Props) {
                             <input
                               type="text"
                               placeholder="Or type your own instruction..."
-                              value={freeformText}
-                              onChange={e => setFreeformText(e.target.value)}
-                              onKeyDown={e => { if (e.key === 'Enter' && freeformText.trim()) handleApprovalResponse(a.id, true, freeformText.trim(), 'custom'); }}
+                              value={freeformTexts[a.id] ?? ''}
+                              onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
+                              onKeyDown={e => { if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom'); }}
                               className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
                             />
                             <button
-                              disabled={responding === a.id || !freeformText.trim()}
-                              onClick={() => handleApprovalResponse(a.id, true, freeformText.trim(), 'custom')}
+                              disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
+                              onClick={() => handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom')}
                               className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
                             >Send</button>
                           </div>
@@ -516,14 +516,14 @@ export function NotificationBell({ collapsed, userId }: Props) {
                             <input
                               type="text"
                               placeholder="Or type your own instruction..."
-                              value={freeformText}
-                              onChange={e => setFreeformText(e.target.value)}
-                              onKeyDown={e => { if (e.key === 'Enter' && freeformText.trim()) handleApprovalResponse(a.id, true, freeformText.trim(), 'custom'); }}
+                              value={freeformTexts[a.id] ?? ''}
+                              onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
+                              onKeyDown={e => { if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom'); }}
                               className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
                             />
                             <button
-                              disabled={responding === a.id || !freeformText.trim()}
-                              onClick={() => handleApprovalResponse(a.id, true, freeformText.trim(), 'custom')}
+                              disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
+                              onClick={() => handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom')}
                               className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
                             >Send</button>
                           </div>
