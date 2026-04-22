@@ -82,7 +82,7 @@ describe('SQLite Storage Backend', () => {
   });
 
   describe('TaskRepo', () => {
-    it('should create, update, and query tasks', () => {
+    it('should create, update, and query tasks', async () => {
       const orgRepo = new SqliteOrgRepo(db);
       orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
       const agentRepo = new SqliteAgentRepo(db);
@@ -267,15 +267,15 @@ describe('SQLite Storage Backend', () => {
       orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
 
       const repo = new SqliteTeamRepo(db);
-      repo.create({
+      const createdTeam = repo.create({
         id: 'team-1',
         orgId: 'org-1',
         name: 'Backend Team',
         description: 'Handles backend',
       });
 
-      const team = repo.findById('team-1');
-      expect(team!.name).toBe('Backend Team');
+      const foundTeam = repo.findById('team-1');
+      expect(foundTeam!.name).toBe('Backend Team');
 
       repo.update('team-1', { name: 'Core Team' });
       expect(repo.findById('team-1')!.name).toBe('Core Team');
