@@ -5129,13 +5129,62 @@ EXPLANATION_END`;
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${hubToken}`,
         };
-        const hubRes = await fetch(`${hubUrl}/api/items`, {
+        let hubRes = await fetch(`${hubUrl}/api/items`, {
           method: 'POST',
           headers,
           body: JSON.stringify(body['payload']),
+          redirect: 'manual',
         });
+        if (hubRes.status >= 300 && hubRes.status < 400) {
+          const location = hubRes.headers.get('location');
+          if (location) {
+            hubRes = await fetch(location, { method: 'POST', headers, body: JSON.stringify(body['payload']), redirect: 'manual' });
+          }
+        }
         const hubData = await hubRes.json();
         this.json(res, hubRes.status, hubData);
+      } catch (err) {
+        this.json(res, 502, { error: `Hub request failed: ${String(err)}` });
+      }
+      return;
+    }
+
+    // Generic Hub API proxy (avoids CORS issues with cross-origin fetch to markus.global)
+    if (path.startsWith('/api/hub/')) {
+      const hubPath = path.slice('/api/hub'.length);
+      const reqUrl = new URL(req.url!, `http://${req.headers.host}`);
+      const hubTargetUrl = `${this.hubUrl}/api${hubPath}${reqUrl.search}`;
+
+      const proxyHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      const authHeader = req.headers['authorization'];
+      if (authHeader) proxyHeaders['Authorization'] = authHeader;
+
+      try {
+        let body: string | undefined;
+        if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+          body = JSON.stringify(await this.readBody(req));
+        }
+        // Use redirect: 'manual' to prevent fetch from stripping the
+        // Authorization header when Vercel issues a cross-origin 307 redirect.
+        let hubRes = await fetch(hubTargetUrl, {
+          method: req.method,
+          headers: proxyHeaders,
+          body,
+          redirect: 'manual',
+        });
+        if (hubRes.status >= 300 && hubRes.status < 400) {
+          const location = hubRes.headers.get('location');
+          if (location) {
+            hubRes = await fetch(location, {
+              method: req.method,
+              headers: proxyHeaders,
+              body,
+              redirect: 'manual',
+            });
+          }
+        }
+        const data = await hubRes.json();
+        this.json(res, hubRes.status, data);
       } catch (err) {
         this.json(res, 502, { error: `Hub request failed: ${String(err)}` });
       }

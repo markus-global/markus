@@ -1526,8 +1526,9 @@ export function ensureHubAuth(): Promise<void> {
     const pollTimer = setInterval(async () => {
       if (settled) return;
       try {
-        const res = await fetch(`${HUB_URL}/api/auth/connect-status?session=${encodeURIComponent(sessionId)}`);
-        const data = await res.json() as { ready?: boolean; token?: string; user?: HubUser };
+        const data = await request<{ ready?: boolean; token?: string; user?: HubUser }>(
+          `/hub/auth/connect-status?session=${encodeURIComponent(sessionId)}`
+        );
         if (data.ready && data.token && data.user) {
           settled = true;
           saveHubAuth(data.token, data.user);
@@ -1555,9 +1556,10 @@ async function hubRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getHubToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...init?.headers as Record<string, string> };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(`${HUB_URL}/api${path}`, {
+  const res = await fetch(`${BASE}/hub${path}`, {
     ...init,
     headers,
+    credentials: 'include',
   });
   const data = await res.json();
   if (res.status === 401 && token) {
