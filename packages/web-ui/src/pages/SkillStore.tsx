@@ -751,11 +751,19 @@ export function SkillStore() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {hubSkills.map(item => (
+              {hubSkills.map(item => {
+                const detailUrl = item.slug && item.author?.username
+                  ? `${hubApi.getUrl()}/${encodeURIComponent(item.author.username)}/${encodeURIComponent(item.slug)}`
+                  : null;
+                return (
                 <div key={item.id} className="bg-surface-secondary border border-border-default rounded-xl p-5 hover:border-gray-600 transition-colors">
                   <div className="flex items-start justify-between">
                     <div className="flex-1 min-w-0">
-                      <div className="font-semibold text-sm truncate">{item.name}</div>
+                      {detailUrl ? (
+                        <a href={detailUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-sm truncate block hover:text-brand-400 transition-colors">{item.name}</a>
+                      ) : (
+                        <div className="font-semibold text-sm truncate">{item.name}</div>
+                      )}
                       <div className="text-xs text-fg-tertiary mt-0.5">by {item.author?.displayName ?? item.author?.username}</div>
                     </div>
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-500/15 text-green-600 shrink-0 ml-2">Hub</span>
@@ -765,11 +773,15 @@ export function SkillStore() {
                     {'★'.repeat(Math.round(parseFloat(item.avgRating)))}{'☆'.repeat(5 - Math.round(parseFloat(item.avgRating)))}
                     <span className="text-fg-tertiary ml-1">({item.ratingCount}) · ↓ {item.downloadCount}</span>
                   </div>
-                  <div className="mt-2 pt-2 border-t border-border-default flex items-center justify-end gap-2">
+                  <div className="mt-2 pt-2 border-t border-border-default flex items-center justify-between gap-2">
+                    {detailUrl ? (
+                      <a href={detailUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-brand-500 hover:text-brand-400">View on Hub →</a>
+                    ) : <span />}
                     <HubSkillInstallButton item={item} installedSkills={installed} onMsg={msg} onRefresh={() => void loadInstalled()} />
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

@@ -1453,6 +1453,7 @@ export interface HubItem {
   id: string;
   itemType: 'agent' | 'team' | 'skill';
   name: string;
+  slug?: string;
   description: string;
   version: string;
   category: string;
