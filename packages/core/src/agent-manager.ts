@@ -1,6 +1,7 @@
 import {
   createLogger,
   agentId as genAgentId,
+  generateId,
   stripInternalBlocks,
   type AgentConfig,
   type AgentProfile,
@@ -10,6 +11,7 @@ import {
   type SystemAnnouncement,
   type PathAccessPolicy,
   type RoleTemplate,
+  type RoleCategory,
   saveConfig,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
@@ -239,7 +241,7 @@ export interface MCPServerConfig {
 
 export interface CreateAgentRequest {
   name: string;
-  roleName: string;
+  roleName?: string;
   orgId?: string;
   teamId?: string;
   agentRole?: 'manager' | 'worker';
@@ -253,6 +255,8 @@ export interface CreateAgentRequest {
   profile?: AgentProfile;
   /** Override model config: when provided with modelMode 'custom', agent uses this provider */
   llmProvider?: string;
+  /** When true, skip copying template role files (caller will provide custom files) */
+  skipTemplateCopy?: boolean;
 }
 
 export interface RoleFileStatus {
@@ -676,26 +680,43 @@ export class AgentManager {
   async createAgent(request: CreateAgentRequest): Promise<Agent> {
     if (!request.name?.trim()) throw new Error('Agent name is required');
     const id = genAgentId();
-    const role = this.roleLoader.loadRole(request.roleName);
+    const roleName = request.roleName || 'custom';
+    const isCustomRole = roleName === 'custom';
+
+    const role: RoleTemplate = isCustomRole
+      ? {
+          id: generateId('role'),
+          name: request.name,
+          description: '',
+          category: 'custom' as RoleCategory,
+          systemPrompt: `# ${request.name}\n\nYou are ${request.name}.`,
+          defaultSkills: [],
+          heartbeatChecklist: '',
+          defaultPolicies: [],
+          builtIn: false,
+        }
+      : this.roleLoader.loadRole(roleName);
+
     const agentDataDir = join(this.dataDir, id);
     mkdirSync(agentDataDir, { recursive: true });
 
-    // Copy template role files to agent's own directory for per-agent evolution
     const agentRoleDir = join(agentDataDir, 'role');
     mkdirSync(agentRoleDir, { recursive: true });
-    const templateDir = this.roleLoader.resolveTemplateDir(request.roleName);
-    if (templateDir) {
-      for (const file of ['ROLE.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md']) {
-        const src = join(templateDir, file);
-        if (existsSync(src)) copyFileSync(src, join(agentRoleDir, file));
+
+    if (!isCustomRole && !request.skipTemplateCopy) {
+      const templateDir = this.roleLoader.resolveTemplateDir(roleName);
+      if (templateDir) {
+        for (const file of ['ROLE.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md']) {
+          const src = join(templateDir, file);
+          if (existsSync(src)) copyFileSync(src, join(agentRoleDir, file));
+        }
       }
     }
 
     const config: AgentConfig = {
       id,
       name: request.name,
-      // Store the template folder name so agents can be restored on restart
-      roleId: request.roleName,
+      roleId: roleName,
       orgId: request.orgId ?? 'default',
       teamId: request.teamId,
       agentRole: request.agentRole ?? 'worker',
@@ -1311,8 +1332,19 @@ export class AgentManager {
     let role: RoleTemplate;
     if (existsSync(join(agentRoleDir, 'ROLE.md'))) {
       role = this.roleLoader.loadRole(agentRoleDir);
+    } else if (row.roleId === 'custom') {
+      role = {
+        id: generateId('role'),
+        name: row.name,
+        description: '',
+        category: 'custom' as RoleCategory,
+        systemPrompt: `# ${row.name}\n\nYou are ${row.name}.`,
+        defaultSkills: [],
+        heartbeatChecklist: '',
+        defaultPolicies: [],
+        builtIn: false,
+      };
     } else {
-      // Load from template (backward compat), then copy for future self-evolution
       role = (() => {
         try { return this.roleLoader.loadRole(row.roleId); } catch { /* try next */ }
         try { return this.roleLoader.loadRole(row.roleName); } catch { /* try next */ }
@@ -1325,7 +1357,6 @@ export class AgentManager {
         }
         throw new Error(`Role not found: ${row.roleName} (roleId: ${row.roleId})`);
       })();
-      // Migration: copy template files to agent's own role dir
       const templateDir = this.roleLoader.resolveTemplateDir(row.roleId)
         ?? this.roleLoader.resolveTemplateDir(row.roleName);
       if (templateDir) {

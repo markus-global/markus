@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { api, wsClient, hubApi } from '../api.ts';
+import { api, wsClient, hubApi, kebab } from '../api.ts';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
@@ -94,7 +94,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
                 const { filesMap } = await api.agents.getFilesMap(agentId);
                 const config = {
                   type: 'agent' as const,
-                  name: agent.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || agent.name,
+                  name: kebab(agent.name, agent.name),
                   displayName: agent.name,
                   version: '1.0.0',
                   description: agent.roleDescription ?? agent.role,

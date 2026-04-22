@@ -119,7 +119,7 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
         <Field label="Name" value={displayName} />
         <Field label="Description" value={artifact.description as string} />
         <div className="flex flex-wrap gap-2">
-          <Badge label="Role Template" value={roleName} color="indigo" />
+          {roleName && <Badge label="Base Template" value={roleName} color="indigo" />}
           <Badge label="Agent Role" value={agentRole} color={agentRole === 'manager' ? 'purple' : 'cyan'} />
         </div>
         {toStringArray(artifact.tags).length > 0 && (

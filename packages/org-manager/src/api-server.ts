@@ -3,7 +3,7 @@ import { join, resolve, dirname } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
+import { createLogger, generateId, kebab, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -358,7 +358,7 @@ export class APIServer {
         if (!res.ok) throw new Error(`Hub download failed: ${res.status}`);
         const data = await res.json() as { name: string; itemType: string; files?: Record<string, string>; config?: unknown; description?: string };
         const name = data.name;
-        const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+        const slug = kebab(name, 'hub-pkg');
         const mode = (data.itemType === 'team' ? 'team' : data.itemType === 'skill' ? 'skill' : 'agent') as 'agent' | 'team' | 'skill';
         const typeDir = mode === 'agent' ? 'agents' : mode === 'team' ? 'teams' : 'skills';
         const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, slug);
@@ -1378,13 +1378,9 @@ export class APIServer {
         this.json(res, 400, { error: 'name is required' });
         return;
       }
-      if (!roleName?.trim()) {
-        this.json(res, 400, { error: 'roleName is required' });
-        return;
-      }
       const agent = await this.orgService.hireAgent({
         name: agentName,
-        roleName,
+        roleName: roleName?.trim() || undefined,
         orgId: (body['orgId'] as string) ?? 'default',
         teamId: body['teamId'] as string | undefined,
         skills: body['skills'] as string[] | undefined,
@@ -2454,7 +2450,7 @@ export class APIServer {
             const agent = agentManager.getAgent(agentId);
             const roleDir = this.resolveAgentRoleDir(agent);
             if (!roleDir) continue;
-            const slug = agent.config.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || agentId;
+            const slug = kebab(agent.config.name, agentId);
             for (const fname of roleFileNames) {
               const fpath = join(roleDir, fname);
               if (existsSync(fpath)) {
@@ -4221,7 +4217,7 @@ EXPLANATION_END`;
             : Array.isArray(artifact.members) ? artifact.members : []) as Array<Record<string, unknown>>;
           for (const m of rawMembers) {
             const mName = (m.name as string) ?? 'Agent';
-            const slug = mName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || 'agent';
+            const slug = kebab(mName, 'agent');
             const memberDir = join(artDir, 'members', slug);
             const roleContent = (m.roleContent as string) || (m.role_md as string);
             const policiesContent = (m.policiesContent as string) || (m.policies_md as string);

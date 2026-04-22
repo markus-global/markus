@@ -767,8 +767,8 @@ export const api = {
   agents: {
     list: () => request<{ agents: AgentInfo[] }>('/agents').then(d => ({ ...d, agents: d.agents.filter(a => a.name) })),
     get: (id: string) => request<AgentDetail>(`/agents/${id}`),
-    create: (name: string, roleName: string, agentRole?: 'manager' | 'worker', teamId?: string) =>
-      request('/agents', { method: 'POST', body: JSON.stringify({ name, roleName, agentRole, teamId }) }),
+    create: (name: string, roleName?: string, agentRole?: 'manager' | 'worker', teamId?: string) =>
+      request('/agents', { method: 'POST', body: JSON.stringify({ name, ...(roleName ? { roleName } : {}), agentRole, teamId }) }),
     start: (id: string) => request(`/agents/${id}/start`, { method: 'POST' }),
     stop: (id: string) => request(`/agents/${id}/stop`, { method: 'POST' }),
     remove: (id: string, opts?: { purgeFiles?: boolean }) =>
@@ -1639,3 +1639,13 @@ export const hubApi = {
     return hubRequest<{ ok: boolean }>(`/items/${id}`, { method: 'DELETE' });
   },
 };
+
+/** Convert a string to kebab-case slug. Must match the server-side kebab() in @markus/shared. */
+export function kebab(s: string, fallback?: string): string {
+  const result = s.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '');
+  if (result) return result;
+  if (fallback) return fallback;
+  let hash = 0;
+  for (let i = 0; i < s.length; i++) hash = ((hash << 5) - hash + s.charCodeAt(i)) | 0;
+  return `pkg-${Math.abs(hash).toString(36)}`;
+}
