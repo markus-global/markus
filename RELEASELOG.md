@@ -1,5 +1,26 @@
 # Release Log
 
+## v0.4.22
+
+自演化路径增强（ROLE.md / HEARTBEAT.md）；Hub 发布 CORS 修复与 API 代理；Agent 创建 roleName 可选；Store 卡片链接 Hub 详情页。
+
+### New Features
+
+- **ROLE.md / HEARTBEAT.md 直接自演化路径** — Agent 可通过编辑 ROLE.md 和 HEARTBEAT.md 进行自我演化；新增 `reloadHeartbeat()` 热加载，HEARTBEAT.md 修改即时生效；降低 ROLE.md 更新门槛，单条经验即可触发；自演化技能文档同步更新决策矩阵
+- **Hub 详情页链接** — Store 页面（Agents / Teams / Skills）的 Hub 卡片标题和页脚链接到 Hub 详情页（`/{username}/{slug}`），新标签页打开
+
+### Bug Fixes
+
+- **修复 Hub 发布 CORS 与鉴权失败** — 新增通用 `/api/hub/*` 本地代理路由，所有 Hub API 调用走服务端转发，规避 Vercel 307 重定向导致的浏览器 CORS 拦截和 Authorization header 丢失（401 根因）
+- **修复 Agent 创建自定义 ROLE.md 被模板覆盖** — `roleName` 改为可选，`'custom'` 表示无模板；新增 `skipTemplateCopy` 标志防止自定义角色文件被覆盖；健壮的成员目录查找（`findMemberDir`）支持多种回退策略；统一 `kebab()` slug 函数消除保存与安装流程间的 slug 不匹配
+- **修复 AgentBuilder 分享时误显 "Uninstalling..."** — 按操作类型追踪 busy 状态，区分分享与卸载
+
+### Stats
+
+- 19 files changed, +353 / −115 lines
+
+---
+
 ## v0.4.21
 
 Markdown 文件路径可点击预览；MarkdownMessage 拷贝菜单；多模态附件降级；markitdown 技能；审批输入修复；UI 组件优化。
