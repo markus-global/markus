@@ -1,5 +1,37 @@
 # Release Log
 
+## v0.4.21
+
+Markdown 文件路径可点击预览；MarkdownMessage 拷贝菜单；多模态附件降级；markitdown 技能；审批输入修复；UI 组件优化。
+
+### New Features
+
+- **Markdown 文件路径点击预览** — 行内代码中的文件路径自动识别，存在的文件高亮可点击：Markdown 文件弹窗预览（支持无限嵌套弹窗），其他类型在文件管理器中打开；不存在的文件显示删除线样式
+- **MarkdownMessage 拷贝菜单** — 所有 Markdown 渲染区域显示拷贝按钮，支持复制 Markdown 源码、HTML (Light)、HTML (Dark) 三种格式
+- **多模态附件降级** — 不支持视觉的模型自动通过 markitdown 将图片/文档转为文本附件，支持 PDF/DOCX/XLSX/PPTX/图片等格式
+- **markitdown 技能** — 新增 Agent 技能模板，可安装 markitdown 用于文档格式转换
+- **Avatar 组件** — 提取独立 Avatar 组件，支持 Agent 头像与状态指示器复用
+
+### Bug Fixes
+
+- **修复审批输入框串联** — 多个审批卡片的自由文本输入框共享同一 state，在一个输入框打字所有输入框同步显示；改为按审批 ID 独立维护状态
+- **修复文件路径在表格中不换行** — 长文件路径在表格窄列中不断行，添加 break-all 允许任意位置换行
+- **修复文件路径图标与文字分离** — 表格中图标被挤到单独一行，用 whitespace-nowrap span 确保图标与路径首字符不分离
+
+### Enhancements
+
+- Sidebar 布局与样式优化
+- Onboarding 引导流程增强
+- Chat 气泡样式更新
+- Deliverables 页重构：复用 MarkdownMessage 和共享拷贝工具，移除冗余代码
+- 文档更新（CONTRIBUTING、README、GUIDE、ARCHITECTURE、REMOTE-ACCESS）
+
+### Stats
+
+- 38 files changed, +1,472 / −457 lines
+
+---
+
 ## v0.4.20
 
 多 Agent 认知架构（CPP 四阶段管线）；自演化记忆生命周期重构；notify_user/escalation 转为聊天消息；recall_activity 工具；服务端 turn-boundary 流式提交；审批持久化与 requirement 审批统一；6 项运行时 bug 修复；浏览器自动化设置。
