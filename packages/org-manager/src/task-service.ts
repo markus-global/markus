@@ -2996,6 +2996,10 @@ export class TaskService {
           'Save each lesson using `memory_save` with tags `["lesson", ...]`.',
           'If it is a repeatable multi-step procedure, promote to SOP via `memory_update_longterm({ section: "sops", mode: "patch" })`.',
           'If the best practice would benefit other agents on the team, create a shareable skill via **skill-building** and install it with `builder_install`.',
+          '',
+          '**Direct self-evolution** — consider the simplest, most impactful options:',
+          '- If this lesson reveals a behavioral rule that should always guide your work, append it to your ROLE.md via `file_edit`.',
+          '- If you should be checking for this class of issue regularly, add a check to your HEARTBEAT.md via `file_edit`.',
         ].join('\n')
       : [
           '[SELF-EVOLUTION — Post-Task Reflection (Success)]',
@@ -3013,6 +3017,11 @@ export class TaskService {
           'If you identify a meaningful insight, save it using `memory_save` with tags `["lesson", "best-practice", ...]`.',
           'If it is a multi-step workflow, promote to SOP via `memory_update_longterm({ section: "sops", mode: "patch" })`.',
           'If worth sharing with the team, create a skill via **skill-building** and install with `builder_install`.',
+          '',
+          '**Direct self-evolution** — consider the simplest, most impactful options:',
+          '- If this success reveals a guiding principle or working style worth keeping, append it to your ROLE.md via `file_edit`.',
+          '- If there is a periodic check that would help maintain this quality, add it to your HEARTBEAT.md via `file_edit`.',
+          '',
           'If nothing noteworthy stands out, it is fine to skip saving.',
         ].join('\n');
 

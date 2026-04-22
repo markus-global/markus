@@ -42,7 +42,8 @@ Skip trivial matters — typos, one-off path errors, situations that won't recur
 | Validated pattern from successful task | Observation buffer | `memory_save` with tags: `["insight", ...]` |
 | Multi-step repeatable workflow (personal) | MEMORY.md | `memory_update_longterm({ section: "<your-section>", mode: "patch" })` |
 | Practice worth sharing with the team | Skill package | Create via **skill-building**, install with `builder_install` |
-| 3+ related insights → behavioral rule | ROLE.md | Read → append → log change |
+| Behavioral rule or guiding principle | ROLE.md | `file_read` → `file_edit` to append |
+| New recurring check for your patrol | HEARTBEAT.md | `file_read` → `file_edit` to add/remove items |
 
 ## Capturing Insights (Observation Buffer)
 
@@ -166,12 +167,23 @@ Only create a skill when you are confident the practice is validated (proven acr
 
 ## Role Evolution (ROLE.md)
 
-The deepest level. Modify ROLE.md only when ALL conditions are met:
+ROLE.md is your identity — it is loaded into every conversation and shapes all your behavior. Updating it is one of the **simplest and most impactful** forms of self-evolution.
 
-1. **Pattern threshold** — 3+ related insights pointing to a fundamental behavioral change
-2. **High confidence** — Proven by successfully completed tasks
-3. **Systemic impact** — Affects many future tasks
-4. **Not contradicting core role** — Refines or extends, doesn't contradict
+### When to Update
+
+Modify ROLE.md when you discover a behavioral rule, working style, or guiding principle that should **always** apply to your work. Examples:
+
+- "Always run tests before submitting code for review"
+- "When debugging, check logs first before reading source code"
+- "Prefer small, focused PRs over large ones"
+
+You do NOT need to accumulate multiple insights first — even a single validated lesson can warrant a role update if it is fundamental and non-obvious.
+
+### Guard Rails
+
+- **Refine, don't contradict** — New guidelines should extend your core role, not conflict with it
+- **Proven, not speculative** — The principle should be validated by actual task outcomes
+- **Not one-off** — It should apply to future tasks, not just the current situation
 
 ### How to Modify
 
@@ -180,13 +192,37 @@ The deepest level. Modify ROLE.md only when ALL conditions are met:
 3. Use `file_edit` for surgical changes
 4. Log: `memory_save` with tags `["insight", "role-evolution"]`
 
+## Heartbeat Customization (HEARTBEAT.md)
+
+HEARTBEAT.md is your personal patrol checklist — it controls what you check during each heartbeat cycle. Customizing it is a direct way to evolve your operational behavior.
+
+### When to Update
+
+- You realize you should be regularly checking for something you currently aren't (e.g., monitoring a specific service, reviewing a certain type of task)
+- A checklist item is obsolete or no longer relevant to your responsibilities
+- You want to change the order or priority of your patrol routine
+
+### How to Modify
+
+1. Read current HEARTBEAT.md via `file_read`
+2. Add, remove, or reorder checklist items via `file_edit`
+3. Changes take effect at the next heartbeat cycle (the system auto-reloads)
+4. Log: `memory_save` with tags `["insight", "heartbeat-evolution"]`
+
+### Examples of Good Heartbeat Additions
+
+- "Check if any PR I opened has new review comments"
+- "Verify that the staging deployment matches the latest main branch"
+- "Review `task_list` for tasks blocked more than 24 hours — escalate if needed"
+
 ## Quality Signal
 
 During heartbeat, check your revision rate:
 - Tasks with `executionRound > 1` required revision
 - High revision rate (>30%) means your knowledge isn't being applied effectively
 - Check if saved insights cover the failure patterns you see
-- Escalate recurring mistakes: insight → MEMORY.md procedure → role update
+- Consider: would a ROLE.md rule or a HEARTBEAT.md check have prevented any recent failures?
+- Escalate recurring mistakes: insight → MEMORY.md procedure → ROLE.md rule or HEARTBEAT.md check
 
 ## Rules
 
