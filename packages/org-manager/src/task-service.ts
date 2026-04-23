@@ -86,6 +86,9 @@ export interface CreateTaskRequest {
   planReportId?: string;
   taskType?: TaskType;
   scheduleConfig?: ScheduleConfig;
+  notes?: string;
+  acceptanceCriteria?: string;
+  deadline?: string;
 }
 
 export type TaskEventType =
@@ -1358,7 +1361,9 @@ export class TaskService {
         },
         cancelToken,
         taskProjectContext,
-        executionRound
+        executionRound,
+        task.title,
+        task.requirementId,
       )
       .catch(err => {
         log.error('Task execution promise rejected', { taskId, error: String(err) });
@@ -1543,12 +1548,17 @@ export class TaskService {
       ? { ...request.scheduleConfig, currentRuns: 0, nextRunAt: computeInitialNextRun(request.scheduleConfig) }
       : undefined;
 
+    const approvalTier = this.determineApprovalTier(
+      request,
+      (request.creatorRole as 'worker' | 'manager') ?? 'worker',
+    );
+
     const task: Task = {
       id: taskId(),
       orgId: request.orgId,
       title: request.title,
       description: request.description,
-      status: 'pending',
+      status: approvalTier === 'auto' ? 'in_progress' : 'pending',
       priority: request.priority ?? 'medium',
       assignedAgentId: request.assignedAgentId,
       reviewerAgentId: request.reviewerAgentId,
@@ -1636,10 +1646,10 @@ export class TaskService {
         title: `Task approval: ${task.title}`,
         description: `Agent "${creatorName}" wants to create task "${task.title}" (priority: ${task.priority}).`,
         details: { taskId: task.id, priority: task.priority },
-      }).then(approved => {
+      }).then(result => {
         const current = this.tasks.get(task.id);
         if (!current || current.status !== 'pending') return;
-        if (approved) {
+        if (result.approved) {
           this.approveTask(task.id);
         } else {
           this.rejectTask(task.id);
@@ -1930,8 +1940,7 @@ export class TaskService {
     if (this.hitlService && (to === 'review' || to === 'completed' || to === 'failed')) {
       const notifType = to === 'completed' ? 'task_completed' as const
         : to === 'review' ? 'task_review' as const
-        : to === 'failed' ? 'task_failed' as const
-        : 'task_status_changed' as const;
+        : 'task_failed' as const;
       const priority = to === 'failed' ? 'high' as const : 'normal' as const;
       this.hitlService.notify({
         targetUserId: 'default',
@@ -2380,9 +2389,11 @@ export class TaskService {
 
   private areBlockersSatisfied(task: Task): boolean {
     if (!task.blockedBy?.length) return true;
+    // Only 'completed' unblocks — cancelled tasks should NOT satisfy blockers.
+    // cascadeCancelDependents handles cancelled propagation separately.
     return task.blockedBy.every(blockerId => {
       const blocker = this.tasks.get(blockerId);
-      return blocker && (blocker.status === 'completed' || blocker.status === 'cancelled');
+      return blocker && blocker.status === 'completed';
     });
   }
 
@@ -2945,6 +2956,28 @@ export class TaskService {
 
     const hadRevisions = (task.executionRound ?? 1) > 1;
 
+    // Build execution trace summary from available task data
+    const traceParts: string[] = [];
+    traceParts.push(`- Execution rounds: ${task.executionRound ?? 1}`);
+    if (task.startedAt && task.completedAt) {
+      const durationMin = Math.round(
+        (new Date(task.completedAt).getTime() - new Date(task.startedAt).getTime()) / 60_000
+      );
+      traceParts.push(`- Duration: ~${durationMin} min`);
+    }
+    if (task.result?.summary) {
+      traceParts.push(`- Result summary: ${task.result.summary.slice(0, 300)}`);
+    }
+
+    const recentNotes = (task.notes ?? []).slice(-8);
+    if (recentNotes.length > 0) {
+      traceParts.push('- Recent notes (oldest→newest):');
+      for (const note of recentNotes) {
+        traceParts.push(`  • ${note.slice(0, 200)}`);
+      }
+    }
+    const traceSection = traceParts.join('\n');
+
     const prompt = hadRevisions
       ? [
           '[SELF-EVOLUTION — Post-Task Reflection (Revision)]',
@@ -2952,24 +2985,43 @@ export class TaskService {
           `Task "${task.title}" (ID: ${task.id}) was completed after ${task.executionRound} execution rounds.`,
           'This means the task required revision — something in your initial approach needed correction.',
           '',
-          'Follow the **self-evolution** skill instructions to extract lessons:',
+          '## Execution Trace',
+          traceSection,
+          '',
+          'Use the trace above to ground your reflection:',
           '1. What went wrong in earlier rounds? What feedback or error caused the revision?',
           '2. What did you change in the successful round?',
-          '3. What is the generalizable lesson?',
+          '3. What is the generalizable lesson? Is it SOP-worthy (multi-step repeatable procedure)?',
           '',
           'Save each lesson using `memory_save` with tags `["lesson", ...]`.',
-          'If you now have 3+ unsaved lessons, also consolidate into long-term memory via `memory_update_longterm` with section `"lessons-learned"`.',
+          'If it is a repeatable multi-step procedure, promote to SOP via `memory_update_longterm({ section: "sops", mode: "patch" })`.',
+          'If the best practice would benefit other agents on the team, create a shareable skill via **skill-building** and install it with `builder_install`.',
+          '',
+          '**Direct self-evolution** — consider the simplest, most impactful options:',
+          '- If this lesson reveals a behavioral rule that should always guide your work, append it to your ROLE.md via `file_edit`.',
+          '- If you should be checking for this class of issue regularly, add a check to your HEARTBEAT.md via `file_edit`.',
         ].join('\n')
       : [
           '[SELF-EVOLUTION — Post-Task Reflection (Success)]',
           '',
           `Task "${task.title}" (ID: ${task.id}) was completed successfully on the first attempt.`,
           '',
-          'Briefly reflect on what made this task go well:',
+          '## Execution Trace',
+          traceSection,
+          '',
+          'First-pass approval is a strong signal. Reflect on what made this work:',
           '1. Were there tools, patterns, or approaches that proved especially effective?',
           '2. Is there a reusable technique or SOP worth remembering for similar future tasks?',
+          '3. Would this best practice benefit other agents on the team? If so, consider creating a shareable skill.',
           '',
           'If you identify a meaningful insight, save it using `memory_save` with tags `["lesson", "best-practice", ...]`.',
+          'If it is a multi-step workflow, promote to SOP via `memory_update_longterm({ section: "sops", mode: "patch" })`.',
+          'If worth sharing with the team, create a skill via **skill-building** and install with `builder_install`.',
+          '',
+          '**Direct self-evolution** — consider the simplest, most impactful options:',
+          '- If this success reveals a guiding principle or working style worth keeping, append it to your ROLE.md via `file_edit`.',
+          '- If there is a periodic check that would help maintain this quality, add it to your HEARTBEAT.md via `file_edit`.',
+          '',
           'If nothing noteworthy stands out, it is fine to skip saving.',
         ].join('\n');
 
@@ -3548,7 +3600,9 @@ export class TaskService {
         },
         cancelToken,
         undefined,
-        executionRound
+        executionRound,
+        task.title,
+        task.requirementId,
       )
       .catch(err => {
         log.error('Fresh retry execution rejected', { taskId, error: String(err) });

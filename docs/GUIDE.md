@@ -108,13 +108,13 @@ This starts the Markus services automatically.
 
 ## First Login
 
-Default credentials:
+Initial credentials (before onboarding):
 - Email: `admin@markus.local`
 - Password: `markus123`
 
-**You will be required to change the password on first login.**
+**On first login, the onboarding wizard will guide you to set your real name, email, and a new password.** You should complete the profile setup step to replace these default credentials.
 
-After changing the password, you can add more human members or hire AI agents from the Team page.
+After onboarding, you can add more human members or hire AI agents from the Team page.
 
 ---
 

@@ -142,26 +142,28 @@ export const PREEMPT_REQUEUE_DELAY_MS = 3_000;
 // These control how much memory context is injected into the system prompt.
 // All agents see this on every LLM call — tuning affects quality vs. token cost.
 
-/** Max characters for the SOPs section extracted from MEMORY.md.
- *  SOPs are high-value procedural memory — agents must see them fully.
- *  A typical SOP is ~200-300 chars; 3000 chars fits ~10 SOPs comfortably.
- *  Loaded independently from the general MEMORY.md cap. */
-export const SYSTEM_SOPS_CHARS = 3000;
+/** Max characters for the unified "## Your Knowledge" section from MEMORY.md.
+ *  MEMORY.md is loaded as a single section — no separate SOPs/lessons/etc.
+ *  8000 chars ≈ ~2000 tokens — fits ~5 sections of agent-organized knowledge. */
+export const SYSTEM_KNOWLEDGE_CHARS = 8000;
 
-/** Max characters for the full MEMORY.md (Long-term Knowledge).
- *  Contains lessons-learned, tool-preferences, role-evolution-log, etc.
- *  Note: SOPs are loaded separately above, so this budget is for everything else.
- *  5000 chars ≈ ~1200 tokens — moderate cost, good coverage. */
+/** @deprecated Use SYSTEM_KNOWLEDGE_CHARS. Kept for backward compat. */
+export const SYSTEM_SOPS_CHARS = 3000;
+/** @deprecated Use SYSTEM_KNOWLEDGE_CHARS. Kept for backward compat. */
 export const SYSTEM_LONGTERM_MEMORY_CHARS = 5000;
 
-/** Max recent lesson entries (tagged "lesson") injected into system prompt.
- *  These are individual memory_save entries from self-evolution.
- *  10 entries × ~150 chars = ~1500 chars ≈ ~375 tokens. */
-export const SYSTEM_LESSON_ENTRIES_MAX = 10;
+/** Hard cap on individual MEMORY.md section content (chars).
+ *  Prevents any single section from growing unbounded. */
+export const MEMORY_MD_SECTION_MAX_CHARS = 3000;
 
-/** Max recent best-practice entries (tagged "best-practice") injected.
- *  These come from heartbeat task reviews; same budget as lessons.
- *  10 entries × ~200 chars = ~2000 chars ≈ ~500 tokens. */
+/** Hard cap on total MEMORY.md file size (chars).
+ *  Prevents the file from growing without bound even if the agent
+ *  keeps creating new sections.  15 000 chars ≈ 5 sections × 3 000. */
+export const MEMORY_MD_TOTAL_MAX_CHARS = 15_000;
+
+/** @deprecated Lesson/best-practice taxonomy removed. Use unified knowledge. */
+export const SYSTEM_LESSON_ENTRIES_MAX = 10;
+/** @deprecated Lesson/best-practice taxonomy removed. Use unified knowledge. */
 export const SYSTEM_BEST_PRACTICE_ENTRIES_MAX = 10;
 
 /** Max characters for shared deliverables context in system prompt.
@@ -265,12 +267,86 @@ export const TRIAGE_PROMPT_MAX_ITEMS = 50;
 
 /** Max tokens for the triage LLM response.
  *  Must be generous enough for models that emit <think> blocks before the
- *  JSON payload.  4096 tokens covers even verbose chain-of-thought. */
-export const TRIAGE_MAX_TOKENS = 4096;
+ *  JSON payload.  8192 tokens covers verbose chain-of-thought plus
+ *  tool-call reasoning when triage tools are enabled. */
+export const TRIAGE_MAX_TOKENS = 8192;
 
 /** Temperature for the triage LLM call.
  *  Low temperature produces deterministic, focused decisions. */
 export const TRIAGE_TEMPERATURE = 0.1;
+
+/** Max recent messages from the agent's main session included in triage context.
+ *  More messages give the triage LLM better situational awareness.
+ *  20 messages × ~2000 chars ≈ ~40K chars — generous but justified since
+ *  good triage decisions save far more downstream cost. */
+export const TRIAGE_CONTEXT_MESSAGES_MAX = 20;
+
+/** Max characters per message in the triage context.
+ *  2000 chars lets the LLM see real content instead of useless fragments. */
+export const TRIAGE_CONTEXT_MSG_CHARS = 2000;
+
+/** Max characters for payload.content per candidate item in the triage prompt.
+ *  The summary alone is often insufficient; the full content provides
+ *  actionable detail for prioritization decisions. */
+export const TRIAGE_ITEM_CONTENT_CHARS = 3000;
+
+/** Age threshold (ms) for auto-dropping informational items before triage.
+ *  Informational items (task_status_update, heartbeat, memory_consolidation,
+ *  daily_report) older than this are stale — the information they carried is
+ *  outdated and processing them would waste attention.
+ *  4 hours is generous enough for agents that were paused but short enough
+ *  to prevent unbounded queue growth. */
+export const TRIAGE_STALE_INFO_TTL_MS = 4 * 60 * 60 * 1000;
+
+/** Informational mailbox types eligible for age-based auto-drop before triage.
+ *  These types carry context that decays rapidly and do not require LLM processing. */
+export const TRIAGE_STALE_DROP_TYPES: readonly string[] = [
+  'task_status_update', 'heartbeat', 'memory_consolidation', 'daily_report',
+];
+
+/** Max tool-use iterations allowed during triage deliberation.
+ *  Enough to gather context (task_list, task_get, etc.) but not enough
+ *  to do real work. */
+export const TRIAGE_MAX_TOOL_ITERATIONS = 3;
+
+/** Read-only tools allowed during triage deliberation.
+ *  These let the triage LLM understand current workload, task dependencies,
+ *  and team state before deciding priority. */
+export const TRIAGE_ALLOWED_TOOLS: readonly string[] = [
+  'task_list', 'task_get', 'requirement_list', 'requirement_get',
+  'list_projects', 'team_list',
+];
+
+// ─── Subagent Limits ────────────────────────────────────────────────────────
+// These control subagent execution behavior and progress preview truncation.
+
+/** Max characters for the task preview in subagent progress events.
+ *  Shown in the frontend execution log as context. */
+export const SUBAGENT_TASK_PREVIEW_CHARS = 500;
+
+/** Max characters for the thinking preview in subagent progress events.
+ *  Shown while the subagent is processing (streaming teaser). */
+export const SUBAGENT_THINKING_PREVIEW_CHARS = 1000;
+
+/** Max characters for the result preview in subagent progress events.
+ *  Shown in tool_end events and completion metadata. */
+export const SUBAGENT_RESULT_PREVIEW_CHARS = 500;
+
+/** Max characters for tool result content in persisted subagent log entries.
+ *  Full results are kept in messages for context; this caps the log file copy. */
+export const SUBAGENT_LOG_ENTRY_CHARS = 10_000;
+
+/** Max characters for error message previews in retry logs. */
+export const SUBAGENT_ERROR_PREVIEW_CHARS = 500;
+
+/** Max parallel subagents in a single spawn_subagents call. */
+export const SUBAGENT_MAX_PARALLEL = 10;
+
+/** Max LLM call retries for transient errors within a subagent. */
+export const SUBAGENT_MAX_LLM_RETRIES = 2;
+
+/** Base delay (ms) for exponential backoff on retryable LLM errors. */
+export const SUBAGENT_RETRY_BASE_MS = 2000;
 
 // ─── Shell Execution Limits ─────────────────────────────────────────────────
 
@@ -290,3 +366,32 @@ export const SHELL_TIMEOUT_MAX_MS = 300_000;
  *  request_user_approval can wait indefinitely for the user. 24 hours is a
  *  generous safety net while allowing realistic human response times. */
 export const APPROVAL_WAIT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
+// ─── Heartbeat Startup ──────────────────────────────────────────────────────
+
+/** Minimum initial delay (ms) before an agent's first heartbeat fires.
+ *  Prevents the first agent from firing immediately at startup, giving the
+ *  system time to settle and avoiding a burst of LLM requests at boot. */
+export const HEARTBEAT_MIN_INITIAL_DELAY_MS = 5_000;
+
+/** Random jitter (ms) added to deterministic heartbeat stagger on startup.
+ *  When multiple agents start together, each gets a stagger offset plus
+ *  this random jitter to avoid deterministic collisions across restarts. */
+export const HEARTBEAT_STARTUP_JITTER_MS = 10_000;
+
+// ─── LLM Router Circuit Breaker ─────────────────────────────────────────────
+
+/** Circuit-breaker cooldown (ms) specifically for rate-limit (HTTP 429) errors.
+ *  Much shorter than the generic 5-minute cooldown because rate limits
+ *  typically clear within seconds. */
+export const LLM_CIRCUIT_RESET_RATE_LIMIT_MS = 30 * 1000;
+
+/** Max concurrent in-flight LLM requests per provider before jitter kicks in.
+ *  When exceeded, additional requests add a random delay to spread the load
+ *  and avoid thundering-herd 429 cascades. */
+export const LLM_MAX_CONCURRENT_PER_PROVIDER = 5;
+
+/** Base delay (ms) for the random jitter applied when per-provider concurrency
+ *  exceeds LLM_MAX_CONCURRENT_PER_PROVIDER.  Actual delay is in the range
+ *  [JITTER_BASE, JITTER_BASE * 3]. */
+export const LLM_CONCURRENCY_JITTER_BASE_MS = 500;

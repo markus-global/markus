@@ -5,16 +5,12 @@ import {
   type LLMMessage,
   type RoleTemplate,
   type IdentityContext,
+  type PreparedCognitiveContext,
   SYSTEM_MY_TASKS_MAX,
   SYSTEM_TEAM_TASKS_MAX,
   SYSTEM_TASK_DESC_CHARS,
-  SYSTEM_SOPS_CHARS,
-  SYSTEM_LONGTERM_MEMORY_CHARS,
-  SYSTEM_LESSON_ENTRIES_MAX,
-  SYSTEM_BEST_PRACTICE_ENTRIES_MAX,
+  SYSTEM_KNOWLEDGE_CHARS,
   SYSTEM_DELIVERABLES_CHARS,
-  SYSTEM_DAILY_LOG_CHARS,
-  SYSTEM_DAILY_LOG_DAYS,
   SYSTEM_USER_PROFILE_CHARS,
   SYSTEM_PROJECT_DESC_CHARS,
   SYSTEM_DELIVERABLE_PREVIEW_CHARS,
@@ -151,7 +147,7 @@ export class ContextEngine {
       content: string;
       anchor?: { section: string; itemId?: string };
     }>;
-    scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation';
+    scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review';
     agentWorkspace?: {
       primaryWorkspace: string;
       sharedWorkspace?: string;
@@ -171,6 +167,7 @@ export class ContextEngine {
       recentDecisions?: Array<{ type: string; reasoning: string }>;
       mergedContent?: string;
     };
+    cognitiveContext?: PreparedCognitiveContext;
   }): Promise<string> {
     const parts: string[] = [];
 
@@ -327,39 +324,16 @@ export class ContextEngine {
       }
     }
 
-    // SOPs get their own dedicated section — always fully loaded, not truncated by the
-    // general MEMORY.md cap, so agents reliably see their accumulated procedures.
-    const sops = opts.memory.getLongTermSection('sops');
-    if (sops) {
-      parts.push('\n## Your SOPs (Standard Operating Procedures)');
-      parts.push('These are your proven, repeatable workflows. Follow them when the trigger matches.');
-      parts.push(sops.slice(0, SYSTEM_SOPS_CHARS));
-    }
-
+    // Unified knowledge section — MEMORY.md loaded as a single block.
+    // Agent-organized: no rigid SOP/lesson/best-practice taxonomy.
     const longTermMem = opts.memory.getLongTermMemory();
     if (longTermMem) {
-      parts.push('\n## Long-term Knowledge');
-      parts.push(longTermMem.slice(0, SYSTEM_LONGTERM_MEMORY_CHARS));
+      parts.push('\n## Your Knowledge');
+      parts.push(longTermMem.slice(0, SYSTEM_KNOWLEDGE_CHARS));
     }
 
-    const lessons = opts.memory.getEntriesByTag('lesson', SYSTEM_LESSON_ENTRIES_MAX);
-    if (lessons.length > 0) {
-      parts.push('\n## Lessons from Past Experience');
-      for (const lesson of lessons) {
-        const ts = lesson.timestamp ? new Date(lesson.timestamp).toLocaleDateString() : '';
-        parts.push(`- [${ts}] ${lesson.content}`);
-      }
-    }
-
-    const bestPractices = opts.memory.getEntriesByTag('best-practice', SYSTEM_BEST_PRACTICE_ENTRIES_MAX);
-    if (bestPractices.length > 0) {
-      parts.push('\n## Best Practices');
-      parts.push('Proven approaches from your completed tasks. Apply when relevant.');
-      for (const bp of bestPractices) {
-        const ts = bp.timestamp ? new Date(bp.timestamp).toLocaleDateString() : '';
-        parts.push(`- [${ts}] ${bp.content}`);
-      }
-    }
+    // Track IDs of insight entries shown in knowledge to avoid duplication in Relevant Memories
+    const alreadyShownIds = new Set<string>();
 
     const isDream = opts.scenario === 'memory_consolidation';
 
@@ -368,22 +342,30 @@ export class ContextEngine {
       parts.push((opts.deliverableContext ?? opts.knowledgeContext ?? '').slice(0, SYSTEM_DELIVERABLES_CHARS));
     }
 
-    if (!isDream) {
-      const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId);
+    // When CPP is active, cognitive sections replace mechanical retrieval
+    const cpp = opts.cognitiveContext;
+    if (cpp && !cpp.isEmpty) {
+      if (cpp.cognitiveContext) {
+        parts.push('\n## Cognitive Context');
+        parts.push(cpp.cognitiveContext);
+      }
+      if (cpp.retrievedContext) {
+        parts.push('\n## Retrieved Context');
+        parts.push(cpp.retrievedContext);
+      }
+      if (cpp.reflection) {
+        parts.push('\n## Reflection');
+        parts.push(cpp.reflection);
+      }
+    } else if (!isDream) {
+      // Fallback: mechanical retrieval when CPP is off or D0
+      const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId, alreadyShownIds);
       if (relevantMemories.length > 0) {
         parts.push('\n## Relevant Memories');
         for (const mem of relevantMemories) {
           const ts = mem.timestamp ? new Date(mem.timestamp).toLocaleDateString() : '';
           parts.push(`- [${ts}] ${mem.content}`);
         }
-      }
-    }
-
-    if (!isDream) {
-      const dailyLog = opts.memory.getRecentDailyLogs(SYSTEM_DAILY_LOG_DAYS);
-      if (dailyLog) {
-        parts.push('\n## Recent Activity Summary');
-        parts.push(dailyLog.slice(0, SYSTEM_DAILY_LOG_CHARS));
       }
     }
 
@@ -468,9 +450,15 @@ export class ContextEngine {
       parts.push('');
       parts.push('**Work discovery**: `list_projects` → `requirement_list` → `task_list`. Use `memory_save`/`memory_search` for personal notes; `deliverable_create`/`deliverable_search` for shared outputs.');
       parts.push('');
+      parts.push('**Automatic status notifications** (do NOT duplicate manually):');
+      parts.push('- When task status changes, the system **automatically** handles all side effects: execution start/cancel, reviewer notification, dependency unblocking.');
+      parts.push('- Task status notifications are placed in assignees\' mailboxes as **informational context only**.');
+      parts.push('- Do NOT send A2A messages to notify about task status changes — only send A2A when you have substantive coordination needs beyond the status change itself.');
+      parts.push('');
       parts.push('**Communicating with the user**:');
-      parts.push('- `notify_user` — one-way FYI: status updates, progress reports, findings (no response expected)');
+      parts.push('- `notify_user` — proactive message to user: status updates, progress reports, findings, alerts. Appears in chat and notification bell. User may reply. Write comprehensive body with full context.');
       parts.push('- `request_user_approval` — when you need a user decision, approval, or input. BLOCKS until the user responds. Supports custom options and freeform text. Do NOT use for routine updates.');
+      parts.push('- `recall_activity` — query your own past execution logs by task or activity type. Use when you need to review what you did previously (e.g., to answer a follow-up question).');
     }
 
     if (opts.environment) {
@@ -566,7 +554,7 @@ export class ContextEngine {
     return lines.join('\n');
   }
 
-  private buildScenarioSection(scenario: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation'): string {
+  private buildScenarioSection(scenario: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review'): string {
     const lines: string[] = ['\n## Current Interaction Mode'];
 
     switch (scenario) {
@@ -622,9 +610,11 @@ export class ContextEngine {
         lines.push('- Be concise and structured — your colleague needs actionable information');
         lines.push('- Always use **absolute file paths** when referencing files or deliverables');
         lines.push('- Respond with clear facts. No conversational filler.');
+        lines.push('- Do NOT use A2A for routine task status notifications or acknowledgments — the system handles all status-triggered side effects automatically');
+        lines.push('- Only send A2A when you have substantive coordination needs: sharing context, asking questions, or providing instructions that go beyond a status change');
         lines.push('');
         lines.push('**Work delegation:**');
-        lines.push('- A2A messages are for: status updates, quick coordination, simple questions, sharing file references');
+        lines.push('- A2A messages are for: quick coordination, simple questions, sharing file references, substantive instructions');
         lines.push('- For substantial work requests: create a `task_create` assigned to the target agent — do NOT ask them to do complex work via chat');
         lines.push('- For multi-agent work: decompose into a task DAG with `blocked_by` dependencies, assign each to the right agent');
         lines.push('- If you cannot help, explain why and suggest who can');
@@ -658,6 +648,23 @@ export class ContextEngine {
         lines.push('- Your reply would only be "Sounds good", "Agreed", or similar zero-information response — do NOT reply');
         lines.push('- The comment does not ask a question, request action, or contain information you need to correct — do NOT reply');
         lines.push('- **Principle**: only comment when your reply adds **new information** or requests a **decision**. Avoid comment ping-pong.');
+        break;
+
+      case 'review':
+        lines.push('You are in **task review mode** — you have been asked to review a completed task.');
+        lines.push('');
+        lines.push('**MANDATORY review protocol:**');
+        lines.push('1. **Understand the task**: Call `task_get` with the task ID to see the full task state, description, deliverables, and notes');
+        lines.push('2. **Inspect deliverables**: Use `file_read` to examine ALL deliverable files listed in the task');
+        lines.push('3. **Check git changes**: If a task branch exists, use `shell_execute` to run `git diff` and review code changes');
+        lines.push('4. **Verify quality**: Check that deliverables match the task requirements and are functionally correct');
+        lines.push('');
+        lines.push('**After completing your review, you MUST take one of these actions:**');
+        lines.push('- **Approve**: `task_update` with `status: "completed"` and a `note` summarizing your review findings. If there is a task branch, merge it first.');
+        lines.push('- **Request revision**: `task_update` with `status: "in_progress"` and a `note` explaining what needs to change. This auto-restarts the task with your feedback.');
+        lines.push('');
+        lines.push('**CRITICAL: You MUST call `task_update` to finalize the review.** Simply writing a text response is NOT sufficient — the task will remain stuck in "review" status until you explicitly call `task_update` with either "completed" or "in_progress".');
+        lines.push('Do NOT review or change the status of any task other than the one you were asked to review.');
         break;
 
       case 'memory_consolidation':
@@ -726,8 +733,9 @@ export class ContextEngine {
         lines.push(teamName ? `\n### Your Team — ${teamName}` : '\n### Your Team');
         for (const c of opts.identity.colleagues) {
           const statusTag = c.status ? ` [${c.status}]` : '';
+          const idTag = c.id ? ` id:${c.id}` : '';
           lines.push(
-            `- ${c.name} (${c.role})${statusTag}${c.skills?.length ? ` — skills: ${c.skills.join(', ')}` : ''}`
+            `- ${c.name} (${c.role})${statusTag}${idTag}${c.skills?.length ? ` — skills: ${c.skills.join(', ')}` : ''}`
           );
         }
       }
@@ -954,7 +962,7 @@ export class ContextEngine {
     sessionId: string,
     messages: LLMMessage[],
     keepLast: number,
-    agentId?: string,
+    _agentId?: string,
   ): Promise<LLMMessage[]> {
     if (messages.length <= keepLast) return messages;
 
@@ -970,10 +978,32 @@ export class ContextEngine {
       return [...protectedPrefix, ...compactableMessages];
     }
 
-    if (this.llmSummarizer) {
+    // Score messages by information density — high-priority messages are retained longer
+    const scored = compactableMessages.map((msg, idx) => ({
+      msg,
+      idx,
+      priority: this.scoreMessageDensity(msg),
+    }));
+
+    // Partition: messages that should be compacted first (low priority) vs retained
+    // Keep the most recent `keepLast` messages + any high-priority older messages
+    const recentBoundary = compactableMessages.length - keepLast;
+    const olderScored = scored.slice(0, recentBoundary);
+    olderScored.sort((a, b) => a.priority - b.priority);
+
+    // Low-priority messages get compacted first, high-priority stay in retained
+    const highPriorityThreshold = 3;
+    const promotedToRetain = olderScored.filter(s => s.priority >= highPriorityThreshold);
+    const toCompact = olderScored.filter(s => s.priority < highPriorityThreshold);
+
+    // Rebuild: compact low-priority old messages, keep high-priority + recent
+    const older = toCompact.map(s => s.msg);
+    const promoted = promotedToRetain.map(s => s.msg);
+    const recent = compactableMessages.slice(-keepLast);
+    const retained = [...promoted, ...recent];
+
+    if (this.llmSummarizer && older.length > 0) {
       try {
-        const older = compactableMessages.slice(0, -keepLast);
-        const retained = compactableMessages.slice(-keepLast);
         const summary = await this.llmSummarizer(older);
         if (summary && summary.length > 0) {
           log.info('LLM-powered summarization succeeded', {
@@ -986,7 +1016,7 @@ export class ContextEngine {
             role: 'user',
             content: `[Conversation history summary — ${older.length} earlier messages were compacted by LLM]\n${summary}\n[End of summary. The conversation continues below.]`,
           };
-          memory.writeDailyLog(agentId ?? sessionId, summary);
+          // No side-effects: prepareMessages must be pure (no writeDailyLog here)
           return [...protectedPrefix, summaryMessage, ...retained];
         }
       } catch (err) {
@@ -994,23 +1024,51 @@ export class ContextEngine {
       }
     }
 
-    // Heuristic fallback: build a simple summary from older messages
-    const older = compactableMessages.slice(0, -keepLast);
-    const retained = compactableMessages.slice(-keepLast);
-    const heuristicSummary = this.buildHeuristicSummary(older);
+    // Heuristic fallback: use the same density-scored older/retained
+    const heuristicOlder = older.length > 0 ? older : compactableMessages.slice(0, -keepLast);
+    const heuristicRetained = older.length > 0 ? retained : compactableMessages.slice(-keepLast);
+    const heuristicSummary = this.buildHeuristicSummary(heuristicOlder);
     if (heuristicSummary) {
       const summaryMessage: LLMMessage = {
         role: 'user',
-        content: `[Conversation history summary — ${older.length} earlier messages were compacted]\n${heuristicSummary}\n[End of summary.]`,
+        content: `[Conversation history summary — ${heuristicOlder.length} earlier messages were compacted]\n${heuristicSummary}\n[End of summary.]`,
       };
-      return [...protectedPrefix, summaryMessage, ...retained];
+      return [...protectedPrefix, summaryMessage, ...heuristicRetained];
     }
 
     // Last resort: try memory store's summarizeAndTruncate (may not preserve task prompt)
     if (!isTaskPrompt) {
       return memory.summarizeAndTruncate(sessionId, keepLast);
     }
-    return [...protectedPrefix, ...retained];
+    return [...protectedPrefix, ...heuristicRetained];
+  }
+
+  /** Score a message's information density (0=low priority, 5=highest) */
+  private scoreMessageDensity(msg: LLMMessage): number {
+    const text = getTextContent(msg.content);
+
+    // User messages are always high priority
+    if (msg.role === 'user') return 4;
+
+    // Error messages are critical
+    if (text.includes('Error') || text.includes('error') || text.includes('FAILED')) return 5;
+
+    // Messages with decision/conclusion markers
+    if (text.includes('DECISION:') || text.includes('CONCLUSION:') || text.includes('IMPORTANT:')) return 4;
+
+    // Tool results: short successful ones are low priority
+    if (msg.role === 'tool') {
+      if (text.length < 200) return 1;
+      if (text.length > 5000) return 1;
+      return 2;
+    }
+
+    // Activity log injections
+    if (text.includes('[heartbeat]') || text.includes('[HEARTBEAT')) return 0;
+    if (text.includes('activityLog')) return 1;
+
+    // Default: medium priority
+    return 2;
   }
 
   /**
@@ -1491,8 +1549,63 @@ export class ContextEngine {
     return lines.join('\n');
   }
 
-  private async retrieveRelevantMemories(memory: IMemoryStore, query?: string, agentId?: string): Promise<MemoryEntry[]> {
-    const facts = memory.getEntries('fact', this.config.memorySearchTopK);
+  /**
+   * Match insight entries against the current task description
+   * using keyword overlap. Returns entries whose content shares significant
+   * words with the task, ranked by overlap score.
+   */
+  private matchInsightsForTask(
+    memory: IMemoryStore,
+    taskDescription: string,
+    excludeIds: Set<string>,
+  ): MemoryEntry[] {
+    const insights = memory.getEntriesByTag('insight');
+    // Also include legacy lesson/best-practice tags for backward compat
+    const legacyLessons = memory.getEntriesByTag('lesson');
+    const legacyBP = memory.getEntriesByTag('best-practice');
+    const allIds = new Set<string>();
+    const candidates = [...insights, ...legacyLessons, ...legacyBP]
+      .filter(e => {
+        if (allIds.has(e.id) || excludeIds.has(e.id)) return false;
+        allIds.add(e.id);
+        return true;
+      });
+    if (candidates.length === 0) return [];
+
+    const stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
+      'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'and', 'or', 'not',
+      'this', 'that', 'it', 'as', 'if', 'but', 'do', 'does', 'did', 'has', 'have', 'had',
+      'will', 'would', 'could', 'should', 'can', 'may', 'must', 'use', 'task', 'using']);
+    const tokenize = (text: string) => {
+      const words = text.toLowerCase().replace(/[^a-z0-9\s-]/g, ' ').split(/\s+/).filter(w => w.length > 2);
+      return new Set(words.filter(w => !stopWords.has(w)));
+    };
+
+    const taskTokens = tokenize(taskDescription);
+    if (taskTokens.size === 0) return [];
+
+    const scored = candidates.map(entry => {
+      const entryTokens = tokenize(entry.content);
+      let overlap = 0;
+      for (const t of entryTokens) {
+        if (taskTokens.has(t)) overlap++;
+      }
+      return { entry, score: overlap };
+    }).filter(s => s.score >= 2);
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, 5).map(s => s.entry);
+  }
+
+  private async retrieveRelevantMemories(
+    memory: IMemoryStore,
+    query?: string,
+    agentId?: string,
+    excludeIds?: Set<string>,
+  ): Promise<MemoryEntry[]> {
+    const exclude = excludeIds ?? new Set<string>();
+    const facts = memory.getEntries('fact', this.config.memorySearchTopK)
+      .filter(f => !exclude.has(f.id));
 
     if (query && this.semanticSearch?.isEnabled()) {
       try {
@@ -1500,7 +1613,7 @@ export class ContextEngine {
           agentId,
           topK: this.config.memorySearchTopK,
         });
-        const semEntries = semResults.map(r => r.entry);
+        const semEntries = semResults.map(r => r.entry).filter(e => !exclude.has(e.id));
         const semIds = new Set(semEntries.map(e => e.id));
         const combined = [...facts.filter(f => !semIds.has(f.id)), ...semEntries];
         return combined.slice(0, this.config.memorySearchTopK * 2);
@@ -1511,7 +1624,7 @@ export class ContextEngine {
 
     if (query) {
       try {
-        const searchResults = memory.search(query);
+        const searchResults = memory.search(query).filter(e => !exclude.has(e.id));
         const searchIds = new Set(searchResults.map(m => m.id));
         const combined = [...facts.filter(f => !searchIds.has(f.id)), ...searchResults];
         return combined.slice(0, this.config.memorySearchTopK * 2);

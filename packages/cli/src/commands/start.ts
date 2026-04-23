@@ -11,6 +11,7 @@ import {
   checkForUpdate,
   TRIAGE_MAX_TOKENS,
   TRIAGE_TEMPERATURE,
+  TRIAGE_ALLOWED_TOOLS,
   type LLMProviderConfig,
 } from '@markus/shared';
 import {
@@ -29,6 +30,7 @@ import {
   TaskService,
   APIServer,
   HITLService,
+  type NotificationPriority,
   BillingService,
   AuditService,
   ProjectService,
@@ -248,6 +250,15 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (config.agent?.maxToolIterations) {
     agentManager.maxToolIterations = config.agent.maxToolIterations;
   }
+  if (config.browser?.bringToFront !== undefined) {
+    agentManager.setBrowserBringToFront(config.browser.bringToFront);
+  }
+  if (config.browser?.autoCloseTabs !== undefined) {
+    agentManager.setBrowserAutoCloseTabs(config.browser.autoCloseTabs);
+  }
+  if (config.browser?.remoteDebuggingPort) {
+    agentManager.setBrowserRemoteDebuggingPort(config.browser.remoteDebuggingPort);
+  }
 
   taskService.setAgentManager(agentManager);
 
@@ -403,6 +414,9 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   if (storage?.notificationRepo) {
     hitlService.setNotificationRepo(storage.notificationRepo);
   }
+  if (storage?.approvalRepo) {
+    hitlService.setApprovalRepo(storage.approvalRepo);
+  }
   if (storage?.projectRepo) {
     projectService.setProjectRepo(storage.projectRepo);
   }
@@ -415,6 +429,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // One-time migration: sync existing task.deliverables into the unified deliverables table
   const allTasks = taskService.listTasks({ orgId: 'default' });
   await deliverableService.migrateFromTasks(allTasks);
+  await deliverableService.deduplicateByReference();
 
   const reportService = new ReportService(taskService, billingService, auditService, knowledgeService);
   const _trustService = new TrustService();
@@ -429,6 +444,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   agentManager.setProjectService(projectService);
   agentManager.setKnowledgeService(knowledgeService);
   agentManager.setDeliverableService(deliverableService);
+  agentManager.setWebUiBaseUrl(`http://localhost:${apiPort}`);
   requirementService.setAgentManager(agentManager);
   requirementService.setHITLService(hitlService);
   apiServer.setProjectService(projectService);
@@ -485,6 +501,17 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     agentManager.setHubClient(hubClient);
   }
 
+  // Wire team/agent update callbacks for manager tools
+  agentManager.setTeamUpdater(async (teamId, data) => {
+    const team = await orgService.updateTeam(teamId, data);
+    return { id: teamId, name: team.name, description: team.description };
+  });
+  if (storage) {
+    agentManager.setAgentConfigPersister(async (agentId, data) => {
+      await storage.agentRepo.updateConfig(agentId, data);
+    });
+  }
+
   // Wire skill search/install callbacks so agents can discover and install remote skills
   agentManager.setSkillSearcher(async (query) => searchRegistries(query));
   agentManager.setSkillInstaller(async (request) => {
@@ -513,7 +540,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       targetUserId: 'default',
       options: opts.options,
       allowFreeform: opts.allowFreeform,
-      details: { priority: opts.priority, relatedTaskId: opts.relatedTaskId },
+      details: { priority: opts.priority, taskId: opts.relatedTaskId },
     });
   });
 
@@ -533,6 +560,13 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
   // Ensure every agent has a main session on startup, then persist activity logs to it
   if (storage?.chatSessionRepo) {
+    // Migrate legacy assistant messages that lack segments metadata
+    try {
+      storage.chatSessionRepo.migrateLegacyMessages();
+    } catch (e) {
+      log.warn('Legacy chat message migration failed', { error: String(e) });
+    }
+
     for (const info of agentManager.listAgents()) {
       try {
         storage.chatSessionRepo.getOrCreateMainSession(info.id);
@@ -559,6 +593,71 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         log.warn('Failed to persist activity log', { agentId, error: String(e) });
       }
     });
+    // notify_user: persist as regular chat message + WS broadcast + notification bell
+    agentManager.getEventBus().on('agent:notify-user', async (evt: unknown) => {
+      const { agentId, title, body, priority, taskId, requirementId } = evt as {
+        agentId: string; title: string; body: string; priority?: NotificationPriority;
+        taskId?: string; requirementId?: string;
+      };
+      try {
+        const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId);
+        const agent = agentManager.getAgent(agentId);
+        const formattedMsg = `**${title}**\n\n${body}`;
+        const msg = storage.chatSessionRepo.appendMessage(
+          mainSession.id, agentId, 'assistant', formattedMsg, 0, {},
+        );
+        storage.chatSessionRepo.updateLastMessage(mainSession.id);
+        ws.broadcastProactiveMessage(agentId, agent.config.name, mainSession.id, msg.id, formattedMsg, {
+          isMainSession: true,
+        });
+        const hasTask = !!taskId;
+        hitlService.notify({
+          targetUserId: 'default',
+          type: 'agent_report',
+          title, body, priority,
+          actionType: hasTask ? 'navigate' : 'open_chat',
+          actionTarget: hasTask
+            ? JSON.stringify({ path: `/work?openTask=${taskId}` })
+            : JSON.stringify({ agentId, sessionId: mainSession.id }),
+          metadata: { agentId, agentName: agent.config.name, taskId, requirementId, sessionId: mainSession.id },
+        });
+      } catch (e) {
+        log.warn('Failed to handle notify-user event', { agentId, error: String(e) });
+      }
+    });
+
+    // escalation: persist as regular chat message + WS broadcast + notification + audit
+    agentManager.getEventBus().on('agent:escalation', async (evt: unknown) => {
+      const { agentId, reason } = evt as { agentId: string; reason: string };
+      try {
+        const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId);
+        const agent = agentManager.getAgent(agentId);
+        const formattedMsg = `**I need help**\n\n${reason}`;
+        const msg = storage.chatSessionRepo.appendMessage(
+          mainSession.id, agentId, 'assistant', formattedMsg, 0, {},
+        );
+        storage.chatSessionRepo.updateLastMessage(mainSession.id);
+        ws.broadcastProactiveMessage(agentId, agent.config.name, mainSession.id, msg.id, formattedMsg, {
+          isMainSession: true,
+        });
+        hitlService.notify({
+          targetUserId: 'default',
+          type: 'system',
+          title: 'Agent needs help',
+          body: reason,
+          priority: 'high',
+          actionType: 'open_chat',
+          actionTarget: JSON.stringify({ agentId, sessionId: mainSession.id }),
+          metadata: { agentId, sessionId: mainSession.id },
+        });
+        auditService.record({
+          orgId: 'default', agentId, type: 'error', action: 'escalation', detail: reason, success: false,
+        });
+      } catch (e) {
+        log.warn('Failed to handle escalation event', { agentId, error: String(e) });
+      }
+    });
+
     // Also create main session for newly created agents
     agentManager.getEventBus().on('agent:created', (evt: unknown) => {
       const { agentId } = evt as { agentId: string };
@@ -648,33 +747,10 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   const scheduledTaskRunner = new ScheduledTaskRunner(taskService);
   scheduledTaskRunner.start();
 
+  // Escalation callback kept for agent-internal state management; actual notification/DB/WS/audit
+  // logic is handled by the 'agent:escalation' event handler registered above.
   agentManager.setEscalationHandler((agentId, reason) => {
     log.warn('Agent escalation', { agentId, reason });
-    let mainSessionId: string | undefined;
-    if (storage?.chatSessionRepo) {
-      try {
-        const ms = storage.chatSessionRepo.getOrCreateMainSession(agentId);
-        if (ms && typeof ms === 'object' && 'id' in ms) mainSessionId = (ms as { id: string }).id;
-      } catch { /* skip */ }
-    }
-    hitlService.notify({
-      targetUserId: 'default',
-      type: 'system',
-      title: 'Agent needs help',
-      body: reason,
-      priority: 'high',
-      actionType: 'open_chat',
-      actionTarget: JSON.stringify({ agentId, ...(mainSessionId ? { sessionId: mainSessionId } : {}) }),
-      metadata: { agentId, ...(mainSessionId ? { sessionId: mainSessionId } : {}) },
-    });
-    auditService.record({
-      orgId: 'default',
-      agentId,
-      type: 'error',
-      action: 'escalation',
-      detail: reason,
-      success: false,
-    });
   });
 
   agentManager.setApprovalHandler(async (agentId, request) => {
@@ -812,6 +888,24 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         }
       },
     });
+
+    // Wire recall_activity tool to query execution history from SQLite
+    agentManager.setRecallCallbacks({
+      listActivities: (agentId, opts) => {
+        const results = actRepo.queryActivities(agentId, {
+          type: opts.type,
+          limit: opts.limit,
+        });
+        if (opts.taskId) return results.filter((a: { taskId?: string | null }) => a.taskId === opts.taskId);
+        return results;
+      },
+      getActivityLogs: (activityId) => {
+        return actRepo.getActivityLogs(activityId);
+      },
+      searchActivities: (agentId, query, opts) => {
+        return actRepo.searchActivities(agentId, query, opts);
+      },
+    });
   }
 
   // Wire mailbox + decision persistence to SQLite
@@ -825,11 +919,12 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         mailbox.setPersistence({
           save: (item) => {
             try {
+              const { responsePromise, ...persistableMetadata } = (item.metadata ?? {}) as Record<string, unknown>;
               mbRepo.save({
                 id: item.id, agentId: item.agentId, sourceType: item.sourceType,
                 priority: item.priority, status: item.status,
                 payload: item.payload as unknown as Record<string, unknown>,
-                metadata: (item.metadata ?? {}) as unknown as Record<string, unknown>,
+                metadata: persistableMetadata,
                 queuedAt: item.queuedAt,
               });
             } catch (e) { log.warn('Failed to persist mailbox item', { id: item.id, error: String(e) }); }
@@ -847,6 +942,24 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
               sourceType: r.sourceType,
               priority: r.priority,
               status: r.status as 'queued',
+              payload: r.payload,
+              metadata: r.metadata,
+              queuedAt: r.queuedAt,
+              startedAt: r.startedAt ?? undefined,
+              completedAt: r.completedAt ?? undefined,
+              deferredUntil: r.deferredUntil ?? undefined,
+              mergedInto: r.mergedInto ?? undefined,
+              retryCount: r.retryCount ?? 0,
+            }));
+          },
+          loadDeferred: (aid: string) => {
+            const rows = mbRepo.getByAgent(aid, { status: 'deferred' });
+            return rows.map((r: any) => ({
+              id: r.id,
+              agentId: r.agentId,
+              sourceType: r.sourceType,
+              priority: r.priority,
+              status: r.status as 'deferred',
               payload: r.payload,
               metadata: r.metadata,
               queuedAt: r.queuedAt,
@@ -888,6 +1001,40 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
           }, triageProvider);
           return response.content;
         });
+
+        // Wire triage chat function (for mini tool loop during triage)
+        agent.getAttentionController().setTriageChatFn(async (messages, tools) => {
+          const llmTools = tools?.map(t => ({
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+          }));
+          const response = await llmRouter.chat({
+            messages: messages as any,
+            tools: llmTools,
+            temperature: TRIAGE_TEMPERATURE,
+            maxTokens: TRIAGE_MAX_TOKENS,
+          }, triageProvider);
+          return { content: response.content, toolCalls: response.toolCalls };
+        });
+
+        // Wire read-only triage tools from the agent's tool set
+        const triageToolMap = new Map<string, { name: string; description: string; inputSchema: Record<string, unknown>; execute: (args: Record<string, unknown>) => Promise<string> }>();
+        const agentTools = agent.getTools();
+        for (const toolName of TRIAGE_ALLOWED_TOOLS) {
+          const handler = agentTools.get(toolName);
+          if (handler) {
+            triageToolMap.set(toolName, {
+              name: handler.name,
+              description: handler.description,
+              inputSchema: handler.inputSchema,
+              execute: handler.execute.bind(handler),
+            });
+          }
+        }
+        if (triageToolMap.size > 0) {
+          agent.getAttentionController().setTriageTools(triageToolMap);
+        }
       } catch { /* agent not found */ }
     };
 

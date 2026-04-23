@@ -3,9 +3,13 @@
 # Quick release: bump version, commit, tag, push. CI handles the rest.
 #
 # Usage:
-#   ./scripts/quick-release.sh 0.3.0 "feat: new agent builder"
 #   ./scripts/quick-release.sh patch "fix: startup crash"
 #   ./scripts/quick-release.sh minor "feat: A2A protocol support"
+#   ./scripts/quick-release.sh 0.3.0 "feat: new agent builder"
+#
+# If direct push to main is blocked (branch protection), the script
+# automatically creates a release/<version> branch, pushes it, and
+# opens a PR. Merge the PR to trigger CI publish.
 #
 set -euo pipefail
 
@@ -81,11 +85,31 @@ if [[ -d "$MARKUS_HUB_DIR" ]]; then
 fi
 
 # ── Commit, tag, push ────────────────────────────────────────────────────
-git add -u  # stage all modified tracked files (version bumps + any pending changes)
-git add packages/*/README.md 2>/dev/null || true  # include new package READMEs if present
+git add -u
+git add packages/*/README.md 2>/dev/null || true
 git commit -m "release v${VER}: ${MSG}"
 git tag -a "v${VER}" -m "v${VER} — ${MSG}"
-git push origin main "v${VER}"
 
-printf "\n${GREEN}✓${NC} ${BOLD}v${VER}${NC} released → CI will publish to npm\n"
+if git push origin main "v${VER}" 2>/dev/null; then
+  printf "\n${GREEN}✓${NC} ${BOLD}v${VER}${NC} released → CI will publish to npm\n"
+else
+  RELEASE_BRANCH="release/v${VER}"
+  printf "\n${YELLOW}!${NC} Direct push to main blocked, creating branch ${BOLD}${RELEASE_BRANCH}${NC}…\n"
+  git checkout -b "$RELEASE_BRANCH"
+  git push -u origin "$RELEASE_BRANCH" "v${VER}"
+  printf "\n${GREEN}✓${NC} ${BOLD}v${VER}${NC} pushed to ${BOLD}${RELEASE_BRANCH}${NC}\n"
+
+  if command -v gh &>/dev/null; then
+    PR_URL="$(gh pr create --title "release v${VER}: ${MSG}" \
+      --body "Version bump v${CURRENT} → v${VER}" \
+      --base main --head "$RELEASE_BRANCH" 2>/dev/null)" \
+      && printf "${GREEN}✓${NC} PR created: ${PR_URL}\n" \
+      || printf "${YELLOW}!${NC} gh pr create failed — create the PR manually.\n"
+  else
+    printf "${YELLOW}!${NC} Install gh CLI to auto-create PRs, or create one manually.\n"
+  fi
+
+  printf "\nMerge the PR to trigger CI publish.\n"
+fi
+
 printf "  https://github.com/markus-global/markus/actions\n\n"

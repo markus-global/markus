@@ -3,25 +3,17 @@ import { createLogger } from '@markus/shared';
 const log = createLogger('hitl');
 
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired';
-export type BountyStatus = 'open' | 'claimed' | 'completed' | 'cancelled';
 export type NotificationPriority = 'low' | 'normal' | 'high' | 'urgent';
 
 export type NotificationType =
   | 'approval_request'
-  | 'bounty_posted'
   | 'task_created'
   | 'task_completed'
   | 'task_review'
   | 'task_failed'
-  | 'task_status_changed'
   | 'requirement_created'
   | 'requirement_decision'
-  | 'agent_alert'
   | 'agent_report'
-  | 'agent_chat_request'
-  | 'agent_notification'
-  | 'agent_escalation'
-  | 'mention'
   | 'system';
 
 export type NotificationActionType = 'none' | 'navigate' | 'open_chat';
@@ -45,20 +37,6 @@ export interface ApprovalRequest {
   selectedOption?: string;
 }
 
-export interface BountyTask {
-  id: string;
-  agentId: string;
-  agentName: string;
-  title: string;
-  description: string;
-  reward?: string;
-  skills: string[];
-  status: BountyStatus;
-  claimedBy?: string;
-  createdAt: string;
-  completedAt?: string;
-  result?: string;
-}
 
 export interface Notification {
   id: string;
@@ -107,6 +85,63 @@ export interface NotificationRepo {
   markAllRead(userId: string): number;
 }
 
+export interface ApprovalRepo {
+  upsert(a: {
+    id: string;
+    agentId: string;
+    agentName: string;
+    type: string;
+    title: string;
+    description: string;
+    details: Record<string, unknown>;
+    status: string;
+    requestedAt: string;
+    respondedAt?: string;
+    respondedBy?: string;
+    responseComment?: string;
+    expiresAt?: string;
+    options?: Array<{ id: string; label: string; description?: string }>;
+    allowFreeform?: boolean;
+    selectedOption?: string;
+  }): void;
+  list(status?: string): Array<{
+    id: string;
+    agentId: string;
+    agentName: string;
+    type: string;
+    title: string;
+    description: string;
+    details: Record<string, unknown>;
+    status: string;
+    requestedAt: string;
+    respondedAt?: string;
+    respondedBy?: string;
+    responseComment?: string;
+    expiresAt?: string;
+    options?: Array<{ id: string; label: string; description?: string }>;
+    allowFreeform?: boolean;
+    selectedOption?: string;
+  }>;
+  get(id: string): {
+    id: string;
+    agentId: string;
+    agentName: string;
+    type: string;
+    title: string;
+    description: string;
+    details: Record<string, unknown>;
+    status: string;
+    requestedAt: string;
+    respondedAt?: string;
+    respondedBy?: string;
+    responseComment?: string;
+    expiresAt?: string;
+    options?: Array<{ id: string; label: string; description?: string }>;
+    allowFreeform?: boolean;
+    selectedOption?: string;
+  } | undefined;
+}
+
 type NotificationHandler = (notification: Notification) => void;
 
 let idCounter = 0;
@@ -117,12 +152,45 @@ function genId(prefix: string): string {
 export class HITLService {
   private approvals = new Map<string, ApprovalRequest>();
   private pendingResolvers = new Map<string, (result: { approved: boolean; comment?: string; selectedOption?: string }) => void>();
-  private bounties = new Map<string, BountyTask>();
   private notificationHandlers: NotificationHandler[] = [];
   private notificationRepo?: NotificationRepo;
+  private approvalRepo?: ApprovalRepo;
 
   setNotificationRepo(repo: NotificationRepo): void {
     this.notificationRepo = repo;
+  }
+
+  setApprovalRepo(repo: ApprovalRepo): void {
+    this.approvalRepo = repo;
+    // Restore persisted approvals into memory on startup
+    try {
+      const rows = repo.list();
+      for (const row of rows) {
+        if (!this.approvals.has(row.id)) {
+          this.approvals.set(row.id, {
+            id: row.id,
+            agentId: row.agentId,
+            agentName: row.agentName,
+            type: row.type as ApprovalRequest['type'],
+            title: row.title,
+            description: row.description,
+            details: row.details,
+            status: row.status as ApprovalStatus,
+            requestedAt: row.requestedAt,
+            respondedAt: row.respondedAt,
+            respondedBy: row.respondedBy,
+            responseComment: row.responseComment,
+            expiresAt: row.expiresAt,
+            options: row.options,
+            allowFreeform: row.allowFreeform,
+            selectedOption: row.selectedOption,
+          });
+        }
+      }
+      log.info(`Restored ${rows.length} approvals from storage`);
+    } catch (err) {
+      log.warn('Failed to restore approvals from storage', { error: String(err) });
+    }
   }
 
   onNotification(handler: NotificationHandler): () => void {
@@ -168,6 +236,7 @@ export class HITLService {
       allowFreeform: opts.allowFreeform,
     };
     this.approvals.set(id, approval);
+    this.persistApproval(approval);
     log.info(`Approval requested: ${id} by ${opts.agentName}`);
 
     this.notify({
@@ -219,6 +288,7 @@ export class HITLService {
     approval.respondedBy = respondedBy;
     if (comment) approval.responseComment = comment;
     if (selectedOption) approval.selectedOption = selectedOption;
+    this.persistApproval(approval);
     log.info(`Approval ${id} ${approval.status} by ${respondedBy}`, { comment, selectedOption });
 
     if (this.notificationRepo) {
@@ -240,6 +310,32 @@ export class HITLService {
     return approval;
   }
 
+  private persistApproval(approval: ApprovalRequest): void {
+    if (!this.approvalRepo) return;
+    try {
+      this.approvalRepo.upsert({
+        id: approval.id,
+        agentId: approval.agentId,
+        agentName: approval.agentName,
+        type: approval.type,
+        title: approval.title,
+        description: approval.description,
+        details: approval.details,
+        status: approval.status,
+        requestedAt: approval.requestedAt,
+        respondedAt: approval.respondedAt,
+        respondedBy: approval.respondedBy,
+        responseComment: approval.responseComment,
+        expiresAt: approval.expiresAt,
+        options: approval.options,
+        allowFreeform: approval.allowFreeform,
+        selectedOption: approval.selectedOption,
+      });
+    } catch (err) {
+      log.warn('Failed to persist approval', { id: approval.id, error: String(err) });
+    }
+  }
+
   listApprovals(status?: ApprovalStatus): ApprovalRequest[] {
     const all = [...this.approvals.values()];
     return status ? all.filter(a => a.status === status) : all;
@@ -247,71 +343,6 @@ export class HITLService {
 
   getApproval(id: string): ApprovalRequest | undefined {
     return this.approvals.get(id);
-  }
-
-  postBounty(opts: {
-    agentId: string;
-    agentName: string;
-    title: string;
-    description: string;
-    skills?: string[];
-    reward?: string;
-  }): BountyTask {
-    const id = genId('bnt');
-    const now = new Date().toISOString();
-    const bounty: BountyTask = {
-      id,
-      agentId: opts.agentId,
-      agentName: opts.agentName,
-      title: opts.title,
-      description: opts.description,
-      reward: opts.reward,
-      skills: opts.skills ?? [],
-      status: 'open',
-      createdAt: now,
-    };
-    this.bounties.set(id, bounty);
-    log.info(`Bounty posted: ${id} by ${opts.agentName}`);
-
-    this.notify({
-      targetUserId: 'all',
-      type: 'bounty_posted',
-      title: `New bounty: ${opts.title}`,
-      body: `${opts.agentName} needs help: ${opts.description}`,
-      metadata: { bountyId: id },
-    });
-
-    return bounty;
-  }
-
-  claimBounty(id: string, userId: string): BountyTask | undefined {
-    const bounty = this.bounties.get(id);
-    if (!bounty || bounty.status !== 'open') return undefined;
-
-    bounty.status = 'claimed';
-    bounty.claimedBy = userId;
-    log.info(`Bounty ${id} claimed by ${userId}`);
-    return bounty;
-  }
-
-  completeBounty(id: string, result: string): BountyTask | undefined {
-    const bounty = this.bounties.get(id);
-    if (!bounty || bounty.status !== 'claimed') return undefined;
-
-    bounty.status = 'completed';
-    bounty.completedAt = new Date().toISOString();
-    bounty.result = result;
-    log.info(`Bounty ${id} completed`);
-    return bounty;
-  }
-
-  listBounties(status?: BountyStatus): BountyTask[] {
-    const all = [...this.bounties.values()];
-    return status ? all.filter(b => b.status === status) : all;
-  }
-
-  getBounty(id: string): BountyTask | undefined {
-    return this.bounties.get(id);
   }
 
   listNotifications(userId?: string, unreadOnly = false, opts?: { limit?: number; offset?: number; type?: string }): Notification[] {

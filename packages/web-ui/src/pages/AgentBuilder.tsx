@@ -106,7 +106,7 @@ export function AgentBuilder() {
   const [artifacts, setArtifacts] = useState<BuilderArtifact[]>([]);
   const [loading, setLoading] = useState(false);
   const [filterType, setFilterType] = useState<string>('all');
-  const [actionInProgress, setActionInProgress] = useState<string | null>(null);
+  const [actionInProgress, setActionInProgress] = useState<{ key: string; action: string } | null>(null);
   const [installedMap, setInstalledMap] = useState<Map<string, InstalledInfo>>(new Map());
   const [deleteTarget, setDeleteTarget] = useState<BuilderArtifact | null>(null);
   const [sharedMap, setSharedMap] = useState<Map<string, { id: string; name: string; slug: string }>>(new Map());
@@ -177,7 +177,7 @@ export function AgentBuilder() {
   const handleInstall = async (art: BuilderArtifact) => {
     const key = `${art.type}/${art.name}`;
     if (installedMap.has(key)) return;
-    setActionInProgress(key);
+    setActionInProgress({ key, action: 'install' });
     try {
       const result = await api.builder.artifacts.install(art.type, art.name);
       const info: InstalledInfo = {};
@@ -197,7 +197,7 @@ export function AgentBuilder() {
   const handleUninstall = async (art: BuilderArtifact) => {
     const key = `${art.type}/${art.name}`;
     if (!installedMap.has(key)) return;
-    setActionInProgress(key);
+    setActionInProgress({ key, action: 'uninstall' });
     try {
       await api.builder.artifacts.uninstall(art.type, art.name);
       setInstalledMap(prev => { const m = new Map(prev); m.delete(key); return m; });
@@ -213,7 +213,7 @@ export function AgentBuilder() {
   const handleShare = async (art: BuilderArtifact) => {
     const key = `${art.type}/${art.name}`;
     if (sharedMap.has(key)) return;
-    setActionInProgress(key);
+    setActionInProgress({ key, action: 'share' });
     try {
       const detail = await api.builder.artifacts.get(art.type, art.name);
       const name = (art.meta.displayName as string) || (art.meta.name as string) || art.name;
@@ -247,7 +247,7 @@ export function AgentBuilder() {
     setHubDeleteTarget(null);
     if (!hubItem) return;
     const hubItemId = hubItem.id;
-    setActionInProgress(key);
+    setActionInProgress({ key, action: 'hubDelete' });
     try {
       await hubApi.deleteItem(hubItemId);
       setSharedMap(prev => { const m = new Map(prev); m.delete(key); return m; });
@@ -264,7 +264,7 @@ export function AgentBuilder() {
     const art = deleteTarget;
     const key = `${art.type}/${art.name}`;
     setDeleteTarget(null);
-    setActionInProgress(key);
+    setActionInProgress({ key, action: 'delete' });
     try {
       await api.builder.artifacts.delete(art.type, art.name);
       setArtifacts(prev => prev.filter(a => !(a.type === art.type && a.name === art.name)));
@@ -372,24 +372,24 @@ export function AgentBuilder() {
               const displayName = (art.meta.displayName as string) || (art.meta.name as string) || art.name;
               const description = (art.meta.description as string) || '';
               const key = `${art.type}/${art.name}`;
-              const busy = actionInProgress === key;
+              const busyAction = actionInProgress?.key === key ? actionInProgress.action : null;
 
               const actionButtons = (
                 <div className={`flex items-center gap-1.5 ${isMobile ? 'flex-wrap' : 'shrink-0'}`}>
                   {installedMap.has(key) ? (
-                    <button onClick={() => handleUninstall(art)} disabled={busy}
+                    <button onClick={() => handleUninstall(art)} disabled={!!busyAction}
                       className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:bg-red-500/10 hover:text-red-500 hover:border-red-500/30 transition-colors disabled:opacity-50">
-                      {busy ? 'Uninstalling...' : 'Uninstall'}
+                      {busyAction === 'uninstall' ? 'Uninstalling...' : 'Uninstall'}
                     </button>
                   ) : (
-                    <button onClick={() => handleInstall(art)} disabled={busy}
+                    <button onClick={() => handleInstall(art)} disabled={!!busyAction}
                       className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50">
-                      {busy ? 'Installing...' : 'Install'}
+                      {busyAction === 'install' ? 'Installing...' : 'Install'}
                     </button>
                   )}
                   {sharedMap.has(key) ? (
                     <div className="flex items-center gap-1">
-                      <button onClick={() => setHubDeleteTarget({ key, name: (art.meta.displayName as string) || (art.meta.name as string) || art.name })} disabled={busy}
+                      <button onClick={() => setHubDeleteTarget({ key, name: (art.meta.displayName as string) || (art.meta.name as string) || art.name })} disabled={!!busyAction}
                         className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:text-red-500 hover:border-red-500/30 hover:bg-red-500/10 transition-colors disabled:opacity-50" title="Remove from Markus Hub">
                         Shared
                       </button>
@@ -407,12 +407,12 @@ export function AgentBuilder() {
                       </button>
                     </div>
                   ) : (
-                    <button onClick={() => handleShare(art)} disabled={busy}
+                    <button onClick={() => handleShare(art)} disabled={!!busyAction}
                       className="text-xs px-3 py-1.5 rounded-lg border border-border-default text-fg-secondary hover:text-green-600 hover:border-green-500/30 transition-colors disabled:opacity-50">
-                      {busy ? 'Sharing...' : 'Share'}
+                      {busyAction === 'share' ? 'Sharing...' : 'Share'}
                     </button>
                   )}
-                  <button onClick={() => setDeleteTarget(art)} disabled={busy}
+                  <button onClick={() => setDeleteTarget(art)} disabled={!!busyAction}
                     className="text-xs px-2 py-1.5 rounded-lg text-fg-tertiary hover:text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-50" title="Delete">
                     <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                   </button>

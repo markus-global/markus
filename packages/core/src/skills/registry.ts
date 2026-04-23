@@ -1,4 +1,4 @@
-import { createLogger } from '@markus/shared';
+import { createLogger, kebab } from '@markus/shared';
 import type { SkillInstance, SkillManifest, SkillRegistry } from './types.js';
 
 const log = createLogger('skill-registry');
@@ -8,7 +8,7 @@ export class InMemorySkillRegistry implements SkillRegistry {
   private aliases = new Map<string, string>();
 
   private static normalize(s: string): string {
-    return s.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    return kebab(s);
   }
 
   register(skill: SkillInstance): void {

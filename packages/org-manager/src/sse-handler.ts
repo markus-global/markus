@@ -12,6 +12,7 @@ export interface SSEMessageHandlerOptions {
   agent: Agent;
   userText: string;
   images?: string[];
+  fileNames?: string[];
   senderId?: string;
   sessionId?: string;
   senderInfo?: { name: string; role: string };
@@ -27,6 +28,7 @@ export interface SSEMessageHandlerOptions {
   onError?: (error: unknown, segments: Array<{type: string; content?: string; tool?: string; status?: string}>) => Promise<void>;
   executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown }): unknown };
   messageId?: string;
+  isResume?: boolean;
 }
 
 /**
@@ -35,8 +37,9 @@ export interface SSEMessageHandlerOptions {
 export class SSEHandler {
   private options: SSEMessageHandlerOptions;
   private sseBuffer: SSEBuffer | null = null;
-  private msgSegments: Array<{type: 'text'; content: string} | {type: 'tool'; tool: string; status: 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number}> = [];
+  private msgSegments: Array<{type: 'text'; content: string; thinking?: string; createdAt?: string} | {type: 'tool'; tool: string; status: 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number; createdAt?: string}> = [];
   private textBuf = '';
+  private thinkingBuf = '';
   private runningTools: Array<{tool: string; arguments?: unknown; startedAt: number}> = [];
   private totalTokens = 0;
   private processedTokens = 0;
@@ -79,7 +82,7 @@ export class SSEHandler {
         }
       });
 
-      if (this.options.persistUserMessage) {
+      if (this.options.persistUserMessage && !this.options.isResume) {
         this.sessionId = await this.options.persistUserMessage(
           this.options.agentId,
           this.options.userText,
@@ -87,6 +90,8 @@ export class SSEHandler {
           this.options.images,
           this.options.sessionId,
         );
+      } else if (this.options.isResume) {
+        this.sessionId = this.options.sessionId ?? null;
       }
 
       const reply = await this.options.agent.sendMessageStream(
@@ -96,11 +101,28 @@ export class SSEHandler {
         this.options.senderInfo,
         this.cancelToken,
         this.options.images,
+        this.options.fileNames,
       );
 
+      const finalNow = new Date().toISOString();
+      let finalThinking: string | undefined;
+      if (this.thinkingBuf) {
+        if (this.sseBuffer && !this.sseDisconnected) {
+          this.sseBuffer.send({ type: 'thinking_commit', thinking: this.thinkingBuf, createdAt: finalNow });
+        }
+        finalThinking = this.thinkingBuf;
+        this.thinkingBuf = '';
+      }
       if (this.textBuf) {
-        this.msgSegments.push({ type: 'text', content: this.textBuf });
+        if (this.sseBuffer && !this.sseDisconnected) {
+          this.sseBuffer.send({ type: 'text_commit', text: this.textBuf, createdAt: finalNow });
+        }
+        const seg: typeof this.msgSegments[number] = { type: 'text' as const, content: this.textBuf, createdAt: finalNow };
+        if (finalThinking) (seg as { thinking?: string }).thinking = finalThinking;
+        this.msgSegments.push(seg);
         this.textBuf = '';
+      } else if (finalThinking) {
+        this.msgSegments.push({ type: 'text', content: '', thinking: finalThinking, createdAt: finalNow });
       }
 
       const wasCancelled = this.cancelToken.cancelled;
@@ -189,10 +211,10 @@ export class SSEHandler {
       // Include any partial text that was accumulated before the error.
       const errSuffix = `\n\n⚠ ${String(error).slice(0, 500)}`;
       if (this.textBuf) {
-        this.msgSegments.push({ type: 'text', content: this.textBuf });
+        this.msgSegments.push({ type: 'text', content: this.textBuf, createdAt: new Date().toISOString() });
         this.textBuf = '';
       }
-      this.msgSegments.push({ type: 'text', content: errSuffix.trim() });
+      this.msgSegments.push({ type: 'text', content: errSuffix.trim(), createdAt: new Date().toISOString() });
 
       // Reconstruct reply from accumulated text segments so partial content is preserved
       const partialText = this.msgSegments
@@ -256,6 +278,7 @@ export class SSEHandler {
         status: 'stopped',
         arguments: rt.arguments,
         durationMs: Date.now() - rt.startedAt,
+        createdAt: new Date().toISOString(),
       });
     }
     this.runningTools = [];
@@ -267,8 +290,16 @@ export class SSEHandler {
   private handleStreamEvent(event: AgentStreamEvent): void {
     if (!this.sseBuffer || this.sseDisconnected) return;
 
-    this.sseBuffer.send({ ...event });
+    // Delay agent_tool start events until AFTER thinking_commit/text_commit
+    // flushes, so the client receives them in correct order.
+    if (!(event.type === 'agent_tool' && event.phase === 'start')) {
+      this.sseBuffer.send({ ...event });
+    }
     
+    if (event.type === 'thinking_delta' && event.thinking) {
+      this.thinkingBuf += event.thinking;
+    }
+
     if (event.type === 'text_delta' && event.text) {
       this.textBuf += event.text;
 
@@ -289,10 +320,24 @@ export class SSEHandler {
       }
       
       if (event.phase === 'start') {
-        if (this.textBuf) { 
-          this.msgSegments.push({ type: 'text', content: this.textBuf }); 
-          this.textBuf = ''; 
+        const now = new Date().toISOString();
+        let turnThinking: string | undefined;
+        if (this.thinkingBuf) {
+          this.sseBuffer.send({ type: 'thinking_commit', thinking: this.thinkingBuf, createdAt: now });
+          turnThinking = this.thinkingBuf;
+          this.thinkingBuf = '';
         }
+        if (this.textBuf) { 
+          const seg: typeof this.msgSegments[number] = { type: 'text' as const, content: this.textBuf, createdAt: now };
+          if (turnThinking) (seg as { thinking?: string }).thinking = turnThinking;
+          this.msgSegments.push(seg); 
+          this.sseBuffer.send({ type: 'text_commit', text: this.textBuf, createdAt: now });
+          this.textBuf = ''; 
+        } else if (turnThinking) {
+          this.msgSegments.push({ type: 'text', content: '', thinking: turnThinking, createdAt: now });
+        }
+        // Send agent_tool start AFTER thinking/text commits
+        this.sseBuffer.send({ ...event });
         if (event.tool) {
           this.runningTools.push({ tool: event.tool, arguments: event.arguments, startedAt: Date.now() });
         }
@@ -307,13 +352,26 @@ export class SSEHandler {
           result: event.result,
           error: event.error,
           durationMs: event.durationMs,
+          createdAt: new Date().toISOString(),
         });
         this.sseBuffer.sendProgress(this.processedTokens, this.totalTokens, `工具执行完成: ${event.tool}`);
       }
     } else if (event.type === 'message_end') {
+      const now = new Date().toISOString();
+      let turnThinking: string | undefined;
+      if (this.thinkingBuf) {
+        this.sseBuffer.send({ type: 'thinking_commit', thinking: this.thinkingBuf, createdAt: now });
+        turnThinking = this.thinkingBuf;
+        this.thinkingBuf = '';
+      }
       if (this.textBuf) {
-        this.msgSegments.push({ type: 'text', content: this.textBuf });
+        this.sseBuffer.send({ type: 'text_commit', text: this.textBuf, createdAt: now });
+        const seg: typeof this.msgSegments[number] = { type: 'text' as const, content: this.textBuf, createdAt: now };
+        if (turnThinking) (seg as { thinking?: string }).thinking = turnThinking;
+        this.msgSegments.push(seg);
         this.textBuf = '';
+      } else if (turnThinking) {
+        this.msgSegments.push({ type: 'text', content: '', thinking: turnThinking, createdAt: now });
       }
       if (event.usage?.outputTokens) {
         this.totalTokens = Math.max(this.totalTokens, event.usage.outputTokens);

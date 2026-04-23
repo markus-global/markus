@@ -434,6 +434,8 @@ CREATE TABLE IF NOT EXISTS agent_activities (
   total_tokens INTEGER DEFAULT 0,
   total_tools INTEGER DEFAULT 0,
   success INTEGER DEFAULT 1,
+  summary TEXT DEFAULT '',
+  keywords TEXT DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_agent_activities_agent ON agent_activities(agent_id, started_at DESC);
@@ -507,6 +509,26 @@ CREATE TABLE IF NOT EXISTS user_notifications (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_user_notifications_user ON user_notifications(user_id, read, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS approvals (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  agent_name TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'custom',
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  details TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending',
+  requested_at TEXT NOT NULL DEFAULT (datetime('now')),
+  responded_at TEXT,
+  responded_by TEXT,
+  response_comment TEXT,
+  expires_at TEXT,
+  options TEXT,
+  allow_freeform INTEGER NOT NULL DEFAULT 0,
+  selected_option TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at DESC);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -549,8 +571,12 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'task_comments', column: 'activity_id', sql: "ALTER TABLE task_comments ADD COLUMN activity_id TEXT" },
     { table: 'requirement_comments', column: 'activity_id', sql: "ALTER TABLE requirement_comments ADD COLUMN activity_id TEXT" },
     { table: 'agent_activities', column: 'mailbox_item_id', sql: "ALTER TABLE agent_activities ADD COLUMN mailbox_item_id TEXT" },
+    { table: 'agent_activities', column: 'summary', sql: "ALTER TABLE agent_activities ADD COLUMN summary TEXT DEFAULT ''" },
+    { table: 'agent_activities', column: 'keywords', sql: "ALTER TABLE agent_activities ADD COLUMN keywords TEXT DEFAULT ''" },
     { table: 'chat_sessions', column: 'is_main', sql: "ALTER TABLE chat_sessions ADD COLUMN is_main INTEGER NOT NULL DEFAULT 0" },
     { table: 'mailbox_items', column: 'retry_count', sql: "ALTER TABLE mailbox_items ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0" },
+    { table: 'users', column: 'avatar_url', sql: "ALTER TABLE users ADD COLUMN avatar_url TEXT" },
+    { table: 'agents', column: 'avatar_url', sql: "ALTER TABLE agents ADD COLUMN avatar_url TEXT" },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -756,6 +782,10 @@ export class SqliteAgentRepo {
     this.db.prepare('DELETE FROM agents WHERE id = ?').run(id);
   }
 
+  updateAvatarUrl(id: string, avatarUrl: string | null) {
+    this.db.prepare('UPDATE agents SET avatar_url = ?, updated_at = ? WHERE id = ?').run(avatarUrl, now(), id);
+  }
+
   updateConfig(id: string, data: { name?: string; agentRole?: string; skills?: unknown; llmConfig?: unknown; computeConfig?: unknown; heartbeatIntervalMs?: number }) {
     const sets: string[] = ['updated_at = ?'];
     const vals: SqlParams = [now()];
@@ -788,6 +818,7 @@ export class SqliteAgentRepo {
       tokensUsedToday: r['tokens_used_today'],
       activeTaskIds: fromJson(r['active_task_ids'] as string),
       profile: fromJson(r['profile'] as string),
+      avatarUrl: r['avatar_url'] as string | null,
       lastHeartbeat: toDate(r['last_heartbeat'] as string),
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),
@@ -1729,6 +1760,23 @@ export class SqliteChatSessionRepo {
   }
 
   /**
+   * Remove only the last assistant message from a session (for resume).
+   * Returns the deleted message's content and metadata so the caller can
+   * reconstruct a trimmed version for the LLM context.
+   */
+  deleteLastAssistantMessage(sessionId: string): { content: string; metadata?: Record<string, unknown> } | null {
+    const row = this.db.prepare(
+      'SELECT id, content, metadata FROM chat_messages WHERE session_id = ? AND role = ? ORDER BY created_at DESC LIMIT 1'
+    ).get(sessionId, 'assistant') as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const id = row['id'] as string;
+    const content = row['content'] as string;
+    const rawMeta = row['metadata'] as string | null;
+    this.db.prepare('DELETE FROM chat_messages WHERE id = ?').run(id);
+    return { content, metadata: rawMeta ? JSON.parse(rawMeta) : undefined };
+  }
+
+  /**
    * Remove the last user+assistant exchange from a session (for retry).
    * Deletes from the end backwards through the last assistant message
    * and its preceding user message.
@@ -1757,6 +1805,78 @@ export class SqliteChatSessionRepo {
       createdAt: toDate(r['created_at'] as string)!,
       lastMessageAt: toDate(r['last_message_at'] as string)!,
     };
+  }
+
+  /**
+   * Migrate legacy assistant messages that lack segments metadata.
+   * Parses raw text content to extract tool calls and clean text into proper segments.
+   * Should be called once at startup.
+   */
+  migrateLegacyMessages(): number {
+    const rows = this.db.prepare(
+      `SELECT id, content, metadata, created_at FROM chat_messages
+       WHERE role = 'assistant'
+         AND (metadata IS NULL OR metadata = 'null' OR json_extract(metadata, '$.segments') IS NULL)
+         AND content IS NOT NULL AND content != ''`
+    ).all() as Array<Record<string, unknown>>;
+
+    if (rows.length === 0) return 0;
+
+    const update = this.db.prepare(
+      'UPDATE chat_messages SET metadata = ? WHERE id = ?'
+    );
+    let migrated = 0;
+
+    for (const row of rows) {
+      const id = row['id'] as string;
+      const content = row['content'] as string;
+      const rawMeta = row['metadata'] as string | null;
+      const existingMeta = rawMeta && rawMeta !== 'null' ? JSON.parse(rawMeta) : {};
+      const createdAt = row['created_at'] as string | null;
+
+      const segments = this._parseContentToSegments(content, createdAt ?? undefined);
+      if (segments.length === 0) continue;
+
+      existingMeta.segments = segments;
+      update.run(JSON.stringify(existingMeta), id);
+      migrated++;
+    }
+
+    if (migrated > 0) {
+      log.info(`Migrated ${migrated} legacy chat messages to segment format`);
+    }
+    return migrated;
+  }
+
+  private _parseContentToSegments(content: string, msgCreatedAt?: string): Array<Record<string, unknown>> {
+    const segments: Array<Record<string, unknown>> = [];
+    let remaining = content;
+
+    remaining = remaining.replace(/<think>[\s\S]*?<\/think>/g, '');
+
+    const toolPattern = /<(?:invoke|function_calls|antml:\w+)\b[\s\S]*?(?:<\/(?:invoke|function_calls|antml:\w+)>|$)/g;
+    const parts = remaining.split(toolPattern);
+    const tools = remaining.match(toolPattern) ?? [];
+
+    const baseMs = msgCreatedAt ? new Date(msgCreatedAt).getTime() : Date.now();
+    let cursorMs = baseMs;
+
+    for (let i = 0; i < parts.length; i++) {
+      const text = parts[i]!.replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '').trim();
+      if (text) {
+        segments.push({ type: 'text', content: text, createdAt: new Date(cursorMs).toISOString() });
+        cursorMs += 1000;
+      }
+      if (i < tools.length) {
+        const toolXml = tools[i]!;
+        const nameMatch = toolXml.match(/name="([^"]+)"/);
+        const toolName = nameMatch?.[1] ?? 'unknown_tool';
+        segments.push({ type: 'tool', tool: toolName, status: 'done', createdAt: new Date(cursorMs).toISOString() });
+        cursorMs += 2000;
+      }
+    }
+
+    return segments;
   }
 
   private _mapMsg(r: Record<string, unknown>) {
@@ -1943,7 +2063,7 @@ export class SqliteUserRepo {
     this.db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, id);
   }
 
-  updateProfile(id: string, data: { name?: string; email?: string; role?: string }) {
+  updateProfile(id: string, data: { name?: string; email?: string; role?: string; avatarUrl?: string | null }) {
     const sets: string[] = [];
     const vals: SqlParams = [];
     if (data.name !== undefined) {
@@ -1958,6 +2078,10 @@ export class SqliteUserRepo {
       sets.push('role = ?');
       vals.push(data.role);
     }
+    if (data.avatarUrl !== undefined) {
+      sets.push('avatar_url = ?');
+      vals.push(data.avatarUrl);
+    }
     if (sets.length === 0) return null;
     vals.push(id);
     this.db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
@@ -1971,6 +2095,10 @@ export class SqliteUserRepo {
     return r.cnt;
   }
 
+  updateAvatarUrl(id: string, avatarUrl: string | null) {
+    this.db.prepare('UPDATE users SET avatar_url = ? WHERE id = ?').run(avatarUrl, id);
+  }
+
   private _map(r: Record<string, unknown>) {
     return {
       id: r['id'],
@@ -1980,6 +2108,7 @@ export class SqliteUserRepo {
       role: r['role'],
       teamId: r['team_id'],
       passwordHash: r['password_hash'],
+      avatarUrl: r['avatar_url'] as string | null,
       createdAt: toDate(r['created_at'] as string),
       lastLoginAt: toDate(r['last_login_at'] as string),
     };
@@ -2880,6 +3009,8 @@ export class SqliteDeliverableRepo {
     if (patch.type !== undefined) { sets.push('type = ?'); vals.push(patch.type as SQLInputValue); }
     if (patch.artifactType !== undefined) { sets.push('artifact_type = ?'); vals.push(patch.artifactType as SQLInputValue); }
     if (patch.artifactData !== undefined) { sets.push('artifact_data = ?'); vals.push(toJson(patch.artifactData)); }
+    if (patch.diffStats !== undefined) { sets.push('diff_stats = ?'); vals.push(toJson(patch.diffStats)); }
+    if (patch.testResults !== undefined) { sets.push('test_results = ?'); vals.push(toJson(patch.testResults)); }
     vals.push(id);
     this.db.prepare(`UPDATE deliverables SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
     return this.findById(id);
@@ -2945,6 +3076,8 @@ export interface ActivityRecord {
   totalTokens: number;
   totalTools: number;
   success: boolean;
+  summary: string;
+  keywords: string;
   createdAt: string;
 }
 
@@ -2979,7 +3112,7 @@ export class SqliteActivityRepo {
 
   updateActivity(
     activityId: string,
-    update: { endedAt?: string; totalTokens?: number; totalTools?: number; success?: boolean }
+    update: { endedAt?: string; totalTokens?: number; totalTools?: number; success?: boolean; summary?: string; keywords?: string }
   ): void {
     const sets: string[] = [];
     const vals: SqlParams = [];
@@ -2987,6 +3120,8 @@ export class SqliteActivityRepo {
     if (update.totalTokens !== undefined) { sets.push('total_tokens = ?'); vals.push(update.totalTokens); }
     if (update.totalTools !== undefined) { sets.push('total_tools = ?'); vals.push(update.totalTools); }
     if (update.success !== undefined) { sets.push('success = ?'); vals.push(update.success ? 1 : 0); }
+    if (update.summary !== undefined) { sets.push('summary = ?'); vals.push(update.summary); }
+    if (update.keywords !== undefined) { sets.push('keywords = ?'); vals.push(update.keywords); }
     if (sets.length === 0) return;
     vals.push(activityId);
     this.db.prepare(`UPDATE agent_activities SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
@@ -3058,6 +3193,32 @@ export class SqliteActivityRepo {
     return r ? this.mapActivity(r) : null;
   }
 
+  searchActivities(
+    agentId: string,
+    query: string,
+    opts?: { limit?: number }
+  ): ActivityRecord[] {
+    const limit = opts?.limit ?? 10;
+    const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 1);
+    if (terms.length === 0) return [];
+
+    const conditions = ['agent_id = ?'];
+    const params: SqlParams = [agentId];
+
+    const searchClauses = terms.map(() =>
+      "(LOWER(summary) LIKE '%' || ? || '%' OR LOWER(keywords) LIKE '%' || ? || '%' OR LOWER(label) LIKE '%' || ? || '%')"
+    );
+    conditions.push(`(${searchClauses.join(' AND ')})`);
+    for (const t of terms) {
+      params.push(t, t, t);
+    }
+
+    params.push(limit);
+    const sql = `SELECT * FROM agent_activities WHERE ${conditions.join(' AND ')} ORDER BY started_at DESC LIMIT ?`;
+    const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
+    return rows.map(r => this.mapActivity(r));
+  }
+
   private mapActivity(r: Record<string, unknown>): ActivityRecord {
     return {
       id: r['id'] as string,
@@ -3071,6 +3232,8 @@ export class SqliteActivityRepo {
       totalTokens: (r['total_tokens'] as number) ?? 0,
       totalTools: (r['total_tools'] as number) ?? 0,
       success: (r['success'] as number) !== 0,
+      summary: (r['summary'] as string) ?? '',
+      keywords: (r['keywords'] as string) ?? '',
       createdAt: r['created_at'] as string,
     };
   }
@@ -3427,6 +3590,99 @@ export class SqliteNotificationRepo {
       actionTarget: r['action_target'] as string | null,
       metadata: fromJson<Record<string, unknown>>(r['metadata'] as string),
       createdAt: r['created_at'] as string,
+    };
+  }
+}
+
+// ─── SQLite Approval Repo ────────────────────────────────────────────────────
+
+export interface ApprovalRow {
+  id: string;
+  agentId: string;
+  agentName: string;
+  type: string;
+  title: string;
+  description: string;
+  details: Record<string, unknown>;
+  status: string;
+  requestedAt: string;
+  respondedAt?: string;
+  respondedBy?: string;
+  responseComment?: string;
+  expiresAt?: string;
+  options?: Array<{ id: string; label: string; description?: string }>;
+  allowFreeform?: boolean;
+  selectedOption?: string;
+}
+
+export class SqliteApprovalRepo {
+  constructor(private db: DatabaseSync) {}
+
+  upsert(a: ApprovalRow): void {
+    this.db.prepare(
+      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         status = excluded.status,
+         responded_at = excluded.responded_at,
+         responded_by = excluded.responded_by,
+         response_comment = excluded.response_comment,
+         selected_option = excluded.selected_option`
+    ).run(
+      a.id,
+      a.agentId,
+      a.agentName,
+      a.type,
+      a.title,
+      a.description,
+      JSON.stringify(a.details),
+      a.status,
+      a.requestedAt,
+      a.respondedAt ?? null,
+      a.respondedBy ?? null,
+      a.responseComment ?? null,
+      a.expiresAt ?? null,
+      a.options ? JSON.stringify(a.options) : null,
+      a.allowFreeform ? 1 : 0,
+      a.selectedOption ?? null,
+    );
+  }
+
+  list(status?: string): ApprovalRow[] {
+    const conditions: string[] = [];
+    const params: SQLInputValue[] = [];
+    if (status) {
+      conditions.push('status = ?');
+      params.push(status);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const sql = `SELECT * FROM approvals ${where} ORDER BY requested_at DESC LIMIT 200`;
+    return (this.db.prepare(sql).all(...params) as Record<string, unknown>[]).map(r => this.mapRow(r));
+  }
+
+  get(id: string): ApprovalRow | undefined {
+    const r = this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return r ? this.mapRow(r) : undefined;
+  }
+
+  private mapRow(r: Record<string, unknown>): ApprovalRow {
+    return {
+      id: r['id'] as string,
+      agentId: r['agent_id'] as string,
+      agentName: r['agent_name'] as string,
+      type: r['type'] as string,
+      title: r['title'] as string,
+      description: r['description'] as string,
+      details: fromJson<Record<string, unknown>>(r['details'] as string) ?? {},
+      status: r['status'] as string,
+      requestedAt: r['requested_at'] as string,
+      respondedAt: r['responded_at'] as string | undefined,
+      respondedBy: r['responded_by'] as string | undefined,
+      responseComment: r['response_comment'] as string | undefined,
+      expiresAt: r['expires_at'] as string | undefined,
+      options: fromJson<Array<{ id: string; label: string; description?: string }>>(r['options'] as string) ?? undefined,
+      allowFreeform: !!(r['allow_freeform'] as number),
+      selectedOption: r['selected_option'] as string | undefined,
     };
   }
 }

@@ -16,6 +16,7 @@ export {
 export { RoleLoader } from './role-loader.js';
 export { HeartbeatScheduler } from './heartbeat.js';
 export { ContextEngine, type OrgContext, type ContextConfig, type LLMSummarizer } from './context-engine.js';
+export { CognitivePreparation, selectCognitiveDepth, type CognitiveLLM, type RetrievalBackend } from './cognitive.js';
 export {
   SmartTokenCounter,
   getDefaultTokenCounter,

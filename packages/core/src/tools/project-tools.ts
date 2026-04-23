@@ -53,7 +53,9 @@ export interface DeliverableServiceBridge {
   update(id: string, data: {
     title?: string;
     summary?: string;
+    reference?: string;
     status?: string;
+    type?: string;
     tags?: string[];
   }): Promise<{ id: string; status: string } | undefined>;
   list(opts: {
@@ -87,6 +89,7 @@ export interface ProjectServiceBridge {
 export interface ProjectToolsContext {
   agentId: string;
   orgId: string;
+  webUiBaseUrl?: string;
   projectService?: ProjectServiceBridge;
   getProjectInfo?: (projectId?: string) => Promise<{
     id: string;
@@ -144,6 +147,7 @@ export interface ProjectToolsContext {
   deliverableUpdate?: (id: string, data: {
     title?: string;
     summary?: string;
+    reference?: string;
     status?: string;
     tags?: string;
   }) => Promise<{ id: string; status: string } | undefined>;
@@ -261,7 +265,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
           {
             name: 'deliverable_create',
             description:
-              'Publish a deliverable to the shared team repository. Use for files, research findings, conventions, architectural decisions, gotchas, or troubleshooting tips.',
+              'Register a deliverable (file, directory, or artifact) that has already been created on disk. Write the actual content to a file FIRST using shell_execute or other file tools, then call this to track it. If the reference path already exists as a deliverable, the existing record is updated instead of creating a duplicate.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -273,11 +277,11 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 title: { type: 'string', description: 'Clear, searchable title' },
                 summary: {
                   type: 'string',
-                  description: 'Detailed content or description (markdown supported)',
+                  description: 'Brief summary describing what this deliverable contains and why it matters (not the full content — the actual content lives in the referenced file)',
                 },
                 reference: {
                   type: 'string',
-                  description: 'File path, URL, or directory path',
+                  description: 'Path to the file or directory that contains the actual content (must already exist)',
                 },
                 tags: { type: 'string', description: 'Comma-separated tags for discoverability' },
               },
@@ -292,12 +296,16 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   reference: args['reference'] as string | undefined,
                   tags: args['tags'] as string | undefined,
                 });
-                return JSON.stringify({
+                const resp: Record<string, unknown> = {
                   status: 'success',
                   deliverableId: result.id,
                   deliverableType: result.type,
                   deliverableStatus: result.status,
-                });
+                };
+                if (ctx.webUiBaseUrl) {
+                  resp.accessUrl = `${ctx.webUiBaseUrl}/#deliverables`;
+                }
+                return JSON.stringify(resp);
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
@@ -341,7 +349,8 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   count: results.length,
                   results: results.map(d => ({
                     id: d.id, type: d.type, title: d.title,
-                    reference: d.reference, status: d.status,
+                    summary: d.summary, reference: d.reference,
+                    status: d.status, tags: d.tags,
                   })),
                 });
               } catch (error) {
@@ -390,7 +399,9 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   count: results.length,
                   results: results.map(d => ({
                     id: d.id, type: d.type, title: d.title,
-                    reference: d.reference, status: d.status,
+                    summary: d.summary, reference: d.reference,
+                    status: d.status, tags: d.tags,
+                    updatedAt: d.updatedAt,
                   })),
                 });
               } catch (error) {
@@ -406,13 +417,14 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
           {
             name: 'deliverable_update',
             description:
-              "Update a deliverable's status, title, summary, or tags.",
+              "Update a deliverable's metadata: status, title, summary, or tags. This only changes the registry record — to update the actual file content, modify the file directly first, then call this to update the summary.",
             inputSchema: {
               type: 'object',
               properties: {
                 deliverable_id: { type: 'string', description: 'The deliverable ID' },
                 title: { type: 'string', description: 'New title (optional)' },
-                summary: { type: 'string', description: 'New summary/content (optional)' },
+                summary: { type: 'string', description: 'Updated brief summary (optional — not the full file content)' },
+                reference: { type: 'string', description: 'Updated file path or URL (optional)' },
                 status: {
                   type: 'string',
                   enum: ['active', 'verified', 'outdated'],
@@ -429,12 +441,17 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   {
                     title: args['title'] as string | undefined,
                     summary: args['summary'] as string | undefined,
+                    reference: args['reference'] as string | undefined,
                     status: args['status'] as string | undefined,
                     tags: args['tags'] as string | undefined,
                   }
                 );
                 if (!result) return JSON.stringify({ status: 'error', error: 'Deliverable not found' });
-                return JSON.stringify({ status: 'success', deliverableId: result.id, deliverableStatus: result.status });
+                const resp: Record<string, unknown> = { status: 'success', deliverableId: result.id, deliverableStatus: result.status };
+                if (ctx.webUiBaseUrl) {
+                  resp.accessUrl = `${ctx.webUiBaseUrl}/#deliverables`;
+                }
+                return JSON.stringify(resp);
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }

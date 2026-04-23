@@ -33,11 +33,11 @@ function injectGitCommitMeta(command: string, meta?: ShellAgentMeta): string {
 }
 
 const GIT_ALWAYS_DENY: Array<{ pattern: RegExp; label: string }> = [
-  { pattern: /\bgit\s+push\s+--force/, label: 'force push (--force)' },
-  { pattern: /\bgit\s+push\s+-f\b/, label: 'force push (-f)' },
 ];
 
 const GIT_NEEDS_APPROVAL: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /\bgit\s+push\s+--force/, label: 'force push (--force)' },
+  { pattern: /\bgit\s+push\s+-f\b/, label: 'force push (-f)' },
   { pattern: /\bgit\s+push\s+.*\b(main|master)\b/, label: 'push to protected branch' },
   { pattern: /\bgit\s+merge\s+(?!--abort)/, label: 'merge branches' },
   { pattern: /\bgit\s+rebase\b/, label: 'rebase' },

@@ -197,6 +197,7 @@ export function App() {
               onNavigate={(p) => { navigate(p); setSidebarOpen(false); }}
               authUser={authUser}
               onLogout={() => setAuthUser(null)}
+              onUserUpdated={(u) => setAuthUser(u)}
               collapsed={sidebar.collapsed}
               onToggleCollapse={sidebar.toggle}
             />

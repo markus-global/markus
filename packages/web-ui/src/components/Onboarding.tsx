@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import type { ThemeMode } from '../hooks/useTheme.ts';
+import { api } from '../api.ts';
+import { AvatarUpload } from './Avatar.tsx';
 
 interface Props {
   onComplete: () => void;
@@ -14,10 +16,20 @@ interface EnvModelDetected {
 interface EnvModelsResponse { detected: EnvModelDetected[]; timeoutMs?: number }
 interface OpenClawPreview { found: boolean; summary: { configPath: string; models?: { providerCount: number; providers: Array<{ name: string; modelCount: number; baseUrl?: string }> } } }
 
-const LLM_STEP = 2;
+const PROFILE_STEP = 1;
+const LLM_STEP = 3;
 
 export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
   const [step, setStep] = useState(0);
+
+  // Profile setup state
+  const [profileName, setProfileName] = useState('');
+  const [profileEmail, setProfileEmail] = useState('');
+  const [profilePassword, setProfilePassword] = useState('');
+  const [profileConfirm, setProfileConfirm] = useState('');
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState('');
+  const [profileSaved, setProfileSaved] = useState(false);
 
   // LLM setup state
   const [envModels, setEnvModels] = useState<EnvModelsResponse | null>(null);
@@ -125,6 +137,27 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
     finally { setOpenclawLoading(false); }
   };
 
+  const saveProfile = async () => {
+    setProfileError('');
+    if (!profileName.trim()) { setProfileError('Please enter your name'); return; }
+    if (!profileEmail.trim()) { setProfileError('Please enter your email'); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(profileEmail.trim())) { setProfileError('Please enter a valid email address'); return; }
+    if (profilePassword && profilePassword.length < 6) { setProfileError('Password must be at least 6 characters'); return; }
+    if (profilePassword && profilePassword !== profileConfirm) { setProfileError('Passwords do not match'); return; }
+    setProfileSaving(true);
+    try {
+      await api.auth.updateProfile(profileName.trim(), profileEmail.trim());
+      if (profilePassword) {
+        await api.auth.changePassword('', profilePassword);
+      }
+      setProfileSaved(true);
+    } catch {
+      setProfileError('Failed to save profile. Please try again.');
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
   const themeOptions: Array<{ value: ThemeMode; label: string; icon: string; desc: string }> = [
     { value: 'system', label: 'System', icon: '💻', desc: 'Follow your OS setting' },
     { value: 'light', label: 'Light', icon: '☀️', desc: 'Always light background' },
@@ -157,7 +190,82 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
         </div>
       ),
     },
-    // Step 1: Appearance
+    // Step 1: Profile Setup
+    {
+      title: 'Set Up Your Profile',
+      subtitle: 'Tell us who you are',
+      content: profileSaved ? (
+        <div className="flex items-center gap-3 bg-green-500/10 border border-green-500/30 rounded-xl p-4">
+          <span className="text-green-600 text-lg">&#10003;</span>
+          <div>
+            <div className="text-sm font-medium text-green-600">Profile saved</div>
+            <div className="text-xs text-fg-secondary mt-0.5">{profileName} &middot; {profileEmail}</div>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="flex justify-center">
+            <AvatarUpload currentUrl={null} name={profileName} size={64} targetType="user" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-fg-tertiary font-medium">Your Name <span className="text-red-500">*</span></label>
+            <input
+              type="text"
+              value={profileName}
+              onChange={e => setProfileName(e.target.value)}
+              placeholder="Enter your name"
+              className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
+              autoFocus
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-fg-tertiary font-medium">Email <span className="text-red-500">*</span></label>
+            <input
+              type="email"
+              value={profileEmail}
+              onChange={e => setProfileEmail(e.target.value)}
+              placeholder="your@email.com"
+              className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-fg-tertiary font-medium">New Password</label>
+            <input
+              type="password"
+              value={profilePassword}
+              onChange={e => setProfilePassword(e.target.value)}
+              placeholder="Set a secure password (min 6 characters)"
+              className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
+            />
+          </div>
+          {profilePassword && (
+            <div className="space-y-1">
+              <label className="text-xs text-fg-tertiary font-medium">Confirm Password</label>
+              <input
+                type="password"
+                value={profileConfirm}
+                onChange={e => setProfileConfirm(e.target.value)}
+                placeholder="Repeat your password"
+                className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
+              />
+            </div>
+          )}
+          {profileError && (
+            <div className="px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-500">
+              {profileError}
+            </div>
+          )}
+          <button
+            onClick={() => void saveProfile()}
+            disabled={profileSaving || !profileName.trim() || !profileEmail.trim()}
+            className="w-full px-4 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
+          >
+            {profileSaving ? 'Saving...' : 'Save Profile'}
+          </button>
+        </div>
+      ),
+    },
+    // Step 2: Appearance
     {
       title: 'Choose Your Theme',
       subtitle: 'You can change this anytime in Settings',
@@ -288,6 +396,7 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
   ];
 
   const handleNext = () => {
+    if (step === PROFILE_STEP && !profileSaved) return;
     if (step < steps.length - 1) {
       setStep(step + 1);
     } else {
@@ -323,6 +432,11 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
               </button>
             )}
             <div className="flex items-center gap-3">
+              {step === PROFILE_STEP && !profileSaved && (
+                <button onClick={() => setStep(step + 1)} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
+                  Skip for now
+                </button>
+              )}
               {step === LLM_STEP && !llmConfigured && (
                 <button onClick={handleNext} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
                   Skip for now
@@ -330,7 +444,12 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
               )}
               <button
                 onClick={handleNext}
-                className="px-6 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-xl transition-colors"
+                disabled={step === PROFILE_STEP && !profileSaved}
+                className={`px-6 py-2.5 text-white text-sm rounded-xl transition-colors ${
+                  step === PROFILE_STEP && !profileSaved
+                    ? 'bg-brand-600/40 cursor-not-allowed'
+                    : 'bg-brand-600 hover:bg-brand-500'
+                }`}
               >
                 {step === steps.length - 1 ? 'Get Started' : 'Next'}
               </button>

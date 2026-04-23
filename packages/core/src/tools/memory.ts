@@ -17,10 +17,11 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
     {
       name: 'memory_save',
       description:
-        'Save an important piece of information to your long-term memory. ' +
-        'Use this to remember key decisions, learned facts, user preferences, ' +
-        'task outcomes, or anything you want to recall in future interactions. ' +
-        'Memories are automatically retrieved when relevant to future queries.',
+        'Save an observation to your memory buffer (memories.json). ' +
+        'Use for individual insights, tool tips, task outcomes, facts. ' +
+        'Tag with "insight" for learned principles. ' +
+        'Recurring patterns (3+) are promoted to MEMORY.md during dream cycles. ' +
+        'For validated knowledge, use memory_update_longterm instead.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -30,8 +31,8 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
           },
           type: {
             type: 'string',
-            enum: ['fact', 'note', 'task_result'],
-            description: 'Type of memory: "fact" for learned information, "note" for observations/decisions, "task_result" for task outcomes.',
+            enum: ['fact', 'note', 'insight'],
+            description: 'Type: "fact" for learned information, "note" for observations/decisions, "insight" for learned principles and patterns.',
           },
           tags: {
             type: 'string',
@@ -178,21 +179,26 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
     {
       name: 'memory_update_longterm',
       description:
-        'Update a section of your long-term memory file (MEMORY.md). ' +
-        'Use this to persist important accumulated knowledge that should always be available. ' +
-        'Standard sections: "lessons-learned" (max 20 lessons), "tool-preferences" (max 15 entries), ' +
-        '"sops" (max 10 standard operating procedures), "role-evolution-log" (max 20 entries). ' +
-        'You can also use custom sections like "project-conventions" or "team-preferences".',
+        'Update a section of your curated knowledge (MEMORY.md). ' +
+        'This is your permanent knowledge base — always in your system prompt as "## Your Knowledge". ' +
+        'You organize your own sections — create whatever structure makes sense for your work. ' +
+        'Common sections: "procedures", "conventions", "preferences", "domain-knowledge", "evolution-log". ' +
+        'In "patch" mode, append to the existing section instead of replacing it.',
       inputSchema: {
         type: 'object',
         properties: {
           section: {
             type: 'string',
-            description: 'Section name/key (e.g., "lessons-learned", "tool-preferences", "sops", "role-evolution-log", "project-conventions")',
+            description: 'Section name/key — you choose (e.g., "procedures", "conventions", "preferences", "domain-knowledge")',
           },
           content: {
             type: 'string',
-            description: 'The content to store under this section. Overwrites previous content for this section key.',
+            description: 'The content to store under this section.',
+          },
+          mode: {
+            type: 'string',
+            enum: ['replace', 'patch'],
+            description: 'replace (default): overwrite the section. patch: append to existing section content.',
           },
         },
         required: ['section', 'content'],
@@ -200,10 +206,17 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
       async execute(args: Record<string, unknown>): Promise<string> {
         const section = args['section'] as string;
         const content = args['content'] as string;
+        const mode = (args['mode'] as string) ?? 'replace';
 
-        ctx.memory.addLongTermMemory(section, content);
-        log.info('Agent updated long-term memory', { agentId: ctx.agentId, section, contentLen: content.length });
-        return JSON.stringify({ status: 'updated', section });
+        if (mode === 'patch') {
+          const existing = ctx.memory.getLongTermSection(section);
+          const merged = existing ? `${existing}\n${content}` : content;
+          ctx.memory.addLongTermMemory(section, merged);
+        } else {
+          ctx.memory.addLongTermMemory(section, content);
+        }
+        log.info('Agent updated long-term memory', { agentId: ctx.agentId, section, mode, contentLen: content.length });
+        return JSON.stringify({ status: 'updated', section, mode });
       },
     },
   ];

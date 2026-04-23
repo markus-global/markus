@@ -1,0 +1,20 @@
+{
+  "type": "skill",
+  "name": "markitdown",
+  "displayName": "MarkItDown File Converter",
+  "version": "1.0.0",
+  "description": "Convert documents (PDF, Word, Excel, PowerPoint, images) to Markdown text for LLM processing",
+  "author": "markus",
+  "category": "data",
+  "tags": ["ocr", "pdf", "document", "conversion", "multimodal"],
+  "skill": {
+    "skillFile": "SKILL.md",
+    "requiredPermissions": ["file"],
+    "mcpServers": {
+      "markitdown": {
+        "command": "uvx",
+        "args": ["markitdown-mcp"]
+      }
+    }
+  }
+}

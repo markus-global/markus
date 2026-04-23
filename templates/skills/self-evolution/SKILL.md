@@ -1,222 +1,236 @@
 ---
 name: self-evolution
-description: Learn from mistakes, corrections, and successful strategies — evolve your role, tool preferences, and SOPs over time
+description: Learn from experience — capture insights, organize knowledge, share reusable practices as skills, and refine your role over time
 ---
 
 # Self-Evolution
 
-You have the ability to learn from experience and evolve yourself over time. This goes beyond remembering facts — you can refine your own role definition, optimize your tool usage patterns, and develop standard operating procedures (SOPs) that make you more effective.
+You learn from experience and evolve yourself over time. This goes beyond remembering facts — you organize your own knowledge, develop effective procedures, and refine your role. Continuous self-improvement is a core part of being an effective agent.
 
-This is not optional — continuous self-improvement is a core part of being an effective agent.
+## Knowledge Stores
+
+Your memory has two stores with distinct roles:
+
+| Store | File | Purpose | Written by |
+|---|---|---|---|
+| **Observation buffer** | `memories.json` | Raw observations, individual insights, tool tips | `memory_save` |
+| **Curated knowledge** | `MEMORY.md` | Validated procedures, consolidated insights, proven patterns | `memory_update_longterm` |
+
+**Flow**: Observations enter the buffer → recurring patterns get promoted to MEMORY.md (by you or by dream cycles) → source entries are pruned.
+
+MEMORY.md is always loaded into your context as `## Your Knowledge`. The observation buffer is surfaced by the cognitive preparation pipeline or by relevance matching.
 
 ## When to Reflect
 
-Trigger the reflection process when any of these happen:
+Trigger reflection when any of these happen:
 
-1. **User correction** — The user says "no, do X instead", "that's wrong", or redirects your approach. Strongest signal.
-2. **Task revision** — A task you submitted was rejected and sent back. The system will prompt you to reflect after a revised task is accepted.
-3. **Self-correction** — You tried one approach, it failed, and you found a different approach that worked.
-4. **Resolved error** — An unexpected error (tool failure, wrong API assumption, misunderstood requirement) that you diagnosed and fixed.
-5. **Efficiency insight** — You discover a faster, cleaner, or more reliable way to accomplish a recurring task.
-6. **Pattern recognition** — You notice you keep doing something the same way and realize it could be standardized.
+1. **User correction** — "no, do X instead", "that's wrong". Strongest signal.
+2. **Task revision** — Your submission was rejected. The system prompts you automatically.
+3. **Self-correction** — One approach failed, a different one worked.
+4. **Resolved error** — Unexpected failure you diagnosed and fixed.
+5. **Efficiency insight** — A faster/cleaner/more reliable way for a recurring task.
+6. **Pattern recognition** — You keep doing something the same way and it could be standardized.
 
-Do NOT trigger reflection for trivial matters — typos, one-off path errors, or situations that won't recur.
+Skip trivial matters — typos, one-off path errors, situations that won't recur.
 
-## Layer 1: Lessons (Immediate Memory)
+## Decision Matrix — Where Does This Insight Go?
 
-### How to Extract a Lesson
+| What you learned | Where to save | How |
+|---|---|---|
+| Single insight, gotcha, mistake | Observation buffer | `memory_save` with tags: `["insight", ...]` |
+| Tool tip or preference | Observation buffer | `memory_save` with tags: `["insight", "tool:<name>"]` |
+| Validated pattern from successful task | Observation buffer | `memory_save` with tags: `["insight", ...]` |
+| Multi-step repeatable workflow (personal) | MEMORY.md | `memory_update_longterm({ section: "<your-section>", mode: "patch" })` |
+| Practice worth sharing with the team | Skill package | Create via **skill-building**, install with `builder_install` |
+| Behavioral rule or guiding principle | ROLE.md | `file_read` → `file_edit` to append |
+| New recurring check for your patrol | HEARTBEAT.md | `file_read` → `file_edit` to add/remove items |
 
-When a reflection trigger fires, think through:
+## Capturing Insights (Observation Buffer)
+
+### Extracting an Insight
+
+When a reflection trigger fires:
 
 1. **Situation** — What were you trying to do?
 2. **What went wrong** — What assumption or action was incorrect?
 3. **What worked** — What was the correct approach?
 4. **Generalized rule** — A reusable principle beyond this specific instance.
 
-### How to Save a Lesson
+### Saving an Insight
 
 Use `memory_save` with:
 
-- **type**: `"note"`
-- **content**: Concise lesson in this format:
+- **type**: `"insight"`
+- **content** format:
   ```
-  [LESSON] <one-line summary>
+  [INSIGHT] <one-line summary>
   Situation: <brief context>
   Mistake: <what went wrong>
   Correction: <what works>
-  Rule: <generalized principle for future use>
+  Rule: <generalized principle>
   ```
-- **tags**: Always include `"lesson"` as the first tag, then add category tags:
-  - `coding` — code patterns, language features, library usage
-  - `tool-usage` — correct use of shell, file, git, or other tools
-  - `communication` — how to interact with users, managers, or other agents
-  - `architecture` — system design, file organization, dependency decisions
-  - `process` — workflow, task management, review process
-  - `domain:<topic>` — domain-specific knowledge (e.g., `domain:react`)
+- **tags**: Always include `"insight"` first, then category tags: `coding`, `tool-usage`, `communication`, `architecture`, `process`, `domain:<topic>`
 
-### Consolidating Lessons
+Dream cycles automatically promote recurring patterns (3+ similar insights) from the observation buffer to MEMORY.md and prune the source entries.
 
-When you have 3+ unsaved lessons, consolidate into long-term memory:
+## Organizing Your Knowledge (MEMORY.md)
 
-```
-memory_update_longterm({
-  section: "lessons-learned",
-  content: "<numbered list of top 20 lessons>"
-})
-```
+MEMORY.md is **your** knowledge base. You decide what sections to create and how to organize it. There is no rigid system-imposed taxonomy — structure it in whatever way makes your work most effective.
 
-Each lesson: one actionable sentence. Replace older/less impactful ones when you exceed 20.
+### Common Section Patterns
 
-## Layer 2: Tool Preferences
+| Section name | Example content |
+|---|---|
+| `conventions` | Coding standards, naming rules, review criteria for your projects |
+| `procedures` | Step-by-step workflows for recurring tasks |
+| `preferences` | Tool choices, flags, parameter settings that work well |
+| `domain-knowledge` | Technical facts specific to your area of expertise |
+| `evolution-log` | Chronological record of ROLE.md changes |
 
-Over time you will discover which tools work best for specific situations. Record these preferences so you can make better tool choices automatically.
+You are not limited to these — create whatever sections make sense for your work.
 
-### When to Update Tool Preferences
+### How to Add Knowledge
 
-- You discover a tool is significantly better than another for a specific task type
-- You find optimal parameters or flags for a tool (e.g., `grep_search` with specific flags vs. `glob_find`)
-- You learn that a tool has limitations you should work around
-- A tool combination (pipeline) works well for a recurring need
-
-### How to Save Tool Preferences
-
-Use `memory_save` with:
-
-- **type**: `"note"`
-- **content**:
-  ```
-  [TOOL-PREF] <one-line summary>
-  Task: <what kind of task>
-  Preferred: <tool and how to use it>
-  Avoid: <what doesn't work well and why>
-  Reason: <why this preference>
-  ```
-- **tags**: `["lesson", "tool-preference", "<tool-name>"]`
-
-Periodically consolidate into long-term memory:
+Use `memory_update_longterm` with `mode: "patch"` to append without overwriting:
 
 ```
 memory_update_longterm({
-  section: "tool-preferences",
-  content: "<list of tool preferences by task type>"
+  section: "procedures",
+  mode: "patch",
+  content: "### <Name>\nTrigger: <when to use>\nSteps:\n1. ...\n2. ...\nNotes: <gotchas>\nLast updated: <date>"
 })
 ```
 
-Format as a compact reference table your future self can quickly scan.
+### How to Update Existing Knowledge
 
-## Layer 3: SOPs (Standard Operating Procedures)
-
-When you find yourself repeatedly doing a multi-step process, document it as an SOP. When you later find a better way, update it.
-
-### When to Create or Update an SOP
-
-- You've done the same multi-step workflow 2+ times and want to standardize it
-- You found a significantly better sequence of steps for an existing SOP
-- A step in an existing SOP failed or was suboptimal, and you found a fix
-- **During heartbeat review**: You reviewed recently completed tasks and identified a repeatable pattern that led to successful outcomes (especially first-pass approvals)
-
-### Extracting SOPs from Completed Tasks
-
-During each heartbeat, review your recently completed tasks to mine for SOP-worthy patterns:
-
-1. **Check completion quality** — Tasks approved on the first pass (no revision) are strong signals. The approach you used is worth preserving.
-2. **Identify the workflow** — What sequence of steps did you follow? Was there a specific order that mattered? What tools and techniques were critical?
-3. **Generalize** — Strip task-specific details. Ask: "If I faced a similar class of problem, would these steps still work?"
-4. **Cross-reference** — Check `memory_search("sops")` for existing SOPs that overlap. Update existing ones rather than creating duplicates.
-5. **Save or update** — Use `memory_update_longterm({ section: "sops", ... })` with the full SOP set (including the new or updated one).
-
-Best practices that are too narrow for an SOP (single-step tips, one-liner rules) should be saved as lessons instead.
-
-### How to Save SOPs
-
-Use `memory_update_longterm` with section `"sops"`:
+Use `mode: "replace"` with the full updated section content (read existing first, modify, then write back):
 
 ```
 memory_update_longterm({
-  section: "sops",
-  content: "<all your SOPs>"
+  section: "procedures",
+  mode: "replace",
+  content: "<full updated section content>"
 })
 ```
 
-Format each SOP as:
+### Using Your Knowledge (Before Starting Work)
 
-```
-### SOP: <Name>
-Trigger: <when to use this SOP>
-Steps:
-1. <step 1>
-2. <step 2>
-...
-Notes: <gotchas, tips, common failures>
-Last updated: <date>
-```
+Before starting a task, check your existing knowledge:
 
-Keep SOPs concise and actionable. Maximum 10 SOPs — merge or retire outdated ones.
+1. **MEMORY.md** — Your curated knowledge appears in the system context above as `## Your Knowledge`. Read and follow any procedures whose trigger matches.
+2. **Skills** — Use `discover_tools({ mode: "list_skills" })` to see available team skills. Activate relevant ones with `discover_tools({ name: ["skill-name"] })`.
+3. **Past experience** — Use `recall_activity` to query your execution history for relevant context.
 
-## Layer 4: Role Evolution (ROLE.md)
+Do not reinvent approaches you have already codified. If an existing procedure or skill partially applies, start from it and adapt.
 
-This is the deepest level of self-evolution. Your ROLE.md defines your core identity, system prompt, and behavioral guidelines. When you accumulate enough lessons and experience in a domain, you can evolve your own role definition.
+### Limits
 
-**Your ROLE.md path**: `{AGENT_DATA_DIR}/role/ROLE.md` (the system tells you your data directory in the workspace section of your context)
+- Per-section: 3000 chars max
+- Total MEMORY.md: 15000 chars max
+- Merge or retire outdated entries when sections grow large
 
-### When to Modify ROLE.md
+## Shareable Skills (Team Practices)
 
-Only modify your ROLE.md when ALL of these conditions are met:
+When a practice would benefit **other agents on the team** (not just you), package it as an installable skill instead of a personal MEMORY.md entry.
 
-1. **Pattern threshold** — You have 3+ related lessons or best practices pointing to a fundamental behavioral change (not a one-off fix). Heartbeat task reviews are a primary source of these patterns.
-2. **High confidence** — The change reflects proven experience from successfully completed tasks, not speculation
-3. **Systemic impact** — The improvement would affect how you handle many future tasks, not just one type
-4. **Not contradicting core role** — The change refines or extends your role, not contradicts it
+### Personal Knowledge vs Skill — when to choose which
 
-**Heartbeat-driven role evolution**: During heartbeat, after reviewing completed tasks and extracting best practices, check if accumulated best practices (tagged `best-practice`) form a coherent behavioral guideline. If 3+ related best practices point to the same principle, it's time to promote them into your ROLE.md as a permanent behavioral guideline.
+| Criterion | MEMORY.md entry | Skill |
+|---|---|---|
+| Who benefits | Only you | Multiple agents |
+| Storage | MEMORY.md (your context) | Installable skill package |
+| Visibility | Only in your prompt | Available to all agents after install |
+| Examples | "How I deploy service X" | "Code review checklist", "Git workflow for this repo" |
 
-### How to Modify ROLE.md
+### Before Creating — Check First
 
-1. First, read your current ROLE.md via `file_read`
-2. Identify where the new guideline fits — append to existing sections or add a new section
-3. Use `file_edit` to make a surgical change — never rewrite the entire file
-4. Log the change in memory:
+Before creating a new skill, check if one already exists:
+1. Run `discover_tools({ mode: "list_skills" })` to see all installed skills
+2. Run `builder_list` to see artifacts in builder-artifacts
+3. If a similar skill exists, **update it** instead of creating a new one
 
-```
-memory_save({
-  type: "note",
-  content: "[ROLE-EVOLUTION] <summary of change>\nReason: <why this change>\nLessons: <which lessons led to this>\nChange: <what was added/modified in ROLE.md>",
-  tags: ["lesson", "role-evolution"]
-})
-```
+### How to Create and Install
 
-### ROLE.md Evolution Rules
+1. Use the **skill-building** skill to create the package:
+   - Write `skill.json` manifest + `SKILL.md` instructions to `~/.markus/builder-artifacts/skills/{name}/`
+2. Install with `builder_install({ type: "skill", name: "{name}" })`
+3. Log the creation via `memory_save` with tags `["insight", "skill-created"]`
 
-- **APPEND, don't replace** — Add new guidelines, don't remove existing ones unless they're clearly wrong
-- **Keep it concise** — Each new guideline should be 1-3 lines. ROLE.md should not grow beyond 200 lines
-- **Never touch the header** — The `# Role Name` and core identity section must stay intact
-- **Log every change** — Always save a `role-evolution` tagged memory entry explaining why
-- **One change at a time** — Don't batch multiple unrelated role changes
-- **Consolidate evolution history** periodically:
+### How to Update an Existing Skill
 
-```
-memory_update_longterm({
-  section: "role-evolution-log",
-  content: "<chronological list of role changes and reasons>"
-})
-```
+1. Edit the files in `~/.markus/builder-artifacts/skills/{name}/` (use `file_read` then `file_edit`)
+2. Bump the version in `skill.json` (e.g., `"1.0.0"` → `"1.1.0"`)
+3. Re-install with `builder_install({ type: "skill", name: "{name}" })` — this overwrites the old version and re-registers
+4. Log the update via `memory_save` with tags `["insight", "skill-updated"]`
 
-## Using Past Experience
+Only create a skill when you are confident the practice is validated (proven across 2+ tasks) and genuinely useful for others.
 
-Your past evolution data is available in two ways:
+## Role Evolution (ROLE.md)
 
-1. **Automatic** — Your `lessons-learned`, `tool-preferences`, `sops`, and `role-evolution-log` sections in MEMORY.md appear in your system context every session.
-2. **On-demand** — Use `memory_search` with relevant keywords to find specific past lessons.
+ROLE.md is your identity — it is loaded into every conversation and shapes all your behavior. Updating it is one of the **simplest and most impactful** forms of self-evolution.
 
-Before starting a task, briefly review relevant sections. This takes seconds and prevents repeating mistakes.
+### When to Update
+
+Modify ROLE.md when you discover a behavioral rule, working style, or guiding principle that should **always** apply to your work. Examples:
+
+- "Always run tests before submitting code for review"
+- "When debugging, check logs first before reading source code"
+- "Prefer small, focused PRs over large ones"
+
+You do NOT need to accumulate multiple insights first — even a single validated lesson can warrant a role update if it is fundamental and non-obvious.
+
+### Guard Rails
+
+- **Refine, don't contradict** — New guidelines should extend your core role, not conflict with it
+- **Proven, not speculative** — The principle should be validated by actual task outcomes
+- **Not one-off** — It should apply to future tasks, not just the current situation
+
+### How to Modify
+
+1. Read current ROLE.md via `file_read`
+2. Append the new guideline (never rewrite the whole file)
+3. Use `file_edit` for surgical changes
+4. Log: `memory_save` with tags `["insight", "role-evolution"]`
+
+## Heartbeat Customization (HEARTBEAT.md)
+
+HEARTBEAT.md is your personal patrol checklist — it controls what you check during each heartbeat cycle. Customizing it is a direct way to evolve your operational behavior.
+
+### When to Update
+
+- You realize you should be regularly checking for something you currently aren't (e.g., monitoring a specific service, reviewing a certain type of task)
+- A checklist item is obsolete or no longer relevant to your responsibilities
+- You want to change the order or priority of your patrol routine
+
+### How to Modify
+
+1. Read current HEARTBEAT.md via `file_read`
+2. Add, remove, or reorder checklist items via `file_edit`
+3. Changes take effect at the next heartbeat cycle (the system auto-reloads)
+4. Log: `memory_save` with tags `["insight", "heartbeat-evolution"]`
+
+### Examples of Good Heartbeat Additions
+
+- "Check if any PR I opened has new review comments"
+- "Verify that the staging deployment matches the latest main branch"
+- "Review `task_list` for tasks blocked more than 24 hours — escalate if needed"
+
+## Quality Signal
+
+During heartbeat, check your revision rate:
+- Tasks with `executionRound > 1` required revision
+- High revision rate (>30%) means your knowledge isn't being applied effectively
+- Check if saved insights cover the failure patterns you see
+- Consider: would a ROLE.md rule or a HEARTBEAT.md check have prevented any recent failures?
+- Escalate recurring mistakes: insight → MEMORY.md procedure → ROLE.md rule or HEARTBEAT.md check
 
 ## Rules
 
-- **DO NOT** skip reflection when the system prompts you after a task revision.
-- **DO NOT** save trivial or non-generalizable lessons.
-- **DO NOT** let any long-term memory section grow unbounded. Limits: lessons-learned (20), tool-preferences (15), SOPs (10), role-evolution-log (20).
-- **DO NOT** modify ROLE.md for one-off situations — only for proven patterns.
-- **DO** save lessons immediately when a correction happens, while context is fresh.
-- **DO** include specific, actionable advice. "Be more careful" is useless. "Always validate input schema before processing" is useful.
-- **DO** use tags consistently so lessons are discoverable via search.
-- **DO** periodically prune and consolidate each memory section to keep it current.
+- **DO** save insights immediately while context is fresh
+- **DO** include specific, actionable advice ("Always validate input schema before processing" > "Be more careful")
+- **DO** use tags consistently for discoverability
+- **DO** use `mode: "patch"` when adding to MEMORY.md sections
+- **DO NOT** save trivial or non-generalizable observations
+- **DO NOT** let MEMORY.md sections grow unbounded — merge or prune regularly
+- **DO NOT** modify ROLE.md for one-off situations
+- **DO NOT** skip reflection when the system prompts you after a task revision

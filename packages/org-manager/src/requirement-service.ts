@@ -116,15 +116,24 @@ export class RequirementService {
 
     this.broadcast('requirement:created', req);
     if (this.hitlService && req.source === 'agent') {
-      this.hitlService.notify({
+      this.hitlService.requestApprovalAndWait({
+        agentId: req.createdBy,
+        agentName: req.createdBy,
+        type: 'custom',
+        title: `Requirement approval: ${req.title}`,
+        description: `Agent "${req.createdBy}" proposed requirement "${req.title}" (priority: ${req.priority}).`,
+        details: { requirementId: req.id, priority: req.priority },
         targetUserId: 'default',
-        type: 'requirement_created',
-        title: `Requirement proposed: ${req.title}`,
-        body: `Agent proposed requirement "${req.title}" — needs approval`,
-        priority: 'high',
-        actionType: 'navigate',
-        actionTarget: JSON.stringify({ path: `/work?openRequirement=${req.id}` }),
-        metadata: { requirementId: req.id, createdBy: req.createdBy },
+      }).then(result => {
+        const current = this.requirements.get(req.id);
+        if (!current || current.status !== 'pending') return;
+        if (result.approved) {
+          this.approveRequirement(req.id, result.comment ?? 'hitl');
+        } else {
+          this.rejectRequirement(req.id, result.comment ?? 'hitl', result.comment || 'Rejected via approval');
+        }
+      }).catch(err => {
+        log.error('HITL approval flow error for requirement', { requirementId: req.id, error: String(err) });
       });
     }
     log.info('Requirement created', {
@@ -170,6 +179,12 @@ export class RequirementService {
       throw new Error(`Requirement ${id} is in status '${req.status}' and cannot be approved`);
     }
 
+    if (this.hitlService) {
+      const pending = this.hitlService.listApprovals('pending');
+      const hitl = pending.find(a => (a.details as Record<string, unknown>)?.['requirementId'] === id);
+      if (hitl) this.hitlService.respondToApproval(hitl.id, true, userId);
+    }
+
     const now = new Date().toISOString();
     req.status = 'in_progress';
     req.approvedBy = userId;
@@ -200,6 +215,12 @@ export class RequirementService {
     if (!req) throw new Error(`Requirement ${id} not found`);
     if (req.status !== 'pending') {
       throw new Error(`Requirement ${id} is in status '${req.status}' and cannot be rejected`);
+    }
+
+    if (this.hitlService) {
+      const pending = this.hitlService.listApprovals('pending');
+      const hitl = pending.find(a => (a.details as Record<string, unknown>)?.['requirementId'] === id);
+      if (hitl) this.hitlService.respondToApproval(hitl.id, false, userId, reason);
     }
 
     const now = new Date().toISOString();
@@ -260,6 +281,28 @@ export class RequirementService {
 
     this.broadcast('requirement:resubmitted', req);
     log.info('Requirement resubmitted for review', { id, hasUpdates: !!updates });
+
+    if (this.hitlService && req.source === 'agent') {
+      this.hitlService.requestApprovalAndWait({
+        agentId: req.createdBy,
+        agentName: req.createdBy,
+        type: 'custom',
+        title: `Requirement approval (resubmitted): ${req.title}`,
+        description: `Agent "${req.createdBy}" resubmitted requirement "${req.title}" (priority: ${req.priority}).`,
+        details: { requirementId: req.id, priority: req.priority },
+        targetUserId: 'default',
+      }).then(result => {
+        const current = this.requirements.get(req.id);
+        if (!current || current.status !== 'pending') return;
+        if (result.approved) {
+          this.approveRequirement(req.id, result.comment ?? 'hitl');
+        } else {
+          this.rejectRequirement(req.id, result.comment ?? 'hitl', result.comment || 'Rejected via approval');
+        }
+      }).catch(err => {
+        log.error('HITL approval flow error for resubmitted requirement', { requirementId: req.id, error: String(err) });
+      });
+    }
 
     return req;
   }

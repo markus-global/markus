@@ -93,6 +93,7 @@ export class ToolSelector {
     recentToolNames?: string[];
     isManager?: boolean;
     isTaskExecution?: boolean;
+    isReview?: boolean;
     skillCatalog?: SkillManifest[];
   }): LLMTool[] {
     const selected = new Set<string>();
@@ -128,6 +129,22 @@ export class ToolSelector {
       }
     }
 
+    if (opts.isReview) {
+      for (const group of this.groups) {
+        if (['code', 'shell'].includes(group.name)) {
+          for (const name of group.toolNames) {
+            if (opts.allTools.has(name)) selected.add(name);
+          }
+        }
+      }
+      for (const name of [
+        'task_get', 'task_note',
+        'requirement_get',
+      ]) {
+        if (opts.allTools.has(name)) selected.add(name);
+      }
+    }
+
     const contextLower = opts.userMessage.toLowerCase();
     for (const group of this.groups) {
       if (group.toolNames.some(n => selected.has(n))) continue;
@@ -158,12 +175,12 @@ export class ToolSelector {
 
     result.push({
       name: 'notify_user',
-      description: 'Send a notification to the user. Use for status updates, reports, alerts, and findings that do not require user input. The notification appears in the user notification bell.',
+      description: 'Send a message to the user. The message appears in the agent chat and as a notification. Write a comprehensive body — the user sees the full content and may reply. Use for status updates, reports, alerts, and findings.',
       inputSchema: {
         type: 'object',
         properties: {
           title: { type: 'string', description: 'Short headline (1 line)' },
-          body: { type: 'string', description: 'Full notification content' },
+          body: { type: 'string', description: 'Full message content. Be thorough — this is what the user reads in chat.' },
           priority: { type: 'string', enum: ['low', 'normal', 'high', 'urgent'], description: 'Default: normal' },
           related_task_id: { type: 'string', description: 'If related to a task, include the task ID for deep-linking' },
         },
@@ -197,6 +214,22 @@ export class ToolSelector {
           priority: { type: 'string', enum: ['normal', 'high', 'urgent'], description: 'Default: normal' },
         },
         required: ['title', 'description'],
+      },
+    });
+
+    result.push({
+      name: 'recall_activity',
+      description: 'Query your own execution history. Use "list" to see recent activities, or "get" with an activity_id to see detailed tool call logs for a specific activity.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          operation: { type: 'string', enum: ['list', 'get'], description: 'list = recent activity summaries, get = detailed logs for one activity' },
+          activity_id: { type: 'string', description: 'Required for "get". The activity ID to retrieve logs for.' },
+          task_id: { type: 'string', description: 'Optional filter for "list": only activities related to this task.' },
+          type: { type: 'string', description: 'Optional filter for "list": activity type (e.g. task, chat, heartbeat).' },
+          limit: { type: 'number', description: 'Max results for "list" (default 5, max 20).' },
+        },
+        required: ['operation'],
       },
     });
 

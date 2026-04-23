@@ -29,7 +29,7 @@ export interface PackageDependencies {
 // ─── Type-specific sections ─────────────────────────────────────────────────
 
 export interface AgentSection {
-  roleName: string;
+  roleName?: string;
   agentRole: 'manager' | 'worker';
   llmProvider?: string;
   llmModel?: string;
@@ -39,7 +39,7 @@ export interface AgentSection {
 export interface TeamMemberSection {
   name: string;
   role: 'manager' | 'worker';
-  roleName: string;
+  roleName?: string;
   count: number;
   skills?: string[];
 }
@@ -135,7 +135,7 @@ export function buildManifest(
   if (type === 'agent') {
     const agentRaw = (raw.agent as Record<string, unknown>) ?? raw;
     base.agent = {
-      roleName: (agentRaw.roleName as string) ?? (raw.roleName as string) ?? 'developer',
+      roleName: (agentRaw.roleName as string) || (raw.roleName as string) || undefined,
       agentRole: ((agentRaw.agentRole as string) ?? (raw.agentRole as string) ?? 'worker') as 'manager' | 'worker',
       llmProvider: (agentRaw.llmProvider as string) || (raw.llmProvider as string) || undefined,
       llmModel: (agentRaw.llmModel as string) || (raw.llmModel as string) || undefined,
@@ -155,7 +155,7 @@ export function buildManifest(
       members: rawMembers.map(m => ({
         name: (m.name as string) ?? 'Agent',
         role: ((m.role as string) ?? 'worker') as 'manager' | 'worker',
-        roleName: (m.roleName as string) ?? 'developer',
+        roleName: (m.roleName as string) || undefined,
         count: (m.count as number) ?? 1,
         skills: toArr(m.skills).length > 0 ? toArr(m.skills) : undefined,
       })),
@@ -239,8 +239,8 @@ export function validateManifest(m: unknown): string[] {
 
   if (o.type === 'agent' && o.agent) {
     const a = o.agent as Record<string, unknown>;
-    if (!a.roleName || typeof a.roleName !== 'string')
-      errors.push('agent.roleName is required');
+    if (a.roleName !== undefined && typeof a.roleName !== 'string')
+      errors.push('agent.roleName must be a string if provided');
   }
 
   if (o.type === 'team' && o.team) {
@@ -252,10 +252,14 @@ export function validateManifest(m: unknown): string[] {
   return errors;
 }
 
-function kebab(s: string): string {
+/**
+ * Convert a string to a kebab-case slug safe for filesystem paths and URLs.
+ * Handles non-ASCII names (e.g. Chinese) by generating a stable hash-based slug.
+ */
+export function kebab(s: string, fallback?: string): string {
   const result = s.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '');
   if (result) return result;
-  // Non-ASCII names (e.g. Chinese) produce empty string — generate a stable hash-based slug
+  if (fallback) return fallback;
   let hash = 0;
   for (let i = 0; i < s.length; i++) hash = ((hash << 5) - hash + s.charCodeAt(i)) | 0;
   return `pkg-${Math.abs(hash).toString(36)}`;

@@ -1,5 +1,87 @@
 # Release Log
 
+## v0.4.21
+
+Markdown 文件路径可点击预览；MarkdownMessage 拷贝菜单；多模态附件降级；markitdown 技能；审批输入修复；UI 组件优化。
+
+### New Features
+
+- **Markdown 文件路径点击预览** — 行内代码中的文件路径自动识别，存在的文件高亮可点击：Markdown 文件弹窗预览（支持无限嵌套弹窗），其他类型在文件管理器中打开；不存在的文件显示删除线样式
+- **MarkdownMessage 拷贝菜单** — 所有 Markdown 渲染区域显示拷贝按钮，支持复制 Markdown 源码、HTML (Light)、HTML (Dark) 三种格式
+- **多模态附件降级** — 不支持视觉的模型自动通过 markitdown 将图片/文档转为文本附件，支持 PDF/DOCX/XLSX/PPTX/图片等格式
+- **markitdown 技能** — 新增 Agent 技能模板，可安装 markitdown 用于文档格式转换
+- **Avatar 组件** — 提取独立 Avatar 组件，支持 Agent 头像与状态指示器复用
+
+### Bug Fixes
+
+- **修复审批输入框串联** — 多个审批卡片的自由文本输入框共享同一 state，在一个输入框打字所有输入框同步显示；改为按审批 ID 独立维护状态
+- **修复文件路径在表格中不换行** — 长文件路径在表格窄列中不断行，添加 break-all 允许任意位置换行
+- **修复文件路径图标与文字分离** — 表格中图标被挤到单独一行，用 whitespace-nowrap span 确保图标与路径首字符不分离
+
+### Enhancements
+
+- Sidebar 布局与样式优化
+- Onboarding 引导流程增强
+- Chat 气泡样式更新
+- Deliverables 页重构：复用 MarkdownMessage 和共享拷贝工具，移除冗余代码
+- 文档更新（CONTRIBUTING、README、GUIDE、ARCHITECTURE、REMOTE-ACCESS）
+
+### Stats
+
+- 38 files changed, +1,472 / −457 lines
+
+---
+
+## v0.4.20
+
+多 Agent 认知架构（CPP 四阶段管线）；自演化记忆生命周期重构；notify_user/escalation 转为聊天消息；recall_activity 工具；服务端 turn-boundary 流式提交；审批持久化与 requirement 审批统一；6 项运行时 bug 修复；浏览器自动化设置。
+
+### New Features
+
+- **认知准备管线（CPP）** — 四阶段流水线 Appraise → Retrieve → Reflect → Assemble，按刺激类型分级认知深度（D0–D3），替代机械式记忆检索，统一知识模型（单一 insight 标签 + MEMORY.md 注入）
+- **recall_activity 工具** — Agent 可查询自身执行历史（活动列表、工具调用详情），支持关键字搜索和活动摘要索引
+- **notify_user / escalation 转聊天消息** — 通知写入 Agent 聊天会话（非隐藏活动日志），通过 WS 广播 + 通知铃铛 + taskId 路由展示
+- **服务端 turn-boundary 流式提交** — SSE 按 turn 缓冲 thinking，在工具边界和消息结束时发出 `thinking_commit` / `text_commit` 事件，客户端分离已提交段与实时 delta
+- **浏览器自动化设置** — Settings 页新增 Browser Automation 区域（bringToFront / autoCloseTabs / remoteDebuggingPort），配置持久化到 MarkusConfig，消除 Chrome 逐次权限弹窗
+- **team_update / agent_update 管理工具** — Manager 角色可动态修改团队和 Agent 配置
+- **聊天 Resume 按钮** — 最后一条 Agent 消息显示 Resume，移除末尾 assistant 输出后从断点继续 LLM 生成
+
+### Bug Fixes
+
+- **修复审批拒绝始终通过** — task approval callback 将 result 对象当布尔值（始终 truthy），被拒任务错误转入 in_progress
+- **修复审批重启后丢失** — 审批持久化到 SQLite，服务端重启时 fallback 直接执行状态转换
+- **修复 6 项运行时 bug** — responsePromise.reject 反序列化丢失；heartbeat 误触异常完成重试循环；LLM router 429 惊群（新增 30s 短路冷却 + 并发追踪）；工具循环仅警告不中断（改为强制 break）；browser new_page 竞态；启动 heartbeat 突发（最小延迟 + 抖动）
+- **修复聊天 Resume** — 保留已有 session context，避免重复用户消息，裁剪不完整 segments 而非丢弃整个 Agent 气泡
+- **修复活动日志污染聊天** — 隐藏 heartbeat / review / mention 等活动日志条目，保留在 Agent Profile Mind tab
+- **修复 TS 构建错误** — CLI 包 NotificationPriority 类型转换与导出
+
+### Refactoring
+
+- **自演化记忆重构** — 明确记忆生命周期：memories.json 为摄入缓冲、MEMORY.md 为策展知识；SOP patch 模式增量更新；MEMORY.md 硬限制（3000 字符/段、15000 总量）；dream cycle 护栏（cap removes 10、merges 5）
+- **Requirement 审批统一** — Agent 提出的需求进入 HITL 审批队列（approve/reject 按钮），Work 页和通知铃铛双向同步
+- **通知类型精简** — 移除 bounty_posted / agent_alert / mention 等未使用类型，移除整个 bounty 系统
+- **统一 session 压缩** — 单一策略（trigger@60、keep 30），信息密度评分驱动智能压缩
+
+### Enhancements
+
+- Agent 配置 inline diff：word-level 高亮 + hunk 折叠；Smart Sync LLM 合并模板变更与自定义（支持 undo）
+- 分诊优化：pre-triage 自动清理 >4h 旧信息项；mini 工具循环支持只读工具；上下文扩展到 20 条 × 2000 字符
+- 活跃 lesson 检索：按关键字匹配任务描述自动注入相关经验
+- 每 30 次工具迭代插入中段反思 nudge
+- 每段消息附带 createdAt 时间戳，ThinkingRow 显示内容预览
+- Legacy 消息迁移：启动时解析旧 XML 格式消息为 segments 结构
+- FilePathLink 组件、MarkdownMessage XML 标签清理
+- 日 token 预算强制（maxTokensPerDay）+ Agent 自动暂停
+- DEFAULT_MAX_TOOL_ITERATIONS 从 Infinity 改为 200，heartbeat 上限 30
+- 委派上下文（notes / acceptanceCriteria / deadline）透传任务创建
+- 新增 COGNITIVE-ARCHITECTURE.md 文档
+
+### Stats
+
+- 64 files changed, +5,247 / −1,240 lines
+
+---
+
 ## v0.4.19
 
 Mailbox 可靠性与 LLM 分诊系统；新增 `request_user_approval` 阻塞审批工具；结构化活动日志与持久认知；执行时间线 thinking 解析修复；移动端聊天 UI 优化。

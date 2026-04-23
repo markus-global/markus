@@ -1,14 +1,12 @@
 import { useState } from 'react';
 import { api, type AuthUser } from '../api.ts';
 
-const DEFAULT_PASSWORD = 'markus123';
-
 interface Props {
   onLogin: (user: AuthUser, isDefaultPassword: boolean) => void;
 }
 
 export function Login({ onLogin }: Props) {
-  const [email, setEmail] = useState('admin@markus.local');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -20,7 +18,8 @@ export function Login({ onLogin }: Props) {
     setLoading(true);
     try {
       const { user } = await api.auth.login(email.trim(), password);
-      onLogin(user, password === DEFAULT_PASSWORD);
+      const isDefault = email.trim().toLowerCase() === 'admin@markus.local' && password === 'markus123';
+      onLogin(user, isDefault);
     } catch {
       setError('Invalid email or password');
     } finally {
@@ -53,7 +52,8 @@ export function Login({ onLogin }: Props) {
               value={email}
               onChange={e => setEmail(e.target.value)}
               autoComplete="email"
-              className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
+              placeholder="your@email.com"
+              className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors placeholder:text-fg-tertiary"
               required
             />
           </div>
@@ -85,7 +85,7 @@ export function Login({ onLogin }: Props) {
           </button>
 
           <p className="text-center text-xs text-fg-tertiary">
-            Default: admin@markus.local / markus123
+            Sign in with your email and password
           </p>
         </form>
       </div>

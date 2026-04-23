@@ -69,7 +69,7 @@ curl -fsSL https://markus.global/install.sh | bash
 markus start
 ```
 
-Open **http://localhost:8056** — log in with `admin@markus.local` / `markus123`.
+Open **http://localhost:8056** — the onboarding wizard will guide you to set up your name, email, and password. Initial login: `admin@markus.local` / `markus123`.
 
 That's it. SQLite database, bundled web UI, zero dependencies to install separately.
 

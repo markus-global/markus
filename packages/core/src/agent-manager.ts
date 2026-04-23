@@ -1,6 +1,7 @@
 import {
   createLogger,
   agentId as genAgentId,
+  generateId,
   stripInternalBlocks,
   type AgentConfig,
   type AgentProfile,
@@ -10,6 +11,7 @@ import {
   type SystemAnnouncement,
   type PathAccessPolicy,
   type RoleTemplate,
+  type RoleCategory,
   saveConfig,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
@@ -28,6 +30,7 @@ import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.
 import { createProjectTools, type ProjectServiceBridge, type KnowledgeServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext } from './tools/project-tools.js';
 import { createMemoryTools } from './tools/memory.js';
 import { createSettingsTools } from './tools/settings.js';
+import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
@@ -148,6 +151,9 @@ export interface TaskServiceBridge {
     createdBy?: string;
     creatorRole?: string;
     taskType?: string;
+    notes?: string;
+    acceptanceCriteria?: string;
+    deadline?: string;
     scheduleConfig?: {
       cron?: string;
       every?: string;
@@ -235,7 +241,7 @@ export interface MCPServerConfig {
 
 export interface CreateAgentRequest {
   name: string;
-  roleName: string;
+  roleName?: string;
   orgId?: string;
   teamId?: string;
   agentRole?: 'manager' | 'worker';
@@ -249,6 +255,8 @@ export interface CreateAgentRequest {
   profile?: AgentProfile;
   /** Override model config: when provided with modelMode 'custom', agent uses this provider */
   llmProvider?: string;
+  /** When true, skip copying template role files (caller will provide custom files) */
+  skipTemplateCopy?: boolean;
 }
 
 export interface RoleFileStatus {
@@ -287,6 +295,7 @@ export class AgentManager {
   private sharedDataDir?: string;
   private mcpManager: MCPClientManager;
   private browserSessionManager: BrowserSessionManager;
+  private remoteDebuggingPort = 0;
   private globalSecurityPolicy?: SecurityPolicy;
   private globalMcpServers?: Record<string, MCPServerConfig>;
   private skillRegistry?: SkillRegistry;
@@ -302,6 +311,7 @@ export class AgentManager {
   private projectService?: ProjectServiceBridge;
   private knowledgeService?: KnowledgeServiceBridge;
   private deliverableService?: DeliverableServiceBridge;
+  private webUiBaseUrl?: string;
   private semanticSearch?: SemanticMemorySearch;
   private requirementService?: RequirementServiceBridge;
   private agentAuditCallback?: (
@@ -329,11 +339,15 @@ export class AgentManager {
     onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
     onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
   };
+  private recallCallbacks?: RecallCallbacks;
   private delegationManager: DelegationManager;
   private _maxToolIterations = Infinity;
   private templateRegistry?: TemplateRegistry;
   private builderService?: { listArtifacts: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>; installArtifact: (type: 'agent' | 'team' | 'skill', name: string) => Promise<{ type: string; installed: unknown }> };
   private hubClient?: { search: (opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>; downloadAndInstall: (itemId: string) => Promise<{ type: string; installed: unknown }> };
+  private teamUpdater?: (teamId: string, data: { name?: string; description?: string }) => Promise<{ id: string; name: string; description?: string }>;
+  private agentConfigPersister?: (agentId: string, data: Record<string, unknown>) => Promise<void>;
+
   private groupChatHandlers?: {
     sendGroupMessage: (
       channelKey: string,
@@ -437,6 +451,7 @@ export class AgentManager {
         return ds.update(id, {
           title: data.title,
           summary: data.summary,
+          reference: data.reference,
           status: data.status,
           tags,
         });
@@ -503,6 +518,9 @@ export class AgentManager {
           reviewerAgentId: envelope.from,
           createdBy: envelope.from,
           creatorRole: 'manager',
+          notes: delegation.context,
+          acceptanceCriteria: delegation.expectedOutput,
+          deadline: delegation.deadline,
         });
         log.info('Delegation created real task', {
           taskId: task.id,
@@ -532,6 +550,37 @@ export class AgentManager {
     this._maxToolIterations = value <= 0 ? Infinity : value;
   }
 
+  setBrowserBringToFront(value: boolean): void {
+    this.browserSessionManager.bringToFront = value;
+  }
+
+  setBrowserAutoCloseTabs(value: boolean): void {
+    this.browserSessionManager.autoCloseTabs = value;
+  }
+
+  setBrowserRemoteDebuggingPort(port: number): void {
+    this.remoteDebuggingPort = port;
+  }
+
+  /**
+   * When remoteDebuggingPort is configured, replace --autoConnect with
+   * --browserUrl so that the chrome-devtools MCP server reuses a persistent
+   * debugging connection instead of requesting a new permission each time.
+   */
+  private enrichChromeDevtoolsConfig(
+    serverName: string,
+    config: { command: string; args?: string[]; env?: Record<string, string> },
+  ): { command: string; args?: string[]; env?: Record<string, string> } {
+    if (serverName !== 'chrome-devtools' || this.remoteDebuggingPort <= 0) return config;
+    const args = [...(config.args ?? [])];
+    const autoIdx = args.indexOf('--autoConnect');
+    if (autoIdx !== -1) args.splice(autoIdx, 1);
+    if (!args.includes('--browserUrl') && !args.includes('--browser-url')) {
+      args.push('--browserUrl', `http://127.0.0.1:${this.remoteDebuggingPort}`);
+    }
+    return { ...config, args };
+  }
+
   setTaskService(taskService: TaskServiceBridge): void {
     this.taskService = taskService;
   }
@@ -550,6 +599,10 @@ export class AgentManager {
 
   setDeliverableService(deliverableService: DeliverableServiceBridge): void {
     this.deliverableService = deliverableService;
+  }
+
+  setWebUiBaseUrl(url: string): void {
+    this.webUiBaseUrl = url.replace(/\/+$/, '');
   }
 
   setSkillSearcher(cb: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>): void {
@@ -627,26 +680,43 @@ export class AgentManager {
   async createAgent(request: CreateAgentRequest): Promise<Agent> {
     if (!request.name?.trim()) throw new Error('Agent name is required');
     const id = genAgentId();
-    const role = this.roleLoader.loadRole(request.roleName);
+    const roleName = request.roleName || 'custom';
+    const isCustomRole = roleName === 'custom';
+
+    const role: RoleTemplate = isCustomRole
+      ? {
+          id: generateId('role'),
+          name: request.name,
+          description: '',
+          category: 'custom' as RoleCategory,
+          systemPrompt: `# ${request.name}\n\nYou are ${request.name}.`,
+          defaultSkills: [],
+          heartbeatChecklist: '',
+          defaultPolicies: [],
+          builtIn: false,
+        }
+      : this.roleLoader.loadRole(roleName);
+
     const agentDataDir = join(this.dataDir, id);
     mkdirSync(agentDataDir, { recursive: true });
 
-    // Copy template role files to agent's own directory for per-agent evolution
     const agentRoleDir = join(agentDataDir, 'role');
     mkdirSync(agentRoleDir, { recursive: true });
-    const templateDir = this.roleLoader.resolveTemplateDir(request.roleName);
-    if (templateDir) {
-      for (const file of ['ROLE.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md']) {
-        const src = join(templateDir, file);
-        if (existsSync(src)) copyFileSync(src, join(agentRoleDir, file));
+
+    if (!isCustomRole && !request.skipTemplateCopy) {
+      const templateDir = this.roleLoader.resolveTemplateDir(roleName);
+      if (templateDir) {
+        for (const file of ['ROLE.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md']) {
+          const src = join(templateDir, file);
+          if (existsSync(src)) copyFileSync(src, join(agentRoleDir, file));
+        }
       }
     }
 
     const config: AgentConfig = {
       id,
       name: request.name,
-      // Store the template folder name so agents can be restored on restart
-      roleId: request.roleName,
+      roleId: roleName,
       orgId: request.orgId ?? 'default',
       teamId: request.teamId,
       agentRole: request.agentRole ?? 'worker',
@@ -733,8 +803,9 @@ export class AgentManager {
         const skill = this.skillRegistry.get(skillName);
         if (skill?.manifest.mcpServers) {
           const isolated = skill.manifest.isolation === 'per-agent';
-          for (const [serverName, serverConfig] of Object.entries(skill.manifest.mcpServers)) {
+          for (const [serverName, rawServerConfig] of Object.entries(skill.manifest.mcpServers)) {
             try {
+              const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
               let mcpTools: AgentToolHandler[];
               if (isolated) {
                 await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
@@ -768,7 +839,8 @@ export class AgentManager {
       let tools: AgentToolHandler[] = [];
       const skill = this.skillRegistry?.get(skillName);
       const isolated = skill?.manifest.isolation === 'per-agent';
-      for (const [serverName, srvConfig] of Object.entries(mcpServers)) {
+      for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
+        const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
         if (isolated) {
           await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
           tools.push(...this.mcpManager.getToolHandlersScoped(serverName, id));
@@ -855,6 +927,11 @@ export class AgentManager {
       semanticSearch: this.semanticSearch,
     })) {
       agent.registerTool(tool);
+    }
+
+    // Recall tool — agents can query their own execution history
+    if (this.recallCallbacks) {
+      agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));
     }
 
     // Settings tools — agents can list providers and switch models via chat
@@ -1059,6 +1136,7 @@ export class AgentManager {
       for (const tool of createProjectTools({
         agentId: id,
         orgId: config.orgId,
+        webUiBaseUrl: this.webUiBaseUrl,
         projectService: this.projectService,
         ...this.buildKnowledgeCallbacks(id, config.orgId),
         ...this.buildDeliverableCallbacks(id, config.orgId),
@@ -1134,6 +1212,19 @@ export class AgentManager {
         listArtifacts: this.builderService
           ? (type?: 'agent' | 'team' | 'skill') => this.builderService!.listArtifacts(type)
           : undefined,
+        updateTeam: this.teamUpdater
+          ? async (teamId: string, data: { name?: string; description?: string }) => this.teamUpdater!(teamId, data)
+          : undefined,
+        updateAgentConfig: async (agentId: string, data: { name?: string }) => {
+          const targetAgent = this.getAgent(agentId);
+          if (data.name !== undefined) {
+            (targetAgent.config as unknown as Record<string, unknown>).name = data.name;
+          }
+          if (this.agentConfigPersister) {
+            await this.agentConfigPersister(agentId, data);
+          }
+          return { id: agentId, name: targetAgent.config.name };
+        },
       });
       for (const tool of managerTools) {
         agent.registerTool(tool);
@@ -1241,8 +1332,19 @@ export class AgentManager {
     let role: RoleTemplate;
     if (existsSync(join(agentRoleDir, 'ROLE.md'))) {
       role = this.roleLoader.loadRole(agentRoleDir);
+    } else if (row.roleId === 'custom') {
+      role = {
+        id: generateId('role'),
+        name: row.name,
+        description: '',
+        category: 'custom' as RoleCategory,
+        systemPrompt: `# ${row.name}\n\nYou are ${row.name}.`,
+        defaultSkills: [],
+        heartbeatChecklist: '',
+        defaultPolicies: [],
+        builtIn: false,
+      };
     } else {
-      // Load from template (backward compat), then copy for future self-evolution
       role = (() => {
         try { return this.roleLoader.loadRole(row.roleId); } catch { /* try next */ }
         try { return this.roleLoader.loadRole(row.roleName); } catch { /* try next */ }
@@ -1255,7 +1357,6 @@ export class AgentManager {
         }
         throw new Error(`Role not found: ${row.roleName} (roleId: ${row.roleId})`);
       })();
-      // Migration: copy template files to agent's own role dir
       const templateDir = this.roleLoader.resolveTemplateDir(row.roleId)
         ?? this.roleLoader.resolveTemplateDir(row.roleName);
       if (templateDir) {
@@ -1362,9 +1463,10 @@ export class AgentManager {
         const skill = this.skillRegistry.get(skillName);
         if (skill?.manifest.mcpServers) {
           const isolated = skill.manifest.isolation === 'per-agent';
-          for (const [serverName, serverConfig] of Object.entries(skill.manifest.mcpServers)) {
+          for (const [serverName, rawServerConfig] of Object.entries(skill.manifest.mcpServers)) {
             mcpConnections.push((async () => {
               try {
+                const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
                 let mcpTools: AgentToolHandler[];
                 if (isolated) {
                   await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
@@ -1400,7 +1502,8 @@ export class AgentManager {
       let tools: AgentToolHandler[] = [];
       const skill = this.skillRegistry?.get(skillName);
       const isolated = skill?.manifest.isolation === 'per-agent';
-      for (const [serverName, srvConfig] of Object.entries(mcpServers)) {
+      for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
+        const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
         if (isolated) {
           await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
           tools.push(...this.mcpManager.getToolHandlersScoped(serverName, id));
@@ -1465,6 +1568,14 @@ export class AgentManager {
       },
       delegateTask: async (targetId: string, delegation: TaskDelegation) =>
         this.delegationManager.delegateTask(id, delegation, targetId),
+      ...(this.groupChatHandlers
+        ? {
+            sendGroupMessage: this.groupChatHandlers.sendGroupMessage,
+            createGroupChat: (name: string, memberIds: string[]) =>
+              this.groupChatHandlers!.createGroupChat(name, id, config.name, memberIds),
+            listGroupChats: this.groupChatHandlers.listGroupChats,
+          }
+        : {}),
     };
     for (const tool of createA2ATools(a2aCtx)) agent.registerTool(tool);
     for (const tool of createStructuredA2ATools(a2aCtx)) agent.registerTool(tool);
@@ -1476,6 +1587,10 @@ export class AgentManager {
       semanticSearch: this.semanticSearch,
     })) {
       agent.registerTool(tool);
+    }
+
+    if (this.recallCallbacks) {
+      agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));
     }
 
     for (const tool of createSettingsTools({
@@ -1645,6 +1760,7 @@ export class AgentManager {
       for (const tool of createProjectTools({
         agentId: id,
         orgId: config.orgId,
+        webUiBaseUrl: this.webUiBaseUrl,
         projectService: this.projectService,
         ...this.buildKnowledgeCallbacks(id, config.orgId),
         ...this.buildDeliverableCallbacks(id, config.orgId),
@@ -1719,6 +1835,19 @@ export class AgentManager {
         listArtifacts: this.builderService
           ? (type?: 'agent' | 'team' | 'skill') => this.builderService!.listArtifacts(type)
           : undefined,
+        updateTeam: this.teamUpdater
+          ? async (teamId: string, data: { name?: string; description?: string }) => this.teamUpdater!(teamId, data)
+          : undefined,
+        updateAgentConfig: async (agentId: string, data: { name?: string }) => {
+          const targetAgent = this.getAgent(agentId);
+          if (data.name !== undefined) {
+            (targetAgent.config as unknown as Record<string, unknown>).name = data.name;
+          }
+          if (this.agentConfigPersister) {
+            await this.agentConfigPersister(agentId, data);
+          }
+          return { id: agentId, name: targetAgent.config.name };
+        },
       });
       for (const tool of managerTools) agent.registerTool(tool);
 
@@ -1929,9 +2058,13 @@ export class AgentManager {
       state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
     ) => void
   ): void {
-    this.stateChangeHandler = handler;
+    // Wrap handler to also sync AgentCard status in DelegationManager
+    this.stateChangeHandler = (agentId, state) => {
+      handler(agentId, state);
+      this.delegationManager.updateAgentStatus(agentId, state.status);
+    };
     for (const [, agent] of this.agents) {
-      agent.setStateChangeCallback(handler);
+      agent.setStateChangeCallback(this.stateChangeHandler);
     }
   }
 
@@ -1971,11 +2104,18 @@ export class AgentManager {
   setActivityCallbacks(cbs: {
     onStart: (activity: AgentActivity & { agentId: string }) => void;
     onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
-    onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
+    onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   }): void {
     this.activityCallbacks = cbs;
     for (const [, agent] of this.agents) {
       agent.setActivityCallbacks(cbs);
+    }
+  }
+
+  setRecallCallbacks(cbs: RecallCallbacks): void {
+    this.recallCallbacks = cbs;
+    for (const [id, agent] of this.agents) {
+      agent.registerTool(createRecallTool({ agentId: id, ...cbs }));
     }
   }
 
@@ -1994,6 +2134,7 @@ export class AgentManager {
     currentActivity?: AgentActivity;
     mailboxDepth?: number;
     attentionState?: string;
+    modelSupportsVision?: boolean;
   }> {
     return [...this.agents.values()].map(a => {
       const state = a.getState();
@@ -2018,6 +2159,7 @@ export class AgentManager {
         currentActivity: state.currentActivity,
         mailboxDepth,
         attentionState,
+        modelSupportsVision: a.getModelSupportsVision(),
       };
     });
   }
@@ -2046,6 +2188,14 @@ export class AgentManager {
 
   setBuilderService(service: { listArtifacts: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>; installArtifact: (type: 'agent' | 'team' | 'skill', name: string) => Promise<{ type: string; installed: unknown }> }): void {
     this.builderService = service;
+  }
+
+  setTeamUpdater(updater: (teamId: string, data: { name?: string; description?: string }) => Promise<{ id: string; name: string; description?: string }>): void {
+    this.teamUpdater = updater;
+  }
+
+  setAgentConfigPersister(persister: (agentId: string, data: Record<string, unknown>) => Promise<void>): void {
+    this.agentConfigPersister = persister;
   }
 
   setHubClient(client: { search: (opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>; downloadAndInstall: (itemId: string) => Promise<{ type: string; installed: unknown }> }): void {
@@ -2174,9 +2324,13 @@ export class AgentManager {
   private emergencyMode = false;
 
   async pauseAllAgents(reason?: string): Promise<void> {
-    for (const [, agent] of this.agents) {
-      if (agent.getState().status !== 'offline') {
-        agent.pause(reason);
+    for (const [id, agent] of this.agents) {
+      try {
+        if (agent.getState().status !== 'offline') {
+          agent.pause(reason);
+        }
+      } catch (err) {
+        log.warn('Failed to pause agent', { agentId: id, error: String(err) });
       }
     }
     this.globalPaused = true;
@@ -2185,9 +2339,13 @@ export class AgentManager {
   }
 
   async resumeAllAgents(): Promise<void> {
-    for (const [, agent] of this.agents) {
-      if (agent.getState().status === 'paused') {
-        agent.resume();
+    for (const [id, agent] of this.agents) {
+      try {
+        if (agent.getState().status === 'paused') {
+          agent.resume();
+        }
+      } catch (err) {
+        log.warn('Failed to resume agent', { agentId: id, error: String(err) });
       }
     }
     this.globalPaused = false;
@@ -2197,9 +2355,13 @@ export class AgentManager {
   }
 
   async emergencyStop(): Promise<void> {
-    for (const [, agent] of this.agents) {
-      agent.cancelActiveStream();
-      await agent.stop();
+    for (const [id, agent] of this.agents) {
+      try {
+        agent.cancelActiveStream();
+        await agent.stop();
+      } catch (err) {
+        log.warn('Failed to stop agent during emergency', { agentId: id, error: String(err) });
+      }
     }
     this.emergencyMode = true;
     this.globalPaused = true;

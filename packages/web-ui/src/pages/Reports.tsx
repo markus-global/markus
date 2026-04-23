@@ -279,7 +279,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
                       <button
                         onClick={async () => {
                           try {
-                            const { report: r } = await api.reports.approvePlan(selectedReport.id, { approvedBy: authUser?.id ?? 'admin' });
+                            const { report: r } = await api.reports.approvePlan(selectedReport.id, { approvedBy: authUser?.id ?? 'unknown' });
                             setSelectedReport(r);
                             showFlash('Plan approved');
                             fetchHistory();
@@ -292,7 +292,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
                           const reason = prompt('Rejection reason:');
                           if (!reason) return;
                           try {
-                            const { report: r } = await api.reports.rejectPlan(selectedReport.id, { rejectedBy: authUser?.id ?? 'admin', reason });
+                            const { report: r } = await api.reports.rejectPlan(selectedReport.id, { rejectedBy: authUser?.id ?? 'unknown', reason });
                             setSelectedReport(r);
                             showFlash('Plan rejected');
                             fetchHistory();
@@ -353,7 +353,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
                   className="flex-1 px-3 py-2 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder:text-fg-tertiary"
                   onKeyDown={e => {
                     if (e.key === 'Enter' && feedbackContent.trim()) {
-                      api.reports.addFeedback(selectedReport.id, { author: authUser?.id ?? 'admin', type: 'comment', content: feedbackContent.trim() })
+                      api.reports.addFeedback(selectedReport.id, { author: authUser?.id ?? 'unknown', type: 'comment', content: feedbackContent.trim() })
                         .then(({ feedback: fb }) => { setFeedback(prev => [...prev, fb]); setFeedbackContent(''); showFlash('Feedback added'); })
                         .catch(err => showFlash(`Error: ${err}`));
                     }
@@ -362,7 +362,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
                 <button
                   onClick={() => {
                     if (!feedbackContent.trim()) return;
-                    api.reports.addFeedback(selectedReport.id, { author: authUser?.id ?? 'admin', type: 'comment', content: feedbackContent.trim() })
+                    api.reports.addFeedback(selectedReport.id, { author: authUser?.id ?? 'unknown', type: 'comment', content: feedbackContent.trim() })
                       .then(({ feedback: fb }) => { setFeedback(prev => [...prev, fb]); setFeedbackContent(''); showFlash('Feedback added'); })
                       .catch(err => showFlash(`Error: ${err}`));
                   }}

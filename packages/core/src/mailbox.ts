@@ -2,6 +2,8 @@ import {
   createLogger,
   generateId,
   MAILBOX_QUEUED_TTL_MS,
+  TRIAGE_STALE_INFO_TTL_MS,
+  TRIAGE_STALE_DROP_TYPES,
   type MailboxItem,
   type MailboxItemType,
   type MailboxPayload,
@@ -13,6 +15,17 @@ import {
 import type { EventBus } from './events.js';
 
 const log = createLogger('mailbox');
+
+/**
+ * Thrown by `dequeueAsync` when it is woken by `cancelWait()` with an empty
+ * queue.  This is the normal shutdown signal — callers should catch and exit.
+ */
+export class MailboxCancelledError extends Error {
+  constructor() {
+    super('Mailbox wait cancelled');
+    this.name = 'MailboxCancelledError';
+  }
+}
 
 /** Derived from the centralised MAILBOX_TYPE_REGISTRY in @markus/shared. */
 const DEFAULT_PRIORITY: Record<MailboxItemType, MailboxPriority> = Object.fromEntries(
@@ -31,6 +44,8 @@ export interface MailboxPersistence {
   markStaleProcessingAsDropped?(agentId: string): number;
   /** Load persisted queued items for this agent (for recovery on restart). */
   loadQueued?(agentId: string): MailboxItem[];
+  /** Load persisted deferred items for this agent (for auto-resurface). */
+  loadDeferred?(agentId: string): MailboxItem[];
 }
 
 /**
@@ -350,6 +365,8 @@ export class AgentMailbox {
 
   /**
    * Block until an item is available, then dequeue it.
+   * Throws `MailboxCancelledError` if woken by `cancelWait()` with an empty queue
+   * (normal shutdown path — the attention loop should catch and exit cleanly).
    */
   async dequeueAsync(): Promise<MailboxItem> {
     const item = this.dequeue();
@@ -359,7 +376,11 @@ export class AgentMailbox {
       this.idleResolve = resolve;
     });
 
-    return this.dequeue()!;
+    const afterWake = this.dequeue();
+    if (!afterWake) {
+      throw new MailboxCancelledError();
+    }
+    return afterWake;
   }
 
   /**
@@ -384,9 +405,14 @@ export class AgentMailbox {
   }
 
   /**
-   * Mark an item as completed.
+   * Mark an item as completed and remove from in-memory queue if still present.
    */
   complete(itemId: string): void {
+    const idx = this.queue.findIndex(i => i.id === itemId);
+    if (idx !== -1) {
+      const [item] = this.queue.splice(idx, 1);
+      item.status = 'completed';
+    }
     const now = new Date().toISOString();
     this.persistence?.updateStatus(itemId, 'completed', { completedAt: now });
   }
@@ -513,6 +539,68 @@ export class AgentMailbox {
     this.persistence?.updateStatus(item.id, 'queued');
     this.eventBus.emit('mailbox:new-item', { agentId: this.agentId, item });
     this.wakeIdleLoop();
+  }
+
+  /**
+   * Resurface all deferred items that are due (deferredUntil <= now) or
+   * have no deferredUntil set (deferred without a time = resume on next idle).
+   * Called at the top of each attention loop idle cycle.
+   */
+  resurfaceDue(): number {
+    const deferred = this.persistence?.loadDeferred?.(this.agentId) ?? [];
+    const now = Date.now();
+    let resurfaced = 0;
+    for (const item of deferred) {
+      if (this.queue.some(q => q.id === item.id)) continue;
+      const isDue = !item.deferredUntil || new Date(item.deferredUntil).getTime() <= now;
+      if (isDue) {
+        this.resurface(item);
+        resurfaced++;
+      }
+    }
+    if (resurfaced > 0) {
+      log.info('Resurfaced deferred items', { agentId: this.agentId, count: resurfaced });
+    }
+    return resurfaced;
+  }
+
+  /**
+   * Auto-drop stale informational items from the queue.
+   * Called before triage to keep the queue lean — old informational items
+   * (task_status_update, heartbeat, etc.) carry context that has already
+   * decayed and would only waste LLM attention budget.
+   */
+  purgeStaleItems(): number {
+    const now = Date.now();
+    const staleTypes = new Set(TRIAGE_STALE_DROP_TYPES);
+    const toRemove: number[] = [];
+
+    for (let i = this.queue.length - 1; i >= 0; i--) {
+      const item = this.queue[i];
+      if (item.status !== 'queued') continue;
+      // Only drop informational types, never human messages / A2A / execution triggers
+      if (!staleTypes.has(item.sourceType)) continue;
+      if (item.payload.extra?.triggerExecution) continue;
+
+      const age = now - new Date(item.queuedAt).getTime();
+      if (age > TRIAGE_STALE_INFO_TTL_MS) {
+        toRemove.push(i);
+      }
+    }
+
+    for (const idx of toRemove) {
+      const [item] = this.queue.splice(idx, 1);
+      item.status = 'dropped';
+      this.persistence?.updateStatus(item.id, 'dropped');
+    }
+
+    if (toRemove.length > 0) {
+      log.info('Purged stale informational items', {
+        agentId: this.agentId,
+        count: toRemove.length,
+      });
+    }
+    return toRemove.length;
   }
 
   get depth(): number {

@@ -617,7 +617,6 @@ Analogous to `MAILBOX_TYPE_REGISTRY`, user notification types are defined in `US
 | Type | Label | Icon | Default Priority |
 |------|-------|------|-----------------|
 | `approval_request` | Approval Request | ⚠ | high |
-| `bounty_posted` | Bounty Posted | 🎯 | normal |
 | `task_created` | Task Created | ☑ | normal |
 | `task_review` | Task Review | 👀 | high |
 | `task_completed` | Task Completed | ✓ | normal |
@@ -655,25 +654,28 @@ When a notification is created (via `HITLService.notify()`), a WebSocket `notifi
 
 Agents have two distinct modes for communicating with users, reflecting different conversational intents:
 
-### 13.1 `notify_user` — One-Way Notification
+### 13.1 `notify_user` — Proactive Chat Message + Notification
 
-Fire-and-forget informational updates. Creates a persistent notification in the user's notification bell.
+Proactive messages that appear in the agent's chat **and** the user's notification bell. The user can reply in chat, and the agent has full context of what it sent.
 
 ```typescript
 // Tool schema
 {
   name: 'notify_user',
   parameters: {
-    title: string,     // Short notification headline
-    message: string,   // Notification body
-    priority: 'low' | 'normal' | 'high' | 'urgent'  // optional, default 'normal'
+    title: string,     // Short headline (1 line)
+    body: string,      // Full message content (visible in chat)
+    priority: 'low' | 'normal' | 'high' | 'urgent',  // optional, default 'normal'
+    related_task_id?: string  // deep-link to task if applicable
   }
 }
 ```
 
-**When to use**: Status updates, task completion notices, FYI messages, non-blocking announcements.
+**When to use**: Status updates, task completion notices, FYI messages, findings, alerts — any proactive communication where the user may want to reply.
 
-**Flow**: `agent.executeTool('notify_user')` → `agent.userNotifier(title, message, priority)` → `HITLService.notify()` → SQLite + WebSocket → NotificationBell
+**Flow**: `agent.executeTool('notify_user')` → `memory.appendMessage()` (full `**title**\n\nbody` as regular assistant message) → `eventBus.emit('agent:notify-user')` → `start.ts` handler: `chatSessionRepo.appendMessage()` (no `activityLog` metadata) + `ws.broadcastProactiveMessage()` + `hitlService.notify()`
+
+**Notification routing**: With `related_task_id` → `actionType: 'navigate'` to Work page. Without task → `actionType: 'open_chat'` with `sessionId` to agent's chat.
 
 ### 13.2 `request_user_approval` — Blocking Decision Request
 
@@ -711,12 +713,13 @@ The system prompt includes scenario-specific guidance on which tool to use:
 
 | Situation | Tool |
 |-----------|------|
-| Status report, progress update, FYI alert | `notify_user` |
+| Status report, progress update, FYI alert | `notify_user` (appears in chat, user may reply) |
 | Task completed notification | `notify_user` with `related_task_id` |
 | Need user to approve/reject something | `request_user_approval` (default options) |
 | Need user to choose between approaches | `request_user_approval` with custom `options` |
 | Need user freeform input | `request_user_approval` with `allow_freeform: true` |
 | Want to discuss interactively | Mention user via task/requirement comment |
+| Need to review past execution details | `recall_activity` (list activities or get logs) |
 
 ---
 
@@ -932,9 +935,11 @@ Examples:
 
 ### Frontend Rendering
 
-Activity messages are rendered as compact system-style cards (colored dot + text) rather than full chat bubbles. The `[ACTIVITY: type]` prefix is stripped for display. Messages with a `mailboxItemId` show a "Details" button on hover.
+Activity log entries (marked with `activityLog: true` metadata) are hidden from the chat interface and visible only in the Agent Profile Mind tab. This reduces noise in the chat while keeping full traceability in the agent's profile.
 
-When the user opens an agent's chat, the frontend loads sessions via `getSessionsByAgent()`, which returns the main session first (sorted by `is_main DESC`). The main session's messages include both user conversations and activity entries, displayed chronologically.
+**Exception — `notify_user` and escalation**: These messages bypass `injectActivityToMainSession` entirely and are instead injected as regular chat messages (no `activityLog` metadata) via their own `agent:notify-user` and `agent:escalation` event handlers. They render as normal agent chat bubbles, allowing users to see and reply to them directly.
+
+When the user opens an agent's chat, the frontend loads sessions via `getSessionsByAgent()`, which returns the main session first (sorted by `is_main DESC`). The main session's messages include both user conversations and notify/escalation messages, displayed chronologically.
 
 ### Completion Marker
 
@@ -979,7 +984,10 @@ dequeueAsync() → headItem
        │
        └─ triageJudge configured?
             → performTriage(headItem)
-                 ├─ Build prompt (all candidates + agent context)
+                 ├─ Build prompt (all candidates + agent context + item content)
+                 ├─ [Optional] Mini tool loop: LLM calls read-only tools
+                 │    (task_list, task_get, requirement_list, etc.) up to
+                 │    TRIAGE_MAX_TOOL_ITERATIONS times to gather context
                  ├─ TriageJudge returns JSON: { processItemId, deferItemIds, dropItemIds, reasoning }
                  ├─ Validate IDs against candidate set
                  ├─ If chosen ≠ headItem: putBack(headItem), dequeueById(chosen)
@@ -988,6 +996,18 @@ dequeueAsync() → headItem
                  ├─ Emit 'attention:triage' → WS → frontend
                  └─ Record 'triage' decision
 ```
+
+### Triage Context Budget
+
+The triage prompt is intentionally **generous** — tens of thousands of tokens are acceptable because accurate triage decisions save far more cost downstream. Context includes:
+- **20 recent messages** (up to 2000 chars each) from the agent's main session
+- **Full payload.content** (up to 3000 chars) for each candidate item, not just the summary
+- **Active task IDs** for the agent's current workload
+- **Recent activity summaries** and **recent decisions**
+
+### Read-Only Tool Access
+
+When `triageChatFn` and `triageToolHandlers` are configured, `performTriage` runs a mini tool loop before the final JSON decision. The LLM can invoke read-only tools defined by `TRIAGE_ALLOWED_TOOLS` (`task_list`, `task_get`, `requirement_list`, `requirement_get`, `list_projects`, `team_list`) up to `TRIAGE_MAX_TOOL_ITERATIONS` (default 3) times. This lets the triage LLM understand current workload, task dependencies, and team state before deciding priority.
 
 ### Cognition Injection
 
@@ -1011,7 +1031,8 @@ TriageResult.reasoning
 | `putBack()` | `mailbox.ts` | Returns a dequeued item to queue (no retryCount increment) |
 | `dequeueById()` | `mailbox.ts` | Dequeues a specific item by ID (for triage swap) |
 | `updateCognition()` | `agent.ts` | Converts TriageResult into situational awareness text |
-| `getTriageContext()` | `agent.ts` (delegate) | Provides agent name, recent messages, recent activity |
+| `getTriageContext()` | `agent.ts` (delegate) | Provides agent name, recent messages, recent activity, active task IDs |
+| `resurfaceDue()` | `mailbox.ts` | Resurfaces deferred items whose `deferredUntil` has passed or is unset |
 
 ### Triage Prompt Identity
 
@@ -1019,8 +1040,25 @@ The triage prompt uses first-person perspective: "You are {agentName}." The agen
 
 ---
 
-## 22. Future Work
+## 22. Deferred Item Auto-Resume
+
+Deferred mailbox items are automatically resurfaced when the agent is idle:
+
+- `resurfaceDue()` is called at the top of each attention loop idle cycle (before `dequeueAsync`) and after `recoverStaleItems` on startup.
+- Items where `deferredUntil <= now` or `deferredUntil` is undefined (deferred without a time = resume on next idle) are re-enqueued.
+- Deferred items are loaded from persistence via `loadDeferred(agentId)`.
+
+## 23. Task Status Update Processing
+
+`task_status_update` items are **informational only** (`invokesLLM: false`). The side-effect system in `updateTaskStatus()` handles all real actions automatically:
+- **→ `in_progress`**: Auto-starts task execution
+- **Leaving `in_progress`**: Cancels running execution
+- **→ `review`**: Notifies reviewer agent
+- **Terminal states**: Checks and unblocks dependent tasks
+
+Agents do NOT need to take action on these notifications — they serve as episodic memory and triage decision context. Agents should NOT send A2A messages to duplicate what the side-effect system already does.
+
+## 24. Future Work
 
 - **Cross-agent priority coordination**: Allow a manager agent to influence subordinate agents' mailbox priorities.
-- **Deferred item resurfacing**: Automatically re-enqueue deferred items when conditions are met.
 - **Decision pattern learning**: Use long-term decision history to adaptively tune heuristic thresholds.

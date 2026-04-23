@@ -114,7 +114,7 @@ export function TeamsStore() {
         for (let i = 0; i < count; i++) {
           const name = member.name ?? `${tpl.name} Agent ${i + 1}`;
           const displayName = count > 1 ? `${name} ${i + 1}` : name;
-          const roleName = member.roleName ?? member.templateId ?? 'developer';
+          const roleName = member.roleName ?? member.templateId;
           try {
             const res = await fetch('/api/agents', {
               method: 'POST',
@@ -122,7 +122,7 @@ export function TeamsStore() {
               credentials: 'include',
               body: JSON.stringify({
                 name: displayName,
-                roleName,
+                ...(roleName ? { roleName } : {}),
                 orgId: 'default',
                 teamId,
                 agentRole: member.role ?? 'worker',
@@ -281,9 +281,9 @@ export function TeamsStore() {
                         {m.role === 'manager' ? '★' : (i + 1)}
                       </div>
                       <div className="min-w-0 flex-1">
-                        <div className="text-sm text-fg-primary">{m.name ?? m.roleName ?? m.templateId}</div>
+                        <div className="text-sm text-fg-primary">{m.name ?? m.roleName ?? m.templateId ?? 'Agent'}</div>
                         <div className="flex items-center gap-2 mt-0.5">
-                          <span className="text-[10px] text-fg-tertiary font-mono">{m.roleName ?? m.templateId}</span>
+                          {(m.roleName || m.templateId) && <span className="text-[10px] text-fg-tertiary font-mono">{m.roleName ?? m.templateId}</span>}
                           <span className={`px-1.5 py-0.5 rounded text-[10px] capitalize ${
                             m.role === 'manager' ? 'bg-brand-500/15 text-brand-500' : 'bg-blue-500/15 text-blue-600'
                           }`}>
@@ -381,6 +381,11 @@ function HubTeamCard({ item, localInfo, onStatusChange }: { item: HubItem; local
         <span>{item.author?.displayName ?? item.author?.username}</span>
       </div>
       <div className="flex items-center gap-2 mt-3">
+        {item.slug && item.author?.username && (
+          <a href={`${hubApi.getUrl()}/${encodeURIComponent(item.author.username)}/${encodeURIComponent(item.slug)}`}
+            target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+            className="text-[10px] text-brand-500 hover:text-brand-400 mr-auto">View on Hub →</a>
+        )}
         {canUpgrade ? (
           <button
             onClick={e => void handleInstall(e)}
@@ -447,7 +452,7 @@ function TeamTemplateCard({ template: tpl, isSelected, onSelect }: {
             <span key={i} className={`px-2 py-0.5 text-[10px] rounded-md border ${
               m.role === 'manager' ? 'bg-brand-500/10 text-brand-400 border-brand-500/15' : 'bg-blue-500/10 text-blue-400 border-blue-500/15'
             }`}>
-              {m.name ?? m.roleName ?? m.templateId}
+              {m.name ?? m.roleName ?? m.templateId ?? 'Agent'}
               {(m.count ?? 1) > 1 ? ` x${m.count}` : ''}
             </span>
           ))}

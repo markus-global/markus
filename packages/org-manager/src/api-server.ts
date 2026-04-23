@@ -3,7 +3,7 @@ import { join, resolve, dirname } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
+import { createLogger, generateId, kebab, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -243,6 +243,21 @@ export class APIServer {
           },
           timestamp: new Date().toISOString(),
         });
+        // Deliver to peer agent mailboxes so they see the message
+        const chat = this.customGroupChats.find(c => c.id === channelKey);
+        if (chat) {
+          for (const memberId of chat.memberIds) {
+            if (memberId === senderId) continue;
+            try {
+              const memberAgent = am.getAgent(memberId);
+              memberAgent.enqueueToMailbox('a2a_message', {
+                summary: `Group chat message from ${senderName}`,
+                content: `[Group chat: ${chat.name}] ${senderName}: ${cleanText}`,
+                extra: { senderId, senderName, channelKey },
+              });
+            } catch { /* agent may not exist */ }
+          }
+        }
         return 'Message sent to group chat';
       },
       createGroupChat: async (
@@ -343,7 +358,7 @@ export class APIServer {
         if (!res.ok) throw new Error(`Hub download failed: ${res.status}`);
         const data = await res.json() as { name: string; itemType: string; files?: Record<string, string>; config?: unknown; description?: string };
         const name = data.name;
-        const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+        const slug = kebab(name, 'hub-pkg');
         const mode = (data.itemType === 'team' ? 'team' : data.itemType === 'skill' ? 'skill' : 'agent') as 'agent' | 'team' | 'skill';
         const typeDir = mode === 'agent' ? 'agents' : mode === 'team' ? 'teams' : 'skills';
         const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, slug);
@@ -892,6 +907,7 @@ export class APIServer {
           email: userRow.email,
           role: userRow.role,
           orgId: userRow.orgId,
+          avatarUrl: userRow.avatarUrl ?? undefined,
         },
       });
       return;
@@ -927,6 +943,7 @@ export class APIServer {
           email: userRow.email,
           role: userRow.role,
           orgId: userRow.orgId,
+          avatarUrl: userRow.avatarUrl ?? undefined,
         },
       });
       return;
@@ -972,6 +989,118 @@ export class APIServer {
         `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
       );
       this.json(res, 200, { ok: true });
+      return;
+    }
+
+    if (path === '/api/auth/profile' && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Storage not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const name = (body['name'] as string)?.trim();
+      const email = (body['email'] as string)?.trim().toLowerCase();
+      if (!name) {
+        this.json(res, 400, { error: 'Name is required' });
+        return;
+      }
+      if (email) {
+        const existing = this.storage.userRepo.findByEmail(email);
+        if (existing && existing.id !== authUser.userId) {
+          this.json(res, 409, { error: 'Email already in use' });
+          return;
+        }
+      }
+      const updated = this.storage.userRepo.updateProfile(authUser.userId, {
+        name,
+        ...(email ? { email } : {}),
+      });
+      if (!updated) {
+        this.json(res, 404, { error: 'User not found' });
+        return;
+      }
+      // Update in-memory human user as well
+      const human = this.orgService.getHumanUser(authUser.userId);
+      if (human) {
+        human.name = name;
+        if (email) human.email = email;
+      }
+      // Re-issue token with updated info
+      const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
+      const token = await signToken(
+        { userId: updated.id, orgId: updated.orgId, role: updated.role, exp },
+        this.jwtSecret
+      );
+      res.setHeader(
+        'Set-Cookie',
+        `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
+      );
+      this.json(res, 200, {
+        user: {
+          id: updated.id,
+          name: updated.name,
+          email: updated.email,
+          role: updated.role,
+          orgId: updated.orgId,
+          avatarUrl: updated.avatarUrl ?? undefined,
+        },
+      });
+      return;
+    }
+
+    // ── Avatar upload / serve ────────────────────────────────────────────
+    if (path === '/api/avatars/upload' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const body = await this.readBody(req);
+      const targetType = (body['type'] as string) ?? 'user';
+      const targetId = (body['id'] as string) ?? authUser.userId;
+      const imageData = body['image'] as string;
+      if (!imageData) {
+        this.json(res, 400, { error: 'image is required (base64 data URL)' });
+        return;
+      }
+      const match = imageData.match(/^data:image\/(png|jpeg|jpg|webp|gif);base64,(.+)$/);
+      if (!match) {
+        this.json(res, 400, { error: 'Invalid image format. Must be a base64 data URL (png/jpeg/webp/gif)' });
+        return;
+      }
+      const ext = match[1] === 'jpeg' ? 'jpg' : match[1]!;
+      const buf = Buffer.from(match[2]!, 'base64');
+      if (buf.length > 2 * 1024 * 1024) {
+        this.json(res, 400, { error: 'Image too large (max 2MB)' });
+        return;
+      }
+      const avatarDir = join(homedir(), '.markus', 'avatars');
+      mkdirSync(avatarDir, { recursive: true });
+      const filename = `${targetType}_${targetId}.${ext}`;
+      writeFileSync(join(avatarDir, filename), buf);
+      const avatarUrl = `/api/avatars/${filename}`;
+      if (targetType === 'user' && this.storage) {
+        this.storage.userRepo.updateAvatarUrl(targetId, avatarUrl);
+        const human = this.orgService.getHumanUser(targetId);
+        if (human) (human as any).avatarUrl = avatarUrl;
+      } else if (targetType === 'agent' && this.storage) {
+        this.storage.agentRepo.updateAvatarUrl(targetId, avatarUrl);
+      }
+      this.json(res, 200, { avatarUrl });
+      return;
+    }
+
+    if (path.startsWith('/api/avatars/') && req.method === 'GET') {
+      const filename = decodeURIComponent(path.split('/')[3] ?? '');
+      if (!filename || filename.includes('..')) {
+        this.json(res, 400, { error: 'Invalid filename' });
+        return;
+      }
+      const filePath = join(homedir(), '.markus', 'avatars', filename);
+      if (existsSync(filePath) && statSync(filePath).isFile()) {
+        this.serveStaticFile(res, filePath);
+      } else {
+        this.json(res, 404, { error: 'Avatar not found' });
+      }
       return;
     }
 
@@ -1214,16 +1343,27 @@ export class APIServer {
 
     // Agents
     if (path === '/api/agents' && req.method === 'GET') {
-      const agents = this.orgService.getAgentManager().listAgents();
+      let agents = this.orgService.getAgentManager().listAgents() as Array<Record<string, unknown>>;
+      // Merge avatarUrl from storage
+      if (this.storage) {
+        const dbAgents = this.storage.agentRepo.listAll();
+        const avatarMap = new Map(dbAgents.filter((a: any) => a.avatarUrl).map((a: any) => [a.id, a.avatarUrl]));
+        if (avatarMap.size > 0) {
+          agents = agents.map(a => {
+            const av = avatarMap.get(a.id as string);
+            return av ? { ...a, avatarUrl: av } : a;
+          });
+        }
+      }
       if (this.gateway) {
         const extRegs = this.gateway.listRegistrations();
         const disconnectedIds = new Set(
           extRegs.filter(r => !r.connected && r.markusAgentId).map(r => r.markusAgentId!)
         );
-        const adjusted = agents.map(a =>
-          disconnectedIds.has(a.id) ? { ...a, status: 'offline' } : a
+        agents = agents.map(a =>
+          disconnectedIds.has(a.id as string) ? { ...a, status: 'offline' } : a
         );
-        this.json(res, 200, { agents: adjusted });
+        this.json(res, 200, { agents });
       } else {
         this.json(res, 200, { agents });
       }
@@ -1238,13 +1378,9 @@ export class APIServer {
         this.json(res, 400, { error: 'name is required' });
         return;
       }
-      if (!roleName?.trim()) {
-        this.json(res, 400, { error: 'roleName is required' });
-        return;
-      }
       const agent = await this.orgService.hireAgent({
         name: agentName,
-        roleName,
+        roleName: roleName?.trim() || undefined,
         orgId: (body['orgId'] as string) ?? 'default',
         teamId: body['teamId'] as string | undefined,
         skills: body['skills'] as string[] | undefined,
@@ -1305,7 +1441,9 @@ export class APIServer {
         const senderId = body['senderId'] as string | undefined;
         const sessionId = body['sessionId'] as string | undefined ?? undefined;
         const images = (body['images'] as string[] | undefined)?.filter(Boolean);
+        const fileNames = (body['fileNames'] as string[] | undefined)?.filter(Boolean);
         const isRetry = body['isRetry'] as boolean | undefined;
+        const isResume = body['isResume'] as boolean | undefined;
         const senderInfo = this.orgService.resolveHumanIdentity(senderId);
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'working');
@@ -1319,6 +1457,8 @@ export class APIServer {
             if (isRetry) {
               this.storage.chatSessionRepo.deleteLastExchange(sessionId);
             }
+            // Resume: keep the existing assistant message in DB and memory so
+            // the LLM can see its previous partial response and continue.
             const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, 200);
             agent.restoreSessionFromHistory(
               sessionId,
@@ -1350,6 +1490,7 @@ export class APIServer {
             agent,
             userText,
             images,
+            fileNames,
             senderId,
             senderInfo,
             sessionId,
@@ -1357,6 +1498,7 @@ export class APIServer {
             persistUserMessage: bindingPersist,
             persistAssistantMessage: this.persistAssistantMessage.bind(this),
             executionStreamRepo: this.storage?.executionStreamRepo,
+            isResume,
           });
 
           await sseHandler.handle(res);
@@ -1365,7 +1507,7 @@ export class APIServer {
           const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
           let reply: string;
           try {
-            reply = await agent.sendMessage(userText, senderId, senderInfo, { images, toolEventCollector: toolEvents });
+            reply = await agent.sendMessage(userText, senderId, senderInfo, { images, fileNames, toolEventCollector: toolEvents });
           } catch (err) {
             const errText = `⚠ AI service error: ${String(err).slice(0, 500)}`;
             void this.persistAssistantMessage(
@@ -1484,7 +1626,15 @@ export class APIServer {
       const orgId = url.searchParams.get('orgId') ?? 'default';
       const teams = this.orgService.listTeamsWithMembers(orgId);
       const ungrouped = this.orgService.listUngroupedMembers(orgId);
-      this.json(res, 200, { teams, ungrouped });
+      const enrichMember = (m: Record<string, unknown>) => {
+        const avatarUrl = m.type === 'agent'
+          ? this.storage?.agentRepo.findById(m.id as string)?.avatarUrl
+          : this.storage?.userRepo.findById(m.id as string)?.avatarUrl;
+        return avatarUrl ? { ...m, avatarUrl } : m;
+      };
+      const enrichedTeams = teams.map(t => ({ ...t, members: (t.members as unknown as Record<string, unknown>[]).map(enrichMember) }));
+      const enrichedUngrouped = (ungrouped as unknown as Record<string, unknown>[]).map(enrichMember);
+      this.json(res, 200, { teams: enrichedTeams, ungrouped: enrichedUngrouped });
       return;
     }
 
@@ -2300,7 +2450,7 @@ export class APIServer {
             const agent = agentManager.getAgent(agentId);
             const roleDir = this.resolveAgentRoleDir(agent);
             if (!roleDir) continue;
-            const slug = agent.config.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || agentId;
+            const slug = kebab(agent.config.name, agentId);
             for (const fname of roleFileNames) {
               const fpath = join(roleDir, fname);
               if (existsSync(fpath)) {
@@ -2708,6 +2858,86 @@ export class APIServer {
       return;
     }
 
+    // Smart sync: use LLM to merge template changes while preserving agent customizations
+    if (path.match(/^\/api\/agents\/[^/]+\/role-smart-sync$/) && req.method === 'POST') {
+      const agentId = path.split('/')[3]!;
+      if (!this.llmRouter) {
+        this.json(res, 503, { error: 'LLM router not available for smart sync' });
+        return;
+      }
+      try {
+        const body = await this.readBody(req);
+        const fileName = (body['file'] as string) ?? 'ROLE.md';
+        const diff = this.orgService.getAgentManager().getRoleFileDiff(agentId, fileName);
+
+        if (!diff.agentContent || !diff.templateContent) {
+          this.json(res, 400, { error: 'Cannot smart sync: missing agent or template content' });
+          return;
+        }
+
+        if (diff.agentContent === diff.templateContent) {
+          this.json(res, 200, { success: true, mergedContent: diff.agentContent, explanation: 'Files are already identical.' });
+          return;
+        }
+
+        const prompt = `You are a configuration merge assistant. You need to intelligently merge a template update into an agent's configuration file while preserving the agent's customizations.
+
+AGENT'S CURRENT FILE (${fileName}):
+\`\`\`
+${diff.agentContent}
+\`\`\`
+
+UPDATED TEMPLATE FILE (${fileName}):
+\`\`\`
+${diff.templateContent}
+\`\`\`
+
+INSTRUCTIONS:
+1. Identify what changed in the template compared to the agent's current file
+2. Preserve the agent's custom modifications (things the user deliberately changed from the original template)
+3. Incorporate valuable new additions from the template (new sections, improved wording, new capabilities)
+4. If the agent removed something from the original template, keep it removed (respect user intent)
+5. If the template added something new, include it
+6. If both modified the same section, prefer the agent's version but incorporate template improvements where they don't conflict
+
+Output ONLY two sections:
+MERGED_CONTENT_START
+(the merged file content here)
+MERGED_CONTENT_END
+
+EXPLANATION_START
+(brief bullet points of what was kept, added, and why)
+EXPLANATION_END`;
+
+        const llmResponse = await this.llmRouter.chat({
+          messages: [
+            { role: 'system', content: 'You are a precise configuration merge tool. Output exactly the requested format.' },
+            { role: 'user', content: prompt },
+          ],
+          maxTokens: 8192,
+          temperature: 0.1,
+        });
+
+        const text = llmResponse.content;
+        const mergedMatch = text.match(/MERGED_CONTENT_START\n([\s\S]*?)\nMERGED_CONTENT_END/);
+        const explanationMatch = text.match(/EXPLANATION_START\n([\s\S]*?)\nEXPLANATION_END/);
+
+        if (!mergedMatch) {
+          this.json(res, 500, { error: 'LLM did not produce valid merged content', success: false });
+          return;
+        }
+
+        this.json(res, 200, {
+          success: true,
+          mergedContent: mergedMatch[1]!.trim(),
+          explanation: explanationMatch?.[1]?.trim() ?? 'Merge completed.',
+        });
+      } catch (err) {
+        this.json(res, 500, { error: `Smart sync failed: ${String(err)}`, success: false });
+      }
+      return;
+    }
+
     // Batch check: all agents' role update status
     if (path === '/api/agents/role-updates' && req.method === 'GET') {
       const results = this.orgService.getAgentManager().checkAllRoleUpdates();
@@ -2941,12 +3171,14 @@ export class APIServer {
         } catch {
           /* ok */
         }
+        const storedAgent = this.storage?.agentRepo.findById(agentId);
         this.json(res, 200, {
           id: agent.id,
           name: agent.config.name,
           role: agent.role.name,
           roleDescription: agent.role.description,
           agentRole: agent.config.agentRole,
+          avatarUrl: storedAgent?.avatarUrl ?? undefined,
           state,
           activeTaskCount: state.activeTaskCount,
           activeTaskIds: state.activeTaskIds,
@@ -3332,7 +3564,9 @@ export class APIServer {
         const d = await this.deliverableService.update(delivId, {
           title: body['title'] as string | undefined,
           summary: body['summary'] as string | undefined,
+          reference: body['reference'] as string | undefined,
           status: body['status'] as any,
+          type: body['type'] as any,
           tags: body['tags'] as string[] | undefined,
         });
         if (!d) { this.json(res, 404, { error: 'Deliverable not found' }); return; }
@@ -3438,7 +3672,17 @@ export class APIServer {
     // Human Users
     if (path === '/api/users' && req.method === 'GET') {
       const targetOrgId = url.searchParams.get('orgId') ?? 'default';
-      const users = this.orgService.listHumanUsers(targetOrgId);
+      let users = this.orgService.listHumanUsers(targetOrgId) as unknown as Array<Record<string, unknown>>;
+      if (this.storage) {
+        const dbUsers = await this.storage.userRepo.listByOrg(targetOrgId);
+        const avatarMap = new Map(dbUsers.filter((u: any) => u.avatarUrl).map((u: any) => [u.id, u.avatarUrl]));
+        if (avatarMap.size > 0) {
+          users = users.map(u => {
+            const av = avatarMap.get(u.id as string);
+            return av ? { ...u, avatarUrl: av } : u;
+          });
+        }
+      }
       this.json(res, 200, { users });
       return;
     }
@@ -3453,14 +3697,18 @@ export class APIServer {
       const teamId = body['teamId'] as string | undefined;
       const userId = (body['id'] as string | undefined) ?? generateId('usr');
 
-      // Persist to DB if storage is available and password is provided (for login-capable users)
+      // Persist to DB if storage is available and login credentials are provided
       if (this.storage && (email || password)) {
+        if (password && !email) {
+          this.json(res, 400, { error: 'Email is required when setting a password' });
+          return;
+        }
         const passwordHash = password ? await hashPassword(password) : undefined;
         await this.storage.userRepo.create({
           id: userId,
           orgId,
           name,
-          email: email ?? `${userId}@markus.local`,
+          email: email ?? undefined,
           role,
           passwordHash,
         });
@@ -3969,7 +4217,7 @@ export class APIServer {
             : Array.isArray(artifact.members) ? artifact.members : []) as Array<Record<string, unknown>>;
           for (const m of rawMembers) {
             const mName = (m.name as string) ?? 'Agent';
-            const slug = mName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || 'agent';
+            const slug = kebab(mName, 'agent');
             const memberDir = join(artDir, 'members', slug);
             const roleContent = (m.roleContent as string) || (m.role_md as string);
             const policiesContent = (m.policiesContent as string) || (m.policies_md as string);
@@ -4586,71 +4834,44 @@ export class APIServer {
       const authUser = await this.getAuthUser(req);
       const approvalId = path.split('/')[3]!;
       const body = await this.readBody(req);
+      const approved = body['approved'] as boolean;
+      const respondedBy = (body['respondedBy'] as string) ?? authUser?.userId ?? 'anonymous';
+      const comment = body['comment'] as string | undefined;
+      const selectedOption = body['selectedOption'] as string | undefined;
       const result = this.hitlService.respondToApproval(
-        approvalId,
-        body['approved'] as boolean,
-        (body['respondedBy'] as string) ?? authUser?.userId ?? 'anonymous',
-        body['comment'] as string | undefined,
-        body['selectedOption'] as string | undefined,
+        approvalId, approved, respondedBy, comment, selectedOption,
       );
       if (!result) {
         this.json(res, 404, { error: 'Approval not found or not pending' });
         return;
       }
+
+      // Directly transition task/requirement as fallback.
+      // The in-memory promise callback from requestApprovalAndWait is lost on
+      // server restart, so we must also drive the state change from here.
+      const details = result.details as Record<string, unknown> | undefined;
+      const taskId = details?.['taskId'] as string | undefined;
+      const requirementId = details?.['requirementId'] as string | undefined;
+      if (taskId) {
+        try {
+          if (approved) {
+            this.taskService.approveTask(taskId);
+          } else {
+            this.taskService.rejectTask(taskId);
+          }
+        } catch { /* already transitioned by in-memory promise callback */ }
+      }
+      if (requirementId && this.requirementService) {
+        try {
+          if (approved) {
+            this.requirementService.approveRequirement(requirementId, respondedBy);
+          } else {
+            this.requirementService.rejectRequirement(requirementId, respondedBy, comment || 'Rejected via approval');
+          }
+        } catch { /* already transitioned by in-memory promise callback */ }
+      }
+
       this.json(res, 200, { approval: result });
-      return;
-    }
-
-    // HITL: Bounties
-    if (path === '/api/bounties' && req.method === 'GET') {
-      const status = url.searchParams.get('status') as 'open' | 'claimed' | undefined;
-      this.json(res, 200, { bounties: this.hitlService?.listBounties(status ?? undefined) ?? [] });
-      return;
-    }
-
-    if (path === '/api/bounties' && req.method === 'POST') {
-      if (!this.hitlService) {
-        this.json(res, 503, { error: 'HITL service not available' });
-        return;
-      }
-      const body = await this.readBody(req);
-      const bounty = this.hitlService.postBounty({
-        agentId: body['agentId'] as string,
-        agentName: (body['agentName'] as string) ?? 'Agent',
-        title: body['title'] as string,
-        description: body['description'] as string,
-        skills: body['skills'] as string[],
-        reward: body['reward'] as string,
-      });
-      this.json(res, 201, { bounty });
-      return;
-    }
-
-    if (path.startsWith('/api/bounties/') && req.method === 'POST') {
-      if (!this.hitlService) {
-        this.json(res, 503, { error: 'HITL service not available' });
-        return;
-      }
-      const bountyId = path.split('/')[3]!;
-      const body = await this.readBody(req);
-      const action = body['action'] as string;
-      if (action === 'claim') {
-        const result = this.hitlService.claimBounty(bountyId, body['userId'] as string);
-        if (!result) {
-          this.json(res, 404, { error: 'Bounty not found or not open' });
-          return;
-        }
-        this.json(res, 200, { bounty: result });
-      } else if (action === 'complete') {
-        const result = this.hitlService.completeBounty(bountyId, body['result'] as string);
-        if (!result) {
-          this.json(res, 404, { error: 'Bounty not found or not claimed' });
-          return;
-        }
-        this.json(res, 200, { bounty: result });
-      } else {
-        this.json(res, 400, { error: 'Unknown action. Use claim or complete' });
-      }
       return;
     }
 
@@ -4904,13 +5125,62 @@ export class APIServer {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${hubToken}`,
         };
-        const hubRes = await fetch(`${hubUrl}/api/items`, {
+        let hubRes = await fetch(`${hubUrl}/api/items`, {
           method: 'POST',
           headers,
           body: JSON.stringify(body['payload']),
+          redirect: 'manual',
         });
+        if (hubRes.status >= 300 && hubRes.status < 400) {
+          const location = hubRes.headers.get('location');
+          if (location) {
+            hubRes = await fetch(location, { method: 'POST', headers, body: JSON.stringify(body['payload']), redirect: 'manual' });
+          }
+        }
         const hubData = await hubRes.json();
         this.json(res, hubRes.status, hubData);
+      } catch (err) {
+        this.json(res, 502, { error: `Hub request failed: ${String(err)}` });
+      }
+      return;
+    }
+
+    // Generic Hub API proxy (avoids CORS issues with cross-origin fetch to markus.global)
+    if (path.startsWith('/api/hub/')) {
+      const hubPath = path.slice('/api/hub'.length);
+      const reqUrl = new URL(req.url!, `http://${req.headers.host}`);
+      const hubTargetUrl = `${this.hubUrl}/api${hubPath}${reqUrl.search}`;
+
+      const proxyHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      const authHeader = req.headers['authorization'];
+      if (authHeader) proxyHeaders['Authorization'] = authHeader;
+
+      try {
+        let body: string | undefined;
+        if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+          body = JSON.stringify(await this.readBody(req));
+        }
+        // Use redirect: 'manual' to prevent fetch from stripping the
+        // Authorization header when Vercel issues a cross-origin 307 redirect.
+        let hubRes = await fetch(hubTargetUrl, {
+          method: req.method,
+          headers: proxyHeaders,
+          body,
+          redirect: 'manual',
+        });
+        if (hubRes.status >= 300 && hubRes.status < 400) {
+          const location = hubRes.headers.get('location');
+          if (location) {
+            hubRes = await fetch(location, {
+              method: req.method,
+              headers: proxyHeaders,
+              body,
+              redirect: 'manual',
+            });
+          }
+        }
+        const data = await hubRes.json();
+        this.json(res, hubRes.status, data);
       } catch (err) {
         this.json(res, 502, { error: `Hub request failed: ${String(err)}` });
       }
@@ -5009,6 +5279,53 @@ export class APIServer {
         }
       }
       this.json(res, 200, { maxToolIterations: am.maxToolIterations });
+      return;
+    }
+
+    // Settings — Browser automation
+    if (path === '/api/settings/browser' && req.method === 'GET') {
+      const { loadConfig: loadCfg } = await import('@markus/shared');
+      const currentConfig = loadCfg(this.markusConfigPath);
+      const browser = currentConfig.browser ?? {};
+      this.json(res, 200, {
+        bringToFront: browser.bringToFront ?? false,
+        remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
+        autoCloseTabs: browser.autoCloseTabs ?? true,
+      });
+      return;
+    }
+
+    if (path === '/api/settings/browser' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const updates: Record<string, unknown> = {};
+      if (typeof body['bringToFront'] === 'boolean') updates.bringToFront = body['bringToFront'];
+      if (typeof body['remoteDebuggingPort'] === 'number') updates.remoteDebuggingPort = body['remoteDebuggingPort'];
+      if (typeof body['autoCloseTabs'] === 'boolean') updates.autoCloseTabs = body['autoCloseTabs'];
+      try {
+        saveConfig({ browser: updates } as any, this.markusConfigPath);
+        const am = this.orgService.getAgentManager();
+        if (typeof updates.bringToFront === 'boolean') {
+          am.setBrowserBringToFront(updates.bringToFront);
+        }
+        if (typeof updates.autoCloseTabs === 'boolean') {
+          am.setBrowserAutoCloseTabs(updates.autoCloseTabs);
+        }
+        if (typeof updates.remoteDebuggingPort === 'number') {
+          am.setBrowserRemoteDebuggingPort(updates.remoteDebuggingPort);
+        }
+      } catch (e) {
+        log.warn('Failed to persist browser settings', { error: String(e) });
+      }
+      const { loadConfig: loadCfg } = await import('@markus/shared');
+      const currentConfig = loadCfg(this.markusConfigPath);
+      const browser = currentConfig.browser ?? {};
+      this.json(res, 200, {
+        bringToFront: browser.bringToFront ?? false,
+        remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
+        autoCloseTabs: browser.autoCloseTabs ?? true,
+      });
       return;
     }
 
@@ -6152,6 +6469,51 @@ export class APIServer {
       return;
     }
 
+    // ── File existence batch check ──────────────────────────────────────────
+
+    if (path === '/api/files/check' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const paths = body?.paths as string[] | undefined;
+      if (!Array.isArray(paths) || paths.length === 0) {
+        this.json(res, 400, { error: 'Missing "paths" array in request body' });
+        return;
+      }
+
+      try {
+        const { resolve, extname } = await import('node:path');
+        const { existsSync, statSync } = await import('node:fs');
+
+        const results: Record<string, { exists: boolean; isFile: boolean; type: string }> = {};
+        const mdExts = ['.md', '.markdown'];
+        const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'];
+
+        for (const p of paths.slice(0, 50)) {
+          try {
+            const resolved = resolve(p);
+            if (!existsSync(resolved)) {
+              results[p] = { exists: false, isFile: false, type: 'unknown' };
+              continue;
+            }
+            const stat = statSync(resolved);
+            const isFile = stat.isFile();
+            const ext = extname(resolved).toLowerCase();
+            let type = 'text';
+            if (mdExts.includes(ext)) type = 'markdown';
+            else if (imageExts.includes(ext)) type = 'image';
+            else if (!isFile) type = 'directory';
+            results[p] = { exists: true, isFile, type };
+          } catch {
+            results[p] = { exists: false, isFile: false, type: 'unknown' };
+          }
+        }
+
+        this.json(res, 200, { results });
+      } catch (err) {
+        this.json(res, 500, { error: `Failed to check files: ${String(err)}` });
+      }
+      return;
+    }
+
     // ── File preview ──────────────────────────────────────────────────────
 
     if (path === '/api/files/preview' && req.method === 'GET') {
@@ -6165,13 +6527,6 @@ export class APIServer {
         const { resolve, extname } = await import('node:path');
         const { readFileSync, existsSync, statSync } = await import('node:fs');
         const resolved = resolve(filePath);
-
-        // Security: only allow files under home/.markus (agent workspaces & shared data)
-        const markusBase = join(homedir(), '.markus');
-        if (!resolved.startsWith(markusBase)) {
-          this.json(res, 403, { error: 'Access denied: file is outside the allowed directory' });
-          return;
-        }
 
         if (!existsSync(resolved)) {
           this.json(res, 404, { error: 'File not found' });

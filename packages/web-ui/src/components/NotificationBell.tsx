@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { api, type NotificationInfo, type ApprovalInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
+import { MarkdownMessage } from './MarkdownMessage.tsx';
 
 interface Props {
   collapsed?: boolean;
@@ -20,34 +21,23 @@ const TYPE_ICON: Record<string, string> = {
   approval_request: 'M9 12l2 2 4-4 M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z',
   task_completed: 'M22 11.08V12a10 10 0 1 1-5.93-9.14 M22 4L12 14.01l-3-3',
   task_created: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8',
-  task_status_changed: 'M23 4v6h-6 M1 20v-6h6 M3.51 9a9 9 0 0 1 14.85-3.36L23 10 M1 14l4.64 4.36A9 9 0 0 0 20.49 15',
+  task_review: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8',
+  task_failed: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8',
   requirement_created: 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7 M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z',
   requirement_decision: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
-  agent_alert: 'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z M12 9v4 M12 17h.01',
   agent_report: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8',
-  agent_chat_request: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
-  agent_escalation: 'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z M12 9v4 M12 17h.01',
-  bounty_posted: 'M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z M19 10v2a7 7 0 0 1-14 0v-2',
-  mention: 'M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2 M12.5 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0z M20 8v6 M23 11h-6',
   system: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
 };
 
 const TYPE_COLOR: Record<string, string> = {
+  approval_request: 'text-amber-500',
   task_completed: 'text-green-500',
   task_failed: 'text-red-500',
   task_created: 'text-blue-500',
   task_review: 'text-purple-500',
-  task_status_changed: 'text-blue-400',
   requirement_created: 'text-amber-500',
   requirement_decision: 'text-green-500',
-  approval_request: 'text-amber-500',
-  agent_alert: 'text-red-500',
-  agent_escalation: 'text-red-400',
   agent_report: 'text-blue-500',
-  agent_chat_request: 'text-brand-500',
-  agent_notification: 'text-blue-400',
-  bounty_posted: 'text-amber-500',
-  mention: 'text-brand-500',
   system: 'text-fg-tertiary',
 };
 
@@ -67,15 +57,12 @@ function actionHint(n: NotificationInfo): string | null {
   if (actionType === 'navigate') return 'View details →';
   const meta = n.metadata ?? {};
   switch (n.type) {
-    case 'task_completed': case 'task_created': case 'task_review':
-    case 'task_failed': case 'task_status_changed':
+    case 'task_completed': case 'task_created': case 'task_review': case 'task_failed':
       return meta.taskId ? 'View task →' : null;
     case 'requirement_created': case 'requirement_decision':
       return meta.requirementId ? 'View requirement →' : null;
-    case 'agent_chat_request':
-      return 'Open chat →';
-    case 'agent_alert': case 'agent_escalation': case 'agent_notification':
-      return meta.agentId ? 'Open chat →' : null;
+    case 'agent_report':
+      return meta.agentId ? 'View agent →' : null;
     case 'approval_request':
       return 'View approval →';
     default:
@@ -116,7 +103,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
   const [responding, setResponding] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectComment, setRejectComment] = useState('');
-  const [freeformText, setFreeformText] = useState('');
+  const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>({});
   const [unreadCount, setUnreadCount] = useState(0);
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -184,16 +171,24 @@ export function NotificationBell({ collapsed, userId }: Props) {
     return () => document.removeEventListener('mousedown', close);
   }, [open]);
 
-  const approvalIds = new Set(approvals.map(a => a.id));
+  const pendingApprovalIds = new Set(approvals.filter(a => a.status === 'pending').map(a => a.id));
+  const allApprovalIds = new Set(approvals.map(a => a.id));
   const displayNotifications = notifications.filter(n => {
-    if (n.type === 'approval_request' && n.metadata?.approvalId && approvalIds.has(n.metadata.approvalId as string)) {
+    if (n.type === 'approval_request' && n.metadata?.approvalId && allApprovalIds.has(n.metadata.approvalId as string)) {
       return false;
     }
     return true;
   });
 
-  const pendingApprovals = approvals.filter(a => a.status === 'pending').length;
-  const badgeCount = unreadCount + pendingApprovals;
+  // Count unread notifications excluding those that have matching pending approvals
+  // (pending approvals are counted separately to avoid double-counting)
+  const hiddenUnreadApprovalCount = notifications.filter(n =>
+    n.type === 'approval_request' && !n.read &&
+    n.metadata?.approvalId && pendingApprovalIds.has(n.metadata.approvalId as string)
+  ).length;
+  const adjustedUnreadCount = Math.max(0, unreadCount - hiddenUnreadApprovalCount);
+  const pendingApprovals = pendingApprovalIds.size;
+  const badgeCount = adjustedUnreadCount + pendingApprovals;
 
   useEffect(() => {
     if (prevPendingRef.current !== null && pendingApprovals > prevPendingRef.current) {
@@ -245,7 +240,9 @@ export function NotificationBell({ collapsed, userId }: Props) {
         const approvalId = meta.approvalId as string | undefined;
         const approval = approvalId ? approvals.find(a => a.id === approvalId) : undefined;
         const taskId = (approval?.details?.taskId ?? meta.taskId) as string | undefined;
+        const apAgentId = (approval?.details?.agentId ?? approval?.agentId) as string | undefined;
         if (taskId) navBus.navigate(PAGE.WORK, { openTask: taskId });
+        else if (apAgentId) navBus.navigate(PAGE.TEAM, { agentId: apAgentId });
         else navBus.navigate(PAGE.WORK);
         break;
       }
@@ -253,7 +250,6 @@ export function NotificationBell({ collapsed, userId }: Props) {
       case 'task_created':
       case 'task_review':
       case 'task_failed':
-      case 'task_status_changed':
         if (meta.taskId) navBus.navigate(PAGE.WORK, { openTask: meta.taskId as string });
         else navBus.navigate(PAGE.WORK);
         break;
@@ -262,16 +258,8 @@ export function NotificationBell({ collapsed, userId }: Props) {
         if (meta.requirementId) navBus.navigate(PAGE.WORK, { openRequirement: meta.requirementId as string });
         else navBus.navigate(PAGE.WORK);
         break;
-      case 'agent_chat_request': {
-        const params: Record<string, string> = {};
-        if (meta.agentId) params.agentId = meta.agentId as string;
-        if (meta.sessionId) params.sessionId = meta.sessionId as string;
-        navBus.navigate(PAGE.TEAM, Object.keys(params).length > 0 ? params : undefined);
-        break;
-      }
-      case 'agent_notification':
-      case 'agent_alert':
-      case 'agent_escalation': {
+      case 'agent_report':
+      case 'system': {
         if (meta.agentId) {
           const params: Record<string, string> = { agentId: meta.agentId as string };
           if (meta.sessionId) params.sessionId = meta.sessionId as string;
@@ -281,9 +269,6 @@ export function NotificationBell({ collapsed, userId }: Props) {
         }
         break;
       }
-      case 'bounty_posted':
-        navBus.navigate(PAGE.SETTINGS);
-        break;
       default:
         if (meta.taskId) navBus.navigate(PAGE.WORK, { openTask: meta.taskId as string });
         else if (meta.requirementId) navBus.navigate(PAGE.WORK, { openRequirement: meta.requirementId as string });
@@ -316,7 +301,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
       setApprovals(prev => prev.map(a => a.id === id ? approval : a));
       setRejectingId(null);
       setRejectComment('');
-      setFreeformText('');
+      setFreeformTexts(prev => { const next = { ...prev }; delete next[id]; return next; });
 
       const relatedNotif = notifications.find(
         n => n.type === 'approval_request' && n.metadata?.approvalId === id
@@ -324,6 +309,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
       if (relatedNotif && !relatedNotif.read) {
         api.notifications.markRead(relatedNotif.id);
         setNotifications(prev => prev.map(n => n.id === relatedNotif.id ? { ...n, read: true } : n));
+        setUnreadCount(prev => Math.max(0, prev - 1));
       }
       window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
     } catch { /* */ }
@@ -345,7 +331,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
 
   const navigateForApproval = (a: ApprovalInfo) => {
     const taskId = a.details?.taskId as string | undefined;
-    const agentId = a.details?.agentId as string | undefined;
+    const agentId = (a.details?.agentId ?? a.agentId) as string | undefined;
     if (taskId) navBus.navigate(PAGE.WORK, { openTask: taskId });
     else if (agentId) navBus.navigate(PAGE.TEAM, { agentId });
     else navBus.navigate(PAGE.WORK);
@@ -390,7 +376,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
                 tab === 'notifications' ? 'text-fg-primary border-b-2 border-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'
               }`}
             >
-              Notifications{unreadCount > 0 ? ` (${unreadCount})` : ''}
+              Notifications{adjustedUnreadCount > 0 ? ` (${adjustedUnreadCount})` : ''}
             </button>
             <button
               onClick={() => setOpen(false)}
@@ -422,25 +408,29 @@ export function NotificationBell({ collapsed, userId }: Props) {
                     const descClean = cmd ? a.description.replace(/\s*Command:.*$/, '') : a.description;
                     return (
                     <div key={a.id} className="px-3 py-3 space-y-2.5">
-                      <div className="flex items-start gap-2">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-500 mt-0.5 shrink-0">
-                          <path d={TYPE_ICON.approval_request} />
-                        </svg>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs text-fg-primary font-medium">{a.title}</span>
-                            <span className="text-[10px] text-fg-tertiary shrink-0">{timeAgo(a.requestedAt)}</span>
+                      <div
+                        className="cursor-pointer hover:bg-surface-overlay/50 -mx-3 -mt-3 px-3 pt-3 pb-1 rounded-t-md transition-colors"
+                        onClick={() => navigateForApproval(a)}
+                      >
+                        <div className="flex items-start gap-2">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-500 mt-0.5 shrink-0">
+                            <path d={TYPE_ICON.approval_request} />
+                          </svg>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-fg-primary font-medium">{a.title}</span>
+                              <span className="text-[10px] text-fg-tertiary shrink-0">{timeAgo(a.requestedAt)}</span>
+                            </div>
+                            <div className="text-[11px] text-fg-tertiary mt-0.5">{a.agentName}</div>
                           </div>
-                          <div className="text-[11px] text-fg-tertiary mt-0.5">{a.agentName}</div>
                         </div>
+                        <div className="mt-2.5 max-h-48 overflow-y-auto text-[11px] text-fg-secondary leading-relaxed">
+                          <MarkdownMessage content={descClean} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px]" />
+                        </div>
+                        {cmd && (
+                          <pre className="text-[11px] text-fg-primary bg-surface-overlay border border-border-default rounded-md px-2.5 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono leading-relaxed mt-2">{cmd}</pre>
+                        )}
                       </div>
-                      <p className="text-[11px] text-fg-secondary leading-relaxed">{descClean}</p>
-                      {cmd && (
-                        <pre className="text-[11px] text-fg-primary bg-surface-overlay border border-border-default rounded-md px-2.5 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono leading-relaxed">{cmd}</pre>
-                      )}
-                      <button onClick={() => navigateForApproval(a)} className="text-[11px] text-brand-500 hover:text-brand-400 transition-colors">
-                        View execution context →
-                      </button>
                       {a.options && a.options.length > 0 ? (
                         <div className="space-y-1.5">
                           <div className="flex flex-wrap gap-1.5">
@@ -454,23 +444,21 @@ export function NotificationBell({ collapsed, userId }: Props) {
                               >{opt.label}</button>
                             ))}
                           </div>
-                          {a.allowFreeform && (
-                            <div className="flex gap-1.5">
-                              <input
-                                type="text"
-                                placeholder="Type your response..."
-                                value={freeformText}
-                                onChange={e => setFreeformText(e.target.value)}
-                                onKeyDown={e => { if (e.key === 'Enter' && freeformText.trim()) handleApprovalResponse(a.id, true, freeformText.trim(), 'custom'); }}
-                                className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
-                              />
-                              <button
-                                disabled={responding === a.id || !freeformText.trim()}
-                                onClick={() => handleApprovalResponse(a.id, true, freeformText.trim(), 'custom')}
-                                className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
-                              >Send</button>
-                            </div>
-                          )}
+                          <div className="flex gap-1.5">
+                            <input
+                              type="text"
+                              placeholder="Or type your own instruction..."
+                              value={freeformTexts[a.id] ?? ''}
+                              onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
+                              onKeyDown={e => { if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom'); }}
+                              className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                            />
+                            <button
+                              disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
+                              onClick={() => handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom')}
+                              className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
+                            >Send</button>
+                          </div>
                         </div>
                       ) : rejectingId === a.id ? (
                         <div className="space-y-1.5">
@@ -494,23 +482,21 @@ export function NotificationBell({ collapsed, userId }: Props) {
                               className="px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay transition-colors"
                             >Cancel</button>
                           </div>
-                          {a.allowFreeform && (
-                            <div className="flex gap-1.5 mt-1">
-                              <input
-                                type="text"
-                                placeholder="Or type your response..."
-                                value={freeformText}
-                                onChange={e => setFreeformText(e.target.value)}
-                                onKeyDown={e => { if (e.key === 'Enter' && freeformText.trim()) handleApprovalResponse(a.id, true, freeformText.trim(), 'custom'); }}
-                                className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
-                              />
-                              <button
-                                disabled={responding === a.id || !freeformText.trim()}
-                                onClick={() => handleApprovalResponse(a.id, true, freeformText.trim(), 'custom')}
-                                className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
-                              >Send</button>
-                            </div>
-                          )}
+                          <div className="flex gap-1.5 mt-1">
+                            <input
+                              type="text"
+                              placeholder="Or type your own instruction..."
+                              value={freeformTexts[a.id] ?? ''}
+                              onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
+                              onKeyDown={e => { if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom'); }}
+                              className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                            />
+                            <button
+                              disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
+                              onClick={() => handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom')}
+                              className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
+                            >Send</button>
+                          </div>
                         </div>
                       ) : (
                         <div className="space-y-1.5">
@@ -526,23 +512,21 @@ export function NotificationBell({ collapsed, userId }: Props) {
                               className="flex-1 px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay disabled:opacity-50 transition-colors"
                             >Reject</button>
                           </div>
-                          {a.allowFreeform && (
-                            <div className="flex gap-1.5">
-                              <input
-                                type="text"
-                                placeholder="Or type your response..."
-                                value={freeformText}
-                                onChange={e => setFreeformText(e.target.value)}
-                                onKeyDown={e => { if (e.key === 'Enter' && freeformText.trim()) handleApprovalResponse(a.id, true, freeformText.trim(), 'custom'); }}
-                                className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
-                              />
-                              <button
-                                disabled={responding === a.id || !freeformText.trim()}
-                                onClick={() => handleApprovalResponse(a.id, true, freeformText.trim(), 'custom')}
-                                className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
-                              >Send</button>
-                            </div>
-                          )}
+                          <div className="flex gap-1.5">
+                            <input
+                              type="text"
+                              placeholder="Or type your own instruction..."
+                              value={freeformTexts[a.id] ?? ''}
+                              onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
+                              onKeyDown={e => { if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom'); }}
+                              className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                            />
+                            <button
+                              disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
+                              onClick={() => handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom')}
+                              className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
+                            >Send</button>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -589,7 +573,9 @@ export function NotificationBell({ collapsed, userId }: Props) {
                           {!n.read && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_DOT[n.priority] ?? PRIORITY_DOT.normal}`} />}
                           <span className="text-xs text-fg-primary font-medium truncate">{n.title}</span>
                         </div>
-                        <p className="text-[11px] text-fg-tertiary line-clamp-2 mt-0.5">{n.body}</p>
+                        <div className="text-[11px] text-fg-tertiary mt-0.5 max-h-32 overflow-y-auto">
+                          <MarkdownMessage content={n.body} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px] [&_p]:text-fg-tertiary" />
+                        </div>
                         <div className="flex items-center gap-2 mt-0.5">
                           <span className="text-[10px] text-fg-muted">{timeAgo(n.createdAt)}</span>
                           {actionHint(n) && (

@@ -29,8 +29,8 @@ Markus is an **AI Digital Workforce Platform** that lets organizations hire, man
 ┌──▼─────────▼──────────▼─────────▼───────────▼───────────────┐
 │                Agent Runtime (@markus/core)                   │
 │  Agent · Mailbox · AttentionController · ContextEngine        │
-│  LLMRouter · Memory · HeartbeatScheduler                      │
-│  Tools · MCP Client · ReviewService                           │
+│  CognitivePreparation · LLMRouter · Memory                    │
+│  HeartbeatScheduler · Tools · MCP Client · ReviewService      │
 └──────────────────────────┬──────────────────────────────────┘
                            │
               ┌────────────▼──────────────┐
@@ -76,7 +76,7 @@ Each Agent consists of:
 | `MEMORY.md` | Long-term memory (Agent-maintained) |
 | `CONTEXT.md` | Organization context (shared knowledge base) |
 
-The runtime also supports **spawning lightweight LLM subagents** (`spawn_subagent` / `spawn_subagents`) for delegated subtasks, and a **configurable tool-use iteration limit** (`AgentOptions.maxToolIterations`, system settings; default 200, range 1–10000) on chat-style harnesses — task execution remains uncapped.
+The runtime also supports **spawning lightweight LLM subagents** (`spawn_subagent` / `spawn_subagents`) for delegated subtasks. Subagent limits (parallelism, retry policy, preview truncation) are centralized in `packages/shared/src/limits.ts` rather than hardcoded. The parent agent has a **configurable tool-use iteration limit** (`AgentOptions.maxToolIterations`, system settings; default 200, range 1–10000) on chat-style harnesses — task execution and subagent loops remain uncapped by default.
 
 **Agent role types:**
 - `worker` -- Regular digital employee, executes tasks
@@ -100,6 +100,8 @@ Key components:
 - **AttentionController** — Event-driven focus loop; reacts to new mail with interrupt signals
 - **Yield Points** — Safe checkpoints in the tool loop where the agent can pause to evaluate interrupts
 - **Decision Engine** — Produces decisions: `continue`, `preempt`, `merge`, `defer`, `drop`
+- **Deferred Item Auto-Resume** — Items deferred with a `deferredUntil` timestamp are automatically resurfaced when the agent is idle and the timestamp has passed
+- **Triage with Read-Only Tools** — When multiple items compete for attention, the triage LLM can invoke a curated set of read-only tools (`task_list`, `task_get`, `requirement_list`, etc.) to gather context before deciding priority
 
 External callers use the mailbox API exclusively:
 - `agent.sendMessage()` — Awaitable chat/notification
@@ -110,7 +112,36 @@ External callers use the mailbox API exclusively:
 
 Internal processes (heartbeat, daily report, memory consolidation) also enqueue to the mailbox, ensuring **no LLM call bypasses the attention controller**. The mailbox timeline (items + decisions) forms the agent's **episodic memory ground truth**.
 
+**Task status notifications** (`task_status_update` with `invokesLLM: false`) are **informational only** — the side-effect system in `updateTaskStatus()` handles all real actions automatically (execution start/cancel, reviewer notification, dependency unblocking). These notifications exist as episodic memory and triage decision context, not as work items requiring agent processing.
+
 See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the complete design.
+
+### 3.2.1 Cognitive Preparation Pipeline
+
+Before the main LLM call, agents run a multi-phase **Cognitive Preparation Pipeline** that curates context based on the agent's persona and current state. This is grounded in cognitive psychology (Kahneman's Dual Process Theory, Baddeley's Working Memory) and ensures that different agents in different states prepare different context for the same stimulus.
+
+```
+Stimulus → Triage (what to focus on)
+         → Cognitive Preparation (how to prepare):
+            Phase 1: Appraisal  — persona-aware LLM: "What context do I need?"
+            Phase 2: Retrieval  — directed search against indexed stores
+            Phase 3: Reflection — persona-aware LLM: "What does this mean for me?"
+            Phase 4: Assembly   — merge stable + prepared context
+         → Main LLM Call (with rich, curated context)
+```
+
+Four cognitive depth levels control how much preparation happens:
+- **D0 Reflexive**: No preparation (heartbeat OK, acks)
+- **D1 Reactive**: Appraisal only (most chats, A2A)
+- **D2 Deliberative**: Full preparation (task execution, complex questions)
+- **D3 Meta-cognitive**: Full + post-response evaluation (high-stakes decisions)
+
+Key components:
+- **CognitivePreparation** (`packages/core/src/cognitive.ts`) — Orchestrates the 4-phase pipeline
+- **AppraisalPromptBuilder** — Builds persona-aware prompts using role description + agent state
+- **ReflectionPromptBuilder** — Builds prompts that interpret retrieved context from the agent's perspective
+
+See [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for the full design with theoretical foundations.
 
 ### 3.3 Organization Structure
 
@@ -134,15 +165,18 @@ Organization (Org)
 
 ### 3.4 Memory and Knowledge System
 
-**Agent memory (three layers):**
+**Agent memory (four stores):**
 
-```
-Short-term (session)       Mid-term (daily log)       Long-term (MEMORY.md)
-────────────────────      ─────────────────────      ────────────────────
-· Current chat messages    · Daily work summaries     · Key project info
-· Last 40 messages kept    · Rolling last few days    · Agent writes manually
-· Compression when full    · Auto-generated & stored   · Permanent storage
-```
+| Store | Storage | Role |
+|-------|---------|------|
+| **Identity** | `role/ROLE.md` | Who the agent is. Shapes all cognitive preparation. |
+| **Knowledge** | `MEMORY.md` + `memories.json` | What the agent knows. Agent-organized, no rigid taxonomy. |
+| **Experience** | SQLite `agent_activities` (indexed with summary + keywords) | What the agent did. Searchable episodic memory. |
+| **Working Context** | Current session | What the agent is doing now. Thin, auto-compacted. |
+
+Daily logs (`daily-logs/`) are a write-only audit trail, not injected into prompts. The Experience store replaces their former prompt role.
+
+See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) for the complete architecture.
 
 **Project knowledge base (three scopes):**
 
@@ -168,8 +202,9 @@ Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`,
 | `code_search` | Code search (ripgrep) |
 | `git_*` | Git operations |
 | `agent_send_message` | Send message to another Agent (A2A via mailbox) |
-| `notify_user` | Send one-way notification to user notification bell |
+| `notify_user` | Send proactive message to user (appears in chat + notification bell) |
 | `request_user_approval` | Request user decision/approval (blocks until user responds; supports custom options + freeform) |
+| `recall_activity` | Query own execution history (activities + tool call logs) |
 | `task_create` / `task_list` / `task_update` / `task_get` / `task_assign` / `task_note` | Task board ops (constrained by governance policy) |
 | `task_submit_review` | Submit delivery for review |
 | `requirement_propose` / `requirement_list` | Requirement management |
@@ -249,8 +284,8 @@ Agent trust level dynamically adjusts effective approval tier (e.g. senior Agent
 
 Before each conversation, the ContextEngine dynamically builds the system prompt:
 
-1. Role definition (ROLE.md system prompt)
-2. Shared behavior norms (SHARED.md: workflow overview, governance rules, knowledge sharing, etc.)
+1. Role definition (ROLE.md — Identity store)
+2. Shared behavior norms (SHARED.md: workflow, governance, knowledge sharing)
 3. Identity and org awareness (colleague list, manager, human members)
 4. **Current project context** (project name, repos, governance rules)
 5. **Current workspace** (agent workspace path, shared workspace)
@@ -258,12 +293,13 @@ Before each conversation, the ContextEngine dynamically builds the system prompt
 7. **System announcements** (urgent/high-priority announcements)
 8. **Human feedback** (annotations and instructions from report reviews)
 9. **Project knowledge highlights** (high-importance verified knowledge entries)
-10. Long-term memory (MEMORY.md summary)
-11. Relevant memory retrieval
-12. Recent activity summary (daily log)
-13. Task board (currently assigned Tasks)
-14. Current conversation identity (sender info)
-15. Environment info (OS, toolchain, runtime)
+10. **Your Knowledge** (MEMORY.md — Knowledge store, single unified section)
+11. Cognitive/Retrieved Context + Reflection (when CPP active — from Experience + Knowledge stores)
+12. Task board (currently assigned Tasks)
+13. Current conversation identity (sender info)
+14. Environment info (OS, toolchain, runtime)
+
+See [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) for the complete section ordering and [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for the cognitive preparation pipeline.
 
 ### 3.8 LLM Routing
 
@@ -435,7 +471,7 @@ agent_decisions (id, agent_id, mailbox_item_id, decision, reason, context, decid
 ## 6. Authentication
 
 - JWT Cookie (`markus_token`, 7-day validity)
-- Default account: `admin@markus.local` / `markus123` (must change password on first login)
+- Initial account: `admin@markus.local` / `markus123` (onboarding wizard prompts user to set real name, email, and password)
 - Roles: owner > admin > member > guest
 - Only `owner` / `admin` can manage team members and Agents
 

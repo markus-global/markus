@@ -1,8 +1,9 @@
 import { join } from 'node:path';
-import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, copyFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, copyFileSync, statSync, cpSync } from 'node:fs';
 import { homedir } from 'node:os';
 import {
   createLogger,
+  kebab,
   readManifest,
   manifestFilename,
   validateManifest,
@@ -124,18 +125,18 @@ export class BuilderService {
   ): Promise<InstallResult> {
     const agentManager = this.orgService.getAgentManager();
     const agentName = manifest.displayName ?? manifest.name ?? artifactName;
-    const knownRoles = this.orgService.listAvailableRoles();
-    const requestedRole = manifest.agent?.roleName ?? 'developer';
-    const roleName = knownRoles.includes(requestedRole) ? requestedRole : 'developer';
+    const hasCustomRole = existsSync(join(artDir, 'ROLE.md'));
     const skills = manifest.dependencies?.skills ?? [];
     const agentRole = (manifest.agent?.agentRole ?? 'worker') as 'worker' | 'manager';
 
     const agent = await this.orgService.hireAgent({
       name: agentName,
-      roleName,
+      roleName: manifest.agent?.roleName || (hasCustomRole ? 'custom' : 'developer'),
       orgId: 'default',
       agentRole,
       skills,
+      skipAutoStart: true,
+      skipTemplateCopy: hasCustomRole,
     });
 
     const agentRoleDir = join(agentManager.getDataDir(), agent.id, 'role');
@@ -188,44 +189,47 @@ export class BuilderService {
     this.orgService.ensureTeamDataDir(team.id, announcements, norms);
 
     const members = manifest.team?.members ?? [];
-    const knownRoles = this.orgService.listAvailableRoles();
     const createdAgents: Array<{ id: string; name: string; role: string }> = [];
+    const usedMemberDirs = new Set<string>();
 
     for (const member of members) {
       const count = member.count ?? 1;
       const memberRole = (member.role ?? 'worker') as 'worker' | 'manager';
       const memberName = member.name ?? 'Agent';
-      const roleName = knownRoles.includes(member.roleName) ? member.roleName : 'developer';
       const memberSkills = member.skills ?? [];
-      const memberSlug = memberName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-      const memberFilesDir = join(artDir, 'members', memberSlug);
+      const memberFilesDir = this.findMemberDir(artDir, memberName, usedMemberDirs);
+      const hasCustomRole = !!memberFilesDir && existsSync(join(memberFilesDir, 'ROLE.md'));
+      if (memberFilesDir) usedMemberDirs.add(memberFilesDir);
+      log.info('installTeam: member lookup', { memberName, memberFilesDir, hasCustomRole });
 
       for (let i = 0; i < count; i++) {
         const displayName = count > 1 ? `${memberName} ${i + 1}` : memberName;
         const agent = await this.orgService.hireAgent({
           name: displayName,
-          roleName,
+          roleName: member.roleName || (hasCustomRole ? 'custom' : 'developer'),
           orgId: 'default',
           teamId: team.id,
           agentRole: memberRole,
           skills: memberSkills.length > 0 ? memberSkills : undefined,
+          skipAutoStart: true,
+          skipTemplateCopy: hasCustomRole,
         });
 
         const agentRoleDir = join(agentManager.getDataDir(), agent.id, 'role');
         mkdirSync(agentRoleDir, { recursive: true });
-        if (existsSync(memberFilesDir)) {
+        if (memberFilesDir && existsSync(memberFilesDir)) {
           for (const fname of readdirSync(memberFilesDir)) {
             const srcFile = join(memberFilesDir, fname);
             if (statSync(srcFile).isFile()) {
               copyFileSync(srcFile, join(agentRoleDir, fname));
             }
           }
-          agent.reloadRole();
         }
         writeFileSync(
           join(agentRoleDir, '.role-origin.json'),
           JSON.stringify({ customRole: true, source: 'builder-artifact', artifact: artifactName, artifactType: 'team' }),
         );
+        agent.reloadRole();
 
         if (memberRole === 'manager') {
           await this.orgService.updateTeam(team.id, { managerId: agent.id, managerType: 'agent' });
@@ -241,6 +245,45 @@ export class BuilderService {
     };
   }
 
+  /**
+   * Find the member directory under artDir/members/ by trying multiple slug strategies.
+   * Returns the absolute path to the member directory, or null if not found.
+   */
+  private findMemberDir(artDir: string, memberName: string, usedDirs: Set<string>): string | null {
+    const membersBase = join(artDir, 'members');
+    if (!existsSync(membersBase)) return null;
+
+    // Strategy 1: exact slug match (using the canonical kebab function)
+    const slug = kebab(memberName, 'agent');
+    const exact = join(membersBase, slug);
+    if (existsSync(exact) && !usedDirs.has(exact)) return exact;
+
+    // Strategy 3: scan directories for matching ROLE.md title
+    try {
+      for (const entry of readdirSync(membersBase, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const candidateDir = join(membersBase, entry.name);
+        if (usedDirs.has(candidateDir)) continue;
+        const rolePath = join(candidateDir, 'ROLE.md');
+        if (!existsSync(rolePath)) continue;
+        try {
+          const content = readFileSync(rolePath, 'utf-8');
+          const title = content.match(/^#\s+(.+)$/m)?.[1]?.trim();
+          if (title && title.toLowerCase() === memberName.toLowerCase()) return candidateDir;
+        } catch { /* skip */ }
+      }
+    } catch { /* skip */ }
+
+    // Strategy 4: if only one unmatched directory remains, use it
+    try {
+      const remaining = readdirSync(membersBase, { withFileTypes: true })
+        .filter(e => e.isDirectory() && !usedDirs.has(join(membersBase, e.name)));
+      if (remaining.length === 1) return join(membersBase, remaining[0].name);
+    } catch { /* skip */ }
+
+    return null;
+  }
+
   private async installSkill(
     artDir: string,
     manifest: MarkusPackageManifest,
@@ -250,8 +293,11 @@ export class BuilderService {
     mkdirSync(skillDir, { recursive: true });
     for (const fname of readdirSync(artDir)) {
       const srcFile = join(artDir, fname);
+      const destFile = join(skillDir, fname);
       if (statSync(srcFile).isFile()) {
-        copyFileSync(srcFile, join(skillDir, fname));
+        copyFileSync(srcFile, destFile);
+      } else if (statSync(srcFile).isDirectory()) {
+        cpSync(srcFile, destFile, { recursive: true });
       }
     }
 

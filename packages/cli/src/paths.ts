@@ -53,13 +53,13 @@ export function allTemplateDirs(sub: string): string[] {
  * Returns undefined if no pre-built Web UI is found.
  */
 export function resolveWebUiDir(): string | undefined {
+  // monorepo dev: packages/web-ui/dist/ — always freshly built by `pnpm build`
+  const devDir = resolve(__dirname, '../../web-ui/dist');
+  if (existsSync(devDir)) return devDir;
+
   // npm-installed: dist/web-ui/ sits next to the bundled CLI
   const pkgDir = resolve(__dirname, 'web-ui');
   if (existsSync(pkgDir)) return pkgDir;
-
-  // monorepo dev: packages/web-ui/dist/
-  const devDir = resolve(__dirname, '../../web-ui/dist');
-  if (existsSync(devDir)) return devDir;
 
   return undefined;
 }

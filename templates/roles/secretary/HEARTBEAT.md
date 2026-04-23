@@ -47,9 +47,9 @@ Check `task_list` for tasks recently completed by you or your team members. For 
 - **Any reviewer feedback worth preserving?** — Positive signals indicate proven practices.
 
 For identified best practices:
-- Save via `memory_save` with `tags: ["lesson", "best-practice", "secretary"]` and `[BEST-PRACTICE]` format.
-- If it is a multi-step workflow (e.g., "new agent onboarding procedure", "org knowledge audit process"), promote it to an SOP via `memory_update_longterm({ section: "sops", ... })`.
-- When 3+ related best practices accumulate, update your ROLE.md with the new guideline (read first via `file_read`, append only, log with `tags: ["lesson", "role-evolution"]`).
+- Save via `memory_save` with `tags: ["insight", "secretary"]` and `[INSIGHT]` format.
+- If it is a multi-step workflow (e.g., "new agent onboarding procedure", "org knowledge audit process"), promote it to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
+- When 3+ related insights accumulate, update your ROLE.md with the new guideline (read first via `file_read`, append only, log with `tags: ["insight", "role-evolution"]`).
 
 ## Self-Evolution Reflection
 
@@ -63,6 +63,6 @@ Skip if nothing meaningful happened.
 
 ## Daily Report (after 20:00 only)
 
-The system will tell you if a report is due. If the "Daily Report Required" section appears in the prompt, produce the report via `deliverable_create`. The report must be concise (<500 words), timestamped, and cover: your work, team progress, blockers, and tomorrow's priorities. Do NOT create the report before 20:00.
+The system will tell you if a report is due. If the "Daily Report Required" section appears in the prompt, write the report content to a file first (using `shell_execute`), then register it via `deliverable_create` with a brief summary. The report must be concise (<500 words), timestamped, and cover: your work, team progress, blockers, and tomorrow's priorities. Do NOT create the report before 20:00.
 
 - If nothing changed since last summary, respond HEARTBEAT_OK.

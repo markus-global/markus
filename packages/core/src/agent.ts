@@ -26,6 +26,8 @@ import {
   HEARTBEAT_DAILY_LOG_CHARS,
   COMPLETION_MARKER_INSTRUCTION,
   COMPLETION_MARKER,
+  TRIAGE_CONTEXT_MESSAGES_MAX,
+  TRIAGE_CONTEXT_MSG_CHARS,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -59,6 +61,7 @@ import { AttentionController, type AttentionDelegate } from './attention.js';
  */
 interface TaskAsyncContext {
   taskId: string;
+  requirementId?: string;
   /** When set, executeTool/buildToolDefinitions use this instead of this.tools */
   tools?: Map<string, AgentToolHandler>;
   /** When set, subagent tools emit progress events through this callback */
@@ -280,7 +283,7 @@ export class Agent {
   private activitySeqCounters = new Map<string, number>();
   private onActivityStartCb?: (activity: AgentActivity & { agentId: string }) => void;
   private onActivityLogCb?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
-  private onActivityEndCb?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
+  private onActivityEndCb?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   private dynamicContextProviders = new Map<string, () => string>();
   private static readonly MAX_ACTIVITY_LOG_ENTRIES = 200;
   private static readonly MAX_ACTIVITY_LOGS_KEPT = 10;
@@ -291,7 +294,10 @@ export class Agent {
   private static readonly NETWORK_RETRY_MAX = 3;
   private static readonly NETWORK_RETRY_BASE_MS = 2000;
   private static readonly MEMORY_CONSOLIDATION_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
-  private static readonly DEFAULT_MAX_TOOL_ITERATIONS = Infinity;
+  private static readonly DEFAULT_MAX_TOOL_ITERATIONS = 200;
+  private static readonly HEARTBEAT_MAX_TOOL_ITERATIONS = 30;
+  /** Maps background_exec session IDs to the originating session that spawned them */
+  private bgSessionOrigin = new Map<string, string>();
   private _maxToolIterations: number;
   private _bgCompletionUnsub?: () => void;
 
@@ -360,12 +366,13 @@ export class Agent {
     this.tools.set('spawn_subagent', createSubagentTool(subagentCtx));
     this.tools.set('spawn_subagents', createParallelSubagentTool(subagentCtx));
 
-    // Register background process completion notifications.
-    // When a background_exec session finishes, inject a notification into the
-    // current chat session so the model sees it on its next turn.
+    // Route background_exec completion to the originating session (not always main chat).
     this._bgCompletionUnsub = onBackgroundCompletion((notification) => {
-      const sessionId = this.currentSessionId;
-      if (!sessionId) return;
+      const targetSession = this.bgSessionOrigin.get(notification.sessionId)
+        ?? this.currentSessionId;
+      if (!targetSession) return;
+      this.bgSessionOrigin.delete(notification.sessionId);
+
       const status = notification.exitCode === 0 ? 'succeeded' : `failed (exit ${notification.exitCode})`;
       const parts = [
         `[BACKGROUND PROCESS COMPLETED] Session ${notification.sessionId} ${status}.`,
@@ -378,7 +385,7 @@ export class Agent {
       if (notification.exitCode === 0 && notification.stdoutTail) {
         parts.push(`Output (last lines):\n${notification.stdoutTail}`);
       }
-      this.injectUserMessage(sessionId, parts.join('\n'));
+      this.injectUserMessage(targetSession, parts.join('\n'));
     });
 
     // Initialize task executor
@@ -399,8 +406,9 @@ export class Agent {
       });
     });
 
-    // Auto-reload role when agent modifies its own ROLE.md
+    // Auto-reload role / heartbeat when agent modifies its own files
     const roleFilePath = join(this.dataDir, 'role', 'ROLE.md');
+    const heartbeatFilePath = join(this.dataDir, 'role', 'HEARTBEAT.md');
     this.toolHooks.register({
       name: 'role-auto-reload',
       after: async (ctx) => {
@@ -409,6 +417,10 @@ export class Agent {
           if (targetPath === roleFilePath || targetPath.endsWith('/role/ROLE.md')) {
             log.info('Agent modified its own ROLE.md — reloading role definition');
             this.reloadRole();
+          }
+          if (targetPath === heartbeatFilePath || targetPath.endsWith('/role/HEARTBEAT.md')) {
+            log.info('Agent modified its own HEARTBEAT.md — reloading heartbeat checklist');
+            this.reloadHeartbeat();
           }
         }
       },
@@ -540,8 +552,9 @@ export class Agent {
       sessionId?: string;
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
+      fileNames?: string[];
       allowedTools?: Set<string>;
-      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation';
+      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review';
       toolEventCollector?: Array<{
         tool: string;
         status: 'done' | 'error';
@@ -565,6 +578,7 @@ export class Agent {
         sessionId: options?.sessionId,
         channelContext: options?.channelContext,
         images: options?.images,
+        fileNames: options?.fileNames,
         allowedTools: options?.allowedTools
           ? [...options.allowedTools]
           : undefined,
@@ -598,12 +612,14 @@ export class Agent {
     senderInfo?: { name: string; role: string },
     cancelToken?: { cancelled: boolean },
     images?: string[],
+    fileNames?: string[],
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: userMessage.slice(0, 100),
       content: userMessage,
       extra: {
         images,
+        fileNames,
         stream: true,
         onEvent,
         cancelToken,
@@ -639,11 +655,14 @@ export class Agent {
     cancelToken?: { cancelled: boolean },
     taskProjectContext?: TaskProjectContext,
     executionRound?: number,
+    taskTitle?: string,
+    requirementId?: string,
   ): Promise<string> {
     const payload: MailboxPayload = {
-      summary: `Task: ${taskDescription.slice(0, 80)}`,
+      summary: `Task: ${taskTitle ?? taskDescription.slice(0, 80)}`,
       content: taskDescription,
       taskId,
+      requirementId,
       extra: {
         triggerExecution: true,
         onLog,
@@ -767,13 +786,17 @@ export class Agent {
       },
       getTriageContext: async () => {
         const messages = this.currentSessionId
-          ? this.memory.getRecentMessages(this.currentSessionId, 10)
+          ? this.memory.getRecentMessages(this.currentSessionId, TRIAGE_CONTEXT_MESSAGES_MAX * 2)
               .filter(m => m.role === 'user' || m.role === 'assistant')
-              .slice(-6)
-              .map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content.slice(0, 200) : String(m.content).slice(0, 200) }))
+              .slice(-TRIAGE_CONTEXT_MESSAGES_MAX)
+              .map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content.slice(0, TRIAGE_CONTEXT_MSG_CHARS) : String(m.content).slice(0, TRIAGE_CONTEXT_MSG_CHARS) }))
           : [];
         const activities = this.recentActivitySummaries();
-        return { agentName: this.config.name, recentMainSessionMessages: messages, recentActivitySummaries: activities };
+
+        // Include active task IDs for situational awareness
+        const activeTaskIds = Array.from(this.activeTasks);
+
+        return { agentName: this.config.name, recentMainSessionMessages: messages, recentActivitySummaries: activities, activeTaskIds };
       },
       onTriageCompleted: (result) => {
         if (!result) return;
@@ -794,10 +817,14 @@ export class Agent {
       ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'user' }
       : undefined;
     const resolveResponse = (reply: string) => {
-      item.metadata?.responsePromise?.resolve(stripCompletionMarker(reply));
+      if (typeof item.metadata?.responsePromise?.resolve === 'function') {
+        item.metadata.responsePromise.resolve(stripCompletionMarker(reply));
+      }
     };
     const rejectResponse = (err: unknown) => {
-      item.metadata?.responsePromise?.reject(err);
+      if (typeof item.metadata?.responsePromise?.reject === 'function') {
+        item.metadata.responsePromise.reject(err);
+      }
     };
 
     const ts = Date.now();
@@ -811,6 +838,7 @@ export class Agent {
       if (extra.sessionId !== undefined) opts.sessionId = extra.sessionId;
       if (extra.channelContext !== undefined) opts.channelContext = extra.channelContext;
       if (extra.images !== undefined) opts.images = extra.images;
+      if (extra.fileNames !== undefined) opts.fileNames = extra.fileNames;
       if (extra.scenario !== undefined) opts.scenario = extra.scenario;
       if (extra.toolEventCollector !== undefined) opts.toolEventCollector = extra.toolEventCollector;
       if (extra.allowedTools !== undefined) {
@@ -831,6 +859,7 @@ export class Agent {
               senderInfo,
               extra.cancelToken as { cancelled: boolean } | undefined,
               extra.images as string[] | undefined,
+              extra.fileNames as string[] | undefined,
             );
             resolveResponse(reply);
             return reply;
@@ -860,6 +889,7 @@ export class Agent {
               extra.cancelToken as { cancelled: boolean } | undefined,
               extra.taskProjectContext as TaskProjectContext | undefined,
               extra.executionRound as number | undefined,
+              item.payload.requirementId,
             );
             resolveResponse('');
             return;
@@ -939,7 +969,7 @@ export class Agent {
             item.metadata?.senderName
               ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'worker' }
               : undefined,
-            buildHandleOpts({ sessionId: `review_${this.id}_${ts}` }),
+            buildHandleOpts({ sessionId: `review_${this.id}_${ts}`, scenario: 'review' }),
           );
           resolveResponse(reply);
           return reply;
@@ -950,8 +980,9 @@ export class Agent {
             agentId: this.id,
             triggeredAt: item.queuedAt,
           });
-          resolveResponse('');
-          return;
+          const hbReply = COMPLETION_MARKER;
+          resolveResponse(hbReply);
+          return hbReply;
         }
 
         case 'system_event':
@@ -1083,6 +1114,25 @@ export class Agent {
   }
 
   /**
+   * Reload the agent's heartbeat checklist from its HEARTBEAT.md file on disk.
+   * Called when the agent modifies its own HEARTBEAT.md via file_edit/file_write.
+   */
+  reloadHeartbeat(): void {
+    const heartbeatFile = join(this.dataDir, 'role', 'HEARTBEAT.md');
+    if (!existsSync(heartbeatFile)) return;
+    try {
+      const content = readFileSync(heartbeatFile, 'utf-8');
+      this.role = {
+        ...this.role,
+        heartbeatChecklist: content,
+      };
+      log.info(`Heartbeat checklist reloaded from disk for agent ${this.config.name}`);
+    } catch (err) {
+      log.warn(`Failed to reload heartbeat for agent ${this.config.name}`, { error: String(err) });
+    }
+  }
+
+  /**
    * Start a fresh conversation session, discarding the current in-memory session context.
    * Called when the user explicitly starts a "New Chat".
    */
@@ -1124,7 +1174,6 @@ export class Agent {
       if (session) {
         this.currentSessionId = existingMemorySessionId;
         if (options?.isRetry) {
-          // Strip last assistant reply + preceding user msg from memory
           while (session.messages.length > 0 && session.messages[session.messages.length - 1]!.role !== 'user') {
             session.messages.pop();
           }
@@ -1329,6 +1378,10 @@ export class Agent {
    */
   getCurrentTaskId(): string | undefined {
     return taskAsyncContext.getStore()?.taskId ?? this.currentTaskId;
+  }
+
+  private getCurrentRequirementId(): string | undefined {
+    return taskAsyncContext.getStore()?.requirementId;
   }
 
   /**
@@ -1538,6 +1591,16 @@ export class Agent {
     this.lastEstimatedInputTokens = 0;
   }
 
+  private checkDailyTokenBudget(): void {
+    const dailyLimit = this.config.llmConfig?.maxTokensPerDay;
+    if (dailyLimit && this.getTokensUsed() >= dailyLimit) {
+      const msg = `Daily token budget exhausted (${this.getTokensUsed()} / ${dailyLimit})`;
+      log.warn(msg, { agentId: this.id });
+      this.pause(msg);
+      throw new Error(`Agent ${this.id}: ${msg}`);
+    }
+  }
+
   private updateTokensUsed(tokens: number): void {
     this.state.tokensUsedToday += tokens;
     if (this.stateManager) {
@@ -1677,6 +1740,11 @@ export class Agent {
    * contexts (task execution, review, A2A, etc.) and surfaces the activity
    * in the frontend chat timeline.
    */
+  /** Activity types that warrant a full session message injection */
+  private static readonly SESSION_INJECT_TYPES = new Set([
+    'notify_user', 'escalation', 'task_completed', 'task_failed',
+  ]);
+
   injectActivityToMainSession(opts: {
     type: string;
     summary: string;
@@ -1687,10 +1755,6 @@ export class Agent {
   }): void {
     if (!this.currentSessionId) return;
 
-    // Collapse consecutive heartbeats: skip if previous injection was also a heartbeat
-    if (opts.type === 'heartbeat' && this.lastInjectedActivityType === 'heartbeat') {
-      return;
-    }
     this.lastInjectedActivityType = opts.type;
 
     const text = opts.summary;
@@ -1698,6 +1762,11 @@ export class Agent {
     if (this.recentActivityRing.length > Agent.ACTIVITY_RING_SIZE) {
       this.recentActivityRing.shift();
     }
+
+    // Only inject user-facing activity types as session messages to keep sessions thin.
+    // All other types (heartbeats, A2A, routine status) stay in recentActivityRing only.
+    if (!Agent.SESSION_INJECT_TYPES.has(opts.type)) return;
+
     this.memory.appendMessage(this.currentSessionId, {
       role: 'assistant',
       content: text,
@@ -1895,7 +1964,7 @@ export class Agent {
   setActivityCallbacks(cbs: {
     onStart?: (activity: AgentActivity & { agentId: string }) => void;
     onLog?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
-    onEnd?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
+    onEnd?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   }): void {
     this.onActivityStartCb = cbs.onStart;
     this.onActivityLogCb = cbs.onLog;
@@ -1926,6 +1995,32 @@ export class Agent {
     return id;
   }
 
+  private computeActivitySummary(activityId: string): { summary: string; keywords: string } {
+    const logs = this.activityLogs.get(activityId) ?? [];
+    const toolNames = new Set<string>();
+    const errors: string[] = [];
+    let lastText = '';
+
+    for (const log of logs) {
+      if (log.type === 'tool_start') {
+        const name = (log.metadata?.toolName as string) ?? '';
+        if (name) toolNames.add(name);
+      }
+      if (log.type === 'error') errors.push(log.content.slice(0, 100));
+      if (log.type === 'text') lastText = log.content.slice(0, 200);
+    }
+
+    const parts: string[] = [];
+    if (toolNames.size > 0) parts.push(`Used: ${[...toolNames].join(', ')}`);
+    if (errors.length > 0) parts.push(`Errors: ${errors.slice(0, 2).join('; ')}`);
+    if (lastText) parts.push(lastText);
+
+    return {
+      summary: parts.join('. ').slice(0, 500),
+      keywords: [...toolNames, ...errors.map(e => e.split(':')[0]?.trim() ?? '')].filter(Boolean).join(','),
+    };
+  }
+
   private endActivity(activityId?: string, opts?: { success?: boolean }): void {
     const aid = activityId ?? this.state.currentActivity?.id;
     if (aid) {
@@ -1940,12 +2035,16 @@ export class Agent {
       }
       totalTools = Math.floor(totalTools / 2);
 
+      const { summary, keywords } = this.computeActivitySummary(aid);
+
       try {
         this.onActivityEndCb?.(aid, {
           endedAt: new Date().toISOString(),
           totalTokens,
           totalTools,
           success: opts?.success !== false,
+          summary,
+          keywords,
         });
       } catch { /* best effort */ }
 
@@ -2089,8 +2188,10 @@ export class Agent {
       sessionId?: string;
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
+      fileNames?: string[];
       allowedTools?: Set<string>;
-      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation';
+      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review';
+      maxToolIterations?: number;
       toolEventCollector?: Array<{
         tool: string;
         status: 'done' | 'error';
@@ -2105,7 +2206,7 @@ export class Agent {
     }
 
     const scenario = options?.scenario ?? 'chat';
-    const isLightweight = scenario !== 'chat' && scenario !== 'task_execution';
+    const isLightweight = scenario !== 'chat' && scenario !== 'task_execution' && scenario !== 'review';
     const PREEMPTABLE_SCENARIOS = new Set(['heartbeat', 'memory_consolidation']);
     const isPreemptable = PREEMPTABLE_SCENARIOS.has(scenario);
 
@@ -2128,6 +2229,10 @@ export class Agent {
         case 'comment_response':
           actType = 'chat';
           actLabel = `Comment reply to ${senderInfo?.name ?? senderId ?? 'user'}`;
+          break;
+        case 'review':
+          actType = 'internal';
+          actLabel = `Reviewing task from ${senderInfo?.name ?? senderId ?? 'worker'}`;
           break;
         default:
           actLabel = `Chat with ${senderInfo?.name ?? senderId ?? 'user'}`;
@@ -2163,18 +2268,32 @@ export class Agent {
       sessionId = options?.sessionId ?? `${scenario}_${this.id}_${Date.now()}`;
     }
     this.memory.getOrCreateSession(this.id, sessionId);
-    const userContent = this.buildUserContent(userMessage, options?.images);
+    const userContent = await this.buildUserContent(userMessage, options?.images, options?.fileNames);
     this.memory.appendMessage(sessionId, { role: 'user', content: userContent });
 
-    // Prepend channel context as prior messages so they are visible in the session
+    // Inject channel context: on first turn, prepend all messages.
+    // On subsequent turns, inject latest N messages as a context block if changed.
     if (options?.channelContext?.length) {
       const session = this.memory.getSession(sessionId);
-      if (session && session.messages.length <= 1) {
-        const channelMsgs: LLMMessage[] = options.channelContext.map(m => ({
-          role: (m.role === 'assistant' ? 'assistant' : 'user') as LLMMessage['role'],
-          content: m.content,
-        }));
-        session.messages = [...channelMsgs, ...session.messages];
+      if (session) {
+        const contextHash = options.channelContext.map(m => m.content).join('|').slice(0, 200);
+        const lastHash = (session as unknown as { _channelCtxHash?: string })._channelCtxHash;
+        if (session.messages.length <= 1) {
+          const channelMsgs: LLMMessage[] = options.channelContext.map(m => ({
+            role: (m.role === 'assistant' ? 'assistant' : 'user') as LLMMessage['role'],
+            content: m.content,
+          }));
+          session.messages = [...channelMsgs, ...session.messages];
+          (session as unknown as { _channelCtxHash: string })._channelCtxHash = contextHash;
+        } else if (lastHash !== contextHash) {
+          const latest = options.channelContext.slice(-5);
+          const block = latest.map(m => `[${m.role}] ${m.content}`).join('\n');
+          this.memory.appendMessage(sessionId, {
+            role: 'user',
+            content: `[Channel context update — latest messages]\n${block}\n[End channel context]`,
+          });
+          (session as unknown as { _channelCtxHash: string })._channelCtxHash = contextHash;
+        }
       }
     }
 
@@ -2213,7 +2332,10 @@ export class Agent {
       ...this.getTeamContextParams(),
     });
 
-    let llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
+    let llmTools = this.buildToolDefinitions({
+      userMessage: effectiveMessage,
+      isReview: scenario === 'review',
+    });
     if (options?.allowedTools) {
       llmTools = llmTools.filter(t => options.allowedTools!.has(t.name));
     }
@@ -2234,6 +2356,7 @@ export class Agent {
 
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
     try {
+      this.checkDailyTokenBudget();
       this.lastEstimatedInputTokens = this.estimateMessagesTokens(messages);
       const llmStart = Date.now();
       let response = await this.withNetworkRetry(
@@ -2258,15 +2381,17 @@ export class Agent {
       });
 
       let toolIterations = 0;
+      const effectiveMaxIter = options?.maxToolIterations ?? this._maxToolIterations;
 
       while (
         (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
         response.finishReason === 'max_tokens'
       ) {
-        if (++toolIterations > this._maxToolIterations) {
+        if (++toolIterations > effectiveMaxIter) {
           log.warn('Tool loop hit max iterations', {
             agentId: this.id,
             iterations: toolIterations,
+            cap: effectiveMaxIter,
           });
           break;
         }
@@ -2367,14 +2492,25 @@ export class Agent {
           }
           const loopCheck = this.loopDetector.check();
           if (loopCheck.detected) {
+            const warningMsg = `[SYSTEM] Loop detected: ${loopCheck.message}. You are repeating the same actions without progress. Try a different approach or stop.`;
+            this.memory.appendMessage(sessionId, { role: 'user', content: warningMsg });
             if (loopCheck.severity === 'critical') {
-              log.warn('Loop detector: critical pattern — breaking', {
+              log.warn('Loop detector: critical pattern — force-breaking tool loop', {
                 agentId: this.id,
                 pattern: loopCheck.pattern,
               });
-              const warningMsg = `[SYSTEM] Loop detected: ${loopCheck.message}. You are repeating the same actions without progress. Try a different approach or stop.`;
-              this.memory.appendMessage(sessionId, { role: 'user', content: warningMsg });
+              break;
             }
+          }
+
+          // Early preemption check after parallel tools complete — skip next
+          // LLM call and reach the yield point faster when an interrupt arrived
+          // during tool execution.
+          if (isPreemptable && this.attentionController.hasInterruptPending()) {
+            log.info('Interrupt arrived during parallel tool execution, breaking early', {
+              agentId: this.id, scenario,
+            });
+            break;
           }
         }
 
@@ -2490,6 +2626,7 @@ export class Agent {
     senderInfo?: { name: string; role: string },
     cancelToken?: { cancelled: boolean },
     images?: string[],
+    fileNames?: string[],
   ): Promise<string> {
     if (this.activeTasks.size === 0) {
       this.setStatus('working');
@@ -2518,7 +2655,7 @@ export class Agent {
       this.currentSessionId = session.id;
     }
 
-    const userContent = this.buildUserContent(userMessage, images);
+    const userContent = await this.buildUserContent(userMessage, images, fileNames);
     this.memory.appendMessage(this.currentSessionId, { role: 'user', content: userContent });
 
     const systemPrompt = await this.contextEngine.buildSystemPrompt({
@@ -2592,6 +2729,7 @@ export class Agent {
       onEvent(event);
     };
     try {
+      this.checkDailyTokenBudget();
       const llmStart = Date.now();
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chatStream(
@@ -2723,12 +2861,15 @@ export class Agent {
             this.loopDetector.record(tc.name, tc.arguments ?? {}, toolResults[i]?.content ?? '');
           }
           const loopCheck = this.loopDetector.check();
-          if (loopCheck.detected && loopCheck.severity === 'critical') {
-            log.warn('Stream loop detector: critical pattern — injecting warning', {
-              agentId: this.id, pattern: loopCheck.pattern,
-            });
+          if (loopCheck.detected) {
             const warningMsg = `[SYSTEM] Loop detected: ${loopCheck.message}. You are repeating the same actions without progress. Try a different approach or stop.`;
             this.memory.appendMessage(this.currentSessionId, { role: 'user', content: warningMsg });
+            if (loopCheck.severity === 'critical') {
+              log.warn('Stream loop detector: critical pattern — force-breaking tool loop', {
+                agentId: this.id, pattern: loopCheck.pattern,
+              });
+              break;
+            }
           }
         }
 
@@ -2875,9 +3016,10 @@ export class Agent {
     }) => void,
     cancelToken?: { cancelled: boolean },
     taskProjectContext?: TaskProjectContext,
-    executionRound?: number
+    executionRound?: number,
+    requirementId?: string,
   ): Promise<void> {
-    return this.executeTaskConcurrent(taskId, description, onLog, cancelToken, undefined, taskProjectContext, executionRound);
+    return this.executeTaskConcurrent(taskId, description, onLog, cancelToken, undefined, taskProjectContext, executionRound, requirementId);
   }
 
   /**
@@ -2896,7 +3038,8 @@ export class Agent {
     cancelToken?: { cancelled: boolean },
     priority: TaskPriority = TaskPriority.MEDIUM,
     taskProjectContext?: TaskProjectContext,
-    executionRound?: number
+    executionRound?: number,
+    requirementId?: string,
   ): Promise<void> {
     if (!this.taskExecutor) {
       throw new Error('Task executor not initialized');
@@ -2907,7 +3050,7 @@ export class Agent {
     // resolve their own taskId (prevents deliverable cross-contamination).
     const result = await this.taskExecutor.executeTaskTask(
       taskId,
-      () => taskAsyncContext.run({ taskId }, () =>
+      () => taskAsyncContext.run({ taskId, requirementId }, () =>
         this._executeTaskInternal(taskId, description, onLog, cancelToken, taskProjectContext, executionRound)
       ),
       {
@@ -3032,6 +3175,7 @@ export class Agent {
         ? [
             'Review the previous execution history above, then continue and complete the remaining work. Skip steps already marked as completed (✓).',
             '**IMPORTANT — Dependency check:** If this task has a "Dependency Tasks" section, you MUST review all dependency task outputs before continuing. Use `file_read` to inspect any deliverable files listed, and use `task_get` to retrieve full details. These outputs provide essential background knowledge that your work should build upon.',
+            '**IMPORTANT — Check existing knowledge:** Before diving in, check the "Your Knowledge" section in your system context above. Follow any procedures or insights that match this type of task.',
             ...(hasErrors ? [
               '',
               '⚠ CRITICAL — LEARN FROM PREVIOUS FAILURES:',
@@ -3046,6 +3190,7 @@ export class Agent {
             'Execute this task completely using your available tools. When done, provide a concise summary of what was accomplished.',
             '',
             '**IMPORTANT — Dependency check:** If this task has a "Dependency Tasks" section above, you MUST review all dependency task outputs BEFORE starting your own work. Use `file_read` to inspect any deliverable files listed, and use `task_get` to retrieve full details of each dependency task. These dependency outputs provide essential background knowledge and artifacts that your work should build upon.',
+            '**IMPORTANT — Check existing knowledge:** Before diving in, check the "Your Knowledge" section in your system context above. Follow any procedures or insights that match this type of task.',
           ].join('\n'),
       '',
       '## Completion Requirements — MANDATORY',
@@ -3187,13 +3332,46 @@ export class Agent {
             toolCalls: response.toolCalls,
           });
 
+          let interruptedDuringTools = false;
           for (const tc of response.toolCalls!) {
             if (cancelToken?.cancelled) break;
+            if (this.attentionController.hasInterruptPending()) {
+              log.info('Attention interrupt pending — skipping remaining tools', {
+                agentId: this.id, taskId, skippedTool: tc.name,
+              });
+              this.memory.appendMessage(sessionId, {
+                role: 'tool',
+                content: '[Tool skipped — preempted by higher-priority item]',
+                toolCallId: tc.id,
+              });
+              interruptedDuringTools = true;
+              continue;
+            }
             emit('tool_start', tc.name, { arguments: tc.arguments });
             const toolStart = Date.now();
             try {
-              let result = await this.executeTool(tc, undefined, sessionId);
-              result = this.offloadLargeResult(tc.name, result);
+              const preemptionRace = this.attentionController.waitForPreemptionSignal();
+              const toolResult = this.executeTool(tc, undefined, sessionId);
+              const raceResult = await Promise.race([
+                toolResult.then(r => ({ source: 'tool' as const, value: r })),
+                preemptionRace.then(() => ({ source: 'preempt' as const, value: undefined })),
+              ]);
+              this.attentionController.clearPreemptionSignal();
+
+              let result: string;
+              if (raceResult.source === 'preempt') {
+                log.info('Tool execution preempted by critical interrupt', {
+                  agentId: this.id, taskId, tool: tc.name,
+                  elapsedMs: Date.now() - toolStart,
+                });
+                result = await toolResult;
+                result = this.offloadLargeResult(tc.name, result);
+                interruptedDuringTools = true;
+              } else {
+                result = raceResult.value as string;
+                result = this.offloadLargeResult(tc.name, result);
+              }
+
               const isErr = isErrorResult(result);
               const durationMs = Date.now() - toolStart;
               emit('tool_end', tc.name, {
@@ -3208,7 +3386,9 @@ export class Agent {
                 content: result,
                 toolCallId: tc.id,
               });
+              if (interruptedDuringTools) break;
             } catch (toolErr) {
+              this.attentionController.clearPreemptionSignal();
               const durationMs = Date.now() - toolStart;
               emit('tool_end', tc.name, { success: false, durationMs, arguments: tc.arguments, error: String(toolErr) });
               this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: false });
@@ -3217,6 +3397,20 @@ export class Agent {
                 content: `Error: ${String(toolErr)}`,
                 toolCallId: tc.id,
               });
+            }
+          }
+
+          if (interruptedDuringTools) {
+            for (const tc of response.toolCalls!) {
+              const hasResult = this.memory.getRecentMessages(sessionId, 100)
+                .some(m => m.role === 'tool' && m.toolCallId === tc.id);
+              if (!hasResult) {
+                this.memory.appendMessage(sessionId, {
+                  role: 'tool',
+                  content: '[Tool skipped — preempted by higher-priority item]',
+                  toolCallId: tc.id,
+                });
+              }
             }
           }
         }
@@ -3277,6 +3471,24 @@ export class Agent {
           log.debug('Injected task completion reminder', { taskId, iteration: taskToolIterations });
         }
 
+        // Mid-execution reflection nudge every 30 tool iterations.
+        // Forces the agent to pause and capture insights while context is fresh.
+        if (taskToolIterations > 0 && taskToolIterations % 30 === 0) {
+          this.memory.appendMessage(sessionId, {
+            role: 'user',
+            content: [
+              '[REFLECTION CHECKPOINT]',
+              `You have completed ${taskToolIterations} tool call rounds on this task.`,
+              'Before continuing, briefly consider:',
+              '- Have you encountered any surprising errors or workarounds worth remembering?',
+              '- Have you discovered a better tool or approach mid-task?',
+              'If yes, save it now using `memory_save` with tags: `["insight", ...]`.',
+              'Then continue with the task.',
+            ].join('\n'),
+          });
+          log.debug('Injected mid-execution reflection nudge', { taskId, iteration: taskToolIterations });
+        }
+
         const preparedTaskCont = await this.contextEngine.prepareMessages({
           systemPrompt,
           sessionMessages: this.memory.getRecentMessages(sessionId, 200),
@@ -3321,9 +3533,111 @@ export class Agent {
         return;
       }
 
-      flushText();
-      const finalReply = stripCompletionMarker(sanitizeLLMReply(response.content));
-      this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
+      // Last-chance check: did the agent call task_submit_review?
+      // Scan session messages for a tool call to task_submit_review.
+      const sessionMsgs = this.memory.getRecentMessages(sessionId, 500);
+      const didSubmitReview = sessionMsgs.some(
+        m => m.role === 'assistant' && m.toolCalls?.some(tc => tc.name === 'task_submit_review')
+      );
+      if (!didSubmitReview && !cancelToken?.cancelled) {
+        log.warn('Task execution ending without task_submit_review — injecting final reminder', { taskId, agentId: this.id });
+        flushText();
+        this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content });
+        this.memory.appendMessage(sessionId, {
+          role: 'user',
+          content: [
+            `[SYSTEM — CRITICAL REMINDER — Task ${taskId}]`,
+            'You are about to finish without calling `task_submit_review`. This is MANDATORY.',
+            'The task will NOT enter review and will be automatically retried if you do not submit.',
+            '',
+            'Call `task_submit_review` NOW with:',
+            '- `summary`: What you accomplished',
+            '- `deliverables`: List of files/directories you produced',
+            '',
+            'If you were unable to complete the task, call `task_update` with status "blocked" or "failed" and a note explaining why.',
+            'Do NOT just stop — take action NOW.',
+          ].join('\n'),
+        });
+
+        const preparedFinal = await this.contextEngine.prepareMessages({
+          systemPrompt,
+          sessionMessages: this.memory.getRecentMessages(sessionId, 200),
+          memory: this.memory,
+          sessionId,
+          agentId: this.id,
+          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          toolDefinitions: llmTools,
+        });
+        taskLlmStart = Date.now();
+        response = await this.withNetworkRetry(
+          () => this.llmRouter.chatStream(
+            {
+              messages: preparedFinal.messages,
+              tools: llmTools.length > 0 ? llmTools : undefined,
+              metadata: this.getLLMMetadata(sessionId),
+              compaction: useCompaction,
+            },
+            event => {
+              if (event.type === 'text_delta' && event.text) {
+                textBuffer += event.text;
+                emitDelta(event.text);
+              }
+            },
+            this.getEffectiveProvider(),
+            abortController.signal,
+          ),
+          'Task execution final submit reminder',
+        );
+        taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
+        this.updateTokensUsed(taskLlmTokens);
+        this.calibrateTokenCounter(response.usage.inputTokens);
+
+        // Process any tool calls from the final reminder turn
+        if (response.toolCalls?.length) {
+          this.memory.appendMessage(sessionId, {
+            role: 'assistant',
+            content: response.content,
+            toolCalls: response.toolCalls,
+          });
+          for (const tc of response.toolCalls) {
+            if (cancelToken?.cancelled) break;
+            if (this.attentionController.hasInterruptPending()) {
+              this.memory.appendMessage(sessionId, {
+                role: 'tool',
+                content: '[Tool skipped — preempted by higher-priority item]',
+                toolCallId: tc.id,
+              });
+              continue;
+            }
+            emit('tool_start', tc.name, { arguments: tc.arguments });
+            const toolStart = Date.now();
+            try {
+              let result = await this.executeTool(tc, undefined, sessionId);
+              result = this.offloadLargeResult(tc.name, result);
+              const isErr = isErrorResult(result);
+              const durationMs = Date.now() - toolStart;
+              emit('tool_end', tc.name, { success: !isErr, durationMs, arguments: tc.arguments, result });
+              this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
+            } catch (toolErr) {
+              const durationMs = Date.now() - toolStart;
+              emit('tool_end', tc.name, { success: false, durationMs, arguments: tc.arguments, error: String(toolErr) });
+              this.memory.appendMessage(sessionId, { role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
+            }
+          }
+          // After processing tool calls, only append if there's non-tool-call text
+          flushText();
+        } else {
+          flushText();
+          const finalReply = stripCompletionMarker(sanitizeLLMReply(response.content));
+          this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
+        }
+      } else {
+        flushText();
+        const finalReply = stripCompletionMarker(sanitizeLLMReply(response.content));
+        this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
+      }
+
       emit('status', 'execution_finished', {});
       this.metricsCollector.recordTaskCompletion(taskId, 'completed', Date.now() - taskStartMs);
       this.eventBus.emit('task:completed', { taskId, agentId: this.id });
@@ -3511,6 +3825,14 @@ export class Agent {
           });
 
           for (const tc of response.toolCalls!) {
+            if (this.attentionController.hasInterruptPending()) {
+              this.memory.appendMessage(sessionId, {
+                role: 'tool',
+                content: '[Tool skipped — preempted by higher-priority item]',
+                toolCallId: tc.id,
+              });
+              continue;
+            }
             emit('tool_start', tc.name, { arguments: tc.arguments });
             const toolStart = Date.now();
             try {
@@ -3608,6 +3930,14 @@ export class Agent {
     this.tools.set(handler.name, handler);
   }
 
+  registerBackgroundSession(bgSessionId: string, originSessionId: string): void {
+    this.bgSessionOrigin.set(bgSessionId, originSessionId);
+  }
+
+  getTools(): Map<string, AgentToolHandler> {
+    return this.tools;
+  }
+
   /**
    * Mark tool names as permanently activated so they appear in every LLM call.
    * Used by skill MCP integration to ensure skill-provided tools are always visible.
@@ -3629,6 +3959,10 @@ export class Agent {
       }
     }
     return state;
+  }
+
+  getModelSupportsVision(): boolean {
+    return this.llmRouter.modelSupportsVision(this.getEffectiveProvider());
   }
 
   getEventBus(): EventBus {
@@ -3662,18 +3996,31 @@ export class Agent {
     };
   }
 
-  private buildUserContent(text: string, images?: string[]): string | LLMContentPart[] {
+  private async buildUserContent(text: string, images?: string[], fileNames?: string[]): Promise<string | LLMContentPart[]> {
     if (!images?.length) return text;
-    const parts: LLMContentPart[] = [{ type: 'text', text }];
-    for (const img of images) {
-      parts.push({ type: 'image_url', image_url: { url: img } });
+
+    const supportsVision = this.llmRouter.modelSupportsVision(this.getEffectiveProvider());
+
+    if (supportsVision) {
+      const parts: LLMContentPart[] = [{ type: 'text', text }];
+      for (const img of images) {
+        parts.push({ type: 'image_url', image_url: { url: img } });
+      }
+      return parts;
     }
-    return parts;
+
+    const { convertFilesToText } = await import('./file-converter.js');
+    const converted = await convertFilesToText(images, fileNames);
+    const attachmentText = converted
+      .map(d => `\n\n<attached_file name="${d.name}" type="${d.mimeType}">\n${d.text}\n</attached_file>`)
+      .join('');
+    return text + attachmentText;
   }
 
   private buildToolDefinitions(context?: {
     userMessage?: string;
     isTaskExecution?: boolean;
+    isReview?: boolean;
   }): LLMTool[] {
     const isManager = this.config.agentRole === 'manager';
 
@@ -3688,6 +4035,7 @@ export class Agent {
       recentToolNames: recentPlusActivated,
       isManager,
       isTaskExecution: context?.isTaskExecution,
+      isReview: context?.isReview,
       skillCatalog: this.skillRegistry?.list(),
     });
 
@@ -3862,7 +4210,7 @@ export class Agent {
       return await this.handleDiscoverTools(toolCall.arguments);
     }
 
-    // Handle notify_user: one-way notification to the user
+    // Handle notify_user: proactive message to the user (appears in chat + notification bell)
     if (toolCall.name === 'notify_user') {
       const title = (toolCall.arguments.title as string) ?? '';
       const body = (toolCall.arguments.body as string) ?? '';
@@ -3871,27 +4219,34 @@ export class Agent {
       }
       try {
         const priority = (toolCall.arguments.priority as string) ?? 'normal';
-        const relatedTaskId = toolCall.arguments.related_task_id as string | undefined;
-        const actionType = relatedTaskId ? 'navigate' : 'none';
-        const actionTarget = relatedTaskId ? JSON.stringify({ path: `/work?openTask=${relatedTaskId}` }) : undefined;
-        // Send to notification bell
-        if (this.userNotifier) {
-          this.userNotifier({
-            type: 'agent_report',
-            title,
-            body,
-            priority,
-            actionType,
-            actionTarget,
-            metadata: { agentId: this.id, agentName: this.config.name, ...(relatedTaskId ? { taskId: relatedTaskId } : {}) },
+        const explicitTaskId = toolCall.arguments.related_task_id as string | undefined;
+        const taskId = explicitTaskId ?? this.getCurrentTaskId();
+        const requirementId = this.getCurrentRequirementId();
+
+        // Write full message into in-memory session (as regular message, not activityLog)
+        const formattedMsg = `**${title}**\n\n${body}`;
+        if (this.currentSessionId) {
+          this.memory.appendMessage(this.currentSessionId, {
+            role: 'assistant',
+            content: formattedMsg,
           });
         }
-        // Also post to main session so it appears in the chat timeline
-        this.injectActivityToMainSession({
-          type: 'notify_user',
-          summary: title,
-          outcome: body,
+        this.recentActivityRing.push(`[notify_user] ${title}`);
+        if (this.recentActivityRing.length > Agent.ACTIVITY_RING_SIZE) {
+          this.recentActivityRing.shift();
+        }
+
+        // Emit event — start.ts handler does DB persist + WS broadcast + notification
+        this.eventBus.emit('agent:notify-user', {
+          agentId: this.id,
+          sessionId: this.currentSessionId,
+          title,
+          body,
+          priority,
+          taskId,
+          requirementId,
         });
+
         log.info('User notification sent', { agentId: this.id, title });
         return JSON.stringify({ status: 'ok', message: 'Notification sent to user.' });
       } catch (err) {
@@ -4081,10 +4436,29 @@ export class Agent {
         agentId: this.id,
         failures: this.consecutiveFailures,
       });
-      this.escalationCallback?.(
-        this.id,
-        `Agent ${this.config.name} needs help: ${reason} (${this.consecutiveFailures} consecutive failures)`
-      );
+      const escalationReason = `Agent ${this.config.name} needs help: ${reason} (${this.consecutiveFailures} consecutive failures)`;
+      this.escalationCallback?.(this.id, escalationReason);
+
+      // Write escalation message into in-memory session so agent is aware
+      const formattedMsg = `**I need help**\n\n${escalationReason}`;
+      if (this.currentSessionId) {
+        this.memory.appendMessage(this.currentSessionId, {
+          role: 'assistant',
+          content: formattedMsg,
+        });
+      }
+      this.recentActivityRing.push(`[escalation] ${escalationReason}`);
+      if (this.recentActivityRing.length > Agent.ACTIVITY_RING_SIZE) {
+        this.recentActivityRing.shift();
+      }
+
+      // Emit event — start.ts handler does DB persist + WS broadcast + notification + audit
+      this.eventBus.emit('agent:escalation', {
+        agentId: this.id,
+        sessionId: this.currentSessionId,
+        reason: escalationReason,
+      });
+
       this.consecutiveFailures = 0;
     }
   }
@@ -4229,29 +4603,41 @@ export class Agent {
       'Use `task_list` to find tasks recently completed (status `completed`) where you were the assignee.',
       'For each completed task since your last heartbeat:',
       '',
-      '1. **What went well?** — Identify approaches, patterns, or techniques that led to a smooth completion.',
-      '   - First-pass approvals (no revision needed) are strong signals of good practice.',
-      '   - Efficient tool usage, clean code patterns, good decomposition strategies.',
-      '2. **What could be improved?** — Note any friction, rework, or reviewer feedback that revealed a better way.',
-      '3. **Is there a repeatable pattern?** — If you solved a class of problems (not just one instance), this is SOP material.',
+      '1. **What went well?** — First-pass approvals (no revision) are strong signals. Efficient tool usage, clean patterns, good decomposition.',
+      '2. **What could be improved?** — Friction, rework, reviewer feedback that revealed a better way.',
+      '3. **Is there a repeatable pattern?** — If you solved a class of problems (not just one instance), add it to your MEMORY.md knowledge.',
       '',
-      'If you identify a best practice worth preserving:',
-      '- Save it via `memory_save` with `tags: ["lesson", "best-practice", ...]` and format:',
-      '  `[BEST-PRACTICE] <one-line summary>\\nContext: <when this applies>\\nApproach: <what to do>\\nWhy: <why this works>`',
-      '- If it is a multi-step repeatable workflow, promote it to an SOP via `memory_update_longterm({ section: "sops", ... })`.',
+      '## Knowledge Lifecycle (how to save what you learn)',
       '',
-      '## Self-Evolution Reflection',
-      'After reviewing completed tasks, reflect on your overall growth. Follow your **self-evolution** skill instructions:',
+      '**Observation buffer** (`memory_save` → memories.json):',
+      '- Individual observations: insights, tool tips, gotchas, task outcomes.',
+      '- Format: `[INSIGHT] <summary>` + context/approach/why.',
+      '- Tags: always `"insight"` first, then category: `coding`, `tool-usage`, `architecture`, `domain:<topic>`.',
+      '- Dream cycles will promote recurring patterns (3+ similar) to MEMORY.md and prune source entries.',
       '',
-      '1. **Lessons** — Did anything go wrong or get corrected? Save with `memory_save` using `tags: ["lesson", ...]` and the `[LESSON]` format.',
-      '2. **Tool preferences** — Did you discover a better tool or parameter for a task? Save with `tags: ["lesson", "tool-preference", ...]` and the `[TOOL-PREF]` format.',
-      '3. **SOPs** — Consolidate best practices from completed tasks into SOPs. Update `memory_update_longterm({ section: "sops", ... })`.',
-      '   - Review existing SOPs first (`memory_search("sops")`) — update rather than duplicate.',
-      '   - Each SOP: trigger, steps, gotchas, last updated date.',
-      '4. **Role evolution** — When you accumulate 3+ related best practices or lessons pointing to a fundamental behavioral improvement, update your ROLE.md:',
-      '   - Read current ROLE.md via `file_read`',
-      '   - Append the new guideline (do NOT rewrite the file)',
-      '   - Log the change via `memory_save` with `tags: ["lesson", "role-evolution"]`',
+      '**Curated knowledge** (`memory_update_longterm` → MEMORY.md):',
+      '- You organize MEMORY.md however you want — create sections that make sense for your work.',
+      '- Use `mode: "patch"` to append to a section, `mode: "replace"` to rewrite a section.',
+      '- **ALWAYS check existing knowledge first** (`memory_search`) — update rather than duplicate.',
+      '- Common sections: `procedures`, `conventions`, `preferences`, `domain-knowledge`.',
+      '',
+      '**Shareable skills** (for team-wide practices):',
+      '- Check existing skills first: `discover_tools({ mode: "list_skills" })` and `builder_list`.',
+      '- To update an existing skill: edit files in `~/.markus/builder-artifacts/skills/{name}/`, bump version, re-install with `builder_install`.',
+      '',
+      '**Direct self-evolution** (simplest and most impactful):',
+      '- **Update ROLE.md** — When you discover a behavioral rule, working style, or guiding principle that should always apply, append it to your ROLE.md via `file_edit`. ROLE.md is loaded into every conversation, so changes take effect immediately. Read first, then append. No need to accumulate 3 insights — even a single validated lesson can warrant a role update if it is fundamental.',
+      '- **Update HEARTBEAT.md** — When you realize your patrol routine should include a new recurring check (or remove an obsolete one), modify your HEARTBEAT.md via `file_edit`. This is your personal checklist — customize it to match your actual responsibilities. Changes take effect at the next heartbeat.',
+      '',
+      '**Decision guide — where does this insight go?**',
+      '| Observation type | Action |',
+      '|---|---|',
+      '| Single insight / gotcha | `memory_save` with tags: `["insight"]` |',
+      '| Tool tip or preference | `memory_save` with tags: `["insight", "tool:<name>"]` |',
+      '| Multi-step repeatable workflow | `memory_update_longterm({ section: "procedures", mode: "patch" })` |',
+      '| Practice worth sharing with the team | Create skill via **skill-building**, then install with `builder_install` |',
+      '| Behavioral rule or guiding principle | Update ROLE.md (`file_read` → `file_edit` to append) |',
+      '| New recurring check for your patrol | Update HEARTBEAT.md (`file_read` → `file_edit`) |',
       '',
       'Quality bar: Only record insights that are **specific**, **actionable**, and **non-obvious**.',
       'Skip if nothing meaningful happened since last heartbeat.',
@@ -4274,6 +4660,17 @@ export class Agent {
       ].join('\n');
     }
 
+    const qualitySignalSection = [
+      '',
+      '## Quality Signal Check',
+      'When reviewing completed tasks, note your revision rate:',
+      '- Tasks with `executionRound > 1` required revision — your initial approach had issues.',
+      '- A high revision rate (>30%) suggests your knowledge is not being applied effectively.',
+      '- Check: does your MEMORY.md knowledge actually cover the failure patterns you see?',
+      '- If you keep making the same type of mistake, escalate: save as insight → add to MEMORY.md → update ROLE.md or HEARTBEAT.md.',
+      '- Consider: would a ROLE.md rule or a HEARTBEAT.md check have prevented any recent failures?',
+    ].join('\n');
+
     const prompt = [
       '[HEARTBEAT CHECK-IN]',
       '',
@@ -4285,20 +4682,22 @@ export class Agent {
       requirementMonitoringSection,
       dailyReportSection,
       selfEvolutionSection,
+      qualitySignalSection,
       '',
       '## Core Principle: Patrol, Don\'t Build',
       'Heartbeat is a patrol — observe, triage, and take lightweight actions. Heavy work belongs in tasks.',
       '',
       '## What You CAN Do (lightweight actions)',
       '- **Check status**: `task_list`, `task_get`, `team_status` — see what\'s going on',
-      '- **Notify user**: `notify_user` — send pure FYI status updates, reports, alerts (no response expected)',
-      '- **Request user approval**: `request_user_approval` — when you need a user decision, approval, or input (blocks until user responds)',
+      '- **Notify user**: `notify_user` — message appears in chat + notification bell',
+      '- **Request user approval**: `request_user_approval` — blocks until user responds',
+      '- **Recall history**: `recall_activity` — review your past execution logs',
       '- **Message agents**: `agent_send_message` — coordinate with colleagues',
       '- **Create tasks**: `task_create` — if you spot something that needs doing, create a task for it (assign to yourself or others)',
       '- **Trigger existing tasks**: `task_update(status: "in_progress")` — restart failed tasks or unblock stuck ones',
       '- **Retry failed tasks**: If tasks assigned to you are in `failed` status, retry via `task_update(status: "in_progress")` with a note',
       '- **Quick reviews**: If tasks are in `review` where you are the reviewer, review them now (may need more tool calls)',
-      '- **Save insights**: `memory_save` — record observations, lessons, and patterns',
+      '- **Save insights**: `memory_save` — record observations, insights, and patterns',
       '- **Propose requirements**: `requirement_propose` — suggest work based on what you observe',
       '',
       '## What You Must NOT Do',
@@ -4313,7 +4712,7 @@ export class Agent {
       '- If background processes failed → check the error, notify the responsible developer or user',
       '- If tasks are blocked for too long → investigate blockers, send a message to the assignee or PM',
       '- If a dependency task completed → check if downstream tasks can be unblocked',
-      '- If you notice a recurring pattern → save it as a lesson via `memory_save`',
+      '- If you notice a recurring pattern → save it as an insight via `memory_save`',
       '',
       '## Finishing Up',
       '- Compare against your last heartbeat summary above. Skip unchanged items.',
@@ -4325,10 +4724,10 @@ export class Agent {
     const baseTools = [
       'task_create', 'task_list', 'task_update', 'task_get', 'task_note',
       'task_comment', 'requirement_comment',
-      'file_read', 'file_edit', 'agent_send_message',
+      'file_read', 'agent_send_message',
       'requirement_propose', 'requirement_list', 'requirement_update_status',
       'memory_save', 'memory_search', 'memory_update_longterm',
-      'discover_tools', 'notify_user', 'request_user_approval',
+      'discover_tools', 'notify_user', 'request_user_approval', 'recall_activity',
     ];
     if (isManager) {
       baseTools.push(
@@ -4349,6 +4748,7 @@ export class Agent {
           sessionId: `hb_${this.id}_${Date.now()}`,
           allowedTools: HEARTBEAT_ALLOWED_TOOLS,
           scenario: 'heartbeat',
+          maxToolIterations: Agent.HEARTBEAT_MAX_TOOL_ITERATIONS,
         });
         this.state.lastHeartbeat = new Date().toISOString();
         this.metricsCollector.recordHeartbeat(true);
@@ -4446,23 +4846,11 @@ export class Agent {
     try {
       const today = new Date().toISOString().slice(0, 10);
 
-      // 1. Compact main session if it exists and is large
-      if (this.currentSessionId) {
-        const session = this.memory.getSession(this.currentSessionId);
-        if (session && session.messages.length > 30) {
-          await this.memoryFlush(this.currentSessionId);
-          const { flushedCount } = this.memory.compactSession(this.currentSessionId, 15);
-          if (flushedCount > 0) {
-            log.info('Memory consolidation: compacted main session', {
-              agentId: this.id,
-              flushedCount,
-              remaining: session.messages.length,
-            });
-          }
-        }
-      }
+      // Session compaction is now handled exclusively by MemoryStore.checkAndCompact
+      // (triggered on appendMessage at >80 messages). No session compaction here —
+      // consolidateMemory only runs the dream cycle.
 
-      // 2. Memory dream: prune, deduplicate, merge — once per day when entries are large
+      // Memory dream: prune, deduplicate, merge — once per day when entries are large
       const entries = this.memory.getEntries();
       if (entries.length >= 50 && this.lastDreamDate !== today) {
         this.lastDreamDate = today;
@@ -4497,27 +4885,44 @@ export class Agent {
       truncated,
     });
 
+    const existingKnowledge = this.memory.getLongTermMemory();
+    const knowledgePreview = existingKnowledge ? existingKnowledge.slice(0, 1500) : '';
+
     const prompt = [
       '[MEMORY CONSOLIDATION — Dream Cycle]',
       '',
-      `You have ${batch.length} memory entries${truncated ? ` (showing most recent ${MAX_ENTRIES_FOR_LLM} of ${entries.length} total)` : ''}. Review them and identify:`,
-      '1. **Duplicates**: entries saying essentially the same thing',
-      '2. **Outdated**: entries superseded by newer information',
-      '3. **Merge candidates**: multiple entries about the same topic that can be combined',
+      `You have ${batch.length} memory entries${truncated ? ` (showing most recent ${MAX_ENTRIES_FOR_LLM} of ${entries.length} total)` : ''}. Review them and:`,
+      '',
+      '**Phase 1 — Clean up:**',
+      '1. **Duplicates**: entries saying essentially the same thing → remove',
+      '2. **Outdated**: entries superseded by newer information → remove',
+      '3. **Merge candidates**: multiple entries about the same topic → combine into one',
+      '',
+      '**Phase 2 — Promote recurring patterns:**',
+      '4. **Pattern promotion**: If 3+ entries share a common theme (e.g., same type of mistake, same tool approach),',
+      '   synthesize them into a consolidated insight and mark the source entries for removal.',
+      '   Use the `section` field to specify which MEMORY.md section the promoted content belongs to.',
+      '   The agent organizes their own sections — use whatever section name fits the content.',
+      '',
+      knowledgePreview ? `## Existing MEMORY.md Knowledge (for reference — avoid duplicating)\n${knowledgePreview}\n` : '',
       '',
       'Respond with ONLY a JSON object (no markdown fences):',
       '{',
-      '  "remove": ["id1", "id2"],       // IDs to delete (duplicates, outdated)',
-      '  "merge": [                       // groups to merge into single entries',
-      '    { "removeIds": ["id3", "id4"], "mergedContent": "combined text", "tags": ["tag1"] }',
+      '  "remove": ["id1", "id2"],',
+      '  "merge": [',
+      '    { "removeIds": ["id3", "id4"], "mergedContent": "combined text", "tags": ["insight"] }',
+      '  ],',
+      '  "promote": [',
+      '    { "sourceIds": ["id5", "id6", "id7"], "section": "procedures", "content": "synthesized insight" }',
       '  ]',
       '}',
       '',
       'Rules:',
       '- Be conservative. Only remove entries you are confident are redundant or outdated.',
       '- When merging, preserve all unique information from the originals.',
-      '- If nothing needs consolidation, return { "remove": [], "merge": [] }',
-      '- Keep lessons and best-practices entries unless truly duplicated.',
+      '- Promote only when 3+ entries point to the same pattern.',
+      '- The `section` field uses the agent\'s own MEMORY.md section names (agent-organized, not fixed).',
+      '- If nothing needs consolidation, return { "remove": [], "merge": [], "promote": [] }',
       '',
       '## Current Memory Entries',
       '',
@@ -4538,23 +4943,49 @@ export class Agent {
         return;
       }
 
-      const plan = JSON.parse(jsonMatch[0]) as {
+      const rawPlan = JSON.parse(jsonMatch[0]) as {
         remove?: string[];
         merge?: Array<{ removeIds: string[]; mergedContent: string; tags?: string[] }>;
+        promote?: Array<{ sourceIds: string[]; section: string; content: string }>;
       };
 
-      log.info('Dream cycle plan', {
+      // Guardrails: cap operations and validate IDs
+      const MAX_REMOVE_PER_CYCLE = 10;
+      const MAX_MERGE_PER_CYCLE = 5;
+      const entryIds = new Set(batch.map(e => e.id));
+
+      const plan = {
+        remove: (rawPlan.remove ?? []).filter(id => entryIds.has(id)).slice(0, MAX_REMOVE_PER_CYCLE),
+        merge: (rawPlan.merge ?? []).filter(m =>
+          m.removeIds.every(id => entryIds.has(id)) && m.mergedContent?.length > 0
+        ).slice(0, MAX_MERGE_PER_CYCLE),
+        promote: (rawPlan.promote ?? []).filter(p =>
+          p.sourceIds.every(id => entryIds.has(id)) && p.content?.length > 0 && p.section?.length > 0
+        ).slice(0, MAX_MERGE_PER_CYCLE),
+      };
+
+      if ((rawPlan.remove?.length ?? 0) > MAX_REMOVE_PER_CYCLE) {
+        log.warn('Dream cycle: remove list truncated', {
+          requested: rawPlan.remove!.length, cap: MAX_REMOVE_PER_CYCLE,
+        });
+      }
+
+      // Audit log: full plan before application
+      log.info('Dream cycle plan (audited)', {
         agentId: this.id,
-        toRemove: plan.remove?.length ?? 0,
-        toMerge: plan.merge?.length ?? 0,
-        removeIds: plan.remove?.slice(0, 10),
-        mergeGroups: plan.merge?.map(g => ({ removeIds: g.removeIds, contentPreview: g.mergedContent.slice(0, 80) })).slice(0, 5),
+        toRemove: plan.remove.length,
+        toMerge: plan.merge.length,
+        toPromote: plan.promote.length,
+        removeIds: plan.remove,
+        mergeGroups: plan.merge.map(g => ({ removeIds: g.removeIds, contentPreview: g.mergedContent.slice(0, 80) })),
+        promoteGroups: plan.promote.map(p => ({ sourceIds: p.sourceIds, section: p.section, contentPreview: p.content.slice(0, 80) })),
       });
 
       let removedCount = 0;
       let mergedCount = 0;
+      let promotedCount = 0;
 
-      if (plan.remove?.length) {
+      if (plan.remove.length > 0) {
         removedCount = this.memory.removeEntries(plan.remove);
         if (this.semanticSearch?.isEnabled()) {
           for (const id of plan.remove) {
@@ -4584,12 +5015,37 @@ export class Agent {
         }
       }
 
-      if (removedCount > 0 || mergedCount > 0) {
+      // Phase 2: Promote recurring patterns to MEMORY.md and prune source entries
+      if (plan.promote?.length) {
+        for (const promo of plan.promote) {
+          if (!promo.sourceIds?.length || !promo.content || !promo.section) continue;
+          const section = promo.section.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+          const existing = this.memory.getLongTermSection(section);
+          const merged = existing ? `${existing}\n${promo.content}` : promo.content;
+          this.memory.addLongTermMemory(section, merged);
+
+          // Remove source entries from intake buffer
+          const removed = this.memory.removeEntries(promo.sourceIds);
+          if (this.semanticSearch?.isEnabled()) {
+            for (const id of promo.sourceIds) {
+              this.semanticSearch.deleteMemory(id).catch(() => {});
+            }
+          }
+          promotedCount++;
+          log.debug('Dream cycle: promoted pattern to MEMORY.md', {
+            section, sourceCount: promo.sourceIds.length, removed,
+            contentPreview: promo.content.slice(0, 100),
+          });
+        }
+      }
+
+      if (removedCount > 0 || mergedCount > 0 || promotedCount > 0) {
         log.info('Dream cycle completed', {
           agentId: this.id,
           entriesBefore: entries.length,
           removed: removedCount,
           merged: mergedCount,
+          promoted: promotedCount,
           entriesAfter: this.memory.getEntries().length,
         });
       } else {

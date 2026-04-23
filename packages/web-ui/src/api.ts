@@ -18,12 +18,19 @@ export interface AgentToolEvent {
   subagentEvent?: SubagentProgressEvent;
 }
 
+export interface StreamCommitEvent {
+  type: 'thinking_commit' | 'text_commit';
+  content: string;
+  createdAt: string;
+}
+
 export interface AuthUser {
   id: string;
   name: string;
   email?: string;
   role: string;
   orgId: string;
+  avatarUrl?: string;
 }
 
 export interface ChatSessionInfo {
@@ -37,8 +44,8 @@ export interface ChatSessionInfo {
 }
 
 export type StoredSegment =
-  | { type: 'text'; content: string }
-  | { type: 'tool'; tool: string; status: 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number };
+  | { type: 'text'; content: string; thinking?: string; createdAt?: string }
+  | { type: 'tool'; tool: string; status: 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number; createdAt?: string };
 
 export interface ChatMessageInfo {
   id: string;
@@ -426,6 +433,8 @@ export interface AgentInfo {
   currentActivity?: AgentActivityInfo;
   mailboxDepth?: number;
   attentionState?: string;
+  modelSupportsVision?: boolean;
+  avatarUrl?: string;
 }
 
 export interface HumanUserInfo {
@@ -435,6 +444,7 @@ export interface HumanUserInfo {
   orgId: string;
   email?: string;
   teamId?: string;
+  avatarUrl?: string;
 }
 
 export interface RoleInfo {
@@ -453,6 +463,7 @@ export interface TeamMemberInfo {
   status?: string;
   teamId?: string;
   currentTaskId?: string;
+  avatarUrl?: string;
 }
 
 export interface ExternalAgentInfo {
@@ -665,6 +676,7 @@ export interface AgentDetail {
   availableSkills?: AvailableSkillInfo[];
   activeTaskCount?: number;
   activeTaskIds?: string[];
+  avatarUrl?: string;
   proficiency?: Record<string, { uses: number; successes: number; lastUsed?: string }>;
   config?: AgentConfigInfo;
   tools?: AgentToolInfo[];
@@ -755,8 +767,8 @@ export const api = {
   agents: {
     list: () => request<{ agents: AgentInfo[] }>('/agents').then(d => ({ ...d, agents: d.agents.filter(a => a.name) })),
     get: (id: string) => request<AgentDetail>(`/agents/${id}`),
-    create: (name: string, roleName: string, agentRole?: 'manager' | 'worker', teamId?: string) =>
-      request('/agents', { method: 'POST', body: JSON.stringify({ name, roleName, agentRole, teamId }) }),
+    create: (name: string, roleName?: string, agentRole?: 'manager' | 'worker', teamId?: string) =>
+      request('/agents', { method: 'POST', body: JSON.stringify({ name, ...(roleName ? { roleName } : {}), agentRole, teamId }) }),
     start: (id: string) => request(`/agents/${id}/start`, { method: 'POST' }),
     stop: (id: string) => request(`/agents/${id}/stop`, { method: 'POST' }),
     remove: (id: string, opts?: { purgeFiles?: boolean }) =>
@@ -784,6 +796,8 @@ export const api = {
       request<{ file: string; agentContent: string | null; templateContent: string | null }>(`/agents/${id}/role-diff?file=${encodeURIComponent(file)}`),
     roleSync: (id: string, files?: string[]) =>
       request<{ agentId: string; success: boolean; error?: string; synced: string[] }>(`/agents/${id}/role-sync`, { method: 'POST', body: JSON.stringify(files ? { files } : {}) }),
+    roleSmartSync: (id: string, file: string) =>
+      request<{ success: boolean; mergedContent: string; explanation: string; error?: string }>(`/agents/${id}/role-smart-sync`, { method: 'POST', body: JSON.stringify({ file }) }),
     roleUpdates: () =>
       request<{ total: number; staleCount: number; stale: RoleUpdateStatus[] }>('/agents/role-updates'),
     addSkill: (id: string, skillName: string) =>
@@ -816,9 +830,9 @@ export const api = {
     },
     getDecisions: (id: string, limit = 50) =>
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
-    message: (id: string, text: string, images?: string[], sessionId?: string | null) =>
-      request<{ reply: string; sessionId?: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, sessionId: sessionId ?? undefined }) }),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean): Promise<{ content: string; sessionId?: string }> => {
+    message: (id: string, text: string, images?: string[], sessionId?: string | null, fileNames?: string[]) =>
+      request<{ reply: string; sessionId?: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, fileNames, sessionId: sessionId ?? undefined }) }),
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[]): Promise<{ content: string; sessionId?: string }> => {
       return new Promise(async (resolve, reject) => {
         let fullContent = '';
         let resultSessionId: string | undefined;
@@ -827,7 +841,7 @@ export const api = {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ text, stream: true, images, sessionId: sessionId ?? undefined, isRetry: isRetry || undefined }),
+            body: JSON.stringify({ text, stream: true, images, fileNames, sessionId: sessionId ?? undefined, isRetry: isRetry || undefined, isResume: isResume || undefined }),
             signal,
           });
           if (!res.ok) { reject(new Error(`API error: ${res.status}`)); return; }
@@ -862,6 +876,10 @@ export const api = {
                   reject(err);
                   reader.cancel().catch(() => {});
                   return;
+                } else if (event.type === 'thinking_commit' && event.thinking) {
+                  onCommit?.({ type: 'thinking_commit', content: event.thinking, createdAt: (event as Record<string, unknown>).createdAt as string ?? new Date().toISOString() });
+                } else if (event.type === 'text_commit' && event.text) {
+                  onCommit?.({ type: 'text_commit', content: event.text, createdAt: (event as Record<string, unknown>).createdAt as string ?? new Date().toISOString() });
                 } else if (event.type === 'tool_call_start' && event.toolCall?.name) {
                   onActivity?.({ tool: event.toolCall.name, phase: 'start' });
                 } else if (event.type === 'agent_tool' && event.tool && event.phase) {
@@ -1002,6 +1020,8 @@ export const api = {
       request<{ type: string; name: string; content: string; mimeType?: string }>(`/files/preview?path=${encodeURIComponent(filePath)}`),
     reveal: (filePath: string) =>
       request<{ ok: boolean; path: string }>('/files/reveal', { method: 'POST', body: JSON.stringify({ path: filePath }) }),
+    check: (paths: string[]) =>
+      request<{ results: Record<string, { exists: boolean; isFile: boolean; type: string }> }>('/files/check', { method: 'POST', body: JSON.stringify({ paths }) }),
   },
   requirements: {
     list: (filters?: { orgId?: string; status?: string; source?: string; projectId?: string }) => {
@@ -1077,6 +1097,9 @@ export const api = {
     getAgent: () => request<{ maxToolIterations: number }>('/settings/agent'),
     updateAgent: (settings: { maxToolIterations?: number }) =>
       request<{ maxToolIterations: number }>('/settings/agent', { method: 'POST', body: JSON.stringify(settings) }),
+    getBrowser: () => request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean }>('/settings/browser'),
+    updateBrowser: (settings: { bringToFront?: boolean; remoteDebuggingPort?: number; autoCloseTabs?: boolean }) =>
+      request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean }>('/settings/browser', { method: 'POST', body: JSON.stringify(settings) }),
   },
   skills: {
     list: () => request<{ skills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; requiredPermissions?: string[]; type: 'builtin' | 'filesystem' | 'imported'; sourcePath?: string; agentIds: string[] }> }>('/skills'),
@@ -1131,6 +1154,10 @@ export const api = {
     me: () => request<{ user: AuthUser }>('/auth/me'),
     changePassword: (currentPassword: string, newPassword: string) =>
       request<{ ok: boolean }>('/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
+    updateProfile: (name: string, email: string) =>
+      request<{ user: AuthUser }>('/auth/profile', { method: 'PUT', body: JSON.stringify({ name, email }) }),
+    uploadAvatar: (image: string, type: 'user' | 'agent' = 'user', id?: string) =>
+      request<{ avatarUrl: string }>('/avatars/upload', { method: 'POST', body: JSON.stringify({ image, type, id }) }),
   },
   sessions: {
     listByAgent: (agentId: string, limit = 20) =>
@@ -1426,6 +1453,7 @@ export interface HubItem {
   id: string;
   itemType: 'agent' | 'team' | 'skill';
   name: string;
+  slug?: string;
   description: string;
   version: string;
   category: string;
@@ -1499,8 +1527,9 @@ export function ensureHubAuth(): Promise<void> {
     const pollTimer = setInterval(async () => {
       if (settled) return;
       try {
-        const res = await fetch(`${HUB_URL}/api/auth/connect-status?session=${encodeURIComponent(sessionId)}`);
-        const data = await res.json() as { ready?: boolean; token?: string; user?: HubUser };
+        const data = await request<{ ready?: boolean; token?: string; user?: HubUser }>(
+          `/hub/auth/connect-status?session=${encodeURIComponent(sessionId)}`
+        );
         if (data.ready && data.token && data.user) {
           settled = true;
           saveHubAuth(data.token, data.user);
@@ -1528,9 +1557,10 @@ async function hubRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getHubToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...init?.headers as Record<string, string> };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(`${HUB_URL}/api${path}`, {
+  const res = await fetch(`${BASE}/hub${path}`, {
     ...init,
     headers,
+    credentials: 'include',
   });
   const data = await res.json();
   if (res.status === 401 && token) {
@@ -1609,3 +1639,13 @@ export const hubApi = {
     return hubRequest<{ ok: boolean }>(`/items/${id}`, { method: 'DELETE' });
   },
 };
+
+/** Convert a string to kebab-case slug. Must match the server-side kebab() in @markus/shared. */
+export function kebab(s: string, fallback?: string): string {
+  const result = s.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '');
+  if (result) return result;
+  if (fallback) return fallback;
+  let hash = 0;
+  for (let i = 0; i < s.length; i++) hash = ((hash << 5) - hash + s.charCodeAt(i)) | 0;
+  return `pkg-${Math.abs(hash).toString(36)}`;
+}

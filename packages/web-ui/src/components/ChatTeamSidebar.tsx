@@ -12,6 +12,7 @@ import {
   NewTeamModal, AddHumanModal, AddExistingModal,
   OpenClawImportModal,
 } from './TeamModals.tsx';
+import { Avatar } from './Avatar.tsx';
 
 // Module-level cache so last-message previews survive unmount/remount cycles on mobile
 let _lastMsgCache: Map<string, string> = new Map();
@@ -443,11 +444,12 @@ export function ChatTeamSidebar({
             selected ? 'bg-brand-600/20 text-brand-500' : 'text-fg-secondary hover:bg-surface-elevated'
           }`}
         >
-          <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-            selected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-secondary'
-          }`}>
-            {agentInitials(a.name)}
-          </div>
+          <Avatar
+            name={a.name}
+            avatarUrl={a.avatarUrl}
+            size={24}
+            bgClass={selected ? 'bg-brand-600' : 'bg-surface-overlay text-fg-secondary'}
+          />
           <div className="flex-1 min-w-0 text-left">
             <div className="flex items-center gap-1">
               <span className="truncate font-medium text-[11px] leading-tight">{a.name}</span>
@@ -761,11 +763,12 @@ export function ChatTeamSidebar({
                     : 'text-fg-secondary hover:bg-surface-elevated'
                 }`}
               >
-                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-                  chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId) ? 'bg-brand-600 text-white' : 'bg-brand-500/15 text-brand-500'
-                }`}>
-                  {authUser.name[0]?.toUpperCase()}
-                </div>
+                <Avatar
+                  name={authUser.name}
+                  avatarUrl={authUser.avatarUrl}
+                  size={24}
+                  bgClass={chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId) ? 'bg-brand-600' : 'bg-brand-500/15 text-brand-500'}
+                />
                 <div className="flex-1 min-w-0 text-left">
                   <div className="truncate font-medium text-[11px] leading-tight">{authUser.name}</div>
                   <div className="text-fg-tertiary truncate text-[10px] leading-tight mt-0.5">My Notes</div>
@@ -784,11 +787,12 @@ export function ChatTeamSidebar({
                     : 'text-fg-secondary hover:bg-surface-elevated'
                 }`}
               >
-                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-                  chatMode === 'dm' && activeDmUserId === h.id ? 'bg-green-600 text-white' : 'bg-green-500/10 text-green-600'
-                }`}>
-                  {h.name[0]?.toUpperCase()}
-                </div>
+                <Avatar
+                  name={h.name}
+                  avatarUrl={h.avatarUrl}
+                  size={24}
+                  bgClass={chatMode === 'dm' && activeDmUserId === h.id ? 'bg-green-600' : 'bg-green-500/10 text-green-600'}
+                />
                 <div className="flex-1 min-w-0 text-left">
                   <div className="truncate font-medium text-[11px] leading-tight">{h.name}</div>
                   <div className="text-fg-tertiary truncate text-[10px] leading-tight mt-0.5">{h.email || h.role}</div>
