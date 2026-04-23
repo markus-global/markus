@@ -1,0 +1,32 @@
+{
+  "title": "商店",
+  "tabs": {
+    "agents": "智能体",
+    "teams": "团队",
+    "skills": "技能"
+  },
+  "marketplace": {
+    "searchPlaceholder": "搜索模板…",
+    "noResults": "未找到模板",
+    "install": "安装",
+    "installed": "已安装",
+    "hire": "聘用",
+    "category": "分类",
+    "allCategories": "全部分类",
+    "hubAgents": "Markus Hub 智能体",
+    "hubTeams": "Markus Hub 团队",
+    "hubSkills": "Markus Hub 技能",
+    "templates": "模板",
+    "featured": "精选",
+    "popular": "热门",
+    "recent": "最近"
+  },
+  "detail": {
+    "description": "描述",
+    "skills": "技能",
+    "tools": "工具",
+    "members": "成员",
+    "requirements": "要求",
+    "configuration": "配置"
+  }
+}

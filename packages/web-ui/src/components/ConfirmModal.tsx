@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface CheckboxOption {
   id: string;
@@ -15,7 +16,8 @@ interface Props {
   onCancel: () => void;
 }
 
-export function ConfirmModal({ title, message, confirmLabel = 'Confirm', checkboxes, onConfirm, onCancel }: Props) {
+export function ConfirmModal({ title, message, confirmLabel, checkboxes, onConfirm, onCancel }: Props) {
+  const { t } = useTranslation('common');
   const [checks, setChecks] = useState<Record<string, boolean>>(() => {
     const init: Record<string, boolean> = {};
     for (const cb of checkboxes ?? []) init[cb.id] = cb.defaultChecked ?? false;
@@ -50,13 +52,13 @@ export function ConfirmModal({ title, message, confirmLabel = 'Confirm', checkbo
             onClick={onCancel}
             className="px-4 py-1.5 text-sm border border-border-default rounded-lg hover:bg-surface-elevated transition-colors"
           >
-            Cancel
+            {t('cancel')}
           </button>
           <button
             onClick={() => onConfirm(checkboxes ? checks : undefined)}
             className="px-4 py-1.5 text-sm bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors"
           >
-            {confirmLabel}
+            {confirmLabel ?? t('confirm')}
           </button>
         </div>
       </div>

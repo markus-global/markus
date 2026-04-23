@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { api, type NotificationInfo, type ApprovalInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
@@ -41,34 +43,34 @@ const TYPE_COLOR: Record<string, string> = {
   system: 'text-fg-tertiary',
 };
 
-function timeAgo(iso: string): string {
+function timeAgo(iso: string, t: TFunction): string {
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'now';
-  if (mins < 60) return `${mins}m`;
+  if (mins < 1) return t('common:time.now');
+  if (mins < 60) return t('common:time.minutesAgo', { count: mins });
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h`;
-  return `${Math.floor(hrs / 24)}d`;
+  if (hrs < 24) return t('common:time.hoursAgo', { count: hrs });
+  return t('common:time.daysAgo', { count: Math.floor(hrs / 24) });
 }
 
-function actionHint(n: NotificationInfo): string | null {
+function actionHint(n: NotificationInfo, t: TFunction): string | null {
   const actionType = (n as any).actionType;
-  if (actionType === 'open_chat') return 'Open chat →';
-  if (actionType === 'navigate') return 'View details →';
+  if (actionType === 'open_chat') return t('team:notifications.actionHints.openChat');
+  if (actionType === 'navigate') return t('team:notifications.actionHints.viewDetails');
   const meta = n.metadata ?? {};
   switch (n.type) {
     case 'task_completed': case 'task_created': case 'task_review': case 'task_failed':
-      return meta.taskId ? 'View task →' : null;
+      return meta.taskId ? t('team:notifications.actionHints.viewTask') : null;
     case 'requirement_created': case 'requirement_decision':
-      return meta.requirementId ? 'View requirement →' : null;
+      return meta.requirementId ? t('team:notifications.actionHints.viewRequirement') : null;
     case 'agent_report':
-      return meta.agentId ? 'View agent →' : null;
+      return meta.agentId ? t('team:notifications.actionHints.viewAgent') : null;
     case 'approval_request':
-      return 'View approval →';
+      return t('team:notifications.actionHints.viewApproval');
     default:
-      if (meta.taskId) return 'View task →';
-      if (meta.requirementId) return 'View requirement →';
-      if (meta.agentId) return 'View agent →';
+      if (meta.taskId) return t('team:notifications.actionHints.viewTask');
+      if (meta.requirementId) return t('team:notifications.actionHints.viewRequirement');
+      if (meta.agentId) return t('team:notifications.actionHints.viewAgent');
       return null;
   }
 }
@@ -96,6 +98,7 @@ function playNotificationSound() {
 }
 
 export function NotificationBell({ collapsed, userId }: Props) {
+  const { t } = useTranslation(['team', 'common']);
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<'approvals' | 'notifications'>('approvals');
   const [notifications, setNotifications] = useState<NotificationInfo[]>([]);
@@ -345,7 +348,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
         className={`relative flex items-center justify-center rounded-md transition-colors ${
           collapsed ? 'w-8 h-8' : 'w-7 h-7'
         } ${open ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-overlay'}`}
-        title="Notifications"
+        title={t('team:notifications.bellTitle')}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
@@ -353,7 +356,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
         </svg>
         {badgeCount > 0 && (
           <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
-            {badgeCount > 99 ? '99+' : badgeCount}
+            {badgeCount > 99 ? t('common:badgeOverLimit') : badgeCount}
           </span>
         )}
       </button>
@@ -368,7 +371,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
                 tab === 'approvals' ? 'text-fg-primary border-b-2 border-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'
               }`}
             >
-              Approvals{pendingApprovals > 0 ? ` (${pendingApprovals})` : ''}
+              {t('team:notifications.approvals')}{pendingApprovals > 0 ? ` (${pendingApprovals})` : ''}
             </button>
             <button
               onClick={() => setTab('notifications')}
@@ -376,12 +379,12 @@ export function NotificationBell({ collapsed, userId }: Props) {
                 tab === 'notifications' ? 'text-fg-primary border-b-2 border-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'
               }`}
             >
-              Notifications{adjustedUnreadCount > 0 ? ` (${adjustedUnreadCount})` : ''}
+              {t('team:notifications.notifications')}{adjustedUnreadCount > 0 ? ` (${adjustedUnreadCount})` : ''}
             </button>
             <button
               onClick={() => setOpen(false)}
               className="px-2 py-2 text-fg-tertiary hover:text-fg-primary transition-colors shrink-0"
-              title="Close"
+              title={t('common:close')}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M18 6L6 18" /><path d="M6 6l12 12" />
@@ -392,7 +395,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
           {/* Actions bar */}
           {tab === 'notifications' && unreadCount > 0 && (
             <div className="flex justify-end px-3 py-1.5 border-b border-border-default/50 shrink-0">
-              <button onClick={handleMarkAllRead} className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors">Mark all read</button>
+              <button onClick={handleMarkAllRead} className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors">{t('team:notifications.markAllRead')}</button>
             </div>
           )}
 
@@ -400,7 +403,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
           <div className="flex-1 overflow-y-auto">
             {tab === 'approvals' && (
               approvals.length === 0 ? (
-                <div className="p-6 text-center text-xs text-fg-tertiary">No approval requests</div>
+                <div className="p-6 text-center text-xs text-fg-tertiary">{t('team:notifications.noApprovals')}</div>
               ) : (
                 <div className="divide-y divide-border-default/50">
                   {approvals.filter(a => a.status === 'pending').map(a => {
@@ -419,7 +422,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
                               <span className="text-xs text-fg-primary font-medium">{a.title}</span>
-                              <span className="text-[10px] text-fg-tertiary shrink-0">{timeAgo(a.requestedAt)}</span>
+                              <span className="text-[10px] text-fg-tertiary shrink-0">{timeAgo(a.requestedAt, t)}</span>
                             </div>
                             <div className="text-[11px] text-fg-tertiary mt-0.5">{a.agentName}</div>
                           </div>
@@ -447,7 +450,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
                           <div className="flex gap-1.5">
                             <input
                               type="text"
-                              placeholder="Or type your own instruction..."
+                              placeholder={t('team:notifications.freeformPlaceholder')}
                               value={freeformTexts[a.id] ?? ''}
                               onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
                               onKeyDown={e => { if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom'); }}
@@ -457,7 +460,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
                               disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
                               onClick={() => handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom')}
                               className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
-                            >Send</button>
+                            >{t('common:send')}</button>
                           </div>
                         </div>
                       ) : rejectingId === a.id ? (
@@ -465,7 +468,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
                           <input
                             type="text"
                             autoFocus
-                            placeholder="Reason for rejection (optional, Enter to submit)"
+                            placeholder={t('team:notifications.rejectReasonPlaceholder')}
                             value={rejectComment}
                             onChange={e => setRejectComment(e.target.value)}
                             onKeyDown={e => { if (e.key === 'Enter') handleApprovalResponse(a.id, false, rejectComment || undefined, 'reject'); if (e.key === 'Escape') { setRejectingId(null); setRejectComment(''); } }}
@@ -476,16 +479,16 @@ export function NotificationBell({ collapsed, userId }: Props) {
                               disabled={responding === a.id}
                               onClick={() => handleApprovalResponse(a.id, false, rejectComment || undefined, 'reject')}
                               className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50 transition-colors"
-                            >Confirm Reject</button>
+                            >{t('team:notifications.confirmReject')}</button>
                             <button
                               onClick={() => { setRejectingId(null); setRejectComment(''); }}
                               className="px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay transition-colors"
-                            >Cancel</button>
+                            >{t('common:cancel')}</button>
                           </div>
                           <div className="flex gap-1.5 mt-1">
                             <input
                               type="text"
-                              placeholder="Or type your own instruction..."
+                              placeholder={t('team:notifications.freeformPlaceholder')}
                               value={freeformTexts[a.id] ?? ''}
                               onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
                               onKeyDown={e => { if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom'); }}
@@ -495,7 +498,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
                               disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
                               onClick={() => handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom')}
                               className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
-                            >Send</button>
+                            >{t('common:send')}</button>
                           </div>
                         </div>
                       ) : (
@@ -505,17 +508,17 @@ export function NotificationBell({ collapsed, userId }: Props) {
                               disabled={responding === a.id}
                               onClick={() => handleApprovalResponse(a.id, true, undefined, 'approve')}
                               className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 transition-colors"
-                            >Approve</button>
+                            >{t('common:approve')}</button>
                             <button
                               disabled={responding === a.id}
                               onClick={() => { setRejectingId(a.id); setRejectComment(''); }}
                               className="flex-1 px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay disabled:opacity-50 transition-colors"
-                            >Reject</button>
+                            >{t('common:reject')}</button>
                           </div>
                           <div className="flex gap-1.5">
                             <input
                               type="text"
-                              placeholder="Or type your own instruction..."
+                              placeholder={t('team:notifications.freeformPlaceholder')}
                               value={freeformTexts[a.id] ?? ''}
                               onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
                               onKeyDown={e => { if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom'); }}
@@ -525,7 +528,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
                               disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
                               onClick={() => handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom')}
                               className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
-                            >Send</button>
+                            >{t('common:send')}</button>
                           </div>
                         </div>
                       )}
@@ -537,7 +540,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
                       <div className="flex items-center gap-2">
                         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${a.status === 'approved' ? 'bg-green-500' : 'bg-red-500'}`} />
                         <span className="text-xs text-fg-secondary truncate flex-1">{a.title}</span>
-                        <span className="text-[10px] text-fg-tertiary shrink-0">{a.status}</span>
+                        <span className="text-[10px] text-fg-tertiary shrink-0">{t(`common:status.${a.status === 'approved' ? 'approved' : a.status === 'rejected' ? 'rejected' : a.status}`, { defaultValue: a.status })}</span>
                       </div>
                       {a.responseComment && (
                         <p className="text-[10px] text-fg-tertiary mt-0.5 pl-3.5 truncate">&ldquo;{a.responseComment}&rdquo;</p>
@@ -550,7 +553,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
 
             {tab === 'notifications' && (
               displayNotifications.length === 0 ? (
-                <div className="p-6 text-center text-xs text-fg-tertiary">No notifications</div>
+                <div className="p-6 text-center text-xs text-fg-tertiary">{t('team:notifications.noNotifications')}</div>
               ) : (
                 <div className="divide-y divide-border-default/50">
                   {displayNotifications.slice(0, 50).map(n => {
@@ -577,10 +580,10 @@ export function NotificationBell({ collapsed, userId }: Props) {
                           <MarkdownMessage content={n.body} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px] [&_p]:text-fg-tertiary" />
                         </div>
                         <div className="flex items-center gap-2 mt-0.5">
-                          <span className="text-[10px] text-fg-muted">{timeAgo(n.createdAt)}</span>
-                          {actionHint(n) && (
+                          <span className="text-[10px] text-fg-muted">{timeAgo(n.createdAt, t)}</span>
+                          {actionHint(n, t) && (
                             <span className={`text-[10px] font-medium ${typeColor}`}>
-                              {actionHint(n)}
+                              {actionHint(n, t)}
                             </span>
                           )}
                         </div>

@@ -1,0 +1,79 @@
+{
+  "title": "Reports",
+  "tabs": {
+    "generate": "Generate",
+    "history": "History"
+  },
+  "period": {
+    "daily": "daily",
+    "weekly": "weekly",
+    "monthly": "monthly",
+    "today": "Today",
+    "thisWeek": "This Week",
+    "thisMonth": "This Month"
+  },
+  "usage": {
+    "llmTokens": "LLM Tokens (this month)",
+    "toolCalls": "Tool Calls (today)",
+    "messages": "Messages (today)",
+    "storage": "Storage"
+  },
+  "taskMetrics": {
+    "title": "Task Metrics",
+    "completed": "Completed",
+    "inProgress": "In Progress",
+    "created": "Created",
+    "blocked": "Blocked",
+    "failed": "Failed"
+  },
+  "costOverview": {
+    "title": "Cost Overview",
+    "estCostAllTime": "Est. Cost (all time)",
+    "tokensToday": "Tokens Today",
+    "tokensPeriod": "Tokens ({{period}})",
+    "costPeriod": "Cost ({{period}})",
+    "totalTokens": "Total Tokens",
+    "estimatedCost": "Estimated Cost",
+    "trend": "Trend",
+    "byAgentRow": "{{tokens}} tokens · {{cost}}"
+  },
+  "taskSummary": {
+    "title": "Task Summary",
+    "completedCount": "Completed ({{count}})",
+    "inProgressCount": "In Progress ({{count}})",
+    "blockedCount": "Blocked ({{count}})",
+    "noTasksInPeriod": "No tasks in this period."
+  },
+  "highlights": "Highlights",
+  "blockers": "Blockers",
+  "upcomingPlan": {
+    "title": "Upcoming Plan",
+    "approvePlan": "Approve Plan",
+    "rejectPlan": "Reject Plan",
+    "rejectionReason": "Rejection reason:",
+    "planApproved": "Plan approved",
+    "planRejected": "Plan rejected",
+    "planPending": "Plan pending",
+    "planStatus": "Plan {{status}}"
+  },
+  "noDetailedMetrics": "This report does not contain detailed metrics data.",
+  "noReportsYet": "No reports generated yet. Use the Generate tab to create one.",
+  "feedback": {
+    "title": "Feedback ({{count}})",
+    "placeholder": "Add feedback or instructions…",
+    "added": "Feedback added"
+  },
+  "perAgentUsage": {
+    "title": "Per-Agent Usage",
+    "noData": "No agent usage data yet.",
+    "agent": "Agent",
+    "totalTokens": "Total Tokens",
+    "today": "Today",
+    "requests": "Requests",
+    "toolCalls": "Tool Calls",
+    "estCost": "Est. Cost",
+    "totalAgents": "Total ({{count}} agents)"
+  },
+  "reportType": "{{type}} Report",
+  "backToList": "← Back to list"
+}

@@ -1,0 +1,28 @@
+{
+  "home": "Home",
+  "team": "Team",
+  "work": "Work",
+  "store": "Store",
+  "builder": "Builder",
+  "deliverables": "Deliverables",
+  "reports": "Reports",
+  "settings": "Settings",
+  "sections": {
+    "workspace": "WORKSPACE",
+    "build": "BUILD",
+    "system": "SYSTEM"
+  },
+  "sidebar": {
+    "collapseSidebar": "Collapse sidebar",
+    "expandSidebar": "Expand sidebar",
+    "signOut": "Sign out",
+    "newProject": "New Project",
+    "createFirstProject": "Create your first project",
+    "showAllProjects": "Show all {{count}} projects..."
+  },
+  "tabs": {
+    "agents": "Agents",
+    "teams": "Teams",
+    "skills": "Skills"
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "welcome": {
+    "title": "Welcome to Markus",
+    "subtitle": "Your AI workforce, ready in minutes",
+    "description": "Markus runs <strong>complete AI teams</strong> — developers, researchers, writers, analysts that work autonomously, collaborate with each other, and deliver results around the clock.",
+    "features": {
+      "operation": "24/7 Operation",
+      "operationDesc": "Agents work while you sleep via heartbeat",
+      "collaboration": "Team Collaboration",
+      "collaborationDesc": "Agents delegate, review, and coordinate",
+      "memory": "Persistent Memory",
+      "memoryDesc": "Five memory layers survive restarts",
+      "anyLlm": "Any LLM Provider",
+      "anyLlmDesc": "Anthropic, OpenAI, Google, Ollama & more"
+    }
+  },
+  "theme": {
+    "title": "Choose Your Theme",
+    "subtitle": "You can change this anytime in Settings",
+    "system": "System",
+    "systemDesc": "Follow your OS setting",
+    "light": "Light",
+    "lightDesc": "Always light background",
+    "dark": "Dark",
+    "darkDesc": "Always dark background",
+    "cyberpunk": "Cyberpunk",
+    "cyberpunkDesc": "Neon pink, dark violet",
+    "midnight": "Midnight",
+    "midnightDesc": "Deep ocean, teal accents"
+  },
+  "llm": {
+    "title": "Configure LLM",
+    "subtitle": "Agents need an LLM to think and act",
+    "configured": "LLM provider configured",
+    "configuredHint": "You can manage providers anytime in Settings.",
+    "fromEnv": "From Environment Variables",
+    "detectingKeys": "Detecting API keys...",
+    "noKeysFound": "No API keys found. Set <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, etc. in your <code>.env</code> file and restart.",
+    "applyProviders": "Apply {{count}} Provider(s)",
+    "or": "or",
+    "fromOpenClaw": "From OpenClaw",
+    "detectOpenClaw": "Detect OpenClaw Config",
+    "importModelConfigs": "Import Model Configs",
+    "noOpenClawFound": "No OpenClaw config found.",
+    "importedModels": "Imported {{count}} model configs",
+    "failedToApply": "Failed to apply",
+    "importFailed": "Import failed",
+    "skipForNow": "Skip for now",
+    "openClawFoundLabel": "Found:",
+    "openClawProviders": "({{count}} providers)"
+  },
+  "profile": {
+    "title": "Set Up Your Profile",
+    "subtitle": "Tell us who you are",
+    "saved": "Profile saved",
+    "nameLabel": "Your Name",
+    "namePlaceholder": "Enter your name",
+    "emailLabel": "Email",
+    "emailPlaceholder": "your@email.com",
+    "newPasswordLabel": "New Password",
+    "newPasswordPlaceholder": "Set a secure password (min 6 characters)",
+    "confirmPasswordLabel": "Confirm Password",
+    "confirmPasswordPlaceholder": "Repeat your password",
+    "saveProfile": "Save Profile",
+    "errors": {
+      "nameRequired": "Please enter your name",
+      "emailRequired": "Please enter your email",
+      "emailInvalid": "Please enter a valid email address",
+      "passwordTooShort": "Password must be at least 6 characters",
+      "passwordMismatch": "Passwords do not match",
+      "saveFailed": "Failed to save profile. Please try again."
+    }
+  },
+  "done": {
+    "title": "You're All Set",
+    "subtitle": "Start building your AI workforce",
+    "chat": "Chat",
+    "chatDesc": "Talk to agents or use Smart Route to auto-delegate tasks",
+    "projects": "Projects",
+    "projectsDesc": "Create projects with requirements, tasks, and deliverables",
+    "builder": "Builder",
+    "builderDesc": "Hire new agents from templates or build custom roles",
+    "settings": "Settings",
+    "settingsDesc": "Manage LLM providers, integrations, and governance"
+  },
+  "getStarted": "Get Started"
+}

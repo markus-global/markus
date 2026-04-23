@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useTranslation, Trans } from 'react-i18next';
 import type { ThemeMode } from '../hooks/useTheme.ts';
 import { api } from '../api.ts';
 import { AvatarUpload } from './Avatar.tsx';
@@ -20,6 +21,7 @@ const PROFILE_STEP = 1;
 const LLM_STEP = 3;
 
 export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
+  const { t } = useTranslation(['onboarding', 'common']);
   const [step, setStep] = useState(0);
 
   // Profile setup state
@@ -100,9 +102,9 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
         setSetupMsg({ type: 'ok', text: data.message });
         setLlmConfigured(true);
       } else {
-        setSetupMsg({ type: 'err', text: 'Failed to apply' });
+        setSetupMsg({ type: 'err', text: t('llm.failedToApply') });
       }
-    } catch { setSetupMsg({ type: 'err', text: 'Network error' }); }
+    } catch { setSetupMsg({ type: 'err', text: t('common:networkError') }); }
     finally { setEnvApplying(false); }
   };
 
@@ -130,20 +132,20 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
       if ('error' in data) {
         setSetupMsg({ type: 'err', text: data.error });
       } else {
-        setSetupMsg({ type: 'ok', text: `Imported ${data.appliedModels} model configs` });
+        setSetupMsg({ type: 'ok', text: t('llm.importedModels', { count: data.appliedModels }) });
         setLlmConfigured(true);
       }
-    } catch { setSetupMsg({ type: 'err', text: 'Import failed' }); }
+    } catch { setSetupMsg({ type: 'err', text: t('llm.importFailed') }); }
     finally { setOpenclawLoading(false); }
   };
 
   const saveProfile = async () => {
     setProfileError('');
-    if (!profileName.trim()) { setProfileError('Please enter your name'); return; }
-    if (!profileEmail.trim()) { setProfileError('Please enter your email'); return; }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(profileEmail.trim())) { setProfileError('Please enter a valid email address'); return; }
-    if (profilePassword && profilePassword.length < 6) { setProfileError('Password must be at least 6 characters'); return; }
-    if (profilePassword && profilePassword !== profileConfirm) { setProfileError('Passwords do not match'); return; }
+    if (!profileName.trim()) { setProfileError(t('profile.errors.nameRequired')); return; }
+    if (!profileEmail.trim()) { setProfileError(t('profile.errors.emailRequired')); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(profileEmail.trim())) { setProfileError(t('profile.errors.emailInvalid')); return; }
+    if (profilePassword && profilePassword.length < 6) { setProfileError(t('profile.errors.passwordTooShort')); return; }
+    if (profilePassword && profilePassword !== profileConfirm) { setProfileError(t('profile.errors.passwordMismatch')); return; }
     setProfileSaving(true);
     try {
       await api.auth.updateProfile(profileName.trim(), profileEmail.trim());
@@ -152,34 +154,40 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
       }
       setProfileSaved(true);
     } catch {
-      setProfileError('Failed to save profile. Please try again.');
+      setProfileError(t('profile.errors.saveFailed'));
     } finally {
       setProfileSaving(false);
     }
   };
 
   const themeOptions: Array<{ value: ThemeMode; label: string; icon: string; desc: string }> = [
-    { value: 'system', label: 'System', icon: '💻', desc: 'Follow your OS setting' },
-    { value: 'light', label: 'Light', icon: '☀️', desc: 'Always light background' },
-    { value: 'dark', label: 'Dark', icon: '🌙', desc: 'Always dark background' },
-    { value: 'cyberpunk', label: 'Cyberpunk', icon: '🔮', desc: 'Neon pink, dark violet' },
-    { value: 'midnight', label: 'Midnight', icon: '🌊', desc: 'Deep ocean, teal accents' },
+    { value: 'system', label: t('theme.system'), icon: '💻', desc: t('theme.systemDesc') },
+    { value: 'light', label: t('theme.light'), icon: '☀️', desc: t('theme.lightDesc') },
+    { value: 'dark', label: t('theme.dark'), icon: '🌙', desc: t('theme.darkDesc') },
+    { value: 'cyberpunk', label: t('theme.cyberpunk'), icon: '🔮', desc: t('theme.cyberpunkDesc') },
+    { value: 'midnight', label: t('theme.midnight'), icon: '🌊', desc: t('theme.midnightDesc') },
   ];
 
   const steps = [
     // Step 0: Welcome
     {
-      title: 'Welcome to Markus',
-      subtitle: 'Your AI workforce, ready in minutes',
+      title: t('welcome.title'),
+      subtitle: t('welcome.subtitle'),
       content: (
         <div className="space-y-4 text-fg-secondary text-sm leading-relaxed">
-          <p>Markus runs <strong className="text-fg-primary">complete AI teams</strong> — developers, researchers, writers, analysts that work autonomously, collaborate with each other, and deliver results around the clock.</p>
+          <p className="text-fg-secondary">
+            <Trans
+              i18nKey="welcome.description"
+              ns="onboarding"
+              components={{ strong: <strong className="text-fg-primary" /> }}
+            />
+          </p>
           <div className="grid grid-cols-2 gap-3 mt-6">
             {[
-              ['24/7 Operation', 'Agents work while you sleep via heartbeat'],
-              ['Team Collaboration', 'Agents delegate, review, and coordinate'],
-              ['Persistent Memory', 'Five memory layers survive restarts'],
-              ['Any LLM Provider', 'Anthropic, OpenAI, Google, Ollama & more'],
+              [t('welcome.features.operation'), t('welcome.features.operationDesc')],
+              [t('welcome.features.collaboration'), t('welcome.features.collaborationDesc')],
+              [t('welcome.features.memory'), t('welcome.features.memoryDesc')],
+              [t('welcome.features.anyLlm'), t('welcome.features.anyLlmDesc')],
             ].map(([title, desc]) => (
               <div key={title} className="bg-surface-elevated/50 rounded-lg p-3">
                 <div className="font-medium text-fg-primary text-xs">{title}</div>
@@ -192,13 +200,13 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
     },
     // Step 1: Profile Setup
     {
-      title: 'Set Up Your Profile',
-      subtitle: 'Tell us who you are',
+      title: t('profile.title'),
+      subtitle: t('profile.subtitle'),
       content: profileSaved ? (
         <div className="flex items-center gap-3 bg-green-500/10 border border-green-500/30 rounded-xl p-4">
           <span className="text-green-600 text-lg">&#10003;</span>
           <div>
-            <div className="text-sm font-medium text-green-600">Profile saved</div>
+            <div className="text-sm font-medium text-green-600">{t('profile.saved')}</div>
             <div className="text-xs text-fg-secondary mt-0.5">{profileName} &middot; {profileEmail}</div>
           </div>
         </div>
@@ -208,44 +216,44 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
             <AvatarUpload currentUrl={null} name={profileName} size={64} targetType="user" />
           </div>
           <div className="space-y-1">
-            <label className="text-xs text-fg-tertiary font-medium">Your Name <span className="text-red-500">*</span></label>
+            <label className="text-xs text-fg-tertiary font-medium">{t('profile.nameLabel')} <span className="text-red-500">*</span></label>
             <input
               type="text"
               value={profileName}
               onChange={e => setProfileName(e.target.value)}
-              placeholder="Enter your name"
+              placeholder={t('profile.namePlaceholder')}
               className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
               autoFocus
             />
           </div>
           <div className="space-y-1">
-            <label className="text-xs text-fg-tertiary font-medium">Email <span className="text-red-500">*</span></label>
+            <label className="text-xs text-fg-tertiary font-medium">{t('profile.emailLabel')} <span className="text-red-500">*</span></label>
             <input
               type="email"
               value={profileEmail}
               onChange={e => setProfileEmail(e.target.value)}
-              placeholder="your@email.com"
+              placeholder={t('profile.emailPlaceholder')}
               className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
             />
           </div>
           <div className="space-y-1">
-            <label className="text-xs text-fg-tertiary font-medium">New Password</label>
+            <label className="text-xs text-fg-tertiary font-medium">{t('profile.newPasswordLabel')}</label>
             <input
               type="password"
               value={profilePassword}
               onChange={e => setProfilePassword(e.target.value)}
-              placeholder="Set a secure password (min 6 characters)"
+              placeholder={t('profile.newPasswordPlaceholder')}
               className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
             />
           </div>
           {profilePassword && (
             <div className="space-y-1">
-              <label className="text-xs text-fg-tertiary font-medium">Confirm Password</label>
+              <label className="text-xs text-fg-tertiary font-medium">{t('profile.confirmPasswordLabel')}</label>
               <input
                 type="password"
                 value={profileConfirm}
                 onChange={e => setProfileConfirm(e.target.value)}
-                placeholder="Repeat your password"
+                placeholder={t('profile.confirmPasswordPlaceholder')}
                 className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
               />
             </div>
@@ -260,15 +268,15 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
             disabled={profileSaving || !profileName.trim() || !profileEmail.trim()}
             className="w-full px-4 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
           >
-            {profileSaving ? 'Saving...' : 'Save Profile'}
+            {profileSaving ? t('common:saving') : t('profile.saveProfile')}
           </button>
         </div>
       ),
     },
     // Step 2: Appearance
     {
-      title: 'Choose Your Theme',
-      subtitle: 'You can change this anytime in Settings',
+      title: t('theme.title'),
+      subtitle: t('theme.subtitle'),
       content: (
         <div className="grid grid-cols-3 gap-3">
           {themeOptions.map(opt => (
@@ -291,21 +299,21 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
     },
     // Step 2: LLM Setup
     {
-      title: 'Configure LLM',
-      subtitle: 'Agents need an LLM to think and act',
+      title: t('llm.title'),
+      subtitle: t('llm.subtitle'),
       content: llmConfigured ? (
         <div className="flex items-center gap-3 bg-green-500/10 border border-green-500/30 rounded-xl p-4">
           <span className="text-green-600 text-lg">&#10003;</span>
           <div>
-            <div className="text-sm font-medium text-green-600">LLM provider configured</div>
-            <div className="text-xs text-fg-secondary mt-0.5">You can manage providers anytime in Settings.</div>
+            <div className="text-sm font-medium text-green-600">{t('llm.configured')}</div>
+            <div className="text-xs text-fg-secondary mt-0.5">{t('llm.configuredHint')}</div>
           </div>
         </div>
       ) : (
         <div className="space-y-4">
           <div className="space-y-2">
-            <div className="text-xs text-fg-secondary uppercase tracking-wider">From Environment Variables</div>
-            {envLoading && <div className="text-xs text-fg-tertiary animate-pulse">Detecting API keys...</div>}
+            <div className="text-xs text-fg-secondary uppercase tracking-wider">{t('llm.fromEnv')}</div>
+            {envLoading && <div className="text-xs text-fg-tertiary animate-pulse">{t('llm.detectingKeys')}</div>}
             {envModels && envModels.detected.length > 0 && (
               <div className="space-y-2">
                 {envModels.detected.map(d => (
@@ -323,42 +331,46 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
                 <button onClick={() => void applyEnvModels()}
                   disabled={envApplying || Object.values(envSelected).filter(Boolean).length === 0}
                   className="w-full px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                  {envApplying ? 'Applying...' : `Apply ${Object.values(envSelected).filter(Boolean).length} Provider(s)`}
+                  {envApplying ? t('common:applying') : t('llm.applyProviders', { count: Object.values(envSelected).filter(Boolean).length })}
                 </button>
               </div>
             )}
             {envModels && envModels.detected.length === 0 && !envLoading && (
               <div className="text-xs text-fg-tertiary bg-surface-elevated/30 rounded-lg p-3">
-                No API keys found. Set <code className="text-fg-secondary">ANTHROPIC_API_KEY</code>, <code className="text-fg-secondary">OPENAI_API_KEY</code>, etc. in your <code className="text-fg-secondary">.env</code> file and restart.
+                <Trans
+                  i18nKey="llm.noKeysFound"
+                  ns="onboarding"
+                  components={{ code: <code className="text-fg-secondary" /> }}
+                />
               </div>
             )}
           </div>
 
           <div className="flex items-center gap-3">
             <div className="flex-1 h-px bg-border-default" />
-            <span className="text-xs text-fg-tertiary">or</span>
+            <span className="text-xs text-fg-tertiary">{t('llm.or')}</span>
             <div className="flex-1 h-px bg-border-default" />
           </div>
 
           <div className="space-y-2">
-            <div className="text-xs text-fg-secondary uppercase tracking-wider">From OpenClaw</div>
+            <div className="text-xs text-fg-secondary uppercase tracking-wider">{t('llm.fromOpenClaw')}</div>
             {!openclawPreview ? (
               <button onClick={() => void detectOpenclaw()} disabled={openclawLoading}
                 className="px-4 py-2 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-secondary text-sm rounded-lg transition-colors w-full">
-                {openclawLoading ? 'Detecting...' : 'Detect OpenClaw Config'}
+                {openclawLoading ? t('common:detecting') : t('llm.detectOpenClaw')}
               </button>
             ) : openclawPreview.found ? (
               <div className="space-y-2">
-                <div className="text-xs text-green-600">Found: <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code>
-                  {openclawPreview.summary.models && <span className="text-fg-tertiary ml-1">({openclawPreview.summary.models.providerCount} providers)</span>}
+                <div className="text-xs text-green-600">{t('llm.openClawFoundLabel')} <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code>
+                  {openclawPreview.summary.models && <span className="text-fg-tertiary ml-1">{t('llm.openClawProviders', { count: openclawPreview.summary.models.providerCount })}</span>}
                 </div>
                 <button onClick={() => void importOpenclaw()} disabled={openclawLoading}
                   className="w-full px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                  {openclawLoading ? 'Importing...' : 'Import Model Configs'}
+                  {openclawLoading ? t('common:importing') : t('llm.importModelConfigs')}
                 </button>
               </div>
             ) : (
-              <div className="text-xs text-fg-tertiary bg-surface-elevated/30 rounded-lg p-3">No OpenClaw config found.</div>
+              <div className="text-xs text-fg-tertiary bg-surface-elevated/30 rounded-lg p-3">{t('llm.noOpenClawFound')}</div>
             )}
           </div>
 
@@ -372,15 +384,15 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
     },
     // Step 3: Done
     {
-      title: 'You\'re All Set',
-      subtitle: 'Start building your AI workforce',
+      title: t('done.title'),
+      subtitle: t('done.subtitle'),
       content: (
         <div className="space-y-2 text-fg-secondary text-sm">
           {[
-            ['Chat', 'Talk to agents or use Smart Route to auto-delegate tasks'],
-            ['Projects', 'Create projects with requirements, tasks, and deliverables'],
-            ['Builder', 'Hire new agents from templates or build custom roles'],
-            ['Settings', 'Manage LLM providers, integrations, and governance'],
+            [t('done.chat'), t('done.chatDesc')],
+            [t('done.projects'), t('done.projectsDesc')],
+            [t('done.builder'), t('done.builderDesc')],
+            [t('done.settings'), t('done.settingsDesc')],
           ].map(([title, desc]) => (
             <div key={title} className="flex gap-3 bg-surface-elevated/50 rounded-lg p-3">
               <div className="text-brand-500 mt-0.5 shrink-0">&#x2192;</div>
@@ -424,22 +436,22 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
           <div className="flex justify-between mt-8">
             {step > 0 ? (
               <button onClick={() => setStep(step - 1)} className="px-4 py-2 text-sm text-fg-secondary hover:text-fg-primary transition-colors">
-                Back
+                {t('common:back')}
               </button>
             ) : (
               <button onClick={onComplete} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
-                Skip
+                {t('common:skip')}
               </button>
             )}
             <div className="flex items-center gap-3">
               {step === PROFILE_STEP && !profileSaved && (
                 <button onClick={() => setStep(step + 1)} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
-                  Skip for now
+                  {t('llm.skipForNow')}
                 </button>
               )}
               {step === LLM_STEP && !llmConfigured && (
                 <button onClick={handleNext} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
-                  Skip for now
+                  {t('llm.skipForNow')}
                 </button>
               )}
               <button
@@ -451,7 +463,7 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
                     : 'bg-brand-600 hover:bg-brand-500'
                 }`}
               >
-                {step === steps.length - 1 ? 'Get Started' : 'Next'}
+                {step === steps.length - 1 ? t('getStarted') : t('common:next')}
               </button>
             </div>
           </div>

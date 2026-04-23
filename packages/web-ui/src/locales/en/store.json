@@ -1,0 +1,32 @@
+{
+  "title": "Store",
+  "tabs": {
+    "agents": "Agents",
+    "teams": "Teams",
+    "skills": "Skills"
+  },
+  "marketplace": {
+    "searchPlaceholder": "Search templates...",
+    "noResults": "No templates found",
+    "install": "Install",
+    "installed": "Installed",
+    "hire": "Hire",
+    "category": "Category",
+    "allCategories": "All Categories",
+    "hubAgents": "Hub Agents",
+    "hubTeams": "Hub Teams",
+    "hubSkills": "Hub Skills",
+    "templates": "Templates",
+    "featured": "Featured",
+    "popular": "Popular",
+    "recent": "Recent"
+  },
+  "detail": {
+    "description": "Description",
+    "skills": "Skills",
+    "tools": "Tools",
+    "members": "Members",
+    "requirements": "Requirements",
+    "configuration": "Configuration"
+  }
+}

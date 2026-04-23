@@ -1,0 +1,87 @@
+{
+  "welcome": {
+    "title": "欢迎使用 Markus",
+    "subtitle": "几分钟内就绪的 AI 团队",
+    "description": "Markus 运行<strong>完整的 AI 团队</strong> — 开发者、研究员、撰稿人、分析师可自主工作、彼此协作，并全天候交付成果。",
+    "features": {
+      "operation": "7×24 运行",
+      "operationDesc": "智能体通过心跳在你休息时继续工作",
+      "collaboration": "团队协作",
+      "collaborationDesc": "智能体之间委派、审核与协调",
+      "memory": "持久记忆",
+      "memoryDesc": "五层记忆在重启后仍然保留",
+      "anyLlm": "任意 LLM 提供商",
+      "anyLlmDesc": "Anthropic、OpenAI、Google、Ollama 等"
+    }
+  },
+  "theme": {
+    "title": "选择主题",
+    "subtitle": "可随时在设置中更改",
+    "system": "跟随系统",
+    "systemDesc": "跟随操作系统设置",
+    "light": "浅色",
+    "lightDesc": "始终使用浅色背景",
+    "dark": "深色",
+    "darkDesc": "始终使用深色背景",
+    "cyberpunk": "赛博朋克",
+    "cyberpunkDesc": "霓虹粉与深紫",
+    "midnight": "午夜",
+    "midnightDesc": "深海色与青绿点缀"
+  },
+  "llm": {
+    "title": "配置 LLM",
+    "subtitle": "智能体需要 LLM 来思考与行动",
+    "configured": "已配置 LLM 提供商",
+    "configuredHint": "可随时在设置中管理提供商。",
+    "fromEnv": "来自环境变量",
+    "detectingKeys": "正在检测 API keys...",
+    "noKeysFound": "未发现 API keys。请在 <code>.env</code> 中设置 <code>ANTHROPIC_API_KEY</code>、<code>OPENAI_API_KEY</code> 等，然后重启。",
+    "applyProviders": "应用 {{count}} 个提供商",
+    "or": "或",
+    "fromOpenClaw": "来自 OpenClaw",
+    "detectOpenClaw": "检测 OpenClaw 配置",
+    "importModelConfigs": "导入模型配置",
+    "noOpenClawFound": "未找到 OpenClaw 配置。",
+    "importedModels": "已导入 {{count}} 条模型配置",
+    "failedToApply": "应用失败",
+    "importFailed": "导入失败",
+    "skipForNow": "暂时跳过",
+    "openClawFoundLabel": "已找到：",
+    "openClawProviders": "（{{count}} 个提供商）"
+  },
+  "profile": {
+    "title": "设置个人资料",
+    "subtitle": "介绍一下你自己",
+    "saved": "资料已保存",
+    "nameLabel": "姓名",
+    "namePlaceholder": "请输入姓名",
+    "emailLabel": "邮箱",
+    "emailPlaceholder": "your@email.com",
+    "newPasswordLabel": "新密码",
+    "newPasswordPlaceholder": "设置安全密码（至少 6 位）",
+    "confirmPasswordLabel": "确认密码",
+    "confirmPasswordPlaceholder": "再次输入密码",
+    "saveProfile": "保存资料",
+    "errors": {
+      "nameRequired": "请输入姓名",
+      "emailRequired": "请输入邮箱",
+      "emailInvalid": "请输入有效的邮箱地址",
+      "passwordTooShort": "密码至少需要 6 个字符",
+      "passwordMismatch": "两次输入的密码不一致",
+      "saveFailed": "保存资料失败，请重试。"
+    }
+  },
+  "done": {
+    "title": "一切就绪",
+    "subtitle": "开始搭建你的 AI 团队",
+    "chat": "对话",
+    "chatDesc": "与智能体对话或使用 Smart Route 自动委派任务",
+    "projects": "项目",
+    "projectsDesc": "创建包含需求、任务与交付物的项目",
+    "builder": "构建器",
+    "builderDesc": "从模板招聘新智能体或自定义角色",
+    "settings": "设置",
+    "settingsDesc": "管理 LLM 提供商、集成与治理"
+  },
+  "getStarted": "开始使用"
+}

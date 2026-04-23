@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api, hubApi, type AgentInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
@@ -13,46 +14,25 @@ function shortenPath(p: string): string {
 
 const BUILDER_PROMPTS = [
   {
+    id: 'hireAgent' as const,
     icon: '✦',
     color: 'from-brand-500 to-purple-600',
     borderColor: 'border-brand-500/30 hover:border-brand-400/50',
     bgColor: 'bg-brand-500/10',
-    title: 'Hire an Agent',
-    desc: 'Hire from templates, create custom agents, or find specialists on Markus Hub',
-    examples: [
-      'Hire a senior React developer',
-      'Create a custom code reviewer',
-      'Find a DevOps specialist on Hub',
-    ],
-    prompt: 'I need to hire an agent: ',
   },
   {
+    id: 'buildTeam' as const,
     icon: '◈',
     color: 'from-blue-500 to-blue-600',
     borderColor: 'border-blue-500/30 hover:border-blue-400/50',
     bgColor: 'bg-blue-500/10',
-    title: 'Build a Team',
-    desc: 'Compose an optimal team for your project or deploy a team template',
-    examples: [
-      'A web dev team with PM, devs, and QA',
-      'A data engineering squad',
-      'A content creation team',
-    ],
-    prompt: 'I need to build a team for: ',
   },
   {
+    id: 'createSkill' as const,
     icon: '⬡',
     color: 'from-green-500 to-green-600',
     borderColor: 'border-green-500/30 hover:border-green-400/50',
     bgColor: 'bg-green-500/10',
-    title: 'Create a Skill',
-    desc: 'Design new capabilities that agents can learn and use',
-    examples: [
-      'A Git changelog generator',
-      'A web scraping skill',
-      'A database migration tool',
-    ],
-    prompt: 'I need a skill that: ',
   },
 ];
 
@@ -76,7 +56,7 @@ interface InstalledInfo {
   agentIds?: string[];
 }
 
-function ConfirmDialog({ message, onConfirm, onCancel }: { message: string; onConfirm: () => void; onCancel: () => void }) {
+function ConfirmDialog({ title, message, cancelLabel, confirmLabel, onConfirm, onCancel }: { title: string; message: string; cancelLabel: string; confirmLabel: string; onConfirm: () => void; onCancel: () => void }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onCancel}>
       <div className="bg-surface-secondary border border-border-default rounded-xl p-6 max-w-sm mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -87,13 +67,13 @@ function ConfirmDialog({ message, onConfirm, onCancel }: { message: string; onCo
             </svg>
           </div>
           <div>
-            <div className="text-sm font-medium text-fg-primary">Confirm Delete</div>
+            <div className="text-sm font-medium text-fg-primary">{title}</div>
             <div className="text-xs text-fg-secondary mt-0.5">{message}</div>
           </div>
         </div>
         <div className="flex justify-end gap-2">
-          <button onClick={onCancel} className="px-4 py-1.5 text-xs text-fg-secondary hover:text-fg-primary border border-border-default hover:border-gray-600 rounded-lg transition-colors">Cancel</button>
-          <button onClick={onConfirm} className="px-4 py-1.5 text-xs bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors">Delete</button>
+          <button onClick={onCancel} className="px-4 py-1.5 text-xs text-fg-secondary hover:text-fg-primary border border-border-default hover:border-gray-600 rounded-lg transition-colors">{cancelLabel}</button>
+          <button onClick={onConfirm} className="px-4 py-1.5 text-xs bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors">{confirmLabel}</button>
         </div>
       </div>
     </div>
@@ -101,6 +81,7 @@ function ConfirmDialog({ message, onConfirm, onCancel }: { message: string; onCo
 }
 
 export function AgentBuilder() {
+  const { t } = useTranslation(['builder', 'common']);
   const isMobile = useIsMobile();
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [artifacts, setArtifacts] = useState<BuilderArtifact[]>([]);
@@ -188,7 +169,7 @@ export function AgentBuilder() {
       window.dispatchEvent(new CustomEvent('markus:data-changed'));
     } catch (err) {
       console.error('Install failed:', err);
-      alert(`Install failed: ${err}`);
+      alert(t('installFailed', { error: String(err) }));
     } finally {
       setActionInProgress(null);
     }
@@ -204,7 +185,7 @@ export function AgentBuilder() {
       window.dispatchEvent(new CustomEvent('markus:data-changed'));
     } catch (err) {
       console.error('Uninstall failed:', err);
-      alert(`Uninstall failed: ${err}`);
+      alert(t('uninstallFailed', { error: String(err) }));
     } finally {
       setActionInProgress(null);
     }
@@ -234,7 +215,7 @@ export function AgentBuilder() {
       if (result.id) setSharedMap(prev => { const m = new Map(prev); m.set(key, { id: result.id!, name, slug: result.slug ?? slug }); return m; });
     } catch (err) {
       console.error('Share failed:', err);
-      alert(`Share failed: ${err}`);
+      alert(t('shareFailed', { error: String(err) }));
     } finally {
       setActionInProgress(null);
     }
@@ -253,7 +234,7 @@ export function AgentBuilder() {
       setSharedMap(prev => { const m = new Map(prev); m.delete(key); return m; });
     } catch (err) {
       console.error('Hub delete failed:', err);
-      alert(`Failed to remove from Hub: ${err}`);
+      alert(t('hubDeleteFailed', { error: String(err) }));
     } finally {
       setActionInProgress(null);
     }
@@ -284,18 +265,21 @@ export function AgentBuilder() {
       <div className={`max-w-4xl ${isMobile ? 'px-4 py-5' : 'px-6 py-10'}`}>
         {/* Builder prompts → navigate to Secretary */}
         <div className="mb-10">
-          <h1 className="text-2xl font-bold text-fg-primary">Builder</h1>
+          <h1 className="text-2xl font-bold text-fg-primary">{t('title')}</h1>
           <p className="text-sm text-fg-tertiary mt-2">
-            Hire agents, build teams, and create skills. Your Secretary handles the entire process
-            — from sourcing to onboarding.
+            {t('subtitle')}
           </p>
         </div>
 
         <div className="grid gap-5">
-          {BUILDER_PROMPTS.map(b => (
+          {BUILDER_PROMPTS.map(b => {
+            const examplesRaw = t(`prompts.${b.id}Examples`, { returnObjects: true });
+            const examples = Array.isArray(examplesRaw) ? examplesRaw : [];
+            const promptPrefix = t(`prompts.${b.id}Prompt`);
+            return (
             <button
-              key={b.title}
-              onClick={() => navigateToSecretary(b.prompt)}
+              key={b.id}
+              onClick={() => navigateToSecretary(promptPrefix)}
               className={`group text-left w-full rounded-xl border ${b.borderColor} bg-surface-secondary/60 ${isMobile ? 'p-4' : 'p-6'} transition-all hover:bg-surface-secondary/80 hover:shadow-lg`}
             >
               <div className={`flex items-start ${isMobile ? 'gap-3' : 'gap-5'}`}>
@@ -305,14 +289,14 @@ export function AgentBuilder() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <h3 className={`${isMobile ? 'text-base' : 'text-lg'} font-semibold bg-gradient-to-r ${b.color} bg-clip-text text-transparent`}>
-                      {b.title}
+                      {t(`prompts.${b.id}`)}
                     </h3>
                   </div>
-                  <p className="text-sm text-fg-secondary leading-relaxed">{b.desc}</p>
+                  <p className="text-sm text-fg-secondary leading-relaxed">{t(`prompts.${b.id}Desc`)}</p>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {b.examples.map((ex, i) => (
+                    {examples.map((ex, i) => (
                       <span key={i} className="text-[11px] text-fg-tertiary bg-surface-elevated/60 rounded-full px-3 py-1 border border-border-default cursor-pointer hover:bg-surface-elevated/80 hover:text-fg-secondary transition-colors"
-                        onClick={(e) => { e.stopPropagation(); navigateToSecretary(b.prompt + ex); }}>
+                        onClick={(e) => { e.stopPropagation(); navigateToSecretary(promptPrefix + ex); }}>
                         &ldquo;{ex}&rdquo;
                       </span>
                     ))}
@@ -323,47 +307,54 @@ export function AgentBuilder() {
                 </svg>
               </div>
             </button>
-          ))}
+            );
+          })}
         </div>
 
         {/* Artifact management section */}
         <div className="mt-14 mb-4">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-fg-primary">My Creations</h2>
-              <p className="text-xs text-fg-tertiary mt-1">Saved builder artifacts — install to deploy, or share to Markus Hub.</p>
+              <h2 className="text-lg font-semibold text-fg-primary">{t('myCreations.title')}</h2>
+              <p className="text-xs text-fg-tertiary mt-1">{t('myCreations.subtitle')}</p>
             </div>
             <button
               onClick={loadAll}
               className="text-xs text-fg-tertiary hover:text-fg-secondary transition-colors px-3 py-1.5 rounded-lg border border-border-default hover:border-gray-600"
             >
-              Refresh
+              {t('common:refresh')}
             </button>
           </div>
 
           <div className="flex gap-2 mt-4">
-            {['all', 'agent', 'team', 'skill'].map(t => (
+            {(['all', 'agent', 'team', 'skill'] as const).map(ft => (
               <button
-                key={t}
-                onClick={() => setFilterType(t)}
+                key={ft}
+                onClick={() => setFilterType(ft)}
                 className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-                  filterType === t
+                  filterType === ft
                     ? 'border-gray-600 bg-surface-elevated text-fg-primary'
                     : 'border-border-default text-fg-tertiary hover:text-fg-secondary hover:border-gray-600'
                 }`}
               >
-                {t === 'all' ? 'All' : t.charAt(0).toUpperCase() + t.slice(1) + 's'}
+                {ft === 'all'
+                  ? t('myCreations.filterAll')
+                  : ft === 'agent'
+                    ? t('myCreations.filterAgents')
+                    : ft === 'team'
+                      ? t('myCreations.filterTeams')
+                      : t('myCreations.filterSkills')}
               </button>
             ))}
           </div>
         </div>
 
         {loading && artifacts.length === 0 ? (
-          <div className="text-center text-fg-tertiary py-12 text-sm">Loading artifacts...</div>
+          <div className="text-center text-fg-tertiary py-12 text-sm">{t('myCreations.loadingArtifacts')}</div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-12">
-            <div className="text-fg-tertiary text-sm">No artifacts found.</div>
-            <div className="text-fg-muted text-xs mt-1">Use a builder above to create agents, teams, or skills.</div>
+            <div className="text-fg-tertiary text-sm">{t('myCreations.noArtifacts')}</div>
+            <div className="text-fg-muted text-xs mt-1">{t('myCreations.noArtifactsHint')}</div>
           </div>
         ) : (
           <div className="grid gap-3">
@@ -379,26 +370,26 @@ export function AgentBuilder() {
                   {installedMap.has(key) ? (
                     <button onClick={() => handleUninstall(art)} disabled={!!busyAction}
                       className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:bg-red-500/10 hover:text-red-500 hover:border-red-500/30 transition-colors disabled:opacity-50">
-                      {busyAction === 'uninstall' ? 'Uninstalling...' : 'Uninstall'}
+                      {busyAction === 'uninstall' ? t('common:uninstalling') : t('common:uninstall')}
                     </button>
                   ) : (
                     <button onClick={() => handleInstall(art)} disabled={!!busyAction}
                       className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50">
-                      {busyAction === 'install' ? 'Installing...' : 'Install'}
+                      {busyAction === 'install' ? t('common:installing') : t('common:install')}
                     </button>
                   )}
                   {sharedMap.has(key) ? (
                     <div className="flex items-center gap-1">
                       <button onClick={() => setHubDeleteTarget({ key, name: (art.meta.displayName as string) || (art.meta.name as string) || art.name })} disabled={!!busyAction}
-                        className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:text-red-500 hover:border-red-500/30 hover:bg-red-500/10 transition-colors disabled:opacity-50" title="Remove from Markus Hub">
-                        Shared
+                        className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:text-red-500 hover:border-red-500/30 hover:bg-red-500/10 transition-colors disabled:opacity-50" title={t('removeFromHubTooltip')}>
+                        {t('common:shared')}
                       </button>
                       <button onClick={() => {
                         const hubItem = sharedMap.get(key); const hubUser = hubApi.getUser();
                         if (!hubItem || !hubUser) return;
                         const link = `${hubApi.getUrl()}/${encodeURIComponent(hubUser.username)}/${encodeURIComponent(hubItem.slug)}`;
                         navigator.clipboard.writeText(link).then(() => { setCopiedKey(key); setTimeout(() => setCopiedKey(prev => prev === key ? null : prev), 2000); }).catch(() => {});
-                      }} className="text-xs px-2 py-1.5 rounded-lg border border-green-600/20 text-green-500 hover:text-green-600 hover:border-green-500/40 transition-colors" title="Copy Hub link">
+                      }} className="text-xs px-2 py-1.5 rounded-lg border border-green-600/20 text-green-500 hover:text-green-600 hover:border-green-500/40 transition-colors" title={t('copyHubLinkTooltip')}>
                         {copiedKey === key ? (
                           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
                         ) : (
@@ -409,11 +400,11 @@ export function AgentBuilder() {
                   ) : (
                     <button onClick={() => handleShare(art)} disabled={!!busyAction}
                       className="text-xs px-3 py-1.5 rounded-lg border border-border-default text-fg-secondary hover:text-green-600 hover:border-green-500/30 transition-colors disabled:opacity-50">
-                      {busyAction === 'share' ? 'Sharing...' : 'Share'}
+                      {busyAction === 'share' ? t('common:sharing') : t('common:share')}
                     </button>
                   )}
                   <button onClick={() => setDeleteTarget(art)} disabled={!!busyAction}
-                    className="text-xs px-2 py-1.5 rounded-lg text-fg-tertiary hover:text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-50" title="Delete">
+                    className="text-xs px-2 py-1.5 rounded-lg text-fg-tertiary hover:text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-50" title={t('common:delete')}>
                     <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                   </button>
                 </div>
@@ -452,14 +443,20 @@ export function AgentBuilder() {
 
         {deleteTarget && (
           <ConfirmDialog
-            message={`Delete "${(deleteTarget.meta.displayName as string) || (deleteTarget.meta.name as string) || deleteTarget.name}"? This cannot be undone.`}
+            title={t('confirmDelete')}
+            message={t('deleteCannotUndo', { name: (deleteTarget.meta.displayName as string) || (deleteTarget.meta.name as string) || deleteTarget.name })}
+            cancelLabel={t('common:cancel')}
+            confirmLabel={t('common:delete')}
             onConfirm={confirmDelete}
             onCancel={() => setDeleteTarget(null)}
           />
         )}
         {hubDeleteTarget && (
           <ConfirmDialog
-            message={`Remove "${hubDeleteTarget.name}" from Markus Hub? It will no longer be available for others to download.`}
+            title={t('confirmDelete')}
+            message={t('removeFromHub', { name: hubDeleteTarget.name })}
+            cancelLabel={t('common:cancel')}
+            confirmLabel={t('common:delete')}
             onConfirm={() => void confirmHubDelete()}
             onCancel={() => setHubDeleteTarget(null)}
           />

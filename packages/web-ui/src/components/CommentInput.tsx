@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
 import type { AgentInfo } from '../api.ts';
 
 function MentionDropdown({ agents, filter, anchorRef, onSelect, selectedIndex, onIndexChange }: {
@@ -10,6 +11,7 @@ function MentionDropdown({ agents, filter, anchorRef, onSelect, selectedIndex, o
   selectedIndex: number;
   onIndexChange: (index: number) => void;
 }) {
+  const { t } = useTranslation('common');
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -52,7 +54,7 @@ function MentionDropdown({ agents, filter, anchorRef, onSelect, selectedIndex, o
       className="w-60 bg-surface-overlay border border-border-default rounded-lg shadow-xl z-[9999] max-h-48 overflow-y-auto"
     >
       <div className="px-2.5 py-1.5 text-[10px] text-fg-tertiary font-medium uppercase tracking-wider border-b border-border-default">
-        Mention an agent
+        {t('commentInput.mentionHeading')}
       </div>
       {filtered.map((a, i) => (
         <button
@@ -153,6 +155,7 @@ export function CommentInput({ agents, onSubmit, placeholder, replyTo, onCancelR
   replyTo?: ReplyQuote | null;
   onCancelReply?: () => void;
 }) {
+  const { t } = useTranslation('common');
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -177,7 +180,7 @@ export function CommentInput({ agents, onSubmit, placeholder, replyTo, onCancelR
       lastSubmitRef.current = null;
       onCancelReply?.();
     } catch (e) {
-      setError(String(e instanceof Error ? e.message : e) || 'Failed to send comment');
+      setError(String(e instanceof Error ? e.message : e) || t('commentInput.sendFailed'));
     }
     setSending(false);
   };
@@ -193,7 +196,7 @@ export function CommentInput({ agents, onSubmit, placeholder, replyTo, onCancelR
       setSelectedMentions([]);
       lastSubmitRef.current = null;
     } catch (e) {
-      setError(String(e instanceof Error ? e.message : e) || 'Failed to send comment');
+      setError(String(e instanceof Error ? e.message : e) || t('commentInput.sendFailed'));
     }
     setSending(false);
   };
@@ -314,7 +317,7 @@ export function CommentInput({ agents, onSubmit, placeholder, replyTo, onCancelR
           onChange={e => handleInputChange(e.target.value)}
           onKeyDown={handleKeyDown}
           onBlur={handleBlur}
-          placeholder={placeholder ?? 'Add a comment… (type @ to mention an agent)'}
+          placeholder={placeholder ?? t('commentInput.placeholder')}
           rows={2}
           className="w-full px-2.5 py-2 text-xs bg-transparent text-fg-primary placeholder-fg-tertiary outline-none resize-none"
         />
@@ -327,7 +330,7 @@ export function CommentInput({ agents, onSubmit, placeholder, replyTo, onCancelR
               className="text-[11px] text-amber-500 hover:text-amber-400 font-medium transition-colors flex items-center gap-1"
             >
               <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
-              Retry
+              {t('commentInput.retry')}
             </button>
           </div>
         )}
@@ -337,7 +340,7 @@ export function CommentInput({ agents, onSubmit, placeholder, replyTo, onCancelR
             disabled={!text.trim() || sending}
             className="px-3 py-1 text-[11px] font-medium bg-brand-500 text-white rounded-md hover:bg-brand-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {sending ? 'Sending…' : 'Comment'}
+            {sending ? t('commentInput.sending') : t('commentInput.submit')}
           </button>
         </div>
       </div>

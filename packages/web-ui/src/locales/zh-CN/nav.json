@@ -1,0 +1,28 @@
+{
+  "home": "首页",
+  "team": "团队",
+  "work": "工作",
+  "store": "商店",
+  "builder": "构建器",
+  "deliverables": "交付物",
+  "reports": "报告",
+  "settings": "设置",
+  "sections": {
+    "workspace": "工作区",
+    "build": "构建",
+    "system": "系统"
+  },
+  "sidebar": {
+    "collapseSidebar": "收起侧边栏",
+    "expandSidebar": "展开侧边栏",
+    "signOut": "退出登录",
+    "newProject": "新建项目",
+    "createFirstProject": "创建你的第一个项目",
+    "showAllProjects": "显示全部 {{count}} 个项目..."
+  },
+  "tabs": {
+    "agents": "智能体",
+    "teams": "团队",
+    "skills": "技能"
+  }
+}
