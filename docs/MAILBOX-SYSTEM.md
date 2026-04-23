@@ -190,7 +190,7 @@ idle ──► focused ──► idle
 
 - **idle** — Waiting for mail. Blocks on `mailbox.dequeueAsync()`.
 - **focused** — Processing a single mailbox item. All new mail triggers an interrupt signal.
-- **deciding** — Evaluating whether to continue, preempt, merge, or defer (at a yield point).
+- **deciding** — Evaluating whether to continue, preempt, cancel, merge, or defer (at a yield point).
 
 ### Event-Driven Interrupts
 
@@ -199,7 +199,7 @@ There is **no polling**. When a new item arrives while the agent is focused:
 1. The mailbox emits `mailbox:new-item` via the EventBus.
 2. The `AttentionController` sets an **interrupt signal**.
 3. At the next **safe yield point** (between LLM turns in the tool loop), the agent calls `checkYieldPoint()`.
-4. The controller evaluates the pending item and returns a **decision**.
+4. The controller evaluates the pending item using **heuristics first** (fast, no LLM call), then optionally falls back to an **LLM interrupt judge** for ambiguous cases where heuristics return `continue`. The LLM judge sees both the current work context and the full content of the new message, enabling it to understand semantic intent (e.g., "stop publishing" → cancel, "hold off for now" → preempt).
 
 ### Decision Types
 
@@ -207,11 +207,21 @@ There is **no polling**. When a new item arrives while the agent is focused:
 |----------|--------|
 | `pick` | Item dequeued from idle state (initial selection) |
 | `continue` | New item not urgent enough — keep working on current focus |
-| `preempt` | Pause current work, switch to higher-priority item |
+| `preempt` | **Pause** current work — session is **deferred for later resumption**. The agent switches to the new item. When the agent becomes idle, `resurfaceDue()` automatically re-queues the deferred item for continued processing. |
+| `cancel` | **Permanently stop** current work — the item is **dropped and will NOT be resumed**. Used when the new message explicitly revokes or contradicts the current work (e.g., "cancel that task", "don't publish this"). |
 | `merge` | Absorb new item into current work (e.g., comment on current task) |
 | `defer` | Explicitly postpone the new item |
 | `delegate` | Hand off to another agent (future) |
 | `drop` | Discard the item |
+
+### Preempt vs Cancel Semantics
+
+These two decisions handle fundamentally different situations:
+
+- **Preempt (pause)**: "暂停" — The current work is saved. The mailbox item is moved to `deferred` status and will automatically resurface when the agent is idle. Session context (conversation history) is preserved by `sessionId`, so processing continues from where it left off.
+- **Cancel (stop)**: "取消" — The current work is permanently abandoned. The mailbox item is marked as `completed` and will NOT be resumed. Used when the incoming message explicitly revokes or invalidates the current work.
+
+The heuristic interrupt rules (`heuristicDecision`) never produce `cancel` — only the **LLM interrupt judge** can make this semantic distinction, since it requires understanding message content (e.g., distinguishing "wait before deploying" from "cancel the deployment entirely").
 
 ### Priority Invariant: User Interactions First
 
@@ -225,10 +235,20 @@ User chat (`human_chat`), task comments (`task_comment`), and requirement commen
 
 Yield points are inserted at natural pauses in the agent's processing pipeline:
 
-- **Task execution** (`_executeTaskInternal`): After all tool calls complete and before the next LLM turn. If preempted, the task session state is fully saved and execution is **automatically re-queued** via `TaskService.runTask()` — the task stays `in_progress` and a new `task_status_update` (execution mode) is enqueued to the mailbox. The re-queued item sits behind any higher-priority items and resumes with full session context when the agent is available.
-- **Chat/message handling** (`handleMessage`): After tool results are recorded. The preemption behaviour depends on the **scenario**:
-  - **Preemptable scenarios** (`heartbeat`, `memory_consolidation`): Full preemption is allowed. If a higher-priority item arrives (e.g., user chat), the current processing is abandoned and the agent immediately switches to the new item. Since these are self-initiated periodic processes with no external caller waiting, abandoning them is safe — the next scheduled cycle will retry.
-  - **Non-preemptable scenarios** (`chat`, `a2a`, `comment_response`): Only merge decisions are honoured (no preemption), since an external caller is awaiting a response. The `system_event` and `daily_report` types use scenario `heartbeat` internally, so they are also preemptable.
+- **Task execution** (`_executeTaskInternal`): After all tool calls complete and before the next LLM turn. Both `preempt` and `cancel` decisions are honoured:
+  - **Preempt** → task session state is saved, mailbox item deferred. When the agent is idle, the deferred item resurfaces and execution resumes with full session context.
+  - **Cancel** → mailbox item is dropped permanently. The task may need separate status updates (e.g., `cancelTask`) depending on the cancelling message's intent.
+- **Chat/message handling** (`handleMessage`): After tool results are recorded. Interrupt behaviour depends on the **scenario**:
+  - **Preemptable scenarios** (`heartbeat`, `memory_consolidation`): Full preemption/cancellation is allowed. Since these are self-initiated periodic processes with no external caller waiting, interrupting them is safe.
+  - **Non-preemptable scenarios** (`chat`, `a2a`, `comment_response`): Only merge decisions are honoured (no preemption/cancellation), since an external caller is awaiting a response. The `system_event` and `daily_report` types use scenario `heartbeat` internally, so they are also preemptable.
+
+### Agent Stop/Pause Behaviour
+
+When an agent is stopped (`Agent.stop()`) or paused (`Agent.pause()`):
+1. **Active LLM stream is cancelled** via `cancelActiveStream()` — any in-flight LLM response is aborted immediately.
+2. **Attention loop stops** — `AttentionController.stop()` sets `running = false` and wakes any blocked `dequeueAsync()`.
+3. **In-flight item is preserved** — if processing was in progress, the item is **requeued** (not lost) so it can be picked up when the agent resumes.
+4. **Deferred items survive** — items deferred by preemption remain in the database and will be resurfaced when the agent restarts.
 
 ---
 
@@ -1037,6 +1057,8 @@ TriageResult.reasoning
 | `updateCognition()` | `agent.ts` | Converts TriageResult into situational awareness text |
 | `getTriageContext()` | `agent.ts` (delegate) | Provides agent name, recent messages, recent activity, active task IDs |
 | `resurfaceDue()` | `mailbox.ts` | Resurfaces deferred items whose `deferredUntil` has passed or is unset |
+| `deferDequeued()` | `mailbox.ts` | Defers an item already removed from the queue (used when preempted mid-processing) |
+| `evaluateWithLLMFallback()` | `attention.ts` | Heuristic-first interrupt decision with optional LLM fallback for ambiguous cases |
 
 ### Triage Prompt Identity
 

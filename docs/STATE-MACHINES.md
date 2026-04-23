@@ -95,7 +95,7 @@ The legal transition set is defined as a declarative matrix `TASK_TRANSITIONS` i
 4. **Retry = fresh start**: Retry increments `executionRound`, creates a new LLM session, discards previous execution context. Only the task description and notes carry over.
 5. **Pause = blocked**: Pausing a running task sets it to `blocked` and cancels execution. Resume calls `runTask` with full previous context.
 6. **Rejected ≠ Cancelled**: `rejectTask()` sets `rejected` (proposal denied before work). `cancelTask()` sets `cancelled` (work stopped after starting). `rejected` is a terminal state — the proposal was not approved.
-7. **Preemption ≠ blocked**: When the attention controller preempts a task for a higher-priority item, the task stays `in_progress` (not `blocked`). `TaskService` automatically re-queues execution via `runTask()` after the preempting work completes. The same execution round and session context are preserved.
+7. **Preemption ≠ blocked**: When the attention controller **preempts** (pauses) a task for a higher-priority item, the task stays `in_progress` (not `blocked`). The mailbox item is deferred and automatically resurfaced when the agent is idle. The same execution round and session context are preserved. **Cancellation** is different: when the controller **cancels** a task (because the incoming message explicitly revokes the work), the mailbox item is permanently dropped and will NOT be resumed.
 
 ---
 

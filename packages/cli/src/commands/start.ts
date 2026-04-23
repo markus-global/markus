@@ -13,6 +13,7 @@ import {
   TRIAGE_TEMPERATURE,
   TRIAGE_ALLOWED_TOOLS,
   type LLMProviderConfig,
+  type DecisionType,
 } from '@markus/shared';
 import {
   AgentManager,
@@ -1000,6 +1001,23 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
             maxTokens: TRIAGE_MAX_TOKENS,
           }, triageProvider);
           return response.content;
+        });
+
+        // Wire LLM interrupt judge — evaluates whether to preempt current
+        // work when a new message arrives (e.g. "stop publishing", "pause that task").
+        // Only called when heuristics return 'continue' for ambiguous cases.
+        agent.getAttentionController().setLLMJudge(async (prompt: string) => {
+          const response = await llmRouter.chat({
+            messages: [
+              { role: 'system', content: 'You are an attention interrupt judge. Decide whether to interrupt current work for a new incoming message. Reply with ONLY one word: continue, preempt, cancel, merge, or defer. Use "preempt" to pause (resume later) and "cancel" to permanently stop current work.' },
+              { role: 'user', content: prompt },
+            ],
+            temperature: 0.1,
+            maxTokens: 32,
+          }, triageProvider);
+          const raw = response.content.trim().toLowerCase();
+          const valid: DecisionType[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];
+          return valid.includes(raw as DecisionType) ? (raw as DecisionType) : 'continue';
         });
 
         // Wire triage chat function (for mini tool loop during triage)

@@ -507,6 +507,7 @@ export class Agent {
   }
 
   async stop(): Promise<void> {
+    this.cancelActiveStream();
     this.attentionController.stop();
     this.heartbeat.stop();
     this._bgCompletionUnsub?.();
@@ -782,7 +783,7 @@ export class Agent {
         }
       },
       evaluateInterrupt: async (currentItem: MailboxItem, newItem: MailboxItem) => {
-        return this.attentionController.heuristicDecision(currentItem, newItem);
+        return this.attentionController.evaluateWithLLMFallback(currentItem, newItem);
       },
       getTriageContext: async () => {
         const messages = this.currentSessionId
@@ -1209,6 +1210,7 @@ export class Agent {
   pause(reason?: string): void {
     if (this.state.status === 'offline') return;
     this.pauseReason = reason;
+    this.cancelActiveStream();
     this.heartbeat.stop();
     this.attentionController.stop();
     if (this.memoryConsolidationTimer) {
@@ -2518,12 +2520,13 @@ export class Agent {
         // consolidation, etc.) allow full preemption; user-facing chat only
         // allows merge since the caller is awaiting a response.
         const chatYield = await this.checkAttentionYieldPoint();
-        if (chatYield.decision === 'preempt' && isPreemptable) {
-          log.info('handleMessage preempted by higher-priority item', {
+        if ((chatYield.decision === 'preempt' || chatYield.decision === 'cancel') && isPreemptable) {
+          const marker = chatYield.decision === 'cancel' ? '[cancelled]' : '[preempted]';
+          log.info(`handleMessage ${chatYield.decision} by higher-priority item`, {
             agentId: this.id, scenario,
             preemptedBy: chatYield.item?.sourceType,
           });
-          return '[preempted]';
+          return marker;
         }
         if (chatYield.decision === 'merge' && chatYield.item) {
           const mergeMsg = `[LIVE UPDATE] ${chatYield.item.payload.summary}\n\n${chatYield.item.payload.content}`;
@@ -3431,14 +3434,16 @@ export class Agent {
         // mailbox items. All tool results are saved to the session, so we
         // can pause and resume without data loss.
         const yieldResult = await this.checkAttentionYieldPoint();
-        if (yieldResult.decision === 'preempt') {
-          emit('status', 'preempted', {
+        if (yieldResult.decision === 'preempt' || yieldResult.decision === 'cancel') {
+          const statusLabel = yieldResult.decision === 'cancel' ? 'cancelled' : 'preempted';
+          emit('status', statusLabel, {
             reason: yieldResult.reasoning,
             preemptedBy: yieldResult.item?.sourceType,
           });
-          log.info('Task preempted by higher-priority mailbox item', {
+          log.info(`Task ${statusLabel} by higher-priority mailbox item`, {
             taskId,
             agentId: this.id,
+            decision: yieldResult.decision,
             preemptedBy: yieldResult.item?.sourceType,
             reasoning: yieldResult.reasoning?.slice(0, 120),
           });
