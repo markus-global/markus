@@ -832,10 +832,11 @@ export const api = {
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
     message: (id: string, text: string, images?: string[], sessionId?: string | null, fileNames?: string[]) =>
       request<{ reply: string; sessionId?: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, fileNames, sessionId: sessionId ?? undefined }) }),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[]): Promise<{ content: string; sessionId?: string }> => {
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[]): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[] }> => {
       return new Promise(async (resolve, reject) => {
         let fullContent = '';
         let resultSessionId: string | undefined;
+        let resultSegments: StoredSegment[] | undefined;
         try {
           const res = await fetch(`${BASE}/agents/${id}/message`, {
             method: 'POST',
@@ -868,6 +869,8 @@ export const api = {
                 } else if (event.type === 'done') {
                   fullContent = event.content ?? fullContent;
                   if (event.sessionId) resultSessionId = event.sessionId;
+                  const doneSegments = (event as Record<string, unknown>).segments as StoredSegment[] | undefined;
+                  if (doneSegments?.length) resultSegments = doneSegments;
                 } else if (event.type === 'error') {
                   const errEvent = event as { type: string; message?: string; error?: string; sessionId?: string };
                   if (errEvent.sessionId) resultSessionId = errEvent.sessionId;
@@ -893,9 +896,9 @@ export const api = {
               } catch { /* skip */ }
             }
           }
-          resolve({ content: fullContent, sessionId: resultSessionId });
+          resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments });
         } catch (err) {
-          if (err instanceof Error && err.name === 'AbortError') { resolve({ content: fullContent, sessionId: resultSessionId }); }
+          if (err instanceof Error && err.name === 'AbortError') { resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments }); }
           else { reject(err); }
         }
       });
