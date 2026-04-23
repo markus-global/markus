@@ -919,7 +919,7 @@ export class Agent {
               item.payload.content + markerSuffix,
               item.metadata?.senderId,
               senderInfo,
-              buildHandleOpts({ sessionId: `comment_${reqId}_${ts}`, scenario: 'comment_response' }),
+              buildHandleOpts({ sessionId: `requirement_${reqId}_${ts}`, scenario: 'requirement_action' }),
             );
             resolveResponse(reply);
             return reply;

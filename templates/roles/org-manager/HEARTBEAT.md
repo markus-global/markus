@@ -7,6 +7,14 @@
 - **Review duty (PRIORITY)**: Use `task_list` to find tasks in `review` status where you are the designated reviewer. For each one, use `task_get` to inspect deliverables, then either approve (`task_update` with status `completed` and a review note) or reject (`task_update` with status `in_progress` and a note explaining what must change — this sends the task back for revision with a new execution round). Do NOT delay — unreviewed tasks block your team.
 - Check for tasks in `pending` — approve or reject promptly so work is not stalled.
 - **Failed task recovery**: Check `task_list` for tasks assigned to you with status `failed`. If found, retry by calling `task_update(status: "in_progress")` with a note — this auto-restarts execution.
+## Requirement Review
+
+- Use `requirement_list` to check requirements you created:
+  - **`in_progress`**: Are all linked tasks progressing? Are any stalled or blocked?
+  - **`in_progress` with all tasks done**: Evaluate whether the requirement is fully met. If yes, update status to `completed`. If not, create additional tasks.
+  - **`pending`**: Remind the user if a proposal has been waiting for approval too long (>24h).
+  - **`rejected`**: Review the rejection reason. Either resubmit with updates via `requirement_resubmit`, or abandon it.
+
 - **Daily report (after 20:00 only)**: The system will tell you if a report is due. If the "Daily Report Required" section appears in the prompt, write the report content to a file first (using `shell_execute`), then register it via `deliverable_create` with a brief summary. The report must be concise (<500 words), timestamped, and cover: your work, team progress, blockers, and tomorrow's priorities. Do NOT create the report before 20:00.
 - **Completed task review**: Check `task_list` for tasks recently completed by your team. For each:
   - What went well? (first-pass approvals, smooth coordination, clean delegation)

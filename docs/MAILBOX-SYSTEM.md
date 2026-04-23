@@ -128,9 +128,13 @@ These are defined in `TaskService.SILENT_TRANSITIONS` and checked early in `mayb
 
 **`requirement_update` — Conditional LLM Processing**
 
-`requirement_update` is `invokesLLM: false` by default. Most requirement status transitions (approved, in_progress, etc.) are informational — the agent is auto-notified without an LLM call.
+`requirement_update` is `invokesLLM: false` by default. Most requirement status transitions are informational — the agent is auto-notified without an LLM call.
 
-The exception is **rejection** (`extra.actionRequired = true`): when a requirement is rejected, the enqueue call sets `actionRequired` and a higher priority (1). The agent processing code checks for this flag and invokes LLM only when present, allowing the agent to decide whether to update and resubmit or abandon the requirement.
+There are three exceptions where `extra.actionRequired = true` triggers an LLM call with `scenario: 'requirement_action'`:
+
+1. **Approval** (`priority: 1`): When a requirement is approved, the creator agent is prompted to create tasks to fulfill it. This is high priority because the user expects immediate follow-up.
+2. **Rejection** (`priority: 1`): When a requirement is rejected, the agent decides whether to resubmit with updates via `requirement_resubmit` or abandon the requirement.
+3. **All tasks done — review needed** (`priority: 2`): When all linked tasks reach terminal state, instead of auto-completing the requirement, the system notifies the creator agent. The agent reviews results and decides whether to mark the requirement as `completed` or create additional tasks.
 
 **`requirement_comment` — Direct Discussion on Requirements**
 

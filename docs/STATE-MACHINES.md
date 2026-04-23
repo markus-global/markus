@@ -225,12 +225,12 @@ Requirements have no running agent, so there is no live injection mechanism. All
 
 ### 6.3 Requirement Approval Notifications
 
-When a human approves or rejects an agent-proposed requirement (`source: 'agent'`):
+When a human approves or rejects an agent-proposed requirement (`source: 'agent'`), the creator agent receives a `requirement_update` mailbox item with `actionRequired: true` and priority 1 (high). Both decisions trigger an LLM call with `scenario: 'requirement_action'`, prompting the agent to take immediate action:
 
-| Decision | Notified | Message |
-|----------|----------|---------|
-| **Approved** | Creator agent | Requirement is now in progress; create tasks via `task_create` |
-| **Rejected** | Creator agent | Includes rejection reason; update and resubmit via `requirement_resubmit`, or abandon |
+| Decision | Notified | Agent Action |
+|----------|----------|--------------|
+| **Approved** | Creator agent | Create tasks via `task_create` to fulfill the requirement |
+| **Rejected** | Creator agent | Review rejection reason; resubmit via `requirement_resubmit` with updates, or abandon |
 
 Both decisions also create an HITL notification visible in the UI notification bell.
 
@@ -278,15 +278,17 @@ Requirements represent high-level work items fulfilled by one or more tasks.
 ### State Transition Diagram
 
 ```
- (agent)              (human approves)       (all tasks done)
-    │                       │                       │
+ (agent)              (human approves)       (agent reviews &
+    │                       │                 marks complete)
     ▼                       ▼                       ▼
   pending ──────────► in_progress ──────────► completed
-    │  ▲
-    ▼  │
-  rejected ── resubmit ──┘
-               
-  any ──► cancelled
+    │  ▲                    ▲
+    ▼  │                    │
+  rejected ── resubmit ──┘  │
+                             │
+  any ──► cancelled          │
+                             │
+  [all tasks done] ──notify agent──┘ (agent decides: complete or create more tasks)
 ```
 
 ### Transitions
@@ -298,7 +300,7 @@ Requirements represent high-level work items fulfilled by one or more tasks.
 | `pending` | `in_progress` | User approves |
 | `pending` | `rejected` | User rejects |
 | `rejected` | `pending` | Agent resubmits via `requirement_resubmit` (optionally with updates) |
-| `in_progress` | `completed` | All linked tasks reach terminal state |
+| `in_progress` | `completed` | Agent evaluates all tasks done and marks complete |
 | any | `cancelled` | Manual cancellation |
 
 ### Key Rules
@@ -306,10 +308,12 @@ Requirements represent high-level work items fulfilled by one or more tasks.
 1. **User-created requirements auto-approve** — start at `in_progress`
 2. **Agent proposals need user approval** — start at `pending`
 3. **Max 3 pending proposals per agent** — prevents spam
-4. **Completion is automatic** — when all linked tasks terminate
-5. **No `approved` intermediate state** — approval goes directly to `in_progress`, same as tasks
-6. **No `draft` state** — items are created directly as `pending`; there is no separate drafting phase
-7. **Rejected requirements can be resubmitted** — agent calls `requirement_resubmit` to move back to `pending`, optionally updating title, description, priority, or tags. Rejection metadata is cleared on resubmit
+4. **Completion is agent-driven** — when all linked tasks reach terminal state, the system notifies the creator agent (via `requirement_update` with `actionRequired: true`). The agent reviews the results and decides whether to mark the requirement as `completed` or create additional tasks. There is no automatic completion.
+5. **Approval triggers agent action** — when a requirement is approved (`pending → in_progress`), the creator agent receives a high-priority `requirement_update` with `actionRequired: true`, prompting immediate task creation.
+6. **No `approved` intermediate state** — approval goes directly to `in_progress`, same as tasks
+7. **No `draft` state** — items are created directly as `pending`; there is no separate drafting phase
+8. **Rejected requirements can be resubmitted** — agent calls `requirement_resubmit` to move back to `pending`, optionally updating title, description, priority, or tags. Rejection metadata is cleared on resubmit
+9. **Heartbeat checks requirements** — agents proactively check their created requirements during heartbeat: reviewing progress of `in_progress` requirements, reminding users about stale `pending` proposals, and handling `rejected` requirements
 
 ---
 
