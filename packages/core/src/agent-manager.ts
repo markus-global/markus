@@ -364,6 +364,11 @@ export class AgentManager {
     listGroupChats: () => Promise<
       Array<{ id: string; name: string; type: string; channelKey: string }>
     >;
+    getChannelMessages?: (
+      channelKey: string,
+      limit: number,
+      before?: string
+    ) => Promise<{ messages: Array<{ senderName: string; senderType: string; text: string; createdAt: string }>; hasMore: boolean }>;
   };
 
   private buildKnowledgeCallbacks(agentId: string, orgId: string): Pick<
@@ -913,6 +918,7 @@ export class AgentManager {
             createGroupChat: (name: string, memberIds: string[]) =>
               this.groupChatHandlers!.createGroupChat(name, id, config.name, memberIds),
             listGroupChats: this.groupChatHandlers.listGroupChats,
+            getChannelMessages: this.groupChatHandlers.getChannelMessages,
           }
         : {}),
     };
@@ -1574,6 +1580,7 @@ export class AgentManager {
             createGroupChat: (name: string, memberIds: string[]) =>
               this.groupChatHandlers!.createGroupChat(name, id, config.name, memberIds),
             listGroupChats: this.groupChatHandlers.listGroupChats,
+            getChannelMessages: this.groupChatHandlers.getChannelMessages,
           }
         : {}),
     };
@@ -2218,6 +2225,11 @@ export class AgentManager {
     listGroupChats: () => Promise<
       Array<{ id: string; name: string; type: string; channelKey: string }>
     >;
+    getChannelMessages?: (
+      channelKey: string,
+      limit: number,
+      before?: string
+    ) => Promise<{ messages: Array<{ senderName: string; senderType: string; text: string; createdAt: string }>; hasMore: boolean }>;
   }): void {
     this.groupChatHandlers = handlers;
   }

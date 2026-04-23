@@ -78,9 +78,24 @@ export interface ChannelMessageInfo {
   text: string;
   mentions: string[];
   metadata?: ChannelMsgMetadata | null;
+  replyToId?: string;
+  replyToSender?: string;
+  replyToText?: string;
   createdAt: string;
 }
 
+
+export interface GroupChatInfo {
+  id: string;
+  name: string;
+  type: 'team' | 'custom';
+  channelKey: string;
+  teamId?: string;
+  creatorId?: string;
+  creatorName?: string;
+  memberCount?: number;
+  members?: Array<{ id: string; name: string; type: 'human' | 'agent' }>;
+}
 
 // ─── Governance types ────────────────────────────────────────────────
 
@@ -1176,7 +1191,7 @@ export const api = {
       request<{ messages: ChannelMessageInfo[]; hasMore: boolean }>(
         `/channels/${encodeURIComponent(channel)}/messages?limit=${limit}${before ? `&before=${before}` : ''}`
       ),
-    sendMessage: (channel: string, data: { text: string; senderId?: string; senderName?: string; mentions?: string[]; targetAgentId?: string; orgId?: string; humanOnly?: boolean }) =>
+    sendMessage: (channel: string, data: { text: string; senderId?: string; senderName?: string; mentions?: string[]; targetAgentId?: string; orgId?: string; humanOnly?: boolean; replyToId?: string }) =>
       request<{ userMessage: ChannelMessageInfo | null; agentMessage: ChannelMessageInfo | null }>(
         `/channels/${encodeURIComponent(channel)}/messages`,
         { method: 'POST', body: JSON.stringify(data) }
@@ -1318,6 +1333,19 @@ export const api = {
   executionLogs: {
     get: (sourceType: string, sourceId: string) =>
       request<{ logs: ExecutionStreamEntryAPI[] }>(`/execution-logs?sourceType=${encodeURIComponent(sourceType)}&sourceId=${encodeURIComponent(sourceId)}`),
+  },
+  groupChats: {
+    list: () => request<{ chats: GroupChatInfo[] }>('/group-chats'),
+    create: (data: { name: string; memberIds: string[]; memberTypes?: Record<string, string>; memberNames?: Record<string, string>; creatorId?: string; creatorName?: string }) =>
+      request<{ chat: GroupChatInfo }>('/group-chats', { method: 'POST', body: JSON.stringify(data) }),
+    getById: (id: string) => request<{ chat: GroupChatInfo }>(`/group-chats/${id}`),
+    update: (id: string, data: { name: string }) =>
+      request<{ ok: boolean }>(`/group-chats/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    delete: (id: string) => request<{ ok: boolean }>(`/group-chats/${id}`, { method: 'DELETE' }),
+    addMember: (id: string, memberId: string, memberType: string, memberName: string) =>
+      request<{ ok: boolean }>(`/group-chats/${id}/members`, { method: 'POST', body: JSON.stringify({ memberId, memberType, memberName }) }),
+    removeMember: (id: string, memberId: string) =>
+      request<{ ok: boolean }>(`/group-chats/${id}/members/${memberId}`, { method: 'DELETE' }),
   },
 };
 

@@ -169,6 +169,7 @@ CREATE TABLE IF NOT EXISTS channel_messages (
   text TEXT NOT NULL,
   mentions TEXT NOT NULL DEFAULT '[]',
   metadata TEXT DEFAULT '{}',
+  reply_to_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_channel_messages_channel ON channel_messages(channel, created_at);
@@ -529,6 +530,26 @@ CREATE TABLE IF NOT EXISTS approvals (
   selected_option TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at DESC);
+
+CREATE TABLE IF NOT EXISTS group_chats (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL DEFAULT 'default',
+  name TEXT NOT NULL,
+  channel_key TEXT NOT NULL UNIQUE,
+  creator_id TEXT NOT NULL,
+  creator_name TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS group_chat_members (
+  group_chat_id TEXT NOT NULL REFERENCES group_chats(id) ON DELETE CASCADE,
+  member_id TEXT NOT NULL,
+  member_type TEXT NOT NULL CHECK(member_type IN ('human', 'agent')),
+  member_name TEXT NOT NULL,
+  added_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (group_chat_id, member_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_chat_members_group ON group_chat_members(group_chat_id);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -577,6 +598,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'mailbox_items', column: 'retry_count', sql: "ALTER TABLE mailbox_items ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0" },
     { table: 'users', column: 'avatar_url', sql: "ALTER TABLE users ADD COLUMN avatar_url TEXT" },
     { table: 'agents', column: 'avatar_url', sql: "ALTER TABLE agents ADD COLUMN avatar_url TEXT" },
+    { table: 'channel_messages', column: 'reply_to_id', sql: "ALTER TABLE channel_messages ADD COLUMN reply_to_id TEXT" },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -1905,12 +1927,13 @@ export class SqliteChannelMessageRepo {
     text: string;
     mentions?: string[];
     metadata?: Record<string, unknown>;
+    replyToId?: string;
   }) {
     const id = generateId('chm');
     const ts = now();
     this.db
       .prepare(
-        'INSERT INTO channel_messages (id, org_id, channel, sender_id, sender_type, sender_name, text, mentions, metadata, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
+        'INSERT INTO channel_messages (id, org_id, channel, sender_id, sender_type, sender_name, text, mentions, metadata, reply_to_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
       )
       .run(
         id,
@@ -1922,6 +1945,7 @@ export class SqliteChannelMessageRepo {
         data.text,
         toJson(data.mentions ?? []),
         toJson(data.metadata ?? {}),
+        data.replyToId ?? null,
         ts
       );
     return {
@@ -1934,18 +1958,21 @@ export class SqliteChannelMessageRepo {
       text: data.text,
       mentions: data.mentions ?? [],
       metadata: data.metadata ?? null,
+      replyToId: data.replyToId,
       createdAt: new Date(ts),
     };
   }
 
   getMessages(channel: string, limit = 50, before?: string) {
-    let q = 'SELECT * FROM channel_messages WHERE channel = ?';
+    let q = `SELECT m.*, r.sender_name AS reply_to_sender, SUBSTR(r.text, 1, 120) AS reply_to_text
+      FROM channel_messages m LEFT JOIN channel_messages r ON m.reply_to_id = r.id
+      WHERE m.channel = ?`;
     const vals: SqlParams = [channel];
     if (before) {
-      q += ' AND created_at < ?';
+      q += ' AND m.created_at < ?';
       vals.push(before);
     }
-    q += ' ORDER BY created_at DESC LIMIT ?';
+    q += ' ORDER BY m.created_at DESC LIMIT ?';
     vals.push(limit + 1);
     const rows = (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => ({
       id: r['id'],
@@ -1957,10 +1984,25 @@ export class SqliteChannelMessageRepo {
       text: r['text'],
       mentions: fromJson<string[]>(r['mentions'] as string),
       metadata: fromJson<Record<string, unknown>>(r['metadata'] as string),
+      replyToId: (r['reply_to_id'] as string) ?? undefined,
+      replyToSender: (r['reply_to_sender'] as string) ?? undefined,
+      replyToText: (r['reply_to_text'] as string) ?? undefined,
       createdAt: toDate(r['created_at'] as string)!,
     }));
     const hasMore = rows.length > limit;
     return { messages: rows.slice(0, limit).reverse(), hasMore };
+  }
+
+  getMessageById(id: string) {
+    const r = this.db.prepare('SELECT * FROM channel_messages WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!r) return undefined;
+    return {
+      id: r['id'] as string,
+      senderName: r['sender_name'] as string,
+      senderType: r['sender_type'] as string,
+      senderId: r['sender_id'] as string,
+      text: r['text'] as string,
+    };
   }
 }
 
@@ -3683,6 +3725,120 @@ export class SqliteApprovalRepo {
       options: fromJson<Array<{ id: string; label: string; description?: string }>>(r['options'] as string) ?? undefined,
       allowFreeform: !!(r['allow_freeform'] as number),
       selectedOption: r['selected_option'] as string | undefined,
+    };
+  }
+}
+
+// ─── Group Chat Repo ──────────────────────────────────────────────────────────
+
+import type { GroupChat, GroupChatMember } from './types.ts';
+
+export class SqliteGroupChatRepo {
+  constructor(private db: DatabaseSync) {}
+
+  create(data: {
+    orgId: string;
+    name: string;
+    creatorId: string;
+    creatorName: string;
+    members: Array<{ id: string; type: 'human' | 'agent'; name: string }>;
+  }): GroupChat & { members: GroupChatMember[] } {
+    const id = generateId('gc');
+    const channelKey = `group:custom:${id}`;
+    const ts = now();
+    this.db
+      .prepare(
+        'INSERT INTO group_chats (id, org_id, name, channel_key, creator_id, creator_name, created_at) VALUES (?,?,?,?,?,?,?)'
+      )
+      .run(id, data.orgId, data.name, channelKey, data.creatorId, data.creatorName, ts);
+
+    const insertMember = this.db.prepare(
+      'INSERT OR IGNORE INTO group_chat_members (group_chat_id, member_id, member_type, member_name, added_at) VALUES (?,?,?,?,?)'
+    );
+    const members: GroupChatMember[] = [];
+    for (const m of data.members) {
+      insertMember.run(id, m.id, m.type, m.name, ts);
+      members.push({ groupChatId: id, memberId: m.id, memberType: m.type as 'human' | 'agent', memberName: m.name, addedAt: new Date(ts) });
+    }
+
+    return {
+      id, orgId: data.orgId, name: data.name, channelKey, creatorId: data.creatorId,
+      creatorName: data.creatorName, createdAt: new Date(ts), members,
+    };
+  }
+
+  list(orgId: string): Array<GroupChat & { memberCount: number }> {
+    const rows = this.db.prepare(
+      `SELECT g.*, (SELECT COUNT(*) FROM group_chat_members WHERE group_chat_id = g.id) AS member_count
+       FROM group_chats g WHERE g.org_id = ? ORDER BY g.created_at DESC`
+    ).all(orgId) as Record<string, unknown>[];
+    return rows.map(r => ({
+      ...this.mapRow(r),
+      memberCount: r['member_count'] as number,
+    }));
+  }
+
+  getById(id: string): (GroupChat & { members: GroupChatMember[] }) | undefined {
+    const r = this.db.prepare('SELECT * FROM group_chats WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!r) return undefined;
+    const members = this.getMembers(id);
+    return { ...this.mapRow(r), members };
+  }
+
+  getByChannelKey(channelKey: string): (GroupChat & { members: GroupChatMember[] }) | undefined {
+    const r = this.db.prepare('SELECT * FROM group_chats WHERE channel_key = ?').get(channelKey) as Record<string, unknown> | undefined;
+    if (!r) return undefined;
+    const gc = this.mapRow(r);
+    return { ...gc, members: this.getMembers(gc.id) };
+  }
+
+  getMembers(groupChatId: string): GroupChatMember[] {
+    const rows = this.db.prepare('SELECT * FROM group_chat_members WHERE group_chat_id = ?').all(groupChatId) as Record<string, unknown>[];
+    return rows.map(r => ({
+      groupChatId: r['group_chat_id'] as string,
+      memberId: r['member_id'] as string,
+      memberType: r['member_type'] as 'human' | 'agent',
+      memberName: r['member_name'] as string,
+      addedAt: toDate(r['added_at'] as string)!,
+    }));
+  }
+
+  getAgentMemberIds(channelKey: string): string[] {
+    const gc = this.db.prepare('SELECT id FROM group_chats WHERE channel_key = ?').get(channelKey) as { id: string } | undefined;
+    if (!gc) return [];
+    const rows = this.db.prepare(
+      "SELECT member_id FROM group_chat_members WHERE group_chat_id = ? AND member_type = 'agent'"
+    ).all(gc.id) as Array<{ member_id: string }>;
+    return rows.map(r => r.member_id);
+  }
+
+  addMember(groupChatId: string, memberId: string, memberType: 'human' | 'agent', memberName: string): void {
+    this.db.prepare(
+      'INSERT OR IGNORE INTO group_chat_members (group_chat_id, member_id, member_type, member_name, added_at) VALUES (?,?,?,?,?)'
+    ).run(groupChatId, memberId, memberType, memberName, now());
+  }
+
+  removeMember(groupChatId: string, memberId: string): void {
+    this.db.prepare('DELETE FROM group_chat_members WHERE group_chat_id = ? AND member_id = ?').run(groupChatId, memberId);
+  }
+
+  updateName(id: string, name: string): void {
+    this.db.prepare('UPDATE group_chats SET name = ? WHERE id = ?').run(name, id);
+  }
+
+  delete(id: string): void {
+    this.db.prepare('DELETE FROM group_chats WHERE id = ?').run(id);
+  }
+
+  private mapRow(r: Record<string, unknown>): GroupChat {
+    return {
+      id: r['id'] as string,
+      orgId: r['org_id'] as string,
+      name: r['name'] as string,
+      channelKey: r['channel_key'] as string,
+      creatorId: r['creator_id'] as string,
+      creatorName: r['creator_name'] as string,
+      createdAt: toDate(r['created_at'] as string)!,
     };
   }
 }

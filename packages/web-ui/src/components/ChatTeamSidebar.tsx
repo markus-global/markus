@@ -29,7 +29,7 @@ interface ChatTeamSidebarProps {
   humans: HumanUserInfo[];
   tasks: TaskInfo[];
   externalAgents: ExternalAgentInfo[];
-  groupChats: Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number; teamId?: string }>;
+  groupChats: Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number; teamId?: string; creatorId?: string; creatorName?: string; members?: Array<{ id: string; name: string; type: 'human' | 'agent' }> }>;
   chatMode: ChatMode;
   selectedAgent: string;
   activeChannel: string;
@@ -39,6 +39,7 @@ interface ChatTeamSidebarProps {
   onSelectDm: (userId: string) => void;
   onRefreshTeams: () => void;
   onRefreshAgents: () => void;
+  onRefreshGroupChats: () => void;
   onViewProfile: (agentId: string) => void;
   width?: number;
   onResizeStart?: (e: React.MouseEvent) => void;
@@ -51,13 +52,135 @@ function agentInitials(name: string) {
   return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
 }
 
+// ─── Create Group Chat Modal ────────────────────────────────────────────────
+
+function CreateGroupChatModal({ agents, humans, authUser, onClose, onCreate }: {
+  agents: AgentInfo[];
+  humans: HumanUserInfo[];
+  authUser?: AuthUser;
+  onClose: () => void;
+  onCreate: (name: string, memberIds: string[], memberTypes: Record<string, string>, memberNames: Record<string, string>) => Promise<void>;
+}) {
+  const [name, setName] = useState('');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState('');
+  const [creating, setCreating] = useState(false);
+
+  const allMembers = useMemo(() => {
+    const list: Array<{ id: string; name: string; type: 'human' | 'agent'; subtitle: string }> = [];
+    for (const a of agents) {
+      list.push({ id: a.id, name: a.name, type: 'agent', subtitle: a.role || 'Agent' });
+    }
+    for (const h of humans) {
+      if (h.id === authUser?.id) continue;
+      list.push({ id: h.id, name: h.name, type: 'human', subtitle: h.email || h.role || 'Human' });
+    }
+    return list;
+  }, [agents, humans, authUser]);
+
+  const filtered = useMemo(() => {
+    if (!search) return allMembers;
+    const q = search.toLowerCase();
+    return allMembers.filter(m => m.name.toLowerCase().includes(q) || m.subtitle.toLowerCase().includes(q));
+  }, [allMembers, search]);
+
+  const toggleMember = (id: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const handleCreate = async () => {
+    if (!name.trim() || selected.size === 0) return;
+    setCreating(true);
+    const memberIds = [...selected];
+    const memberTypes: Record<string, string> = {};
+    const memberNames: Record<string, string> = {};
+    for (const id of memberIds) {
+      const m = allMembers.find(x => x.id === id);
+      if (m) { memberTypes[id] = m.type; memberNames[id] = m.name; }
+    }
+    await onCreate(name.trim(), memberIds, memberTypes, memberNames);
+    setCreating(false);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-surface-elevated rounded-xl border border-border-default shadow-2xl w-[400px] max-w-[90vw] max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-border-default">
+          <h3 className="text-sm font-semibold">Create Group Chat</h3>
+          <p className="text-[11px] text-fg-tertiary mt-0.5">Add agents and humans to chat together</p>
+        </div>
+        <div className="px-5 py-3 border-b border-border-default">
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="Group name..."
+            className="w-full bg-surface-primary border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary placeholder:text-fg-muted outline-none focus:ring-1 focus:ring-brand-500/50"
+            autoFocus
+          />
+        </div>
+        <div className="px-5 py-2 border-b border-border-default">
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search members..."
+            className="w-full bg-surface-primary border border-border-default rounded-lg px-3 py-1.5 text-xs text-fg-primary placeholder:text-fg-muted outline-none focus:ring-1 focus:ring-brand-500/50"
+          />
+        </div>
+        <div className="flex-1 overflow-y-auto px-3 py-2 min-h-0 max-h-[300px]">
+          {filtered.length === 0 && <p className="text-xs text-fg-tertiary px-2 py-4 text-center">No members found</p>}
+          {filtered.map(m => (
+            <button
+              key={m.id}
+              onClick={() => toggleMember(m.id)}
+              className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
+                selected.has(m.id) ? 'bg-brand-500/10 text-brand-500' : 'text-fg-secondary hover:bg-surface-overlay'
+              }`}
+            >
+              <div className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${
+                selected.has(m.id) ? 'bg-brand-500 border-brand-500' : 'border-border-default'
+              }`}>
+                {selected.has(m.id) && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>}
+              </div>
+              <Avatar name={m.name} size={20} bgClass={m.type === 'agent' ? 'bg-brand-500/15 text-brand-500' : 'bg-green-500/15 text-green-600'} />
+              <div className="flex-1 min-w-0 text-left">
+                <span className="truncate text-[11px] font-medium block">{m.name}</span>
+                <span className="text-[9px] text-fg-tertiary">{m.subtitle}</span>
+              </div>
+              <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-medium ${
+                m.type === 'agent' ? 'bg-brand-500/10 text-brand-500' : 'bg-green-500/10 text-green-600'
+              }`}>{m.type}</span>
+            </button>
+          ))}
+        </div>
+        <div className="px-5 py-3 border-t border-border-default flex items-center justify-between">
+          <span className="text-[10px] text-fg-tertiary">{selected.size} selected</span>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="px-3 py-1.5 text-xs text-fg-secondary hover:text-fg-primary rounded-lg hover:bg-surface-overlay transition-colors">Cancel</button>
+            <button
+              onClick={handleCreate}
+              disabled={!name.trim() || selected.size === 0 || creating}
+              className="px-4 py-1.5 text-xs font-medium text-white bg-brand-600 hover:bg-brand-500 rounded-lg transition-colors disabled:opacity-50 disabled:pointer-events-none"
+            >
+              {creating ? 'Creating...' : 'Create'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function ChatTeamSidebar({
   authUser, agents, teams, humans, tasks, externalAgents, groupChats,
   chatMode, selectedAgent, activeChannel, activeDmUserId,
   onSelectAgent, onSelectChannel, onSelectDm,
-  onRefreshTeams, onRefreshAgents, onViewProfile,
+  onRefreshTeams, onRefreshAgents, onRefreshGroupChats, onViewProfile,
   width, onResizeStart, hidden,
 }: ChatTeamSidebarProps) {
   const { t } = useTranslation(['team', 'common']);
@@ -76,11 +199,13 @@ export function ChatTeamSidebar({
   const [showAddHuman, setShowAddHuman] = useState<{ teamId?: string } | null>(null);
   const [showAddExisting, setShowAddExisting] = useState<string | null>(null);
   const [showOpenClaw, setShowOpenClaw] = useState(false);
+  const [showCreateGroupChat, setShowCreateGroupChat] = useState(false);
 
   // Context menus
   const [teamMenu, setTeamMenu] = useState<{ teamId: string; x: number; y: number } | null>(null);
   const [agentMenu, setAgentMenu] = useState<{ agentId: string; teamId?: string; x: number; y: number } | null>(null);
   const [addMenu, setAddMenu] = useState<string | null>(null); // teamId for which add menu is open
+  const [gcMenu, setGcMenu] = useState<{ gcId: string; x: number; y: number } | null>(null);
 
   // Action bar dropdown
   const [actionMenu, setActionMenu] = useState(false);
@@ -220,15 +345,16 @@ export function ChatTeamSidebar({
 
   // Close menus on outside click
   useEffect(() => {
-    if (!teamMenu && !agentMenu && !actionMenu) return;
+    if (!teamMenu && !agentMenu && !actionMenu && !gcMenu) return;
     const handler = (e: MouseEvent) => {
       setTeamMenu(null);
       setAgentMenu(null);
+      setGcMenu(null);
       setActionMenu(false);
     };
     setTimeout(() => document.addEventListener('click', handler), 0);
     return () => document.removeEventListener('click', handler);
-  }, [teamMenu, agentMenu, actionMenu]);
+  }, [teamMenu, agentMenu, actionMenu, gcMenu]);
 
   // ── Team actions ──────────────────────────────────────────────────────────
 
@@ -596,8 +722,11 @@ export function ChatTeamSidebar({
   const groupChatsByTeam = useMemo(() => {
     const map = new Map<string, typeof groupChats>();
     const unmatched: typeof groupChats = [];
+    const custom: typeof groupChats = [];
     for (const gc of groupChats) {
-      if (gc.teamId) {
+      if (gc.type === 'custom') {
+        custom.push(gc);
+      } else if (gc.teamId) {
         const list = map.get(gc.teamId) ?? [];
         list.push(gc);
         map.set(gc.teamId, list);
@@ -612,7 +741,7 @@ export function ChatTeamSidebar({
         }
       }
     }
-    return { byTeam: map, unmatched };
+    return { byTeam: map, unmatched, custom };
   }, [groupChats, teams]);
 
   return (
@@ -670,6 +799,14 @@ export function ChatTeamSidebar({
                       {t('chat.newTeam')}
                     </div>
                     <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.newTeamDesc')}</div>
+                  </button>
+                  <button onClick={() => { setActionMenu(false); setShowCreateGroupChat(true); }}
+                    className="w-full text-left px-4 py-2.5 text-xs text-fg-secondary hover:bg-surface-elevated border-t border-border-default transition-colors">
+                    <div className="font-medium flex items-center gap-1.5">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+                      New Group Chat
+                    </div>
+                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">Custom group with any members</div>
                   </button>
                   <button onClick={() => { setActionMenu(false); navBus.navigate(PAGE.STORE); }}
                     className="w-full text-left px-4 py-2.5 text-xs text-fg-secondary hover:bg-surface-elevated border-t border-border-default transition-colors">
@@ -732,6 +869,40 @@ export function ChatTeamSidebar({
               )}
             </button>
           ))}
+
+          {/* Custom group chats */}
+          {groupChatsByTeam.custom.length > 0 && (
+            <div className="mt-1 mb-1">
+              <p className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 px-2">Groups</p>
+              {groupChatsByTeam.custom.map(gc => {
+                const isActive = chatMode === 'channel' && activeChannel === gc.channelKey;
+                return (
+                  <button
+                    key={gc.id}
+                    onClick={() => onSelectChannel(gc.channelKey)}
+                    onContextMenu={e => {
+                      e.preventDefault();
+                      const pos = clampMenuPos(e);
+                      setGcMenu({ gcId: gc.id, ...pos });
+                    }}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
+                      isActive ? 'bg-brand-600/20 text-brand-500' : 'text-fg-secondary hover:bg-surface-elevated'
+                    }`}
+                  >
+                    <div className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 ${
+                      isActive ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-secondary'
+                    }`}>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+                    </div>
+                    <div className="flex-1 min-w-0 text-left">
+                      <span className="truncate font-medium text-[11px] leading-tight block">{gc.name}</span>
+                      <div className="text-[10px] text-fg-tertiary leading-tight mt-0.5">{gc.memberCount ?? 0} members</div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* Teams with agents or members */}
           {teams.map(t => {
@@ -1032,6 +1203,52 @@ export function ChatTeamSidebar({
         />
       )}
 
+      {/* ── Context Menu: Custom Group Chat ── */}
+      {gcMenu && (() => {
+        const gc = groupChats.find(g => g.id === gcMenu.gcId);
+        if (!gc) return null;
+        return (
+          <div
+            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)]"
+            style={{ left: gcMenu.x, top: gcMenu.y }}
+            onClick={e => e.stopPropagation()}
+          >
+            <button onClick={async () => {
+              setGcMenu(null);
+              askConfirm('Delete group chat?', `Delete "${gc.name}" and all its messages?`, async () => {
+                await api.groupChats.delete(gc.id);
+                onRefreshGroupChats();
+              }, 'Delete');
+            }} className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-500 flex items-center gap-2">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+              Delete Group
+            </button>
+          </div>
+        );
+      })()}
+
+      {/* ── Create Group Chat Modal ── */}
+      {showCreateGroupChat && (
+        <CreateGroupChatModal
+          agents={agents}
+          humans={humans}
+          authUser={authUser}
+          onClose={() => setShowCreateGroupChat(false)}
+          onCreate={async (name, memberIds, memberTypes, memberNames) => {
+            await api.groupChats.create({
+              name,
+              memberIds,
+              memberTypes,
+              memberNames,
+              creatorId: authUser?.id,
+              creatorName: authUser?.name,
+            });
+            setShowCreateGroupChat(false);
+            onRefreshGroupChats();
+          }}
+        />
+      )}
+
       {pendingConfirm && (
         <ConfirmModal
           title={pendingConfirm.title}
@@ -1055,3 +1272,4 @@ export function ChatTeamSidebar({
     </>
   );
 }
+

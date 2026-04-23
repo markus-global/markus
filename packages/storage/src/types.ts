@@ -116,6 +116,7 @@ export interface ChannelMsg {
   text: string;
   mentions: string[];
   metadata?: ChannelMsgMetadata | null;
+  replyToId?: string;
   createdAt: Date;
 }
 
@@ -265,6 +266,24 @@ export interface MarketplaceRatingRow {
   review: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface GroupChat {
+  id: string;
+  orgId: string;
+  name: string;
+  channelKey: string;
+  creatorId: string;
+  creatorName: string;
+  createdAt: Date;
+}
+
+export interface GroupChatMember {
+  groupChatId: string;
+  memberId: string;
+  memberType: 'human' | 'agent';
+  memberName: string;
+  addedAt: Date;
 }
 
 // ─── Repo interfaces (structural contracts for dependency injection) ──────────

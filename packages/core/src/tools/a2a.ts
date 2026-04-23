@@ -13,6 +13,7 @@ export interface A2AContext {
   sendGroupMessage?: (channelKey: string, message: string, senderId: string, senderName: string) => Promise<string>;
   createGroupChat?: (name: string, memberIds: string[]) => Promise<{ id: string; name: string }>;
   listGroupChats?: () => Promise<Array<{ id: string; name: string; type: string; channelKey: string }>>;
+  getChannelMessages?: (channelKey: string, limit: number, before?: string) => Promise<{ messages: Array<{ senderName: string; senderType: string; text: string; createdAt: string }>; hasMore: boolean }>;
 }
 
 export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
@@ -137,6 +138,71 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
         } catch (err) {
           return JSON.stringify({ status: 'error', error: String(err) });
         }
+      },
+    } as AgentToolHandler] : []),
+    ...(ctx.getChannelMessages ? [{
+      name: 'recall_context',
+      description: [
+        'Recall historical context you may need to respond effectively.',
+        'Use this BEFORE responding when the provided context is insufficient.',
+        '',
+        'Supported scopes:',
+        '• "channel" — Read chat messages from a group chat or DM channel. Requires channel_key.',
+        '  Use when you joined a discussion late, were @mentioned, or need to understand prior conversation.',
+        '',
+        'For other context types, use these existing tools instead:',
+        '• task_get — Full task details including all comments (scope=task context)',
+        '• requirement_get — Full requirement details including all comments (scope=requirement context)',
+        '• recall_activity — Your own execution history, activity logs, and past work (scope=your activities)',
+        '• memory_search — Your saved memories and notes (scope=personal knowledge)',
+      ].join('\n'),
+      inputSchema: {
+        type: 'object',
+        properties: {
+          scope: {
+            type: 'string',
+            enum: ['channel'],
+            description: 'Type of context to recall. Currently: "channel" for chat/group messages.',
+          },
+          channel_key: {
+            type: 'string',
+            description: 'Required when scope="channel". The channel key (e.g., "group:<teamId>" for team chats, "dm:<id1>_<id2>" for DMs).',
+          },
+          limit: { type: 'number', description: 'Number of items to fetch (default 30, max 50).' },
+          before: { type: 'string', description: 'ISO timestamp — fetch items older than this for pagination. Omit for most recent.' },
+        },
+        required: ['scope'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const scope = args['scope'] as string;
+
+        if (scope === 'channel') {
+          const channelKey = args['channel_key'] as string;
+          if (!channelKey) {
+            return JSON.stringify({ status: 'error', error: 'channel_key is required when scope="channel"' });
+          }
+          const limit = Math.min((args['limit'] as number) ?? 30, 50);
+          const before = args['before'] as string | undefined;
+          try {
+            const result = await ctx.getChannelMessages!(channelKey, limit, before);
+            const formatted = result.messages.map(m =>
+              `[${m.createdAt}] ${m.senderType === 'agent' ? `[agent] ${m.senderName}` : `[human] ${m.senderName}`}: ${m.text.slice(0, 500)}`
+            );
+            return JSON.stringify({
+              messages: formatted,
+              count: result.messages.length,
+              hasMore: result.hasMore,
+              oldestTimestamp: result.messages[0]?.createdAt,
+            });
+          } catch (err) {
+            return JSON.stringify({ status: 'error', error: String(err) });
+          }
+        }
+
+        return JSON.stringify({
+          status: 'error',
+          error: `Unknown scope: "${scope}". Use "channel" for chat messages, or use task_get / requirement_get / recall_activity for other context.`,
+        });
       },
     } as AgentToolHandler] : []),
   ];
