@@ -1673,6 +1673,26 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           fileNamesToSend,
         );
         if (currentConvKeyRef.current === sendKey) {
+          // Apply server's authoritative final segments and content so the
+          // rendered state matches the DB-persisted data.  This prevents a
+          // blank bubble when delta-built segments have empty content (e.g.
+          // thinking-only responses before text_delta arrives).
+          if (streamResult.segments?.length) {
+            updateConvMsgs(sendKey, prev => {
+              const u = [...prev];
+              const idx = u.findIndex(m => m.id === agentMsgId);
+              if (idx < 0) return prev;
+              const finalSegs: MsgSegment[] = streamResult.segments!.map((s, i) =>
+                s.type === 'tool'
+                  ? { type: 'tool' as const, key: `${s.tool}_${i}`, tool: s.tool, status: s.status, args: s.arguments, result: s.result, error: s.error, durationMs: s.durationMs, createdAt: s.createdAt }
+                  : { type: 'text' as const, content: s.content, thinking: s.thinking, createdAt: s.createdAt }
+              );
+              const finalText = streamResult.content || u[idx]!.text;
+              u[idx] = { ...u[idx]!, text: finalText, segments: finalSegs, committedSegments: finalSegs };
+              return u;
+            });
+          }
+
           if (streamResult.sessionId) {
             setActiveSessionId(streamResult.sessionId);
             setOpenSessionTabs(prev =>

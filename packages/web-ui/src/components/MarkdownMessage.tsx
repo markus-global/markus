@@ -2,6 +2,9 @@ import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import { FilePathLink, looksLikeFilePath } from './FilePathLink.tsx';
 import { copyPlainText, copyAsHtml } from './markdown-copy.ts';
 
@@ -25,6 +28,16 @@ function extractThinkBlocks(text: string): { thinking: string[]; rest: string } 
   // think blocks span across message segments (split by tool calls)
   rest = rest.replace(/<\/think>/g, '').replace(/<think>/g, '');
   return { thinking, rest: rest.trim() };
+}
+
+/** Normalise LaTeX delimiters from LLM output to remark-math's expected syntax.
+ *  \(...\) → $...$  and  \[...\] → $$...$$ */
+function normalizeMathDelimiters(text: string): string {
+  // Block math: \[...\] → $$...$$  (may span multiple lines)
+  let out = text.replace(/\\\[([\s\S]*?)\\\]/g, (_m, inner: string) => `$$${inner}$$`);
+  // Inline math: \(...\) → $...$  (single line only to avoid false positives)
+  out = out.replace(/\\\((.+?)\\\)/g, (_m, inner: string) => `$${inner}$`);
+  return out;
 }
 
 const MENTION_PREFIX = '#mention:';
@@ -172,10 +185,11 @@ export function MarkdownMessage({ content, className = '', onMentionClick }: Pro
   const { thinking, rest } = extractThinkBlocks(content);
   const contentRef = useRef<HTMLDivElement>(null);
 
-  const processedRest = useMemo(
-    () => onMentionClick ? preprocessMentions(rest) : rest,
-    [rest, onMentionClick],
-  );
+  const processedRest = useMemo(() => {
+    let t = normalizeMathDelimiters(rest);
+    if (onMentionClick) t = preprocessMentions(t);
+    return t;
+  }, [rest, onMentionClick]);
 
   const components = useMemo(() => {
     if (!onMentionClick) return mdComponents;
@@ -221,15 +235,15 @@ export function MarkdownMessage({ content, className = '', onMentionClick }: Pro
                 </summary>
                 <div className="px-3 pb-3 border-t border-border-default/50">
                   <div className="mt-2 pl-3 border-l-2 border-brand-500/40 text-xs text-fg-secondary leading-relaxed">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
-                      {full}
+                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={mdComponents}>
+                      {normalizeMathDelimiters(full)}
                     </ReactMarkdown>
                   </div>
                 </div>
               </details>
             );
           })()}
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={components}>
             {processedRest}
           </ReactMarkdown>
         </div>
