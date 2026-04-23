@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api, wsClient, type DeliverableInfo, type ProjectInfo, type AgentInfo } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { copyPlainText } from '../components/markdown-copy.ts';
@@ -14,21 +15,22 @@ const TYPE_META: Record<string, { icon: string; color: string }> = {
   directory: { icon: '\u{1F4C1}', color: 'bg-blue-500/10 text-blue-600' },
 };
 
-const STATUS_META: Record<string, { label: string; color: string }> = {
-  active:   { label: 'Active',   color: 'text-green-600 bg-green-500/10' },
-  verified: { label: 'Verified', color: 'text-blue-600 bg-blue-500/10' },
-  outdated: { label: 'Outdated', color: 'text-red-500 bg-red-500/10' },
+const STATUS_META: Record<string, { color: string }> = {
+  active:   { color: 'text-green-600 bg-green-500/10' },
+  verified: { color: 'text-blue-600 bg-blue-500/10' },
+  outdated: { color: 'text-red-500 bg-red-500/10' },
 };
 
 const ALL_TYPES = ['file', 'directory'] as const;
 
-const ARTIFACT_META: Record<string, { icon: string; label: string; color: string }> = {
-  agent: { icon: '\u2726', label: 'Agent', color: 'bg-brand-500/10 text-brand-500' },
-  team:  { icon: '\u25C8', label: 'Team',  color: 'bg-blue-500/10 text-blue-600' },
-  skill: { icon: '\u2B21', label: 'Skill', color: 'bg-amber-500/10 text-amber-600' },
+const ARTIFACT_META: Record<string, { icon: string; color: string }> = {
+  agent: { icon: '\u2726', color: 'bg-brand-500/10 text-brand-500' },
+  team:  { icon: '\u25C8', color: 'bg-blue-500/10 text-blue-600' },
+  skill: { icon: '\u2B21', color: 'bg-amber-500/10 text-amber-600' },
 };
 
 export function DeliverablesPage() {
+  const { t } = useTranslation(['deliverables', 'common']);
   const isMobile = useIsMobile();
   const listPanel = useResizablePanel({ side: 'left', defaultWidth: 384, minWidth: 280, maxWidth: 600, storageKey: 'markus_deliverables_list' });
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
@@ -101,7 +103,7 @@ export function DeliverablesPage() {
       setCopiedPath(true);
       setTimeout(() => setCopiedPath(false), 1500);
     } else {
-      flashMsg('error', 'Copy failed — try long-pressing to copy manually');
+      flashMsg('error', t('detail.copyFailed'));
     }
   };
 
@@ -187,10 +189,10 @@ export function DeliverablesPage() {
       let label: string;
       if (groupBy === 'project') {
         key = item.projectId ?? '_none';
-        label = item.projectId ? (projectMap.get(item.projectId)?.name ?? item.projectId) : 'No Project';
+        label = item.projectId ? (projectMap.get(item.projectId)?.name ?? item.projectId) : t('noProject');
       } else if (groupBy === 'agent') {
         key = item.agentId ?? '_none';
-        label = item.agentId ? (agentMap.get(item.agentId)?.name ?? item.agentId) : 'Unknown';
+        label = item.agentId ? (agentMap.get(item.agentId)?.name ?? item.agentId) : t('common:unknown');
       } else if (groupBy === 'type') {
         key = item.type;
         label = item.type.charAt(0).toUpperCase() + item.type.slice(1);
@@ -206,7 +208,7 @@ export function DeliverablesPage() {
     if (groupBy === 'date') sorted.sort((a, b) => b[0].localeCompare(a[0]));
     else sorted.sort((a, b) => a[1].label.localeCompare(b[1].label));
     return sorted;
-  }, [items, groupBy, projectMap, agentMap]);
+  }, [items, groupBy, projectMap, agentMap, t]);
 
   const handleCreate = async () => {
     if (!newTitle.trim() || !newSummary.trim()) return;
@@ -218,12 +220,12 @@ export function DeliverablesPage() {
         summary: newSummary,
         reference: newReference,
         projectId: newProjectId || undefined,
-        tags: newTags.split(',').map(t => t.trim()).filter(Boolean),
+        tags: newTags.split(',').map(s => s.trim()).filter(Boolean),
       });
       setShowCreate(false);
-      flashMsg('success', 'Deliverable created');
+      flashMsg('success', t('createModal.created'));
       refresh();
-    } catch (e) { flashMsg('error', `Error: ${e}`); }
+    } catch (e) { flashMsg('error', t('common:error', { message: String(e) })); }
     setCreating(false);
   };
 
@@ -231,10 +233,10 @@ export function DeliverablesPage() {
     setActionLoading('verify');
     try {
       await api.deliverables.verify(d.id);
-      flashMsg('success', 'Verified');
+      flashMsg('success', t('common:verified'));
       setSelected({ ...d, status: 'verified' });
       refresh();
-    } catch (e) { flashMsg('error', `Error: ${e}`); }
+    } catch (e) { flashMsg('error', t('common:error', { message: String(e) })); }
     setActionLoading('');
   };
 
@@ -242,10 +244,10 @@ export function DeliverablesPage() {
     setActionLoading('flag');
     try {
       await api.deliverables.update(d.id, { status: 'outdated' });
-      flashMsg('success', 'Flagged as outdated');
+      flashMsg('success', t('flaggedOutdated'));
       setSelected({ ...d, status: 'outdated' });
       refresh();
-    } catch (e) { flashMsg('error', `Error: ${e}`); }
+    } catch (e) { flashMsg('error', t('common:error', { message: String(e) })); }
     setActionLoading('');
   };
 
@@ -253,10 +255,10 @@ export function DeliverablesPage() {
     setActionLoading('remove');
     try {
       await api.deliverables.remove(d.id);
-      flashMsg('success', 'Removed');
+      flashMsg('success', t('removed'));
       setSelected(null);
       refresh();
-    } catch (e) { flashMsg('error', `Error: ${e}`); }
+    } catch (e) { flashMsg('error', t('common:error', { message: String(e) })); }
     setActionLoading('');
   };
 
@@ -331,62 +333,62 @@ export function DeliverablesPage() {
         <div className="p-4 border-b border-border-default space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-fg-secondary">
-              Deliverables{totalCount > 0 && <span className="ml-1.5 text-fg-tertiary font-normal">({totalCount})</span>}
+              {t('title')}{totalCount > 0 && <span className="ml-1.5 text-fg-tertiary font-normal">({totalCount})</span>}
             </h2>
-            <button onClick={openContributeForm} className="text-xs px-2.5 py-1 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">+ Create</button>
+            <button onClick={openContributeForm} className="text-xs px-2.5 py-1 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">{t('create')}</button>
           </div>
           <input
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Search deliverables..."
+            placeholder={t('searchPlaceholder')}
             className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary focus:border-brand-500 focus:outline-none transition-colors"
           />
           {sharedDir && (
             <div className="flex items-center gap-2 px-2.5 py-1.5 bg-surface-elevated/50 border border-border-default rounded-lg text-[10px] text-fg-tertiary">
               <span className="truncate font-mono">{sharedDir}</span>
               <button onClick={() => void api.system.openPath(sharedDir)}
-                className="shrink-0 underline hover:text-fg-secondary transition-colors">Open</button>
+                className="shrink-0 underline hover:text-fg-secondary transition-colors">{t('common:open')}</button>
             </div>
           )}
           {/* Type filter (includes artifact types) */}
           <div className="flex gap-1 overflow-x-auto scrollbar-hide">
-            <FilterPill label="All types" value="" current={filterType || filterArtifact || ''} onClick={() => { setFilterType(''); setFilterArtifact(''); }} />
-            {ALL_TYPES.map(t => (
-              <FilterPill key={t} label={`${TYPE_META[t]?.icon ?? ''} ${t}`} value={t} current={filterType} onClick={v => { setFilterType(v); setFilterArtifact(''); }} />
+            <FilterPill label={t('filters.allTypes')} value="" current={filterType || filterArtifact || ''} onClick={() => { setFilterType(''); setFilterArtifact(''); }} />
+            {ALL_TYPES.map(ty => (
+              <FilterPill key={ty} label={`${TYPE_META[ty]?.icon ?? ''} ${ty}`} value={ty} current={filterType} onClick={v => { setFilterType(v); setFilterArtifact(''); }} />
             ))}
             {(['agent', 'team', 'skill'] as const).map(a => (
-              <FilterPill key={a} label={`${ARTIFACT_META[a].icon} ${ARTIFACT_META[a].label}`} value={a} current={filterArtifact} onClick={v => { setFilterArtifact(v); setFilterType(''); }} />
+              <FilterPill key={a} label={`${ARTIFACT_META[a].icon} ${t(`artifactTypes.${a}`)}`} value={a} current={filterArtifact} onClick={v => { setFilterArtifact(v); setFilterType(''); }} />
             ))}
           </div>
           {/* Project filter */}
           {projects.length > 0 && (
             <div className="flex gap-1 overflow-x-auto scrollbar-hide">
-              <FilterPill label="All projects" value="" current={filterProject} onClick={setFilterProject} />
+              <FilterPill label={t('filters.allProjects')} value="" current={filterProject} onClick={setFilterProject} />
               {projects.map(p => <FilterPill key={p.id} label={p.name} value={p.id} current={filterProject} onClick={setFilterProject} />)}
             </div>
           )}
           {/* Status filter */}
           <div className="flex gap-1 overflow-x-auto scrollbar-hide">
-            <FilterPill label="Active" value="" current={filterStatus} onClick={setFilterStatus} />
-            <FilterPill label="Verified" value="verified" current={filterStatus} onClick={setFilterStatus} />
-            <FilterPill label="Outdated" value="outdated" current={filterStatus} onClick={setFilterStatus} />
+            <FilterPill label={t('filters.active')} value="" current={filterStatus} onClick={setFilterStatus} />
+            <FilterPill label={t('filters.verified')} value="verified" current={filterStatus} onClick={setFilterStatus} />
+            <FilterPill label={t('filters.outdated')} value="outdated" current={filterStatus} onClick={setFilterStatus} />
           </div>
           {/* Group by */}
           <div className="flex gap-1.5 items-center">
-            <span className="text-[10px] text-fg-tertiary">Group:</span>
+            <span className="text-[10px] text-fg-tertiary">{t('filters.group')}</span>
             {(['date', 'project', 'agent', 'type'] as const).map(g => (
               <button key={g} onClick={() => { setGroupBy(g); setCollapsedGroups(new Set()); }}
                 className={`px-2 py-1 rounded text-xs transition-colors ${groupBy === g ? 'bg-brand-600 text-white' : 'bg-surface-elevated text-fg-secondary hover:bg-surface-overlay'}`}>
-                {g.charAt(0).toUpperCase() + g.slice(1)}
+                {t(`groupBy.${g}`)}
               </button>
             ))}
             {grouped.length > 1 && (
               <button
                 onClick={toggleAllGroups}
                 className="ml-auto px-1.5 py-1 rounded text-[10px] text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated transition-colors"
-                title={collapsedGroups.size === grouped.length ? 'Expand all' : 'Collapse all'}
+                title={collapsedGroups.size === grouped.length ? t('expandAllTooltip') : t('collapseAllTooltip')}
               >
-                {collapsedGroups.size === grouped.length ? '▶ Expand' : '▼ Collapse'}
+                {collapsedGroups.size === grouped.length ? t('expandAll') : t('collapseAll')}
               </button>
             )}
           </div>
@@ -411,9 +413,9 @@ export function DeliverablesPage() {
               <svg className="w-12 h-12 text-fg-muted mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
               </svg>
-              <p className="text-sm text-fg-secondary">No deliverables yet</p>
-              <p className="text-xs text-fg-tertiary mt-1 mb-3">Deliverables are created when tasks complete or manually</p>
-              <button onClick={openContributeForm} className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">+ Create first</button>
+              <p className="text-sm text-fg-secondary">{t('empty.title')}</p>
+              <p className="text-xs text-fg-tertiary mt-1 mb-3">{t('empty.subtitle')}</p>
+              <button onClick={openContributeForm} className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">{t('empty.createFirst')}</button>
             </div>
           ) : grouped.map(([key, group]) => {
             const isCollapsed = collapsedGroups.has(key);
@@ -439,13 +441,13 @@ export function DeliverablesPage() {
                     <div className="flex items-center gap-2 mt-1">
                       {item.artifactType && ARTIFACT_META[item.artifactType] ? (
                         <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${ARTIFACT_META[item.artifactType].color}`}>
-                          {ARTIFACT_META[item.artifactType].icon} {ARTIFACT_META[item.artifactType].label}
+                          {ARTIFACT_META[item.artifactType].icon} {t(`artifactTypes.${item.artifactType}`)}
                         </span>
                       ) : (
                         <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium uppercase ${TYPE_META[item.type]?.color ?? 'bg-surface-overlay text-fg-secondary'}`}>{item.type}</span>
                       )}
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${STATUS_META[item.status]?.color ?? 'bg-surface-elevated text-fg-tertiary'}`}>{item.status}</span>
-                      {item.agentId && <span className="text-[10px] text-fg-tertiary truncate">{agentMap.get(item.agentId)?.name ?? 'Agent'}</span>}
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${STATUS_META[item.status]?.color ?? 'bg-surface-elevated text-fg-tertiary'}`}>{t(`common:status.${item.status}`, { defaultValue: item.status })}</span>
+                      {item.agentId && <span className="text-[10px] text-fg-tertiary truncate">{agentMap.get(item.agentId)?.name ?? t('groupBy.agent')}</span>}
                     </div>
                   </button>
                 ))}
@@ -454,14 +456,14 @@ export function DeliverablesPage() {
           })}
           {loadingMore && (
             <div className="flex items-center justify-center gap-2 py-3 text-fg-tertiary">
-              <Spinner /> <span className="text-[10px]">Loading more...</span>
+              <Spinner /> <span className="text-[10px]">{t('common:loadingMore')}</span>
             </div>
           )}
           {!loading && items.length > 0 && (
             <div className="text-center text-[10px] text-fg-tertiary py-2">
               {items.length < totalCount
-                ? `${items.length} / ${totalCount} deliverables`
-                : `${totalCount} deliverables`}
+                ? t('count.partial', { loaded: items.length, total: totalCount })
+                : t('count.total', { total: totalCount })}
             </div>
           )}
         </div>
@@ -483,7 +485,7 @@ export function DeliverablesPage() {
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
             </button>
-            <span className="text-sm font-medium truncate">{selected?.title ?? 'Details'}</span>
+            <span className="text-sm font-medium truncate">{selected?.title ?? t('detail.details')}</span>
           </div>
         )}
         {!selected ? (
@@ -492,7 +494,7 @@ export function DeliverablesPage() {
               <svg className="w-12 h-12 mx-auto text-fg-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
               </svg>
-              <p className="text-sm">Select a deliverable to view details</p>
+              <p className="text-sm">{t('detail.selectToView')}</p>
             </div>
           </div>
         ) : (
@@ -504,46 +506,46 @@ export function DeliverablesPage() {
                 {selected.status !== 'verified' && (
                   <button onClick={() => handleVerify(selected)} disabled={!!actionLoading}
                     className="px-3 py-1.5 text-xs rounded-lg bg-green-600/20 text-green-600 hover:bg-green-600/30 disabled:opacity-50 transition-colors">
-                    {actionLoading === 'verify' ? 'Verifying...' : 'Verify'}
+                    {actionLoading === 'verify' ? t('common:verifying') : t('detail.verify')}
                   </button>
                 )}
                 {selected.status !== 'outdated' && (
                   <button onClick={() => handleFlagOutdated(selected)} disabled={!!actionLoading}
                     className="px-3 py-1.5 text-xs rounded-lg bg-amber-600/20 text-amber-600 hover:bg-amber-600/30 disabled:opacity-50 transition-colors">
-                    {actionLoading === 'flag' ? 'Flagging...' : 'Flag Outdated'}
+                    {actionLoading === 'flag' ? t('detail.flagging') : t('detail.flagOutdated')}
                   </button>
                 )}
                 <button onClick={() => handleRemove(selected)} disabled={!!actionLoading}
                   className="px-3 py-1.5 text-xs rounded-lg bg-red-600/20 text-red-500 hover:bg-red-600/30 disabled:opacity-50 transition-colors">
-                  {actionLoading === 'remove' ? 'Removing...' : 'Remove'}
+                  {actionLoading === 'remove' ? t('common:removing') : t('common:remove')}
                 </button>
               </div>
               <div className="flex items-center gap-3 mt-2 flex-wrap">
                 <span className={`px-2 py-0.5 rounded text-xs font-medium uppercase ${TYPE_META[selected.type]?.color ?? 'bg-surface-overlay text-fg-secondary'}`}>{TYPE_META[selected.type]?.icon ?? ''} {selected.type}</span>
-                <span className={`px-2 py-0.5 rounded text-xs ${STATUS_META[selected.status]?.color ?? 'bg-surface-elevated text-fg-tertiary'}`}>{selected.status}</span>
+                <span className={`px-2 py-0.5 rounded text-xs ${STATUS_META[selected.status]?.color ?? 'bg-surface-elevated text-fg-tertiary'}`}>{t(`common:status.${selected.status}`, { defaultValue: selected.status })}</span>
                 {selected.artifactType && ARTIFACT_META[selected.artifactType] && (
                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${ARTIFACT_META[selected.artifactType].color}`}>
-                    {ARTIFACT_META[selected.artifactType].icon} Builder {ARTIFACT_META[selected.artifactType].label}
+                    {ARTIFACT_META[selected.artifactType].icon} {t('detail.builderWithType', { type: t(`artifactTypes.${selected.artifactType}`) })}
                   </span>
                 )}
               </div>
               {selected.reference && (selected.type === 'file' || selected.type === 'directory') && (
                 <div className="flex items-center gap-2 mt-2 bg-surface-secondary/60 border border-border-default rounded-lg px-3 py-2">
                   <button
-                    onClick={() => { api.files.reveal(selected.reference).catch(() => flashMsg('error', 'Failed to open file browser')); }}
+                    onClick={() => { api.files.reveal(selected.reference).catch(() => flashMsg('error', t('detail.failedToOpenBrowser'))); }}
                     className="text-xs font-mono text-brand-500 hover:text-brand-500 hover:underline truncate flex-1 text-left cursor-pointer"
-                    title="Open in file browser"
+                    title={t('detail.openInFileBrowser')}
                   >{selected.reference}</button>
                   <button
-                    onClick={() => { api.files.reveal(selected.reference).catch(() => flashMsg('error', 'Failed to open file browser')); }}
+                    onClick={() => { api.files.reveal(selected.reference).catch(() => flashMsg('error', t('detail.failedToOpenBrowser'))); }}
                     className="px-2 py-1 text-[10px] rounded bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0"
-                    title="Reveal in Finder"
-                  >Open</button>
+                    title={t('detail.revealInFinder')}
+                  >{t('common:open')}</button>
                   <button
                     onClick={() => copyPath(selected.reference)}
                     className={`px-2 py-1 text-[10px] rounded transition-colors shrink-0 ${copiedPath ? 'bg-green-500/20 text-green-600' : 'bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay'}`}
-                    title="Copy path to clipboard"
-                  >{copiedPath ? 'Copied!' : 'Copy'}</button>
+                    title={t('detail.copyPath')}
+                  >{copiedPath ? t('common:copied') : t('common:copy')}</button>
                 </div>
               )}
               {selected.reference && selected.type !== 'file' && selected.type !== 'directory' && (
@@ -561,7 +563,7 @@ export function DeliverablesPage() {
                 </div>
                 {selected.reference && (
                   <div className="px-3 py-2 bg-surface-secondary/50 border border-border-default rounded-lg">
-                    <span className="text-[10px] text-fg-tertiary uppercase tracking-wider block mb-1">Artifact Directory</span>
+                    <span className="text-[10px] text-fg-tertiary uppercase tracking-wider block mb-1">{t('detail.artifactDirectory')}</span>
                     <span className="text-xs text-fg-secondary font-mono break-all">{selected.reference}</span>
                   </div>
                 )}
@@ -570,7 +572,7 @@ export function DeliverablesPage() {
                     onClick={handleOpenInBuilder}
                     className="flex-1 px-4 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium rounded-lg transition-colors"
                   >
-                    Open in Builder
+                    {t('detail.openInBuilder')}
                   </button>
                 </div>
                 {selected.summary && (
@@ -582,7 +584,7 @@ export function DeliverablesPage() {
             ) : (
               <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
                 {previewLoading ? (
-                  <div className="flex items-center gap-2 text-fg-tertiary text-sm"><Spinner /> Loading preview...</div>
+                  <div className="flex items-center gap-2 text-fg-tertiary text-sm"><Spinner /> {t('detail.loadingPreview')}</div>
                 ) : previewImage ? (
                   <div className="flex flex-col items-center gap-2">
                     <img src={previewImage.src} alt={previewImage.name} className="max-w-full max-h-[60vh] rounded-lg object-contain" />
@@ -592,23 +594,23 @@ export function DeliverablesPage() {
                   <MarkdownMessage content={previewContent} className="text-fg-secondary text-sm" />
                 ) : showCopyPath ? (
                   <div className="space-y-3">
-                    <p className="text-sm text-fg-secondary">This {selected.type} cannot be previewed in the browser.</p>
+                    <p className="text-sm text-fg-secondary">{t('detail.cannotPreview', { type: selected.type })}</p>
                     <div className="flex items-center gap-2">
                       <button
-                        onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', 'Failed to open')); }}
+                        onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
                         className="text-xs bg-surface-elevated px-3 py-2 rounded text-brand-500 hover:text-brand-500 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
-                        title="Open in file browser"
+                        title={t('detail.openInFileBrowser')}
                       >{selected.reference}</button>
-                      <button onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', 'Failed to open')); }}
-                        className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0">Open</button>
+                      <button onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
+                        className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0">{t('common:open')}</button>
                       <button onClick={() => copyPath(selected!.reference)}
-                        className={`px-3 py-2 text-xs rounded-lg transition-colors shrink-0 ${copiedPath ? 'bg-green-500/20 text-green-600' : 'bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay'}`}>{copiedPath ? 'Copied!' : 'Copy'}</button>
+                        className={`px-3 py-2 text-xs rounded-lg transition-colors shrink-0 ${copiedPath ? 'bg-green-500/20 text-green-600' : 'bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay'}`}>{copiedPath ? t('common:copied') : t('common:copy')}</button>
                     </div>
                   </div>
                 ) : selected.summary ? (
                   <MarkdownMessage content={selected.summary} className="text-fg-secondary text-sm" />
                 ) : (
-                  <p className="text-sm text-fg-tertiary italic">No content</p>
+                  <p className="text-sm text-fg-tertiary italic">{t('detail.noContent')}</p>
                 )}
               </div>
             )}
@@ -618,9 +620,9 @@ export function DeliverablesPage() {
               <div className="flex gap-4 flex-wrap">
                 {selected.diffStats && (
                   <div className="bg-surface-secondary border border-border-default rounded-lg px-4 py-3 text-xs space-y-1">
-                    <div className="text-fg-tertiary font-medium">Diff Stats</div>
+                    <div className="text-fg-tertiary font-medium">{t('diffStats.title')}</div>
                     <div className="flex gap-3">
-                      <span className="text-fg-secondary">{selected.diffStats.filesChanged} files</span>
+                      <span className="text-fg-secondary">{t('diffStats.files', { count: selected.diffStats.filesChanged })}</span>
                       <span className="text-green-600">+{selected.diffStats.additions}</span>
                       <span className="text-red-500">-{selected.diffStats.deletions}</span>
                     </div>
@@ -628,11 +630,11 @@ export function DeliverablesPage() {
                 )}
                 {selected.testResults && (
                   <div className="bg-surface-secondary border border-border-default rounded-lg px-4 py-3 text-xs space-y-1">
-                    <div className="text-fg-tertiary font-medium">Tests</div>
+                    <div className="text-fg-tertiary font-medium">{t('testResults.title')}</div>
                     <div className="flex gap-3">
-                      <span className="text-green-600">{selected.testResults.passed} passed</span>
-                      <span className="text-red-500">{selected.testResults.failed} failed</span>
-                      <span className="text-fg-secondary">{selected.testResults.skipped} skipped</span>
+                      <span className="text-green-600">{t('testResults.passed', { count: selected.testResults.passed })}</span>
+                      <span className="text-red-500">{t('testResults.failed', { count: selected.testResults.failed })}</span>
+                      <span className="text-fg-secondary">{t('testResults.skipped', { count: selected.testResults.skipped })}</span>
                     </div>
                   </div>
                 )}
@@ -650,24 +652,24 @@ export function DeliverablesPage() {
 
             {/* Association links */}
             <div className="border-t border-border-default pt-4 space-y-2">
-              <div className="text-xs text-fg-tertiary font-medium">Links</div>
+              <div className="text-xs text-fg-tertiary font-medium">{t('links.title')}</div>
               <div className="flex gap-3 flex-wrap">
                 {selected.taskId && (
                   <button onClick={() => navBus.navigate(PAGE.WORK, { openTask: selected.taskId! })}
                     className="text-xs text-brand-500 hover:underline bg-brand-500/10 px-2.5 py-1 rounded">
-                    Task: {selected.taskId.slice(0, 12)}...
+                    {t('links.task', { id: `${selected.taskId.slice(0, 12)}...` })}
                   </button>
                 )}
                 {selected.agentId && (
                   <button onClick={() => navBus.navigate(PAGE.TEAM, { selectAgent: selected.agentId! })}
                     className="text-xs text-blue-600 hover:underline bg-blue-500/10 px-2.5 py-1 rounded">
-                    Agent: {agentMap.get(selected.agentId)?.name ?? selected.agentId.slice(0, 12)}
+                    {t('links.agent', { name: agentMap.get(selected.agentId)?.name ?? selected.agentId.slice(0, 12) })}
                   </button>
                 )}
                 {selected.projectId && (
                   <button onClick={() => navBus.navigate(PAGE.WORK, { projectId: selected.projectId! })}
                     className="text-xs text-blue-600 hover:underline bg-blue-500/10 px-2.5 py-1 rounded">
-                    Project: {projectMap.get(selected.projectId)?.name ?? selected.projectId.slice(0, 12)}
+                    {t('links.project', { name: projectMap.get(selected.projectId)?.name ?? selected.projectId.slice(0, 12) })}
                   </button>
                 )}
               </div>
@@ -676,11 +678,11 @@ export function DeliverablesPage() {
             {/* Metadata */}
             <div className="text-xs text-fg-tertiary space-y-1 border-t border-border-default pt-4">
               <div className="flex gap-6 flex-wrap">
-                <span>Created: <span className="text-fg-secondary">{new Date(selected.createdAt).toLocaleString()}</span></span>
-                <span>Updated: <span className="text-fg-secondary">{new Date(selected.updatedAt).toLocaleString()}</span></span>
-                <span>Accessed: <span className="text-fg-secondary">{selected.accessCount}x</span></span>
+                <span>{t('metadata.created')} <span className="text-fg-secondary">{new Date(selected.createdAt).toLocaleString()}</span></span>
+                <span>{t('metadata.updated')} <span className="text-fg-secondary">{new Date(selected.updatedAt).toLocaleString()}</span></span>
+                <span>{t('metadata.accessed')} <span className="text-fg-secondary">{selected.accessCount}x</span></span>
               </div>
-              <div className="text-fg-muted select-all">ID: {selected.id}</div>
+              <div className="text-fg-muted select-all">{t('metadata.id', { id: selected.id })}</div>
             </div>
           </div>
         )}
@@ -691,46 +693,46 @@ export function DeliverablesPage() {
       {showCreate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => !creating && setShowCreate(false)}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[36rem] space-y-4" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-fg-primary">Create Deliverable</h3>
+            <h3 className="text-base font-semibold text-fg-primary">{t('createModal.title')}</h3>
 
             <div>
-              <label className="text-xs text-fg-tertiary block mb-1">Type</label>
+              <label className="text-xs text-fg-tertiary block mb-1">{t('createModal.type')}</label>
               <select value={newType} onChange={e => setNewType(e.target.value)}
                 className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary">
-                {ALL_TYPES.map(t => <option key={t} value={t}>{TYPE_META[t]?.icon ?? ''} {t}</option>)}
+                {ALL_TYPES.map(ty => <option key={ty} value={ty}>{TYPE_META[ty]?.icon ?? ''} {ty}</option>)}
               </select>
             </div>
 
             <div>
-              <label className="text-xs text-fg-tertiary block mb-1">Title <span className="text-red-500">*</span></label>
-              <input value={newTitle} onChange={e => setNewTitle(e.target.value)} placeholder="Clear, searchable title"
+              <label className="text-xs text-fg-tertiary block mb-1">{t('createModal.titleField')} <span className="text-red-500">{t('createModal.required')}</span></label>
+              <input value={newTitle} onChange={e => setNewTitle(e.target.value)} placeholder={t('createModal.titlePlaceholder')}
                 className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary focus:border-brand-500 focus:outline-none transition-colors" />
             </div>
 
             <div>
-              <label className="text-xs text-fg-tertiary block mb-1">Reference <span className="text-fg-tertiary">(file path, URL, branch name)</span></label>
-              <input value={newReference} onChange={e => setNewReference(e.target.value)} placeholder="/path/to/file or https://..."
+              <label className="text-xs text-fg-tertiary block mb-1">{t('createModal.reference')} <span className="text-fg-tertiary">({t('createModal.referenceHint')})</span></label>
+              <input value={newReference} onChange={e => setNewReference(e.target.value)} placeholder={t('createModal.referencePlaceholder')}
                 className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary focus:border-brand-500 focus:outline-none transition-colors font-mono" />
             </div>
 
             <div>
-              <label className="text-xs text-fg-tertiary block mb-1">Summary <span className="text-red-500">*</span> <span className="text-fg-tertiary">(Markdown)</span></label>
+              <label className="text-xs text-fg-tertiary block mb-1">{t('createModal.summary')} <span className="text-red-500">{t('createModal.required')}</span> <span className="text-fg-tertiary">({t('createModal.summaryHint')})</span></label>
               <textarea value={newSummary} onChange={e => setNewSummary(e.target.value)}
-                placeholder="Describe the deliverable..."
+                placeholder={t('createModal.summaryPlaceholder')}
                 className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary h-36 resize-none focus:border-brand-500 focus:outline-none transition-colors font-mono" />
             </div>
 
             <div className="flex gap-4">
               <div className="flex-1">
-                <label className="text-xs text-fg-tertiary block mb-1">Tags <span className="text-fg-tertiary">(comma separated)</span></label>
-                <input value={newTags} onChange={e => setNewTags(e.target.value)} placeholder="react, api, docs"
+                <label className="text-xs text-fg-tertiary block mb-1">{t('createModal.tags')} <span className="text-fg-tertiary">({t('createModal.tagsHint')})</span></label>
+                <input value={newTags} onChange={e => setNewTags(e.target.value)} placeholder={t('createModal.tagsPlaceholder')}
                   className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary focus:border-brand-500 focus:outline-none transition-colors" />
               </div>
               <div className="flex-1">
-                <label className="text-xs text-fg-tertiary block mb-1">Project</label>
+                <label className="text-xs text-fg-tertiary block mb-1">{t('createModal.project')}</label>
                 <select value={newProjectId} onChange={e => setNewProjectId(e.target.value)}
                   className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary">
-                  <option value="">None</option>
+                  <option value="">{t('common:none')}</option>
                   {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </div>
@@ -738,12 +740,12 @@ export function DeliverablesPage() {
 
             <div className="flex justify-end gap-3 pt-1 border-t border-border-default">
               <button onClick={() => setShowCreate(false)} disabled={creating}
-                className="text-sm text-fg-tertiary hover:text-fg-secondary disabled:opacity-50 transition-colors py-2">Cancel</button>
+                className="text-sm text-fg-tertiary hover:text-fg-secondary disabled:opacity-50 transition-colors py-2">{t('common:cancel')}</button>
               <button onClick={handleCreate}
                 disabled={creating || !newTitle.trim() || !newSummary.trim()}
                 className="bg-brand-600 hover:bg-brand-500 text-white text-sm px-4 py-2 rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
                 {creating && <Spinner />}
-                {creating ? 'Creating...' : 'Create'}
+                {creating ? t('common:creating') : t('common:create')}
               </button>
             </div>
           </div>

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 export type BuilderMode = 'agent' | 'team' | 'skill';
 
@@ -76,12 +77,13 @@ function Badge({ label, value, color }: { label: string; value?: string; color: 
 }
 
 function FilesPreview({ files }: { files: Record<string, string> }) {
+  const { t } = useTranslation(['builder', 'common']);
   const [active, setActive] = useState(Object.keys(files)[0] ?? '');
   const names = Object.keys(files);
   if (names.length === 0) return null;
   return (
     <div>
-      <span className="text-[10px] text-fg-tertiary uppercase tracking-wider">Files ({names.length})</span>
+      <span className="text-[10px] text-fg-tertiary uppercase tracking-wider">{t('builder:artifact.files', { count: names.length })}</span>
       <div className="mt-1 bg-surface-elevated/50 rounded-lg border border-border-default/30 overflow-hidden">
         <div className="flex gap-0.5 px-1.5 py-1 border-b border-border-default/30 overflow-x-auto">
           {names.map(fn => (
@@ -100,6 +102,7 @@ function FilesPreview({ files }: { files: Record<string, string> }) {
 }
 
 export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, unknown>; mode: BuilderMode }) {
+  const { t } = useTranslation(['builder', 'common']);
   const files = getArtifactFiles(artifact);
   const agentSection = artifact.agent as Record<string, unknown> | undefined;
   const teamSection = artifact.team as Record<string, unknown> | undefined;
@@ -116,11 +119,11 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
 
     return (
       <div className="space-y-3 text-sm">
-        <Field label="Name" value={displayName} />
-        <Field label="Description" value={artifact.description as string} />
+        <Field label={t('builder:artifact.name')} value={displayName} />
+        <Field label={t('builder:artifact.description')} value={artifact.description as string} />
         <div className="flex flex-wrap gap-2">
-          {roleName && <Badge label="Base Template" value={roleName} color="indigo" />}
-          <Badge label="Agent Role" value={agentRole} color={agentRole === 'manager' ? 'purple' : 'cyan'} />
+          {roleName && <Badge label={t('builder:artifact.baseTemplate')} value={roleName} color="indigo" />}
+          <Badge label={t('builder:artifact.agentRole')} value={agentRole} color={agentRole === 'manager' ? 'purple' : 'cyan'} />
         </div>
         {toStringArray(artifact.tags).length > 0 && (
           <div className="flex flex-wrap gap-1">
@@ -131,13 +134,13 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
         )}
         {(llmProvider || llmModel) && (
           <div className="flex gap-2">
-            {llmProvider && <Badge label="LLM Provider" value={llmProvider} color="gray" />}
-            {llmModel && <Badge label="LLM Model" value={llmModel} color="gray" />}
+            {llmProvider && <Badge label={t('builder:artifact.llmProvider')} value={llmProvider} color="gray" />}
+            {llmModel && <Badge label={t('builder:artifact.llmModel')} value={llmModel} color="gray" />}
           </div>
         )}
         {envDeps.length > 0 && (
           <div>
-            <span className="text-[10px] text-fg-tertiary uppercase tracking-wider">Required Env</span>
+            <span className="text-[10px] text-fg-tertiary uppercase tracking-wider">{t('builder:artifact.requiredEnv')}</span>
             <div className="flex flex-wrap gap-1 mt-1">
               {envDeps.map(e => (
                 <span key={e} className="px-1.5 py-0.5 text-[10px] bg-amber-500/10 text-amber-600 rounded font-mono">{e}</span>
@@ -145,7 +148,7 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
             </div>
           </div>
         )}
-        {skillDeps.length > 0 && <Field label="Skills" value={skillDeps.join(', ')} />}
+        {skillDeps.length > 0 && <Field label={t('builder:artifact.skills')} value={skillDeps.join(', ')} />}
         {files && <FilesPreview files={files} />}
       </div>
     );
@@ -156,10 +159,10 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
     const members = teamMembers ?? [];
     return (
       <div className="space-y-3 text-sm">
-        <Field label="Name" value={displayName} />
-        <Field label="Description" value={artifact.description as string} />
+        <Field label={t('builder:artifact.name')} value={displayName} />
+        <Field label={t('builder:artifact.description')} value={artifact.description as string} />
         <div className="flex flex-wrap gap-2">
-          <Badge label="Category" value={artifact.category as string} color="indigo" />
+          <Badge label={t('builder:artifact.category')} value={artifact.category as string} color="indigo" />
         </div>
         {toStringArray(artifact.tags).length > 0 && (
           <div className="flex flex-wrap gap-1">
@@ -170,7 +173,7 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
         )}
         {files && <FilesPreview files={files} />}
         <div>
-          <span className="text-[10px] text-fg-tertiary uppercase tracking-wider">Members ({members.length})</span>
+          <span className="text-[10px] text-fg-tertiary uppercase tracking-wider">{t('builder:artifact.members', { count: members.length })}</span>
           <div className="mt-1.5 space-y-1.5">
             {members.map((m, i) => (
               <div key={i} className="bg-surface-elevated/30 rounded-lg px-2 py-1.5 border border-border-default/20">
@@ -202,10 +205,10 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
   // skill
   return (
     <div className="space-y-3 text-sm">
-      <Field label="Name" value={displayName} />
-      <Field label="Description" value={artifact.description as string} />
+      <Field label={t('builder:artifact.name')} value={displayName} />
+      <Field label={t('builder:artifact.description')} value={artifact.description as string} />
       <div className="flex gap-2">
-        <Badge label="Category" value={artifact.category as string} color="indigo" />
+        <Badge label={t('builder:artifact.category')} value={artifact.category as string} color="indigo" />
       </div>
       {files && <FilesPreview files={files} />}
       {toStringArray(artifact.tags).length > 0 && (

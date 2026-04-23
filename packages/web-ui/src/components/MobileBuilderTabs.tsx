@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { AgentBuilder } from '../pages/AgentBuilder.tsx';
 import { TemplateMarketplace } from '../pages/TemplateMarketplace.tsx';
 import { TeamsStore } from '../pages/TeamsStore.tsx';
@@ -6,16 +7,17 @@ import { SkillStore } from '../pages/SkillStore.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import type { AuthUser } from '../api.ts';
 
-const tabs = [
-  { id: 'builder', label: 'Builder' },
-  { id: 'agents', label: 'Agents' },
-  { id: 'teams', label: 'Teams' },
-  { id: 'skills', label: 'Skills' },
-] as const;
-
-type TabId = (typeof tabs)[number]['id'];
+const tabIds = ['builder', 'agents', 'teams', 'skills'] as const;
+type TabId = (typeof tabIds)[number];
 
 export function MobileBuilderTabs({ authUser }: { authUser?: AuthUser }) {
+  const { t } = useTranslation(['nav', 'common']);
+  const tabs = useMemo(() => [
+    { id: 'builder' as const, label: t('nav:builder') },
+    { id: 'agents' as const, label: t('nav:tabs.agents') },
+    { id: 'teams' as const, label: t('nav:tabs.teams') },
+    { id: 'skills' as const, label: t('nav:tabs.skills') },
+  ], [t]);
   const [activeTab, setActiveTab] = useState<TabId>('builder');
   const swipe = useSwipeTabs(tabs, activeTab, setActiveTab);
 

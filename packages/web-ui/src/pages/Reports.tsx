@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api, type ReportInfo, type ReportFeedbackInfo, type AgentUsageInfo, type AuthUser } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
@@ -34,6 +35,7 @@ function formatBytes(b: number): string {
 }
 
 export function ReportsPage({ authUser }: ReportsPageProps) {
+  const { t } = useTranslation(['reports', 'common']);
   const [period, setPeriod] = useState<Period>('weekly');
   const [report, setReport] = useState<ReportInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -105,7 +107,11 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
     else { setSortBy(col); setSortDesc(true); }
   };
 
-  const periodLabel: Record<Period, string> = { daily: 'Today', weekly: 'This Week', monthly: 'This Month' };
+  const periodLabel = useMemo(() => ({
+    daily: t('period.today'),
+    weekly: t('period.thisWeek'),
+    monthly: t('period.thisMonth'),
+  }), [t]);
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -113,11 +119,11 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
         {/* Header with tabs */}
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-4 flex-wrap">
-            <h1 className="text-xl font-semibold text-fg-primary">Reports</h1>
+            <h1 className="text-xl font-semibold text-fg-primary">{t('title')}</h1>
             <div className="flex gap-1 bg-surface-elevated rounded-lg p-0.5">
-              <button onClick={() => setTab('generate')} className={`px-3 py-1.5 text-xs rounded-md transition-colors ${tab === 'generate' ? 'bg-surface-overlay text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'}`}>Generate</button>
+              <button onClick={() => setTab('generate')} className={`px-3 py-1.5 text-xs rounded-md transition-colors ${tab === 'generate' ? 'bg-surface-overlay text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'}`}>{t('tabs.generate')}</button>
               <button onClick={() => setTab('history')} className={`px-3 py-1.5 text-xs rounded-md transition-colors ${tab === 'history' ? 'bg-surface-overlay text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-                History{historyReports.length > 0 ? ` (${historyReports.length})` : ''}
+                {t('tabs.history')}{historyReports.length > 0 ? ` (${historyReports.length})` : ''}
               </button>
             </div>
           </div>
@@ -126,7 +132,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {tab === 'generate' && (
               <div className="flex gap-1 bg-surface-elevated rounded-lg p-0.5">
                 {(['daily', 'weekly', 'monthly'] as const).map(p => (
-                  <button key={p} onClick={() => setPeriod(p)} className={`px-3 py-1.5 text-xs rounded-md transition-colors capitalize ${period === p ? 'bg-surface-overlay text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'}`}>{p}</button>
+                  <button key={p} onClick={() => setPeriod(p)} className={`px-3 py-1.5 text-xs rounded-md transition-colors ${period === p ? 'bg-surface-overlay text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'}`}>{t(`period.${p}`)}</button>
                 ))}
               </div>
             )}
@@ -137,13 +143,13 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
         {tab === 'history' && !selectedReport && (
           <section className="bg-surface-secondary border border-border-default rounded-xl overflow-hidden">
             {historyReports.length === 0 ? (
-              <div className="p-8 text-center text-fg-tertiary text-sm">No reports generated yet. Use the Generate tab to create one.</div>
+              <div className="p-8 text-center text-fg-tertiary text-sm">{t('noReportsYet')}</div>
             ) : (
               <div className="divide-y divide-border-default/50">
                 {historyReports.map(r => (
                   <button key={r.id} onClick={() => openReport(r)} className="w-full text-left px-5 py-3 flex items-center gap-4 hover:bg-surface-elevated/30 transition-colors">
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-fg-primary">{r.type} Report</div>
+                      <div className="text-sm font-medium text-fg-primary">{t('reportType', { type: r.type })}</div>
                       <div className="text-xs text-fg-tertiary mt-0.5">
                         {new Date(r.periodStart).toLocaleDateString()} — {new Date(r.periodEnd).toLocaleDateString()}
                       </div>
@@ -153,7 +159,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
                         r.plan.status === 'approved' ? 'bg-green-500/10 text-green-600' :
                         r.plan.status === 'rejected' ? 'bg-red-500/10 text-red-500' :
                         'bg-amber-500/10 text-amber-600'
-                      }`}>{r.plan.status === 'pending' ? 'Plan pending' : `Plan ${r.plan.status}`}</span>
+                      }`}>{r.plan.status === 'pending' ? t('upcomingPlan.planPending') : t('upcomingPlan.planStatus', { status: r.plan.status })}</span>
                     )}
                     <span className="text-[10px] text-fg-tertiary shrink-0">{new Date(r.generatedAt).toLocaleDateString()}</span>
                   </button>
@@ -167,8 +173,8 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
         {tab === 'history' && selectedReport && (
           <>
             <div className="flex items-center gap-3">
-              <button onClick={() => { setSelectedReport(null); setFeedback([]); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">&larr; Back to list</button>
-              <span className="text-sm font-medium text-fg-primary">{selectedReport.type} Report</span>
+              <button onClick={() => { setSelectedReport(null); setFeedback([]); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('backToList')}</button>
+              <span className="text-sm font-medium text-fg-primary">{t('reportType', { type: selectedReport.type })}</span>
               <span className="text-xs text-fg-tertiary">
                 {new Date(selectedReport.periodStart).toLocaleDateString()} — {new Date(selectedReport.periodEnd).toLocaleDateString()}
               </span>
@@ -177,13 +183,13 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* Metrics Overview — always shown */}
             {selectedReport.metrics && (
               <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-fg-secondary mb-3">Task Metrics</h3>
+                <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('taskMetrics.title')}</h3>
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                  <MetricCard label="Completed" value={selectedReport.metrics.tasksCompleted} color="text-green-600" />
-                  <MetricCard label="In Progress" value={selectedReport.metrics.tasksInProgress} color="text-brand-500" />
-                  <MetricCard label="Created" value={selectedReport.metrics.tasksCreated} color="text-blue-600" />
-                  <MetricCard label="Blocked" value={selectedReport.metrics.tasksBlocked} color="text-amber-600" />
-                  <MetricCard label="Failed" value={selectedReport.metrics.tasksFailed} color="text-red-500" />
+                  <MetricCard label={t('taskMetrics.completed')} value={selectedReport.metrics.tasksCompleted} color="text-green-600" />
+                  <MetricCard label={t('taskMetrics.inProgress')} value={selectedReport.metrics.tasksInProgress} color="text-brand-500" />
+                  <MetricCard label={t('taskMetrics.created')} value={selectedReport.metrics.tasksCreated} color="text-blue-600" />
+                  <MetricCard label={t('taskMetrics.blocked')} value={selectedReport.metrics.tasksBlocked} color="text-amber-600" />
+                  <MetricCard label={t('taskMetrics.failed')} value={selectedReport.metrics.tasksFailed} color="text-red-500" />
                 </div>
               </section>
             )}
@@ -191,21 +197,21 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* Cost Summary */}
             {selectedReport.costSummary && (
               <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-fg-secondary mb-3">Cost Overview</h3>
+                <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('costOverview.title')}</h3>
                 <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
                   <div>
                     <div className="text-2xl font-bold text-fg-primary">{selectedReport.costSummary.totalTokens.toLocaleString()}</div>
-                    <div className="text-xs text-fg-tertiary">Total Tokens</div>
+                    <div className="text-xs text-fg-tertiary">{t('costOverview.totalTokens')}</div>
                   </div>
                   <div>
                     <div className="text-2xl font-bold text-fg-primary">{formatCost(selectedReport.costSummary.totalEstimatedCost)}</div>
-                    <div className="text-xs text-fg-tertiary">Estimated Cost</div>
+                    <div className="text-xs text-fg-tertiary">{t('costOverview.estimatedCost')}</div>
                   </div>
                   <div>
                     <div className={`text-2xl font-bold ${selectedReport.costSummary.trend === 'decreasing' ? 'text-green-600' : selectedReport.costSummary.trend === 'increasing' ? 'text-red-500' : 'text-fg-primary'}`}>
                       {selectedReport.costSummary.trend === 'decreasing' ? '↓' : selectedReport.costSummary.trend === 'increasing' ? '↑' : '→'} {selectedReport.costSummary.trend}
                     </div>
-                    <div className="text-xs text-fg-tertiary">Trend</div>
+                    <div className="text-xs text-fg-tertiary">{t('costOverview.trend')}</div>
                   </div>
                 </div>
                 {selectedReport.costSummary.byAgent && selectedReport.costSummary.byAgent.length > 0 && (
@@ -213,7 +219,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
                     {selectedReport.costSummary.byAgent.map((a, i) => (
                       <div key={i} className="flex items-center justify-between text-xs">
                         <span className="text-fg-secondary">{a.agentId}</span>
-                        <span className="text-fg-tertiary tabular-nums">{formatNumber(a.tokens)} tokens · {formatCost(a.cost)}</span>
+                        <span className="text-fg-tertiary tabular-nums">{t('costOverview.byAgentRow', { tokens: formatNumber(a.tokens), cost: formatCost(a.cost) })}</span>
                       </div>
                     ))}
                   </div>
@@ -224,19 +230,19 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* Task Summary */}
             {selectedReport.taskSummary && (
               <section className="bg-surface-secondary border border-border-default rounded-xl p-5 overflow-hidden">
-                <h3 className="text-xs font-semibold text-fg-secondary mb-3">Task Summary</h3>
+                <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('taskSummary.title')}</h3>
                 <div className="space-y-4 min-w-0">
                   {selectedReport.taskSummary.completed.length > 0 && (
-                    <TaskSection title={`Completed (${selectedReport.taskSummary.completed.length})`} color="emerald" items={selectedReport.taskSummary.completed.map(t => ({ id: t.id, label: t.title, sub: t.agent }))} />
+                    <TaskSection title={t('taskSummary.completedCount', { count: selectedReport.taskSummary.completed.length })} color="emerald" items={selectedReport.taskSummary.completed.map(task => ({ id: task.id, label: task.title, sub: task.agent }))} />
                   )}
                   {selectedReport.taskSummary.inProgress.length > 0 && (
-                    <TaskSection title={`In Progress (${selectedReport.taskSummary.inProgress.length})`} color="indigo" items={selectedReport.taskSummary.inProgress.map(t => ({ id: t.id, label: t.title, sub: t.agent }))} />
+                    <TaskSection title={t('taskSummary.inProgressCount', { count: selectedReport.taskSummary.inProgress.length })} color="indigo" items={selectedReport.taskSummary.inProgress.map(task => ({ id: task.id, label: task.title, sub: task.agent }))} />
                   )}
                   {selectedReport.taskSummary.blocked.length > 0 && (
-                    <TaskSection title={`Blocked (${selectedReport.taskSummary.blocked.length})`} color="amber" items={selectedReport.taskSummary.blocked.map(t => ({ id: t.id, label: t.title, sub: t.reason || t.agent }))} />
+                    <TaskSection title={t('taskSummary.blockedCount', { count: selectedReport.taskSummary.blocked.length })} color="amber" items={selectedReport.taskSummary.blocked.map(task => ({ id: task.id, label: task.title, sub: task.reason || task.agent }))} />
                   )}
                   {selectedReport.taskSummary.completed.length === 0 && selectedReport.taskSummary.inProgress.length === 0 && selectedReport.taskSummary.blocked.length === 0 && (
-                    <p className="text-sm text-fg-tertiary">No tasks in this period.</p>
+                    <p className="text-sm text-fg-tertiary">{t('taskSummary.noTasksInPeriod')}</p>
                   )}
                 </div>
               </section>
@@ -245,7 +251,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* Highlights */}
             {selectedReport.highlights && selectedReport.highlights.length > 0 && (
               <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-fg-secondary mb-2">Highlights</h3>
+                <h3 className="text-xs font-semibold text-fg-secondary mb-2">{t('highlights')}</h3>
                 <ul className="list-disc list-inside space-y-1 text-sm text-fg-secondary">
                   {selectedReport.highlights.map((h, i) => <li key={i}>{h}</li>)}
                 </ul>
@@ -255,7 +261,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* Blockers */}
             {selectedReport.blockers && selectedReport.blockers.length > 0 && (
               <section className="bg-surface-secondary border border-amber-500/20 rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-amber-600 mb-2">Blockers</h3>
+                <h3 className="text-xs font-semibold text-amber-600 mb-2">{t('blockers')}</h3>
                 <ul className="list-disc list-inside space-y-1 text-sm text-fg-secondary">
                   {selectedReport.blockers.map((b, i) => <li key={i}>{b}</li>)}
                 </ul>
@@ -267,12 +273,12 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
               <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-xs font-semibold text-fg-secondary">
-                    Upcoming Plan
+                    {t('upcomingPlan.title')}
                     <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] font-medium ${
                       selectedReport.plan.status === 'approved' ? 'bg-green-500/10 text-green-600' :
                       selectedReport.plan.status === 'rejected' ? 'bg-red-500/10 text-red-500' :
                       'bg-amber-500/10 text-amber-600'
-                    }`}>{selectedReport.plan.status}</span>
+                    }`}>{t(`common:status.${selectedReport.plan.status}`, { defaultValue: selectedReport.plan.status })}</span>
                   </h3>
                   {selectedReport.plan.status === 'pending' && (
                     <div className="flex gap-2">
@@ -281,25 +287,25 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
                           try {
                             const { report: r } = await api.reports.approvePlan(selectedReport.id, { approvedBy: authUser?.id ?? 'unknown' });
                             setSelectedReport(r);
-                            showFlash('Plan approved');
+                            showFlash(t('upcomingPlan.planApproved'));
                             fetchHistory();
-                          } catch (e) { showFlash(`Error: ${e}`); }
+                          } catch (e) { showFlash(t('common:error', { message: String(e) })); }
                         }}
                         className="px-3 py-1.5 text-xs font-medium bg-green-600 text-white rounded-lg hover:bg-green-500 transition-colors"
-                      >Approve Plan</button>
+                      >{t('upcomingPlan.approvePlan')}</button>
                       <button
                         onClick={async () => {
-                          const reason = prompt('Rejection reason:');
+                          const reason = prompt(t('upcomingPlan.rejectionReason'));
                           if (!reason) return;
                           try {
                             const { report: r } = await api.reports.rejectPlan(selectedReport.id, { rejectedBy: authUser?.id ?? 'unknown', reason });
                             setSelectedReport(r);
-                            showFlash('Plan rejected');
+                            showFlash(t('upcomingPlan.planRejected'));
                             fetchHistory();
-                          } catch (e) { showFlash(`Error: ${e}`); }
+                          } catch (e) { showFlash(t('common:error', { message: String(e) })); }
                         }}
                         className="px-3 py-1.5 text-xs font-medium border border-border-default text-fg-secondary rounded-lg hover:bg-surface-overlay transition-colors"
-                      >Reject Plan</button>
+                      >{t('upcomingPlan.rejectPlan')}</button>
                     </div>
                   )}
                 </div>
@@ -324,13 +330,13 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* No data fallback */}
             {!selectedReport.metrics && !selectedReport.taskSummary && !selectedReport.costSummary && (
               <section className="bg-surface-secondary border border-border-default rounded-xl p-8 text-center">
-                <p className="text-sm text-fg-tertiary">This report does not contain detailed metrics data.</p>
+                <p className="text-sm text-fg-tertiary">{t('noDetailedMetrics')}</p>
               </section>
             )}
 
             {/* Feedback */}
             <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-              <h3 className="text-xs font-semibold text-fg-secondary mb-3">Feedback ({feedback.length})</h3>
+              <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('feedback.title', { count: feedback.length })}</h3>
               {feedback.length > 0 && (
                 <div className="space-y-2 mb-4">
                   {feedback.map(fb => (
@@ -349,13 +355,13 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
                 <input
                   value={feedbackContent}
                   onChange={e => setFeedbackContent(e.target.value)}
-                  placeholder="Add feedback or instructions…"
+                  placeholder={t('feedback.placeholder')}
                   className="flex-1 px-3 py-2 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder:text-fg-tertiary"
                   onKeyDown={e => {
                     if (e.key === 'Enter' && feedbackContent.trim()) {
                       api.reports.addFeedback(selectedReport.id, { author: authUser?.id ?? 'unknown', type: 'comment', content: feedbackContent.trim() })
-                        .then(({ feedback: fb }) => { setFeedback(prev => [...prev, fb]); setFeedbackContent(''); showFlash('Feedback added'); })
-                        .catch(err => showFlash(`Error: ${err}`));
+                        .then(({ feedback: fb }) => { setFeedback(prev => [...prev, fb]); setFeedbackContent(''); showFlash(t('feedback.added')); })
+                        .catch(err => showFlash(t('common:error', { message: String(err) })));
                     }
                   }}
                 />
@@ -363,12 +369,12 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
                   onClick={() => {
                     if (!feedbackContent.trim()) return;
                     api.reports.addFeedback(selectedReport.id, { author: authUser?.id ?? 'unknown', type: 'comment', content: feedbackContent.trim() })
-                      .then(({ feedback: fb }) => { setFeedback(prev => [...prev, fb]); setFeedbackContent(''); showFlash('Feedback added'); })
-                      .catch(err => showFlash(`Error: ${err}`));
+                      .then(({ feedback: fb }) => { setFeedback(prev => [...prev, fb]); setFeedbackContent(''); showFlash(t('feedback.added')); })
+                      .catch(err => showFlash(t('common:error', { message: String(err) })));
                   }}
                   disabled={!feedbackContent.trim()}
                   className="px-3 py-2 text-xs bg-brand-600 text-white rounded-lg hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >Send</button>
+                >{t('common:send')}</button>
               </div>
             </section>
           </>
@@ -377,16 +383,16 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
         {/* Generate Tab Content */}
         {tab === 'generate' && usageSummary && (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <UsageCard label="LLM Tokens (this month)" value={formatNumber(usageSummary.llmTokens)} color="text-brand-500" />
-            <UsageCard label="Tool Calls (today)" value={formatNumber(usageSummary.toolCalls)} color="text-blue-600" />
-            <UsageCard label="Messages (today)" value={formatNumber(usageSummary.messages)} color="text-green-600" />
-            <UsageCard label="Storage" value={formatBytes(usageSummary.storageBytes)} color="text-amber-600" />
+            <UsageCard label={t('usage.llmTokens')} value={formatNumber(usageSummary.llmTokens)} color="text-brand-500" />
+            <UsageCard label={t('usage.toolCalls')} value={formatNumber(usageSummary.toolCalls)} color="text-blue-600" />
+            <UsageCard label={t('usage.messages')} value={formatNumber(usageSummary.messages)} color="text-green-600" />
+            <UsageCard label={t('usage.storage')} value={formatBytes(usageSummary.storageBytes)} color="text-amber-600" />
           </div>
         )}
 
         {/* Period Report Data */}
         {tab === 'generate' && (loading ? (
-          <div className="flex items-center justify-center h-32 text-fg-tertiary text-sm">Loading…</div>
+          <div className="flex items-center justify-center h-32 text-fg-tertiary text-sm">{t('common:loading')}</div>
         ) : error ? (
           <div className="flex items-center justify-center h-32 text-red-500 text-sm">{error}</div>
         ) : report ? (
@@ -398,38 +404,38 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* Task Metrics */}
             {report.metrics && (
               <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-fg-secondary mb-3">Task Metrics</h3>
+                <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('taskMetrics.title')}</h3>
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                  <MetricCard label="Completed" value={report.metrics.tasksCompleted} color="text-green-600" />
-                  <MetricCard label="In Progress" value={report.metrics.tasksInProgress} color="text-brand-500" />
-                  <MetricCard label="Created" value={report.metrics.tasksCreated} color="text-blue-600" />
-                  <MetricCard label="Blocked" value={report.metrics.tasksBlocked} color="text-amber-600" />
-                  <MetricCard label="Failed" value={report.metrics.tasksFailed} color="text-red-500" />
+                  <MetricCard label={t('taskMetrics.completed')} value={report.metrics.tasksCompleted} color="text-green-600" />
+                  <MetricCard label={t('taskMetrics.inProgress')} value={report.metrics.tasksInProgress} color="text-brand-500" />
+                  <MetricCard label={t('taskMetrics.created')} value={report.metrics.tasksCreated} color="text-blue-600" />
+                  <MetricCard label={t('taskMetrics.blocked')} value={report.metrics.tasksBlocked} color="text-amber-600" />
+                  <MetricCard label={t('taskMetrics.failed')} value={report.metrics.tasksFailed} color="text-red-500" />
                 </div>
               </section>
             )}
 
             {/* Cost Summary */}
             <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-              <h3 className="text-xs font-semibold text-fg-secondary mb-3">Cost Overview</h3>
+              <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('costOverview.title')}</h3>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <div>
                   <div className="text-2xl font-bold text-fg-primary">{formatCost(totalCost)}</div>
-                  <div className="text-xs text-fg-tertiary">Est. Cost (all time)</div>
+                  <div className="text-xs text-fg-tertiary">{t('costOverview.estCostAllTime')}</div>
                 </div>
                 <div>
                   <div className="text-2xl font-bold text-fg-primary">{formatNumber(totalTokensToday)}</div>
-                  <div className="text-xs text-fg-tertiary">Tokens Today</div>
+                  <div className="text-xs text-fg-tertiary">{t('costOverview.tokensToday')}</div>
                 </div>
                 {report.costSummary && (
                   <>
                     <div>
                       <div className="text-2xl font-bold text-fg-primary">{report.costSummary.totalTokens.toLocaleString()}</div>
-                      <div className="text-xs text-fg-tertiary">Tokens ({periodLabel[period]})</div>
+                      <div className="text-xs text-fg-tertiary">{t('costOverview.tokensPeriod', { period: periodLabel[period] })}</div>
                     </div>
                     <div>
                       <div className="text-2xl font-bold text-fg-primary">{formatCost(report.costSummary.totalEstimatedCost)}</div>
-                      <div className="text-xs text-fg-tertiary">Cost ({periodLabel[period]})</div>
+                      <div className="text-xs text-fg-tertiary">{t('costOverview.costPeriod', { period: periodLabel[period] })}</div>
                     </div>
                   </>
                 )}
@@ -439,19 +445,19 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* Task Summary */}
             {report.taskSummary && (
               <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-fg-secondary mb-3">Task Summary</h3>
+                <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('taskSummary.title')}</h3>
                 <div className="space-y-4">
                   {report.taskSummary.completed.length > 0 && (
-                    <TaskSection title={`Completed (${report.taskSummary.completed.length})`} color="emerald" items={report.taskSummary.completed.map(t => ({ id: t.id, label: t.title, sub: t.agent }))} />
+                    <TaskSection title={t('taskSummary.completedCount', { count: report.taskSummary.completed.length })} color="emerald" items={report.taskSummary.completed.map(task => ({ id: task.id, label: task.title, sub: task.agent }))} />
                   )}
                   {report.taskSummary.inProgress.length > 0 && (
-                    <TaskSection title={`In Progress (${report.taskSummary.inProgress.length})`} color="indigo" items={report.taskSummary.inProgress.map(t => ({ id: t.id, label: t.title, sub: t.agent }))} />
+                    <TaskSection title={t('taskSummary.inProgressCount', { count: report.taskSummary.inProgress.length })} color="indigo" items={report.taskSummary.inProgress.map(task => ({ id: task.id, label: task.title, sub: task.agent }))} />
                   )}
                   {report.taskSummary.blocked.length > 0 && (
-                    <TaskSection title={`Blocked (${report.taskSummary.blocked.length})`} color="amber" items={report.taskSummary.blocked.map(t => ({ id: t.id, label: t.title, sub: t.reason || t.agent }))} />
+                    <TaskSection title={t('taskSummary.blockedCount', { count: report.taskSummary.blocked.length })} color="amber" items={report.taskSummary.blocked.map(task => ({ id: task.id, label: task.title, sub: task.reason || task.agent }))} />
                   )}
                   {report.taskSummary.completed.length === 0 && report.taskSummary.inProgress.length === 0 && report.taskSummary.blocked.length === 0 && (
-                    <p className="text-sm text-fg-tertiary">No tasks in this period.</p>
+                    <p className="text-sm text-fg-tertiary">{t('taskSummary.noTasksInPeriod')}</p>
                   )}
                 </div>
               </section>
@@ -463,21 +469,21 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
         {tab === 'generate' && (
         <section className="bg-surface-secondary border border-border-default rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-border-default">
-            <h3 className="text-sm font-semibold text-fg-secondary">Per-Agent Usage</h3>
+            <h3 className="text-sm font-semibold text-fg-secondary">{t('perAgentUsage.title')}</h3>
           </div>
           {agents.length === 0 ? (
-            <div className="p-8 text-center text-fg-tertiary text-sm">No agent usage data yet.</div>
+            <div className="p-8 text-center text-fg-tertiary text-sm">{t('perAgentUsage.noData')}</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-border-default text-xs text-fg-tertiary uppercase tracking-wider">
-                    <th className="px-4 py-3 text-left font-medium">Agent</th>
-                    <SortHeader label="Total Tokens" col="totalTokens" current={sortBy} desc={sortDesc} onSort={handleSort} />
-                    <SortHeader label="Today" col="tokensUsedToday" current={sortBy} desc={sortDesc} onSort={handleSort} />
-                    <SortHeader label="Requests" col="requestCount" current={sortBy} desc={sortDesc} onSort={handleSort} />
-                    <SortHeader label="Tool Calls" col="toolCalls" current={sortBy} desc={sortDesc} onSort={handleSort} />
-                    <SortHeader label="Est. Cost" col="estimatedCost" current={sortBy} desc={sortDesc} onSort={handleSort} align="right" />
+                    <th className="px-4 py-3 text-left font-medium">{t('perAgentUsage.agent')}</th>
+                    <SortHeader label={t('perAgentUsage.totalTokens')} col="totalTokens" current={sortBy} desc={sortDesc} onSort={handleSort} />
+                    <SortHeader label={t('perAgentUsage.today')} col="tokensUsedToday" current={sortBy} desc={sortDesc} onSort={handleSort} />
+                    <SortHeader label={t('perAgentUsage.requests')} col="requestCount" current={sortBy} desc={sortDesc} onSort={handleSort} />
+                    <SortHeader label={t('perAgentUsage.toolCalls')} col="toolCalls" current={sortBy} desc={sortDesc} onSort={handleSort} />
+                    <SortHeader label={t('perAgentUsage.estCost')} col="estimatedCost" current={sortBy} desc={sortDesc} onSort={handleSort} align="right" />
                   </tr>
                 </thead>
                 <tbody>
@@ -487,7 +493,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
                 </tbody>
                 <tfoot>
                   <tr className="border-t border-border-default bg-surface-elevated/30">
-                    <td className="px-4 py-3 text-sm font-medium text-fg-secondary">Total ({agents.length} agents)</td>
+                    <td className="px-4 py-3 text-sm font-medium text-fg-secondary">{t('perAgentUsage.totalAgents', { count: agents.length })}</td>
                     <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">{formatNumber(agents.reduce((s, a) => s + a.totalTokens, 0))}</td>
                     <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">{formatNumber(totalTokensToday)}</td>
                     <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">{agents.reduce((s, a) => s + a.requestCount, 0)}</td>

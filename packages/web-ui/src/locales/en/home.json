@@ -1,0 +1,69 @@
+{
+  "title": "Overview",
+  "hireAgent": "+ Hire Agent",
+  "metrics": {
+    "activeAgents": "Active Agents",
+    "tasksInProgress": "Tasks In Progress",
+    "pendingQueue": "Pending Queue",
+    "completed": "Completed"
+  },
+  "gettingStarted": {
+    "title": "Your AI workforce is ready",
+    "subtitle": "Get started in under a minute — describe what you need and let your team take it from here.",
+    "describeGoal": "Describe Your Goal",
+    "describeGoalDesc": "Chat with the Secretary — it will assemble a team and break down tasks",
+    "hireAgents": "Hire Agents",
+    "hireAgentsDesc": "Browse templates: developers, researchers, writers, analysts, and more",
+    "createProject": "Create a Project",
+    "createProjectDesc": "Set up requirements and let agents plan, execute, and deliver"
+  },
+  "agentFocus": {
+    "title": "Agent Focus",
+    "totalQueued": "{{count}} total queued",
+    "working": "Working..."
+  },
+  "taskDistribution": {
+    "title": "Task Distribution",
+    "blockedNeedsAttention": "{{count}} blocked — needs attention"
+  },
+  "teamStatus": {
+    "title": "Team Status",
+    "noTeams": "No teams yet. Create a team or hire agents to get started.",
+    "unassignedAgents": "Unassigned Agents",
+    "workingCount": "{{count}} working",
+    "activeCount": "{{count}} active"
+  },
+  "pendingReviews": {
+    "title": "Pending Reviews",
+    "review": "Review →",
+    "proposedBy": "proposed by {{author}} · {{priority}}",
+    "agentProposed": "Agents proposed {{count}} requirement(s) — review to authorize work.",
+    "agent": "Agent",
+    "user": "User"
+  },
+  "recentActivity": {
+    "title": "Recent Activity"
+  },
+  "systemHealth": {
+    "title": "System Health",
+    "healthScore": "Health Score",
+    "successRate": "Success Rate",
+    "activeTotal": "Active / Total",
+    "tokenCost": "Token Cost",
+    "workingNow": "Working Now",
+    "needsAttention": "Needs attention:",
+    "agentScoreChip": "{{name}} ({{score}}%)"
+  },
+  "storage": {
+    "title": "Storage",
+    "total": "total",
+    "db": "DB: {{size}}",
+    "agents": "Agents: {{count}}",
+    "clickToView": "Click to view details in Settings",
+    "bytesZero": "0 B",
+    "bytesB": "B",
+    "bytesKB": "KB",
+    "bytesMB": "MB",
+    "bytesGB": "GB"
+  }
+}

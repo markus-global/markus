@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { getToolMeta } from './execution-utils.ts';
 
 export interface ActivityStep {
@@ -97,6 +98,7 @@ function TimelineItem({ item, idx, total }: { item: ToolItem; idx: number; total
 }
 
 export function ActivityIndicator({ activities, isActive, persistent }: Props) {
+  const { t } = useTranslation('common');
   const timeline = buildTimeline(activities);
   const [visible, setVisible] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -130,9 +132,9 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
           className="flex items-center gap-1.5 text-xs text-fg-tertiary hover:text-fg-secondary transition-colors select-none"
         >
           <span className={`transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}>▶</span>
-          <span className="font-medium">{doneCount} step{doneCount !== 1 ? 's' : ''}</span>
+          <span className="font-medium">{t('activity.step', { count: doneCount })}</span>
           {errorCount > 0 && (
-            <span className="text-red-500 ml-0.5">· {errorCount} failed</span>
+            <span className="text-red-500 ml-0.5">· {t('activity.failed', { count: errorCount })}</span>
           )}
           {/* Mini pill icons */}
           {!expanded && (
@@ -167,7 +169,7 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
       {/* Thinking / Writing status */}
       {showThinking && (
         <div className="flex items-center gap-1.5 text-xs text-fg-secondary py-0.5">
-          <span className="mr-0.5">Thinking</span>
+          <span className="mr-0.5">{t('activity.thinking')}</span>
           <PulsingDots />
         </div>
       )}
@@ -179,7 +181,7 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
           </div>
           <div className="flex items-center gap-1.5 text-xs text-brand-500">
             <Spinner />
-            <span>Writing response…</span>
+            <span>{t('activity.writingResponse')}</span>
           </div>
         </div>
       )}

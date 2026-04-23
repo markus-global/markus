@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
 import { api, type ProjectInfo, type TeamInfo } from '../api.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 
@@ -10,6 +11,7 @@ interface Props {
 }
 
 export function NewProjectModal({ orgId, onCreated, onClose }: Props) {
+  const { t } = useTranslation(['work', 'common']);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [repoUrl, setRepoUrl] = useState('');
@@ -44,10 +46,10 @@ export function NewProjectModal({ orgId, onCreated, onClose }: Props) {
       } as Partial<ProjectInfo>);
       onCreated(res.project);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create project');
+      setError(err instanceof Error ? err.message : t('project.failedToCreate'));
     }
     setCreating(false);
-  }, [name, description, repoUrl, defaultBranch, teamIds, orgId, creating, onCreated]);
+  }, [name, description, repoUrl, defaultBranch, teamIds, orgId, creating, onCreated, t]);
 
   const nameInvalid = touched && !name.trim();
 
@@ -58,36 +60,36 @@ export function NewProjectModal({ orgId, onCreated, onClose }: Props) {
         onClick={e => e.stopPropagation()}
         onSubmit={handleSubmit}
       >
-        <h3 className="text-base font-semibold mb-5">New Project</h3>
+        <h3 className="text-base font-semibold mb-5">{t('project.newProject')}</h3>
         <div className="space-y-4">
           <div>
-            <label className="block text-xs text-fg-secondary mb-1.5 font-medium">Project Name *</label>
+            <label className="block text-xs text-fg-secondary mb-1.5 font-medium">{t('project.projectName')}</label>
             <input
               value={name}
               onChange={e => { setName(e.target.value); setError(''); }}
               onBlur={() => setTouched(true)}
-              placeholder="e.g. Mobile App, Website Redesign"
+              placeholder={t('project.projectNamePlaceholder')}
               className={`input ${nameInvalid ? '!border-red-500 focus:!ring-red-500/25' : ''}`}
               autoFocus={!isMobile}
             />
-            {nameInvalid && <p className="text-[11px] text-red-400 mt-1">Project name is required</p>}
+            {nameInvalid && <p className="text-[11px] text-red-400 mt-1">{t('project.projectNameRequired')}</p>}
           </div>
 
           <div>
-            <label className="block text-xs text-fg-secondary mb-1.5 font-medium">Description</label>
+            <label className="block text-xs text-fg-secondary mb-1.5 font-medium">{t('project.description')}</label>
             <textarea
               value={description}
               onChange={e => setDescription(e.target.value)}
-              placeholder="What is this project about?"
+              placeholder={t('project.descriptionPlaceholder')}
               className="input"
               rows={3}
             />
           </div>
 
           <div>
-            <label className="block text-xs text-fg-secondary mb-1.5 font-medium">Assign Teams</label>
+            <label className="block text-xs text-fg-secondary mb-1.5 font-medium">{t('project.assignTeams')}</label>
             {teams.length === 0 ? (
-              <div className="text-[11px] text-fg-tertiary py-2">No teams available</div>
+              <div className="text-[11px] text-fg-tertiary py-2">{t('project.noTeamsAvailable')}</div>
             ) : (
               <div className="space-y-1 max-h-32 overflow-y-auto">
                 {teams.map(t => {
@@ -112,21 +114,21 @@ export function NewProjectModal({ orgId, onCreated, onClose }: Props) {
 
           <div className="grid grid-cols-[1fr_auto] gap-3">
             <div>
-              <label className="block text-xs text-fg-secondary mb-1.5 font-medium">Repository URL</label>
+              <label className="block text-xs text-fg-secondary mb-1.5 font-medium">{t('project.repositoryUrl')}</label>
               <input
                 value={repoUrl}
                 onChange={e => setRepoUrl(e.target.value)}
-                placeholder="https://github.com/org/repo (optional)"
+                placeholder={t('project.repositoryPlaceholder')}
                 className="input"
               />
             </div>
             {repoUrl.trim() && (
               <div>
-                <label className="block text-xs text-fg-secondary mb-1.5 font-medium">Branch</label>
+                <label className="block text-xs text-fg-secondary mb-1.5 font-medium">{t('project.branch')}</label>
                 <input
                   value={defaultBranch}
                   onChange={e => setDefaultBranch(e.target.value)}
-                  placeholder="main"
+                  placeholder={t('project.branchPlaceholder')}
                   className="input !w-24"
                 />
               </div>
@@ -138,13 +140,13 @@ export function NewProjectModal({ orgId, onCreated, onClose }: Props) {
           )}
 
           <div className="flex justify-end gap-3 pt-2">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">Cancel</button>
+            <button type="button" onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">{t('common:cancel')}</button>
             <button
               type="submit"
               disabled={!name.trim() || creating}
               className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 rounded-lg text-white"
             >
-              {creating ? 'Creating...' : 'Create Project'}
+              {creating ? t('common:creating') : t('project.createProject')}
             </button>
           </div>
         </div>

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api } from '../api.ts';
 
 interface Props {
@@ -7,6 +8,7 @@ interface Props {
 }
 
 export function ChangePassword({ onComplete, isFirstTime }: Props) {
+  const { t } = useTranslation('auth');
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -16,14 +18,14 @@ export function ChangePassword({ onComplete, isFirstTime }: Props) {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    if (next.length < 6) { setError('Password must be at least 6 characters'); return; }
-    if (next !== confirm) { setError('Passwords do not match'); return; }
+    if (next.length < 6) { setError(t('changePassword.passwordMinLength')); return; }
+    if (next !== confirm) { setError(t('changePassword.passwordsDoNotMatch')); return; }
     setLoading(true);
     try {
       await api.auth.changePassword(current, next);
       onComplete();
     } catch {
-      setError('Failed to change password. Check your current password.');
+      setError(t('changePassword.failedToChange'));
     } finally {
       setLoading(false);
     }
@@ -36,24 +38,24 @@ export function ChangePassword({ onComplete, isFirstTime }: Props) {
         <div className="text-center mb-8">
           <img src="/logo.png" alt="Markus" className="w-14 h-14 mx-auto mb-3 rounded-xl shadow-lg shadow-black/40" />
           <div className="text-2xl font-extrabold tracking-tight text-fg-primary mb-1">Markus</div>
-          <div className="text-sm text-fg-tertiary">AI Digital Employee Platform</div>
+          <div className="text-sm text-fg-tertiary">{t('login.subtitle')}</div>
         </div>
 
         <form onSubmit={submit} className="bg-surface-secondary/80 backdrop-blur-sm border border-border-default rounded-2xl p-8 space-y-5 shadow-2xl shadow-black/30">
           <div>
             <h2 className="text-lg font-semibold text-fg-primary text-center">
-              {isFirstTime ? 'Set Your Password' : 'Change Password'}
+              {isFirstTime ? t('changePassword.setYourPassword') : t('changePassword.changePassword')}
             </h2>
             {isFirstTime && (
               <p className="text-xs text-amber-600/80 text-center mt-2">
-                You're using the default password. Please set a new one before continuing.
+                {t('changePassword.defaultPasswordWarning')}
               </p>
             )}
           </div>
 
           {!isFirstTime && (
             <div className="space-y-1">
-              <label className="text-xs text-fg-tertiary font-medium">Current Password</label>
+              <label className="text-xs text-fg-tertiary font-medium">{t('changePassword.currentPassword')}</label>
               <input
                 type="password"
                 value={current}
@@ -65,7 +67,7 @@ export function ChangePassword({ onComplete, isFirstTime }: Props) {
           )}
 
           <div className="space-y-1">
-            <label className="text-xs text-fg-tertiary font-medium">New Password</label>
+            <label className="text-xs text-fg-tertiary font-medium">{t('changePassword.newPassword')}</label>
             <input
               type="password"
               value={next}
@@ -78,7 +80,7 @@ export function ChangePassword({ onComplete, isFirstTime }: Props) {
           </div>
 
           <div className="space-y-1">
-            <label className="text-xs text-fg-tertiary font-medium">Confirm New Password</label>
+            <label className="text-xs text-fg-tertiary font-medium">{t('changePassword.confirmNewPassword')}</label>
             <input
               type="password"
               value={confirm}
@@ -100,7 +102,7 @@ export function ChangePassword({ onComplete, isFirstTime }: Props) {
             disabled={loading || !next || !confirm}
             className="w-full py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-sm font-medium rounded-xl transition-colors"
           >
-            {loading ? 'Saving…' : isFirstTime ? 'Set Password & Continue' : 'Change Password'}
+            {loading ? t('changePassword.saving') : isFirstTime ? t('changePassword.setPasswordAndContinue') : t('changePassword.changePassword')}
           </button>
         </form>
       </div>

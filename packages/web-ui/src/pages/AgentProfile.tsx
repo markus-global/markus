@@ -1,4 +1,6 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { api, wsClient, hubApi, kebab } from '../api.ts';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem } from '../api.ts';
 import { navBus } from '../navBus.ts';
@@ -14,15 +16,30 @@ interface Props { agentId: string; onBack: () => void; inline?: boolean; default
 
 type ProfileTab = 'overview' | 'mind' | 'tools' | 'skills' | 'memory' | 'heartbeat' | 'files';
 
-const TABS: Array<{ key: ProfileTab; label: string; icon: string }> = [
-  { key: 'overview', label: 'Overview', icon: '▦' },
-  { key: 'mind', label: 'Mind', icon: '🔮' },
-  { key: 'files', label: 'Files', icon: '📄' },
-  { key: 'tools', label: 'Tools', icon: '⚒' },
-  { key: 'skills', label: 'Skills', icon: '◆' },
-  { key: 'memory', label: 'Memory', icon: '🧠' },
-  { key: 'heartbeat', label: 'Heartbeat', icon: '♡' },
+const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
+  { key: 'overview', icon: '▦' },
+  { key: 'mind', icon: '🔮' },
+  { key: 'files', icon: '📄' },
+  { key: 'tools', icon: '⚒' },
+  { key: 'skills', icon: '◆' },
+  { key: 'memory', icon: '🧠' },
+  { key: 'heartbeat', icon: '♡' },
 ];
+
+function taskStatusLabel(status: string, t: TFunction): string {
+  return t(`agent:profilePage.taskStatus.${status}`, { defaultValue: status.replace(/_/g, ' ') });
+}
+
+function agentRuntimeStatusLabel(status: string, t: TFunction): string {
+  const key: Record<string, string> = {
+    idle: 'common:status.idle',
+    working: 'common:status.working',
+    offline: 'common:status.offline',
+    paused: 'common:status.paused',
+    error: 'common:status.error',
+  }[status];
+  return key ? t(key) : status;
+}
 
 const STATUS_DOT: Record<string, string> = {
   idle: 'bg-green-400', working: 'bg-blue-400 animate-pulse',
@@ -36,11 +53,13 @@ function fmtNum(n: number): string {
 }
 
 export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack, highlightMailboxId }: Props) {
+  const { t } = useTranslation(['agent', 'common']);
   const isMobile = useIsMobile();
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const [tab, setTab] = useState<ProfileTab>(defaultTab ?? 'overview');
   const [externalInfo, setExternalInfo] = useState<ExternalAgentInfo | null>(null);
-  const profileTabsList = useMemo(() => TABS.map(t => ({ id: t.key })), []);
+  const tabs = useMemo(() => TAB_DEF.map(tabDef => ({ ...tabDef, label: t(`agent:tabs.${tabDef.key}`) })), [t]);
+  const profileTabsList = useMemo(() => tabs.map(tabRow => ({ id: tabRow.key })), [tabs]);
   const swipeOpts = useMemo(() => ({ onSwipeOutLeft: onSwipeBack }), [onSwipeBack]);
   const profileSwipe = useSwipeTabs(profileTabsList, tab, setTab, swipeOpts);
   const tabBarRef = useRef<HTMLDivElement>(null);
@@ -67,7 +86,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
     return unsub;
   }, [agentId, reload]);
 
-  if (!agent) return <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm">Loading agent...</div>;
+  if (!agent) return <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm">{t('agent:profilePage.loadingAgent')}</div>;
 
   const statusDot = STATUS_DOT[agent.state.status] ?? 'bg-gray-500';
 
@@ -80,14 +99,14 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-base font-semibold">{agent.name}</h2>
               <span className={`w-2 h-2 rounded-full ${statusDot}`} />
-              <span className="text-xs text-fg-tertiary">{agent.state.status}</span>
-              {externalInfo && <span className="px-1.5 py-0.5 text-[10px] bg-brand-500/15 text-brand-500 rounded font-medium">External</span>}
-              {agent.agentRole === 'manager' && <span className="px-1.5 py-0.5 text-[10px] bg-amber-500/15 text-amber-600 rounded font-medium">Manager</span>}
+              <span className="text-xs text-fg-tertiary">{agentRuntimeStatusLabel(agent.state.status, t)}</span>
+              {externalInfo && <span className="px-1.5 py-0.5 text-[10px] bg-brand-500/15 text-brand-500 rounded font-medium">{t('agent:profilePage.badges.external')}</span>}
+              {agent.agentRole === 'manager' && <span className="px-1.5 py-0.5 text-[10px] bg-amber-500/15 text-amber-600 rounded font-medium">{t('agent:profilePage.badges.manager')}</span>}
             </div>
             <div className="text-xs text-fg-tertiary truncate">{agent.role}{agent.roleDescription ? ` — ${agent.roleDescription}` : ''}</div>
           </div>
           <div className="flex gap-1.5 shrink-0">
-            {!inline && <button onClick={() => navBus.navigate(PAGE.TEAM, { agentId })} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors flex items-center gap-1"><span>◈</span> Chat</button>}
+            {!inline && <button onClick={() => navBus.navigate(PAGE.TEAM, { agentId })} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors flex items-center gap-1"><span>◈</span> {t('agent:profilePage.chat')}</button>}
             <button onClick={async () => {
               if (!agent) return;
               try {
@@ -105,24 +124,24 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
                   dependencies: { skills: agent.skills ?? [] },
                 };
                 await hubApi.publishViaProxy({ itemType: 'agent', name: agent.name, description: config.description, category: 'general', config, files: filesMap });
-                alert(`Published "${agent.name}" to Markus Hub`);
-              } catch (e) { alert(`Failed to publish: ${e}`); }
-            }} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors flex items-center gap-1" title="Publish to Markus Hub"><span>↑</span> Hub</button>
+                alert(t('agent:profilePage.publishSuccess', { name: agent.name }));
+              } catch (e) { alert(t('agent:profilePage.publishFailed', { error: String(e) })); }
+            }} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors flex items-center gap-1" title={t('agent:profilePage.publishTitle')}><span>↑</span> {t('agent:profilePage.hub')}</button>
             {inline && <button onClick={onBack} className="p-1.5 text-fg-tertiary hover:text-fg-secondary text-lg leading-none">×</button>}
           </div>
         </div>
         <div ref={tabBarRef} className="flex gap-1 mt-3 -mb-[1px] overflow-x-auto scrollbar-hide">
-          {TABS.filter(t => !externalInfo || ['overview', 'mind'].includes(t.key)).map(t => (
-            <button key={t.key} onClick={() => setTab(t.key)} data-active={tab === t.key}
+          {tabs.filter(tabRow => !externalInfo || ['overview', 'mind'].includes(tabRow.key)).map(tabRow => (
+            <button key={tabRow.key} onClick={() => setTab(tabRow.key)} data-active={tab === tabRow.key}
               className={`px-3 py-1.5 text-xs rounded-t-lg border border-b-0 transition-colors whitespace-nowrap ${
-                tab === t.key ? 'bg-surface-primary text-fg-primary border-border-default' : 'text-fg-tertiary border-transparent hover:text-fg-secondary hover:bg-surface-elevated/50'
+                tab === tabRow.key ? 'bg-surface-primary text-fg-primary border-border-default' : 'text-fg-tertiary border-transparent hover:text-fg-secondary hover:bg-surface-elevated/50'
               }`}
-            ><span className="mr-1">{t.icon}</span>{t.label}</button>
+            ><span className="mr-1">{tabRow.icon}</span>{tabRow.label}</button>
           ))}
         </div>
       </div>
       <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
-        {tab === 'overview' && <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} />}
+        {tab === 'overview' && <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} />}
         {tab === 'mind' && <MindTab agentId={agentId} highlightId={highlightMailboxId} />}
         {tab === 'files' && <FilesTab agentId={agentId} />}
         {tab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}
@@ -136,7 +155,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
 
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
-function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; onUpdate: () => void; externalInfo?: ExternalAgentInfo | null }) {
+function OverviewTab({ agent, onUpdate, externalInfo, t }: { agent: AgentDetail; onUpdate: () => void; externalInfo?: ExternalAgentInfo | null; t: TFunction }) {
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(agent.name);
   const [editRole, setEditRole] = useState(agent.agentRole);
@@ -199,55 +218,55 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
 
   const TASK_DOT: Record<string, string> = { pending: 'bg-gray-400', assigned: 'bg-blue-400', in_progress: 'bg-brand-400', completed: 'bg-green-400', failed: 'bg-red-400', cancelled: 'bg-gray-600' };
 
-  if (externalInfo) {
-    const GATEWAY_ENDPOINTS = [
-      { method: 'POST', path: '/api/gateway/sync', desc: 'Exchange status, tasks, messages, team & project context' },
-      { method: 'GET', path: '/api/gateway/manual', desc: 'Download integration handbook (dynamic, includes colleagues & projects)' },
-      { method: 'GET', path: '/api/gateway/team', desc: 'Query team members, roles, and manager' },
-      { method: 'GET', path: '/api/gateway/projects', desc: 'List projects with governance' },
-      { method: 'GET', path: '/api/gateway/requirements', desc: 'Query requirements (filter by project/status)' },
-    ];
-    const SYNC_CONTEXT_FIELDS = [
-      { field: 'assignedTasks', desc: 'Tasks with requirement & project traceability' },
-      { field: 'inboxMessages', desc: 'Messages from teammates' },
-      { field: 'teamContext', desc: 'Colleagues (id, name, role, status) + manager' },
-      { field: 'projectContext', desc: 'Projects and active requirements' },
-    ];
+  const GATEWAY_ENDPOINTS = useMemo(() => [
+    { method: 'POST' as const, path: '/api/gateway/sync', desc: t('agent:profilePage.gateway.sync') },
+    { method: 'GET' as const, path: '/api/gateway/manual', desc: t('agent:profilePage.gateway.manual') },
+    { method: 'GET' as const, path: '/api/gateway/team', desc: t('agent:profilePage.gateway.team') },
+    { method: 'GET' as const, path: '/api/gateway/projects', desc: t('agent:profilePage.gateway.projects') },
+    { method: 'GET' as const, path: '/api/gateway/requirements', desc: t('agent:profilePage.gateway.requirements') },
+  ], [t]);
+  const SYNC_CONTEXT_FIELDS = useMemo(() => [
+    { field: 'assignedTasks', desc: t('agent:profilePage.syncContext.assignedTasks') },
+    { field: 'inboxMessages', desc: t('agent:profilePage.syncContext.inboxMessages') },
+    { field: 'teamContext', desc: t('agent:profilePage.syncContext.teamContext') },
+    { field: 'projectContext', desc: t('agent:profilePage.syncContext.projectContext') },
+  ], [t]);
 
+  if (externalInfo) {
     return (
       <div className="space-y-4">
-        <Card title="Identity">
+        <Card title={t('agent:profilePage.overview.identity')}>
           <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-            <KV label="Name">{agent.name}</KV>
-            <KV label="Agent Role">
-              <span className={agent.agentRole === 'manager' ? 'text-amber-600' : 'text-blue-600'}>{agent.agentRole === 'manager' ? '★ Manager' : '◆ Worker'}</span>
+            <KV label={t('agent:profilePage.overview.labels.name')}>{agent.name}</KV>
+            <KV label={t('agent:profilePage.overview.labels.agentRole')}>
+              <span className={agent.agentRole === 'manager' ? 'text-amber-600' : 'text-blue-600'}>{agent.agentRole === 'manager' ? t('agent:profilePage.roles.managerDisplay') : t('agent:profilePage.roles.workerDisplay')}</span>
             </KV>
-            <KV label="Role Template">{agent.role}</KV>
-            <KV label="Markus Agent ID" mono>{agent.id}</KV>
-            <KV label="Organization">{agent.config?.orgId ?? 'default'}</KV>
-            <KV label="Created">{agent.config?.createdAt ? new Date(agent.config.createdAt).toLocaleDateString() : '—'}</KV>
+            <KV label={t('agent:profilePage.overview.labels.roleTemplate')}>{agent.role}</KV>
+            <KV label={t('agent:profilePage.overview.labels.markusAgentId')} mono>{agent.id}</KV>
+            <KV label={t('agent:profilePage.overview.labels.organization')}>{agent.config?.orgId ?? 'default'}</KV>
+            <KV label={t('agent:profilePage.overview.labels.created')}>{agent.config?.createdAt ? new Date(agent.config.createdAt).toLocaleDateString() : t('agent:profilePage.emDash')}</KV>
           </div>
         </Card>
 
-        <Card title="Connection Status">
+        <Card title={t('agent:profilePage.overview.connectionStatus')}>
           <div className="grid grid-cols-4 gap-4">
-            <StatBox label="Connection" value={externalInfo.connected ? 'Online' : 'Offline'} color={externalInfo.connected ? 'green' : 'gray'} />
-            <StatBox label="Platform" value="OpenClaw" />
-            <StatBox label="Active Tasks" value={String(agent.state.activeTaskIds?.length ?? 0)} />
-            <StatBox label="Last Sync" value={externalInfo.lastHeartbeat ? new Date(externalInfo.lastHeartbeat).toLocaleTimeString() : 'Never'} />
+            <StatBox label={t('agent:profilePage.overview.labels.connection')} value={externalInfo.connected ? t('common:status.online') : t('common:status.offline')} color={externalInfo.connected ? 'green' : 'gray'} />
+            <StatBox label={t('agent:profilePage.overview.labels.platform')} value={t('agent:profilePage.overview.openClaw')} />
+            <StatBox label={t('agent:profilePage.overview.labels.activeTasks')} value={String(agent.state.activeTaskIds?.length ?? 0)} />
+            <StatBox label={t('agent:profilePage.overview.labels.lastSync')} value={externalInfo.lastHeartbeat ? new Date(externalInfo.lastHeartbeat).toLocaleTimeString() : t('agent:profilePage.never')} />
           </div>
         </Card>
 
-        <Card title="External Agent Details">
+        <Card title={t('agent:profilePage.overview.externalAgentDetails')}>
           <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-            <KV label="External Agent ID" mono>{externalInfo.externalAgentId}</KV>
-            <KV label="Registered">{new Date(externalInfo.registeredAt).toLocaleString()}</KV>
-            <KV label="Capabilities">{externalInfo.capabilities.length > 0 ? externalInfo.capabilities.join(', ') : 'none declared'}</KV>
-            <KV label="Last Heartbeat">{externalInfo.lastHeartbeat ? new Date(externalInfo.lastHeartbeat).toLocaleString() : 'Never'}</KV>
+            <KV label={t('agent:profilePage.overview.labels.externalAgentId')} mono>{externalInfo.externalAgentId}</KV>
+            <KV label={t('agent:profilePage.overview.labels.registered')}>{new Date(externalInfo.registeredAt).toLocaleString()}</KV>
+            <KV label={t('agent:profilePage.overview.labels.capabilities')}>{externalInfo.capabilities.length > 0 ? externalInfo.capabilities.join(', ') : t('agent:profilePage.overview.noneDeclared')}</KV>
+            <KV label={t('agent:profilePage.overview.labels.lastHeartbeat')}>{externalInfo.lastHeartbeat ? new Date(externalInfo.lastHeartbeat).toLocaleString() : t('agent:profilePage.never')}</KV>
           </div>
         </Card>
 
-        <Card title="Sync Context (received every sync cycle)">
+        <Card title={t('agent:profilePage.overview.syncContextTitle')}>
           <div className="space-y-1.5">
             {SYNC_CONTEXT_FIELDS.map(f => (
               <div key={f.field} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
@@ -258,7 +277,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
           </div>
         </Card>
 
-        <Card title="Gateway API Endpoints">
+        <Card title={t('agent:profilePage.overview.gatewayEndpoints')}>
           <div className="space-y-1.5">
             {GATEWAY_ENDPOINTS.map(ep => (
               <div key={ep.path} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
@@ -271,13 +290,13 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
         </Card>
 
         {recentTasks.length > 0 && (
-          <Card title="Recent Tasks" action={<button onClick={() => navBus.navigate(PAGE.WORK)} className="text-xs text-fg-tertiary hover:text-fg-secondary">View all →</button>}>
+          <Card title={t('agent:profilePage.overview.recentTasks')} action={<button onClick={() => navBus.navigate(PAGE.WORK)} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:viewAll')}</button>}>
             <div className="divide-y divide-gray-800/50 -mx-5">
-              {recentTasks.map(t => (
-                <div key={t.id} className="flex items-center gap-2.5 px-5 py-2.5">
-                  <span className={`w-2 h-2 rounded-full shrink-0 ${TASK_DOT[t.status] ?? 'bg-gray-500'}`} />
-                  <span className="text-xs text-fg-secondary flex-1 truncate">{t.title}</span>
-                  <span className="text-[10px] text-fg-tertiary capitalize shrink-0">{t.status.replace(/_/g, ' ')}</span>
+              {recentTasks.map(task => (
+                <div key={task.id} className="flex items-center gap-2.5 px-5 py-2.5">
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${TASK_DOT[task.status] ?? 'bg-gray-500'}`} />
+                  <span className="text-xs text-fg-secondary flex-1 truncate">{task.title}</span>
+                  <span className="text-[10px] text-fg-tertiary capitalize shrink-0">{taskStatusLabel(task.status, t)}</span>
                 </div>
               ))}
             </div>
@@ -287,15 +306,19 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
     );
   }
 
+  const hbCount = recentActivities.filter(a => a.type === 'heartbeat').length;
+  const chatCount = recentActivities.filter(a => a.type === 'chat').length;
+  const activeN = agent.state.activeTaskIds?.length ?? 0;
+
   return (
     <div className="space-y-4">
-      <Card title="Identity" action={
+      <Card title={t('agent:profilePage.overview.identity')} action={
         editing
           ? <div className="flex gap-2">
-              <button onClick={() => setEditing(false)} className="text-xs text-fg-tertiary hover:text-fg-secondary">Cancel</button>
-              <button onClick={save} disabled={saving} className="text-xs text-brand-500 hover:text-brand-500">{saving ? 'Saving...' : 'Save'}</button>
+              <button onClick={() => setEditing(false)} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:cancel')}</button>
+              <button onClick={save} disabled={saving} className="text-xs text-brand-500 hover:text-brand-500">{saving ? t('common:saving') : t('common:save')}</button>
             </div>
-          : <button onClick={() => { setEditing(true); setEditName(agent.name); setEditRole(agent.agentRole); setEditModelMode((agent.config?.llmConfig as Record<string, unknown>)?.modelMode as 'default' | 'custom' ?? 'default'); setEditModel(agent.config?.llmConfig.primary ?? ''); setEditFallback(agent.config?.llmConfig.fallback ?? ''); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">Edit</button>
+          : <button onClick={() => { setEditing(true); setEditName(agent.name); setEditRole(agent.agentRole); setEditModelMode((agent.config?.llmConfig as Record<string, unknown>)?.modelMode as 'default' | 'custom' ?? 'default'); setEditModel(agent.config?.llmConfig.primary ?? ''); setEditFallback(agent.config?.llmConfig.fallback ?? ''); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:edit')}</button>
       }>
         <div className="flex items-start gap-4 mb-3">
           <AvatarUpload
@@ -308,59 +331,59 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
           />
           <div className="flex-1 min-w-0 pt-1">
             <div className="text-sm font-medium text-fg-primary">{agent.name}</div>
-            <div className="text-xs text-fg-tertiary mt-0.5">{agent.role} · {agent.agentRole ?? 'worker'}</div>
+            <div className="text-xs text-fg-tertiary mt-0.5">{agent.role} · {agent.agentRole ?? t('agent:profilePage.roles.worker')}</div>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-          <KV label="Name">{editing ? <input className="input-sm" value={editName} onChange={e => setEditName(e.target.value)} /> : agent.name}</KV>
-          <KV label="Agent Role">
+          <KV label={t('agent:profilePage.overview.labels.name')}>{editing ? <input className="input-sm" value={editName} onChange={e => setEditName(e.target.value)} /> : agent.name}</KV>
+          <KV label={t('agent:profilePage.overview.labels.agentRole')}>
             {editing
               ? <div className="flex gap-1.5">{(['worker', 'manager'] as const).map(r => (
                   <button key={r} onClick={() => setEditRole(r)} className={`px-2 py-1 text-[10px] rounded border transition-colors capitalize ${editRole === r ? (r === 'manager' ? 'bg-amber-500/15 text-amber-600 border-amber-500/30' : 'bg-blue-500/15 text-blue-600 border-blue-500/30') : 'bg-surface-elevated text-fg-tertiary border-border-default'}`}>{r}</button>
                 ))}</div>
-              : <span className={agent.agentRole === 'manager' ? 'text-amber-600' : 'text-blue-600'}>{agent.agentRole === 'manager' ? '★ Manager' : '◆ Worker'}</span>}
+              : <span className={agent.agentRole === 'manager' ? 'text-amber-600' : 'text-blue-600'}>{agent.agentRole === 'manager' ? t('agent:profilePage.roles.managerDisplay') : t('agent:profilePage.roles.workerDisplay')}</span>}
           </KV>
-          <KV label="Role Template">{agent.role}</KV>
-          <KV label="Agent ID" mono>{agent.id}</KV>
-          <KV label="Organization">{agent.config?.orgId ?? 'default'}</KV>
-          <KV label="Created">{agent.config?.createdAt ? new Date(agent.config.createdAt).toLocaleDateString() : '—'}</KV>
+          <KV label={t('agent:profilePage.overview.labels.roleTemplate')}>{agent.role}</KV>
+          <KV label={t('agent:profilePage.overview.labels.agentId')} mono>{agent.id}</KV>
+          <KV label={t('agent:profilePage.overview.labels.organization')}>{agent.config?.orgId ?? 'default'}</KV>
+          <KV label={t('agent:profilePage.overview.labels.created')}>{agent.config?.createdAt ? new Date(agent.config.createdAt).toLocaleDateString() : t('agent:profilePage.emDash')}</KV>
         </div>
       </Card>
 
-      <Card title="Runtime Status">
+      <Card title={t('agent:profilePage.overview.runtimeStatus')}>
         <div className="grid grid-cols-4 gap-4">
-          <StatBox label="Status" value={agent.state.status} color={agent.state.status === 'idle' ? 'green' : agent.state.status === 'working' ? 'blue' : agent.state.status === 'error' ? 'red' : 'gray'} />
-          <StatBox label="Tokens Today" value={String(agent.state.tokensUsedToday)} />
-          <StatBox label="Active Tasks" value={String(agent.state.activeTaskIds?.length ?? 0)} />
-          <StatBox label="Last Heartbeat" value={agent.state.lastHeartbeat ? new Date(agent.state.lastHeartbeat).toLocaleTimeString() : 'Never'} />
+          <StatBox label={t('agent:profilePage.overview.labels.status')} value={agentRuntimeStatusLabel(agent.state.status, t)} color={agent.state.status === 'idle' ? 'green' : agent.state.status === 'working' ? 'blue' : agent.state.status === 'error' ? 'red' : 'gray'} />
+          <StatBox label={t('agent:profilePage.overview.labels.tokensToday')} value={String(agent.state.tokensUsedToday)} />
+          <StatBox label={t('agent:profilePage.overview.labels.activeTasks')} value={String(agent.state.activeTaskIds?.length ?? 0)} />
+          <StatBox label={t('agent:profilePage.overview.labels.lastHeartbeat')} value={agent.state.lastHeartbeat ? new Date(agent.state.lastHeartbeat).toLocaleTimeString() : t('agent:profilePage.never')} />
         </div>
 
         {agent.state.status === 'error' && (
           <div className="mt-3 bg-red-500/10 border border-red-500/20 rounded-lg p-3">
             <div className="flex items-center gap-2 mb-1.5">
               <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-              <span className="text-xs font-medium text-red-500">Error Details</span>
+              <span className="text-xs font-medium text-red-500">{t('agent:profilePage.overview.errorDetails')}</span>
               {agent.state.lastErrorAt && <span className="text-[10px] text-red-500/50 ml-auto">{new Date(agent.state.lastErrorAt).toLocaleString()}</span>}
             </div>
             <pre className="text-[11px] text-red-500/80 leading-relaxed whitespace-pre-wrap break-all font-mono bg-red-500/5 rounded p-2">
-              {agent.state.lastError || 'Agent encountered an error. Check logs for more details.'}
+              {agent.state.lastError || t('agent:profilePage.overview.errorFallback')}
             </pre>
           </div>
         )}
 
-        {agent.state.status === 'working' && (agent.state.activeTaskIds?.length ?? 0) > 0 && (
+        {agent.state.status === 'working' && activeN > 0 && (
           <div className="mt-3 bg-brand-500/10 border border-brand-500/20 rounded-lg p-3">
             <div className="flex items-center gap-2 mb-1.5">
               <span className="w-2 h-2 rounded-full bg-brand-400 animate-pulse" />
-              <span className="text-xs font-medium text-brand-500">Currently Working</span>
-              <span className="text-[10px] text-brand-500/50 ml-auto">{agent.state.activeTaskIds!.length} active task{agent.state.activeTaskIds!.length > 1 ? 's' : ''}</span>
+              <span className="text-xs font-medium text-brand-500">{t('agent:profilePage.overview.currentlyWorking')}</span>
+              <span className="text-[10px] text-brand-500/50 ml-auto">{t('agent:profilePage.overview.activeTasksCount', { count: activeN })}</span>
             </div>
             <div className="space-y-1">
-              {recentTasks.filter(t => agent.state.activeTaskIds?.includes(t.id)).map(t => (
-                <div key={t.id} className="flex items-center gap-2 text-[11px]">
+              {recentTasks.filter(task => agent.state.activeTaskIds?.includes(task.id)).map(task => (
+                <div key={task.id} className="flex items-center gap-2 text-[11px]">
                   <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse shrink-0" />
-                  <span className="text-fg-secondary truncate flex-1">{t.title}</span>
-                  <span className="text-fg-tertiary capitalize shrink-0">{t.status.replace(/_/g, ' ')}</span>
+                  <span className="text-fg-secondary truncate flex-1">{task.title}</span>
+                  <span className="text-fg-tertiary capitalize shrink-0">{taskStatusLabel(task.status, t)}</span>
                 </div>
               ))}
             </div>
@@ -369,28 +392,28 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
 
         <div className="flex gap-2 mt-4 pt-3 border-t border-border-default/50">
           <button onClick={toggleAgent} className="px-3 py-1.5 text-xs border border-border-default rounded-lg hover:border-brand-500 transition-colors">
-            {agent.state.status === 'offline' ? '▶ Start' : '⏹ Stop'}
+            {agent.state.status === 'offline' ? t('agent:profilePage.overview.startAgent') : t('agent:profilePage.overview.stopAgent')}
           </button>
         </div>
       </Card>
 
       {usageInfo && (
-        <Card title="Usage">
+        <Card title={t('agent:profilePage.overview.usage')}>
           <div className="grid grid-cols-3 gap-4">
-            <StatBox label="Total Tokens" value={fmtNum(usageInfo.totalTokens)} />
-            <StatBox label="Requests" value={String(usageInfo.requestCount)} />
-            <StatBox label="Tool Calls" value={String(usageInfo.toolCalls)} />
-            <StatBox label="Prompt Tokens" value={fmtNum(usageInfo.promptTokens)} />
-            <StatBox label="Completion Tokens" value={fmtNum(usageInfo.completionTokens)} />
-            <StatBox label="Est. Cost" value={`$${usageInfo.estimatedCost < 0.01 ? usageInfo.estimatedCost.toFixed(4) : usageInfo.estimatedCost.toFixed(2)}`} />
+            <StatBox label={t('agent:profilePage.overview.labels.totalTokens')} value={fmtNum(usageInfo.totalTokens)} />
+            <StatBox label={t('agent:profilePage.overview.labels.requests')} value={String(usageInfo.requestCount)} />
+            <StatBox label={t('agent:profilePage.overview.labels.toolCalls')} value={String(usageInfo.toolCalls)} />
+            <StatBox label={t('agent:profilePage.overview.labels.promptTokens')} value={fmtNum(usageInfo.promptTokens)} />
+            <StatBox label={t('agent:profilePage.overview.labels.completionTokens')} value={fmtNum(usageInfo.completionTokens)} />
+            <StatBox label={t('agent:profilePage.overview.labels.estCost')} value={`$${usageInfo.estimatedCost < 0.01 ? usageInfo.estimatedCost.toFixed(4) : usageInfo.estimatedCost.toFixed(2)}`} />
           </div>
         </Card>
       )}
 
       {agentStorage && (
-        <Card title="Storage" action={
+        <Card title={t('agent:profilePage.overview.storage')} action={
           <button onClick={() => void api.system.openPath(agentDataDir)}
-            className="text-xs text-fg-tertiary hover:text-fg-secondary">Open folder →</button>
+            className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('agent:profilePage.overview.openFolder')}</button>
         }>
           <div className="flex items-baseline gap-2 mb-3">
             <span className="text-lg font-bold text-fg-primary">{fmtBytesLocal(agentStorage.size)}</span>
@@ -404,9 +427,9 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
         </Card>
       )}
 
-      <Card title="LLM Configuration">
+      <Card title={t('agent:profilePage.overview.llmConfiguration')}>
           <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-            <KV label="Model Mode">
+            <KV label={t('agent:profilePage.overview.labels.modelMode')}>
               {editing
                 ? <div className="flex gap-1.5">
                     {(['default', 'custom'] as const).map(m => (
@@ -416,61 +439,61 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
                             ? (m === 'default' ? 'bg-brand-500/15 text-brand-500 border-brand-500/30' : 'bg-amber-500/15 text-amber-600 border-amber-500/30')
                             : 'bg-surface-elevated text-fg-tertiary border-border-default'
                         }`}
-                      >{m === 'default' ? 'System Default' : 'Custom'}</button>
+                      >{m === 'default' ? t('agent:profilePage.overview.systemDefault') : t('agent:profilePage.overview.custom')}</button>
                     ))}
                   </div>
                 : <span className={`text-xs ${currentModelMode === 'custom' ? 'text-amber-600' : 'text-brand-500'}`}>
-                    {currentModelMode === 'custom' ? '⚙ Custom' : '◎ System Default'}
+                    {currentModelMode === 'custom' ? t('agent:profilePage.overview.customShort') : t('agent:profilePage.overview.systemDefaultShort')}
                   </span>}
             </KV>
-            <KV label="Primary Model">
+            <KV label={t('agent:profilePage.overview.labels.primaryModel')}>
               {editing
                 ? editModelMode === 'custom'
                   ? <select className="input-sm" value={editModel} onChange={e => setEditModel(e.target.value)}>
                       {configuredModels.map(m => <option key={m} value={m}>{m} ({providers[m]?.model})</option>)}
                       {!configuredModels.includes(editModel) && editModel && <option value={editModel}>{editModel}</option>}
                     </select>
-                  : <span className="text-xs text-fg-secondary italic">follows system default ({defaultProvider || '...'})</span>
+                  : <span className="text-xs text-fg-secondary italic">{t('agent:profilePage.overview.followsSystemDefault', { provider: defaultProvider || '...' })}</span>
                 : <span className="font-mono text-xs">
                     {currentModelMode === 'custom'
-                      ? (agent.config?.llmConfig.primary ?? '—')
-                      : <span className="text-fg-secondary">{defaultProvider || agent.config?.llmConfig.primary || '—'} <span className="text-fg-tertiary">(system default)</span></span>}
+                      ? (agent.config?.llmConfig.primary ?? t('agent:profilePage.emDash'))
+                      : <span className="text-fg-secondary">{defaultProvider || agent.config?.llmConfig.primary || t('agent:profilePage.emDash')} <span className="text-fg-tertiary">{t('agent:profilePage.overview.systemDefaultParen')}</span></span>}
                   </span>}
             </KV>
-            <KV label="Fallback">
+            <KV label={t('agent:profilePage.overview.labels.fallback')}>
               {editing
                 ? <select className="input-sm" value={editFallback} onChange={e => setEditFallback(e.target.value)}>
-                    <option value="">none</option>
+                    <option value="">{t('agent:profilePage.overview.noneOption')}</option>
                     {configuredModels.map(m => <option key={m} value={m}>{m}</option>)}
                   </select>
-                : <span className="font-mono text-xs">{agent.config?.llmConfig.fallback ?? 'none'}</span>}
+                : <span className="font-mono text-xs">{agent.config?.llmConfig.fallback ?? t('agent:profilePage.overview.noneOption')}</span>}
             </KV>
-            <KV label="Max Tokens/Request">{agent.config?.llmConfig.maxTokensPerRequest ?? 'default'}</KV>
-            <KV label="Max Tokens/Day">{agent.config?.llmConfig.maxTokensPerDay ?? 'unlimited'}</KV>
+            <KV label={t('agent:profilePage.overview.labels.maxTokensRequest')}>{agent.config?.llmConfig.maxTokensPerRequest ?? t('agent:profilePage.overview.defaultValue')}</KV>
+            <KV label={t('agent:profilePage.overview.labels.maxTokensDay')}>{agent.config?.llmConfig.maxTokensPerDay ?? t('agent:profilePage.overview.unlimited')}</KV>
           </div>
         </Card>
 
       {/* Recent Tasks */}
       {recentTasks.length > 0 && (
-        <Card title="Recent Tasks" action={<button onClick={() => navBus.navigate(PAGE.WORK)} className="text-xs text-fg-tertiary hover:text-fg-secondary">View all →</button>}>
+        <Card title={t('agent:profilePage.overview.recentTasks')} action={<button onClick={() => navBus.navigate(PAGE.WORK)} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:viewAll')}</button>}>
           <div className="divide-y divide-gray-800/50 -mx-5">
-            {recentTasks.map(t => {
-              const isExpanded = expandedTaskId === t.id;
-              const hasLogs = ['in_progress', 'failed', 'completed', 'review'].includes(t.status);
+            {recentTasks.map(task => {
+              const isExpanded = expandedTaskId === task.id;
+              const hasLogs = ['in_progress', 'failed', 'completed', 'review'].includes(task.status);
               return (
-                <div key={t.id}>
+                <div key={task.id}>
                   <button
-                    onClick={() => hasLogs ? setExpandedTaskId(isExpanded ? null : t.id) : undefined}
+                    onClick={() => hasLogs ? setExpandedTaskId(isExpanded ? null : task.id) : undefined}
                     className={`w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors ${hasLogs ? 'hover:bg-surface-elevated/40 cursor-pointer' : 'cursor-default'}`}
                   >
-                    <span className={`w-2 h-2 rounded-full shrink-0 ${TASK_DOT[t.status] ?? 'bg-gray-500'}`} />
-                    <span className="text-xs text-fg-secondary flex-1 truncate">{t.title}</span>
-                    <span className="text-[10px] text-fg-tertiary capitalize shrink-0">{t.status.replace(/_/g, ' ')}</span>
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${TASK_DOT[task.status] ?? 'bg-gray-500'}`} />
+                    <span className="text-xs text-fg-secondary flex-1 truncate">{task.title}</span>
+                    <span className="text-[10px] text-fg-tertiary capitalize shrink-0">{taskStatusLabel(task.status, t)}</span>
                     {hasLogs && <span className="text-fg-tertiary text-[10px]">{isExpanded ? '▲' : '▼'}</span>}
                   </button>
                   {isExpanded && (
                     <div className="border-t border-border-default/60 bg-surface-primary/40">
-                      <TaskLog taskId={t.id} isLive={t.status === 'in_progress'} />
+                      <TaskLog taskId={task.id} isLive={task.status === 'in_progress'} />
                     </div>
                   )}
                 </div>
@@ -481,8 +504,8 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
       )}
 
       {/* Recent Heartbeats */}
-      {recentActivities.filter(a => a.type === 'heartbeat').length > 0 && (
-        <Card title="Recent Heartbeats" action={<span className="text-[10px] text-fg-tertiary">{recentActivities.filter(a => a.type === 'heartbeat').length} runs</span>}>
+      {hbCount > 0 && (
+        <Card title={t('agent:profilePage.overview.recentHeartbeats')} action={<span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.heartbeatRuns', { count: hbCount })}</span>}>
           <div className="divide-y divide-gray-800/50 -mx-5">
             {recentActivities.filter(a => a.type === 'heartbeat').map(act => {
               const isExpanded = expandedActivityId === act.id;
@@ -510,8 +533,8 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
       )}
 
       {/* Recent A2A Communications */}
-      {recentActivities.filter(a => a.type === 'chat').length > 0 && (
-        <Card title="Recent A2A Communications" action={<span className="text-[10px] text-fg-tertiary">{recentActivities.filter(a => a.type === 'chat').length} conversations</span>}>
+      {chatCount > 0 && (
+        <Card title={t('agent:profilePage.overview.recentA2A')} action={<span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.conversations', { count: chatCount })}</span>}>
           <div className="divide-y divide-gray-800/50 -mx-5">
             {recentActivities.filter(a => a.type === 'chat').map(act => {
               const isExpanded = expandedActivityId === act.id;
@@ -614,6 +637,7 @@ function WordDiff({ oldText, newText, mode }: { oldText: string; newText: string
 }
 
 function InlineDiff({ agent, template, templateId }: { agent: string; template: string; templateId: string }) {
+  const { t } = useTranslation(['agent', 'common']);
   const lines = useMemo(() => computeLineDiff(agent, template), [agent, template]);
   const [collapsed, setCollapsed] = useState(true);
 
@@ -682,7 +706,7 @@ function InlineDiff({ agent, template, templateId }: { agent: string; template: 
       <div className="flex items-center justify-between px-3 py-1.5 bg-surface-elevated/80 border-b border-border-default">
         <div className="flex items-center gap-3">
           <span className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">
-            Diff: Current vs Template ({templateId})
+            {t('agent:profilePage.diff.title', { templateId })}
           </span>
           <span className="text-[10px] text-green-500 font-mono">+{addCount}</span>
           <span className="text-[10px] text-red-500 font-mono">-{removeCount}</span>
@@ -690,11 +714,11 @@ function InlineDiff({ agent, template, templateId }: { agent: string; template: 
         <button
           onClick={() => setCollapsed(c => !c)}
           className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors"
-        >{collapsed ? 'Show full file' : 'Show changes only'}</button>
+        >{collapsed ? t('agent:profilePage.diff.showFullFile') : t('agent:profilePage.diff.showChangesOnly')}</button>
       </div>
       <div className="max-h-72 overflow-y-auto bg-surface-primary/50">
         {collapsed && hunks.length > 0 && hunks[0]!.start > 0 && (
-          <div className="text-[10px] text-fg-muted/50 text-center py-0.5 bg-surface-elevated/40 border-b border-border-default/30">··· {hunks[0]!.start} lines hidden ···</div>
+          <div className="text-[10px] text-fg-muted/50 text-center py-0.5 bg-surface-elevated/40 border-b border-border-default/30">{t('agent:profilePage.diff.linesHidden', { count: hunks[0]!.start })}</div>
         )}
         {displayLines.map((line, viewIdx) => {
           const prevInDisplay = viewIdx > 0 ? displayLines[viewIdx - 1] : null;
@@ -707,9 +731,9 @@ function InlineDiff({ agent, template, templateId }: { agent: string; template: 
           );
         })}
         {collapsed && hunks.length > 0 && hunks[hunks.length - 1]!.end < lines.length - 1 && (
-          <div className="text-[10px] text-fg-muted/50 text-center py-0.5 bg-surface-elevated/40 border-t border-border-default/30">··· {lines.length - 1 - hunks[hunks.length - 1]!.end} lines hidden ···</div>
+          <div className="text-[10px] text-fg-muted/50 text-center py-0.5 bg-surface-elevated/40 border-t border-border-default/30">{t('agent:profilePage.diff.linesHidden', { count: lines.length - 1 - hunks[hunks.length - 1]!.end })}</div>
         )}
-        {hunks.length === 0 && <div className="text-xs text-fg-tertiary text-center py-4">Files are identical</div>}
+        {hunks.length === 0 && <div className="text-xs text-fg-tertiary text-center py-4">{t('agent:profilePage.diff.identical')}</div>}
       </div>
     </div>
   );
@@ -718,6 +742,7 @@ function InlineDiff({ agent, template, templateId }: { agent: string; template: 
 // ─── Files Tab (System Prompts / Role Files) ─────────────────────────────────
 
 function FilesTab({ agentId }: { agentId: string }) {
+  const { t } = useTranslation(['agent', 'common']);
   const [files, setFiles] = useState<Array<{ name: string; content: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
@@ -816,13 +841,17 @@ function FilesTab({ agentId }: { agentId: string }) {
     } catch { /* */ }
   };
 
-  if (loading) return <div className="text-xs text-fg-tertiary py-8 text-center">Loading files...</div>;
+  if (loading) return <div className="text-xs text-fg-tertiary py-8 text-center">{t('agent:profilePage.filesTab.loading')}</div>;
 
-  const FILE_LABELS: Record<string, string> = {
-    'ROLE.md': 'System Prompt / Role Definition',
-    'HEARTBEAT.md': 'Heartbeat Tasks',
-    'POLICIES.md': 'Policies & Guardrails',
-    'CONTEXT.md': 'Context & Instructions',
+  const FILE_LABEL_KEYS: Record<string, string> = {
+    'ROLE.md': 'roleMd',
+    'HEARTBEAT.md': 'heartbeatMd',
+    'POLICIES.md': 'policiesMd',
+    'CONTEXT.md': 'contextMd',
+  };
+  const fileLabel = (name: string) => {
+    const k = FILE_LABEL_KEYS[name];
+    return k ? t(`agent:profilePage.filesTab.fileLabels.${k}`) : name;
   };
 
   const staleFiles = roleStatus?.files.filter(f => f.status === 'modified' || f.status === 'added_in_template') ?? [];
@@ -835,28 +864,28 @@ function FilesTab({ agentId }: { agentId: string }) {
         <div className="bg-amber-500/8 border border-amber-500/25 rounded-xl p-4 flex items-start gap-3">
           <span className="text-amber-600 text-sm mt-0.5">↻</span>
           <div className="flex-1 min-w-0">
-            <div className="text-xs text-amber-600 font-medium">Template Update Available</div>
+            <div className="text-xs text-amber-600 font-medium">{t('agent:profilePage.filesTab.templateUpdateAvailable')}</div>
             <div className="text-[11px] text-amber-600/70 mt-0.5">
-              {staleFiles.length} file{staleFiles.length > 1 ? 's' : ''} differ from the <code className="px-1 py-0.5 bg-amber-500/10 rounded text-amber-600">{roleStatus!.templateId}</code> template:
+              {t('agent:profilePage.filesTab.filesDiffer', { count: staleFiles.length, templateId: roleStatus!.templateId })}
               {' '}{staleFiles.map(f => f.file).join(', ')}
             </div>
           </div>
           <button onClick={() => syncFromTemplate()} disabled={syncing}
             className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors shrink-0 disabled:opacity-50"
-          >{syncing ? 'Syncing...' : 'Sync All'}</button>
+          >{syncing ? t('agent:profilePage.filesTab.syncing') : t('agent:profilePage.filesTab.syncAll')}</button>
         </div>
       )}
 
-      <Card title="Agent Configuration Files" action={
+      <Card title={t('agent:profilePage.filesTab.agentConfigFiles')} action={
         roleStatus?.hasTemplate
           ? <div className="flex items-center gap-2">
               <span className={`inline-block w-1.5 h-1.5 rounded-full ${roleStatus.isUpToDate ? 'bg-green-400' : 'bg-amber-400'}`} />
               <span className="text-[10px] text-fg-tertiary">
-                Template: <span className="text-fg-secondary">{roleStatus.templateId}</span>
-                {roleStatus.isUpToDate ? ' (up to date)' : ' (updates available)'}
+                {t('agent:profilePage.filesTab.templateLabel')} <span className="text-fg-secondary">{roleStatus.templateId}</span>
+                {roleStatus.isUpToDate ? t('agent:profilePage.filesTab.upToDate') : t('agent:profilePage.filesTab.updatesAvailable')}
               </span>
             </div>
-          : <div className="text-[10px] text-fg-tertiary">Custom agent — no linked template</div>
+          : <div className="text-[10px] text-fg-tertiary">{t('agent:profilePage.filesTab.customAgentNoTemplate')}</div>
       }>
         <div className="flex gap-2 mb-4 flex-wrap">
           {files.map(f => {
@@ -877,32 +906,32 @@ function FilesTab({ agentId }: { agentId: string }) {
         {selected && (
           <div>
             <div className="flex items-center justify-between mb-2">
-              <div className="text-xs text-fg-secondary">{FILE_LABELS[selected] ?? selected}</div>
+              <div className="text-xs text-fg-secondary">{fileLabel(selected)}</div>
               <div className="flex gap-2 items-center">
                 {selectedFileStale && (
                   <>
                     <button onClick={() => showDiff(selected)} className="px-2.5 py-1 text-[11px] text-amber-600 hover:text-amber-600 border border-amber-500/30 hover:border-amber-500/50 rounded-lg transition-colors">
-                      {diffView?.file === selected ? 'Hide Diff' : 'View Diff'}
+                      {diffView?.file === selected ? t('agent:profilePage.filesTab.hideDiff') : t('agent:profilePage.filesTab.viewDiff')}
                     </button>
                     <button onClick={() => smartSync(selected)} disabled={smartSyncing || syncing}
                       className="px-2.5 py-1 text-[11px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50"
-                      title="Use AI to intelligently merge template changes while preserving your customizations"
-                    >{smartSyncing ? 'Merging...' : 'Smart Sync'}</button>
+                      title={t('agent:profilePage.filesTab.smartSyncTitle')}
+                    >{smartSyncing ? t('agent:profilePage.filesTab.merging') : t('agent:profilePage.filesTab.smartSync')}</button>
                     <button onClick={() => syncFromTemplate(selected)} disabled={syncing}
                       className="px-2.5 py-1 text-[11px] bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50"
-                      title="Overwrite with template content"
-                    >{syncing ? 'Syncing...' : 'Sync This File'}</button>
+                      title={t('agent:profilePage.filesTab.overwriteTemplateTitle')}
+                    >{syncing ? t('agent:profilePage.filesTab.syncing') : t('agent:profilePage.filesTab.syncThisFile')}</button>
                   </>
                 )}
                 {smartSyncResult?.file === selected && (
                   <button onClick={undoSmartSync} className="px-2.5 py-1 text-[11px] text-red-500 hover:text-red-400 border border-red-500/30 hover:border-red-500/50 rounded-lg transition-colors"
-                    title="Undo smart sync and restore previous content"
-                  >Undo Merge</button>
+                    title={t('agent:profilePage.filesTab.undoMergeTitle')}
+                  >{t('agent:profilePage.filesTab.undoMerge')}</button>
                 )}
-                {dirty && <span className="text-[10px] text-amber-600">unsaved</span>}
+                {dirty && <span className="text-[10px] text-amber-600">{t('agent:profilePage.filesTab.unsaved')}</span>}
                 <button onClick={saveFile} disabled={saving || !dirty}
                   className={`px-3 py-1 text-xs rounded-lg transition-colors ${dirty ? 'bg-brand-600 hover:bg-brand-500 text-white' : 'bg-surface-elevated text-fg-tertiary cursor-default'}`}
-                >{saving ? 'Saving...' : 'Save'}</button>
+                >{saving ? t('common:saving') : t('common:save')}</button>
               </div>
             </div>
 
@@ -913,8 +942,8 @@ function FilesTab({ agentId }: { agentId: string }) {
             {smartSyncResult?.file === selected && (
               <div className="mb-3 bg-brand-600/8 border border-brand-500/25 rounded-lg p-3">
                 <div className="flex items-center gap-2 mb-1.5">
-                  <span className="text-[10px] font-semibold text-brand-500 uppercase tracking-wider">Smart Sync Result</span>
-                  <span className="text-[10px] text-fg-tertiary">— review and save to apply</span>
+                  <span className="text-[10px] font-semibold text-brand-500 uppercase tracking-wider">{t('agent:profilePage.filesTab.smartSyncResult')}</span>
+                  <span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.filesTab.reviewAndSave')}</span>
                 </div>
                 <p className="text-[11px] text-fg-secondary whitespace-pre-wrap leading-relaxed">{smartSyncResult.explanation}</p>
               </div>
@@ -927,12 +956,12 @@ function FilesTab({ agentId }: { agentId: string }) {
               spellCheck={false}
             />
             {selected === 'ROLE.md' && (
-              <div className="text-[10px] text-fg-tertiary mt-2">Changes to ROLE.md will update the agent's runtime system prompt immediately.</div>
+              <div className="text-[10px] text-fg-tertiary mt-2">{t('agent:profilePage.filesTab.roleMdHint')}</div>
             )}
           </div>
         )}
 
-        {files.length === 0 && <Empty text="No configuration files found for this role" />}
+        {files.length === 0 && <Empty text={t('agent:profilePage.filesTab.noConfigFiles')} />}
       </Card>
     </div>
   );
@@ -940,67 +969,69 @@ function FilesTab({ agentId }: { agentId: string }) {
 
 // ─── Tools Tab ───────────────────────────────────────────────────────────────
 
-const TOOL_CATEGORIES: Record<string, string[]> = {
-  'Files': ['file_read', 'file_write', 'file_edit', 'apply_patch'],
-  'Search': ['grep_search', 'glob_find', 'list_directory'],
-  'Runtime': ['shell_execute', 'background_exec', 'process'],
-  'Web': ['web_search', 'web_fetch', 'web_extract'],
-  'Tasks': ['task_create', 'task_list', 'task_update', 'task_get', 'task_assign', 'task_note', 'task_comment', 'task_submit_review', 'subtask_create', 'subtask_complete', 'subtask_list', 'task_check_duplicates', 'task_cleanup_duplicates', 'task_board_health'],
-  'Requirements': ['requirement_propose', 'requirement_list', 'requirement_update_status', 'requirement_comment'],
-  'Projects': ['list_projects', 'get_project', 'project_info'],
-  'Deliverables': ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'],
-  'Communication': ['agent_send_message', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats', 'agent_broadcast_status', 'agent_delegate_task'],
-  'Memory': ['memory_save', 'memory_search', 'memory_list', 'memory_update_longterm'],
-  'Planning': ['todo_write', 'todo_read'],
-  'Team (Manager)': ['team_list', 'team_status', 'delegate_message', 'create_task'],
-  'Subagents': ['spawn_subagent', 'spawn_subagents'],
-  'LLM': ['llm_list_providers', 'llm_switch_model', 'llm_switch_default_provider', 'llm_add_provider', 'llm_edit_provider', 'llm_add_model'],
-};
+const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
+  { id: 'files', prefixes: ['file_read', 'file_write', 'file_edit', 'apply_patch'] },
+  { id: 'search', prefixes: ['grep_search', 'glob_find', 'list_directory'] },
+  { id: 'runtime', prefixes: ['shell_execute', 'background_exec', 'process'] },
+  { id: 'web', prefixes: ['web_search', 'web_fetch', 'web_extract'] },
+  { id: 'tasks', prefixes: ['task_create', 'task_list', 'task_update', 'task_get', 'task_assign', 'task_note', 'task_comment', 'task_submit_review', 'subtask_create', 'subtask_complete', 'subtask_list', 'task_check_duplicates', 'task_cleanup_duplicates', 'task_board_health'] },
+  { id: 'requirements', prefixes: ['requirement_propose', 'requirement_list', 'requirement_update_status', 'requirement_comment'] },
+  { id: 'projects', prefixes: ['list_projects', 'get_project', 'project_info'] },
+  { id: 'deliverables', prefixes: ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'] },
+  { id: 'communication', prefixes: ['agent_send_message', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats', 'agent_broadcast_status', 'agent_delegate_task'] },
+  { id: 'memory', prefixes: ['memory_save', 'memory_search', 'memory_list', 'memory_update_longterm'] },
+  { id: 'planning', prefixes: ['todo_write', 'todo_read'] },
+  { id: 'teamManager', prefixes: ['team_list', 'team_status', 'delegate_message', 'create_task'] },
+  { id: 'subagents', prefixes: ['spawn_subagent', 'spawn_subagents'] },
+  { id: 'llm', prefixes: ['llm_list_providers', 'llm_switch_model', 'llm_switch_default_provider', 'llm_add_provider', 'llm_edit_provider', 'llm_add_model'] },
+];
 
-function categorizeTools(tools: AgentToolInfo[]): Array<{ category: string; tools: AgentToolInfo[] }> {
+function categorizeTools(tools: AgentToolInfo[], t: TFunction): Array<{ category: string; tools: AgentToolInfo[] }> {
   const categorized = new Map<string, AgentToolInfo[]>();
   const used = new Set<string>();
-  for (const [cat, names] of Object.entries(TOOL_CATEGORIES)) {
-    const matched = tools.filter(t => names.some(n => t.name.startsWith(n)));
-    if (matched.length > 0) { categorized.set(cat, matched); matched.forEach(m => used.add(m.name)); }
+  for (const { id, prefixes } of TOOL_CATEGORY_DEF) {
+    const catLabel = t(`agent:toolCategories.${id}`);
+    const matched = tools.filter(tool => prefixes.some(n => tool.name.startsWith(n)));
+    if (matched.length > 0) { categorized.set(catLabel, matched); matched.forEach(m => used.add(m.name)); }
   }
-  const remaining = tools.filter(t => !used.has(t.name));
+  const remaining = tools.filter(tool => !used.has(tool.name));
   for (const tool of remaining) {
     const sep = tool.name.indexOf('__');
     if (sep > 0) {
       const server = tool.name.slice(0, sep);
-      const label = `MCP: ${server}`;
+      const label = t('agent:toolCategories.mcp', { server });
       if (!categorized.has(label)) categorized.set(label, []);
       categorized.get(label)!.push(tool);
       used.add(tool.name);
     }
   }
-  const other = tools.filter(t => !used.has(t.name));
-  if (other.length > 0) categorized.set('Other', other);
-  return [...categorized.entries()].map(([category, tools]) => ({ category, tools }));
+  const other = tools.filter(tool => !used.has(tool.name));
+  if (other.length > 0) categorized.set(t('agent:toolCategories.other'), other);
+  return [...categorized.entries()].map(([category, catTools]) => ({ category, tools: catTools }));
 }
 
 function ToolsTab({ tools }: { tools: AgentToolInfo[] }) {
-  const groups = categorizeTools(tools);
+  const { t } = useTranslation(['agent', 'common']);
+  const groups = categorizeTools(tools, t);
   return (
     <div className="space-y-4">
-      <div className="text-xs text-fg-tertiary">{tools.length} tools registered</div>
+      <div className="text-xs text-fg-tertiary">{t('agent:profilePage.toolsTab.registeredCount', { count: tools.length })}</div>
       {groups.map(g => (
         <Card key={g.category} title={g.category}>
           <div className="grid grid-cols-2 gap-2">
-            {g.tools.map(t => (
-              <div key={t.name} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
+            {g.tools.map(tool => (
+              <div key={tool.name} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
                 <div className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
                 <div className="flex-1 min-w-0">
-                  <div className="text-xs font-medium font-mono">{t.name}</div>
-                  <div className="text-[10px] text-fg-tertiary truncate">{t.description}</div>
+                  <div className="text-xs font-medium font-mono">{tool.name}</div>
+                  <div className="text-[10px] text-fg-tertiary truncate">{tool.description}</div>
                 </div>
               </div>
             ))}
           </div>
         </Card>
       ))}
-      {tools.length === 0 && <div className="text-center py-12 text-fg-tertiary text-sm">No tools registered</div>}
+      {tools.length === 0 && <div className="text-center py-12 text-fg-tertiary text-sm">{t('agent:profilePage.toolsTab.noToolsRegistered')}</div>}
     </div>
   );
 }
@@ -1016,6 +1047,7 @@ interface SkillDetail {
 }
 
 function SkillsTab({ agent }: { agent: AgentDetail }) {
+  const { t } = useTranslation(['agent', 'common']);
   const proficiency = agent.proficiency ?? {};
   const [expandedSkill, setExpandedSkill] = useState<string | null>(null);
   const [skillDetail, setSkillDetail] = useState<SkillDetail | null>(null);
@@ -1055,6 +1087,12 @@ function SkillsTab({ agent }: { agent: AgentDetail }) {
   const renderSkillRow = (skill: { name: string; description: string; category: string; builtIn?: boolean; alwaysOn?: boolean }) => {
     const prof = proficiency[skill.name];
     const rate = prof && prof.uses > 0 ? Math.round(prof.successes / prof.uses * 100) : null;
+    const profLine = prof && (
+      <div className="text-[10px] text-fg-tertiary mt-0.5">
+        {t('agent:profilePage.skillsTab.usesStats', { uses: prof.uses, successes: prof.successes })}
+        {prof.lastUsed && t('agent:profilePage.skillsTab.lastUsed', { date: new Date(prof.lastUsed).toLocaleDateString() })}
+      </div>
+    );
     const isExpanded = expandedSkill === skill.name;
 
     return (
@@ -1070,17 +1108,17 @@ function SkillsTab({ agent }: { agent: AgentDetail }) {
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium">{skill.name}</span>
               {skill.alwaysOn && (
-                <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-green-500/15 text-green-500">always-on</span>
+                <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-green-500/15 text-green-500">{t('agent:profilePage.skillsTab.alwaysOn')}</span>
               )}
               {skill.builtIn && !skill.alwaysOn && (
-                <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-surface-overlay/40 text-fg-tertiary">built-in</span>
+                <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-surface-overlay/40 text-fg-tertiary">{t('agent:profilePage.skillsTab.builtIn')}</span>
               )}
               {!skill.builtIn && (
-                <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-brand-500/15 text-brand-400">installed</span>
+                <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-brand-500/15 text-brand-400">{t('agent:profilePage.skillsTab.installed')}</span>
               )}
             </div>
             <div className="text-[10px] text-fg-tertiary mt-0.5 truncate">{skill.description}</div>
-            {prof && <div className="text-[10px] text-fg-tertiary mt-0.5">{prof.uses} uses · {prof.successes} successes{prof.lastUsed && ` · last ${new Date(prof.lastUsed).toLocaleDateString()}`}</div>}
+            {profLine}
           </div>
           {rate !== null && (
             <div className="flex items-center gap-2 shrink-0">
@@ -1095,7 +1133,7 @@ function SkillsTab({ agent }: { agent: AgentDetail }) {
         {isExpanded && (
           <div className="ml-6 mt-1 mb-2 p-4 bg-surface-elevated/30 rounded-lg border border-border-default/20 space-y-3">
             {detailLoading ? (
-              <div className="text-[10px] text-fg-tertiary py-3 text-center">Loading skill details…</div>
+              <div className="text-[10px] text-fg-tertiary py-3 text-center">{t('agent:profilePage.skillsTab.loadingDetails')}</div>
             ) : skillDetail ? (
               <>
                 <div className="flex items-center gap-2 flex-wrap">
@@ -1103,7 +1141,7 @@ function SkillsTab({ agent }: { agent: AgentDetail }) {
                     {skillDetail.category}
                   </span>
                   <span className="text-[10px] text-fg-tertiary">v{skillDetail.version}</span>
-                  {skillDetail.author && <span className="text-[10px] text-fg-tertiary">by {skillDetail.author}</span>}
+                  {skillDetail.author && <span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.skillsTab.byAuthor', { author: skillDetail.author })}</span>}
                   {skillDetail.requiredPermissions?.map(p => (
                     <span key={p} className="px-1.5 py-0.5 bg-amber-500/10 text-amber-600 text-[10px] rounded">{p}</span>
                   ))}
@@ -1121,7 +1159,7 @@ function SkillsTab({ agent }: { agent: AgentDetail }) {
                 {(skillDetail.toolDetails ?? skillDetail.tools ?? []).length > 0 && (
                   <div>
                     <div className="text-[10px] text-fg-tertiary font-semibold uppercase tracking-wider mb-2">
-                      Tools ({(skillDetail.toolDetails ?? skillDetail.tools ?? []).length})
+                      {t('agent:profilePage.skillsTab.toolsHeading', { count: (skillDetail.toolDetails ?? skillDetail.tools ?? []).length })}
                     </div>
                     <div className="space-y-1.5">
                       {(skillDetail.toolDetails ?? skillDetail.tools ?? []).map(tool => (
@@ -1136,7 +1174,7 @@ function SkillsTab({ agent }: { agent: AgentDetail }) {
               </>
             ) : (
               <div className="text-[10px] text-fg-tertiary py-3 text-center">
-                Skill details not available (skill may not be registered in the store)
+                {t('agent:profilePage.skillsTab.detailsUnavailable')}
               </div>
             )}
           </div>
@@ -1155,7 +1193,7 @@ function SkillsTab({ agent }: { agent: AgentDetail }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div className="text-xs text-fg-tertiary">{allSkills.length} skills installed — descriptions auto-injected into agent context</div>
+        <div className="text-xs text-fg-tertiary">{t('agent:profilePage.skillsTab.installedCount', { count: allSkills.length })}</div>
       </div>
       {sortedCategories.map(([cat, skills]) => (
         <Card key={cat} title={<span className="capitalize">{cat} <span className="text-fg-tertiary font-normal">({skills.length})</span></span>}>
@@ -1164,7 +1202,7 @@ function SkillsTab({ agent }: { agent: AgentDetail }) {
           </div>
         </Card>
       ))}
-      {allSkills.length === 0 && <Empty text="No skills installed" />}
+      {allSkills.length === 0 && <Empty text={t('agent:profilePage.skillsTab.noSkills')} />}
     </div>
   );
 }
@@ -1172,6 +1210,7 @@ function SkillsTab({ agent }: { agent: AgentDetail }) {
 // ─── Memory Tab ──────────────────────────────────────────────────────────────
 
 function MemoryTab({ agentId }: { agentId: string }) {
+  const { t } = useTranslation(['agent', 'common']);
   const [data, setData] = useState<AgentMemorySummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [section, setSection] = useState<'entries' | 'sessions' | 'daily' | 'longterm'>('entries');
@@ -1206,20 +1245,20 @@ function MemoryTab({ agentId }: { agentId: string }) {
 
   const saveLong = async () => {
     setSaving(true);
-    await api.agents.updateLongTermMemory(agentId, 'User-edited', longContent).catch(() => {});
+    await api.agents.updateLongTermMemory(agentId, t('agent:profilePage.memoryTab.userEditedSource'), longContent).catch(() => {});
     setSaving(false);
     setEditingLong(false);
     loadData();
   };
 
-  if (loading) return <div className="text-xs text-fg-tertiary py-8 text-center">Loading memory...</div>;
-  if (!data) return <div className="text-xs text-fg-tertiary py-8 text-center">Failed to load memory data</div>;
+  if (loading) return <div className="text-xs text-fg-tertiary py-8 text-center">{t('agent:profilePage.memoryTab.loading')}</div>;
+  if (!data) return <div className="text-xs text-fg-tertiary py-8 text-center">{t('agent:profilePage.memoryTab.loadFailed')}</div>;
 
   const sectionTabs = [
-    { key: 'entries' as const, label: `Recent (${data.entries.length})` },
-    { key: 'sessions' as const, label: `Sessions (${data.sessions.length})` },
-    { key: 'daily' as const, label: 'Daily Logs' },
-    { key: 'longterm' as const, label: 'Long-term' },
+    { key: 'entries' as const, label: t('agent:profilePage.memoryTab.recent', { count: data.entries.length }) },
+    { key: 'sessions' as const, label: t('agent:profilePage.memoryTab.sessions', { count: data.sessions.length }) },
+    { key: 'daily' as const, label: t('agent:profilePage.memoryTab.dailyLogs') },
+    { key: 'longterm' as const, label: t('agent:profilePage.memoryTab.longTerm') },
   ];
 
   return (
@@ -1233,8 +1272,8 @@ function MemoryTab({ agentId }: { agentId: string }) {
       </div>
 
       {section === 'entries' && (
-        <Card title="Recent Memory Entries">
-          {data.entries.length === 0 ? <Empty text="No memory entries" /> : (
+        <Card title={t('agent:profilePage.memoryTab.recentEntries')}>
+          {data.entries.length === 0 ? <Empty text={t('agent:profilePage.memoryTab.noEntries')} /> : (
             <div className="space-y-1.5 max-h-[600px] overflow-y-auto">
               {data.entries.map((e, i) => {
                 const isExpanded = expandedEntryIdx === i;
@@ -1260,8 +1299,8 @@ function MemoryTab({ agentId }: { agentId: string }) {
                       <div className="mx-3 mt-1 mb-2 p-3 bg-surface-elevated/30 rounded-lg border border-border-default/20">
                         <pre className="text-xs text-fg-secondary whitespace-pre-wrap font-mono leading-relaxed break-words">{e.content}</pre>
                         <div className="flex gap-3 mt-2 pt-2 border-t border-border-default/30 text-[10px] text-fg-tertiary">
-                          <span>Type: {e.type}</span>
-                          {e.importance != null && <span>Importance: {e.importance}</span>}
+                          <span>{t('agent:profilePage.overview.labels.type')}: {e.type}</span>
+                          {e.importance != null && <span>{t('agent:profilePage.overview.labels.importance')}: {e.importance}</span>}
                           <span>{new Date(e.timestamp).toLocaleString()}</span>
                         </div>
                       </div>
@@ -1275,8 +1314,8 @@ function MemoryTab({ agentId }: { agentId: string }) {
       )}
 
       {section === 'sessions' && (
-        <Card title="Chat Sessions">
-          {data.sessions.length === 0 ? <Empty text="No sessions" /> : (
+        <Card title={t('agent:profilePage.memoryTab.chatSessions')}>
+          {data.sessions.length === 0 ? <Empty text={t('agent:profilePage.memoryTab.noSessions')} /> : (
             <div className="space-y-1.5 max-h-[600px] overflow-y-auto">
               {data.sessions.map(s => {
                 const isExpanded = expandedSessionId === s.id;
@@ -1297,16 +1336,16 @@ function MemoryTab({ agentId }: { agentId: string }) {
                       className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-surface-elevated/20 hover:bg-surface-elevated/40 transition-colors cursor-pointer text-left"
                     >
                       <div className="text-xs text-fg-secondary font-mono flex-1 truncate">{s.id}</div>
-                      <span className="text-[10px] text-fg-tertiary">{s.messageCount} msgs</span>
+                      <span className="text-[10px] text-fg-tertiary">{s.messageCount} {t('agent:profilePage.memoryTab.msgs')}</span>
                       <span className="text-[10px] text-fg-tertiary">{new Date(s.updatedAt).toLocaleDateString()}</span>
                       <span className="text-fg-tertiary text-[10px]">{isExpanded ? '▲' : '▼'}</span>
                     </button>
                     {isExpanded && (
                       <div className="mx-3 mt-1 mb-2 bg-surface-elevated/30 rounded-lg border border-border-default/20 max-h-96 overflow-y-auto">
                         {sessionLoading ? (
-                          <div className="text-[10px] text-fg-tertiary py-3 text-center">Loading messages...</div>
+                          <div className="text-[10px] text-fg-tertiary py-3 text-center">{t('agent:profilePage.memoryTab.loadingMessages')}</div>
                         ) : sessionMessages.length === 0 ? (
-                          <div className="text-[10px] text-fg-tertiary py-3 text-center">No messages in this session</div>
+                          <div className="text-[10px] text-fg-tertiary py-3 text-center">{t('agent:profilePage.memoryTab.noMessagesInSession')}</div>
                         ) : (() => {
                           const toolResultMap = new Map<string, string>();
                           for (const m of sessionMessages) {
@@ -1318,7 +1357,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
                                 <div key={i} className="px-3 py-2">
                                   {(m.role === 'user' || m.role === 'system') && (
                                     <div>
-                                      <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1 ${m.role === 'user' ? 'bg-blue-500/15 text-blue-600' : 'bg-surface-overlay text-fg-secondary'}`}>{m.role}</span>
+                                      <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1 ${m.role === 'user' ? 'bg-blue-500/15 text-blue-600' : 'bg-surface-overlay text-fg-secondary'}`}>{t(`agent:profilePage.memoryTab.roles.${m.role}`, { defaultValue: m.role })}</span>
                                       <div className="text-xs text-fg-secondary"><MarkdownMessage content={m.content} className="text-xs text-fg-secondary" /></div>
                                     </div>
                                   )}
@@ -1326,7 +1365,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
                                     <div className="space-y-1">
                                       {m.content && (
                                         <div>
-                                          <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1 bg-green-500/15 text-green-600">assistant</span>
+                                          <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1 bg-green-500/15 text-green-600">{t('agent:profilePage.memoryTab.roles.assistant')}</span>
                                           <div className="text-xs text-fg-secondary"><MarkdownMessage content={m.content} className="text-xs text-fg-secondary" /></div>
                                         </div>
                                       )}
@@ -1363,38 +1402,38 @@ function MemoryTab({ agentId }: { agentId: string }) {
       )}
 
       {section === 'daily' && (
-        <Card title="Daily Logs" action={
+        <Card title={t('agent:profilePage.memoryTab.dailyLogs')} action={
           editingDaily
             ? <div className="flex gap-2">
-                <button onClick={() => setEditingDaily(false)} className="text-xs text-fg-tertiary">Cancel</button>
-                <button onClick={saveDaily} disabled={saving} className="text-xs text-brand-500">{saving ? 'Saving...' : 'Save'}</button>
+                <button onClick={() => setEditingDaily(false)} className="text-xs text-fg-tertiary">{t('common:cancel')}</button>
+                <button onClick={saveDaily} disabled={saving} className="text-xs text-brand-500">{saving ? t('common:saving') : t('common:save')}</button>
               </div>
-            : <button onClick={() => setEditingDaily(true)} className="text-xs text-fg-tertiary hover:text-fg-secondary">Edit</button>
+            : <button onClick={() => setEditingDaily(true)} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:edit')}</button>
         }>
           {editingDaily ? (
             <textarea value={dailyContent} onChange={e => setDailyContent(e.target.value)}
               className="w-full h-64 bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-fg-secondary leading-relaxed resize-y focus:border-brand-500 outline-none" />
           ) : data.recentDailyLogs ? (
             <pre className="text-xs text-fg-secondary whitespace-pre-wrap font-mono leading-relaxed bg-surface-elevated/30 rounded-lg p-4 max-h-96 overflow-y-auto">{data.recentDailyLogs}</pre>
-          ) : <Empty text="No daily logs" />}
+          ) : <Empty text={t('agent:profilePage.memoryTab.noDailyLogs')} />}
         </Card>
       )}
 
       {section === 'longterm' && (
-        <Card title="Long-term Memory" action={
+        <Card title={t('agent:profilePage.memoryTab.longTermTitle')} action={
           editingLong
             ? <div className="flex gap-2">
-                <button onClick={() => setEditingLong(false)} className="text-xs text-fg-tertiary">Cancel</button>
-                <button onClick={saveLong} disabled={saving} className="text-xs text-brand-500">{saving ? 'Saving...' : 'Save'}</button>
+                <button onClick={() => setEditingLong(false)} className="text-xs text-fg-tertiary">{t('common:cancel')}</button>
+                <button onClick={saveLong} disabled={saving} className="text-xs text-brand-500">{saving ? t('common:saving') : t('common:save')}</button>
               </div>
-            : <button onClick={() => setEditingLong(true)} className="text-xs text-fg-tertiary hover:text-fg-secondary">Edit</button>
+            : <button onClick={() => setEditingLong(true)} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:edit')}</button>
         }>
           {editingLong ? (
             <textarea value={longContent} onChange={e => setLongContent(e.target.value)}
               className="w-full h-64 bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-fg-secondary leading-relaxed resize-y focus:border-brand-500 outline-none" />
           ) : data.longTermMemory ? (
             <pre className="text-xs text-fg-secondary whitespace-pre-wrap font-mono leading-relaxed bg-surface-elevated/30 rounded-lg p-4 max-h-96 overflow-y-auto">{data.longTermMemory}</pre>
-          ) : <Empty text="No long-term memory stored" />}
+          ) : <Empty text={t('agent:profilePage.memoryTab.noLongTerm')} />}
         </Card>
       )}
     </div>
@@ -1404,6 +1443,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
 // ─── Heartbeat Tab ───────────────────────────────────────────────────────────
 
 function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?: AgentHeartbeatInfo }) {
+  const { t } = useTranslation(['agent', 'common']);
   const [data, setData] = useState<AgentHeartbeatInfo | null>(initialData ?? null);
   const [loading, setLoading] = useState(!initialData);
   const [recentRuns, setRecentRuns] = useState<ActivitySummary[]>([]);
@@ -1446,8 +1486,8 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
     setTriggering(false);
   };
 
-  if (loading) return <div className="text-xs text-fg-tertiary py-8 text-center">Loading heartbeat data...</div>;
-  if (!data) return <div className="text-xs text-fg-tertiary py-8 text-center">No heartbeat data available</div>;
+  if (loading) return <div className="text-xs text-fg-tertiary py-8 text-center">{t('agent:profilePage.heartbeatTab.loading')}</div>;
+  if (!data) return <div className="text-xs text-fg-tertiary py-8 text-center">{t('agent:profilePage.heartbeatTab.noData')}</div>;
 
   const formatDuration = (ms?: number) => {
     if (!ms) return null;
@@ -1461,37 +1501,37 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
     const ms = Date.now() - new Date(iso).getTime();
     if (ms < 0) {
       const abs = Math.abs(ms);
-      if (abs < 60000) return `in ${Math.ceil(abs / 1000)}s`;
-      if (abs < 3600000) return `in ${Math.ceil(abs / 60000)}m`;
-      return `in ${(abs / 3600000).toFixed(1)}h`;
+      if (abs < 60000) return t('agent:profilePage.relative.inSeconds', { count: Math.ceil(abs / 1000) });
+      if (abs < 3600000) return t('agent:profilePage.relative.inMinutes', { count: Math.ceil(abs / 60000) });
+      return t('agent:profilePage.relative.inHours', { hours: (abs / 3600000).toFixed(1) });
     }
-    if (ms < 60000) return `${Math.floor(ms / 1000)}s ago`;
-    if (ms < 3600000) return `${Math.floor(ms / 60000)}m ago`;
-    return `${(ms / 3600000).toFixed(1)}h ago`;
+    if (ms < 60000) return t('agent:profilePage.relative.secondsAgo', { count: Math.floor(ms / 1000) });
+    if (ms < 3600000) return t('agent:profilePage.relative.minutesAgo', { count: Math.floor(ms / 60000) });
+    return t('agent:profilePage.relative.hoursAgo', { hours: (ms / 3600000).toFixed(1) });
   };
 
   return (
     <div className="space-y-4">
       {/* Scheduler + Controls */}
-      <Card title="Heartbeat Scheduler" action={
+      <Card title={t('agent:profilePage.heartbeatTab.scheduler')} action={
         <div className="flex items-center gap-2">
           <button onClick={refresh} className="text-[10px] text-fg-tertiary hover:text-fg-secondary transition-colors">
-            Refresh
+            {t('common:refresh')}
           </button>
           <button
             onClick={handleTrigger}
             disabled={triggering || !data.running}
             className="text-[10px] px-2.5 py-1 rounded-md bg-blue-600/20 text-blue-600 hover:bg-blue-600/30 border border-blue-500/30 transition-colors disabled:opacity-40"
           >
-            {triggering ? 'Triggering...' : 'Trigger Now'}
+            {triggering ? t('agent:profilePage.heartbeatTab.triggering') : t('agent:profilePage.heartbeatTab.triggerNow')}
           </button>
         </div>
       }>
         <div className="grid grid-cols-4 gap-4">
-          <StatBox label="Status" value={data.running ? 'Running' : 'Stopped'} color={data.running ? 'green' : 'gray'} />
-          <StatBox label="Interval" value={formatDuration(data.intervalMs) ?? '—'} />
-          <StatBox label="Last Run" value={data.lastHeartbeat ? formatRelativeTime(data.lastHeartbeat) ?? '—' : 'Never'} />
-          <StatBox label="Next Run" value={data.nextRunAt ? formatRelativeTime(data.nextRunAt) ?? '—' : data.running ? 'Pending' : '—'} />
+          <StatBox label={t('agent:profilePage.overview.labels.status')} value={data.running ? t('agent:profilePage.heartbeatTab.running') : t('agent:profilePage.heartbeatTab.stopped')} color={data.running ? 'green' : 'gray'} />
+          <StatBox label={t('agent:profilePage.heartbeatTab.interval')} value={formatDuration(data.intervalMs) ?? t('agent:profilePage.emDash')} />
+          <StatBox label={t('agent:profilePage.heartbeatTab.lastRun')} value={data.lastHeartbeat ? formatRelativeTime(data.lastHeartbeat) ?? t('agent:profilePage.emDash') : t('agent:profilePage.never')} />
+          <StatBox label={t('agent:profilePage.heartbeatTab.nextRun')} value={data.nextRunAt ? formatRelativeTime(data.nextRunAt) ?? t('agent:profilePage.emDash') : data.running ? t('agent:profilePage.heartbeatTab.pending') : t('agent:profilePage.emDash')} />
         </div>
         {triggerMsg && (
           <div className="mt-3 text-[11px] text-blue-600 bg-blue-500/10 border border-blue-500/20 rounded-lg px-3 py-2">
@@ -1502,7 +1542,7 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
 
       {/* Last Heartbeat Summary */}
       {data.lastSummary && (
-        <Card title="Last Heartbeat Summary" action={
+        <Card title={t('agent:profilePage.heartbeatTab.lastSummary')} action={
           data.lastSummaryAt ? <span className="text-[10px] text-fg-tertiary">{new Date(data.lastSummaryAt).toLocaleString()}</span> : undefined
         }>
           <div className="bg-surface-primary/50 rounded-lg px-4 py-3">
@@ -1513,7 +1553,7 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
 
       {/* Recent Runs */}
       {recentRuns.length > 0 ? (
-        <Card title="Recent Runs" action={<span className="text-[10px] text-fg-tertiary">{recentRuns.length} runs this session</span>}>
+        <Card title={t('agent:profilePage.heartbeatTab.recentRuns')} action={<span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.heartbeatTab.runsThisSession', { count: recentRuns.length })}</span>}>
           <div className="divide-y divide-gray-800/50 -mx-5">
             {[...recentRuns].reverse().map(act => {
               const isExpanded = expandedRunId === act.id;
@@ -1525,7 +1565,7 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
                   >
                     <span className="w-2 h-2 rounded-full shrink-0 bg-blue-400" />
                     <span className="text-xs text-fg-secondary flex-1 truncate">{act.label}</span>
-                    <span className="text-[10px] text-fg-tertiary shrink-0">{act.logCount} actions</span>
+                    <span className="text-[10px] text-fg-tertiary shrink-0">{t('agent:profilePage.heartbeatTab.actionsCount', { count: act.logCount })}</span>
                     <span className="text-[10px] text-fg-tertiary shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
                     <svg className={`w-3 h-3 text-fg-tertiary shrink-0 transition-transform ${isExpanded ? 'rotate-180' : ''}`} viewBox="0 0 12 12" fill="currentColor">
                       <path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -1542,19 +1582,19 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
           </div>
         </Card>
       ) : !data.lastHeartbeat ? (
-        <Card title="Recent Runs">
+        <Card title={t('agent:profilePage.heartbeatTab.recentRuns')}>
           <div className="flex flex-col items-center justify-center py-8 text-center">
             <div className="text-xl mb-2 opacity-40">♡</div>
-            <p className="text-xs text-fg-tertiary">No heartbeat runs yet this session.</p>
+            <p className="text-xs text-fg-tertiary">{t('agent:profilePage.heartbeatTab.noRunsYet')}</p>
             <p className="text-[10px] text-fg-tertiary mt-1">
               {data.running
-                ? `First heartbeat will trigger in ~${formatDuration(data.intervalMs - data.uptimeMs % data.intervalMs) ?? 'soon'}.`
-                : 'Heartbeat scheduler is stopped.'}
+                ? t('agent:profilePage.heartbeatTab.firstHeartbeatSoon', { when: formatDuration(data.intervalMs - data.uptimeMs % data.intervalMs) ?? t('agent:profilePage.heartbeatTab.soon') })
+                : t('agent:profilePage.heartbeatTab.schedulerStopped')}
             </p>
             {data.running && (
               <button onClick={handleTrigger} disabled={triggering}
                 className="mt-3 text-[10px] px-3 py-1.5 rounded-md bg-blue-600/15 text-blue-600 hover:bg-blue-600/25 border border-blue-500/25 transition-colors disabled:opacity-40">
-                {triggering ? 'Triggering...' : 'Run First Heartbeat Now'}
+                {triggering ? t('agent:profilePage.heartbeatTab.triggering') : t('agent:profilePage.heartbeatTab.runFirstNow')}
               </button>
             )}
           </div>

@@ -1,0 +1,90 @@
+{
+  "title": "交付物",
+  "create": "+ 创建",
+  "searchPlaceholder": "搜索交付物…",
+  "filters": {
+    "allTypes": "全部类型",
+    "allProjects": "全部项目",
+    "active": "活跃",
+    "verified": "已验证",
+    "outdated": "已过时",
+    "group": "分组："
+  },
+  "groupBy": {
+    "date": "日期",
+    "project": "项目",
+    "agent": "智能体",
+    "type": "类型"
+  },
+  "expandAll": "▶ 展开",
+  "collapseAll": "▼ 折叠",
+  "empty": {
+    "title": "暂无交付物",
+    "subtitle": "任务完成时会自动创建交付物，也可手动创建",
+    "createFirst": "+ 创建第一个"
+  },
+  "detail": {
+    "selectToView": "请选择交付物以查看详情",
+    "details": "详情",
+    "verify": "验证",
+    "flagOutdated": "标记为已过时",
+    "flagging": "正在标记…",
+    "openInBuilder": "在 Builder 中打开",
+    "noContent": "无内容",
+    "cannotPreview": "无法在浏览器中预览此 {{type}}。",
+    "loadingPreview": "正在加载预览…",
+    "artifactDirectory": "产物目录",
+    "copyFailed": "复制失败 — 请长按手动复制",
+    "failedToOpen": "打开失败",
+    "failedToOpenBrowser": "无法打开文件浏览器",
+    "openInFileBrowser": "在文件浏览器中打开",
+    "revealInFinder": "在访达中显示",
+    "copyPath": "复制路径到剪贴板"
+  },
+  "diffStats": {
+    "title": "差异统计",
+    "files": "{{count}} 个文件"
+  },
+  "testResults": {
+    "title": "测试",
+    "passed": "{{count}} 通过",
+    "failed": "{{count}} 失败",
+    "skipped": "{{count}} 跳过"
+  },
+  "links": {
+    "title": "链接",
+    "task": "任务：{{id}}",
+    "agent": "智能体：{{name}}",
+    "project": "项目：{{name}}"
+  },
+  "metadata": {
+    "created": "创建时间：",
+    "updated": "更新时间：",
+    "accessed": "访问次数：{{count}} 次",
+    "id": "ID：{{id}}"
+  },
+  "noProject": "无项目",
+  "createModal": {
+    "title": "创建交付物",
+    "type": "类型",
+    "titleField": "标题",
+    "titleRequired": "标题为必填项",
+    "titlePlaceholder": "清晰、可检索的标题",
+    "reference": "引用",
+    "referenceHint": "文件路径、URL、分支名",
+    "referencePlaceholder": "/path/to/file 或 https://...",
+    "summary": "摘要",
+    "summaryHint": "Markdown",
+    "summaryPlaceholder": "描述该交付物…",
+    "tags": "标签",
+    "tagsHint": "逗号分隔",
+    "tagsPlaceholder": "react, api, docs",
+    "project": "项目",
+    "created": "交付物已创建",
+    "required": "*"
+  },
+  "count": {
+    "partial": "{{loaded}} / {{total}} 个交付物",
+    "total": "共 {{total}} 个交付物"
+  }
+}

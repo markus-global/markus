@@ -1,4 +1,5 @@
 import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { FilePathLink, looksLikeFilePath } from './FilePathLink.tsx';

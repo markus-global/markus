@@ -1,4 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import {
   api, wsClient,
   type AgentInfo, type AgentToolEvent, type StreamCommitEvent, type HumanUserInfo, type ExternalAgentInfo,
@@ -160,6 +162,7 @@ function agentInitials(name: string) {
 }
 
 function ChatAgentLink({ name, agentId, agents, onViewProfile }: { name: string; agentId?: string; agents: AgentInfo[]; onViewProfile?: (agentId: string) => void }) {
+  const { t } = useTranslation(['team', 'common']);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
   const agent = agentId ? agents.find(a => a.id === agentId) : agents.find(a => a.name === name);
@@ -184,7 +187,7 @@ function ChatAgentLink({ name, agentId, agents, onViewProfile }: { name: string;
             <Avatar name={agent.name} avatarUrl={agent.avatarUrl} size={28} bgClass="bg-brand-500/15 text-brand-600" />
             <div className="flex-1 min-w-0">
               <div className="text-xs text-fg-primary font-medium truncate">{agent.name}</div>
-              <div className="text-[10px] text-fg-tertiary">{agent.role} · {agent.agentRole ?? 'worker'}</div>
+              <div className="text-[10px] text-fg-tertiary">{agent.role} · {agent.agentRole ?? t('page.workerRole')}</div>
             </div>
             <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-green-400'}`} />
           </div>
@@ -192,7 +195,7 @@ function ChatAgentLink({ name, agentId, agents, onViewProfile }: { name: string;
             onClick={() => { setOpen(false); onViewProfile?.(agent.id); }}
             className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
           >
-            View Profile →
+            {t('page.viewProfileArrow')}
           </button>
         </div>
       )}
@@ -207,6 +210,7 @@ function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
   onClose: () => void;
   onViewProfile: (agentId: string) => void;
 }) {
+  const { t } = useTranslation(['common', 'team']);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -217,7 +221,7 @@ function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
   }, [onClose]);
 
   const statusColor = agent.status === 'idle' ? 'bg-green-400' : agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-gray-500';
-  const statusLabel = agent.status === 'idle' ? 'Online' : agent.status === 'working' ? 'Working' : agent.status === 'error' ? 'Error' : agent.status === 'paused' ? 'Paused' : 'Offline';
+  const statusLabel = agent.status === 'idle' ? t('status.online') : agent.status === 'working' ? t('status.working') : agent.status === 'error' ? t('status.error') : agent.status === 'paused' ? t('status.paused') : t('status.offline');
 
   const adjustRef = useCallback((el: HTMLDivElement | null) => {
     if (!el) return;
@@ -253,14 +257,14 @@ function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
         onClick={() => { onClose(); onViewProfile(agent.id); }}
         className="w-full py-1.5 text-xs text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg transition-colors text-center"
       >
-        View Profile →
+        {t('page.viewProfileArrow')}
       </button>
     </div>
   );
 }
 
 /** Convert a raw LLM/network error into a user-friendly message with the actual reason */
-function friendlyAgentError(err: unknown): string {
+function friendlyAgentError(err: unknown, t: TFunction): string {
   const raw = String(err);
 
   if (raw.includes('AbortError') || raw.includes('abort'))
@@ -283,15 +287,15 @@ function friendlyAgentError(err: unknown): string {
   }
 
   if (raw.includes('402') || /insufficient.?balance/i.test(raw))
-    return `⚠ AI service error: ${detail || 'Insufficient credits'}. Please top up the API balance or contact your administrator.`;
+    return t('errors.ai402', { detail: detail || t('errors.defaultInsufficientCredits') });
   if (raw.includes('401') || /unauthorized|invalid.?api.?key/i.test(raw))
-    return `⚠ AI service authentication failed: ${detail || 'Invalid API key'}. Please check the configuration.`;
+    return t('errors.ai401', { detail: detail || t('errors.defaultInvalidApiKey') });
   if (raw.includes('429') || /rate.?limit/i.test(raw))
-    return `⚠ Rate limit exceeded: ${detail || 'Too many requests'}. Please wait a moment and try again.`;
+    return t('errors.ai429', { detail: detail || t('errors.defaultTooManyRequests') });
   if (raw.includes('503') || /service.?unavailable/i.test(raw))
-    return `⚠ AI service unavailable: ${detail || 'Service temporarily down'}. Please try again later.`;
+    return t('errors.ai503', { detail: detail || t('errors.defaultServiceDown') });
 
-  return `⚠ AI service error: ${detail || raw.slice(0, 120)}`;
+  return t('errors.aiGeneric', { detail: detail || raw.slice(0, 120) });
 }
 
 // ─── AgentMessageBody ──────────────────────────────────────────────────────────
@@ -310,6 +314,7 @@ function MessageActions({
   /** Only the most recent agent message should offer Retry/Resume/Re-ask */
   isLastAgentMsg?: boolean;
 }) {
+  const { t } = useTranslation(['team', 'common']);
   const isError = msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'));
   const isStopped = msg.isStopped;
   const canRetry = isLastAgentMsg !== false;
@@ -319,24 +324,24 @@ function MessageActions({
       <button
         onClick={() => onCopy(msg)}
         className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay/60 transition-colors"
-        title="Copy"
+        title={t('copy')}
       >
         {isCopied ? (
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12" /></svg>
         ) : (
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" /></svg>
         )}
-        {isCopied ? 'Copied' : 'Copy'}
+        {isCopied ? t('copied') : t('copy')}
       </button>
       {/* Resume — for the last agent message (continue from where it left off) */}
       {canRetry && onResume && (
         <button
           onClick={() => onResume(msg)}
           className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-green-500 hover:text-green-400 hover:bg-green-500/10 transition-colors"
-          title="Resume"
+          title={t('page.messageActions.resumeTitle')}
         >
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-          Resume
+          {t('page.messageActions.resumeTitle')}
         </button>
       )}
       {/* Re-ask — for stopped messages (only on latest agent msg) */}
@@ -344,10 +349,10 @@ function MessageActions({
         <button
           onClick={() => onRetry(msg)}
           className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-brand-500 hover:text-brand-500 hover:bg-brand-500/10 transition-colors"
-          title="Re-ask"
+          title={t('page.messageActions.reaskTitle')}
         >
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
-          Re-ask
+          {t('page.messageActions.reaskTitle')}
         </button>
       )}
       {/* Retry — for error messages (only on latest agent msg) */}
@@ -355,10 +360,10 @@ function MessageActions({
         <button
           onClick={() => onRetry(msg)}
           className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-amber-600 hover:text-amber-600 hover:bg-amber-500/10 transition-colors"
-          title="Retry"
+          title={t('page.messageActions.retryTitle')}
         >
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
-          Retry
+          {t('page.messageActions.retryTitle')}
         </button>
       )}
       {/* Retry — for normal agent messages (only on latest agent msg) */}
@@ -366,10 +371,10 @@ function MessageActions({
         <button
           onClick={() => onRetry(msg)}
           className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay/60 transition-colors"
-          title="Retry"
+          title={t('page.messageActions.retryTitle')}
         >
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
-          Retry
+          {t('page.messageActions.retryTitle')}
         </button>
       )}
       {/* Reply */}
@@ -377,10 +382,10 @@ function MessageActions({
         <button
           onClick={() => onReply(msg)}
           className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay/60 transition-colors"
-          title="Reply"
+          title={t('page.messageActions.replyTitle')}
         >
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 17 4 12 9 7" /><path d="M20 18v-2a4 4 0 00-4-4H4" /></svg>
-          Reply
+          {t('page.messageActions.replyTitle')}
         </button>
       )}
     </div>
@@ -534,6 +539,7 @@ function AgentMessageBody({
   liveActivities: import('../components/ActivityIndicator.tsx').ActivityStep[];
   onViewModeChange?: (mode: 'compact' | 'full') => void;
 }) {
+  const { t } = useTranslation(['team', 'common']);
   const segments = msg.segments;
   const isStopped = msg.isStopped;
   const [viewMode, setViewModeState] = useState<'compact' | 'full'>('compact');
@@ -616,7 +622,7 @@ function AgentMessageBody({
         {isStopped && (
           <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
             <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
-            <span>Stopped</span>
+            <span>{t('page.stopped')}</span>
           </div>
         )}
       </div>
@@ -645,7 +651,7 @@ function AgentMessageBody({
       {isStopped && (
         <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
           <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
-          <span>Stopped</span>
+          <span>{t('page.stopped')}</span>
         </div>
       )}
     </>
@@ -665,6 +671,7 @@ if (typeof window !== 'undefined') {
 }
 
 export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string; authUser?: AuthUser } = {}) {
+  const { t, i18n } = useTranslation(['team', 'common']);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [humans, setHumans] = useState<HumanUserInfo[]>([]);
   const isMobile = useIsMobile();
@@ -1205,26 +1212,17 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           } else {
             setActiveSessionId(null);
             if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
-            // First-time conversation: auto-send intro request
-            const introMsg = (() => {
-              const lang = (navigator.language || '').toLowerCase();
-              if (lang.startsWith('zh')) return '介绍一下你自己';
-              if (lang.startsWith('ja')) return '自己紹介をしてください';
-              if (lang.startsWith('ko')) return '자기소개를 해주세요';
-              if (lang.startsWith('fr')) return 'Présentez-vous';
-              if (lang.startsWith('de')) return 'Stell dich vor';
-              if (lang.startsWith('es')) return 'Preséntate';
-              if (lang.startsWith('pt')) return 'Apresente-se';
-              if (lang.startsWith('ru')) return 'Представьтесь';
-              return 'Introduce yourself';
-            })();
+            // First-time conversation: auto-send intro request (locale from app language, fallback en)
+            const introBase = (i18n.language || 'en').split('-')[0]?.toLowerCase() ?? 'en';
+            const introKey = ['zh', 'ja', 'ko', 'fr', 'de', 'es', 'pt', 'ru'].includes(introBase) ? introBase : 'en';
+            const introMsg = t(`intro.${introKey}`);
             setTimeout(() => sendRef.current?.(introMsg), 150);
           }
         });
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMode, selectedAgent, activeChannel, activeDmUserId]);
+  }, [chatMode, selectedAgent, activeChannel, activeDmUserId, i18n.language, t]);
 
   // WS live updates for channel mode
   useEffect(() => {
@@ -1238,7 +1236,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       const senderType = (p['senderType'] as string) ?? 'agent';
       const wsText = (p['text'] as string) ?? (p['message'] as string) ?? '';
       const wsSenderId = (p['senderId'] as string) ?? (p['agentId'] as string) ?? '';
-      const wsSenderName = (p['senderName'] as string) ?? (p['agentId'] as string) ?? 'Agent';
+      const wsSenderName = (p['senderName'] as string) ?? (p['agentId'] as string) ?? t('page.fallbackAgent');
       const wsMeta = p['metadata'] as ChannelMsgMetadata | undefined;
 
       const newMsg: ChatMsg = {
@@ -1276,14 +1274,14 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       updateConvMsgs(key, prev => [...prev, newMsg]);
     });
     return unsub;
-  }, [chatMode, activeChannel, selectedAgent, activeDmUserId, updateConvMsgs]);
+  }, [chatMode, activeChannel, selectedAgent, activeDmUserId, updateConvMsgs, t]);
 
   // WS live updates for proactive agent messages (direct mode)
   useEffect(() => {
     const unsub = wsClient.on('chat:proactive_message', (event) => {
       const p = event.payload;
       const agentId = (p['agentId'] as string) ?? '';
-      const agentName = (p['agentName'] as string) ?? 'Agent';
+      const agentName = (p['agentName'] as string) ?? t('page.fallbackAgent');
       const message = (p['message'] as string) ?? '';
       const sessionId = (p['sessionId'] as string) ?? '';
       const meta = (p['metadata'] as Record<string, unknown>) ?? {};
@@ -1314,16 +1312,16 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       }
     });
     return unsub;
-  }, [chatMode, selectedAgent, activeChannel, activeDmUserId, activeSessionId, updateConvMsgs]);
+  }, [chatMode, selectedAgent, activeChannel, activeDmUserId, activeSessionId, updateConvMsgs, t]);
 
   // ── Task helpers ─────────────────────────────────────────────────────────────
   const linkedTask = tasks.find(t => t.id === linkedTaskId);
 
   const createAndLinkTask = async () => {
     if (!selectedAgent) return;
-    const title = newTaskTitle.trim() || (messages[0]?.text.slice(0, 60) ?? 'New Conversation Task');
+    const title = newTaskTitle.trim() || (messages[0]?.text.slice(0, 60) ?? t('page.newTaskTitle'));
     try {
-      await api.tasks.create(title, `Created from chat with ${currentAgent?.name ?? 'agent'}`, selectedAgent, selectedAgent, 'medium');
+      await api.tasks.create(title, t('page.taskFromChat', { name: currentAgent?.name ?? t('page.fallbackAgent') }), selectedAgent, selectedAgent, 'medium');
       setNewTaskTitle('');
       setShowTaskPicker(false);
       // Reload tasks to get new ID
@@ -1417,7 +1415,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       updateConvMsgs(sendKey, prev => [...prev, userMsgDm]);
       try {
         const result = await api.channels.sendMessage(dmChannel, {
-          text, senderName: authUser?.name ?? 'You',
+          text, senderName: authUser?.name ?? t('page.fallbackYou'),
           senderId: authUser?.id,
           mentions: [], orgId: 'default',
           humanOnly: true, // never route to agents
@@ -1430,8 +1428,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         });
       } catch (e) {
         updateConvMsgs(sendKey, prev => [...prev, {
-          id: `err_${Date.now()}`, sender: 'agent', text: `Error: ${String(e)}`,
-          time: new Date().toLocaleTimeString(), agentName: 'System', isError: true,
+          id: `err_${Date.now()}`, sender: 'agent', text: t('page.errorWithMessage', { message: String(e) }),
+          time: new Date().toLocaleTimeString(), agentName: t('page.systemName'), isError: true,
         }]);
       }
       sendingConvs.current.delete(sendKey);
@@ -1447,7 +1445,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           ? agents.find(a => a.name.toLowerCase() === mentions[0]!.toLowerCase())
           : null;
         const result = await api.channels.sendMessage(activeChannel, {
-          text, senderName: authUser?.name ?? 'You', mentions,
+          text, senderName: authUser?.name ?? t('page.fallbackYou'), mentions,
           senderId: authUser?.id,
           targetAgentId: mentionedAgent?.id, orgId: 'default',
         });
@@ -1459,10 +1457,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           return newMsgs.length > 0 ? [...without, ...newMsgs] : prev;
         });
       } catch (e) {
-        const friendly = friendlyAgentError(e) || `Error: ${String(e)}`;
+        const friendly = friendlyAgentError(e, t) || t('page.errorWithMessage', { message: String(e) });
         updateConvMsgs(sendKey, prev => [...prev, {
           id: `err_${Date.now()}`, sender: 'agent', text: friendly,
-          time: new Date().toLocaleTimeString(), agentName: 'System', isError: true,
+          time: new Date().toLocaleTimeString(), agentName: t('page.systemName'), isError: true,
         }]);
       }
       sendingConvs.current.delete(sendKey);
@@ -1718,7 +1716,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           });
         }
 
-        const errText = friendlyAgentError(e);
+        const errText = friendlyAgentError(e, t);
         if (errText) {
           updateConvMsgs(sendKey, prev => {
             const u = [...prev];
@@ -1870,7 +1868,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     const hasFollowingMsgs = retryIdx < currentMsgs.length - 1;
     if (hasFollowingMsgs) {
       const followCount = currentMsgs.length - 1 - retryIdx;
-      if (!window.confirm(`This will discard ${followCount} message${followCount > 1 ? 's' : ''} after this point and re-generate. Continue?`)) return;
+      if (!window.confirm(followCount === 1 ? t('page.retryConfirmSingular') : t('page.retryConfirmPlural', { count: followCount }))) return;
     }
 
     // Remove the agent bubble, all messages after it, and (if immediately preceding) the user message
@@ -1881,7 +1879,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     });
     void send(retryText, { isRetry: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, updateConvMsgs]);
+  }, [messages, updateConvMsgs, t]);
 
   const handleResume = useCallback((resumeMsg: ChatMsg) => {
     const convKey = currentConvKeyRef.current;
@@ -1920,11 +1918,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const handleReplyMsg = useCallback((msg: ChatMsg) => {
     setChatReplyTo({
       id: msg.id,
-      sender: msg.sender === 'user' ? (authUser?.name ?? 'You') : (msg.agentName ?? 'Agent'),
+      sender: msg.sender === 'user' ? (authUser?.name ?? t('page.fallbackYou')) : (msg.agentName ?? t('page.fallbackAgent')),
       text: msg.text.slice(0, 120),
     });
     textareaRef.current?.focus();
-  }, [authUser?.name]);
+  }, [authUser?.name, t]);
 
   const switchSession = async (s: ChatSessionInfo) => {
     setActiveSessionId(s.id);
@@ -1967,7 +1965,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         id: NEW_CHAT_PLACEHOLDER_ID,
         agentId: selectedAgent ?? '',
         userId: null,
-        title: 'New Chat',
+        title: t('page.newChat'),
         createdAt: new Date().toISOString(),
         lastMessageAt: new Date().toISOString(),
       }, ...without];
@@ -2083,7 +2081,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
   // ── Derived ───────────────────────────────────────────────────────────────────
   const currentAgent = agents.find(a => a.id === selectedAgent);
-  const currentUserName = authUser?.name ?? 'You';
+  const currentUserName = authUser?.name ?? t('page.fallbackYou');
   const lastMsg = messages[messages.length - 1];
   const isLastPending = sending && lastMsg?.sender === 'agent';
   const isLastVisualStreaming = streamingVisual && lastMsg?.sender === 'agent';
@@ -2095,14 +2093,14 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const activeGroupChat = groupChats.find(gc => gc.channelKey === activeChannel);
   const modeTitle =
     chatMode === 'channel' ? (activeGroupChat?.name ?? activeChannel) :
-    chatMode === 'direct'  ? (currentAgent?.name ?? 'Select Agent') :
-    chatMode === 'dm'      ? (isSelfDm ? 'My Notes' : (activeDmUser?.name ?? 'Direct Message')) :
-    'Chat';
+    chatMode === 'direct'  ? (currentAgent?.name ?? t('page.selectAgent')) :
+    chatMode === 'dm'      ? (isSelfDm ? t('chat.myNotes') : (activeDmUser?.name ?? t('page.directMessage'))) :
+    t('page.chatTitle');
 
   const placeholder =
-    chatMode === 'channel' ? (activeGroupChat ? `Message ${activeGroupChat.name}…` : `Message ${activeChannel}… (use @name to mention)`) :
-    chatMode === 'dm'      ? (isSelfDm ? 'Write a note to yourself…' : `Message ${activeDmUser?.name ?? ''}…`) :
-    selectedAgent ? 'Type a message…' : 'Select an agent to start chatting';
+    chatMode === 'channel' ? (activeGroupChat ? t('page.placeholder.channel', { name: activeGroupChat.name }) : t('page.placeholder.channelWithMention', { name: activeChannel })) :
+    chatMode === 'dm'      ? (isSelfDm ? t('page.placeholder.dmSelf') : t('page.placeholder.dmOther', { name: activeDmUser?.name ?? '' })) :
+    selectedAgent ? t('page.placeholder.direct') : t('page.placeholder.noAgent');
 
   // ── Render ────────────────────────────────────────────────────────────────────
   const showChatOnMobile = isMobile && mobileShowChat;
@@ -2160,24 +2158,25 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                   className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
                     mainTab === 'chat' ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'
                   }`}
-                >Chat</button>
+                >{t('page.chatTitle')}</button>
                 <button
                   onClick={() => { if (mainTab !== 'profile') switchToProfile(); }}
                   className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
                     mainTab === 'profile' ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'
                   }`}
-                >{chatMode === 'channel' ? 'Team' : 'Profile'}</button>
+                >{chatMode === 'channel' ? t('page.teamTab') : t('page.profileTab')}</button>
                 <div className="flex-1" />
                 {chatMode === 'direct' && mainTab !== 'profile' && (
                   <>
                     <button
                       onClick={newConversation}
                       className="text-[11px] text-brand-500 px-2 py-1 rounded-md bg-brand-500/10 font-medium shrink-0"
-                    >+ New</button>
+                    >{t('page.newChatPlus')}</button>
                     <button
                       ref={historyBtnRef}
                       onClick={() => setShowSessions(!showSessions)}
                       className={`p-1 rounded-md transition-colors shrink-0 ${showSessions ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary'}`}
+                      title={t('page.historyTitle')}
                     >
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -2195,11 +2194,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
             )}
             {(chatMode === 'channel' || chatMode === 'dm') && (
-              <span className="text-xs text-fg-tertiary">{messages.length} messages</span>
+              <span className="text-xs text-fg-tertiary">{t('page.messageCount', { count: messages.length })}</span>
             )}
             {chatMode === 'dm' && (
               <span className="text-xs text-fg-tertiary ml-1">
-                {isSelfDm ? '· Private notepad' : `· Direct message with ${activeDmUser?.name ?? ''}`}
+                {isSelfDm ? t('page.privateNotepad') : t('page.dmWith', { name: activeDmUser?.name ?? '' })}
               </span>
             )}
 
@@ -2213,7 +2212,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                       : 'border-transparent text-fg-tertiary hover:text-fg-secondary'
                   }`}
                 >
-                  Chat
+                  {t('page.chatTitle')}
                 </button>
                 <button
                   onClick={() => setMainTab('profile')}
@@ -2223,7 +2222,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                       : 'border-transparent text-fg-tertiary hover:text-fg-secondary'
                   }`}
                 >
-                  {chatMode === 'channel' ? 'Team' : 'Profile'}
+                  {chatMode === 'channel' ? t('page.teamTab') : t('page.profileTab')}
                 </button>
               </div>
             )}
@@ -2236,13 +2235,13 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                   onClick={newConversation}
                   className="text-xs text-brand-500 hover:text-brand-500 px-2.5 py-1 rounded-md hover:bg-brand-500/10 border border-brand-500/20 transition-colors flex items-center gap-1"
                 >
-                  + New Chat
+                  {t('page.newChatButton')}
                 </button>
                 <button
                   ref={historyBtnRef}
                   onClick={() => setShowSessions(!showSessions)}
                   className={`p-1.5 rounded-md transition-colors ${showSessions ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
-                  title="History"
+                  title={t('page.historyTitle')}
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -2277,7 +2276,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                   }}
                 >
                   {s.isMain && <span className="text-[10px] opacity-50 shrink-0">●</span>}
-                  <span className="truncate">{s.id === NEW_CHAT_PLACEHOLDER_ID ? 'New Chat' : (s.isMain ? 'Main' : (s.title || 'Conversation'))}</span>
+                  <span className="truncate">{s.id === NEW_CHAT_PLACEHOLDER_ID ? t('page.newChat') : (s.isMain ? t('page.sessionMain') : (s.title || t('page.sessionConversation')))}</span>
                   {!s.isMain && (
                     <button
                       onClick={(e) => { e.stopPropagation(); closeSessionTab(s.id); }}
@@ -2298,12 +2297,12 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               className="absolute right-4 top-full mt-1 w-72 max-h-[420px] bg-surface-secondary border border-border-default rounded-xl shadow-2xl shadow-black/40 z-50 flex flex-col overflow-hidden"
             >
               <div className="px-4 py-3 border-b border-border-default flex items-center justify-between">
-                <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">History</span>
+                <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{t('page.historyTitle')}</span>
                 <button onClick={() => setShowSessions(false)} className="text-fg-tertiary hover:text-fg-secondary text-xs">✕</button>
               </div>
               <div className="flex-1 overflow-y-auto p-2">
                 {sessions.length === 0 && (
-                  <div className="text-xs text-fg-tertiary text-center py-6">No conversations yet</div>
+                  <div className="text-xs text-fg-tertiary text-center py-6">{t('page.noConversationsYet')}</div>
                 )}
                 {(() => {
                   const now = new Date();
@@ -2322,10 +2321,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                     else if (t >= weekStart) week.push(s);
                     else older.push(s);
                   }
-                  if (today.length > 0) groups.push({ label: 'Today', items: today });
-                  if (yesterday.length > 0) groups.push({ label: 'Yesterday', items: yesterday });
-                  if (week.length > 0) groups.push({ label: 'Previous 7 days', items: week });
-                  if (older.length > 0) groups.push({ label: 'Older', items: older });
+                  if (today.length > 0) groups.push({ label: t('page.dateToday'), items: today });
+                  if (yesterday.length > 0) groups.push({ label: t('page.dateYesterday'), items: yesterday });
+                  if (week.length > 0) groups.push({ label: t('page.datePrevious7Days'), items: week });
+                  if (older.length > 0) groups.push({ label: t('page.dateOlder'), items: older });
                   return groups.map(g => (
                     <div key={g.label} className="mb-2">
                       <div className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider px-3 py-1.5">{g.label}</div>
@@ -2339,7 +2338,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                         >
                           <div className="truncate font-medium flex items-center gap-1">
                             {s.isMain && <span className="text-[10px] text-brand-500 opacity-60">●</span>}
-                            {s.isMain ? 'Main' : (s.title || 'Conversation')}
+                            {s.isMain ? t('page.sessionMain') : (s.title || t('page.sessionConversation'))}
                           </div>
                           <div className="text-fg-tertiary text-[10px] mt-0.5">{new Date(s.lastMessageAt).toLocaleString()}</div>
                         </button>
@@ -2383,7 +2382,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
-              <span className="text-xs text-fg-tertiary">Loading earlier messages…</span>
+              <span className="text-xs text-fg-tertiary">{t('page.loadingEarlierMessages')}</span>
             </div>
           )}
           <div ref={chatScrollRef} className={`flex-1 overflow-y-auto space-y-3 ${isMobile ? 'p-2.5' : 'p-5'}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
@@ -2398,9 +2397,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                   }
                 </svg>
               </div>
-              {chatMode === 'channel' && <div>No messages in {activeGroupChat?.name ?? activeChannel} yet.</div>}
-              {chatMode === 'direct' && !selectedAgent && <div>Select an agent from the sidebar to start.</div>}
-              {chatMode === 'direct' && selectedAgent && <div>Start a new conversation with {currentAgent?.name}.</div>}
+              {chatMode === 'channel' && <div>{t('page.emptyChannel', { name: activeGroupChat?.name ?? activeChannel })}</div>}
+              {chatMode === 'direct' && !selectedAgent && <div>{t('page.emptySelectAgent')}</div>}
+              {chatMode === 'direct' && selectedAgent && <div>{t('page.emptyNewConversation', { name: currentAgent?.name ?? '' })}</div>}
             </div>
           )}
 
@@ -2417,7 +2416,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                     }}
                   >
                     <Avatar
-                      name={msg.sender === 'user' ? (currentUserName ?? 'You') : (msg.agentName ?? 'Agent')}
+                      name={msg.sender === 'user' ? currentUserName : (msg.agentName ?? t('page.fallbackAgent'))}
                       avatarUrl={msg.sender === 'user' ? authUser?.avatarUrl : agents.find(a => a.id === msg.agentId)?.avatarUrl}
                       size={32}
                       bgClass={msg.sender === 'user' ? 'bg-brand-600' : 'bg-brand-500/15 text-brand-600'}
@@ -2427,7 +2426,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
                       <span className="text-sm font-medium text-fg-primary">
-                        {msg.sender === 'user' ? (currentUserName ?? 'You') : msg.agentName ?? 'Agent'}
+                        {msg.sender === 'user' ? currentUserName : msg.agentName ?? t('page.fallbackAgent')}
                       </span>
                       <span className="text-xs text-fg-tertiary">{msg.time}</span>
                     </div>
@@ -2486,9 +2485,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                     ].join(' ')}>
                       <div className="text-xs text-fg-tertiary mb-1">
                         {msg.sender === 'user'
-                          ? (currentUserName ?? 'You')
+                          ? currentUserName
                           : <ChatAgentLink
-                              name={msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? 'Agent' : 'Agent')}
+                              name={msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? t('page.fallbackAgent') : t('page.fallbackAgent'))}
                               agentId={msg.agentId ?? (chatMode === 'direct' ? currentAgent?.id : undefined)}
                               agents={agents}
                               onViewProfile={handleViewProfile}
@@ -2548,7 +2547,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               })
           }
           {chatMode === 'channel' && sending && (
-            <div className="text-xs text-fg-tertiary animate-pulse ml-11">Agent is thinking…</div>
+            <div className="text-xs text-fg-tertiary animate-pulse ml-11">{t('page.agentThinking')}</div>
           )}
           <div ref={messagesEnd} />
         </div>
@@ -2573,7 +2572,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           {mentionDropdown && filteredAgents.length > 0 && (
             <div className="absolute bottom-full left-4 mb-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden z-10 max-h-48 overflow-y-auto">
               <div className="px-3 py-1.5 text-[10px] text-fg-tertiary font-medium uppercase tracking-wider border-b border-border-default">
-                Mention an agent
+                {t('page.mentionAgent')}
               </div>
               {filteredAgents.map((a, i) => (
                 <button
@@ -2615,7 +2614,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   className="w-16 h-16 rounded-lg border border-dashed border-gray-600 flex items-center justify-center text-fg-tertiary hover:text-fg-secondary hover:border-gray-400 transition-colors shrink-0"
-                  title="Add more files"
+                  title={t('page.addMoreFiles')}
                 >
                   <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14" /></svg>
                 </button>
@@ -2625,7 +2624,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           {pendingImages.length > 0 && pendingImages.some(f => isImageFile(f)) && currentAgent && currentAgent.modelSupportsVision === false && (
             <div className="text-[10px] text-amber-500/80 mb-1.5 flex items-center gap-1">
               <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 9v4m0 4h.01M12 2L2 22h20L12 2z" strokeLinecap="round" strokeLinejoin="round" /></svg>
-              Images will be converted to text (model does not support vision)
+              {t('page.visionWarning')}
             </div>
           )}
           <input ref={fileInputRef} type="file" accept="image/*,.pdf,.docx,.xlsx,.pptx,.xls,.doc,.csv,.json,.xml,.html,.epub" multiple className="hidden" onChange={e => { if (e.target.files) addFiles(e.target.files); e.target.value = ''; }} />
@@ -2645,7 +2644,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               onClick={() => fileInputRef.current?.click()}
               disabled={chatMode === 'direct' && !selectedAgent}
               className="px-2.5 py-2.5 text-fg-tertiary hover:text-fg-secondary disabled:opacity-40 transition-colors rounded-xl hover:bg-surface-elevated"
-              title="Attach files (images, PDF, Word, Excel, PowerPoint...)"
+              title={t('page.attachFilesTitle')}
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" strokeLinecap="round" strokeLinejoin="round" />
@@ -2685,7 +2684,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               <button
                 onClick={stopSending}
                 className="px-3 py-2.5 bg-red-600 hover:bg-red-500 text-white text-sm rounded-xl transition-colors flex items-center gap-1.5"
-                title="Stop agent"
+                title={t('page.stopAgent')}
               >
                 <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
                   <rect x="4" y="4" width="16" height="16" rx="2" />
@@ -2697,7 +2696,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               disabled={(chatMode === 'direct' && !selectedAgent) || (!input.trim() && pendingImages.length === 0)}
               className="px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
             >
-              Send
+              {t('send')}
             </button>
           </div>
         </div>
@@ -2709,6 +2708,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 }
 
 function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; tasks: TaskInfo[]; onViewProfile?: (agentId: string, opts?: { tab?: 'mind' }) => void }) {
+  const { t } = useTranslation(['team', 'common']);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -2746,14 +2746,14 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
   }, [open]);
 
   const dotColor = isError ? 'bg-red-400 animate-pulse' : isWorking ? 'bg-blue-400 animate-pulse' : 'bg-green-400';
-  const label = isError ? 'error' : isWorking ? 'working' : 'idle';
+  const label = isError ? t('status.error') : isWorking ? t('status.working') : t('status.idle');
 
   const activityLabel = activity
-    ? activity.type === 'heartbeat' ? `Heartbeat: ${activity.heartbeatName ?? activity.label}`
+    ? activity.type === 'heartbeat' ? t('page.activityHeartbeat', { name: activity.heartbeatName ?? activity.label })
     : activity.type === 'chat' ? activity.label
-    : activity.type === 'task' ? `Task: ${activity.label}`
+    : activity.type === 'task' ? t('page.activityTask', { label: activity.label })
     : activity.label
-    : 'Processing...';
+    : t('page.processing');
 
   return (
     <div className="relative" ref={ref}>
@@ -2774,10 +2774,10 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
 
       {open && isError && (
         <div ref={popoverRef} className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-red-500/30 rounded-xl shadow-2xl z-30 w-80 max-w-[calc(100vw-1rem)] p-3 space-y-2">
-          <p className="text-[10px] text-red-500 uppercase font-semibold">Error Details</p>
+          <p className="text-[10px] text-red-500 uppercase font-semibold">{t('page.errorDetails')}</p>
           <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2.5">
             <pre className="text-[10px] text-red-500/80 leading-relaxed whitespace-pre-wrap break-all font-mono line-clamp-6">
-              {agent.lastError || 'Agent encountered an error. Check profile for details.'}
+              {agent.lastError || t('page.agentErrorFallback')}
             </pre>
             {agent.lastErrorAt && <div className="text-[9px] text-red-500/50 mt-1.5 border-t border-red-500/10 pt-1">{new Date(agent.lastErrorAt).toLocaleString()}</div>}
           </div>
@@ -2785,14 +2785,14 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
             onClick={() => { setOpen(false); onViewProfile?.(agent.id); }}
             className="w-full text-center text-[10px] text-red-500 hover:text-red-500 border border-red-500/30 hover:border-red-500/50 rounded-lg py-1 transition-colors"
           >
-            View Agent Profile →
+            {t('page.viewAgentProfileArrow')}
           </button>
         </div>
       )}
 
       {open && isWorking && (
         <div ref={popoverRef} className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-30 w-80 max-w-[calc(100vw-1rem)] p-3 space-y-2">
-          <p className="text-[10px] text-fg-tertiary uppercase font-semibold">Current Activity</p>
+          <p className="text-[10px] text-fg-tertiary uppercase font-semibold">{t('page.currentActivity')}</p>
           {currentTask ? (
             <div
               className="flex items-center gap-2 p-2 rounded-lg bg-brand-500/10 border border-brand-500/30 cursor-pointer hover:bg-brand-500/10 transition-colors"
@@ -2801,7 +2801,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
               <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="text-xs text-brand-500 truncate">{currentTask.title}</div>
-                <div className="text-[10px] text-fg-tertiary">Working on task · Click to view</div>
+                <div className="text-[10px] text-fg-tertiary">{t('page.workingOnTaskHint')}</div>
               </div>
               <span className="text-[10px] text-fg-tertiary">→</span>
             </div>
@@ -2815,9 +2815,9 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
               <div className="flex-1 min-w-0">
                 <div className="text-xs text-fg-secondary">{activityLabel}</div>
                 <div className="text-[10px] text-fg-tertiary">
-                  {activity?.type === 'heartbeat' ? 'Periodic check-in task'
-                   : activity?.type === 'chat' ? 'Responding to conversation'
-                   : 'Agent is thinking or communicating'}
+                  {activity?.type === 'heartbeat' ? t('page.activityDescHeartbeat')
+                   : activity?.type === 'chat' ? t('page.activityDescChat')
+                   : t('page.activityDescFallback')}
                 </div>
               </div>
             </div>
@@ -2826,7 +2826,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
             onClick={() => { setOpen(false); onViewProfile?.(agent.id, { tab: 'mind' }); }}
             className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1.5 transition-colors"
           >
-            View Mind →
+            {t('page.viewMindArrow')}
           </button>
         </div>
       )}

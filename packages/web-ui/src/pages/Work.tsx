@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, attachSubagentLogsToEntries, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
@@ -13,17 +14,18 @@ import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 
-function resolveActorName(id: string | undefined, agents: AgentInfo[], users: HumanUserInfo[]): string | null {
+function resolveActorName(id: string | undefined, agents: AgentInfo[], users: HumanUserInfo[], adminLabel = 'Admin'): string | null {
   if (!id) return null;
   const agent = agents.find(a => a.id === id);
   if (agent) return agent.name;
   const user = users.find(u => u.id === id);
   if (user) return user.name;
-  if (id === 'anonymous') return 'Admin';
+  if (id === 'anonymous') return adminLabel;
   return null;
 }
 
 function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo[] }) {
+  const { t } = useTranslation(['work', 'common']);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
   const agent = agents.find(a => a.id === agentId);
@@ -49,7 +51,7 @@ function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-xs text-fg-primary font-medium truncate">{agent.name}</div>
-              <div className="text-[10px] text-fg-tertiary">{agent.role} · {agent.agentRole ?? 'worker'}</div>
+              <div className="text-[10px] text-fg-tertiary">{agent.role} · {agent.agentRole ?? t('work:task.workerRole')}</div>
             </div>
             <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-green-400'}`} />
           </div>
@@ -57,13 +59,13 @@ function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo
             onClick={() => { setOpen(false); navBus.navigate(PAGE.TEAM, { selectAgent: agent.id }); }}
             className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
           >
-            View Profile →
+            {t('work:task.viewProfile')}
           </button>
         </div>
       )}
       {open && !agent && (
         <div className="absolute left-0 bottom-full mb-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-40 w-40 p-2">
-          <div className="text-[10px] text-fg-tertiary">Agent not found: {agentId.slice(0, 12)}…</div>
+          <div className="text-[10px] text-fg-tertiary">{t('work:task.agentNotFound', { id: agentId.slice(0, 12) })}</div>
         </div>
       )}
     </span>
@@ -78,6 +80,7 @@ function InlineEditableText({ value, onSave, className, placeholder }: {
   className?: string;
   placeholder?: string;
 }) {
+  const { t } = useTranslation(['work', 'common']);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -113,8 +116,8 @@ function InlineEditableText({ value, onSave, className, placeholder }: {
     <span
       onClick={() => setEditing(true)}
       className={`cursor-pointer hover:border-b hover:border-gray-600 transition-colors ${className ?? ''}`}
-      title="Click to edit"
-    >{value || <span className="text-fg-tertiary italic">{placeholder ?? 'Click to edit'}</span>}</span>
+      title={t('work:task.clickToEdit')}
+    >{value || <span className="text-fg-tertiary italic">{placeholder ?? t('work:task.clickToEdit')}</span>}</span>
   );
 }
 
@@ -124,6 +127,7 @@ function InlineEditableTextarea({ value, onSave, className, placeholder }: {
   className?: string;
   placeholder?: string;
 }) {
+  const { t } = useTranslation(['work', 'common']);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -160,8 +164,8 @@ function InlineEditableTextarea({ value, onSave, className, placeholder }: {
     <p
       onClick={() => setEditing(true)}
       className={`cursor-pointer hover:bg-surface-elevated/50 rounded-lg transition-colors px-2 py-1 -mx-2 -my-1 ${className ?? ''}`}
-      title="Click to edit"
-    >{value || <span className="text-fg-tertiary italic">{placeholder ?? 'Add a description…'}</span>}</p>
+      title={t('work:task.clickToEdit')}
+    >{value || <span className="text-fg-tertiary italic">{placeholder ?? t('work:task.addDescription')}</span>}</p>
   );
 }
 
@@ -183,7 +187,7 @@ function parseNote(raw: string): ParsedNote {
   return { timestamp: '', author: '', content: raw };
 }
 
-function formatNoteTime(ts: string): string {
+function formatNoteTime(ts: string, t: (key: string, opts?: Record<string, unknown>) => string): string {
   if (!ts) return '';
   const dateMatch = ts.match(/^(\d{4})[/-](\d{2})[/-](\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?/);
   if (!dateMatch) return ts;
@@ -195,10 +199,10 @@ function formatNoteTime(ts: string): string {
   const min = +dateMatch[5]!;
   const noteDate = new Date(year, month, day, hour, min);
   const diff = now.getTime() - noteDate.getTime();
-  if (diff < 60000) return 'just now';
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  if (diff < 604800000) return `${Math.floor(diff / 86400000)}d ago`;
+  if (diff < 60000) return t('work:relative.justNow');
+  if (diff < 3600000) return t('work:relative.minutesAgo', { count: Math.floor(diff / 60000) });
+  if (diff < 86400000) return t('work:relative.hoursAgo', { count: Math.floor(diff / 3600000) });
+  if (diff < 604800000) return t('work:relative.daysAgo', { count: Math.floor(diff / 86400000) });
   return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
@@ -218,12 +222,14 @@ function authorColor(name: string) {
 }
 
 function NoteComment({ note, compact }: { note: string; compact?: boolean }) {
+  const { t } = useTranslation(['work', 'common']);
   const parsed = parseNote(note);
-  const c = authorColor(parsed.author || 'System');
+  const systemLabel = t('work:task.systemAuthor');
+  const c = authorColor(parsed.author || systemLabel);
   const initials = parsed.author
     ? parsed.author.split(/[\s_-]+/).map(w => w[0]).join('').slice(0, 2).toUpperCase()
     : 'SY';
-  const timeLabel = formatNoteTime(parsed.timestamp);
+  const timeLabel = formatNoteTime(parsed.timestamp, t);
   const isSystem = !parsed.author || parsed.author === 'System';
 
   if (compact) {
@@ -232,7 +238,7 @@ function NoteComment({ note, compact }: { note: string; compact?: boolean }) {
         <div className={`w-6 h-6 rounded-full ${c.bg} flex items-center justify-center text-[9px] font-bold ${c.text} shrink-0 mt-0.5`}>{initials}</div>
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-1.5 mb-0.5">
-            <span className={`text-[11px] font-medium ${isSystem ? 'text-fg-tertiary' : c.text}`}>{parsed.author || 'System'}</span>
+            <span className={`text-[11px] font-medium ${isSystem ? 'text-fg-tertiary' : c.text}`}>{isSystem ? systemLabel : parsed.author}</span>
             {timeLabel && <span className="text-[10px] text-fg-tertiary">{timeLabel}</span>}
           </div>
           <div className="text-xs text-fg-secondary"><MarkdownMessage content={parsed.content} className="text-xs text-fg-secondary" /></div>
@@ -250,7 +256,7 @@ function NoteComment({ note, compact }: { note: string; compact?: boolean }) {
       <div className="flex-1 min-w-0 pb-4">
         <div className={`border ${c.border} rounded-lg overflow-hidden`}>
           <div className={`flex items-center gap-2 px-3 py-1.5 ${c.bg} border-b ${c.border}`}>
-            <span className={`text-[11px] font-medium ${isSystem ? 'text-fg-secondary' : c.text}`}>{parsed.author || 'System'}</span>
+            <span className={`text-[11px] font-medium ${isSystem ? 'text-fg-secondary' : c.text}`}>{isSystem ? systemLabel : parsed.author}</span>
             {timeLabel && <span className="text-[10px] text-fg-tertiary">{timeLabel}</span>}
           </div>
           <div className="px-3 py-2.5">
@@ -266,47 +272,75 @@ function NoteComment({ note, compact }: { note: string; compact?: boolean }) {
 
 const ALL_STATUSES = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived'] as const;
 
-const BOARD_COLUMNS = [
-  { id: 'failed',      label: 'Failed',      statuses: ['failed'],                  accent: 'border-t-red-500',    dropStatus: 'failed' },
-  { id: 'todo',        label: 'To Do',       statuses: ['pending'],                 accent: 'border-t-amber-500',  dropStatus: 'pending' },
-  { id: 'in_progress', label: 'In Progress', statuses: ['in_progress', 'blocked'],  accent: 'border-t-brand-500',  dropStatus: 'in_progress' },
-  { id: 'review',      label: 'In Review',   statuses: ['review'],                  accent: 'border-t-purple-500', dropStatus: 'review' },
-  { id: 'done',        label: 'Done',        statuses: ['completed'],               accent: 'border-t-green-500',  dropStatus: 'completed' },
-  { id: 'closed',      label: 'Closed',      statuses: ['rejected', 'cancelled', 'archived'], accent: 'border-t-gray-500',   dropStatus: 'cancelled' },
+const BOARD_COLUMNS_BASE = [
+  { id: 'failed',      statuses: ['failed'],                  accent: 'border-t-red-500',    dropStatus: 'failed' },
+  { id: 'todo',        statuses: ['pending'],                 accent: 'border-t-amber-500',  dropStatus: 'pending' },
+  { id: 'in_progress', statuses: ['in_progress', 'blocked'],  accent: 'border-t-brand-500',  dropStatus: 'in_progress' },
+  { id: 'review',      statuses: ['review'],                  accent: 'border-t-purple-500', dropStatus: 'review' },
+  { id: 'done',        statuses: ['completed'],               accent: 'border-t-green-500',  dropStatus: 'completed' },
+  { id: 'closed',      statuses: ['rejected', 'cancelled', 'archived'], accent: 'border-t-gray-500',   dropStatus: 'cancelled' },
 ] as const;
 
-const COLUMN_LABELS: Record<string, string> = {
-  pending: 'Pending',
-  in_progress: 'In Progress', blocked: 'Blocked',
-  review: 'In Review', completed: 'Completed',
-  failed: 'Failed', rejected: 'Rejected', cancelled: 'Cancelled', archived: 'Archived',
+const SUB_STATUS_BADGE_CLS: Record<string, string> = {
+  pending:  'bg-amber-500/15 text-amber-600',
+  blocked:  'bg-amber-500/15 text-amber-600',
+  failed:   'bg-red-500/15 text-red-500',
+  rejected: 'bg-red-500/15 text-red-500',
 };
-const SUB_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
-  pending:  { label: 'Pending',  cls: 'bg-amber-500/15 text-amber-600' },
-  blocked:  { label: 'Blocked',  cls: 'bg-amber-500/15 text-amber-600' },
-  failed:   { label: 'Failed',   cls: 'bg-red-500/15 text-red-500' },
-  rejected: { label: 'Rejected', cls: 'bg-red-500/15 text-red-500' },
-};
-const TASK_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
-  pending:     { label: 'Pending',     cls: 'bg-amber-500/15 text-amber-600' },
-  in_progress: { label: 'In Progress', cls: 'bg-blue-500/15 text-blue-500' },
-  blocked:     { label: 'Blocked',     cls: 'bg-orange-500/15 text-orange-500' },
-  review:      { label: 'In Review',   cls: 'bg-purple-500/15 text-purple-500' },
-  completed:   { label: 'Completed',   cls: 'bg-green-500/15 text-green-600' },
-  failed:      { label: 'Failed',      cls: 'bg-red-500/15 text-red-500' },
-  rejected:    { label: 'Rejected',    cls: 'bg-red-500/15 text-red-500' },
-  cancelled:   { label: 'Cancelled',   cls: 'bg-gray-500/15 text-fg-tertiary' },
-  archived:    { label: 'Archived',    cls: 'bg-gray-500/15 text-fg-tertiary' },
+const TASK_STATUS_BADGE_CLS: Record<string, string> = {
+  pending:     'bg-amber-500/15 text-amber-600',
+  in_progress: 'bg-blue-500/15 text-blue-500',
+  blocked:     'bg-orange-500/15 text-orange-500',
+  review:      'bg-purple-500/15 text-purple-500',
+  revision:    'bg-amber-500/15 text-amber-600',
+  completed:   'bg-green-500/15 text-green-600',
+  failed:      'bg-red-500/15 text-red-500',
+  rejected:    'bg-red-500/15 text-red-500',
+  cancelled:   'bg-gray-500/15 text-fg-tertiary',
+  archived:    'bg-gray-500/15 text-fg-tertiary',
 };
 const PRIORITY_COLORS: Record<string, string> = {
   urgent: 'border-l-red-500', high: 'border-l-amber-500', medium: 'border-l-blue-500', low: 'border-l-gray-500',
 };
-const PRIORITY_BADGE: Record<string, { label: string; cls: string }> = {
-  low:    { label: 'Low',    cls: 'bg-gray-500/15 text-fg-tertiary' },
-  medium: { label: 'Medium', cls: 'bg-blue-500/15 text-blue-500' },
-  high:   { label: 'High',   cls: 'bg-amber-500/15 text-amber-600' },
-  urgent: { label: 'Urgent', cls: 'bg-red-500/15 text-red-500' },
+const PRIORITY_BADGE_CLS: Record<string, string> = {
+  low:    'bg-gray-500/15 text-fg-tertiary',
+  medium: 'bg-blue-500/15 text-blue-500',
+  high:   'bg-amber-500/15 text-amber-600',
+  urgent: 'bg-red-500/15 text-red-500',
 };
+const REQ_STATUS_BADGE_CLS: Record<string, string> = {
+  pending:     'bg-amber-500/15 text-amber-600',
+  in_progress: 'bg-brand-500/15 text-brand-500',
+  completed:   'bg-green-500/15 text-green-600',
+  rejected:    'bg-red-500/15 text-red-500',
+  cancelled:   'bg-gray-600/15 text-fg-tertiary',
+  archived:    'bg-gray-600/10 text-fg-tertiary/60',
+};
+
+function buildTaskStatusBadges(t: (key: string, opts?: Record<string, unknown>) => string): Record<string, { label: string; cls: string }> {
+  return (Object.keys(TASK_STATUS_BADGE_CLS) as string[]).reduce((acc, k) => {
+    acc[k] = { label: t(`work:status.task.${k}`), cls: TASK_STATUS_BADGE_CLS[k]! };
+    return acc;
+  }, {} as Record<string, { label: string; cls: string }>);
+}
+function buildSubStatusBadges(t: (key: string, opts?: Record<string, unknown>) => string): Record<string, { label: string; cls: string }> {
+  return (Object.keys(SUB_STATUS_BADGE_CLS) as string[]).reduce((acc, k) => {
+    acc[k] = { label: t(`work:status.sub.${k}`), cls: SUB_STATUS_BADGE_CLS[k]! };
+    return acc;
+  }, {} as Record<string, { label: string; cls: string }>);
+}
+function buildPriorityBadges(t: (key: string, opts?: Record<string, unknown>) => string): Record<string, { label: string; cls: string }> {
+  return (Object.keys(PRIORITY_BADGE_CLS) as string[]).reduce((acc, k) => {
+    acc[k] = { label: t(`work:priority.${k}`), cls: PRIORITY_BADGE_CLS[k]! };
+    return acc;
+  }, {} as Record<string, { label: string; cls: string }>);
+}
+function buildReqStatusBadges(t: (key: string, opts?: Record<string, unknown>) => string): Record<string, { label: string; cls: string }> {
+  return (Object.keys(REQ_STATUS_BADGE_CLS) as string[]).reduce((acc, k) => {
+    acc[k] = { label: t(`work:status.requirement.${k}`), cls: REQ_STATUS_BADGE_CLS[k]! };
+    return acc;
+  }, {} as Record<string, { label: string; cls: string }>);
+}
 const PRIORITY_CYCLE = ['low', 'medium', 'high', 'urgent'] as const;
 const TASK_STATUS_CYCLE = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled'] as const;
 const REQ_STATUS_CYCLE = ['pending', 'in_progress', 'completed', 'rejected', 'cancelled'] as const;
@@ -350,6 +384,7 @@ function MentionPopover({ agent, anchorRect, onClose }: {
   anchorRect: { top: number; left: number };
   onClose: () => void;
 }) {
+  const { t } = useTranslation(['work', 'common']);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -360,7 +395,7 @@ function MentionPopover({ agent, anchorRect, onClose }: {
   }, [onClose]);
 
   const statusColor = agent.status === 'idle' ? 'bg-green-400' : agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-gray-500';
-  const statusLabel = agent.status === 'idle' ? 'Online' : agent.status === 'working' ? 'Working' : agent.status === 'error' ? 'Error' : agent.status === 'paused' ? 'Paused' : 'Offline';
+  const statusLabel = agent.status === 'idle' ? t('work:task.online') : agent.status === 'working' ? t('work:task.working') : agent.status === 'error' ? t('work:task.error') : agent.status === 'paused' ? t('work:task.paused') : t('work:task.offline');
 
   return (
     <div
@@ -385,7 +420,7 @@ function MentionPopover({ agent, anchorRect, onClose }: {
         onClick={() => { onClose(); navBus.navigate(PAGE.TEAM, { selectAgent: agent.id }); }}
         className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
       >
-        View Profile →
+        {t('work:task.viewProfile')}
       </button>
     </div>
   );
@@ -396,6 +431,7 @@ function CommentBubble({ comment, agents, onReply }: {
   agents: AgentInfo[];
   onReply?: (comment: TaskComment | RequirementComment) => void;
 }) {
+  const { t } = useTranslation(['work', 'common']);
   const isAgent = comment.authorType === 'agent' || comment.authorType === 'system';
   const ts = new Date(comment.createdAt);
   const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -468,7 +504,7 @@ function CommentBubble({ comment, agents, onReply }: {
               onClick={() => onReply(comment)}
               className="text-fg-tertiary hover:text-fg-secondary text-[10px] opacity-0 group-hover:opacity-100 transition-opacity ml-1"
             >
-              Reply
+              {t('work:task.reply')}
             </button>
           )}
           {comment.activityId && isAgent && (
@@ -476,7 +512,7 @@ function CommentBubble({ comment, agents, onReply }: {
               onClick={toggleExecutionLog}
               className="text-fg-tertiary hover:text-brand-400 text-[10px] opacity-0 group-hover:opacity-100 transition-opacity ml-1"
             >
-              {logExpanded ? 'Hide log' : 'View log'}
+              {logExpanded ? t('work:task.hideLog') : t('work:task.viewLog')}
             </button>
           )}
         </div>
@@ -499,9 +535,9 @@ function CommentBubble({ comment, agents, onReply }: {
         {logExpanded && (
           <div className="mt-2 border border-border-subtle rounded-lg overflow-hidden bg-surface-secondary/30">
             {logLoading ? (
-              <div className="p-3 text-xs text-fg-tertiary">Loading execution log...</div>
+              <div className="p-3 text-xs text-fg-tertiary">{t('work:task.loadingExecutionLog')}</div>
             ) : execEntries.length === 0 ? (
-              <div className="p-3 text-xs text-fg-tertiary">No execution log available.</div>
+              <div className="p-3 text-xs text-fg-tertiary">{t('work:task.noExecutionLogAvailable')}</div>
             ) : (
               <FullExecutionLog entries={logEntries} isActive={false} onCollapse={() => setLogExpanded(false)} embedded />
             )}
@@ -529,6 +565,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
   users: HumanUserInfo[];
   authUser?: { id: string; name: string };
 }) {
+  const { t } = useTranslation(['work', 'common']);
   const [comments, setComments] = useState<TaskComment[]>([]);
 
   useEffect(() => {
@@ -579,10 +616,10 @@ function TaskActivitySection({ task, agents, users, authUser }: {
 
   return (
     <div className="mt-5">
-      <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-3">Activity & Comments</p>
+      <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-3">{t('work:task.activityCommentsHeading')}</p>
       <div className="space-y-0.5 mb-3">
         {items.length === 0 && (
-          <div className="text-xs text-fg-tertiary text-center py-6">No activity yet. Post the first comment below.</div>
+          <div className="text-xs text-fg-tertiary text-center py-6">{t('work:task.noActivityYet')}</div>
         )}
         {items.map((item, i) => {
           if (item.type === 'note') {
@@ -591,7 +628,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
           return <CommentBubble key={`c-${item.comment.id}`} comment={item.comment} agents={agents} onReply={handleReply} />;
         })}
       </div>
-      <CommentInput agents={agents} onSubmit={handleSubmit} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} />
+      <CommentInput agents={agents} onSubmit={handleSubmit} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} placeholder={t('work:task.commentPlaceholder')} />
     </div>
   );
 }
@@ -599,6 +636,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
 // ─── Execution Log Panel ────────────────────────────────────────────────────────
 
 function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: string; isRunning: boolean; authUser?: { id: string; name: string }; agents: AgentInfo[] }) {
+  const { t } = useTranslation(['work', 'common']);
   const [roundsSummary, setRoundsSummary] = useState<RoundSummary[]>([]);
   const [roundLogs, setRoundLogs] = useState<Map<number, TaskLogEntry[]>>(new Map());
   const [loadingRounds, setLoadingRounds] = useState<Set<number>>(new Set());
@@ -777,24 +815,24 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
       <div className="flex gap-2">
         <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submitComment(); } }}
-          placeholder="Add a comment or instruction…"
+          placeholder={t('work:task.commentInstructionPlaceholder')}
           className="flex-1 px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-blue-500 outline-none text-fg-primary placeholder-gray-600" />
         <input type="file" ref={fileInputRef} accept="image/*" multiple onChange={handleImageUpload} className="hidden" />
-        <button onClick={() => fileInputRef.current?.click()} className="px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-fg-secondary hover:text-fg-primary text-sm" title="Attach image">📎</button>
+        <button onClick={() => fileInputRef.current?.click()} className="px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-fg-secondary hover:text-fg-primary text-sm" title={t('work:task.attachImage')}>📎</button>
         <button onClick={() => void submitComment()} disabled={submitting || (!commentText.trim() && imageAttachments.length === 0)}
-          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-white text-xs disabled:opacity-50">Send</button>
+          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-white text-xs disabled:opacity-50">{t('common:send')}</button>
       </div>
     </div>
   );
 
-  if (loading) return <div className="flex-1 flex items-center justify-center text-xs text-fg-tertiary">Loading logs…</div>;
+  if (loading) return <div className="flex-1 flex items-center justify-center text-xs text-fg-tertiary">{t('work:task.loadingLogs')}</div>;
   if (roundsSummary.length === 0 && !streamingText) {
     return (
       <div className="flex flex-col flex-1">
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center text-fg-tertiary">
             <div className="text-2xl mb-2">📋</div>
-            <div className="text-xs">No execution logs yet.<br />Click "Run with Agent" to start.</div>
+            <div className="text-xs">{t('work:task.noExecutionLogs')}<br />{t('work:task.runWithAgentHint')}</div>
           </div>
         </div>
         {commentInput}
@@ -878,7 +916,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
               >
                 <div className="flex items-center gap-2">
                   <span className="text-sm">{statusIcon}</span>
-                  <span className="text-xs text-fg-secondary font-medium">Round #{rs.round}</span>
+                  <span className="text-xs text-fg-secondary font-medium">{t('work:task.roundHeader', { n: rs.round })}</span>
                   {roundComments.length > 0 && (
                     <span className="text-[10px] text-blue-400">💬 {roundComments.length}</span>
                   )}
@@ -890,7 +928,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
                   )}
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="text-[10px] text-fg-tertiary">{rs.toolCount} tool{rs.toolCount !== 1 ? 's' : ''}</span>
+                  <span className="text-[10px] text-fg-tertiary">{t('work:task.toolCount', { count: rs.toolCount })}</span>
                   {elapsedStr && <span className="text-[10px] text-fg-tertiary tabular-nums">{elapsedStr}</span>}
                   <svg className={`w-3 h-3 text-fg-tertiary transition-transform ${isExpanded ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor">
                     <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
@@ -899,7 +937,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
               </button>
               {isExpanded && (
                 <div className="px-3 py-1.5 space-y-0.5">
-                  {isLoading && <div className="text-xs text-fg-tertiary py-2 text-center">Loading round #{rs.round}…</div>}
+                  {isLoading && <div className="text-xs text-fg-tertiary py-2 text-center">{t('work:task.loadingRound', { n: rs.round })}</div>}
                   {logs && (() => {
                     const entries = logs.map(l => taskLogToStreamEntry(l));
                     const exec = entries.map(e => streamEntryToExecEntry(e)).filter((e): e is ExecEntry => e !== null);
@@ -933,6 +971,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
 // ─── File Preview Modal ─────────────────────────────────────────────────────────
 
 function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: () => void }) {
+  const { t } = useTranslation(['work', 'common']);
   const [data, setData] = useState<{ type: string; name: string; content: string; mimeType?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -962,7 +1001,7 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
           <p className="text-[10px] text-fg-tertiary font-mono truncate">{filePath}</p>
         </div>
         <div className="flex-1 overflow-auto min-h-0 p-5">
-          {loading && <div className="text-sm text-fg-tertiary text-center py-8">Loading...</div>}
+          {loading && <div className="text-sm text-fg-tertiary text-center py-8">{t('work:task.filePreviewLoading')}</div>}
           {error && <div className="text-sm text-red-500 text-center py-8">{error}</div>}
           {data && data.type === 'image' && (
             <div className="flex justify-center">
@@ -1952,15 +1991,6 @@ function StatCard({ label, value, color }: { label: string; value: number; color
 
 // ─── Requirement → Board Column Mapping ──────────────────────────────────────
 
-const REQ_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
-  pending:     { label: 'Pending',   cls: 'bg-amber-500/15 text-amber-600' },
-  in_progress: { label: 'Active',    cls: 'bg-brand-500/15 text-brand-500' },
-  completed:   { label: 'Done',      cls: 'bg-green-500/15 text-green-600' },
-  rejected:    { label: 'Rejected',  cls: 'bg-red-500/15 text-red-500' },
-  cancelled:   { label: 'Cancelled', cls: 'bg-gray-600/15 text-fg-tertiary' },
-  archived:    { label: 'Archived',  cls: 'bg-gray-600/10 text-fg-tertiary/60' },
-};
-
 const REQ_COLUMN_MAP: Record<string, string> = {
   pending: 'todo',
   in_progress: 'in_progress',
@@ -2001,7 +2031,7 @@ const GROUP_HEADER_CLS: Record<string, string> = {
 const ALL_REQ_STATUSES = ['pending', 'in_progress', 'completed', 'rejected', 'cancelled', 'archived'] as const;
 
 function taskToGroup(status: string): string {
-  for (const col of BOARD_COLUMNS) {
+  for (const col of BOARD_COLUMNS_BASE) {
     if ((col.statuses as readonly string[]).includes(status)) return col.id;
   }
   return 'closed';
@@ -2011,15 +2041,15 @@ type BacklogRow =
   | { kind: 'task'; data: TaskInfo; group: string; groupOrder: number }
   | { kind: 'req';  data: RequirementInfo; group: string; groupOrder: number };
 
-function relativeTime(iso: string): string {
+function relativeTime(iso: string, t: (key: string, opts?: Record<string, unknown>) => string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return t('work:relative.justNow');
+  if (mins < 60) return t('work:relative.minutesAgo', { count: mins });
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
+  if (hrs < 24) return t('work:relative.hoursAgo', { count: hrs });
   const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
+  return t('work:relative.daysAgo', { count: days });
 }
 
 function TagPicker({ value, options, onSelect, allowedValues }: {
@@ -2090,17 +2120,21 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   selected?: boolean;
   isMobile?: boolean;
 }) {
+  const { t } = useTranslation(['work', 'common']);
+  const taskStatusBadges = useMemo(() => buildTaskStatusBadges(t), [t]);
+  const reqStatusBadges = useMemo(() => buildReqStatusBadges(t), [t]);
+  const priorityBadges = useMemo(() => buildPriorityBadges(t), [t]);
   const status = row.data.status;
   const priority = row.data.priority;
   const assignee = row.kind === 'task' ? agentMap.get(row.data.assignedAgentId ?? '') : undefined;
   const proj = projMap.get(row.kind === 'task' ? (row.data.projectId ?? '') : (row.data.projectId ?? ''));
 
   const typeBadge = row.kind === 'req' ? (
-    <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-600">REQ</span>
+    <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-600">{t('work:task.requirementShort')}</span>
   ) : row.data.taskType === 'scheduled' ? (
-    <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-blue-500/15 text-blue-600">SCHED</span>
+    <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-blue-500/15 text-blue-600">{t('work:task.schedShort')}</span>
   ) : (
-    <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-gray-500/15 text-fg-secondary">TASK</span>
+    <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-gray-500/15 text-fg-secondary">{t('work:task.taskShort')}</span>
   );
 
   if (isMobile) {
@@ -2119,8 +2153,8 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
               value={status}
               options={
                 row.kind === 'task'
-                  ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: TASK_STATUS_BADGE[s]?.label ?? s, cls: TASK_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
-                  : REQ_STATUS_CYCLE.map(s => ({ value: s, label: REQ_STATUS_BADGE[s]?.label ?? s, cls: REQ_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
+                  ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: taskStatusBadges[s]?.label ?? s, cls: taskStatusBadges[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
+                  : REQ_STATUS_CYCLE.map(s => ({ value: s, label: reqStatusBadges[s]?.label ?? s, cls: reqStatusBadges[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
               }
               allowedValues={row.kind === 'task' ? TASK_ALLOWED_TRANSITIONS[status] : REQ_ALLOWED_TRANSITIONS[status]}
               onSelect={val => void handleStatusChange(row, val)}
@@ -2129,7 +2163,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
           <div onClick={e => e.stopPropagation()}>
             <TagPicker
               value={priority}
-              options={PRIORITY_CYCLE.map(p => ({ value: p, label: PRIORITY_BADGE[p]?.label ?? p, cls: PRIORITY_BADGE[p]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))}
+              options={PRIORITY_CYCLE.map(p => ({ value: p, label: priorityBadges[p]?.label ?? p, cls: priorityBadges[p]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))}
               onSelect={val => void handlePriorityChange(row, val)}
             />
           </div>
@@ -2140,7 +2174,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
             </span>
           )}
           {proj?.name && <span className="text-[10px] text-brand-400/70 truncate max-w-[80px]">{proj.name}</span>}
-          <span className="text-[9px] text-fg-muted ml-auto">{relativeTime(row.data.updatedAt ?? '')}</span>
+          <span className="text-[9px] text-fg-muted ml-auto">{relativeTime(row.data.updatedAt ?? '', t)}</span>
         </div>
       </div>
     );
@@ -2161,8 +2195,8 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
           value={status}
           options={
             row.kind === 'task'
-              ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: TASK_STATUS_BADGE[s]?.label ?? s, cls: TASK_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
-              : REQ_STATUS_CYCLE.map(s => ({ value: s, label: REQ_STATUS_BADGE[s]?.label ?? s, cls: REQ_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
+              ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: taskStatusBadges[s]?.label ?? s, cls: taskStatusBadges[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
+              : REQ_STATUS_CYCLE.map(s => ({ value: s, label: reqStatusBadges[s]?.label ?? s, cls: reqStatusBadges[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
           }
           allowedValues={row.kind === 'task' ? TASK_ALLOWED_TRANSITIONS[status] : REQ_ALLOWED_TRANSITIONS[status]}
           onSelect={val => void handleStatusChange(row, val)}
@@ -2171,7 +2205,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       <div className="w-[100px] shrink-0" onClick={e => e.stopPropagation()}>
         <TagPicker
           value={priority}
-          options={PRIORITY_CYCLE.map(p => ({ value: p, label: PRIORITY_BADGE[p]?.label ?? p, cls: PRIORITY_BADGE[p]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))}
+          options={PRIORITY_CYCLE.map(p => ({ value: p, label: priorityBadges[p]?.label ?? p, cls: priorityBadges[p]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))}
           onSelect={val => void handlePriorityChange(row, val)}
         />
       </div>
@@ -2193,7 +2227,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
         )}
       </div>
       <div className="w-[90px] shrink-0 text-[10px] text-fg-muted text-right">
-        {relativeTime(row.data.updatedAt ?? '')}
+        {relativeTime(row.data.updatedAt ?? '', t)}
       </div>
     </div>
   );
@@ -2210,6 +2244,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
   selectedTaskId?: string | null;
   selectedReqId?: string | null;
 }) {
+  const { t } = useTranslation(['work', 'common']);
   const isMobile = useIsMobile();
   const [sortMode, setSortMode] = useState<'status' | 'priority'>('status');
   const [dragIdx, setDragIdx] = useState<number | null>(null);
@@ -2288,7 +2323,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
     if (dragIdx == null) return;
     const row = rows[dragIdx];
     if (!row || row.group === groupId) return;
-    const col = BOARD_COLUMNS.find(c => c.id === groupId);
+    const col = BOARD_COLUMNS_BASE.find(c => c.id === groupId);
     if (!col) return;
     try {
       if (row.kind === 'task') {
@@ -2342,16 +2377,16 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
       {!isMobile && (
       <div className="flex items-center gap-2 px-6 py-2 border-b border-border-default text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider sticky top-0 z-20 bg-surface-secondary">
         <div className="w-12 shrink-0 text-fg-muted normal-case font-normal">{rows.length}</div>
-        <div className="flex-1 min-w-[200px]">Title</div>
+        <div className="flex-1 min-w-[200px]">{t('work:task.backlogTitle')}</div>
         <button onClick={() => setSortMode('status')} className={`w-[130px] shrink-0 text-left flex items-center gap-1 transition-colors ${sortMode === 'status' ? 'text-brand-500' : 'hover:text-fg-secondary'}`}>
-          Status {sortMode === 'status' && <span className="text-[8px]">▼</span>}
+          {t('work:filters.status')} {sortMode === 'status' && <span className="text-[8px]">▼</span>}
         </button>
         <button onClick={() => setSortMode('priority')} className={`w-[100px] shrink-0 text-left flex items-center gap-1 transition-colors ${sortMode === 'priority' ? 'text-brand-500' : 'hover:text-fg-secondary'}`}>
-          Priority {sortMode === 'priority' && <span className="text-[8px]">▼</span>}
+          {t('work:filters.priority')} {sortMode === 'priority' && <span className="text-[8px]">▼</span>}
         </button>
-        <div className="w-[120px] shrink-0">Assignee</div>
-        <div className="w-[120px] shrink-0">Project</div>
-        <div className="w-[90px] shrink-0 text-right">Updated</div>
+        <div className="w-[120px] shrink-0">{t('work:filters.assignee')}</div>
+        <div className="w-[120px] shrink-0">{t('work:task.projectLabel')}</div>
+        <div className="w-[90px] shrink-0 text-right">{t('work:task.backlogUpdated')}</div>
       </div>
       )}
 
@@ -2359,7 +2394,6 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
       <div>
         {sortMode === 'status' && visibleGroups ? (
           visibleGroups.map(groupId => {
-            const col = BOARD_COLUMNS.find(c => c.id === groupId);
             const groupRows = rowsByGroup.get(groupId) ?? [];
             return (
               <div key={groupId}>
@@ -2369,7 +2403,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
                   onDragLeave={() => setDragOverGroup(null)}
                   onDrop={e => void onGroupDrop(e, groupId)}
                 >
-                  <span className="text-[11px] font-semibold uppercase tracking-wider">{col?.label ?? groupId}</span>
+                  <span className="text-[11px] font-semibold uppercase tracking-wider">{t(`work:boardColumn.${groupId}`)}</span>
                   <span className="text-[10px] text-fg-tertiary">{groupCounts[groupId] ?? 0}</span>
                 </div>
                 {groupRows.map(row => (
@@ -2384,7 +2418,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
           ))
         )}
         {rows.length === 0 && (
-          <div className="flex items-center justify-center py-16 text-sm text-fg-tertiary">No items</div>
+          <div className="flex items-center justify-center py-16 text-sm text-fg-tertiary">{t('work:task.noItems')}</div>
         )}
       </div>
       </div>
@@ -2395,6 +2429,10 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
 // ─── Main Page ──────────────────────────────────────────────────────────────────
 
 export function WorkPage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } }) {
+  const { t } = useTranslation(['work', 'common']);
+  const boardColumns = useMemo(() => BOARD_COLUMNS_BASE.map(c => ({ ...c, label: t(`work:boardColumn.${c.id}`) })), [t]);
+  const subStatusBadges = useMemo(() => buildSubStatusBadges(t), [t]);
+  const reqStatusBadges = useMemo(() => buildReqStatusBadges(t), [t]);
   const isMobile = useIsMobile();
   const detailPanel = useResizablePanel({ side: 'right', defaultWidth: Math.round(window.innerWidth * 2 / 3), minWidth: 380, maxWidth: Math.round(window.innerWidth * 0.8), storageKey: 'markus_projects_detail_v3' });
   const [mobileShowDetail, setMobileShowDetail] = useState(false);

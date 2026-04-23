@@ -1,0 +1,69 @@
+{
+  "title": "概览",
+  "hireAgent": "+ 招聘智能体",
+  "metrics": {
+    "activeAgents": "活跃智能体",
+    "tasksInProgress": "进行中的任务",
+    "pendingQueue": "待处理队列",
+    "completed": "已完成"
+  },
+  "gettingStarted": {
+    "title": "你的 AI 团队已就绪",
+    "subtitle": "不到一分钟即可开始 — 描述你的需求，交给团队接手。",
+    "describeGoal": "描述你的目标",
+    "describeGoalDesc": "与秘书对话 — 它会组建团队并拆分任务",
+    "hireAgents": "招聘智能体",
+    "hireAgentsDesc": "浏览模板：开发者、研究员、撰稿人、分析师等",
+    "createProject": "创建项目",
+    "createProjectDesc": "设定需求，让智能体规划、执行并交付"
+  },
+  "agentFocus": {
+    "title": "智能体焦点",
+    "totalQueued": "共 {{count}} 项排队",
+    "working": "工作中..."
+  },
+  "taskDistribution": {
+    "title": "任务分布",
+    "blockedNeedsAttention": "{{count}} 项已阻塞 — 需要处理"
+  },
+  "teamStatus": {
+    "title": "团队状态",
+    "noTeams": "暂无团队。创建团队或招聘智能体以开始。",
+    "unassignedAgents": "未分配的智能体",
+    "workingCount": "{{count}} 工作中",
+    "activeCount": "{{count}} 活跃"
+  },
+  "pendingReviews": {
+    "title": "待审核",
+    "review": "去审核 →",
+    "proposedBy": "由 {{author}} 提出 · {{priority}}",
+    "agentProposed": "智能体提出了 {{count}} 条需求 — 请审核以授权执行。",
+    "agent": "智能体",
+    "user": "用户"
+  },
+  "recentActivity": {
+    "title": "最近动态"
+  },
+  "systemHealth": {
+    "title": "系统健康",
+    "healthScore": "健康分",
+    "successRate": "成功率",
+    "activeTotal": "活跃 / 总计",
+    "tokenCost": "Token 消耗",
+    "workingNow": "当前工作中",
+    "needsAttention": "需要关注：",
+    "agentScoreChip": "{{name}}（{{score}}%）"
+  },
+  "storage": {
+    "title": "存储",
+    "total": "合计",
+    "db": "数据库：{{size}}",
+    "agents": "智能体：{{count}}",
+    "clickToView": "点击在设置中查看详情",
+    "bytesZero": "0 B",
+    "bytesB": "B",
+    "bytesKB": "KB",
+    "bytesMB": "MB",
+    "bytesGB": "GB"
+  }
+}

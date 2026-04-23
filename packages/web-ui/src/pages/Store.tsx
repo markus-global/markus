@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { TemplateMarketplace } from './TemplateMarketplace.tsx';
 import { TeamsStore } from './TeamsStore.tsx';
 import { SkillStore } from './SkillStore.tsx';
@@ -6,11 +7,7 @@ import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import type { AuthUser } from '../api.ts';
 
-const tabs = [
-  { id: 'agents', label: 'Agents' },
-  { id: 'teams', label: 'Teams' },
-  { id: 'skills', label: 'Skills' },
-] as const;
+const tabs = [{ id: 'agents' }, { id: 'teams' }, { id: 'skills' }] as const;
 
 type TabId = (typeof tabs)[number]['id'];
 
@@ -22,6 +19,7 @@ function readStoreTab(): TabId {
 }
 
 export function StorePage({ authUser }: { authUser?: AuthUser }) {
+  const { t } = useTranslation(['store', 'common']);
   const [activeTab, setActiveTab] = useState<TabId>(readStoreTab);
   const isMobile = useIsMobile();
   const swipe = useSwipeTabs(tabs, activeTab, setActiveTab);
@@ -55,7 +53,7 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
                   : 'border-transparent text-fg-tertiary hover:text-fg-secondary'
               }`}
             >
-              {tab.label}
+              {t(`tabs.${tab.id}`)}
             </button>
           ))}
         </div>
@@ -72,7 +70,7 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
     <div className="flex-1 overflow-hidden flex flex-row">
       <nav className="w-48 shrink-0 border-r border-border-default bg-surface-secondary/50 flex flex-col py-4 px-2 gap-1">
         <div className="px-3 pb-3 mb-1 border-b border-border-default/50">
-          <h2 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">Store</h2>
+          <h2 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('title')}</h2>
         </div>
         {tabs.map(tab => (
           <button
@@ -84,7 +82,7 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
                 : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
             }`}
           >
-            {tab.label}
+            {t(`tabs.${tab.id}`)}
           </button>
         ))}
       </nav>

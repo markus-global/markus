@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { useTranslation, Trans } from 'react-i18next';
 import { api, type StorageInfo, type OrphanInfo } from '../api.ts';
 import { THEME_OPTIONS, type ThemeMode } from '../hooks/useTheme.ts';
+import { SUPPORTED_LANGUAGES } from '../i18n/index.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 
@@ -26,6 +28,7 @@ interface EnvModelDetected {
 interface EnvModelsResponse { detected: EnvModelDetected[]; timeoutMs?: number }
 
 export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void } = {}) {
+  const { t, i18n } = useTranslation(['settings', 'common']);
   const [health, setHealth] = useState<{ status: string; version: string; agents: number } | null>(null);
   const [llm, setLlm] = useState<LLMSettings | null>(null);
   const [selectedProvider, setSelectedProvider] = useState('');
@@ -149,22 +152,21 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
     try {
       const res = await fetch('/api/settings/env-models', { headers: authHeaders() });
       if (!res.ok) {
-        setEnvMsg({ type: 'err', text: `Detection failed (HTTP ${res.status})` });
+        setEnvMsg({ type: 'err', text: t('envConfig.detectionFailedHttp', { status: res.status }) });
         return;
       }
       const data = await res.json() as EnvModelsResponse;
       setEnvModels(data);
       if (data.detected.length === 0) {
-        setEnvMsg({ type: 'err', text: 'No model API keys found in environment variables' });
+        setEnvMsg({ type: 'err', text: t('envConfig.noKeysFound') });
       } else {
         const sel: Record<string, boolean> = {};
         for (const d of data.detected) sel[d.provider] = true;
         setEnvSelected(sel);
       }
-    } catch { setEnvMsg({ type: 'err', text: 'Failed to detect environment variables' }); }
+    } catch { setEnvMsg({ type: 'err', text: t('envConfig.failedToDetect') }); }
     finally { setEnvLoading(false); }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [t]);
 
   // Auto-detect env vars on first load when no providers are configured
   const hasConfiguredProviders = llm
@@ -187,9 +189,9 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
         body: JSON.stringify({ defaultProvider: selectedProvider }),
       });
       const data = await res.json() as LLMSettings;
-      if (res.ok) { setLlm(data); setSaveMsg({ type: 'ok', text: `Default provider updated to ${data.defaultProvider}` }); }
-      else { setSaveMsg({ type: 'err', text: ((data as unknown as { error: string }).error ?? 'Save failed') }); }
-    } catch { setSaveMsg({ type: 'err', text: 'Network error' }); }
+      if (res.ok) { setLlm(data); setSaveMsg({ type: 'ok', text: t('defaultProvider.updated', { name: data.defaultProvider }) }); }
+      else { setSaveMsg({ type: 'err', text: ((data as unknown as { error: string }).error ?? t('modelProviders.saveFailed')) }); }
+    } catch { setSaveMsg({ type: 'err', text: t('common:networkError') }); }
     finally { setSaving(false); }
   };
 
@@ -218,7 +220,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
       const data = await res.json() as OpenClawPreview | { error: string };
       if ('error' in data) { setOpenclawMsg({ type: 'err', text: data.error }); }
       else { setOpenclawPreview(data); }
-    } catch { setOpenclawMsg({ type: 'err', text: 'Detection failed' }); }
+    } catch { setOpenclawMsg({ type: 'err', text: t('openClaw.detectFailed') }); }
     finally { setOpenclawLoading(false); }
   };
 
@@ -231,8 +233,8 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
       });
       const data = await res.json() as { applied: boolean; appliedModels: number } | { error: string };
       if ('error' in data) { setOpenclawMsg({ type: 'err', text: data.error }); }
-      else { setOpenclawMsg({ type: 'ok', text: `Imported ${data.appliedModels} model configs from OpenClaw` }); loadSettings(); }
-    } catch { setOpenclawMsg({ type: 'err', text: 'Import failed' }); }
+      else { setOpenclawMsg({ type: 'ok', text: t('openClaw.importedFrom', { count: data.appliedModels }) }); loadSettings(); }
+    } catch { setOpenclawMsg({ type: 'err', text: t('openClaw.importFailed') }); }
     finally { setOpenclawLoading(false); }
   };
 
@@ -240,7 +242,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
     if (!envModels) return;
     const selected = envModels.detected.filter(d => envSelected[d.provider]);
     if (selected.length === 0) {
-      setEnvMsg({ type: 'err', text: 'Select at least one provider to apply' });
+      setEnvMsg({ type: 'err', text: t('envConfig.selectAtLeastOne') });
       return;
     }
     setEnvApplying(true); setEnvMsg(null);
@@ -257,14 +259,14 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
         }),
       });
       if (!res.ok) {
-        setEnvMsg({ type: 'err', text: `Apply failed (HTTP ${res.status})` });
+        setEnvMsg({ type: 'err', text: t('envConfig.applyFailed', { status: res.status }) });
         return;
       }
       const data = await res.json() as { applied: string[]; message: string };
       setEnvMsg({ type: 'ok', text: data.message });
       setEnvModels(null); setEnvSelected({});
       loadSettings();
-    } catch { setEnvMsg({ type: 'err', text: 'Failed to apply environment configs' }); }
+    } catch { setEnvMsg({ type: 'err', text: t('envConfig.failedToApply') }); }
     finally { setEnvApplying(false); }
   };
 
@@ -277,13 +279,13 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
       });
       const data = await res.json() as { authorizeUrl?: string; error?: string };
       if (!res.ok || data.error) {
-        setOauthMsg({ type: 'err', text: data.error ?? 'Login failed' });
+        setOauthMsg({ type: 'err', text: data.error ?? t('oauth.loginFailed') });
         return;
       }
       if (data.authorizeUrl) {
         window.open(data.authorizeUrl, '_blank', 'noopener');
         setPendingOAuthProvider(provider);
-        setOauthMsg({ type: 'ok', text: 'Browser opened for authorization. Complete the login in the browser window...' });
+        setOauthMsg({ type: 'ok', text: t('browserOpened') });
         // Start polling for completion
         if (oauthPollRef.current) clearInterval(oauthPollRef.current);
         oauthPollRef.current = setInterval(async () => {
@@ -295,13 +297,13 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
               oauthPollRef.current = null;
               setPendingOAuthProvider(null);
               setAuthProfiles(statusData.profiles);
-              setOauthMsg({ type: 'ok', text: `Connected to ${provider} via OAuth` });
+              setOauthMsg({ type: 'ok', text: t('oauthConnected', { provider }) });
               loadSettings();
             }
           } catch { /* continue polling */ }
         }, 2000);
       }
-    } catch { setOauthMsg({ type: 'err', text: 'Network error during OAuth login' }); }
+    } catch { setOauthMsg({ type: 'err', text: t('oauth.networkErrorDuringLogin') }); }
     finally { setOauthLoading(null); }
   };
 
@@ -315,15 +317,15 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
       });
       const data = await res.json() as { profile?: { id: string; provider: string }; error?: string };
       if (!res.ok || data.error) {
-        setOauthMsg({ type: 'err', text: data.error ?? 'Callback failed' });
+        setOauthMsg({ type: 'err', text: data.error ?? t('oauth.callbackFailed') });
         return;
       }
-      setOauthMsg({ type: 'ok', text: `Connected to ${data.profile?.provider ?? 'provider'} via OAuth` });
+      setOauthMsg({ type: 'ok', text: t('oauthConnected', { provider: data.profile?.provider ?? t('common:unknown') }) });
       setManualCallbackUrl('');
       setPendingOAuthProvider(null);
       if (oauthPollRef.current) { clearInterval(oauthPollRef.current); oauthPollRef.current = null; }
       loadAuthProfiles(); loadSettings();
-    } catch { setOauthMsg({ type: 'err', text: 'Network error' }); }
+    } catch { setOauthMsg({ type: 'err', text: t('common:networkError') }); }
     finally { setOauthLoading(null); }
   };
 
@@ -334,7 +336,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
       });
       if (res.ok) {
         loadAuthProfiles(); loadSettings();
-        setOauthMsg({ type: 'ok', text: 'Auth profile deleted' });
+        setOauthMsg({ type: 'ok', text: t('authProfileDeleted') });
       }
     } catch { /* ignore */ }
   };
@@ -382,11 +384,11 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
         setLlm(data as LLMSettings);
         setShowAddProvider(false);
         setAddProviderForm({ name: '', apiKey: '', baseUrl: '', model: '', contextWindow: 128000, maxOutputTokens: 16384, costInput: 1, costOutput: 5 });
-        setAddProviderMsg({ type: 'ok', text: `Provider ${addProviderForm.name} added` });
+        setAddProviderMsg({ type: 'ok', text: t('modelProviders.providerAdded', { name: addProviderForm.name }) });
       } else {
-        setAddProviderMsg({ type: 'err', text: (data as { error: string }).error ?? 'Failed to add' });
+        setAddProviderMsg({ type: 'err', text: (data as { error: string }).error ?? t('modelProviders.failedToAdd') });
       }
-    } catch { setAddProviderMsg({ type: 'err', text: 'Network error' }); }
+    } catch { setAddProviderMsg({ type: 'err', text: t('common:networkError') }); }
     finally { setAddProviderSaving(false); }
   };
 
@@ -512,26 +514,46 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="px-6 h-14 flex items-center border-b border-border-default bg-surface-secondary">
-        <h2 className="text-lg font-semibold">Settings</h2>
+        <h2 className="text-lg font-semibold">{t('title')}</h2>
       </div>
 
       <div className="p-7 space-y-10 max-w-4xl">
 
         {/* ───── Appearance ───── */}
-        <Section title="Appearance">
+        <Section title={t('appearance.title')}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
-                <div className="text-sm font-medium">Theme</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">Choose a visual style for the interface</div>
+                <div className="text-sm font-medium">{t('appearance.theme')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('appearance.themeDesc')}</div>
               </div>
               <div className="flex flex-wrap gap-1 bg-surface-elevated rounded-lg p-0.5">
-                {THEME_OPTIONS.map(({ value, label }) => (
+                {THEME_OPTIONS.map(({ value }) => (
                   <button
                     key={value}
                     onClick={() => onThemeChange?.(value)}
                     className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
                       theme === value ? 'bg-brand-600 text-white' : 'text-fg-secondary hover:text-fg-primary'
+                    }`}
+                  >
+                    {t(`appearance.modes.${value}`)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mt-5 pt-5 border-t border-border-default/50">
+              <div>
+                <div className="text-sm font-medium">{t('appearance.language')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('appearance.languageDesc')}</div>
+              </div>
+              <div className="flex flex-wrap gap-1 bg-surface-elevated rounded-lg p-0.5">
+                {SUPPORTED_LANGUAGES.map(({ code, label }) => (
+                  <button
+                    key={code}
+                    onClick={() => { i18n.changeLanguage(code); }}
+                    className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+                      i18n.language === code || (code === 'en' && !SUPPORTED_LANGUAGES.some(l => l.code === i18n.language))
+                        ? 'bg-brand-600 text-white' : 'text-fg-secondary hover:text-fg-primary'
                     }`}
                   >
                     {label}
@@ -546,20 +568,20 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
         {showSetupGuide && (
           <div className="relative bg-gradient-to-br from-brand-500/10 to-surface-secondary border border-brand-500/20 rounded-2xl p-6 space-y-5">
             <button onClick={() => setSetupDismissed(true)}
-              className="absolute top-4 right-4 text-fg-tertiary hover:text-fg-secondary text-xs">Skip</button>
+              className="absolute top-4 right-4 text-fg-tertiary hover:text-fg-secondary text-xs">{t('setupGuide.skip')}</button>
             <div>
-              <h3 className="text-base font-semibold text-fg-primary">Welcome — Configure Your LLM</h3>
-              <p className="text-sm text-fg-secondary mt-1">Markus needs at least one LLM provider to work. Choose a way to get started:</p>
+              <h3 className="text-base font-semibold text-fg-primary">{t('setupGuide.title')}</h3>
+              <p className="text-sm text-fg-secondary mt-1">{t('setupGuide.subtitle')}</p>
             </div>
 
             {/* Option 1: Environment variables (auto-detected) */}
             <SetupCard
-              step="1"
-              title="From Environment Variables"
-              description="Automatically detected API keys from .env or system environment."
+              step={t('setupGuide.fromEnv.step')}
+              title={t('setupGuide.fromEnv.title')}
+              description={t('setupGuide.fromEnv.description')}
               active={!!(envModels && envModels.detected.length > 0)}
             >
-              {envLoading && <div className="text-xs text-fg-tertiary">Detecting...</div>}
+              {envLoading && <div className="text-xs text-fg-tertiary">{t('common:detecting')}</div>}
               {envModels && envModels.detected.length > 0 && (
                 <div className="space-y-2">
                   {envModels.detected.map(d => (
@@ -576,83 +598,85 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                   ))}
                   <button onClick={() => void applyEnvModels()} disabled={envApplying || Object.values(envSelected).filter(Boolean).length === 0}
                     className="w-full px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                    {envApplying ? 'Applying...' : `Apply ${Object.values(envSelected).filter(Boolean).length} Provider(s)`}
+                    {envApplying ? t('common:applying') : t('setupGuide.applyProviders', { count: Object.values(envSelected).filter(Boolean).length })}
                   </button>
                 </div>
               )}
               {envModels && envModels.detected.length === 0 && (
-                <div className="text-xs text-fg-tertiary">No API keys found. Set environment variables like <code className="text-fg-secondary">ANTHROPIC_API_KEY</code> or <code className="text-fg-secondary">OPENAI_API_KEY</code> and restart the server.</div>
+                <div className="text-xs text-fg-tertiary">
+                  <Trans i18nKey="settings:setupGuide.fromEnv.noKeysHint" components={{ code: <code className="text-fg-secondary" /> }} />
+                </div>
               )}
               {envMsg && <Msg type={envMsg.type} text={envMsg.text} />}
             </SetupCard>
 
             {/* Option 2: OpenClaw */}
             <SetupCard
-              step="2"
-              title="From OpenClaw Config"
-              description="Import model configs from an existing OpenClaw installation."
+              step={t('setupGuide.fromOpenClaw.step')}
+              title={t('setupGuide.fromOpenClaw.title')}
+              description={t('setupGuide.fromOpenClaw.description')}
             >
               {!openclawPreview ? (
                 <button onClick={() => void detectOpenclaw()} disabled={openclawLoading}
                   className="px-4 py-2 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-secondary text-sm rounded-lg transition-colors">
-                  {openclawLoading ? 'Detecting...' : 'Detect OpenClaw'}
+                  {openclawLoading ? t('common:detecting') : t('openClaw.detectShort')}
                 </button>
               ) : openclawPreview.found ? (
                 <div className="space-y-2">
-                  <div className="text-xs text-green-600">Found: <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code></div>
+                  <div className="text-xs text-green-600">{t('setupGuide.foundPrefix')} <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code></div>
                   {openclawPreview.summary.models && (
-                    <div className="text-xs text-fg-secondary">{openclawPreview.summary.models.providerCount} providers, {openclawPreview.summary.models.providers.reduce((s, p) => s + p.modelCount, 0)} models</div>
+                    <div className="text-xs text-fg-secondary">{t('openClaw.providersModels', { providers: openclawPreview.summary.models.providerCount, models: openclawPreview.summary.models.providers.reduce((s, p) => s + p.modelCount, 0) })}</div>
                   )}
                   <button onClick={() => void importOpenclaw()} disabled={openclawLoading}
                     className="w-full px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                    {openclawLoading ? 'Importing...' : 'Import Model Configs'}
+                    {openclawLoading ? t('common:importing') : t('openClaw.importConfigs')}
                   </button>
                 </div>
               ) : (
-                <div className="text-xs text-fg-tertiary">No OpenClaw config found.</div>
+                <div className="text-xs text-fg-tertiary">{t('openClaw.notFound')}</div>
               )}
               {openclawMsg && <Msg type={openclawMsg.type} text={openclawMsg.text} />}
             </SetupCard>
 
             {/* Option 3: Manual hint */}
             <SetupCard
-              step="3"
-              title="Manual Configuration"
-              description={<>Edit <code className="text-fg-secondary">~/.markus/markus.json</code> directly, then restart the server.</>}
+              step={t('setupGuide.manual.step')}
+              title={t('setupGuide.manual.title')}
+              description={<Trans i18nKey="settings:setupGuide.manual.description" components={{ code: <code className="text-fg-secondary" /> }} />}
             />
           </div>
         )}
 
         {/* ───── System Status ───── */}
-        <Section title="System Status">
+        <Section title={t('systemStatus.title')}>
           {health ? (
             <div className="grid grid-cols-3 gap-4">
-              <InfoCard label="Status" value={health.status === 'ok' ? 'Healthy' : health.status} color="green" />
-              <InfoCard label="Version" value={health.version} color="indigo" />
-              <InfoCard label="Active Agents" value={String(health.agents)} color="purple" />
+              <InfoCard label={t('systemStatus.status')} value={health.status === 'ok' ? t('systemStatus.healthy') : health.status} color="green" />
+              <InfoCard label={t('systemStatus.version')} value={health.version} color="indigo" />
+              <InfoCard label={t('systemStatus.activeAgents')} value={String(health.agents)} color="purple" />
             </div>
-          ) : <div className="text-sm text-fg-tertiary">Loading...</div>}
+          ) : <div className="text-sm text-fg-tertiary">{t('common:loading')}</div>}
         </Section>
 
         {/* ───── Default Provider ───── */}
-        <Section title="Default LLM Provider">
+        <Section title={t('defaultProvider.title')}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <div className="text-sm font-medium">Primary Provider</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">Used for all agent interactions unless overridden</div>
+                <div className="text-sm font-medium">{t('defaultProvider.primaryProvider')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('defaultProvider.primaryProviderDesc')}</div>
               </div>
               <div className="flex items-center gap-3">
                 {llm ? (
                   <select value={selectedProvider} onChange={e => { setSelectedProvider(e.target.value); setSaveMsg(null); }}
                     className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm w-48 focus:border-brand-500 outline-none">
-                    {enabledProviders.length > 0 ? enabledProviders.map(p => <option key={p} value={p}>{llm.providers[p]?.displayName ?? p}</option>) : <option value="">No providers configured</option>}
+                    {enabledProviders.length > 0 ? enabledProviders.map(p => <option key={p} value={p}>{llm.providers[p]?.displayName ?? p}</option>) : <option value="">{t('defaultProvider.noProviders')}</option>}
                   </select>
-                ) : <div className="text-xs text-fg-tertiary">Loading...</div>}
+                ) : <div className="text-xs text-fg-tertiary">{t('common:loading')}</div>}
                 {selectedProvider !== llm?.defaultProvider && (
                   <button onClick={() => void saveLLM()} disabled={saving}
                     className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
-                    {saving ? 'Saving...' : 'Save'}
+                    {saving ? t('common:saving') : t('common:save')}
                   </button>
                 )}
               </div>
@@ -664,7 +688,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
         {/* OAuth Authentication section removed */}
 
         {/* ───── Model Providers ───── */}
-        <Section title="Model Providers & Pricing">
+        <Section title={t('modelProviders.title')}>
           <div className="space-y-3">
             {llm && Object.entries(llm.providers).map(([name, info]) => (
               <div key={name} className={`bg-surface-secondary border rounded-xl overflow-hidden transition-colors ${info.configured ? 'border-border-default hover:border-gray-600' : 'border-border-default/50 opacity-60'}`}>
@@ -674,11 +698,11 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium">{info.displayName ?? name}</span>
-                        {name === llm.defaultProvider && <span className="text-[10px] bg-brand-500/15 text-brand-500 px-1.5 py-0.5 rounded">default</span>}
-                        {info.configured && !info.enabled && <span className="text-[10px] bg-amber-500/15 text-amber-600 px-1.5 py-0.5 rounded">disabled</span>}
-                        {info.oauthConnected && <span className="text-[10px] bg-green-500/15 text-green-600 px-1.5 py-0.5 rounded">OAuth</span>}
+                        {name === llm.defaultProvider && <span className="text-[10px] bg-brand-500/15 text-brand-500 px-1.5 py-0.5 rounded">{t('modelProviders.badgeDefault')}</span>}
+                        {info.configured && !info.enabled && <span className="text-[10px] bg-amber-500/15 text-amber-600 px-1.5 py-0.5 rounded">{t('modelProviders.disabled')}</span>}
+                        {info.oauthConnected && <span className="text-[10px] bg-green-500/15 text-green-600 px-1.5 py-0.5 rounded">{t('modelProviders.badgeOAuth')}</span>}
                       </div>
-                      <div className="text-xs text-fg-tertiary mt-0.5">{info.model || 'Not configured'}</div>
+                      <div className="text-xs text-fg-tertiary mt-0.5">{info.model || t('modelProviders.notConfigured')}</div>
                     </div>
                   </div>
                   <div className="flex items-center gap-4">
@@ -687,13 +711,13 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                         onClick={e => { e.stopPropagation(); void toggleProvider(name, !info.enabled); }}
                         disabled={togglingProvider === name}
                         className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${info.enabled ? 'bg-green-500' : 'bg-gray-600'} ${togglingProvider === name ? 'opacity-50' : ''}`}
-                        title={info.enabled ? 'Click to disable' : 'Click to enable'}
+                        title={info.enabled ? t('modelProviders.clickToDisable') : t('modelProviders.clickToEnable')}
                       >
                         <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${info.enabled ? 'translate-x-4' : 'translate-x-1'}`} />
                       </button>
                     )}
-                    {info.contextWindow && <span className="text-[10px] text-fg-tertiary">{(info.contextWindow / 1000).toFixed(0)}K ctx</span>}
-                    {info.cost && <span className="text-[10px] text-fg-tertiary">${info.cost.input}/{info.cost.output} per 1M</span>}
+                    {info.contextWindow && <span className="text-[10px] text-fg-tertiary">{t('modelProviders.ctxTokens', { size: (info.contextWindow / 1000).toFixed(0) })}</span>}
+                    {info.cost && <span className="text-[10px] text-fg-tertiary">{t('modelProviders.costPerMillion', { input: info.cost.input, output: info.cost.output })}</span>}
                     <span className="text-fg-tertiary text-xs">{expandedProvider === name ? '▲' : '▼'}</span>
                   </div>
                 </div>
@@ -703,33 +727,33 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                     {info.configured && (
                       <>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                          <MiniStat label="Model" value={info.model} />
-                          <MiniStat label="Context Window" value={info.contextWindow ? `${(info.contextWindow / 1000).toFixed(0)}K tokens` : 'N/A'} />
-                          <MiniStat label="Max Output" value={info.maxOutputTokens ? `${(info.maxOutputTokens / 1000).toFixed(0)}K tokens` : 'N/A'} />
-                          <MiniStat label="Base URL" value={info.baseUrl ?? 'Default'} />
+                          <MiniStat label={t('modelProviders.model')} value={info.model} />
+                          <MiniStat label={t('modelProviders.contextWindow')} value={info.contextWindow ? t('modelProviders.kTokens', { k: (info.contextWindow / 1000).toFixed(0) }) : t('modelProviders.notApplicable')} />
+                          <MiniStat label={t('modelProviders.maxOutput')} value={info.maxOutputTokens ? t('modelProviders.kTokens', { k: (info.maxOutputTokens / 1000).toFixed(0) }) : t('modelProviders.notApplicable')} />
+                          <MiniStat label={t('modelProviders.baseUrlLabel')} value={info.baseUrl ?? t('modelProviders.baseUrlDisplayDefault')} />
                         </div>
 
                         {/* Edit / Delete provider actions */}
                         {editingProvider === name ? (
                           <div className="bg-surface-elevated/40 rounded-lg p-4 space-y-3">
-                            <div className="text-[10px] text-fg-tertiary uppercase tracking-wider">Edit Provider</div>
+                            <div className="text-[10px] text-fg-tertiary uppercase tracking-wider">{t('modelProviders.editProvider')}</div>
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                               <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">API Key</label>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.apiKey')}</label>
                                 <input type="password" value={editProviderForm.apiKey}
                                   onChange={e => setEditProviderForm({ ...editProviderForm, apiKey: e.target.value })}
-                                  placeholder="Leave blank to keep current"
+                                  placeholder={t('modelProviders.apiKeyPlaceholder')}
                                   className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                               </div>
                               <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Base URL</label>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.baseUrl')}</label>
                                 <input type="text" value={editProviderForm.baseUrl}
                                   onChange={e => setEditProviderForm({ ...editProviderForm, baseUrl: e.target.value })}
-                                  placeholder="Default"
+                                  placeholder={t('modelProviders.baseUrlDisplayDefault')}
                                   className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                               </div>
                               <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Model</label>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.model')}</label>
                                 <input type="text" value={editProviderForm.model}
                                   onChange={e => setEditProviderForm({ ...editProviderForm, model: e.target.value })}
                                   className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary focus:border-brand-500 outline-none" />
@@ -737,42 +761,42 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                             </div>
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                               <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Context Window</label>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.contextWindow')}</label>
                                 <input type="number" value={editProviderForm.contextWindow || ''}
                                   onChange={e => setEditProviderForm({ ...editProviderForm, contextWindow: Number(e.target.value) })}
-                                  placeholder="e.g. 128000"
+                                  placeholder={t('modelProviders.placeholderContextExample')}
                                   className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                               </div>
                               <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Max Output Tokens</label>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.maxOutputTokens')}</label>
                                 <input type="number" value={editProviderForm.maxOutputTokens || ''}
                                   onChange={e => setEditProviderForm({ ...editProviderForm, maxOutputTokens: Number(e.target.value) })}
-                                  placeholder="e.g. 16384"
+                                  placeholder={t('modelProviders.placeholderMaxOutputExample')}
                                   className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                               </div>
                               <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">$/1M Input</label>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.inputCost')}</label>
                                 <input type="number" step="0.01" value={editProviderForm.costInput || ''}
                                   onChange={e => setEditProviderForm({ ...editProviderForm, costInput: Number(e.target.value) })}
-                                  placeholder="e.g. 1"
+                                  placeholder={t('modelProviders.placeholderCostInput')}
                                   className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                               </div>
                               <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">$/1M Output</label>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.outputCost')}</label>
                                 <input type="number" step="0.01" value={editProviderForm.costOutput || ''}
                                   onChange={e => setEditProviderForm({ ...editProviderForm, costOutput: Number(e.target.value) })}
-                                  placeholder="e.g. 5"
+                                  placeholder={t('modelProviders.placeholderCostOutput')}
                                   className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                               </div>
                             </div>
                             <div className="flex gap-2">
                               <button onClick={() => void saveEditProvider(name)} disabled={editProviderSaving}
                                 className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
-                                {editProviderSaving ? 'Saving...' : 'Save'}
+                                {editProviderSaving ? t('common:saving') : t('common:save')}
                               </button>
                               <button onClick={() => setEditingProvider(null)}
                                 className="px-3 py-1.5 text-xs border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors">
-                                Cancel
+                                {t('common:cancel')}
                               </button>
                             </div>
                           </div>
@@ -780,12 +804,12 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                           <div className="flex gap-2">
                             <button onClick={e => { e.stopPropagation(); startEditProvider(name, info); }}
                               className="px-3 py-1.5 text-xs border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors">
-                              Edit
+                              {t('common:edit')}
                             </button>
-                            <button onClick={e => { e.stopPropagation(); if (confirm(`Delete provider "${info.displayName ?? name}"?`)) void deleteProvider(name); }}
+                            <button onClick={e => { e.stopPropagation(); if (confirm(t('modelProviders.deleteConfirm', { name: info.displayName ?? name }))) void deleteProvider(name); }}
                               disabled={deletingProvider === name}
                               className="px-3 py-1.5 text-xs border border-red-500/30 text-red-400 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-40">
-                              {deletingProvider === name ? 'Deleting...' : 'Delete'}
+                              {deletingProvider === name ? t('common:deleting') : t('common:delete')}
                             </button>
                           </div>
                         )}
@@ -794,12 +818,12 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
 
                     {info.cost && (
                       <div className="bg-surface-elevated/40 rounded-lg p-3">
-                        <div className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-2">Pricing (per 1M tokens)</div>
+                        <div className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-2">{t('modelProviders.pricingTitle')}</div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                          <MiniStat label="Input" value={`$${info.cost.input}`} />
-                          <MiniStat label="Output" value={`$${info.cost.output}`} />
-                          {info.cost.cacheRead != null && <MiniStat label="Cache Read" value={`$${info.cost.cacheRead}`} />}
-                          {info.cost.cacheWrite != null && <MiniStat label="Cache Write" value={`$${info.cost.cacheWrite}`} />}
+                          <MiniStat label={t('modelProviders.input')} value={`$${info.cost.input}`} />
+                          <MiniStat label={t('modelProviders.output')} value={`$${info.cost.output}`} />
+                          {info.cost.cacheRead != null && <MiniStat label={t('modelProviders.cacheRead')} value={`$${info.cost.cacheRead}`} />}
+                          {info.cost.cacheWrite != null && <MiniStat label={t('modelProviders.cacheWrite')} value={`$${info.cost.cacheWrite}`} />}
                         </div>
                       </div>
                     )}
@@ -807,11 +831,11 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                     {/* Available Models */}
                     <div>
                       <div className="flex items-center justify-between mb-2">
-                        <div className="text-[10px] text-fg-tertiary uppercase tracking-wider">Available Models</div>
+                        <div className="text-[10px] text-fg-tertiary uppercase tracking-wider">{t('modelProviders.availableModels')}</div>
                         {info.configured && addingModelProvider !== name && (
                           <button onClick={() => { setAddingModelProvider(name); setAddModelForm({ id: '', name: '', contextWindow: 128000, maxOutputTokens: 16384, costInput: 1, costOutput: 5, reasoning: false, vision: false }); }}
                             className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors">
-                            + Add Model
+                            {t('modelProviders.addModel')}
                           </button>
                         )}
                       </div>
@@ -820,28 +844,28 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                       {addingModelProvider === name && (
                         <div className="bg-surface-elevated/40 rounded-lg p-3 mb-2 space-y-2">
                           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                            <input type="text" placeholder="Model ID" value={addModelForm.id}
+                            <input type="text" placeholder={t('modelProviders.modelId')} value={addModelForm.id}
                               onChange={e => setAddModelForm({ ...addModelForm, id: e.target.value })}
                               className="px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
-                            <input type="text" placeholder="Display Name" value={addModelForm.name}
+                            <input type="text" placeholder={t('modelProviders.displayName')} value={addModelForm.name}
                               onChange={e => setAddModelForm({ ...addModelForm, name: e.target.value })}
                               className="px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
-                            <input type="number" placeholder="Context (tokens)" value={addModelForm.contextWindow}
+                            <input type="number" placeholder={t('modelProviders.placeholderContextTokens')} value={addModelForm.contextWindow}
                               onChange={e => setAddModelForm({ ...addModelForm, contextWindow: Number(e.target.value) })}
                               className="px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary focus:border-brand-500 outline-none" />
-                            <input type="number" placeholder="Max Output" value={addModelForm.maxOutputTokens}
+                            <input type="number" placeholder={t('modelProviders.maxOutput')} value={addModelForm.maxOutputTokens}
                               onChange={e => setAddModelForm({ ...addModelForm, maxOutputTokens: Number(e.target.value) })}
                               className="px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary focus:border-brand-500 outline-none" />
                           </div>
                           <div className="flex items-center gap-3">
                             <div className="flex items-center gap-1">
-                              <span className="text-[10px] text-fg-tertiary">$/1M in:</span>
+                              <span className="text-[10px] text-fg-tertiary">{t('modelProviders.costPerMillionIn')}</span>
                               <input type="number" step="0.01" value={addModelForm.costInput}
                                 onChange={e => setAddModelForm({ ...addModelForm, costInput: Number(e.target.value) })}
                                 className="w-16 px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary focus:border-brand-500 outline-none" />
                             </div>
                             <div className="flex items-center gap-1">
-                              <span className="text-[10px] text-fg-tertiary">out:</span>
+                              <span className="text-[10px] text-fg-tertiary">{t('modelProviders.costPerMillionOut')}</span>
                               <input type="number" step="0.01" value={addModelForm.costOutput}
                                 onChange={e => setAddModelForm({ ...addModelForm, costOutput: Number(e.target.value) })}
                                 className="w-16 px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary focus:border-brand-500 outline-none" />
@@ -849,21 +873,21 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                             <label className="flex items-center gap-1 text-[10px] text-fg-tertiary cursor-pointer">
                               <input type="checkbox" checked={addModelForm.reasoning}
                                 onChange={e => setAddModelForm({ ...addModelForm, reasoning: e.target.checked })} className="rounded" />
-                              reasoning
+                              {t('modelProviders.reasoning')}
                             </label>
                             <label className="flex items-center gap-1 text-[10px] text-fg-tertiary cursor-pointer">
                               <input type="checkbox" checked={addModelForm.vision}
                                 onChange={e => setAddModelForm({ ...addModelForm, vision: e.target.checked })} className="rounded" />
-                              vision
+                              {t('modelProviders.vision')}
                             </label>
                             <div className="flex-1" />
                             <button onClick={() => void addCustomModel(name)} disabled={addModelSaving || !addModelForm.id || !addModelForm.name}
                               className="px-2 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded transition-colors">
-                              {addModelSaving ? 'Adding...' : 'Add'}
+                              {addModelSaving ? t('modelProviders.adding') : t('common:create')}
                             </button>
                             <button onClick={() => setAddingModelProvider(null)}
                               className="px-2 py-1 text-[10px] border border-border-default text-fg-secondary hover:bg-surface-elevated rounded transition-colors">
-                              Cancel
+                              {t('common:cancel')}
                             </button>
                           </div>
                         </div>
@@ -894,28 +918,28 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                                 <div className="flex items-center gap-2">
                                   {isActive && <span className="w-1.5 h-1.5 rounded-full bg-brand-500 shrink-0" />}
                                   <span className={isActive ? 'text-brand-500 font-medium' : 'text-fg-secondary'}>{m.name}</span>
-                                  {m.reasoning && <span className="text-[9px] bg-amber-500/15 text-amber-600 px-1 py-0.5 rounded">reasoning</span>}
-                                  {m.inputTypes?.includes('image') && <span className="text-[9px] bg-blue-500/15 text-blue-600 px-1 py-0.5 rounded">vision</span>}
-                                  {isCustom && <span className="text-[9px] bg-purple-500/15 text-purple-400 px-1 py-0.5 rounded">custom</span>}
+                                  {m.reasoning && <span className="text-[9px] bg-amber-500/15 text-amber-600 px-1 py-0.5 rounded">{t('modelProviders.reasoning')}</span>}
+                                  {m.inputTypes?.includes('image') && <span className="text-[9px] bg-blue-500/15 text-blue-600 px-1 py-0.5 rounded">{t('modelProviders.vision')}</span>}
+                                  {isCustom && <span className="text-[9px] bg-purple-500/15 text-purple-400 px-1 py-0.5 rounded">{t('modelProviders.custom')}</span>}
                                 </div>
                                 <div className="flex items-center gap-3 text-fg-tertiary">
-                                  <span>{(m.contextWindow / 1000).toFixed(0)}K ctx</span>
-                                  <span>${m.cost.input}/${m.cost.output}</span>
+                                  <span>{t('modelProviders.ctxTokens', { size: (m.contextWindow / 1000).toFixed(0) })}</span>
+                                  <span>{t('modelProviders.costPair', { input: m.cost.input, output: m.cost.output })}</span>
                                   {info.configured && !isActive && (
                                     <span className={`text-[9px] px-1.5 py-0.5 rounded transition-colors ${
                                       isSwitching
                                         ? 'bg-brand-500/30 text-brand-400'
                                         : 'bg-surface-overlay text-fg-tertiary hover:bg-brand-500/20 hover:text-brand-500'
                                     }`}>
-                                      {isSwitching ? 'Switching...' : 'Use'}
+                                      {isSwitching ? t('modelProviders.switching') : t('modelProviders.use')}
                                     </span>
                                   )}
                                   {isActive && (
-                                    <span className="text-[9px] bg-brand-500/15 text-brand-500 px-1.5 py-0.5 rounded">active</span>
+                                    <span className="text-[9px] bg-brand-500/15 text-brand-500 px-1.5 py-0.5 rounded">{t('modelProviders.active')}</span>
                                   )}
                                   {isCustom && !isActive && (
                                     <button onClick={e => { e.stopPropagation(); void deleteCustomModel(name, m.id); }}
-                                      className="text-red-400 hover:text-red-300 transition-colors" title="Delete custom model">
+                                      className="text-red-400 hover:text-red-300 transition-colors" title={t('modelProviders.deleteCustomModelTitle')}>
                                       <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                                     </button>
                                   )}
@@ -929,7 +953,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
 
                     {!info.configured && (
                       <div className="text-xs text-fg-tertiary">
-                        Not configured. Use the "Add Provider" button below, or set API keys in environment variables.
+                        {t('modelProviders.notConfiguredHint')}
                       </div>
                     )}
                   </div>
@@ -942,66 +966,66 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
           {!showAddProvider ? (
             <button onClick={() => setShowAddProvider(true)}
               className="w-full mt-3 px-4 py-3 border border-dashed border-border-default hover:border-brand-500/50 hover:bg-brand-500/5 rounded-xl text-sm text-fg-tertiary hover:text-brand-500 transition-colors">
-              + Add Provider
+              {t('modelProviders.addProvider')}
             </button>
           ) : (
             <div className="mt-3 bg-surface-secondary border border-brand-500/30 rounded-xl p-5 space-y-4">
-              <div className="text-sm font-medium text-fg-primary">Add New Provider</div>
+              <div className="text-sm font-medium text-fg-primary">{t('modelProviders.addNewProvider')}</div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
-                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Provider Name</label>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.providerName')}</label>
                   <input type="text" value={addProviderForm.name}
                     onChange={e => setAddProviderForm({ ...addProviderForm, name: e.target.value })}
-                    placeholder="e.g. deepseek, openrouter, my-provider"
+                    placeholder={t('modelProviders.placeholderProviderName')}
                     className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
-                  <div className="text-[10px] text-fg-tertiary mt-1">Use anthropic, openai, google, ollama for first-party; any other name uses OpenAI-compatible API</div>
+                  <div className="text-[10px] text-fg-tertiary mt-1">{t('modelProviders.providerNameHint')}</div>
                 </div>
                 <div>
-                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">API Key</label>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.apiKey')}</label>
                   <input type="password" value={addProviderForm.apiKey}
                     onChange={e => setAddProviderForm({ ...addProviderForm, apiKey: e.target.value })}
-                    placeholder="sk-..."
+                    placeholder={t('modelProviders.placeholderApiKeySk')}
                     className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                 </div>
                 <div>
-                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Base URL (optional)</label>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.baseUrl')}</label>
                   <input type="text" value={addProviderForm.baseUrl}
                     onChange={e => setAddProviderForm({ ...addProviderForm, baseUrl: e.target.value })}
-                    placeholder="https://api.example.com/v1"
+                    placeholder={t('modelProviders.placeholderBaseUrl')}
                     className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                 </div>
                 <div>
-                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Default Model</label>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.defaultModel')}</label>
                   <input type="text" value={addProviderForm.model}
                     onChange={e => setAddProviderForm({ ...addProviderForm, model: e.target.value })}
-                    placeholder="e.g. deepseek-chat, gpt-4o"
+                    placeholder={t('modelProviders.placeholderDefaultModel')}
                     className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                 </div>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div>
-                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Context Window</label>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.contextWindow')}</label>
                   <input type="number" value={addProviderForm.contextWindow}
                     onChange={e => setAddProviderForm({ ...addProviderForm, contextWindow: Number(e.target.value) })}
                     placeholder="128000"
                     className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                 </div>
                 <div>
-                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Max Output Tokens</label>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.maxOutputTokens')}</label>
                   <input type="number" value={addProviderForm.maxOutputTokens}
                     onChange={e => setAddProviderForm({ ...addProviderForm, maxOutputTokens: Number(e.target.value) })}
                     placeholder="16384"
                     className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                 </div>
                 <div>
-                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">$/1M Input</label>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.inputCost')}</label>
                   <input type="number" step="0.01" value={addProviderForm.costInput}
                     onChange={e => setAddProviderForm({ ...addProviderForm, costInput: Number(e.target.value) })}
                     placeholder="1"
                     className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                 </div>
                 <div>
-                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">$/1M Output</label>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.outputCost')}</label>
                   <input type="number" step="0.01" value={addProviderForm.costOutput}
                     onChange={e => setAddProviderForm({ ...addProviderForm, costOutput: Number(e.target.value) })}
                     placeholder="5"
@@ -1011,11 +1035,11 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
               <div className="flex gap-2">
                 <button onClick={() => void addProvider()} disabled={addProviderSaving || !addProviderForm.name || !addProviderForm.model}
                   className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
-                  {addProviderSaving ? 'Adding...' : 'Add Provider'}
+                  {addProviderSaving ? t('modelProviders.adding') : t('modelProviders.addProviderSubmit')}
                 </button>
                 <button onClick={() => { setShowAddProvider(false); setAddProviderMsg(null); }}
                   className="px-4 py-2 text-sm border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors">
-                  Cancel
+                  {t('common:cancel')}
                 </button>
               </div>
               {addProviderMsg && <Msg type={addProviderMsg.type} text={addProviderMsg.text} />}
@@ -1026,18 +1050,18 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
         <div className="border-t border-border-default" />
 
         {/* ───── Environment Variable Config ───── */}
-        <Section title="Environment Variable Configuration">
+        <Section title={t('envConfig.title')}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
-            <div className="text-sm text-fg-secondary">Detect model API keys from environment variables and write them to the config file.</div>
+            <div className="text-sm text-fg-secondary">{t('envConfig.description')}</div>
             <button onClick={() => void detectEnvModels()} disabled={envLoading}
               className="px-4 py-2 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-secondary text-sm rounded-lg transition-colors flex items-center gap-2">
               <svg className={`w-4 h-4 ${envLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-              {envLoading ? 'Detecting...' : 'Refresh Environment Variables'}
+              {envLoading ? t('common:detecting') : t('envConfig.refreshEnv')}
             </button>
 
             {envModels && envModels.detected.length > 0 && (
               <div className="border-t border-border-default pt-4 space-y-3">
-                <div className="text-xs text-fg-tertiary uppercase tracking-wider">Detected Providers — select to apply:</div>
+                <div className="text-xs text-fg-tertiary uppercase tracking-wider">{t('envConfig.detectedProviders')}</div>
                 {envModels.detected.map(d => (
                   <label key={d.provider} className="flex items-center justify-between bg-surface-elevated/30 rounded-lg px-4 py-3 cursor-pointer hover:bg-surface-elevated/50 transition-colors">
                     <div className="flex items-center gap-3">
@@ -1047,9 +1071,9 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                       <div>
                         <div className="text-sm text-fg-primary font-medium">{d.displayName}</div>
                         <div className="text-xs text-fg-tertiary mt-0.5">
-                          Key: <code className="text-fg-secondary">{d.apiKeyPreview}</code>
-                          {' / '}Model: <code className="text-fg-secondary">{d.model}</code>
-                          {d.baseUrl && <>{' / '}URL: <code className="text-fg-secondary">{d.baseUrl}</code></>}
+                          {t('envConfig.keyLabel')} <code className="text-fg-secondary">{d.apiKeyPreview}</code>
+                          {' / '}{t('envConfig.modelLabel')} <code className="text-fg-secondary">{d.model}</code>
+                          {d.baseUrl && <>{' / '}{t('envConfig.urlLabel')} <code className="text-fg-secondary">{d.baseUrl}</code></>}
                         </div>
                       </div>
                     </div>
@@ -1060,12 +1084,12 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                 ))}
                 {envModels.timeoutMs && (
                   <div className="text-xs text-fg-tertiary">
-                    LLM Timeout: <code className="text-fg-secondary">{envModels.timeoutMs}ms</code> (from <code>LLM_TIMEOUT_MS</code>)
+                    {t('envConfig.llmTimeout', { ms: envModels.timeoutMs })}
                   </div>
                 )}
                 <button onClick={() => void applyEnvModels()} disabled={envApplying || Object.values(envSelected).filter(Boolean).length === 0}
                   className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                  {envApplying ? 'Applying...' : `Apply ${Object.values(envSelected).filter(Boolean).length} Provider(s) to Config`}
+                  {envApplying ? t('common:applying') : t('envConfig.applyToConfig', { count: Object.values(envSelected).filter(Boolean).length })}
                 </button>
               </div>
             )}
@@ -1074,27 +1098,27 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
         </Section>
 
         {/* ───── Import from OpenClaw ───── */}
-        <Section title="Import from OpenClaw">
+        <Section title={t('openClaw.title')}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
-            <div className="text-sm text-fg-secondary">Detect and import LLM configurations from an existing OpenClaw installation.</div>
+            <div className="text-sm text-fg-secondary">{t('openClaw.description')}</div>
             <div className="flex gap-3">
               <button onClick={() => void detectOpenclaw()} disabled={openclawLoading}
                 className="px-4 py-2 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-secondary text-sm rounded-lg transition-colors">
-                {openclawLoading ? 'Detecting...' : 'Detect OpenClaw Config'}
+                {openclawLoading ? t('common:detecting') : t('openClaw.detect')}
               </button>
             </div>
 
             {openclawPreview && openclawPreview.found && (
               <div className="border-t border-border-default pt-4 space-y-3">
-                <div className="text-xs text-green-600">Found OpenClaw config at: <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code></div>
+                <div className="text-xs text-green-600">{t('openClaw.foundAt')} <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code></div>
                 {openclawPreview.summary.models && (
                   <div className="bg-surface-elevated/30 rounded-lg p-3">
-                    <div className="text-xs text-fg-tertiary mb-2">{openclawPreview.summary.models.providerCount} model providers found:</div>
+                    <div className="text-xs text-fg-tertiary mb-2">{t('openClaw.modelProvidersFound', { count: openclawPreview.summary.models.providerCount })}</div>
                     <div className="space-y-1">
                       {openclawPreview.summary.models.providers.map(p => (
                         <div key={p.name} className="flex items-center justify-between text-xs">
                           <span className="text-fg-secondary">{p.name}</span>
-                          <span className="text-fg-tertiary">{p.modelCount} models {p.baseUrl ? `(${p.baseUrl})` : ''}</span>
+                          <span className="text-fg-tertiary">{t('openClaw.modelsCountSuffix', { count: p.modelCount })}{p.baseUrl ? t('openClaw.withBaseUrl', { url: p.baseUrl }) : ''}</span>
                         </div>
                       ))}
                     </div>
@@ -1102,12 +1126,12 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                 )}
                 {openclawPreview.summary.channels && openclawPreview.summary.channels.length > 0 && (
                   <div className="bg-surface-elevated/30 rounded-lg p-3">
-                    <div className="text-xs text-fg-tertiary mb-1">Channels: {openclawPreview.summary.channels.join(', ')}</div>
+                    <div className="text-xs text-fg-tertiary mb-1">{t('openClaw.channelsPrefix')} {openclawPreview.summary.channels.join(', ')}</div>
                   </div>
                 )}
                 <button onClick={() => void importOpenclaw()} disabled={openclawLoading}
                   className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                  {openclawLoading ? 'Importing...' : 'Import Model Configs'}
+                  {openclawLoading ? t('common:importing') : t('openClaw.importConfigs')}
                 </button>
               </div>
             )}
@@ -1115,12 +1139,12 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
           </div>
         </Section>
 
-        <Section title="Agent Execution">
+        <Section title={t('agentExecution.title')}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <div className="text-sm font-medium text-fg-primary">Max Tool Iterations</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">Safety cap on tool call loops per agent turn (0 = unlimited, applies to all agents and subagents)</div>
+                <div className="text-sm font-medium text-fg-primary">{t('agentExecution.maxToolIterations')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('agentExecution.maxToolIterationsDesc')}</div>
               </div>
               <div className="flex items-center gap-2">
                 <input
@@ -1137,13 +1161,13 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                     try {
                       const d = await api.settings.updateAgent({ maxToolIterations: agentMaxIter });
                       setAgentMaxIter(d.maxToolIterations);
-                      setAgentMsg({ type: 'ok', text: 'Saved' });
-                    } catch { setAgentMsg({ type: 'err', text: 'Failed to save' }); }
+                      setAgentMsg({ type: 'ok', text: t('agentExecution.saved') });
+                    } catch { setAgentMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
                     setAgentSaving(false);
                   }}
                   className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
                 >
-                  {agentSaving ? 'Saving…' : 'Save'}
+                  {agentSaving ? t('common:saving') : t('common:save')}
                 </button>
               </div>
             </div>
@@ -1151,19 +1175,18 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
           </div>
         </Section>
 
-        <Section title="Browser Automation">
+        <Section title={t('browserAutomation.title')}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-5">
             <div className="text-xs text-fg-tertiary">
-              Settings for the Chrome DevTools browser skill. Agents use Chrome to browse, test web apps, and inspect pages.
+              {t('browserAutomation.description')}
             </div>
 
             {/* Bring to Front toggle */}
             <div className="flex items-center justify-between">
               <div>
-                <div className="text-sm font-medium text-fg-primary">Bring to Foreground</div>
+                <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.bringToFront')}</div>
                 <div className="text-xs text-fg-tertiary mt-0.5">
-                  When enabled, Chrome tabs will be brought to the foreground when agents navigate.
-                  When disabled (default), agents work silently in the background without stealing focus.
+                  {t('browserAutomation.bringToFrontDesc')}
                 </div>
               </div>
               <button
@@ -1174,8 +1197,8 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                   try {
                     const d = await api.settings.updateBrowser({ bringToFront: newVal });
                     setBrowserBringToFront(d.bringToFront);
-                    setBrowserMsg({ type: 'ok', text: newVal ? 'Tabs will be brought to foreground' : 'Tabs will stay in background' });
-                  } catch { setBrowserMsg({ type: 'err', text: 'Failed to save' }); setBrowserBringToFront(!newVal); }
+                    setBrowserMsg({ type: 'ok', text: newVal ? t('browserAutomation.tabsForeground') : t('browserAutomation.tabsBackground') });
+                  } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); setBrowserBringToFront(!newVal); }
                   setBrowserSaving(false);
                 }}
                 disabled={browserSaving}
@@ -1188,9 +1211,9 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
             {/* Auto-close tabs toggle */}
             <div className="flex items-center justify-between border-t border-border-default pt-4">
               <div>
-                <div className="text-sm font-medium text-fg-primary">Auto-close Tabs</div>
+                <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.autoCloseTabs')}</div>
                 <div className="text-xs text-fg-tertiary mt-0.5">
-                  Automatically close agent-owned browser tabs when the agent task completes or the agent is removed.
+                  {t('browserAutomation.autoCloseTabsDesc')}
                 </div>
               </div>
               <button
@@ -1201,8 +1224,8 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                   try {
                     const d = await api.settings.updateBrowser({ autoCloseTabs: newVal });
                     setBrowserAutoClose(d.autoCloseTabs);
-                    setBrowserMsg({ type: 'ok', text: 'Saved' });
-                  } catch { setBrowserMsg({ type: 'err', text: 'Failed to save' }); setBrowserAutoClose(!newVal); }
+                    setBrowserMsg({ type: 'ok', text: t('agentExecution.saved') });
+                  } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); setBrowserAutoClose(!newVal); }
                   setBrowserSaving(false);
                 }}
                 disabled={browserSaving}
@@ -1216,12 +1239,11 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
             <div className="border-t border-border-default pt-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-sm font-medium text-fg-primary">Remote Debugging Port</div>
+                  <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.remoteDebuggingPort')}</div>
                   <div className="text-xs text-fg-tertiary mt-0.5">
-                    Set a persistent debugging port (e.g. 9222) to avoid Chrome&apos;s permission
-                    dialog every time an agent connects. Start Chrome with{' '}
+                    {t('browserAutomation.remoteDebuggingPortDescLead')}{' '}
                     <code className="text-fg-secondary bg-surface-elevated px-1 rounded">--remote-debugging-port=9222</code>{' '}
-                    then set the same port here. Set to 0 to use auto-connect (requires manual permission approval).
+                    {t('browserAutomation.remoteDebuggingPortDescTail')}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1244,15 +1266,15 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                         setBrowserMsg({
                           type: 'ok',
                           text: d.remoteDebuggingPort > 0
-                            ? `Using persistent connection on port ${d.remoteDebuggingPort} (no more permission dialogs)`
-                            : 'Using auto-connect mode (permission dialog required on each connection)',
+                            ? t('browserAutomation.usingPort', { port: d.remoteDebuggingPort })
+                            : t('browserAutomation.usingAutoConnect'),
                         });
-                      } catch { setBrowserMsg({ type: 'err', text: 'Failed to save' }); }
+                      } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
                       setBrowserSaving(false);
                     }}
                     className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
                   >
-                    {browserSaving ? 'Saving...' : 'Save'}
+                    {browserSaving ? t('common:saving') : t('common:save')}
                   </button>
                 </div>
               </div>
@@ -1262,32 +1284,32 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
           </div>
         </Section>
 
-        <Section title="Data & Storage">
+        <Section title={t('dataStorage.title')}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-5">
-            {storageLoading && !storageInfo && <div className="text-sm text-fg-tertiary">Scanning storage...</div>}
+            {storageLoading && !storageInfo && <div className="text-sm text-fg-tertiary">{t('dataStorage.scanning')}</div>}
             {storageInfo && (
               <>
                 {/* Summary bar */}
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="text-lg font-semibold text-fg-primary">{formatBytes(storageInfo.totalSize)}</div>
+                    <div className="text-lg font-semibold text-fg-primary">{formatBytes(storageInfo.totalSize, t)}</div>
                     <div className="text-xs text-fg-tertiary font-mono mt-0.5">{storageInfo.dataDir}</div>
                   </div>
                   <div className="flex gap-2">
                     <button onClick={() => loadStorage()} disabled={storageLoading}
                       className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors disabled:opacity-40">
-                      {storageLoading ? 'Scanning...' : 'Refresh'}
+                      {storageLoading ? t('dataStorage.scanning') : t('common:refresh')}
                     </button>
                     <button onClick={() => void api.system.openPath(storageInfo.dataDir)}
                       className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors">
-                      Open in Finder
+                      {t('dataStorage.openInFinder')}
                     </button>
                   </div>
                 </div>
 
                 {/* Breakdown table */}
                 <div className="border-t border-border-default pt-4">
-                  <h4 className="text-xs font-semibold text-fg-secondary mb-3">Storage Breakdown</h4>
+                  <h4 className="text-xs font-semibold text-fg-secondary mb-3">{t('dataStorage.storageBreakdown')}</h4>
                   <div className="space-y-1.5">
                     {storageInfo.breakdown.filter(b => b.size > 0).map(item => (
                       <div key={item.name} className="flex items-center justify-between py-1.5 px-3 rounded-lg bg-surface-elevated/40">
@@ -1295,7 +1317,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                           <span className="text-sm text-fg-primary">{item.name}</span>
                           <span className="text-xs text-fg-tertiary ml-2">{item.description}</span>
                         </div>
-                        <span className="text-sm font-medium text-fg-secondary tabular-nums shrink-0 ml-3">{formatBytes(item.size)}</span>
+                        <span className="text-sm font-medium text-fg-secondary tabular-nums shrink-0 ml-3">{formatBytes(item.size, t)}</span>
                       </div>
                     ))}
                   </div>
@@ -1304,7 +1326,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                 {/* Per-agent storage */}
                 {storageInfo.agents.length > 0 && (
                   <div className="border-t border-border-default pt-4">
-                    <h4 className="text-xs font-semibold text-fg-secondary mb-3">Agent Storage ({storageInfo.agents.length})</h4>
+                    <h4 className="text-xs font-semibold text-fg-secondary mb-3">{t('dataStorage.agentStorage', { count: storageInfo.agents.length })}</h4>
                     <div className="space-y-1">
                       {storageInfo.agents.map(ag => {
                         const expanded = expandedAgents.has(ag.id);
@@ -1320,19 +1342,19 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                                 </button>
                                 <span className="text-[10px] text-fg-tertiary font-mono truncate">{ag.id}</span>
                               </div>
-                              <span className="text-xs font-medium text-fg-secondary tabular-nums shrink-0 ml-3">{formatBytes(ag.size)}</span>
+                              <span className="text-xs font-medium text-fg-secondary tabular-nums shrink-0 ml-3">{formatBytes(ag.size, t)}</span>
                             </div>
                             {expanded && (
                               <div className="px-3 pb-2 pt-0.5 space-y-0.5">
                                 {ag.subItems.filter(s => s.size > 0).map(sub => (
                                   <div key={sub.name} className="flex items-center justify-between text-xs py-0.5 pl-5">
                                     <span className="text-fg-tertiary">{sub.name}</span>
-                                    <span className="text-fg-secondary tabular-nums">{formatBytes(sub.size)}</span>
+                                    <span className="text-fg-secondary tabular-nums">{formatBytes(sub.size, t)}</span>
                                   </div>
                                 ))}
                                 <div className="pl-5 pt-1">
                                   <button onClick={() => void api.system.openPath(storageInfo.dataDir + '/agents/' + ag.id)}
-                                    className="text-[10px] text-fg-tertiary hover:text-fg-secondary underline">Open folder</button>
+                                    className="text-[10px] text-fg-tertiary hover:text-fg-secondary underline">{t('dataStorage.openFolder')}</button>
                                 </div>
                               </div>
                             )}
@@ -1345,7 +1367,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
 
                 {/* Orphan cleanup */}
                 {orphanInfo && (orphanInfo.orphanAgents.length > 0 || orphanInfo.orphanTeams.length > 0) && (
-                  <OrphanSection orphanInfo={orphanInfo} dataDir={storageInfo.dataDir} onPurged={loadStorage} />
+                  <OrphanSection orphanInfo={orphanInfo} dataDir={storageInfo.dataDir} onPurged={loadStorage} formatBytes={(n) => formatBytes(n, t)} />
                 )}
               </>
             )}
@@ -1417,15 +1439,16 @@ function MiniStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
+function formatBytes(bytes: number, t: (key: string) => string): string {
+  if (bytes === 0) return t('dataStorage.bytesZero');
+  const units = [t('dataStorage.unitB'), t('dataStorage.unitKB'), t('dataStorage.unitMB'), t('dataStorage.unitGB')];
   const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const val = bytes / Math.pow(1024, i);
   return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
 }
 
-function OrphanSection({ orphanInfo, dataDir, onPurged }: { orphanInfo: OrphanInfo; dataDir: string; onPurged: () => void }) {
+function OrphanSection({ orphanInfo, dataDir, onPurged, formatBytes: formatBytesLocal }: { orphanInfo: OrphanInfo; dataDir: string; onPurged: () => void; formatBytes: (n: number) => string }) {
+  const { t } = useTranslation(['settings', 'common']);
   const allItems = [
     ...orphanInfo.orphanAgents.map(o => ({ ...o, kind: 'agent' as const })),
     ...orphanInfo.orphanTeams.map(o => ({ ...o, kind: 'team' as const })),
@@ -1447,29 +1470,30 @@ function OrphanSection({ orphanInfo, dataDir, onPurged }: { orphanInfo: OrphanIn
     try {
       const r = await api.system.purgeOrphans(ids);
       const count = r.purgedAgents.length + r.purgedTeams.length;
-      setResult(`Cleaned ${count} dir${count !== 1 ? 's' : ''}, freed ${formatBytes(r.freedBytes)}${r.failures.length ? ` (${r.failures.length} failed)` : ''}`);
+      const base = t('dataStorage.cleaned', { count, size: formatBytesLocal(r.freedBytes) });
+      setResult(r.failures.length ? t('dataStorage.cleanedWithFailureNote', { base, count: r.failures.length }) : base);
       setSelected(new Set());
       onPurged();
-    } catch { setResult('Cleanup failed'); }
+    } catch { setResult(t('dataStorage.cleanupFailed')); }
     finally { setPurging(false); }
   };
 
   return (
     <div className="border-t border-border-default pt-4">
-      <h4 className="text-xs font-semibold text-amber-500 mb-2">Orphaned Directories</h4>
+      <h4 className="text-xs font-semibold text-amber-500 mb-2">{t('dataStorage.orphanedDirectories')}</h4>
       <p className="text-xs text-fg-tertiary mb-3">
-        These directories have no matching database record and were likely left behind when agents or teams were deleted.
-        Total: {formatBytes(orphanInfo.totalOrphanSize)} across {allItems.length} director{allItems.length === 1 ? 'y' : 'ies'}.
+        {t('dataStorage.orphanedDesc')}{' '}
+        {t('dataStorage.orphanedTotal', { size: formatBytesLocal(orphanInfo.totalOrphanSize), count: allItems.length })}
       </p>
 
       {/* Select all */}
       <div className="flex items-center gap-2 mb-2 px-1">
         <label className="flex items-center gap-1.5 text-[10px] text-fg-tertiary cursor-pointer select-none">
           <input type="checkbox" checked={allSelected} onChange={toggleAll} className="rounded" />
-          Select all
+          {t('common:selectAll')}
         </label>
         {selected.size > 0 && (
-          <span className="text-[10px] text-fg-secondary">{selected.size} selected ({formatBytes(selectedSize)})</span>
+          <span className="text-[10px] text-fg-secondary">{t('dataStorage.selectedWithSize', { count: selected.size, size: formatBytesLocal(selectedSize) })}</span>
         )}
       </div>
 
@@ -1478,12 +1502,12 @@ function OrphanSection({ orphanInfo, dataDir, onPurged }: { orphanInfo: OrphanIn
         {allItems.map(o => (
           <div key={o.id} className={`flex items-center gap-2 text-xs py-1.5 px-2 rounded transition-colors ${selected.has(o.id) ? 'bg-amber-500/10' : 'bg-surface-elevated/30 hover:bg-surface-elevated/50'}`}>
             <input type="checkbox" checked={selected.has(o.id)} onChange={() => toggle(o.id)} className="rounded shrink-0" />
-            {o.kind === 'team' && <span className="text-[10px] text-fg-tertiary shrink-0">team</span>}
+            {o.kind === 'team' && <span className="text-[10px] text-fg-tertiary shrink-0">{t('dataStorage.teamKind')}</span>}
             <span className="text-fg-tertiary font-mono truncate min-w-0 flex-1">{o.id}</span>
-            <span className="text-fg-secondary tabular-nums shrink-0">{formatBytes(o.size)}</span>
+            <span className="text-fg-secondary tabular-nums shrink-0">{formatBytesLocal(o.size)}</span>
             <button onClick={() => void api.system.openPath(o.path)}
               className="text-[10px] text-fg-tertiary hover:text-fg-secondary shrink-0 underline">
-              Open
+              {t('common:open')}
             </button>
           </div>
         ))}
@@ -1494,12 +1518,12 @@ function OrphanSection({ orphanInfo, dataDir, onPurged }: { orphanInfo: OrphanIn
         {selected.size > 0 && (
           <button disabled={purging} onClick={() => void doPurge([...selected])}
             className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50">
-            {purging ? 'Cleaning...' : `Clean Selected (${formatBytes(selectedSize)})`}
+            {purging ? t('dataStorage.cleaning') : t('dataStorage.cleanSelected', { size: formatBytesLocal(selectedSize) })}
           </button>
         )}
         <button disabled={purging} onClick={() => void doPurge()}
           className="px-3 py-1.5 text-xs border border-amber-600/50 hover:bg-amber-600/10 text-amber-500 rounded-lg transition-colors disabled:opacity-50">
-          {purging ? 'Cleaning...' : `Clean All (${formatBytes(orphanInfo.totalOrphanSize)})`}
+          {purging ? t('dataStorage.cleaning') : t('dataStorage.cleanAll', { size: formatBytesLocal(orphanInfo.totalOrphanSize) })}
         </button>
       </div>
       {result && <div className="text-xs text-fg-tertiary mt-2">{result}</div>}

@@ -1,17 +1,18 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Settings } from '../pages/Settings.tsx';
 import { ReportsPage } from '../pages/Reports.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import type { ThemeMode } from '../hooks/useTheme.ts';
 
-const tabs = [
-  { id: 'settings', label: 'Settings' },
-  { id: 'reports', label: 'Reports' },
-] as const;
-
-type TabId = (typeof tabs)[number]['id'];
+type TabId = 'settings' | 'reports';
 
 export function MobileSettingsTabs({ theme, onThemeChange }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void }) {
+  const { t } = useTranslation(['nav', 'common']);
+  const tabs = useMemo(() => [
+    { id: 'settings' as const, label: t('nav:settings') },
+    { id: 'reports' as const, label: t('nav:reports') },
+  ], [t]);
   const [activeTab, setActiveTab] = useState<TabId>('settings');
   const swipe = useSwipeTabs(tabs, activeTab, setActiveTab);
 

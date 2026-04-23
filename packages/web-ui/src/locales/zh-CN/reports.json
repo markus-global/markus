@@ -1,0 +1,78 @@
+{
+  "title": "报告",
+  "tabs": {
+    "generate": "生成",
+    "history": "历史"
+  },
+  "period": {
+    "daily": "按日",
+    "weekly": "按周",
+    "monthly": "按月",
+    "today": "今天",
+    "thisWeek": "本周",
+    "thisMonth": "本月"
+  },
+  "usage": {
+    "llmTokens": "LLM Token（本月）",
+    "toolCalls": "工具调用（今天）",
+    "messages": "消息（今天）",
+    "storage": "存储"
+  },
+  "taskMetrics": {
+    "title": "任务指标",
+    "completed": "已完成",
+    "inProgress": "进行中",
+    "created": "已创建",
+    "blocked": "已阻塞",
+    "failed": "失败"
+  },
+  "costOverview": {
+    "title": "费用概览",
+    "estCostAllTime": "预估费用（累计）",
+    "tokensToday": "今日 Token",
+    "tokensPeriod": "Token（{{period}}）",
+    "costPeriod": "费用（{{period}}）",
+    "totalTokens": "Token 总计",
+    "estimatedCost": "预估费用",
+    "trend": "趋势"
+  },
+  "taskSummary": {
+    "title": "任务摘要",
+    "completedCount": "已完成（{{count}}）",
+    "inProgressCount": "进行中（{{count}}）",
+    "blockedCount": "已阻塞（{{count}}）",
+    "noTasksInPeriod": "该时间段内没有任务。"
+  },
+  "highlights": "要点",
+  "blockers": "阻塞项",
+  "upcomingPlan": {
+    "title": "后续计划",
+    "approvePlan": "批准计划",
+    "rejectPlan": "拒绝计划",
+    "rejectionReason": "拒绝原因：",
+    "planApproved": "计划已批准",
+    "planRejected": "计划已拒绝",
+    "planPending": "计划待处理",
+    "planStatus": "计划 {{status}}"
+  },
+  "noDetailedMetrics": "此报告不包含详细指标数据。",
+  "noReportsYet": "尚未生成报告。请使用「生成」标签页创建。",
+  "feedback": {
+    "title": "反馈（{{count}}）",
+    "placeholder": "添加反馈或说明…",
+    "added": "反馈已添加"
+  },
+  "perAgentUsage": {
+    "title": "各智能体用量",
+    "noData": "暂无智能体用量数据。",
+    "agent": "智能体",
+    "totalTokens": "Token 总计",
+    "today": "今天",
+    "requests": "请求数",
+    "toolCalls": "工具调用",
+    "estCost": "预估费用",
+    "totalAgents": "合计（{{count}} 个智能体）"
+  },
+  "reportType": "{{type}} 报告",
+  "backToList": "← 返回列表"
+}

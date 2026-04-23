@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api, type AuthUser } from '../api.ts';
 
 interface Props {
@@ -6,6 +7,7 @@ interface Props {
 }
 
 export function Login({ onLogin }: Props) {
+  const { t } = useTranslation('auth');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -21,7 +23,7 @@ export function Login({ onLogin }: Props) {
       const isDefault = email.trim().toLowerCase() === 'admin@markus.local' && password === 'markus123';
       onLogin(user, isDefault);
     } catch {
-      setError('Invalid email or password');
+      setError(t('login.invalidCredentials'));
     } finally {
       setLoading(false);
     }
@@ -35,7 +37,7 @@ export function Login({ onLogin }: Props) {
         <div className="text-center mb-8">
           <img src="/logo.png" alt="Markus" className="w-14 h-14 mx-auto mb-3 rounded-xl shadow-lg shadow-black/40" />
           <div className="text-2xl font-extrabold tracking-tight text-fg-primary mb-1">Markus</div>
-          <div className="text-sm text-fg-tertiary">AI Digital Employee Platform</div>
+          <div className="text-sm text-fg-tertiary">{t('login.subtitle')}</div>
         </div>
 
         {/* Card */}
@@ -43,10 +45,10 @@ export function Login({ onLogin }: Props) {
           onSubmit={submit}
           className="bg-surface-secondary/80 backdrop-blur-sm border border-border-default rounded-2xl p-8 space-y-5 shadow-2xl shadow-black/30"
         >
-          <h2 className="text-lg font-semibold text-fg-primary text-center">Sign in</h2>
+          <h2 className="text-lg font-semibold text-fg-primary text-center">{t('login.signIn')}</h2>
 
           <div className="space-y-1">
-            <label className="text-xs text-fg-tertiary font-medium">Email</label>
+            <label className="text-xs text-fg-tertiary font-medium">{t('login.email')}</label>
             <input
               type="email"
               value={email}
@@ -59,7 +61,7 @@ export function Login({ onLogin }: Props) {
           </div>
 
           <div className="space-y-1">
-            <label className="text-xs text-fg-tertiary font-medium">Password</label>
+            <label className="text-xs text-fg-tertiary font-medium">{t('login.password')}</label>
             <input
               type="password"
               value={password}
@@ -81,11 +83,11 @@ export function Login({ onLogin }: Props) {
             disabled={loading || !email || !password}
             className="w-full py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-sm font-medium rounded-xl transition-all shadow-md shadow-brand-900/40 hover:shadow-lg hover:shadow-brand-900/50"
           >
-            {loading ? 'Signing in…' : 'Sign in'}
+            {loading ? t('login.signingIn') : t('login.signIn')}
           </button>
 
           <p className="text-center text-xs text-fg-tertiary">
-            Sign in with your email and password
+            {t('login.defaultCredentials')}
           </p>
         </form>
       </div>

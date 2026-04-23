@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import {
   api, wsClient,
@@ -59,6 +60,7 @@ export function ChatTeamSidebar({
   onRefreshTeams, onRefreshAgents, onViewProfile,
   width, onResizeStart, hidden,
 }: ChatTeamSidebarProps) {
+  const { t } = useTranslation(['team', 'common']);
   const isMobile = useIsMobile();
   const isAdmin = authUser?.role === 'owner' || authUser?.role === 'admin';
   const externalMarkusIds = useMemo(() => new Set(externalAgents.map(ea => ea.markusAgentId).filter(Boolean) as string[]), [externalAgents]);
@@ -107,11 +109,11 @@ export function ChatTeamSidebar({
 
   const handlePauseClick = useCallback(() => {
     setPendingConfirm({
-      title: globalPaused ? 'Resume All Agents' : 'Pause All Agents',
+      title: globalPaused ? t('modals.resumeAll.title') : t('modals.pauseAll.title'),
       message: globalPaused
-        ? 'All agents will resume processing events from their mailbox.'
-        : 'All agents will be paused. Events will still enter the mailbox but will not be processed. In-progress tasks will be blocked.',
-      confirmLabel: globalPaused ? 'Resume' : 'Pause',
+        ? t('modals.resumeAll.message')
+        : t('modals.pauseAll.message'),
+      confirmLabel: globalPaused ? t('chat.resume') : t('chat.pause'),
       onConfirm: async () => {
         setPauseLoading(true);
         try {
@@ -232,8 +234,8 @@ export function ChatTeamSidebar({
 
   const handleDeleteTeam = (teamId: string, teamName: string) => {
     askConfirm(
-      `Delete "${teamName}"?`,
-      'This team will be removed from the database. Check options below to also delete members and disk files.',
+      `${t('common:delete')} "${teamName}"?`,
+      t('modals.deleteTeam.message'),
       async (checked) => {
         const deleteMembers = checked?.['deleteMembers'] ?? true;
         const purgeFiles = checked?.['purgeFiles'] ?? false;
@@ -242,10 +244,10 @@ export function ChatTeamSidebar({
         refreshUngrouped();
         window.dispatchEvent(new CustomEvent('markus:data-changed'));
       },
-      'Delete Team',
+      t('contextMenu.deleteTeam'),
       [
-        { id: 'deleteMembers', label: 'Also delete all members in this team', defaultChecked: true },
-        { id: 'purgeFiles', label: 'Also delete disk files (workspace, memory, logs)', defaultChecked: false },
+        { id: 'deleteMembers', label: t('modals.deleteTeam.deleteMembers'), defaultChecked: true },
+        { id: 'purgeFiles', label: t('modals.deleteTeam.purgeFiles'), defaultChecked: false },
       ],
     );
   };
@@ -259,7 +261,7 @@ export function ChatTeamSidebar({
       const result = await fn(teamId);
       const ok = result.success?.length ?? 0;
       const fail = result.failed?.length ?? 0;
-      const labels: Record<string, string> = { start: 'started', stop: 'stopped', pause: 'paused', resume: 'resumed' };
+      const labels: Record<string, string> = { start: t('common:status.active'), stop: t('common:status.offline'), pause: t('common:status.paused'), resume: t('common:status.idle') };
       if (fail > 0) showToast(`${action}: ${ok} succeeded, ${fail} failed`, 'error');
       else if (ok > 0) showToast(`${ok} agent${ok > 1 ? 's' : ''} ${labels[action]}`, 'success');
       onRefreshAgents();
@@ -290,23 +292,23 @@ export function ChatTeamSidebar({
 
   const handleRemoveFromTeam = (teamId: string, memberId: string) => {
     askConfirm(
-      'Remove from team?',
-      'This member will be moved to Ungrouped.',
+      t('modals.removeFromTeam.title'),
+      t('modals.removeFromTeam.message'),
       async () => {
         await api.teams.removeMember(teamId, memberId);
         onRefreshTeams();
         refreshUngrouped();
       },
-      'Remove',
+      t('common:remove'),
     );
   };
 
   const handleRemoveFromOrg = (id: string, name: string, type: 'agent' | 'human') => {
     askConfirm(
-      `Remove "${name}"?`,
+      `${t('common:remove')} "${name}"?`,
       type === 'agent'
-        ? 'This agent will be removed from the database. Check the option below to also delete its workspace, memory, and other files from disk.'
-        : 'This user will lose access.',
+        ? t('modals.removeAgent.message')
+        : t('modals.removeHuman.message'),
       async (checked) => {
         if (type === 'agent') {
           const purgeFiles = checked?.['purgeFiles'] ?? false;
@@ -319,8 +321,8 @@ export function ChatTeamSidebar({
         refreshUngrouped();
         window.dispatchEvent(new CustomEvent('markus:data-changed'));
       },
-      'Remove',
-      type === 'agent' ? [{ id: 'purgeFiles', label: 'Also delete disk files (workspace, memory, logs)', defaultChecked: false }] : undefined,
+      t('common:remove'),
+      type === 'agent' ? [{ id: 'purgeFiles', label: t('modals.removeAgent.purgeFiles'), defaultChecked: false }] : undefined,
     );
   };
 
@@ -418,7 +420,7 @@ export function ChatTeamSidebar({
     const subtitle = agentLastMsg.get(a.id)
       || (a.currentActivity?.label?.slice(0, 60) || '');
 
-    const statusTitle = a.status === 'idle' ? 'Online' : a.status === 'working' ? 'Working' : a.status === 'error' ? 'Error' : a.status === 'paused' ? 'Paused' : 'Offline';
+    const statusTitle = a.status === 'idle' ? t('common:status.online') : a.status === 'working' ? t('common:status.working') : a.status === 'error' ? t('common:status.error') : a.status === 'paused' ? t('common:status.paused') : t('common:status.offline');
 
     return (
       <div
@@ -554,7 +556,7 @@ export function ChatTeamSidebar({
           <button
             onClick={() => toggleTeam(tid)}
             className="w-7 h-7 flex items-center justify-center text-fg-secondary hover:text-fg-primary rounded-md hover:bg-surface-overlay transition-colors shrink-0"
-            title={isCollapsed ? 'Expand' : 'Collapse'}
+            title={isCollapsed ? t('common:showMore') : t('common:close')}
           >
             <svg
               className={`w-3.5 h-3.5 transition-transform duration-150 ${isCollapsed ? '' : 'rotate-90'}`}
@@ -577,7 +579,7 @@ export function ChatTeamSidebar({
         </div>
 
         {isDropTarget && isDragging && (
-          <div className="text-[9px] text-brand-500 px-4 py-0.5 animate-pulse">Drop here</div>
+          <div className="text-[9px] text-brand-500 px-4 py-0.5 animate-pulse">{t('chat.dropHere')}</div>
         )}
         {!isCollapsed && (
           <div className="ml-1">
@@ -618,12 +620,12 @@ export function ChatTeamSidebar({
       <div className={`bg-surface-secondary/60 border-r border-border-default flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'}`} style={hidden ? { display: 'none' } : width != null ? { width } : undefined}>
         {/* Header with title + pause toggle */}
         <div className="px-4 h-14 flex items-center border-b border-border-default shrink-0">
-          <h2 className="text-lg font-semibold">Chat</h2>
+          <h2 className="text-lg font-semibold">{t('chat.title')}</h2>
           <div className="ml-auto">
             <button
               onClick={handlePauseClick}
               disabled={pauseLoading}
-              title={globalPaused ? 'Resume all agents' : 'Pause all agents'}
+              title={globalPaused ? t('modals.resumeAll.title') : t('modals.pauseAll.title')}
               className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border transition-colors ${
                 globalPaused
                   ? 'bg-green-500/10 border-green-500/30 text-green-500 hover:bg-green-500/20'
@@ -631,9 +633,9 @@ export function ChatTeamSidebar({
               } disabled:opacity-50`}
             >
               {globalPaused ? (
-                <><svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg> Resume</>
+                <><svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg> {t('chat.resume')}</>
               ) : (
-                <><svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg> Pause</>
+                <><svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg> {t('chat.pause')}</>
               )}
             </button>
           </div>
@@ -646,7 +648,7 @@ export function ChatTeamSidebar({
                 onClick={() => setActionMenu(!actionMenu)}
                 className="w-full flex items-center justify-center gap-1 px-2 py-1.5 text-[10px] font-medium text-fg-secondary hover:text-fg-primary bg-surface-elevated/60 hover:bg-surface-elevated rounded-lg transition-colors"
               >
-                <span className="text-brand-500">+</span> Manage
+                <span className="text-brand-500">+</span> {t('chat.manage')}
                 <svg className={`w-2.5 h-2.5 ml-auto transition-transform ${actionMenu ? 'rotate-180' : ''}`} fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
                 </svg>
@@ -665,33 +667,33 @@ export function ChatTeamSidebar({
                     className="w-full text-left px-4 py-2.5 text-xs text-fg-secondary hover:bg-surface-elevated transition-colors">
                     <div className="font-medium flex items-center gap-1.5">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
-                      New Team
+                      {t('chat.newTeam')}
                     </div>
-                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">Create an empty team</div>
+                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.newTeamDesc')}</div>
                   </button>
                   <button onClick={() => { setActionMenu(false); navBus.navigate(PAGE.STORE); }}
                     className="w-full text-left px-4 py-2.5 text-xs text-fg-secondary hover:bg-surface-elevated border-t border-border-default transition-colors">
                     <div className="font-medium flex items-center gap-1.5">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>
-                      Add Agent
+                      {t('chat.addAgent')}
                     </div>
-                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">Create from templates</div>
+                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.addAgentDesc')}</div>
                   </button>
                   <button onClick={() => { setActionMenu(false); setShowOpenClaw(true); }}
                     className="w-full text-left px-4 py-2.5 text-xs text-brand-500 hover:bg-surface-elevated border-t border-border-default transition-colors">
                     <div className="font-medium flex items-center gap-1.5">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 0 1 9-9" /></svg>
-                      Import OpenClaw
+                      {t('chat.importOpenClaw')}
                     </div>
-                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">Connect an external agent</div>
+                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.importOpenClawDesc')}</div>
                   </button>
                   <button onClick={() => { setActionMenu(false); setShowAddHuman({}); }}
                     className="w-full text-left px-4 py-2.5 text-xs text-green-600 hover:bg-surface-elevated border-t border-border-default transition-colors">
                     <div className="font-medium flex items-center gap-1.5">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="8.5" cy="7" r="4" /><line x1="20" y1="8" x2="20" y2="14" /><line x1="23" y1="11" x2="17" y2="11" /></svg>
-                      Add Human
+                      {t('chat.addHuman')}
                     </div>
-                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">Add a human team member</div>
+                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.addHumanDesc')}</div>
                   </button>
                 </div>
               )}
@@ -702,7 +704,7 @@ export function ChatTeamSidebar({
         {/* Teams + Agents */}
         <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col">
           {agents.length === 0 && teams.length === 0 && (
-            <p className="text-xs text-fg-tertiary px-1 mb-2">No agents yet</p>
+            <p className="text-xs text-fg-tertiary px-1 mb-2">{t('chat.noAgentsYet')}</p>
           )}
 
           {/* Unmatched group chats (no matching team) */}
@@ -723,7 +725,7 @@ export function ChatTeamSidebar({
               </div>
               <div className="flex-1 min-w-0 text-left">
                 <span className="truncate font-medium text-[11px] leading-tight block">{gc.name}</span>
-                <div className="text-[10px] text-fg-tertiary leading-tight mt-0.5">Group Chat</div>
+                <div className="text-[10px] text-fg-tertiary leading-tight mt-0.5">{t('chat.groupChat')}</div>
               </div>
               {gc.memberCount !== undefined && gc.memberCount > 0 && (
                 <span className="text-[9px] text-fg-tertiary shrink-0">{gc.memberCount}</span>
@@ -745,14 +747,14 @@ export function ChatTeamSidebar({
           }).map(t => renderTeamSection(t.id, t, [], t.name))}
 
           {/* Ungrouped agents */}
-          {agentsByTeam.ungrouped.length > 0 && renderTeamSection('_ungrouped', null, agentsByTeam.ungrouped, 'Other')}
+          {agentsByTeam.ungrouped.length > 0 && renderTeamSection('_ungrouped', null, agentsByTeam.ungrouped, t('chat.other'))}
 
           {/* No teams — flat agent list */}
           {teams.length === 0 && agents.length > 0 && agents.map(a => renderAgentItem(a))}
 
           {/* People */}
           <div className="mt-3 pt-2 border-t border-border-default/60">
-            <p className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">People</p>
+            <p className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">{t('chat.people')}</p>
 
             {authUser && (
               <button
@@ -771,7 +773,7 @@ export function ChatTeamSidebar({
                 />
                 <div className="flex-1 min-w-0 text-left">
                   <div className="truncate font-medium text-[11px] leading-tight">{authUser.name}</div>
-                  <div className="text-fg-tertiary truncate text-[10px] leading-tight mt-0.5">My Notes</div>
+                  <div className="text-fg-tertiary truncate text-[10px] leading-tight mt-0.5">{t('chat.myNotes')}</div>
                 </div>
                 <span className="text-fg-tertiary shrink-0"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg></span>
               </button>
@@ -833,62 +835,62 @@ export function ChatTeamSidebar({
               setTeamMenu(null);
             }} className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-fg-secondary flex items-center gap-2">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
-              Rename Team
+              {t('contextMenu.renameTeam')}
             </button>
             {hasOffline && (
               <button onClick={() => { handleBatchAction(teamMenu.teamId, 'start'); setTeamMenu(null); }}
                 className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-green-600 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-                Start All
+                {t('contextMenu.startAll')}
               </button>
             )}
             {hasActive && (
               <button onClick={() => { handleBatchAction(teamMenu.teamId, 'stop'); setTeamMenu(null); }}
                 className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-500 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
-                Stop All
+                {t('contextMenu.stopAll')}
               </button>
             )}
             {hasRunning && (
               <button onClick={() => { handleBatchAction(teamMenu.teamId, 'pause'); setTeamMenu(null); }}
                 className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-amber-600 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
-                Pause All
+                {t('contextMenu.pauseAll')}
               </button>
             )}
             {hasPaused && (
               <button onClick={() => { handleBatchAction(teamMenu.teamId, 'resume'); setTeamMenu(null); }}
                 className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-blue-600 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-                Resume All
+                {t('contextMenu.resumeAll')}
               </button>
             )}
             <div className="border-t border-border-default/50 my-1" />
             <button onClick={() => { setTeamMenu(null); navBus.navigate(PAGE.STORE); }}
               className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-brand-500 flex items-center gap-2">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-              Add Agent
+              {t('chat.addAgent')}
             </button>
             <button onClick={() => { setTeamMenu(null); setShowAddHuman({ teamId: teamMenu.teamId }); }}
               className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-green-600 flex items-center gap-2">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="8.5" cy="7" r="4" /><line x1="20" y1="8" x2="20" y2="14" /><line x1="23" y1="11" x2="17" y2="11" /></svg>
-              Add Human
+              {t('chat.addHuman')}
             </button>
             {ungrouped.length > 0 && (
               <button onClick={() => { setTeamMenu(null); setShowAddExisting(teamMenu.teamId); }}
                 className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-fg-secondary flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="8.5" cy="7" r="4" /><polyline points="17 11 19 13 23 9" /></svg>
-                Add Existing
+                {t('contextMenu.addExisting')}
               </button>
             )}
             <div className="border-t border-border-default/50 my-1" />
             <button onClick={() => {
-              const t = teamMap.get(teamMenu.teamId);
-              if (t) handleDeleteTeam(teamMenu.teamId, t.name);
+              const tm = teamMap.get(teamMenu.teamId);
+              if (tm) handleDeleteTeam(teamMenu.teamId, tm.name);
               setTeamMenu(null);
             }} className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-500 flex items-center gap-2">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
-              Delete Team
+              {t('contextMenu.deleteTeam')}
             </button>
           </div>
         );
@@ -910,33 +912,33 @@ export function ChatTeamSidebar({
             <button onClick={() => { setAgentMenu(null); onViewProfile(a.id); }}
               className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-brand-500 flex items-center gap-2">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
-              View Profile
+              {t('contextMenu.viewProfile')}
             </button>
             {a.status === 'offline' ? (
               <button onClick={() => { handleStartStop(a.id, 'offline'); setAgentMenu(null); }}
                 className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-green-600 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-                Start
+                {t('contextMenu.start')}
               </button>
             ) : (
               <button onClick={() => { handleStartStop(a.id, a.status ?? 'idle'); setAgentMenu(null); }}
                 className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-500 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
-                Stop
+                {t('contextMenu.stop')}
               </button>
             )}
             {agentMenu.teamId && !isManager && (
               <button onClick={() => { handleSetManager(agentMenu.teamId!, a.id, 'agent'); setAgentMenu(null); }}
                 className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-amber-600 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>
-                Set as Manager
+                {t('contextMenu.setAsManager')}
               </button>
             )}
             {agentMenu.teamId && (
               <button onClick={() => { handleRemoveFromTeam(agentMenu.teamId!, a.id); setAgentMenu(null); }}
                 className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-fg-secondary flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 14 4 9 9 4" /><path d="M20 20v-7a4 4 0 0 0-4-4H4" /></svg>
-                Remove from team
+                {t('contextMenu.removeFromTeam')}
               </button>
             )}
             {teams.length > 0 && (
@@ -944,16 +946,16 @@ export function ChatTeamSidebar({
                 <div className="border-t border-border-default/50 my-1" />
                 <div className="px-3 py-1 text-[10px] text-fg-tertiary uppercase flex items-center gap-1.5">
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="M12 5l7 7-7 7" /></svg>
-                  Move to
+                  {t('contextMenu.moveTo')}
                 </div>
-                {teams.filter(t => t.id !== agentMenu.teamId).map(t => (
-                  <button key={t.id} onClick={async () => {
+                {teams.filter(tm => tm.id !== agentMenu.teamId).map(tm => (
+                  <button key={tm.id} onClick={async () => {
                     if (agentMenu.teamId) await api.teams.removeMember(agentMenu.teamId, a.id);
-                    await api.teams.addMember(t.id, a.id, 'agent');
+                    await api.teams.addMember(tm.id, a.id, 'agent');
                     onRefreshTeams(); onRefreshAgents(); refreshUngrouped();
                     setAgentMenu(null);
                   }} className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-fg-secondary pl-7">
-                    {t.name}
+                    {tm.name}
                   </button>
                 ))}
               </>
@@ -963,7 +965,7 @@ export function ChatTeamSidebar({
               <button onClick={() => { handleRemoveFromOrg(a.id, a.name, 'agent'); setAgentMenu(null); }}
                 className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-500 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
-                Remove from org
+                {t('contextMenu.removeFromOrg')}
               </button>
             )}
           </div>

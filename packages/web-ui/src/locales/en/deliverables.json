@@ -1,0 +1,100 @@
+{
+  "title": "Deliverables",
+  "create": "+ Create",
+  "searchPlaceholder": "Search deliverables...",
+  "filters": {
+    "allTypes": "All types",
+    "allProjects": "All projects",
+    "active": "Active",
+    "verified": "Verified",
+    "outdated": "Outdated",
+    "group": "Group:"
+  },
+  "groupBy": {
+    "date": "Date",
+    "project": "Project",
+    "agent": "Agent",
+    "type": "Type"
+  },
+  "expandAll": "▶ Expand",
+  "collapseAll": "▼ Collapse",
+  "expandAllTooltip": "Expand all",
+  "collapseAllTooltip": "Collapse all",
+  "flaggedOutdated": "Flagged as outdated",
+  "removed": "Removed",
+  "artifactTypes": {
+    "agent": "Agent",
+    "team": "Team",
+    "skill": "Skill"
+  },
+  "empty": {
+    "title": "No deliverables yet",
+    "subtitle": "Deliverables are created when tasks complete or manually",
+    "createFirst": "+ Create first"
+  },
+  "detail": {
+    "selectToView": "Select a deliverable to view details",
+    "details": "Details",
+    "verify": "Verify",
+    "flagOutdated": "Flag Outdated",
+    "flagging": "Flagging...",
+    "openInBuilder": "Open in Builder",
+    "builderWithType": "Builder {{type}}",
+    "noContent": "No content",
+    "cannotPreview": "This {{type}} cannot be previewed in the browser.",
+    "loadingPreview": "Loading preview...",
+    "artifactDirectory": "Artifact Directory",
+    "copyFailed": "Copy failed — try long-pressing to copy manually",
+    "failedToOpen": "Failed to open",
+    "failedToOpenBrowser": "Failed to open file browser",
+    "openInFileBrowser": "Open in file browser",
+    "revealInFinder": "Reveal in Finder",
+    "copyPath": "Copy path to clipboard"
+  },
+  "diffStats": {
+    "title": "Diff Stats",
+    "files": "{{count}} files"
+  },
+  "testResults": {
+    "title": "Tests",
+    "passed": "{{count}} passed",
+    "failed": "{{count}} failed",
+    "skipped": "{{count}} skipped"
+  },
+  "links": {
+    "title": "Links",
+    "task": "Task: {{id}}",
+    "agent": "Agent: {{name}}",
+    "project": "Project: {{name}}"
+  },
+  "metadata": {
+    "created": "Created:",
+    "updated": "Updated:",
+    "accessed": "Accessed:",
+    "id": "ID: {{id}}"
+  },
+  "noProject": "No Project",
+  "createModal": {
+    "title": "Create Deliverable",
+    "type": "Type",
+    "titleField": "Title",
+    "titleRequired": "Title is required",
+    "titlePlaceholder": "Clear, searchable title",
+    "reference": "Reference",
+    "referenceHint": "file path, URL, branch name",
+    "referencePlaceholder": "/path/to/file or https://...",
+    "summary": "Summary",
+    "summaryHint": "Markdown",
+    "summaryPlaceholder": "Describe the deliverable...",
+    "tags": "Tags",
+    "tagsHint": "comma separated",
+    "tagsPlaceholder": "react, api, docs",
+    "project": "Project",
+    "created": "Deliverable created",
+    "required": "*"
+  },
+  "count": {
+    "partial": "{{loaded}} / {{total}} deliverables",
+    "total": "{{total}} deliverables"
+  }
+}

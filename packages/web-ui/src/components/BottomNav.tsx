@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { type PageId, PAGE_ICONS, MOBILE_TABS } from '../routes.ts';
 
 interface Props {
@@ -6,6 +7,7 @@ interface Props {
 }
 
 export function BottomNav({ currentPage, onNavigate }: Props) {
+  const { t } = useTranslation('nav');
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 bg-surface-secondary border-t border-border-default flex items-stretch h-14 safe-area-bottom">
       {MOBILE_TABS.map(tab => {
@@ -34,7 +36,7 @@ export function BottomNav({ currentPage, onNavigate }: Props) {
               <path d={PAGE_ICONS[tab.id]!} />
             </svg>
             <span className={`text-[10px] leading-tight ${isActive ? 'font-semibold' : ''}`}>
-              {tab.label}
+              {t(tab.id)}
             </span>
           </button>
         );

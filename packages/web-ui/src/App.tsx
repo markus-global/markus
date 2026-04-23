@@ -21,11 +21,13 @@ import { useResizablePanel } from './hooks/useResizablePanel.ts';
 import { useTheme } from './hooks/useTheme.ts';
 import { useIsMobile } from './hooks/useIsMobile.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
+import { useTranslation } from 'react-i18next';
 
 // Preserve sub-path hashes (e.g. #team/d) across page switches
 const _savedPageHashes: Record<string, string> = {};
 
 export function App() {
+  const { t } = useTranslation('common');
   const [page, setPage] = useState<PageId>(getPageFromHash);
   const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('markus_onboarded'));
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -156,7 +158,7 @@ export function App() {
   if (authUser === 'loading') {
     return (
       <div className="min-h-dvh bg-surface-primary flex items-center justify-center">
-        <div className="text-fg-tertiary text-sm animate-pulse">Loading…</div>
+        <div className="text-fg-tertiary text-sm animate-pulse">{t('loading')}</div>
       </div>
     );
   }
@@ -222,7 +224,7 @@ export function App() {
               <button onClick={() => { navigate(PAGE.SETTINGS); }} className="px-3 py-1 bg-amber-700/50 hover:bg-amber-700/70 text-white text-xs rounded-lg transition-colors">
                 Go to Settings
               </button>
-              <button onClick={() => setLlmBannerDismissed(true)} className="text-amber-500 hover:text-amber-600 text-xs">Dismiss</button>
+              <button onClick={() => setLlmBannerDismissed(true)} className="text-amber-500 hover:text-amber-600 text-xs">{t('dismiss')}</button>
             </div>
           </div>
         )}
@@ -232,7 +234,7 @@ export function App() {
               New version available: <strong>v{updateInfo.latestVersion}</strong> (current: v{updateInfo.currentVersion})
               {!isMobile && <span className="text-fg-tertiary ml-2">— run <code className="bg-surface-overlay px-1.5 py-0.5 rounded text-xs font-mono">npm i -g @markus-global/cli</code> to upgrade</span>}
             </span>
-            <button onClick={() => { setUpdateBannerDismissed(updateInfo.latestVersion); localStorage.setItem('markus_update_dismissed', updateInfo.latestVersion); }} className="text-brand-400 hover:text-brand-300 text-xs shrink-0">Dismiss</button>
+            <button onClick={() => { setUpdateBannerDismissed(updateInfo.latestVersion); localStorage.setItem('markus_update_dismissed', updateInfo.latestVersion); }} className="text-brand-400 hover:text-brand-300 text-xs shrink-0">{t('dismiss')}</button>
           </div>
         )}
         <main className="flex-1 overflow-hidden flex flex-col">
