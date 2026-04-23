@@ -2740,6 +2740,7 @@ export class Agent {
         ),
         'Stream LLM call',
       );
+      streamMarkerDelta.flush();
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(tokensThisCall);
       this.calibrateTokenCounter(response.usage.inputTokens);
@@ -2909,6 +2910,7 @@ export class Agent {
           ),
           'Stream LLM continuation',
         );
+        streamMarkerDelta.flush();
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(tokens2);
         this.calibrateTokenCounter(response.usage.inputTokens);
