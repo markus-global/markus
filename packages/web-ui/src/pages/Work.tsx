@@ -1037,6 +1037,8 @@ function TaskDetailPanel({
   scrollToComments?: boolean;
   onScrollToCommentsDone?: () => void;
 }) {
+  const { t } = useTranslation(['work', 'common']);
+  const taskStatusBadges = useMemo(() => buildTaskStatusBadges(t), [t]);
   const [subtasks, setSubtasks] = useState<Array<{ id: string; title: string; status: string }>>([]);
   const [newSubtask, setNewSubtask] = useState('');
   const [addingSubtask, setAddingSubtask] = useState(false);
@@ -1210,7 +1212,7 @@ function TaskDetailPanel({
           <div className="flex items-center gap-2 flex-wrap flex-1 min-w-0">
             <h3 className="text-base font-semibold leading-snug truncate">{task.title}</h3>
             {(() => {
-              const badge = TASK_STATUS_BADGE[task.status];
+              const badge = taskStatusBadges[task.status];
               return badge ? (
                 <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${badge.cls}`}>{badge.label}</span>
               ) : (
@@ -2879,7 +2881,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
     const req = dragReqRef.current;
 
     if (task) {
-      const targetCol = BOARD_COLUMNS.find(c => c.id === colId);
+      const targetCol = boardColumns.find((c: { id: string; dropStatus: string }) => c.id === colId);
       if (!targetCol) return;
       const targetStatus = targetCol.dropStatus;
       if (task.status === targetStatus) return;
@@ -2923,8 +2925,8 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
     return result;
   };
 
-  const getColumnTasks = (col: typeof BOARD_COLUMNS[number]) =>
-    col.statuses.flatMap(s => filterTasks(board[s] ?? []));
+  const getColumnTasks = (col: typeof BOARD_COLUMNS_BASE[number] & { label: string }) =>
+    col.statuses.flatMap((s: string) => filterTasks(board[s] ?? []));
 
   const filteredReqs = useMemo(() => {
     let list = allRequirements;
@@ -2935,10 +2937,10 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
     return list;
   }, [allRequirements, showArchived, viewMode, selectedProjectId, projectFilter, agentFilter]);
 
-  const getColumnReqs = useCallback((col: typeof BOARD_COLUMNS[number]) =>
+  const getColumnReqs = useCallback((col: typeof BOARD_COLUMNS_BASE[number] & { label: string }) =>
     filteredReqs.filter(r => REQ_COLUMN_MAP[r.status] === col.id), [filteredReqs]);
 
-  const visibleColumns = BOARD_COLUMNS.filter(col => {
+  const visibleColumns = boardColumns.filter((col: typeof BOARD_COLUMNS_BASE[number] & { label: string }) => {
     if (col.id === 'failed' || col.id === 'closed') {
       const tasks = getColumnTasks(col);
       const reqs = getColumnReqs(col);
@@ -3243,13 +3245,13 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
                         type CardItem = { kind: 'req'; data: RequirementInfo; time: number } | { kind: 'task'; data: TaskInfo; time: number };
                         const items: CardItem[] = [
                           ...colReqs.map(r => ({ kind: 'req' as const, data: r, time: new Date(r.updatedAt ?? r.createdAt).getTime() })),
-                          ...colTasks.map(t => ({ kind: 'task' as const, data: t, time: new Date(t.updatedAt ?? t.createdAt ?? 0).getTime() })),
+                          ...colTasks.map(tk => ({ kind: 'task' as const, data: tk, time: new Date(tk.updatedAt ?? tk.createdAt ?? 0).getTime() })),
                         ];
                         items.sort((a, b) => b.time - a.time);
                         return items.map(item => {
                           if (item.kind === 'req') {
                             const req = item.data;
-                            const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-fg-secondary' };
+                            const badge = reqStatusBadges[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-fg-secondary' };
                             const isAgent = req.source === 'agent';
                             const needsReview = isAgent && req.status === 'pending';
                             const reqProject = viewMode === 'all' && req.projectId ? projects.find(p => p.id === req.projectId) : null;
@@ -3292,7 +3294,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
                           } else {
                             const task = item.data;
                             const subCount = task.subtasks?.length ?? 0;
-                            const badge = SUB_STATUS_BADGE[task.status];
+                            const badge = subStatusBadges[task.status];
                             const isApprovalTask = task.status === 'pending';
                             const isSchedTask = task.taskType === 'scheduled' && !!task.scheduleConfig;
                             const schedLabel = isSchedTask ? (task.scheduleConfig!.every ? `Every ${task.scheduleConfig!.every}` : task.scheduleConfig!.cron ? `Cron` : 'Scheduled') : null;
@@ -3741,6 +3743,9 @@ function RequirementDetailPanel({
   scrollToComments?: boolean;
   onScrollToCommentsDone?: () => void;
 }) {
+  const { t } = useTranslation(['work', 'common']);
+  const reqBadges = useMemo(() => buildReqStatusBadges(t), [t]);
+  const subBadges = useMemo(() => buildSubStatusBadges(t), [t]);
   const isMobile = useIsMobile();
   const [editingDesc, setEditingDesc] = useState(false);
   const [descDraft, setDescDraft] = useState(req.description);
@@ -3756,7 +3761,7 @@ function RequirementDetailPanel({
     }, 300);
     return () => clearTimeout(timer);
   }, [scrollToComments, onScrollToCommentsDone]);
-  const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-fg-secondary' };
+  const badge = reqBadges[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-fg-secondary' };
   const isAgent = req.source === 'agent';
   const needsReview = isAgent && req.status === 'pending';
   const canCancel = req.status === 'pending' || req.status === 'in_progress';
@@ -3882,12 +3887,12 @@ function RequirementDetailPanel({
             <div>
               <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2 block">Linked Tasks ({linkedTasks.length})</label>
               <div className="space-y-1.5">
-                {linkedTasks.map(t => {
-                  const sb = SUB_STATUS_BADGE[t.status];
+                {linkedTasks.map(lt => {
+                  const sb = subBadges[lt.status];
                   return (
-                    <div key={t.id} className="flex items-center gap-2 bg-surface-elevated/60 rounded-lg px-3 py-2">
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_COLORS[t.priority]?.replace('border-l-', 'bg-') ?? 'bg-gray-500'}`} />
-                      <span className="text-xs text-fg-secondary flex-1 truncate">{t.title}</span>
+                    <div key={lt.id} className="flex items-center gap-2 bg-surface-elevated/60 rounded-lg px-3 py-2">
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_COLORS[lt.priority]?.replace('border-l-', 'bg-') ?? 'bg-gray-500'}`} />
+                      <span className="text-xs text-fg-secondary flex-1 truncate">{lt.title}</span>
                       {sb && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${sb.cls}`}>{sb.label}</span>}
                     </div>
                   );
@@ -3915,7 +3920,7 @@ function RequirementDetailPanel({
               className="px-2 py-1.5 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-secondary cursor-pointer hover:border-gray-500 transition-colors"
             >
               {ALL_REQ_STATUSES.map(s => {
-                const b = REQ_STATUS_BADGE[s];
+                const b = reqBadges[s];
                 const allowed = s === req.status || (REQ_ALLOWED_TRANSITIONS[req.status]?.has(s) ?? false);
                 return <option key={s} value={s} disabled={!allowed}>{b?.label ?? s}</option>;
               })}

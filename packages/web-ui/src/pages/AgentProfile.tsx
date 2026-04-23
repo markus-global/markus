@@ -31,13 +31,14 @@ function taskStatusLabel(status: string, t: TFunction): string {
 }
 
 function agentRuntimeStatusLabel(status: string, t: TFunction): string {
-  const key: Record<string, string> = {
+  const map: Record<string, string> = {
     idle: 'common:status.idle',
     working: 'common:status.working',
     offline: 'common:status.offline',
     paused: 'common:status.paused',
     error: 'common:status.error',
-  }[status];
+  };
+  const key = map[status];
   return key ? t(key) : status;
 }
 
