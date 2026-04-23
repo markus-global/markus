@@ -863,7 +863,11 @@ export class APIServer {
       prefixLines.push('1. Check channel history — if another agent already answered, do NOT repeat.');
       prefixLines.push('2. Only respond if your specific role/expertise is directly relevant.');
       prefixLines.push('3. Be concise — short, actionable responses only.');
-      prefixLines.push('4. Do NOT create tasks unless the user explicitly asks you to and you are the coordinator.');
+      if (agent.config.agentRole === 'manager') {
+        prefixLines.push('4. When assigning work to agents, you MUST use `task_create` to formalize each assignment as a tracked task. Verbal delegation without a task is NOT allowed — oral promises are meaningless without task tracking. Every commitment must have a corresponding task.');
+      } else {
+        prefixLines.push('4. When you accept a work assignment, verify a task has been created for it (`task_list`). If the coordinator did not create one, remind them or create it yourself with the correct `assigned_agent_id`. Do NOT make promises without task tracking.');
+      }
       prefixLines.push('5. DEFAULT IS SILENCE. When in doubt, respond with exactly: [NO_RESPONSE]');
       prefixLines.push('6. If the provided context is insufficient, use `recall_context` (scope="channel") to fetch earlier messages before responding. For task/requirement details use `task_get`/`requirement_get`. Do NOT guess about prior discussion.');
       if (isTargeted && !thisAgentIsTarget && !isA2A) {

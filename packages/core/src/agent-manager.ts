@@ -38,7 +38,7 @@ import { DelegationManager, type TaskDelegation } from '@markus/a2a';
 import type { TemplateRegistry } from './templates/registry.js';
 import type { TemplateInstantiateRequest } from './templates/types.js';
 import { join } from 'node:path';
-import { mkdirSync, readFileSync, existsSync, copyFileSync, rmSync, readdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, existsSync, copyFileSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 const log = createLogger('agent-manager');
@@ -716,6 +716,18 @@ export class AgentManager {
           if (existsSync(src)) copyFileSync(src, join(agentRoleDir, file));
         }
       }
+    }
+
+    const heartbeatPath = join(agentRoleDir, 'HEARTBEAT.md');
+    if (!existsSync(heartbeatPath)) {
+      writeFileSync(heartbeatPath, [
+        '# Heartbeat Checklist',
+        '',
+        '- [ ] Check mailbox for new messages and respond to urgent items',
+        '- [ ] Review assigned tasks — update progress, unblock if possible',
+        '- [ ] Check team announcements for new information',
+        '- [ ] Scan recent channel messages for anything requiring attention',
+      ].join('\n'), 'utf-8');
     }
 
     const config: AgentConfig = {
