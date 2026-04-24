@@ -2864,8 +2864,9 @@ export class TaskService {
         }
       }
       // For file types without a physical path, write the summary as a file
-      if (d.type === 'file' && d.summary && !existsSync(d.reference)) {
-        const safeName = d.reference.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
+      if (d.type === 'file' && d.summary && !existsSync(src)) {
+        const baseName = d.reference.split('/').pop() ?? 'deliverable';
+        const safeName = baseName.replace(/[^a-zA-Z0-9_一-鿿.-]/g, '_').slice(0, 80);
         writeFileSync(join(taskSharedDir, `${safeName}.md`), d.summary);
       }
     }
