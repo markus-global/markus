@@ -1,5 +1,29 @@
 # Release Log
 
+## v0.4.24
+
+新增 DeepSeek 一级模型支持；reasoning_content 全链路透传；中文文件名路径编码修复；LLM 路由禁用提供商感知与自动切换；通知铃铛 notify_user 修复；不可重试错误短路；测试补全。
+
+### New Features
+
+- **DeepSeek 一级模型支持** — 新增 DeepSeek 作为一级模型提供商，Settings 页支持连接测试，MODEL_CATALOG 同步更新
+- **reasoning_content 全链路透传** — DeepSeek reasoning_content 在子 Agent 工具循环和最终 assistant 回复路径中正确保留，避免推理内容丢失
+
+### Bug Fixes
+
+- **修复中文文件名路径编码异常** — `publishDeliverablesToShared` 中文文件名写入失败，修复路径编码处理，DRY 重构文件操作逻辑
+- **修复 LLM 路由不尊重禁用提供商** — 禁用的模型提供商仍被路由选中，现在正确跳过并自动切换默认模型
+- **修复通知铃铛不显示 notify_user 通知** — NotificationBell 组件过滤逻辑遗漏 notify_user 类型，同步修复 UI 细节
+- **修复不可重试错误仍在重试** — TaskService 对不可重试的错误（如配置错误）不再无限重试
+- **修复工具名称重复注册** — tool-selector 去重处理，避免同名工具多次注册
+- **修复 sqlite-storage 测试外键约束** — 补全测试中缺失的 agent FK 初始化
+
+### Stats
+
+- 29 files changed, +510 / −115 lines
+
+---
+
 ## v0.4.23
 
 Web UI 完整国际化（中英双语）；群聊增强（A2A 回复链、@mention、recall_context）；web_search 代理与降级；LaTeX 数学渲染；Requirement 审批生命周期修复；Mailbox 与 Agent 生命周期 bug 修复。
