@@ -41,7 +41,7 @@ describe('Search Tools', () => {
       const tool = createGrepTool('/tmp/workspace');
       const result = await tool.execute({ pattern: 'test', path: '/etc' });
       const parsed = JSON.parse(result);
-      expect(parsed.status).toBe('success');
+      expect(parsed.status).toBe('denied');
     });
   });
 
@@ -74,7 +74,7 @@ describe('Search Tools', () => {
       const tool = createGlobTool('/tmp/workspace');
       const result = await tool.execute({ pattern: '*.ts', path: '/etc' });
       const parsed = JSON.parse(result);
-      expect(parsed.status).toBe('success');
+      expect(parsed.status).toBe('denied');
     });
   });
 
@@ -114,7 +114,7 @@ describe('Search Tools', () => {
       const tool = createListDirectoryTool('/tmp/workspace');
       const result = await tool.execute({ path: '/etc' });
       const parsed = JSON.parse(result);
-      expect(parsed.status).toBe('success');
+      expect(parsed.status).toBe('denied');
     });
   });
 });
