@@ -487,9 +487,35 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
     'gemini-3-1-pro', 'gemini-2.5-flash',
     'MiniMax-M2.7', 'MiniMax-M2.5',
     'xiaomi/mimo-v2-pro', 'anthropic/claude-opus-4-6', 'openai/gpt-5.4', 'google/gemini-3-1-pro',
+    'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner',
   ]);
 
   const [switchingModel, setSwitchingModel] = useState<string | null>(null);
+
+  // Provider connectivity test state
+  const [testingProvider, setTestingProvider] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; error?: string; errorCode?: number; durationMs?: number; reply?: string }>>({});
+
+  const testProvider = async (providerName: string) => {
+    setTestingProvider(providerName);
+    setTestResults(prev => { const n = { ...prev }; delete n[providerName]; return n; });
+    try {
+      const res = await fetch(`/api/settings/llm/providers/${providerName}/test`, {
+        method: 'POST', headers: authHeaders(),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({})) as { error?: string };
+        setTestResults(prev => ({ ...prev, [providerName]: { ok: false, error: errData.error ?? `HTTP ${res.status}`, errorCode: res.status } }));
+        return;
+      }
+      const data = await res.json() as { ok: boolean; error?: string; errorCode?: number; durationMs?: number; reply?: string };
+      setTestResults(prev => ({ ...prev, [providerName]: data }));
+    } catch {
+      setTestResults(prev => ({ ...prev, [providerName]: { ok: false, error: t('common:networkError') } }));
+    } finally {
+      setTestingProvider(null);
+    }
+  };
 
   const switchProviderModel = async (providerName: string, modelId: string) => {
     setSwitchingModel(`${providerName}:${modelId}`);
@@ -701,6 +727,14 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                         {name === llm.defaultProvider && <span className="text-[10px] bg-brand-500/15 text-brand-500 px-1.5 py-0.5 rounded">{t('modelProviders.badgeDefault')}</span>}
                         {info.configured && !info.enabled && <span className="text-[10px] bg-amber-500/15 text-amber-600 px-1.5 py-0.5 rounded">{t('modelProviders.disabled')}</span>}
                         {info.oauthConnected && <span className="text-[10px] bg-green-500/15 text-green-600 px-1.5 py-0.5 rounded">{t('modelProviders.badgeOAuth')}</span>}
+                        {testResults[name]?.ok === true && <span className="text-[10px] bg-green-500/15 text-green-600 px-1.5 py-0.5 rounded">{t('modelProviders.testOk', { ms: testResults[name].durationMs })}</span>}
+                        {testResults[name]?.ok === false && (
+                          <span className="text-[10px] bg-red-500/15 text-red-500 px-1.5 py-0.5 rounded" title={testResults[name].error}>
+                            {testResults[name].errorCode
+                              ? t('modelProviders.testFailedCode', { code: testResults[name].errorCode })
+                              : t('modelProviders.testFailed')}
+                          </span>
+                        )}
                       </div>
                       <div className="text-xs text-fg-tertiary mt-0.5">{info.model || t('modelProviders.notConfigured')}</div>
                     </div>
@@ -802,6 +836,13 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                           </div>
                         ) : (
                           <div className="flex gap-2">
+                            <button onClick={e => { e.stopPropagation(); void testProvider(name); }}
+                              disabled={testingProvider === name}
+                              className="px-3 py-1.5 text-xs border border-green-500/30 text-green-500 hover:bg-green-500/10 rounded-lg transition-colors disabled:opacity-40 flex items-center gap-1.5">
+                              {testingProvider === name ? (
+                                <><svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg>{t('modelProviders.testing')}</>
+                              ) : t('modelProviders.test')}
+                            </button>
                             <button onClick={e => { e.stopPropagation(); startEditProvider(name, info); }}
                               className="px-3 py-1.5 text-xs border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors">
                               {t('common:edit')}
@@ -811,6 +852,17 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                               className="px-3 py-1.5 text-xs border border-red-500/30 text-red-400 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-40">
                               {deletingProvider === name ? t('common:deleting') : t('common:delete')}
                             </button>
+                          </div>
+                        )}
+
+                        {/* Test result detail */}
+                        {testResults[name] && (
+                          <div className={`text-xs px-3 py-2 rounded-lg ${testResults[name].ok
+                            ? 'bg-green-500/10 text-green-600 border border-green-500/30'
+                            : 'bg-red-500/10 text-red-500 border border-red-500/30'}`}>
+                            {testResults[name].ok
+                              ? t('modelProviders.testSuccess', { ms: testResults[name].durationMs, reply: testResults[name].reply })
+                              : testResults[name].error}
                           </div>
                         )}
                       </>

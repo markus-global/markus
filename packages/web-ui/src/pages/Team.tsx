@@ -1040,8 +1040,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   }, []);
 
   // Load channel messages from DB → store in buffer + update display
-  const loadChannelMessages = useCallback(async (channel: string) => {
-    const key = `ch:${channel}`;
+  const loadChannelMessages = useCallback(async (channel: string, bufferKey?: string) => {
+    const key = bufferKey ?? `ch:${channel}`;
     try {
       const result = await api.channels.getMessages(channel, 50);
       const msgs = result.messages.map(channelMsgToChat);
@@ -1192,7 +1192,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         const channelName = chatMode === 'dm'
           ? makeDmChannel(authUser?.id ?? '', activeDmUserId)
           : activeChannel;
-        loadChannelMessages(channelName);
+        loadChannelMessages(channelName, newKey);
       }
     } else {
       // First visit for this conversation — load from DB
@@ -1204,7 +1204,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         const channelName = chatMode === 'dm'
           ? makeDmChannel(authUser?.id ?? '', activeDmUserId)
           : activeChannel;
-        loadChannelMessages(channelName);
+        loadChannelMessages(channelName, newKey);
         if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
       } else if (chatMode === 'direct' && selectedAgent) {
         loadSessions(selectedAgent).then(s => {
@@ -1281,11 +1281,20 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         }
       }
 
-      const key = `ch:${msgChannel}`;
+      let key: string;
+      if (msgChannel.startsWith('notes:')) {
+        key = `dm:${msgChannel.slice(6)}`;
+      } else if (msgChannel.startsWith('dm:')) {
+        const parts = msgChannel.slice(3).split(':');
+        const otherId = parts.find(id => id !== (authUser?.id ?? '')) ?? parts[0] ?? '';
+        key = `dm:${otherId}`;
+      } else {
+        key = `ch:${msgChannel}`;
+      }
       updateConvMsgs(key, prev => [...prev, newMsg]);
     });
     return unsub;
-  }, [updateConvMsgs]);
+  }, [updateConvMsgs, authUser?.id]);
 
   // WS live updates for proactive agent messages (direct mode)
   useEffect(() => {

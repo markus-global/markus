@@ -6,6 +6,7 @@ interface OpenAIMessage {
   content: string | null | Array<{type: string; text?: string; image_url?: {url: string}}>;
   tool_calls?: OpenAIToolCall[];
   tool_call_id?: string;
+  reasoning_content?: string;
 }
 
 interface OpenAIToolCall {
@@ -21,7 +22,7 @@ interface OpenAIToolDef {
 
 interface OpenAIResponse {
   choices: Array<{
-    message: OpenAIMessage;
+    message: OpenAIMessage & { reasoning_content?: string };
     finish_reason: string;
   }>;
   usage: { prompt_tokens: number; completion_tokens: number };
@@ -130,7 +131,7 @@ export class OpenAIProvider implements LLMProviderInterface {
       }
 
       if (m.toolCalls?.length) {
-        return {
+        const msg: OpenAIMessage = {
           role: 'assistant' as const,
           content: getTextContent(m.content) || null,
           tool_calls: m.toolCalls.map((tc) => ({
@@ -139,6 +140,17 @@ export class OpenAIProvider implements LLMProviderInterface {
             function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
           })),
         };
+        if (m.reasoningContent) msg.reasoning_content = m.reasoningContent;
+        return msg;
+      }
+
+      if (m.role === 'assistant' && m.reasoningContent) {
+        const msg: OpenAIMessage = {
+          role: 'assistant' as const,
+          content: typeof m.content === 'string' ? m.content : getTextContent(m.content),
+          reasoning_content: m.reasoningContent,
+        };
+        return msg;
       }
 
       if (Array.isArray(m.content)) {
@@ -157,14 +169,21 @@ export class OpenAIProvider implements LLMProviderInterface {
   }
 
   private convertTools(tools: LLMTool[]): OpenAIToolDef[] {
-    return tools.map((t) => ({
-      type: 'function' as const,
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.inputSchema,
-      },
-    }));
+    const seen = new Set<string>();
+    const unique: OpenAIToolDef[] = [];
+    for (const t of tools) {
+      if (seen.has(t.name)) continue;
+      seen.add(t.name);
+      unique.push({
+        type: 'function' as const,
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.inputSchema,
+        },
+      });
+    }
+    return unique;
   }
 
   async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void, signal?: AbortSignal): Promise<LLMResponse> {
@@ -211,6 +230,7 @@ export class OpenAIProvider implements LLMProviderInterface {
     }
 
     let content = '';
+    let reasoningContent = '';
     const toolCalls: Map<number, { id: string; name: string; args: string }> = new Map();
     let finishReason: LLMResponse['finishReason'] = 'end_turn';
     let promptTokens = 0;
@@ -238,7 +258,7 @@ export class OpenAIProvider implements LLMProviderInterface {
         try {
           const chunk = JSON.parse(trimmed.slice(6)) as {
             choices?: Array<{
-              delta?: { content?: string; tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>; reasoning_details?: string; thinking?: string };
+              delta?: { content?: string; tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>; reasoning_content?: string; reasoning_details?: string; thinking?: string };
               finish_reason?: string;
             }>;
             usage?: { prompt_tokens?: number; completion_tokens?: number };
@@ -246,11 +266,10 @@ export class OpenAIProvider implements LLMProviderInterface {
 
           const choice = chunk.choices?.[0];
 
-          // Handle reasoning/thinking content from various providers
-          // MiniMax may return: reasoning_details, thinking, or content with 【【】 tags
-          const reasoningContent = choice?.delta?.reasoning_details ?? choice?.delta?.thinking;
-          if (reasoningContent) {
-            onEvent({ type: 'thinking_delta', thinking: reasoningContent });
+          const deltaReasoning = choice?.delta?.reasoning_content ?? choice?.delta?.reasoning_details ?? choice?.delta?.thinking;
+          if (deltaReasoning) {
+            reasoningContent += deltaReasoning;
+            onEvent({ type: 'thinking_delta', thinking: deltaReasoning });
           }
 
           if (choice?.delta?.content) {
@@ -307,12 +326,14 @@ export class OpenAIProvider implements LLMProviderInterface {
     const usage = { inputTokens: promptTokens, outputTokens: completionTokens };
     onEvent({ type: 'message_end', usage, finishReason });
 
-    return {
+    const streamResult: LLMResponse = {
       content,
       toolCalls: resultToolCalls.length ? resultToolCalls : undefined,
       usage,
       finishReason,
     };
+    if (reasoningContent) streamResult.reasoningContent = reasoningContent;
+    return streamResult;
   }
 
   private convertResponse(data: OpenAIResponse): LLMResponse {
@@ -332,7 +353,7 @@ export class OpenAIProvider implements LLMProviderInterface {
       length: 'max_tokens',
     };
 
-    return {
+    const result: LLMResponse = {
       content: typeof msg.content === 'string' ? msg.content : '',
       toolCalls: toolCalls?.length ? toolCalls : undefined,
       usage: {
@@ -341,5 +362,7 @@ export class OpenAIProvider implements LLMProviderInterface {
       },
       finishReason: finishMap[choice.finish_reason] ?? 'end_turn',
     };
+    if (msg.reasoning_content) result.reasoningContent = msg.reasoning_content;
+    return result;
   }
 }

@@ -171,9 +171,19 @@ export class ToolSelector {
       }
     }
 
-    result.push(this.buildDiscoverTool(opts.allTools, selected, opts.skillCatalog));
+    const seen = new Set(result.map(t => t.name));
 
-    result.push({
+    result.push(this.buildDiscoverTool(opts.allTools, selected, opts.skillCatalog));
+    seen.add('discover_tools');
+
+    const pushUnique = (tool: LLMTool) => {
+      if (!seen.has(tool.name)) {
+        seen.add(tool.name);
+        result.push(tool);
+      }
+    };
+
+    pushUnique({
       name: 'notify_user',
       description: 'Send a message to the user. The message appears in the agent chat and as a notification. Write a comprehensive body — the user sees the full content and may reply. Use for status updates, reports, alerts, and findings.',
       inputSchema: {
@@ -188,7 +198,7 @@ export class ToolSelector {
       },
     });
 
-    result.push({
+    pushUnique({
       name: 'request_user_approval',
       description: 'Request a decision or approval from the user. The tool BLOCKS until the user responds. Use when you need human approval, a choice between options, or any user decision/input. Default options: Approve / Reject (reject requires a reason). You can provide custom options and optionally allow freeform text input.',
       inputSchema: {
@@ -217,7 +227,7 @@ export class ToolSelector {
       },
     });
 
-    result.push({
+    pushUnique({
       name: 'recall_activity',
       description: 'Query your own execution history. Use "list" to see recent activities, or "get" with an activity_id to see detailed tool call logs for a specific activity.',
       inputSchema: {

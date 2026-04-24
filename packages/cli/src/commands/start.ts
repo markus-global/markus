@@ -180,6 +180,24 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     }
   }
 
+  const deepseekKey =
+    config.llm.providers['deepseek']?.apiKey ?? process.env['DEEPSEEK_API_KEY'];
+  if (deepseekKey) {
+    providerConfigs['deepseek'] = {
+      provider: 'deepseek',
+      model: config.llm.providers['deepseek']?.model ?? process.env['DEEPSEEK_MODEL'] ?? 'deepseek-v4-flash',
+      apiKey: deepseekKey,
+      baseUrl:
+        config.llm.providers['deepseek']?.baseUrl ??
+        process.env['DEEPSEEK_BASE_URL'] ??
+        'https://api.deepseek.com',
+      timeoutMs: llmTimeoutMs,
+    };
+    if (config.llm.defaultProvider === 'deepseek') {
+      defaultProvider = 'deepseek';
+    }
+  }
+
   // If the configured default provider has no API key, fall back to the first available one
   if (!providerConfigs[defaultProvider]) {
     const available = Object.keys(providerConfigs);
@@ -548,7 +566,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // Wire user notifier through HITL service
   agentManager.setUserNotifier((opts) => {
     hitlService.notify({
-      targetUserId: 'default',
+      targetUserId: 'all',
       type: opts.type as any,
       title: opts.title,
       body: opts.body,
@@ -613,7 +631,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         });
         const hasTask = !!taskId;
         hitlService.notify({
-          targetUserId: 'default',
+          targetUserId: 'all',
           type: 'agent_report',
           title, body, priority,
           actionType: hasTask ? 'navigate' : 'open_chat',
@@ -642,7 +660,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
           isMainSession: true,
         });
         hitlService.notify({
-          targetUserId: 'default',
+          targetUserId: 'all',
           type: 'system',
           title: 'Agent needs help',
           body: reason,
@@ -1033,7 +1051,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
             temperature: TRIAGE_TEMPERATURE,
             maxTokens: TRIAGE_MAX_TOKENS,
           }, triageProvider);
-          return { content: response.content, toolCalls: response.toolCalls };
+          return { content: response.content, toolCalls: response.toolCalls, reasoningContent: response.reasoningContent };
         });
 
         // Wire read-only triage tools from the agent's tool set

@@ -1,4 +1,4 @@
-export type LLMProvider = 'anthropic' | 'openai' | 'openai-codex' | 'siliconflow' | 'openrouter' | 'google' | 'ollama' | 'minimax' | 'zai' | 'custom';
+export type LLMProvider = 'anthropic' | 'openai' | 'openai-codex' | 'siliconflow' | 'openrouter' | 'google' | 'ollama' | 'minimax' | 'zai' | 'deepseek' | 'custom';
 
 export type LLMAuthType = 'api-key' | 'oauth' | 'setup-token';
 
@@ -107,6 +107,8 @@ export interface LLMMessage {
   content: string | LLMContentPart[];
   toolCallId?: string;
   toolCalls?: LLMToolCall[];
+  /** Provider-specific reasoning/thinking content (e.g. DeepSeek reasoning_content) that must be round-tripped. */
+  reasoningContent?: string;
 }
 
 /** Extract plain text from a message's content (ignoring image parts). */
@@ -140,6 +142,8 @@ export interface LLMResponse {
   finishReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence';
   /** Anthropic compaction summary (present when compaction triggers) */
   compactionContent?: string;
+  /** Provider-specific reasoning/thinking content (e.g. DeepSeek reasoning_content) that must be round-tripped. */
+  reasoningContent?: string;
 }
 
 export interface SubagentProgressEvent {

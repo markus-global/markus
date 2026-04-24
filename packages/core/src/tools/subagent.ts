@@ -245,7 +245,7 @@ export async function runSubagentLoop(
     });
 
     if (response.finishReason === 'max_tokens' && !response.toolCalls?.length) {
-      messages.push({ role: 'assistant', content: response.content });
+      messages.push({ role: 'assistant', content: response.content, reasoningContent: response.reasoningContent });
       logEntries.push({ ts: new Date().toISOString(), role: 'assistant', content: response.content });
       messages.push({
         role: 'user',
@@ -256,6 +256,7 @@ export async function runSubagentLoop(
         role: 'assistant',
         content: response.content,
         toolCalls: response.toolCalls,
+        reasoningContent: response.reasoningContent,
       });
       logEntries.push({
         ts: new Date().toISOString(),

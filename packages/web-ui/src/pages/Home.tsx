@@ -41,6 +41,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
   const rootOnly = (tasks: TaskInfo[]) => tasks;
   const rootStatusCounts: Record<string, number> = {};
   for (const [status, tasks] of Object.entries(board)) {
+    if (status === 'archived') continue;
     const count = rootOnly(tasks).length;
     if (count > 0) rootStatusCounts[status] = count;
   }

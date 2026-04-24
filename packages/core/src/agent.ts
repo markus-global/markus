@@ -2401,7 +2401,7 @@ export class Agent {
 
         // Handle max_tokens continuation (model was cut off mid-response)
         if (response.finishReason === 'max_tokens' && !response.toolCalls?.length) {
-          this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content });
+          this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content, reasoningContent: response.reasoningContent });
           const contMsg: LLMMessage = {
             role: 'user',
             content: '[Continue from where you left off. Do not repeat what you already said.]',
@@ -2413,6 +2413,7 @@ export class Agent {
             role: 'assistant',
             content: response.content,
             toolCalls: response.toolCalls,
+            reasoningContent: response.reasoningContent,
           });
 
           // Execute all tool calls in parallel
@@ -2789,6 +2790,7 @@ export class Agent {
           this.memory.appendMessage(this.currentSessionId, {
             role: 'assistant',
             content: response.content,
+            reasoningContent: response.reasoningContent,
           });
           this.memory.appendMessage(this.currentSessionId, {
             role: 'user',
@@ -2799,6 +2801,7 @@ export class Agent {
             role: 'assistant',
             content: response.content,
             toolCalls: response.toolCalls,
+            reasoningContent: response.reasoningContent,
           });
 
           // Execute all tool calls in parallel
@@ -3326,7 +3329,7 @@ export class Agent {
         flushText();
 
         if (response.finishReason === 'max_tokens' && !response.toolCalls?.length) {
-          this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content });
+          this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content, reasoningContent: response.reasoningContent });
           this.memory.appendMessage(sessionId, {
             role: 'user',
             content: '[Continue from where you left off. Do not repeat what you already said.]',
@@ -3336,6 +3339,7 @@ export class Agent {
             role: 'assistant',
             content: response.content,
             toolCalls: response.toolCalls,
+            reasoningContent: response.reasoningContent,
           });
 
           let interruptedDuringTools = false;
@@ -3550,7 +3554,7 @@ export class Agent {
       if (!didSubmitReview && !cancelToken?.cancelled) {
         log.warn('Task execution ending without task_submit_review — injecting final reminder', { taskId, agentId: this.id });
         flushText();
-        this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content });
+        this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content, reasoningContent: response.reasoningContent });
         this.memory.appendMessage(sessionId, {
           role: 'user',
           content: [
@@ -3607,6 +3611,7 @@ export class Agent {
             role: 'assistant',
             content: response.content,
             toolCalls: response.toolCalls,
+            reasoningContent: response.reasoningContent,
           });
           for (const tc of response.toolCalls) {
             if (cancelToken?.cancelled) break;
@@ -3820,7 +3825,7 @@ export class Agent {
         flushText();
 
         if (response.finishReason === 'max_tokens' && !response.toolCalls?.length) {
-          this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content });
+          this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content, reasoningContent: response.reasoningContent });
           this.memory.appendMessage(sessionId, {
             role: 'user',
             content: '[Continue from where you left off. Do not repeat what you already said.]',
@@ -3830,6 +3835,7 @@ export class Agent {
             role: 'assistant',
             content: response.content,
             toolCalls: response.toolCalls,
+            reasoningContent: response.reasoningContent,
           });
 
           for (const tc of response.toolCalls!) {

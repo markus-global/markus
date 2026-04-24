@@ -828,7 +828,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
   if (loading) return <div className="flex-1 flex items-center justify-center text-xs text-fg-tertiary">{t('work:task.loadingLogs')}</div>;
   if (roundsSummary.length === 0 && !streamingText) {
     return (
-      <div className="flex flex-col flex-1">
+      <div className="flex flex-col min-h-full">
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center text-fg-tertiary">
             <div className="text-2xl mb-2">📋</div>
@@ -853,7 +853,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
     timeline.sort((a, b) => a.ts - b.ts);
 
     return (
-      <div className="flex flex-col flex-1">
+      <div className="flex flex-col min-h-full">
         <div className="px-4 py-3 flex-1 space-y-0.5">
           {timeline.map((item, i) =>
             item.kind === 'comment'
@@ -883,7 +883,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
 
   // Multiple rounds — show round headers with lazy loading + comments
   return (
-    <div className="flex flex-col flex-1">
+    <div className="flex flex-col min-h-full">
       <div ref={topRef} />
       <div className="px-4 py-3 flex-1 space-y-2">
         {commentsBeforeFirstRound.length > 0 && (
@@ -1242,7 +1242,7 @@ function TaskDetailPanel({
         <div ref={scrollContainerRef} className="h-full overflow-y-auto" onTouchStart={detailSwipe.onTouchStart} onTouchEnd={detailSwipe.onTouchEnd}>
 
           {activeTab === 'logs' && (
-            <div className="overflow-x-hidden min-w-0">
+            <div className="overflow-x-clip min-w-0 min-h-full">
               {runError && (
                 <div className="mx-4 mt-3 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-500">
                   <span className="font-medium">Failed to start:</span> {runError}

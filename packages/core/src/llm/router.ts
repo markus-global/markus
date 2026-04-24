@@ -183,11 +183,13 @@ export class LLMRouter {
    */
   private static isNonRetryableError(error: unknown): boolean {
     const msg = error instanceof Error ? error.message : String(error);
-    return /\b(402|403|401)\b/.test(msg) ||
+    return /\b(401|402|403)\b/.test(msg) ||
       /insufficient balance/i.test(msg) ||
       /not available in your region/i.test(msg) ||
       /invalid.*api.*key/i.test(msg) ||
-      /authentication/i.test(msg);
+      /authentication/i.test(msg) ||
+      /\b400\b.*invalid_request_error/i.test(msg) ||
+      /reasoning_content.*must be passed back/i.test(msg);
   }
 
   /** Detect rate-limit (429) errors which should use a shorter circuit breaker cooldown. */
@@ -423,20 +425,32 @@ export class LLMRouter {
   }
 
   private selectProvider(request: LLMRequest, explicit?: string): string {
-    if (explicit) return explicit;
+    // If an explicit provider is requested AND it is available, honour the request.
+    // If it is disabled/degraded, fall through to normal selection so we don't
+    // send traffic to a provider the user intentionally turned off.
+    if (explicit && this.isAvailable(explicit)) return explicit;
+    if (explicit && this.disabledProviders.has(explicit)) {
+      log.warn(`Explicit provider ${explicit} is disabled — falling through to auto-select`);
+    }
 
     if (!this.autoSelect || this.providerTiers.length === 0) {
-      // No tiers — use defaultProvider if available, otherwise any healthy provider
       if (this.isAvailable(this.defaultProvider) && this.providers.has(this.defaultProvider)) {
         return this.defaultProvider;
       }
       const healthy = [...this.providers.keys()].find(n => this.isAvailable(n));
-      return healthy ?? this.defaultProvider;
+      if (healthy) return healthy;
+      // Last resort: prefer any enabled (even degraded) provider over a disabled one
+      const enabledAny = [...this.providers.keys()].find(n => !this.disabledProviders.has(n));
+      if (enabledAny) {
+        log.warn(`All providers degraded — using enabled provider ${enabledAny} as last resort`);
+        return enabledAny;
+      }
+      log.warn('All providers disabled or degraded — using default as last resort');
+      return this.defaultProvider;
     }
 
     const complexity = LLMRouter.assessComplexity(request);
 
-    // Find first healthy tiered provider for this complexity
     const match = this.providerTiers.find(t =>
       t.complexity.includes(complexity) &&
       this.providers.has(t.name) &&
@@ -448,15 +462,19 @@ export class LLMRouter {
       return match.name;
     }
 
-    // All tiered providers degraded — fall back to any healthy provider
     const healthy = [...this.providers.keys()].find(n => this.isAvailable(n));
     if (healthy) {
       log.warn(`All tiered providers degraded for complexity=${complexity}, falling back to: ${healthy}`);
       return healthy;
     }
 
-    // Everything degraded — last resort, will likely fail but worth trying
-    log.warn('All providers degraded — using default as last resort');
+    // Last resort: prefer any enabled (even degraded) provider over a disabled one
+    const enabledAny = [...this.providers.keys()].find(n => !this.disabledProviders.has(n));
+    if (enabledAny) {
+      log.warn(`All providers degraded — using enabled provider ${enabledAny} as last resort`);
+      return enabledAny;
+    }
+    log.warn('All providers disabled or degraded — using default as last resort');
     return this.defaultProvider;
   }
 
@@ -789,7 +807,7 @@ export class LLMRouter {
     for (const [name, p] of this.providers.entries()) {
       providers[name] = { model: p.model, configured: true };
     }
-    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter', 'zai']) {
+    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter', 'zai', 'deepseek']) {
       if (!providers[name]) {
         providers[name] = { model: '', configured: false };
       }
@@ -824,7 +842,7 @@ export class LLMRouter {
       };
     }
 
-    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter', 'zai']) {
+    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter', 'zai', 'deepseek']) {
       if (!providers[name]) {
         const oauthProfile = this._profileStore?.getDefaultProfile(name);
         const builtinModels = BUILTIN_MODEL_CATALOG.filter(m => m.provider === name);
@@ -886,6 +904,13 @@ export class LLMRouter {
       this.disabledProviders.delete(providerName);
     } else {
       this.disabledProviders.add(providerName);
+      if (this.defaultProvider === providerName) {
+        const replacement = [...this.providers.keys()].find(n => !this.disabledProviders.has(n));
+        if (replacement) {
+          log.info(`Default provider ${providerName} disabled — switching default to ${replacement}`);
+          this.defaultProvider = replacement;
+        }
+      }
     }
     log.info(`Provider ${providerName} ${enabled ? 'enabled' : 'disabled'}`);
   }
@@ -1008,6 +1033,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   minimax: 'MiniMax',
   openrouter: 'OpenRouter',
   zai: 'ZAI',
+  deepseek: 'DeepSeek',
 };
 
 // Sources:
@@ -1038,4 +1064,9 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'anthropic/claude-opus-4-6', name: 'Claude Opus 4.6 (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'openai/gpt-5.4', name: 'GPT-5.4 (via OpenRouter)', provider: 'openrouter', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 2.5, output: 15, cacheRead: 0.25 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'google/gemini-3-1-pro', name: 'Gemini 3.1 Pro (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'] },
+  // DeepSeek — https://api-docs.deepseek.com/
+  { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 0.14, output: 0.28, cacheRead: 0.028 }, reasoning: true, inputTypes: ['text'] },
+  { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 1.67, output: 3.33, cacheRead: 0.14 }, reasoning: true, inputTypes: ['text'] },
+  { id: 'deepseek-chat', name: 'DeepSeek-Chat (legacy)', provider: 'deepseek', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 0.14, output: 0.28, cacheRead: 0.028 }, reasoning: false, inputTypes: ['text'] },
+  { id: 'deepseek-reasoner', name: 'DeepSeek-Reasoner (legacy)', provider: 'deepseek', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 0.55, output: 2.19, cacheRead: 0.14 }, reasoning: true, inputTypes: ['text'] },
 ];

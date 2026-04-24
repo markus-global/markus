@@ -95,9 +95,9 @@ const PROVIDERS: ProviderDef[] = [
     id: 'deepseek',
     label: 'DeepSeek',
     envKey: 'DEEPSEEK_API_KEY',
-    baseUrl: 'https://api.deepseek.com/v1',
-    defaultModel: 'deepseek-chat',
-    models: ['deepseek-chat', 'deepseek-coder', 'deepseek-chat-v3'],
+    baseUrl: 'https://api.deepseek.com',
+    defaultModel: 'deepseek-v4-flash',
+    models: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'],
   },
 ];
 

@@ -3577,8 +3577,8 @@ export class SqliteNotificationRepo {
   }
 
   list(userId: string, opts?: { unreadOnly?: boolean; limit?: number; offset?: number; type?: string }): NotificationRow[] {
-    const conditions = ['(user_id = ? OR user_id = ?)'];
-    const params: SQLInputValue[] = [userId, 'all'];
+    const conditions = ['(user_id = ? OR user_id = ? OR user_id = ?)'];
+    const params: SQLInputValue[] = [userId, 'all', 'default'];
 
     if (opts?.unreadOnly) {
       conditions.push('read = 0');
@@ -3597,8 +3597,8 @@ export class SqliteNotificationRepo {
   }
 
   count(userId: string, unreadOnly = false): number {
-    const conditions = ['(user_id = ? OR user_id = ?)'];
-    const params: SQLInputValue[] = [userId, 'all'];
+    const conditions = ['(user_id = ? OR user_id = ? OR user_id = ?)'];
+    const params: SQLInputValue[] = [userId, 'all', 'default'];
     if (unreadOnly) conditions.push('read = 0');
 
     const row = this.db.prepare(
@@ -3614,8 +3614,8 @@ export class SqliteNotificationRepo {
 
   markAllRead(userId: string): number {
     const info = this.db.prepare(
-      'UPDATE user_notifications SET read = 1 WHERE (user_id = ? OR user_id = ?) AND read = 0'
-    ).run(userId, 'all');
+      'UPDATE user_notifications SET read = 1 WHERE (user_id = ? OR user_id = ? OR user_id = ?) AND read = 0'
+    ).run(userId, 'all', 'default');
     return Number(info.changes);
   }
 

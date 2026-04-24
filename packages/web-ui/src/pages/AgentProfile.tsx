@@ -1741,20 +1741,20 @@ function fmtBytesLocal(bytes: number): string {
 // ─── Mind Tab (Mailbox & Attention) ──────────────────────────────────────────
 
 const PRIORITY_LABELS: Record<number, string> = { 0: 'Critical', 1: 'High', 2: 'Normal', 3: 'Low', 4: 'Background' };
-const PRIORITY_COLORS: Record<number, string> = { 0: 'text-red-400', 1: 'text-amber-400', 2: 'text-fg-secondary', 3: 'text-fg-tertiary', 4: 'text-fg-tertiary/60' };
+const PRIORITY_COLORS: Record<number, string> = { 0: 'text-red-500', 1: 'text-amber-500', 2: 'text-fg-secondary', 3: 'text-fg-tertiary', 4: 'text-fg-tertiary/60' };
 const DECISION_COLORS: Record<string, string> = {
-  pick: 'bg-brand-500/20 text-brand-300',
-  continue: 'bg-gray-500/20 text-gray-300',
-  preempt: 'bg-amber-500/20 text-amber-300',
-  merge: 'bg-blue-500/20 text-blue-300',
-  defer: 'bg-purple-500/20 text-purple-300',
-  delegate: 'bg-green-500/20 text-green-300',
-  drop: 'bg-red-500/20 text-red-300',
+  pick: 'bg-brand-500/20 text-brand-500',
+  continue: 'bg-gray-500/20 text-gray-500',
+  preempt: 'bg-amber-500/20 text-amber-500',
+  merge: 'bg-blue-500/20 text-blue-500',
+  defer: 'bg-purple-500/20 text-purple-500',
+  delegate: 'bg-green-500/20 text-green-500',
+  drop: 'bg-red-500/20 text-red-500',
 };
 const ATTENTION_COLORS: Record<string, string> = {
-  idle: 'bg-green-500/20 text-green-300',
-  focused: 'bg-brand-500/20 text-brand-300',
-  deciding: 'bg-amber-500/20 text-amber-300',
+  idle: 'bg-green-500/20 text-green-500',
+  focused: 'bg-brand-500/20 text-brand-500',
+  deciding: 'bg-amber-500/20 text-amber-500',
 };
 
 const MAILBOX_TYPE_ICONS: Record<string, string> = {
@@ -2048,7 +2048,7 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
       {/* ── Current State ── */}
       <section>
         <div className="flex items-center gap-3 mb-3">
-          <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${ATTENTION_COLORS[mind?.attentionState ?? 'idle'] ?? 'bg-gray-500/20 text-gray-300'}`}>
+          <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${ATTENTION_COLORS[mind?.attentionState ?? 'idle'] ?? 'bg-gray-500/20 text-gray-500'}`}>
             {(mind?.attentionState ?? 'idle').toUpperCase()}
           </span>
           {mind?.currentFocus ? (() => {
@@ -2078,7 +2078,7 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
 
         {(mind?.queuedItems?.length ?? 0) > 0 && (
           <div className="mb-3">
-            <h4 className="text-xs font-medium text-amber-400 uppercase tracking-wider mb-1.5">Queue ({mind!.queuedItems.length})</h4>
+            <h4 className="text-xs font-medium text-amber-500 uppercase tracking-wider mb-1.5">Queue ({mind!.queuedItems.length})</h4>
             <div className="space-y-1">
               {mind!.queuedItems.map((item, i) => (
                 <div key={item.id} className="flex items-center gap-2 px-3 py-1.5 rounded bg-amber-500/5 border border-amber-500/20 text-sm">
@@ -2221,7 +2221,7 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
                         <div className="space-y-1">
                           {item.decisions.map((d: import('../api.ts').MailboxHistoryDecision) => (
                             <div key={d.id} className="flex items-start gap-2 text-xs">
-                              <span className={`px-1.5 py-0.5 rounded shrink-0 ${DECISION_COLORS[d.decisionType] ?? 'bg-gray-500/20 text-gray-300'}`}>{d.decisionType}</span>
+                              <span className={`px-1.5 py-0.5 rounded shrink-0 ${DECISION_COLORS[d.decisionType] ?? 'bg-gray-500/20 text-gray-500'}`}>{d.decisionType}</span>
                               <span className="text-fg-secondary flex-1">{d.reasoning}</span>
                               <span className="text-fg-tertiary shrink-0">{new Date(d.createdAt).toLocaleTimeString()}</span>
                             </div>
@@ -2235,7 +2235,7 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
                       <div>
                         <h5 className="text-[10px] font-medium text-fg-tertiary uppercase tracking-wider mb-1">
                           Activity — {item.activity.label}
-                          <span className={`ml-2 inline-block px-1 py-0 rounded text-[9px] ${item.activity.success ? 'bg-green-500/15 text-green-400' : 'bg-red-500/15 text-red-400'}`}>
+                          <span className={`ml-2 inline-block px-1 py-0 rounded text-[9px] ${item.activity.success ? 'bg-green-500/15 text-green-500' : 'bg-red-500/15 text-red-500'}`}>
                             {item.activity.success ? '✓ Success' : '✗ Failed'}
                           </span>
                         </h5>
