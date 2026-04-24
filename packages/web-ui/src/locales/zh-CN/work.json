@@ -118,6 +118,7 @@
     "pauseSchedule": "⏸ 暂停计划",
     "archive": "归档",
     "reopen": "重新打开",
+    "resumeFailed": "继续执行",
     "cancelTask": "取消",
     "deleteSubtaskTitle": "删除子任务「{{title}}」？",
     "deleteSubtaskMessage": "该子任务将被永久删除。",

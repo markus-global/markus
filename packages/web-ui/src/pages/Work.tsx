@@ -1502,19 +1502,32 @@ function TaskDetailPanel({
                       </div>
                       <div className="space-y-1.5">
                         {latest3.map((d, i) => {
-                          const fileName = d.reference.split('/').pop() ?? d.reference;
+                          const isUrl = /^https?:\/\//i.test(d.reference);
+                          const fileName = isUrl ? (d.summary || d.reference) : (d.reference.split('/').pop() ?? d.reference);
                           return (
                             <div key={i} className="flex items-start gap-2.5 bg-surface-elevated/60 rounded-lg px-3 py-2 group hover:bg-surface-elevated/80 transition-colors">
                               <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 mt-0.5 ${typeColors[d.type] ?? 'bg-gray-500/15 text-fg-secondary'}`}>{d.type}</span>
                               <div className="flex-1 min-w-0">
-                                <button
-                                  onClick={() => setPreviewFile(d.reference)}
-                                  className="text-sm text-brand-500 hover:text-brand-500 font-medium truncate block max-w-full text-left hover:underline"
-                                  title={d.reference}
-                                >
-                                  {fileName}
-                                </button>
-                                {d.summary && <p className="text-[11px] text-fg-secondary mt-0.5 line-clamp-2">{d.summary}</p>}
+                                {isUrl ? (
+                                  <a
+                                    href={d.reference}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-sm text-brand-500 hover:text-brand-500 font-medium truncate block max-w-full text-left hover:underline"
+                                    title={d.reference}
+                                  >
+                                    {fileName} <svg className="w-3 h-3 inline -mt-0.5 ml-0.5 opacity-60" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6.5v3a.5.5 0 0 1-.5.5h-6a.5.5 0 0 1-.5-.5v-6A.5.5 0 0 1 2.5 3H6"/><path d="M7 2h3v3"/><path d="M5 7 10 2"/></svg>
+                                  </a>
+                                ) : (
+                                  <button
+                                    onClick={() => setPreviewFile(d.reference)}
+                                    className="text-sm text-brand-500 hover:text-brand-500 font-medium truncate block max-w-full text-left hover:underline"
+                                    title={d.reference}
+                                  >
+                                    {fileName}
+                                  </button>
+                                )}
+                                {d.summary && !isUrl && <p className="text-[11px] text-fg-secondary mt-0.5 line-clamp-2">{d.summary}</p>}
                                 <p className="text-[10px] text-fg-tertiary font-mono truncate mt-0.5">{d.reference}</p>
                               </div>
                             </div>
@@ -1562,19 +1575,32 @@ function TaskDetailPanel({
                     </div>
                     <div className="space-y-1.5">
                       {paged.map((d, i) => {
-                        const fileName = d.reference.split('/').pop() ?? d.reference;
+                        const isUrl = /^https?:\/\//i.test(d.reference);
+                        const fileName = isUrl ? (d.summary || d.reference) : (d.reference.split('/').pop() ?? d.reference);
                         return (
                           <div key={i} className="flex items-start gap-2.5 bg-surface-elevated/60 rounded-lg px-3 py-2 group hover:bg-surface-elevated/80 transition-colors">
                             <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 mt-0.5 ${typeColors[d.type] ?? 'bg-gray-500/15 text-fg-secondary'}`}>{d.type}</span>
                             <div className="flex-1 min-w-0">
-                              <button
-                                onClick={() => setPreviewFile(d.reference)}
-                                className="text-sm text-brand-500 hover:text-brand-500 font-medium truncate block max-w-full text-left hover:underline"
-                                title={d.reference}
-                              >
-                                {fileName}
-                              </button>
-                              {d.summary && <p className="text-[11px] text-fg-secondary mt-0.5 line-clamp-2">{d.summary}</p>}
+                              {isUrl ? (
+                                <a
+                                  href={d.reference}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-sm text-brand-500 hover:text-brand-500 font-medium truncate block max-w-full text-left hover:underline"
+                                  title={d.reference}
+                                >
+                                  {fileName} <svg className="w-3 h-3 inline -mt-0.5 ml-0.5 opacity-60" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6.5v3a.5.5 0 0 1-.5.5h-6a.5.5 0 0 1-.5-.5v-6A.5.5 0 0 1 2.5 3H6"/><path d="M7 2h3v3"/><path d="M5 7 10 2"/></svg>
+                                </a>
+                              ) : (
+                                <button
+                                  onClick={() => setPreviewFile(d.reference)}
+                                  className="text-sm text-brand-500 hover:text-brand-500 font-medium truncate block max-w-full text-left hover:underline"
+                                  title={d.reference}
+                                >
+                                  {fileName}
+                                </button>
+                              )}
+                              {d.summary && !isUrl && <p className="text-[11px] text-fg-secondary mt-0.5 line-clamp-2">{d.summary}</p>}
                               <p className="text-[10px] text-fg-tertiary font-mono truncate mt-0.5">{d.reference}</p>
                             </div>
                           </div>
@@ -1718,9 +1744,14 @@ function TaskDetailPanel({
             {(isCompleted || isFailed || isRejected || isCancelled) && (
               <button onClick={() => doUpdate(() => api.tasks.archive(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-white disabled:opacity-50">Archive</button>
             )}
-            {/* ── Reopen (completed/failed only — FSM allows -> in_progress) ── */}
-            {(isCompleted || isFailed) && (
+            {/* ── Reopen (completed only) / Resume (failed — continue with context) ── */}
+            {isCompleted && (
               <button onClick={() => void reopenTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary disabled:opacity-50">Reopen</button>
+            )}
+            {isFailed && (
+              <button onClick={() => void reopenTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
+                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Resume
+              </button>
             )}
             {/* ── Cancel (non-terminal, non-pending) ── */}
             {!isTerminal && task.status !== 'pending' && (

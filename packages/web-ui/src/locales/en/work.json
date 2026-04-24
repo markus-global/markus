@@ -118,6 +118,7 @@
     "pauseSchedule": "⏸ Pause Schedule",
     "archive": "Archive",
     "reopen": "Reopen",
+    "resumeFailed": "Resume",
     "cancelTask": "Cancel",
     "deleteSubtaskTitle": "Delete subtask \"{{title}}\"?",
     "deleteSubtaskMessage": "This subtask will be permanently deleted.",
