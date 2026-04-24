@@ -135,6 +135,7 @@ describe('Manus Best Practices Integration', () => {
           };
         }),
         chatStream: vi.fn(),
+        getActiveModelName: () => 'gpt-4',
         getActiveModelContextWindow: () => 200000,
         getActiveModelMaxOutput: () => 8000,
         getModelContextWindow: (model: string) => 200000,
@@ -216,6 +217,7 @@ describe('Manus Best Practices Integration', () => {
           };
         }),
         chatStream: vi.fn(),
+        getActiveModelName: () => 'gpt-4',
         getActiveModelContextWindow: () => 200000,
         getActiveModelMaxOutput: () => 8000,
         getModelContextWindow: (model: string) => 200000,

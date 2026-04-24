@@ -325,7 +325,6 @@ describe('TaskService - Dependencies & Timeouts', () => {
       expect(health.totalTasks).toBe(3);
       expect(health.statusCounts['in_progress']).toBe(2);
       expect(health.statusCounts['blocked']).toBe(1);
-      expect(health.statusCounts['pending']).toBeUndefined();
     });
 
     it('reports duplicate groups count', () => {

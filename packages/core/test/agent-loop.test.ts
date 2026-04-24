@@ -32,6 +32,7 @@ function makeMockRouter(chatFn: (...args: unknown[]) => Promise<unknown>) {
     chat: vi.fn(chatFn),
     chatStream: vi.fn(),
     getActiveModelContextWindow: () => 200000,
+    getActiveModelName: () => 'gpt-4',
     getActiveModelMaxOutput: () => 8000,
     getModelContextWindow: (model: string) => 200000,
     getModelMaxOutput: (model: string) => 8000,
