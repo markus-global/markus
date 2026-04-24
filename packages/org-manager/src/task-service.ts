@@ -483,6 +483,15 @@ export class TaskService {
       lower.includes('network');
   }
 
+  private static isNonRetryableError(errorContent: string): boolean {
+    const lower = errorContent.toLowerCase();
+    return (lower.includes('invalid_request_error') && /\b400\b/.test(errorContent)) ||
+      lower.includes('reasoning_content') ||
+      lower.includes('invalid api key') ||
+      lower.includes('insufficient balance') ||
+      (/\b(401|402|403)\b/.test(errorContent) && !lower.includes('rate'));
+  }
+
   private shouldRetryTask(taskId: string, errorContent: string, retryAttempt: number, cancelled: boolean): { shouldRetry: boolean; reason: string } {
     if (cancelled) return { shouldRetry: false, reason: 'cancelled' };
 
@@ -494,6 +503,10 @@ export class TaskService {
     // Hard cap on total retries even for in_progress tasks
     if (retryAttempt >= TaskService.MAX_IN_PROGRESS_RETRIES) {
       return { shouldRetry: false, reason: `exceeded max retries (${TaskService.MAX_IN_PROGRESS_RETRIES})` };
+    }
+
+    if (TaskService.isNonRetryableError(errorContent)) {
+      return { shouldRetry: false, reason: 'non-retryable error (auth/billing/request)' };
     }
 
     // Track consecutive identical errors (normalized)
