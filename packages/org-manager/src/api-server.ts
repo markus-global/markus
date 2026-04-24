@@ -6059,7 +6059,9 @@ EXPLANATION_END`;
         return;
       }
       try {
+        const prevDefault = this.llmRouter.getSettings().defaultProvider;
         this.llmRouter.setProviderEnabled(providerName, enabled);
+        const newDefault = this.llmRouter.getSettings().defaultProvider;
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
           const currentConfig = loadCfg(this.markusConfigPath);
@@ -6069,7 +6071,11 @@ EXPLANATION_END`;
           } else {
             providers[providerName] = { enabled };
           }
-          saveConfig({ llm: { providers } } as any, this.markusConfigPath);
+          const configUpdates: any = { llm: { providers } };
+          if (prevDefault !== newDefault) {
+            configUpdates.llm.defaultProvider = newDefault;
+          }
+          saveConfig(configUpdates, this.markusConfigPath);
         } catch (e) {
           log.warn('Failed to persist provider enabled state', { error: String(e) });
         }

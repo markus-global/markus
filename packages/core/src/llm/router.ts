@@ -425,20 +425,32 @@ export class LLMRouter {
   }
 
   private selectProvider(request: LLMRequest, explicit?: string): string {
-    if (explicit) return explicit;
+    // If an explicit provider is requested AND it is available, honour the request.
+    // If it is disabled/degraded, fall through to normal selection so we don't
+    // send traffic to a provider the user intentionally turned off.
+    if (explicit && this.isAvailable(explicit)) return explicit;
+    if (explicit && this.disabledProviders.has(explicit)) {
+      log.warn(`Explicit provider ${explicit} is disabled — falling through to auto-select`);
+    }
 
     if (!this.autoSelect || this.providerTiers.length === 0) {
-      // No tiers — use defaultProvider if available, otherwise any healthy provider
       if (this.isAvailable(this.defaultProvider) && this.providers.has(this.defaultProvider)) {
         return this.defaultProvider;
       }
       const healthy = [...this.providers.keys()].find(n => this.isAvailable(n));
-      return healthy ?? this.defaultProvider;
+      if (healthy) return healthy;
+      // Last resort: prefer any enabled (even degraded) provider over a disabled one
+      const enabledAny = [...this.providers.keys()].find(n => !this.disabledProviders.has(n));
+      if (enabledAny) {
+        log.warn(`All providers degraded — using enabled provider ${enabledAny} as last resort`);
+        return enabledAny;
+      }
+      log.warn('All providers disabled or degraded — using default as last resort');
+      return this.defaultProvider;
     }
 
     const complexity = LLMRouter.assessComplexity(request);
 
-    // Find first healthy tiered provider for this complexity
     const match = this.providerTiers.find(t =>
       t.complexity.includes(complexity) &&
       this.providers.has(t.name) &&
@@ -450,15 +462,19 @@ export class LLMRouter {
       return match.name;
     }
 
-    // All tiered providers degraded — fall back to any healthy provider
     const healthy = [...this.providers.keys()].find(n => this.isAvailable(n));
     if (healthy) {
       log.warn(`All tiered providers degraded for complexity=${complexity}, falling back to: ${healthy}`);
       return healthy;
     }
 
-    // Everything degraded — last resort, will likely fail but worth trying
-    log.warn('All providers degraded — using default as last resort');
+    // Last resort: prefer any enabled (even degraded) provider over a disabled one
+    const enabledAny = [...this.providers.keys()].find(n => !this.disabledProviders.has(n));
+    if (enabledAny) {
+      log.warn(`All providers degraded — using enabled provider ${enabledAny} as last resort`);
+      return enabledAny;
+    }
+    log.warn('All providers disabled or degraded — using default as last resort');
     return this.defaultProvider;
   }
 
@@ -888,6 +904,13 @@ export class LLMRouter {
       this.disabledProviders.delete(providerName);
     } else {
       this.disabledProviders.add(providerName);
+      if (this.defaultProvider === providerName) {
+        const replacement = [...this.providers.keys()].find(n => !this.disabledProviders.has(n));
+        if (replacement) {
+          log.info(`Default provider ${providerName} disabled — switching default to ${replacement}`);
+          this.defaultProvider = replacement;
+        }
+      }
     }
     log.info(`Provider ${providerName} ${enabled ? 'enabled' : 'disabled'}`);
   }
