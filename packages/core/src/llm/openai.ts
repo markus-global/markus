@@ -121,6 +121,10 @@ export class OpenAIProvider implements LLMProviderInterface {
   }
 
   private convertMessages(messages: LLMMessage[]): OpenAIMessage[] {
+    // DeepSeek thinking models require reasoning_content on ALL assistant messages.
+    // Old session messages may lack this field; backfill with empty string to avoid 400 errors.
+    const backfillReasoning = this.name === 'deepseek';
+
     return messages.map((m) => {
       if (m.role === 'tool') {
         return {
@@ -140,15 +144,15 @@ export class OpenAIProvider implements LLMProviderInterface {
             function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
           })),
         };
-        if (m.reasoningContent) msg.reasoning_content = m.reasoningContent;
+        if (m.reasoningContent || backfillReasoning) msg.reasoning_content = m.reasoningContent ?? '';
         return msg;
       }
 
-      if (m.role === 'assistant' && m.reasoningContent) {
+      if (m.role === 'assistant' && (m.reasoningContent || backfillReasoning)) {
         const msg: OpenAIMessage = {
           role: 'assistant' as const,
           content: typeof m.content === 'string' ? m.content : getTextContent(m.content),
-          reasoning_content: m.reasoningContent,
+          reasoning_content: m.reasoningContent ?? '',
         };
         return msg;
       }
