@@ -11,7 +11,8 @@ function createTestSkill(name: string, manifest: Partial<SkillManifest> = {}, sk
   const skillDir = join(TEST_DIR, name);
   mkdirSync(skillDir, { recursive: true });
 
-  const fullManifest: SkillManifest = {
+  const fullManifest = {
+    type: 'skill' as const,
     name,
     version: '1.0.0',
     description: `Test skill: ${name}`,
@@ -20,7 +21,7 @@ function createTestSkill(name: string, manifest: Partial<SkillManifest> = {}, sk
     ...manifest,
   };
 
-  writeFileSync(join(skillDir, 'manifest.json'), JSON.stringify(fullManifest, null, 2));
+  writeFileSync(join(skillDir, 'skill.json'), JSON.stringify(fullManifest, null, 2));
   writeFileSync(join(skillDir, 'README.md'), `# ${name}\nTest skill readme`);
 
   if (skillMd) {
@@ -58,7 +59,7 @@ describe('SkillLoader', () => {
       expect(packages[0].readme).toContain('readme-skill');
     });
 
-    it('should skip directories without manifest.json', () => {
+    it('should skip directories without skill.json', () => {
       createTestSkill('valid-skill');
       mkdirSync(join(TEST_DIR, 'no-manifest'), { recursive: true });
 
@@ -71,7 +72,7 @@ describe('SkillLoader', () => {
       createTestSkill('valid');
       const invalidDir = join(TEST_DIR, 'invalid');
       mkdirSync(invalidDir, { recursive: true });
-      writeFileSync(join(invalidDir, 'manifest.json'), JSON.stringify({ name: 'INVALID NAME!' }));
+      writeFileSync(join(invalidDir, 'skill.json'), JSON.stringify({ name: 'INVALID NAME!' }));
 
       const packages = loader.discoverSkills();
       expect(packages).toHaveLength(1);

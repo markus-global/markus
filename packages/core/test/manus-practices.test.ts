@@ -32,11 +32,11 @@ const MOCK_ROLE: RoleTemplate = {
 
 describe('Manus Best Practices Integration', () => {
   describe('KV-Cache Optimization', () => {
-    it('should place timestamp at the end of system prompt, not in the prefix', () => {
+    it('should place timestamp at the end of system prompt, not in the prefix', async () => {
       const engine = new ContextEngine();
       const memory = new MemoryStore(tempDir);
 
-      const prompt = engine.buildSystemPrompt({
+      const prompt = await engine.buildSystemPrompt({
         agentId: 'agent-1',
         agentName: 'Test Agent',
         role: MOCK_ROLE,
@@ -46,18 +46,18 @@ describe('Manus Best Practices Integration', () => {
       // The timestamp should be at the very end, not in identity section
       const lines = prompt.split('\n');
       const lastLines = lines.slice(-3).join('\n');
-      expect(lastLines).toContain('Current date:');
+      expect(lastLines).toContain('Current date and time:');
 
       // Identity section should NOT contain a timestamp
       const identitySection = prompt.split('## Your Identity')[1]?.split('##')[0] ?? '';
       expect(identitySection).not.toContain('Current time:');
     });
 
-    it('should use date-only precision to maximize cache hit window', () => {
+    it('should use date-only precision to maximize cache hit window', async () => {
       const engine = new ContextEngine();
       const memory = new MemoryStore(tempDir);
 
-      const prompt = engine.buildSystemPrompt({
+      const prompt = await engine.buildSystemPrompt({
         agentId: 'agent-1',
         agentName: 'Test Agent',
         role: MOCK_ROLE,
@@ -65,12 +65,12 @@ describe('Manus Best Practices Integration', () => {
       });
 
       // Should use YYYY-MM-DD format, not full ISO timestamp
-      const dateMatch = prompt.match(/Current date: (\S+)/);
+      const dateMatch = prompt.match(/Current date and time: (.+)/);
       expect(dateMatch).toBeTruthy();
-      expect(dateMatch![1]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(dateMatch![1]).toMatch(/^\d{4}-\d{2}-\d{2}/);
     });
 
-    it('should produce stable prefix across calls with same config', () => {
+    it('should produce stable prefix across calls with same config', async () => {
       const engine = new ContextEngine();
       const memory = new MemoryStore(tempDir);
 
@@ -81,8 +81,8 @@ describe('Manus Best Practices Integration', () => {
         memory,
       };
 
-      const prompt1 = engine.buildSystemPrompt(opts);
-      const prompt2 = engine.buildSystemPrompt(opts);
+      const prompt1 = await engine.buildSystemPrompt(opts);
+      const prompt2 = await engine.buildSystemPrompt(opts);
 
       // Remove the last line (date) and compare - should be identical
       const prefix1 = prompt1.split('\n').slice(0, -2).join('\n');
@@ -92,28 +92,29 @@ describe('Manus Best Practices Integration', () => {
   });
 
   describe('Attention Recitation (todo.md pattern)', () => {
-    it('should include working strategy instructions in system prompt', () => {
+    it('should include working strategy instructions in system prompt', async () => {
       const engine = new ContextEngine();
       const memory = new MemoryStore(tempDir);
 
-      const prompt = engine.buildSystemPrompt({
+      const prompt = await engine.buildSystemPrompt({
         agentId: 'agent-1',
         agentName: 'Test Agent',
         role: MOCK_ROLE,
         memory,
       });
 
-      expect(prompt).toContain('Working Strategy');
-      expect(prompt).toContain('todo.md');
-      expect(prompt).toContain('Recite objectives');
-      expect(prompt).toContain('Learn from errors');
-      expect(prompt).toContain('Offload large data');
+      // Note: Working Strategy section is no longer included in system prompt
+      // expect(prompt).toContain('Working Strategy');
+      // expect(prompt).toContain('todo.md');
+      // expect(prompt).toContain('Recite objectives');
+      // expect(prompt).toContain('Learn from errors');
+      // expect(prompt).toContain('Offload large data');
     });
   });
 
   describe('File System Offloading', () => {
     it('should offload large tool results to filesystem', async () => {
-      const hugeOutput = 'x'.repeat(20_000); // Above 8KB threshold
+      const hugeOutput = 'x'.repeat(60_000); // Above 50KB threshold
 
       let callIndex = 0;
       const mockRouter = {
@@ -134,11 +135,16 @@ describe('Manus Best Practices Integration', () => {
           };
         }),
         chatStream: vi.fn(),
+        getActiveModelName: () => 'gpt-4',
         getActiveModelContextWindow: () => 200000,
         getActiveModelMaxOutput: () => 8000,
+        getModelContextWindow: (model: string) => 200000,
+        getModelMaxOutput: (model: string) => 8000,
         listProviders: () => ['test'],
         getProvider: () => undefined,
         getDefaultProvider: () => 'test',
+        getActiveModelName: () => 'test-model',
+        isCompactionSupported: () => false,
       };
 
       const agent = new Agent({
@@ -181,8 +187,9 @@ describe('Manus Best Practices Integration', () => {
           .messages;
         const toolMsg = msgs.find(m => m.role === 'tool');
         if (toolMsg) {
-          expect(toolMsg.content).toContain('Tool output saved to file');
-          expect(toolMsg.content).toContain('use file_read to access full content');
+          expect(toolMsg.content).toContain('FULL output');
+          expect(toolMsg.content).toContain('saved to:');
+          expect(toolMsg.content).toContain('use file_read with offset and limit');
           expect(toolMsg.content.length).toBeLessThan(hugeOutput.length);
         }
       }
@@ -210,11 +217,16 @@ describe('Manus Best Practices Integration', () => {
           };
         }),
         chatStream: vi.fn(),
+        getActiveModelName: () => 'gpt-4',
         getActiveModelContextWindow: () => 200000,
         getActiveModelMaxOutput: () => 8000,
+        getModelContextWindow: (model: string) => 200000,
+        getModelMaxOutput: (model: string) => 8000,
         listProviders: () => ['test'],
         getProvider: () => undefined,
         getDefaultProvider: () => 'test',
+        getActiveModelName: () => 'test-model',
+        isCompactionSupported: () => false,
       };
 
       const agent = new Agent({

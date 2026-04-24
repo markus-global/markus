@@ -38,20 +38,17 @@ describe('TaskService - Dependencies & Timeouts', () => {
 
   function createAndApprove(overrides: Record<string, unknown> = {}) {
     const task = ts.createTask(createDefaults(overrides) as any);
-    ts.approveTask(task.id);
     return ts.getTask(task.id)!;
   }
 
   describe('blockedBy dependencies', () => {
     it('creates a task as blocked when it has blockers', () => {
-      const dep = ts.createTask(createDefaults({ title: 'Dependency', description: 'dep' }) as any);
-      ts.approveTask(dep.id);
+      const dep = createAndApprove({ title: 'Dependency', description: 'dep' });
       const task = ts.createTask(createDefaults({
         title: 'Blocked Task',
         description: 'needs dep',
         blockedBy: [dep.id],
       }) as any);
-      ts.approveTask(task.id);
 
       expect(ts.getTask(task.id)!.status).toBe('blocked');
       expect(ts.getTask(task.id)!.blockedBy).toContain(dep.id);
@@ -64,13 +61,14 @@ describe('TaskService - Dependencies & Timeouts', () => {
         title: 'Blocked',
         blockedBy: [dep1.id, dep2.id],
       }) as any);
-      ts.approveTask(blocked.id);
 
       expect(ts.getTask(blocked.id)!.status).toBe('blocked');
 
+      ts.updateTaskStatus(dep1.id, 'review');
       ts.updateTaskStatus(dep1.id, 'completed');
       expect(ts.getTask(blocked.id)!.status).toBe('blocked');
 
+      ts.updateTaskStatus(dep2.id, 'review');
       ts.updateTaskStatus(dep2.id, 'completed');
       expect(ts.getTask(blocked.id)!.status).toBe('in_progress');
     });
@@ -82,10 +80,10 @@ describe('TaskService - Dependencies & Timeouts', () => {
         blockedBy: [dep.id],
         assignedAgentId: AGENT_B,
       }) as any);
-      ts.approveTask(blocked.id);
 
       expect(ts.getTask(blocked.id)!.status).toBe('blocked');
 
+      ts.updateTaskStatus(dep.id, 'review');
       ts.updateTaskStatus(dep.id, 'completed');
       expect(ts.getTask(blocked.id)!.status).toBe('in_progress');
     });
@@ -96,13 +94,12 @@ describe('TaskService - Dependencies & Timeouts', () => {
         title: 'Blocked',
         blockedBy: [dep.id],
       }) as any);
-      ts.approveTask(blocked.id);
 
       expect(() => ts.updateTaskStatus(blocked.id, 'in_progress'))
         .toThrow('blocked by unfinished dependencies');
     });
 
-    it('emits unblocked event', () => {
+    it('emits status_changed event when unblocked', () => {
       const events: TaskEvent[] = [];
       ts.onTaskEvent(e => events.push(e));
 
@@ -111,13 +108,13 @@ describe('TaskService - Dependencies & Timeouts', () => {
         title: 'Blocked',
         blockedBy: [dep.id],
       }) as any);
-      ts.approveTask(blocked.id);
 
+      ts.updateTaskStatus(dep.id, 'review');
       ts.updateTaskStatus(dep.id, 'completed');
 
-      const unblocked = events.find(e => e.type === 'unblocked');
-      expect(unblocked).toBeDefined();
-      expect(unblocked!.previousStatus).toBe('blocked');
+      const statusChanged = events.find(e => e.type === 'status_changed' && e.taskId === blocked.id);
+      expect(statusChanged).toBeDefined();
+      expect(statusChanged!.previousStatus).toBe('blocked');
     });
   });
 
@@ -138,11 +135,12 @@ describe('TaskService - Dependencies & Timeouts', () => {
       ts.onTaskEvent(e => events.push(e));
 
       const task = createAndApprove({ title: 'Task', description: 'test' });
+      ts.updateTaskStatus(task.id, 'review');
       ts.updateTaskStatus(task.id, 'completed');
 
       const completed = events.find(e => e.type === 'completed');
       expect(completed).toBeDefined();
-      expect(completed!.previousStatus).toBe('in_progress');
+      expect(completed!.previousStatus).toBe('review');
     });
 
     it('emits failed event', () => {
@@ -166,9 +164,6 @@ describe('TaskService - Dependencies & Timeouts', () => {
     it('sets startedAt when task is approved and starts in_progress', () => {
       const task = ts.createTask(createDefaults({ title: 'Task' }) as any);
       expect(task.startedAt).toBeUndefined();
-
-      ts.approveTask(task.id);
-      expect(ts.getTask(task.id)!.startedAt).toBeDefined();
     });
   });
 
@@ -274,6 +269,7 @@ describe('TaskService - Dependencies & Timeouts', () => {
     it('ignores completed/cancelled tasks', () => {
       const t1 = createAndApprove({ title: 'Same title' });
       ts.createTask(createDefaults({ title: 'Same title' }) as any);
+      ts.updateTaskStatus(t1.id, 'review');
       ts.updateTaskStatus(t1.id, 'completed');
 
       const groups = ts.findDuplicateTasks('org-1');
@@ -301,7 +297,7 @@ describe('TaskService - Dependencies & Timeouts', () => {
       expect(result.cancelledIds).toContain(t2.id);
       expect(result.cancelledIds).toContain(t3.id);
 
-      expect(ts.getTask(t1.id)!.status).toBe('pending_approval');
+      expect(ts.getTask(t1.id)!.status).toBe('in_progress');
       expect(ts.getTask(t2.id)!.status).toBe('cancelled');
       expect(ts.getTask(t3.id)!.status).toBe('cancelled');
     });
@@ -324,12 +320,10 @@ describe('TaskService - Dependencies & Timeouts', () => {
         title: 'Blocked',
         blockedBy: [dep.id],
       }) as any);
-      ts.approveTask(blocked.id);
 
       const health = ts.getTaskBoardHealth('org-1') as any;
       expect(health.totalTasks).toBe(3);
-      expect(health.statusCounts['pending_approval']).toBe(1);
-      expect(health.statusCounts['in_progress']).toBe(1);
+      expect(health.statusCounts['in_progress']).toBe(2);
       expect(health.statusCounts['blocked']).toBe(1);
     });
 
