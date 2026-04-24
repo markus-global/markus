@@ -224,7 +224,7 @@ function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
   }, [onClose]);
 
   const statusColor = agent.status === 'idle' ? 'bg-green-400' : agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-gray-500';
-  const statusLabel = agent.status === 'idle' ? t('status.online') : agent.status === 'working' ? t('status.working') : agent.status === 'error' ? t('status.error') : agent.status === 'paused' ? t('status.paused') : t('status.offline');
+  const statusLabel = agent.status === 'idle' ? t('common:status.online') : agent.status === 'working' ? t('common:status.working') : agent.status === 'error' ? t('common:status.error') : agent.status === 'paused' ? t('common:status.paused') : t('common:status.offline');
 
   const adjustRef = useCallback((el: HTMLDivElement | null) => {
     if (!el) return;
@@ -2823,7 +2823,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
   }, [open]);
 
   const dotColor = isError ? 'bg-red-400 animate-pulse' : isWorking ? 'bg-blue-400 animate-pulse' : 'bg-green-400';
-  const label = isError ? t('status.error') : isWorking ? t('status.working') : t('status.idle');
+  const label = isError ? t('common:status.error') : isWorking ? t('common:status.working') : t('common:status.idle');
 
   const activityLabel = activity
     ? activity.type === 'heartbeat' ? t('page.activityHeartbeat', { name: activity.heartbeatName ?? activity.label })
