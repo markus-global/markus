@@ -127,6 +127,9 @@ function channelMsgToChat(m: ChannelMessageInfo): ChatMsg {
     agentName: m.senderType !== 'human' ? m.senderName : undefined,
     agentId: m.senderType !== 'human' ? m.senderId : undefined,
     isError,
+    replyToId: m.replyToId,
+    replyToSender: m.replyToSender,
+    replyToText: m.replyToText,
   };
   // Build segments from metadata (thinking + tool calls)
   if (m.metadata && m.senderType === 'agent') {
@@ -221,7 +224,7 @@ function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
   }, [onClose]);
 
   const statusColor = agent.status === 'idle' ? 'bg-green-400' : agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-gray-500';
-  const statusLabel = agent.status === 'idle' ? t('status.online') : agent.status === 'working' ? t('status.working') : agent.status === 'error' ? t('status.error') : agent.status === 'paused' ? t('status.paused') : t('status.offline');
+  const statusLabel = agent.status === 'idle' ? t('common:status.online') : agent.status === 'working' ? t('common:status.working') : agent.status === 'error' ? t('common:status.error') : agent.status === 'paused' ? t('common:status.paused') : t('common:status.offline');
 
   const adjustRef = useCallback((el: HTMLDivElement | null) => {
     if (!el) return;
@@ -797,7 +800,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const loadingSessionRef = useRef<string | null>(null);
 
   // Group chats
-  const [groupChats, setGroupChats] = useState<Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number; teamId?: string }>>([]);
+  const [groupChats, setGroupChats] = useState<Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number; teamId?: string; creatorId?: string; creatorName?: string; members?: Array<{ id: string; name: string; type: 'human' | 'agent' }> }>>([]);
 
   // Teams
   const [teams, setTeams] = useState<TeamInfo[]>([]);
@@ -881,6 +884,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   // ── Data loading ─────────────────────────────────────────────────────────────
   const refreshAgents = useCallback(() => api.agents.list().then(d => setAgents(d.agents)).catch(() => {}), []);
   const refreshTeams = useCallback(() => api.teams.list().then(d => setTeams(d.teams)).catch(() => {}), []);
+  const refreshGroupChats = useCallback(() => api.groupChats.list().then(d => setGroupChats(d.chats)).catch(() => {}), []);
 
   useEffect(() => {
     refreshAgents();
@@ -888,18 +892,18 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     api.tasks.list().then(d => setTasks(d.tasks)).catch(() => {});
     refreshTeams();
     api.externalAgents.list().then(d => setExternalAgents(d.agents)).catch(() => {});
-    fetch('/api/group-chats').then(r => r.json()).then((d: { chats: typeof groupChats }) => setGroupChats(d.chats)).catch(() => {});
+    refreshGroupChats();
 
     const timer = setInterval(refreshAgents, 8000);
     const teamTimer = setInterval(refreshTeams, 15000);
     const unsub = wsClient.on('agent:update', refreshAgents);
     const unsubTeam = wsClient.on('*', refreshTeams);
-    const unsubGroup = wsClient.on('chat:group_created', () => {
-      fetch('/api/group-chats').then(r => r.json()).then((d: { chats: typeof groupChats }) => setGroupChats(d.chats)).catch(() => {});
-    });
+    const unsubGroup = wsClient.on('chat:group_created', refreshGroupChats);
+    const unsubGroupUpdate = wsClient.on('chat:group_updated', refreshGroupChats);
+    const unsubGroupDelete = wsClient.on('chat:group_deleted', refreshGroupChats);
     const onDataChanged = () => { refreshAgents(); refreshTeams(); };
     window.addEventListener('markus:data-changed', onDataChanged);
-    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeam(); unsubGroup(); window.removeEventListener('markus:data-changed', onDataChanged); };
+    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeam(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); window.removeEventListener('markus:data-changed', onDataChanged); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -955,9 +959,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-select secretary agent when no agent is selected and agents have loaded
+  // Auto-select secretary agent when no valid agent is selected.
+  // Also handles stale IDs from localStorage (e.g. deleted agents).
   useEffect(() => {
-    if (selectedAgent || agents.length === 0) return;
+    if (agents.length === 0) return;
+    if (selectedAgent && agents.some(a => a.id === selectedAgent)) return;
     const secretary = agents.find(a => a.role === 'secretary')
       ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));
     if (secretary) {
@@ -966,7 +972,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       setMainTab('chat');
     } else if (agents.length > 0) {
       setChatMode('direct');
-      setSelectedAgent(agents[0].id);
+      setSelectedAgent(agents[0]!.id);
       setMainTab('chat');
     }
   }, [agents, selectedAgent]);
@@ -1174,14 +1180,20 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     setShowSessions(false);
 
     if (bufferedMsgs !== undefined) {
-      // Already have content (possibly mid-stream) — show immediately, no DB load
+      // Already have content (possibly mid-stream) — show immediately
       setMessages(bufferedMsgs);
       setHasMore(false);
-      // Restore the active session that was viewing these messages
       if (savedActiveSession !== undefined) {
         setActiveSessionId(savedActiveSession);
       }
       if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
+      // For channel/dm modes, refresh from server in background to catch anything we missed
+      if (chatMode === 'channel' || chatMode === 'dm') {
+        const channelName = chatMode === 'dm'
+          ? makeDmChannel(authUser?.id ?? '', activeDmUserId)
+          : activeChannel;
+        loadChannelMessages(channelName);
+      }
     } else {
       // First visit for this conversation — load from DB
       setMessages([]);
@@ -1224,15 +1236,12 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatMode, selectedAgent, activeChannel, activeDmUserId, i18n.language, t]);
 
-  // WS live updates for channel mode
+  // WS live updates for channel mode — buffer messages for ALL channels, not just the active one
   useEffect(() => {
-    if (chatMode !== 'channel') return;
     const unsub = wsClient.on('chat:message', (event) => {
       const p = event.payload;
       const msgChannel = (p['channel'] as string) ?? '';
-      // Only process messages with an explicit channel that matches the current one.
-      // Messages without a channel field come from direct-chat broadcastChat() and must be ignored.
-      if (!msgChannel || msgChannel !== activeChannel) return;
+      if (!msgChannel) return;
       const senderType = (p['senderType'] as string) ?? 'agent';
       const wsText = (p['text'] as string) ?? (p['message'] as string) ?? '';
       const wsSenderId = (p['senderId'] as string) ?? (p['agentId'] as string) ?? '';
@@ -1246,9 +1255,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         time: new Date().toLocaleTimeString(),
         agentName: senderType === 'agent' ? wsSenderName : undefined,
         agentId: senderType === 'agent' ? wsSenderId : undefined,
+        replyToId: (p['replyToId'] as string) ?? undefined,
+        replyToSender: (p['replyToSender'] as string) ?? undefined,
+        replyToText: (p['replyToText'] as string) ?? undefined,
       };
 
-      // Build segments from metadata (thinking + tool calls) if present
       if (wsMeta && senderType === 'agent') {
         const segs: MsgSegment[] = [];
         if (wsMeta.thinking?.length) {
@@ -1270,11 +1281,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         }
       }
 
-      const key = makeConvKey('channel', selectedAgent, activeChannel, activeDmUserId);
+      const key = `ch:${msgChannel}`;
       updateConvMsgs(key, prev => [...prev, newMsg]);
     });
     return unsub;
-  }, [chatMode, activeChannel, selectedAgent, activeDmUserId, updateConvMsgs, t]);
+  }, [updateConvMsgs]);
 
   // WS live updates for proactive agent messages (direct mode)
   useEffect(() => {
@@ -1441,13 +1452,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       updateConvMsgs(sendKey, prev => [...prev, userMsgCh]);
       try {
         const mentions = parseMentions(text);
-        const mentionedAgent = mentions.length > 0
-          ? agents.find(a => a.name.toLowerCase() === mentions[0]!.toLowerCase())
-          : null;
         const result = await api.channels.sendMessage(activeChannel, {
           text, senderName: authUser?.name ?? t('page.fallbackYou'), mentions,
           senderId: authUser?.id,
-          targetAgentId: mentionedAgent?.id, orgId: 'default',
+          orgId: 'default',
+          replyToId: replyCtx?.id,
         });
         updateConvMsgs(sendKey, prev => {
           const without = prev.filter(m => m.id !== optId);
@@ -1673,6 +1682,26 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           fileNamesToSend,
         );
         if (currentConvKeyRef.current === sendKey) {
+          // Apply server's authoritative final segments and content so the
+          // rendered state matches the DB-persisted data.  This prevents a
+          // blank bubble when delta-built segments have empty content (e.g.
+          // thinking-only responses before text_delta arrives).
+          if (streamResult.segments?.length) {
+            updateConvMsgs(sendKey, prev => {
+              const u = [...prev];
+              const idx = u.findIndex(m => m.id === agentMsgId);
+              if (idx < 0) return prev;
+              const finalSegs: MsgSegment[] = streamResult.segments!.map((s, i) =>
+                s.type === 'tool'
+                  ? { type: 'tool' as const, key: `${s.tool}_${i}`, tool: s.tool, status: s.status, args: s.arguments, result: s.result, error: s.error, durationMs: s.durationMs, createdAt: s.createdAt }
+                  : { type: 'text' as const, content: s.content, thinking: s.thinking, createdAt: s.createdAt }
+              );
+              const finalText = streamResult.content || u[idx]!.text;
+              u[idx] = { ...u[idx]!, text: finalText, segments: finalSegs, committedSegments: finalSegs };
+              return u;
+            });
+          }
+
           if (streamResult.sessionId) {
             setActiveSessionId(streamResult.sessionId);
             setOpenSessionTabs(prev =>
@@ -1916,13 +1945,15 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   }, [messages, updateConvMsgs]);
 
   const handleReplyMsg = useCallback((msg: ChatMsg) => {
-    setChatReplyTo({
-      id: msg.id,
-      sender: msg.sender === 'user' ? (authUser?.name ?? t('page.fallbackYou')) : (msg.agentName ?? t('page.fallbackAgent')),
-      text: msg.text.slice(0, 120),
-    });
+    const senderName = msg.sender === 'user' ? (authUser?.name ?? t('page.fallbackYou')) : (msg.agentName ?? t('page.fallbackAgent'));
+    setChatReplyTo({ id: msg.id, sender: senderName, text: msg.text.slice(0, 120) });
+    // Auto-insert @mention when replying to an agent in a group channel
+    if (chatMode === 'channel' && msg.sender === 'agent' && msg.agentName) {
+      const mention = `@${msg.agentName} `;
+      setInput(prev => prev.startsWith(mention) ? prev : mention + prev);
+    }
     textareaRef.current?.focus();
-  }, [authUser?.name, t]);
+  }, [authUser?.name, chatMode, t]);
 
   const switchSession = async (s: ChatSessionInfo) => {
     setActiveSessionId(s.id);
@@ -1975,27 +2006,44 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const handleInputChange = (val: string) => {
     setInput(val);
     if (chatMode !== 'channel') { setMentionDropdown(false); return; }
-    const lastAt = val.lastIndexOf('@');
-    if (lastAt >= 0 && (lastAt === 0 || val[lastAt - 1] === ' ')) {
-      const after = val.slice(lastAt + 1);
-      const lowerAfter = after.toLowerCase();
-      const hasMatch = agents.some(a => a.name.toLowerCase().includes(lowerAfter));
-      if (hasMatch) {
-        setMentionDropdown(true);
-        setMentionFilter(lowerAfter);
-        setMentionSelectedIndex(0);
-        return;
+
+    const cursorPos = textareaRef.current?.selectionStart ?? val.length;
+    const textBeforeCursor = val.slice(0, cursorPos);
+
+    // Search backwards from cursor for the nearest unfinished @mention
+    const atIdx = textBeforeCursor.lastIndexOf('@');
+    if (atIdx >= 0) {
+      const charBefore = atIdx === 0 ? '' : textBeforeCursor[atIdx - 1]!;
+      const isValidPosition = atIdx === 0 || /[\s\n,，。！？!?;；:：、（）()\[\]【】]/.test(charBefore);
+      if (isValidPosition) {
+        const fragment = textBeforeCursor.slice(atIdx + 1);
+        // Fragment between @ and cursor must be a contiguous token (no space/newline)
+        if (!fragment.includes(' ') && !fragment.includes('\n')) {
+          setMentionDropdown(true);
+          setMentionFilter(fragment.toLowerCase());
+          setMentionSelectedIndex(0);
+          return;
+        }
       }
     }
     setMentionDropdown(false);
   };
 
   const insertMention = (name: string) => {
-    const lastAt = input.lastIndexOf('@');
+    const cursorPos = textareaRef.current?.selectionStart ?? input.length;
+    const before = input.slice(0, cursorPos);
+    const atIdx = before.lastIndexOf('@');
+    const after = input.slice(cursorPos);
     const mention = name.includes(' ') ? `@[${name}]` : `@${name}`;
-    setInput(input.slice(0, lastAt) + mention + ' ');
+    const newVal = input.slice(0, atIdx) + mention + ' ' + after;
+    setInput(newVal);
     setMentionDropdown(false);
     setMentionSelectedIndex(0);
+    // Restore cursor position after the inserted mention
+    const newCursor = atIdx + mention.length + 1;
+    requestAnimationFrame(() => {
+      textareaRef.current?.setSelectionRange(newCursor, newCursor);
+    });
   };
 
   // ── File attachment handling ─────────────────────────────────────────────────
@@ -2085,12 +2133,39 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const lastMsg = messages[messages.length - 1];
   const isLastPending = sending && lastMsg?.sender === 'agent';
   const isLastVisualStreaming = streamingVisual && lastMsg?.sender === 'agent';
-  const filteredAgents = agents.filter(a => a.name.toLowerCase().includes(mentionFilter));
+  const channelTeamMemberIds = useMemo(() => {
+    if (chatMode !== 'channel') return null;
+    if (activeChannel.startsWith('group:custom:')) {
+      const gc = groupChats.find(g => g.channelKey === activeChannel);
+      if (gc?.members) return new Set(gc.members.filter(m => m.type === 'agent').map(m => m.id));
+      return null;
+    }
+    if (!activeTeamId) return null;
+    const team = teams.find(t => t.id === activeTeamId);
+    if (!team) return null;
+    return new Set(team.members.filter(m => m.type === 'agent').map(m => m.id));
+  }, [chatMode, activeChannel, activeTeamId, teams, groupChats]);
+  const filteredAgents = agents
+    .filter(a => channelTeamMemberIds ? channelTeamMemberIds.has(a.id) : true)
+    .filter(a => a.name.toLowerCase().includes(mentionFilter));
 
   const activeDmUser = humans.find(h => h.id === activeDmUserId);
   const isSelfDm = activeDmUserId === authUser?.id || !activeDmUserId;
 
   const activeGroupChat = groupChats.find(gc => gc.channelKey === activeChannel);
+
+  // Fetch custom group chat details (with member list) when selected
+  useEffect(() => {
+    if (!activeChannel.startsWith('group:custom:')) return;
+    const gc = groupChats.find(g => g.channelKey === activeChannel);
+    if (!gc || gc.members) return;
+    api.groupChats.getById(gc.id).then(d => {
+      if (d.chat.members) {
+        setGroupChats(prev => prev.map(g => g.id === gc.id ? { ...g, members: d.chat.members } : g));
+      }
+    }).catch(() => {});
+  }, [activeChannel, groupChats]);
+
   const modeTitle =
     chatMode === 'channel' ? (activeGroupChat?.name ?? activeChannel) :
     chatMode === 'direct'  ? (currentAgent?.name ?? t('page.selectAgent')) :
@@ -2125,6 +2200,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); if (isMobile) enterMobileDetail(); }}
         onRefreshTeams={refreshTeams}
         onRefreshAgents={refreshAgents}
+        onRefreshGroupChats={refreshGroupChats}
         onViewProfile={handleViewProfile}
         width={isMobile ? undefined : chatSidebar.width}
         onResizeStart={isMobile ? undefined : chatSidebar.onResizeStart}
@@ -2337,7 +2413,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                           }`}
                         >
                           <div className="truncate font-medium flex items-center gap-1">
-                            {s.isMain && <span className="text-[10px] text-brand-500 opacity-60">●</span>}
+                            {s.isMain && <span className="text-[10px] text-brand-500 opacity-80">●</span>}
                             {s.isMain ? t('page.sessionMain') : (s.title || t('page.sessionConversation'))}
                           </div>
                           <div className="text-fg-tertiary text-[10px] mt-0.5">{new Date(s.lastMessageAt).toLocaleString()}</div>
@@ -2389,7 +2465,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
           {messages.length === 0 && !sending && (
             <div className="flex flex-col items-center justify-center h-full text-fg-tertiary text-sm space-y-2">
-              <div className="opacity-20">
+              <div className="opacity-40">
                 <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   {chatMode === 'channel'
                     ? <><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H6l-4 4V6c0-1.1.9-2 2-2z" /><line x1="8" y1="10" x2="16" y2="10" /><line x1="8" y1="14" x2="13" y2="14" /></>
@@ -2438,7 +2514,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                         }}
                         className="flex items-center gap-1.5 mt-0.5 mb-1 pl-2 py-0.5 border-l-2 border-brand-500/40 text-xs text-fg-tertiary hover:text-fg-secondary transition-colors cursor-pointer"
                       >
-                        <span className="font-medium text-brand-500/70">{msg.replyToSender}</span>
+                        <span className="font-medium text-brand-500">{msg.replyToSender}</span>
                         <span className="truncate max-w-[250px]">{msg.replyToText ?? '...'}</span>
                       </button>
                     )}
@@ -2502,7 +2578,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                           }}
                           className="flex items-center gap-1.5 mb-1 pl-2 py-0.5 border-l-2 border-brand-500/40 text-[10px] text-fg-tertiary hover:text-fg-secondary transition-colors cursor-pointer"
                         >
-                          <span className="font-medium text-brand-500/70">{msg.replyToSender}</span>
+                          <span className="font-medium text-brand-500">{msg.replyToSender}</span>
                           <span className="truncate max-w-[200px]">{msg.replyToText ?? '...'}</span>
                         </button>
                       )}
@@ -2577,6 +2653,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               {filteredAgents.map((a, i) => (
                 <button
                   key={a.id}
+                  ref={el => { if (i === mentionSelectedIndex && el) el.scrollIntoView({ block: 'nearest' }); }}
                   onClick={() => insertMention(a.name)}
                   onMouseEnter={() => setMentionSelectedIndex(i)}
                   className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 transition-colors ${
@@ -2746,7 +2823,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
   }, [open]);
 
   const dotColor = isError ? 'bg-red-400 animate-pulse' : isWorking ? 'bg-blue-400 animate-pulse' : 'bg-green-400';
-  const label = isError ? t('status.error') : isWorking ? t('status.working') : t('status.idle');
+  const label = isError ? t('common:status.error') : isWorking ? t('common:status.working') : t('common:status.idle');
 
   const activityLabel = activity
     ? activity.type === 'heartbeat' ? t('page.activityHeartbeat', { name: activity.heartbeatName ?? activity.label })

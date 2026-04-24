@@ -132,7 +132,7 @@ Source: `getMailboxContext()` → `buildMailboxSection()` in `ContextEngine`.
 Every LLM call passes through the mailbox, so this section is always populated. It injects:
 - **Current focus**: What the agent is currently working on (item type, summary, time elapsed).
 - **Pending queue**: Count and top items in the mailbox, so the agent knows what's waiting.
-- **Recent decisions**: Last 3-5 attention decisions (continue/preempt/merge/defer) with reasoning.
+- **Recent decisions**: Last 3-5 attention decisions (continue/preempt/cancel/merge/defer) with reasoning. The `preempt` decision means current work was **paused** (deferred for later resumption); the `cancel` decision means current work was **permanently stopped**.
 - **Merged content**: If a `merge` decision injected additional context (e.g., a comment on the current task), it appears here.
 
 **Triage context budget** is generous — up to 20 recent messages × 2000 chars each, plus full item content (3000 chars per candidate) and the agent's active task list. Tens of thousands of tokens are acceptable for triage because accurate prioritization decisions save far more cost downstream. The triage LLM can also invoke a curated set of **read-only tools** (`task_list`, `task_get`, `requirement_list`, `requirement_get`, `list_projects`, `team_list`) to gather additional context before deciding. These are controlled by `TRIAGE_ALLOWED_TOOLS` and `TRIAGE_MAX_TOOL_ITERATIONS` in `limits.ts`.

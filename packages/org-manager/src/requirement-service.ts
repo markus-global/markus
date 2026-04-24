@@ -428,11 +428,13 @@ export class RequirementService {
   }
 
   /**
-   * Check if all tasks for a requirement are done. If so, mark it as completed.
+   * Check if all tasks for a requirement are done. Instead of auto-completing,
+   * notify the creator agent so they can review results and decide whether to
+   * complete the requirement or create additional tasks.
    */
   checkCompletion(requirementId: string, taskStatuses: Map<string, string>): boolean {
     const req = this.requirements.get(requirementId);
-    if (!req || req.status === 'completed') return false;
+    if (!req || req.status === 'completed' || req.status === 'cancelled') return false;
     if (req.taskIds.length === 0) return false;
 
     const allDone = req.taskIds.every(tid => {
@@ -440,16 +442,27 @@ export class RequirementService {
       return status === 'completed' || status === 'cancelled' || status === 'archived';
     });
 
-    if (allDone) {
-      req.status = 'completed';
-      req.updatedAt = new Date().toISOString();
-      if (this.requirementRepo) {
-        this.requirementRepo.updateStatus(requirementId, 'completed').catch((e: unknown) =>
-          log.error('Failed to persist requirement completion', { id: requirementId, error: String(e) })
-        );
-      }
-      this.broadcast('requirement:completed', req);
-      log.info('Requirement completed', { id: requirementId });
+    if (allDone && req.createdBy && this.agentManager) {
+      try {
+        const agent = this.agentManager.getAgent(req.createdBy);
+        if (agent) {
+          agent.enqueueToMailbox('requirement_update', {
+            summary: `All tasks for requirement "${req.title}" are done — review needed`,
+            content: [
+              `[REQUIREMENT REVIEW NEEDED] All linked tasks for "${req.title}" (ID: ${requirementId}) have reached terminal state.`,
+              '',
+              'Please review the results and decide:',
+              `1. If the requirement is fully satisfied, complete it: requirement_update_status(requirement_id="${requirementId}", status="completed")`,
+              `2. If more work is needed, create additional tasks with task_create(requirement_id="${requirementId}", ...)`,
+            ].join('\n'),
+            requirementId,
+            extra: { actionRequired: true },
+          }, {
+            priority: 2,
+            metadata: { senderName: 'System', senderRole: 'manager' },
+          });
+        }
+      } catch { /* agent not found */ }
       return true;
     }
     return false;
@@ -617,14 +630,13 @@ export class RequirementService {
       }
 
       const agent = this.agentManager.getAgent(creatorId);
-      const isRejection = decision === 'rejected';
       agent.enqueueToMailbox('requirement_update', {
         summary: `Requirement "${req.title}" ${decision}`,
         content: parts.join('\n'),
         requirementId: req.id,
-        extra: isRejection ? { actionRequired: true } : undefined,
+        extra: { actionRequired: true },
       }, {
-        priority: isRejection ? 1 : 3,
+        priority: 1,
         metadata: { senderName: 'System', senderRole: 'manager' },
       });
 

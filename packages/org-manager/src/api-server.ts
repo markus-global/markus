@@ -190,15 +190,7 @@ export class APIServer {
   private builderService?: BuilderService;
   private workflowEngine?: WorkflowEngine;
   private teamTemplateRegistry: TeamTemplateRegistry;
-  private customGroupChats: Array<{
-    id: string;
-    name: string;
-    orgId: string;
-    creatorId: string;
-    creatorName: string;
-    memberIds: string[];
-    createdAt: string;
-  }> = [];
+  // Custom group chats are now persisted in SQLite via storage.groupChatRepo
   constructor(
     private orgService: OrganizationService,
     private taskService: TaskService,
@@ -222,16 +214,23 @@ export class APIServer {
         senderName: string
       ) => {
         const cleanText = stripInternalBlocks(message);
+        const orgId = 'default';
+
+        // Persist agent message
+        let persistedMsgId: string | undefined;
         if (this.storage) {
-          await this.storage.channelMessageRepo.append({
-            orgId: 'default',
+          const saved = await this.storage.channelMessageRepo.append({
+            orgId,
             channel: channelKey,
             senderId,
             senderType: 'agent',
             senderName,
             text: cleanText,
           });
+          persistedMsgId = saved.id;
         }
+
+        // Broadcast to frontend via WebSocket
         this.ws.broadcast({
           type: 'chat:message',
           payload: {
@@ -243,21 +242,63 @@ export class APIServer {
           },
           timestamp: new Date().toISOString(),
         });
-        // Deliver to peer agent mailboxes so they see the message
-        const chat = this.customGroupChats.find(c => c.id === channelKey);
-        if (chat) {
-          for (const memberId of chat.memberIds) {
-            if (memberId === senderId) continue;
-            try {
-              const memberAgent = am.getAgent(memberId);
-              memberAgent.enqueueToMailbox('a2a_message', {
-                summary: `Group chat message from ${senderName}`,
-                content: `[Group chat: ${chat.name}] ${senderName}: ${cleanText}`,
-                extra: { senderId, senderName, channelKey },
-              });
-            } catch { /* agent may not exist */ }
+
+        // Resolve all agent members in this group channel
+        let allAgentIds: string[] = [];
+        if (channelKey.startsWith('group:custom:') && this.storage?.groupChatRepo) {
+          allAgentIds = this.storage.groupChatRepo.getAgentMemberIds(channelKey);
+        } else if (channelKey.startsWith('group:')) {
+          const teamId = channelKey.replace(/^group:/, '');
+          const team = this.orgService.getTeam(teamId);
+          allAgentIds = team?.memberAgentIds ?? [];
+        }
+
+        // Notify peer agents in the group
+        const peerAgentIds = allAgentIds.filter(id => id !== senderId);
+        if (peerAgentIds.length > 0) {
+          const agentManager = this.orgService.getAgentManager();
+          const nameMap = this.buildAgentNameMap(allAgentIds, agentManager);
+          const mentionedNames = this.parseAgentMentions(cleanText, [...nameMap.keys()]);
+          const filteredMentions = mentionedNames.filter(n => {
+            const id = nameMap.get(n);
+            return id && id !== senderId;
+          });
+
+          if (filteredMentions.length > 0) {
+            // Targeted: trigger A2A chain for @mentioned agents
+            let channelContext: Array<{ role: string; content: string }> = [];
+            if (this.storage) {
+              try {
+                const recent = await this.storage.channelMessageRepo.getMessages(channelKey, 20);
+                channelContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
+                  role: m.senderType === 'agent' ? 'assistant' : 'user',
+                  content: m.senderType === 'agent' ? stripInternalBlocks(m.text) : `[${m.senderName}]: ${m.text}`,
+                }));
+              } catch { /* best-effort */ }
+            }
+            const roundId = `round_${Date.now()}`;
+            const respondedAgents = new Set<string>([senderId]);
+            void this.triggerAgentToAgentChain(
+              filteredMentions, nameMap, senderName, senderId, cleanText, persistedMsgId,
+              channelKey, orgId, agentManager, allAgentIds.length,
+              { roundId, depth: 1, respondedAgents, allAgentIds },
+            );
+          } else {
+            // No @mentions: deliver as mailbox notification so peers are aware
+            for (const peerId of peerAgentIds) {
+              try {
+                agentManager.getAgent(peerId).enqueueToMailbox('a2a_message', {
+                  summary: `Group chat message from ${senderName}`,
+                  content: `[Group chat message from ${senderName}]:\n${cleanText}`,
+                  extra: { senderId, senderName, channelKey },
+                }, {
+                  metadata: { senderId, senderName, senderRole: 'agent' },
+                });
+              } catch { /* agent may not exist */ }
+            }
           }
         }
+
         return 'Message sent to group chat';
       },
       createGroupChat: async (
@@ -266,22 +307,24 @@ export class APIServer {
         creatorName: string,
         memberIds: string[]
       ) => {
-        const chatId = `group:custom:${Date.now().toString(36)}`;
-        this.customGroupChats.push({
-          id: chatId,
-          name,
-          orgId: 'default',
-          creatorId,
-          creatorName,
-          memberIds,
-          createdAt: new Date().toISOString(),
-        });
-        this.ws.broadcast({
-          type: 'chat:group_created',
-          payload: { chatId, name, creatorId, creatorName },
-          timestamp: new Date().toISOString(),
-        });
-        return { id: chatId, name };
+        if (this.storage?.groupChatRepo) {
+          const members = memberIds.map(id => {
+            try {
+              const agentInfo = this.orgService.getAgentManager().getAgent(id);
+              return { id, type: 'agent' as const, name: agentInfo?.config?.name ?? id };
+            } catch { return { id, type: 'agent' as const, name: id }; }
+          });
+          const gc = this.storage.groupChatRepo.create({
+            orgId: 'default', name, creatorId, creatorName, members,
+          });
+          this.ws.broadcast({
+            type: 'chat:group_created',
+            payload: { chatId: gc.channelKey, name, creatorId, creatorName },
+            timestamp: new Date().toISOString(),
+          });
+          return { id: gc.channelKey, name };
+        }
+        return { id: `group:custom:${Date.now().toString(36)}`, name };
       },
       listGroupChats: async () => {
         const teams = this.orgService.listTeamsWithMembers('default');
@@ -291,13 +334,28 @@ export class APIServer {
           type: 'team',
           channelKey: `group:${t.id}`,
         }));
-        const customChats = this.customGroupChats.map(c => ({
-          id: c.id,
-          name: c.name,
-          type: 'custom',
-          channelKey: c.id,
-        }));
+        const customChats = this.storage?.groupChatRepo
+          ? this.storage.groupChatRepo.list('default').map((c: any) => ({
+              id: c.channelKey,
+              name: c.name,
+              type: 'custom',
+              channelKey: c.channelKey,
+            }))
+          : [];
         return [...teamChats, ...customChats];
+      },
+      getChannelMessages: async (channelKey: string, limit: number, before?: string) => {
+        if (!this.storage) return { messages: [], hasMore: false };
+        const result = this.storage.channelMessageRepo.getMessages(channelKey, limit, before);
+        return {
+          messages: result.messages.map((m: ChannelMsg) => ({
+            senderName: m.senderName,
+            senderType: m.senderType,
+            text: stripInternalBlocks(m.text),
+            createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : String(m.createdAt),
+          })),
+          hasMore: result.hasMore,
+        };
       },
     });
 
@@ -656,10 +714,92 @@ export class APIServer {
     }
   }
 
+  // ── Agent-to-agent reply storm prevention ───────────────────────────────────
+  private static readonly A2A_MAX_DEPTH = 3;
+  private static readonly A2A_COOLDOWN_MS = 30_000;
+  /** Per-channel cooldown tracker: channel → agentId → last reply timestamp */
+  private a2aCooldowns = new Map<string, Map<string, number>>();
+
+  /** Extract @mentions from agent reply text. Returns agent names found.
+   *  Handles multi-word names (e.g. "Ryan 莱恩") by checking known names after each @ sign.
+   *  Also matches partial names: "@Sofia" matches "Sofia 索菲亚" if "Sofia" is a token in the name. */
+  private parseAgentMentions(text: string, knownAgentNames: string[]): string[] {
+    const mentioned = new Set<string>();
+
+    // Build lookup: full names sorted longest-first, plus individual tokens → full name
+    const sorted = [...knownAgentNames].sort((a, b) => b.length - a.length);
+    const tokenToName = new Map<string, string>();
+    for (const name of sorted) {
+      // Each whitespace-separated token maps back to the full name
+      for (const token of name.split(/\s+/)) {
+        if (token.length >= 2) {
+          const key = token.toLowerCase();
+          if (!tokenToName.has(key)) tokenToName.set(key, name);
+        }
+      }
+    }
+
+    let idx = 0;
+    while (idx < text.length) {
+      const atPos = text.indexOf('@', idx);
+      if (atPos < 0) break;
+
+      // Check @[Name With Spaces] bracket syntax first
+      if (text[atPos + 1] === '[') {
+        const close = text.indexOf(']', atPos + 2);
+        if (close > atPos + 2) {
+          const bracketed = text.slice(atPos + 2, close);
+          const match = sorted.find(n => n.toLowerCase() === bracketed.toLowerCase());
+          if (match) mentioned.add(match);
+          idx = close + 1;
+          continue;
+        }
+      }
+
+      const after = text.slice(atPos + 1);
+      const afterLower = after.toLowerCase();
+
+      // Try 1: full name prefix match (e.g. "@Ryan 莱恩" matches "Ryan 莱恩")
+      const fullMatch = sorted.find(n => afterLower.startsWith(n.toLowerCase()));
+      if (fullMatch) {
+        mentioned.add(fullMatch);
+        idx = atPos + 1 + fullMatch.length;
+        continue;
+      }
+
+      // Try 2: single-token match (e.g. "@Sofia" matches "Sofia 索菲亚" via token "Sofia")
+      // Extract the word right after @ (up to next space, punctuation, or CJK boundary)
+      const tokenMatch = after.match(/^(\S+)/);
+      if (tokenMatch) {
+        const token = tokenMatch[1]!.toLowerCase()
+          .replace(/[,，。！？!?;；:：、()（）[\]【】]+$/, ''); // strip trailing punctuation
+        const resolved = tokenToName.get(token);
+        if (resolved) {
+          mentioned.add(resolved);
+          idx = atPos + 1 + tokenMatch[1]!.length;
+          continue;
+        }
+      }
+
+      idx = atPos + 1;
+    }
+    return [...mentioned];
+  }
+
+  /** Build name→id lookup for agents in a channel */
+  private buildAgentNameMap(agentIds: string[], agentManager: AgentManager): Map<string, string> {
+    const map = new Map<string, string>();
+    for (const id of agentIds) {
+      try { map.set(agentManager.getAgent(id).config.name, id); } catch { /* skip */ }
+    }
+    return map;
+  }
+
   /**
    * Process a single agent's reply in a group chat broadcast.
    * Each agent decides independently whether to respond.
    * Replies are persisted and broadcast via WebSocket.
+   * If the agent @mentions other agents, a chain reply is triggered (with storm prevention).
    */
   private async processGroupChatReply(
     agentId: string,
@@ -671,25 +811,73 @@ export class APIServer {
     channelContext: Array<{ role: string; content: string }>,
     agentManager: AgentManager,
     teamSize: number,
+    opts?: { mentionedNames?: string[]; replyToAgentName?: string; replyToText?: string; replyToMsgId?: string },
+    chainCtx?: { roundId: string; depth: number; respondedAgents: Set<string>; allAgentIds: string[] },
   ): Promise<void> {
     try {
       const agent = agentManager.getAgent(agentId);
       const agentName = agent.config.name;
 
-      const groupChatPrefix = [
-        `[GROUP CHAT — ${teamSize} team members receiving this independently]`,
+      const isA2A = !!chainCtx && chainCtx.depth > 0;
+      const hasReplyTarget = !!opts?.replyToAgentName;
+      const hasMentions = !!opts?.mentionedNames?.length;
+      const isTargeted = hasReplyTarget || hasMentions;
+
+      const targetNames = new Set<string>();
+      if (opts?.replyToAgentName) targetNames.add(opts.replyToAgentName);
+      if (opts?.mentionedNames) opts.mentionedNames.forEach(n => targetNames.add(n));
+      const thisAgentIsTarget = targetNames.has(agentName);
+
+      const prefixLines = [
+        `[GROUP CHAT — ${teamSize} team members | You are: ${agentName}]`,
         '',
-        'You are ONE of several agents in a group chat. Rules:',
-        '1. **Check channel history first** — if another agent already answered the question or addressed the topic, do NOT repeat their answer. Add only if you have a *different* perspective or expertise.',
-        '2. **Only respond if your role/expertise is specifically relevant.** Generic offers like "Let me know if you need help" add no value.',
-        '3. **Be concise** — this is a multi-party conversation. Short, actionable responses only.',
-        '4. **Do NOT create tasks** unless the user explicitly asks you to and you are the manager/coordinator.',
-        '5. **Prefer [NO_RESPONSE]** — when in doubt, say nothing. It is better to stay silent than to add noise.',
-        '',
-        'If you have nothing uniquely valuable to contribute, respond with exactly: [NO_RESPONSE]',
-        '---',
-        '',
-      ].join('\n');
+      ];
+
+      if (isA2A) {
+        prefixLines.push(`[AGENT COLLABORATION] This message is from a fellow agent (${opts?.replyToAgentName ?? 'teammate'}), not from the user.`);
+        prefixLines.push('You were @mentioned because your expertise is needed. Respond concisely to the specific request.');
+        prefixLines.push('You may @mention another agent if (and ONLY if) you genuinely need their specific expertise to answer.');
+        prefixLines.push('Do NOT @mention agents just to be polite or to pass the conversation along.');
+        prefixLines.push('');
+      }
+
+      if (isTargeted && !isA2A) {
+        if (hasReplyTarget) {
+          prefixLines.push(`[REPLY] The user is replying to ${opts!.replyToAgentName}'s message: "${(opts!.replyToText ?? '').slice(0, 200)}"`);
+        }
+        if (hasMentions) {
+          prefixLines.push(`[MENTIONED] The user @mentioned: ${opts!.mentionedNames!.join(', ')}`);
+        }
+        prefixLines.push('');
+        if (thisAgentIsTarget) {
+          prefixLines.push('>>> You are the target of this message. You SHOULD respond. <<<');
+        } else {
+          prefixLines.push('>>> STOP. This message is NOT for you. The user is talking to ' + [...targetNames].join(', ') + ', not you.');
+          prefixLines.push('You MUST respond with exactly: [NO_RESPONSE]');
+          prefixLines.push('The ONLY exception: you are directly contradicted by a factual error. Offering opinions, agreement, "me too", or generic help does NOT count. <<<');
+        }
+      } else if (!isA2A) {
+        prefixLines.push('This is an open group message (no specific @mention or reply target).');
+      }
+
+      prefixLines.push('');
+      prefixLines.push('Rules for ALL group chat messages:');
+      prefixLines.push('1. Check channel history — if another agent already answered, do NOT repeat.');
+      prefixLines.push('2. Only respond if your specific role/expertise is directly relevant.');
+      prefixLines.push('3. Be concise — short, actionable responses only.');
+      if (agent.config.agentRole === 'manager') {
+        prefixLines.push('4. When assigning work to agents, you MUST use `task_create` to formalize each assignment as a tracked task. Verbal delegation without a task is NOT allowed — oral promises are meaningless without task tracking. Every commitment must have a corresponding task.');
+      } else {
+        prefixLines.push('4. When you accept a work assignment, verify a task has been created for it (`task_list`). If the coordinator did not create one, remind them or create it yourself with the correct `assigned_agent_id`. Do NOT make promises without task tracking.');
+      }
+      prefixLines.push('5. DEFAULT IS SILENCE. When in doubt, respond with exactly: [NO_RESPONSE]');
+      prefixLines.push('6. If the provided context is insufficient, use `recall_context` (scope="channel") to fetch earlier messages before responding. For task/requirement details use `task_get`/`requirement_get`. Do NOT guess about prior discussion.');
+      if (isTargeted && !thisAgentIsTarget && !isA2A) {
+        prefixLines.push('7. REMINDER: This message is directed at ' + [...targetNames].join(', ') + '. You are ' + agentName + '. Respond ONLY with [NO_RESPONSE].');
+      }
+
+      prefixLines.push('---', '');
+      const groupChatPrefix = prefixLines.join('\n');
 
       const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
       const reply = await agent.sendMessage(
@@ -697,28 +885,32 @@ export class APIServer {
         senderId,
         senderInfo,
         {
-          sourceType: 'human_chat',
+          sourceType: isA2A ? 'a2a_message' : 'human_chat',
+          scenario: isA2A ? 'a2a' : undefined,
           channelContext,
           toolEventCollector: toolEvents,
         }
       );
 
-      // Skip if the agent chose not to respond
-      if (!reply || reply.trim() === '[NO_RESPONSE]' || !reply.trim()) {
+      if (!reply || !reply.trim() || reply.includes('[NO_RESPONSE]')) {
         return;
       }
 
-      // Separate clean text from internal process data
-      const { thinking, clean: cleanReply } = extractThinkBlocks(reply);
-      if (!cleanReply.trim() || cleanReply.trim() === '[NO_RESPONSE]') return;
+      const { thinking, clean: rawClean } = extractThinkBlocks(reply);
+      const cleanReply = rawClean.replace(/\[NO_RESPONSE\]/gi, '').trim();
+      if (!cleanReply) return;
 
       const metadata: Record<string, unknown> = {};
       if (thinking.length > 0) metadata['thinking'] = thinking;
       if (toolEvents.length > 0) metadata['toolCalls'] = toolEvents;
+      if (isA2A && opts?.replyToAgentName) {
+        metadata['replyToAgent'] = opts.replyToAgentName;
+      }
 
       // Persist agent reply
+      let persistedMsgId: string | undefined;
       if (this.storage) {
-        await this.storage.channelMessageRepo.append({
+        const saved = await this.storage.channelMessageRepo.append({
           orgId,
           channel,
           senderId: agentId,
@@ -727,10 +919,12 @@ export class APIServer {
           text: cleanReply,
           mentions: [],
           metadata: Object.keys(metadata).length > 0 ? metadata as any : undefined,
+          replyToId: isA2A ? opts?.replyToMsgId : undefined,
         });
+        persistedMsgId = saved.id;
       }
 
-      // Broadcast via WebSocket so the frontend picks it up
+      // Broadcast via WebSocket
       this.ws.broadcast({
         type: 'chat:message',
         payload: {
@@ -740,13 +934,39 @@ export class APIServer {
           senderName: agentName,
           text: cleanReply,
           metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+          ...(isA2A ? {
+            replyToId: opts?.replyToMsgId,
+            replyToSender: opts?.replyToAgentName,
+            replyToText: (opts?.replyToText ?? '').slice(0, 120),
+          } : {}),
         },
         timestamp: new Date().toISOString(),
       });
+
+      // ── Agent-to-agent chain: parse @mentions in the reply ──
+      const allAgentIds = chainCtx?.allAgentIds ?? [];
+      if (allAgentIds.length > 0) {
+        const nameMap = this.buildAgentNameMap(allAgentIds, agentManager);
+        const mentionedNames = this.parseAgentMentions(cleanReply, [...nameMap.keys()]);
+        const filteredMentions = mentionedNames.filter(n => n !== agentName);
+        log.info('A2A mention scan', { agentName, mentionedNames, filteredMentions, depth: chainCtx?.depth ?? 0 });
+
+        if (filteredMentions.length > 0) {
+          const depth = (chainCtx?.depth ?? 0) + 1;
+          const roundId = chainCtx?.roundId ?? `round_${Date.now()}`;
+          const responded = chainCtx?.respondedAgents ?? new Set<string>();
+          responded.add(agentId);
+
+          void this.triggerAgentToAgentChain(
+            filteredMentions, nameMap, agentName, agentId, cleanReply, persistedMsgId,
+            channel, orgId, agentManager, teamSize,
+            { roundId, depth, respondedAgents: responded, allAgentIds },
+          );
+        }
+      }
     } catch (err) {
       log.warn('Group chat agent reply failed', { agentId, error: String(err) });
 
-      // Persist error for visibility
       if (this.storage) {
         try {
           const errDetail = String(err).slice(0, 500);
@@ -761,6 +981,92 @@ export class APIServer {
           });
         } catch { /* best-effort */ }
       }
+    }
+  }
+
+  /**
+   * Trigger agent-to-agent chain replies with 3-layer storm prevention:
+   * 1. Depth limit (max 3 hops)
+   * 2. Per-round dedup (each agent responds at most once per conversation round)
+   * 3. Cooldown window (same agent won't be triggered twice within 30s on same channel)
+   */
+  private async triggerAgentToAgentChain(
+    mentionedNames: string[],
+    nameMap: Map<string, string>,
+    fromAgentName: string,
+    fromAgentId: string,
+    fromText: string,
+    fromMsgId: string | undefined,
+    channel: string,
+    orgId: string,
+    agentManager: AgentManager,
+    teamSize: number,
+    chainCtx: { roundId: string; depth: number; respondedAgents: Set<string>; allAgentIds: string[] },
+  ): Promise<void> {
+    // Layer 1: depth limit
+    if (chainCtx.depth > APIServer.A2A_MAX_DEPTH) {
+      log.info('A2A chain depth limit reached', { channel, depth: chainCtx.depth, roundId: chainCtx.roundId });
+      return;
+    }
+
+    const now = Date.now();
+    if (!this.a2aCooldowns.has(channel)) {
+      this.a2aCooldowns.set(channel, new Map());
+    }
+    const channelCooldowns = this.a2aCooldowns.get(channel)!;
+
+    // Build fresh channel context
+    let channelContext: Array<{ role: string; content: string }> = [];
+    if (this.storage) {
+      try {
+        const recent = await this.storage.channelMessageRepo.getMessages(channel, 20);
+        channelContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
+          role: m.senderType === 'agent' ? 'assistant' : 'user',
+          content: m.senderType === 'agent'
+            ? stripInternalBlocks(m.text)
+            : `[${m.senderName}]: ${m.text}`,
+        }));
+      } catch { /* best-effort */ }
+    }
+
+    for (const targetName of mentionedNames) {
+      const targetId = nameMap.get(targetName);
+      if (!targetId) continue;
+
+      // Layer 2: per-round dedup
+      if (chainCtx.respondedAgents.has(targetId)) {
+        log.info('A2A skipping (already responded this round)', { targetName, roundId: chainCtx.roundId });
+        continue;
+      }
+
+      // Layer 3: cooldown window
+      const lastReply = channelCooldowns.get(targetId) ?? 0;
+      if (now - lastReply < APIServer.A2A_COOLDOWN_MS) {
+        log.info('A2A skipping (cooldown)', { targetName, channel, cooldownRemaining: APIServer.A2A_COOLDOWN_MS - (now - lastReply) });
+        continue;
+      }
+      channelCooldowns.set(targetId, now);
+
+      const a2aMessage = `[From @${fromAgentName}]: ${fromText}`;
+
+      void this.processGroupChatReply(
+        targetId,
+        a2aMessage,
+        fromAgentId,
+        { name: fromAgentName, role: 'agent' },
+        channel,
+        orgId,
+        channelContext,
+        agentManager,
+        teamSize,
+        {
+          mentionedNames: [targetName],
+          replyToAgentName: fromAgentName,
+          replyToText: fromText.slice(0, 200),
+          replyToMsgId: fromMsgId,
+        },
+        chainCtx,
+      );
     }
   }
 
@@ -1159,6 +1465,7 @@ export class APIServer {
       const senderName = (body['senderName'] as string) ?? 'You';
       const mentions = (body['mentions'] as string[]) ?? [];
       const targetAgentId = body['targetAgentId'] as string | undefined;
+      const replyToId = body['replyToId'] as string | undefined;
       const orgId = (body['orgId'] as string) ?? 'default';
 
       // Persist user message
@@ -1172,6 +1479,7 @@ export class APIServer {
           senderName,
           text,
           mentions,
+          replyToId,
         });
       }
 
@@ -1195,14 +1503,38 @@ export class APIServer {
         }
       };
 
+      // Resolve reply context if the user is replying to a specific message
+      let replyToAgentName: string | undefined;
+      let replyToText: string | undefined;
+      if (replyToId && this.storage) {
+        try {
+          const original = this.storage.channelMessageRepo.getMessageById(replyToId);
+          if (original) {
+            replyToAgentName = original.senderName;
+            replyToText = original.text.slice(0, 200);
+          }
+        } catch { /* best-effort */ }
+      }
+
+      // Enrich userMsg with denormalized reply fields for the frontend
+      const enrichedUserMsg = userMsg ? {
+        ...userMsg,
+        ...(replyToAgentName ? { replyToSender: replyToAgentName, replyToText } : {}),
+      } : null;
+
       // ── Group chat broadcast: all team members respond independently ──
-      if (!isHumanChannel && channel.startsWith('group:') && !targetAgentId) {
-        const teamId = channel.replace(/^group:/, '');
-        const team = this.orgService.getTeam(teamId);
-        const allAgentIds = team?.memberAgentIds ?? [];
+      if (!isHumanChannel && channel.startsWith('group:')) {
+        let allAgentIds: string[];
+        if (channel.startsWith('group:custom:')) {
+          allAgentIds = this.storage?.groupChatRepo?.getAgentMemberIds(channel) ?? [];
+        } else {
+          const teamId = channel.replace(/^group:/, '');
+          const team = this.orgService.getTeam(teamId);
+          allAgentIds = team?.memberAgentIds ?? [];
+        }
 
         if (allAgentIds.length === 0) {
-          this.json(res, 200, { userMessage: userMsg ?? null, agentMessage: null });
+          this.json(res, 200, { userMessage: enrichedUserMsg, agentMessage: null });
           return;
         }
 
@@ -1210,15 +1542,26 @@ export class APIServer {
         const senderInfo = this.orgService.resolveHumanIdentity(senderId);
         const agentManager = this.orgService.getAgentManager();
 
+        const broadcastOpts = {
+          mentionedNames: mentions.length > 0 ? mentions : undefined,
+          replyToAgentName,
+          replyToText,
+        };
+
+        // Prepare chain context so agent replies can trigger agent-to-agent chains
+        const roundId = `round_${Date.now()}`;
+        const respondedAgents = new Set<string>();
+        const chainCtx = { roundId, depth: 0, respondedAgents, allAgentIds };
+
         // Fire-and-forget: each agent processes the message independently
         for (const agentId of allAgentIds) {
           void this.processGroupChatReply(
-            agentId, text, senderId, senderInfo, channel, orgId, channelContext, agentManager, allAgentIds.length,
+            agentId, text, senderId, senderInfo, channel, orgId, channelContext, agentManager, allAgentIds.length, broadcastOpts, chainCtx,
           );
         }
 
         // Return immediately with only the user message
-        this.json(res, 200, { userMessage: userMsg ?? null, agentMessage: null });
+        this.json(res, 200, { userMessage: enrichedUserMsg, agentMessage: null });
         return;
       }
 
@@ -1235,7 +1578,7 @@ export class APIServer {
         }
       }
       if (!routedAgentId) {
-        this.json(res, 200, { userMessage: userMsg ?? null, agentMessage: null });
+        this.json(res, 200, { userMessage: enrichedUserMsg, agentMessage: null });
         return;
       }
       const agent = this.orgService.getAgentManager().getAgent(routedAgentId);
@@ -1293,7 +1636,7 @@ export class APIServer {
               ? 429
               : 502;
         this.json(res, statusCode, {
-          userMessage: userMsg ?? null,
+          userMessage: enrichedUserMsg,
           agentMessage: errorMsg ?? null,
           error: detail,
         });
@@ -1325,7 +1668,7 @@ export class APIServer {
       // No WS broadcast here — the HTTP response delivers the agentMessage directly
       // to the requesting client. WS broadcast is only needed for group chat async replies.
       this.json(res, 200, {
-        userMessage: userMsg ?? null,
+        userMessage: enrichedUserMsg,
         agentMessage: agentMsg ?? {
           id: `tmp_${Date.now()}`,
           channel,
@@ -1561,7 +1904,7 @@ export class APIServer {
     if (path === '/api/group-chats' && req.method === 'GET') {
       const orgId = url.searchParams.get('orgId') ?? 'default';
       const teams = this.orgService.listTeamsWithMembers(orgId);
-      const groupChats = teams.map(t => ({
+      const teamChats = teams.map(t => ({
         id: `group:${t.id}`,
         name: t.name,
         type: 'team' as const,
@@ -1569,22 +1912,18 @@ export class APIServer {
         memberCount: t.members.length,
         channelKey: `group:${t.id}`,
       }));
-      // Also include custom group chats stored in localStorage-style metadata
-      const customChats = this.customGroupChats.filter(c => c.orgId === orgId);
-      this.json(res, 200, {
-        chats: [
-          ...groupChats,
-          ...customChats.map(c => ({
+      const customChats = this.storage?.groupChatRepo
+        ? this.storage.groupChatRepo.list(orgId).map((c: any) => ({
             id: c.id,
             name: c.name,
             type: 'custom' as const,
             creatorId: c.creatorId,
             creatorName: c.creatorName,
-            memberCount: c.memberIds?.length ?? 0,
-            channelKey: c.id,
-          })),
-        ],
-      });
+            memberCount: c.memberCount,
+            channelKey: c.channelKey,
+          }))
+        : [];
+      this.json(res, 200, { chats: [...teamChats, ...customChats] });
       return;
     }
 
@@ -1595,29 +1934,103 @@ export class APIServer {
       const creatorId = body['creatorId'] as string;
       const creatorName = body['creatorName'] as string;
       const memberIds = body['memberIds'] as string[] | undefined;
+      const memberTypes = body['memberTypes'] as Record<string, string> | undefined;
+      const memberNames = body['memberNames'] as Record<string, string> | undefined;
       if (!name) {
         this.json(res, 400, { error: 'name is required' });
         return;
       }
-      const chatId = `group:custom:${Date.now().toString(36)}`;
-      const chat = {
-        id: chatId,
-        name,
-        orgId,
-        creatorId,
-        creatorName,
-        memberIds: memberIds ?? [],
-        createdAt: new Date().toISOString(),
-      };
-      this.customGroupChats.push(chat);
+      if (!this.storage?.groupChatRepo) {
+        this.json(res, 500, { error: 'Storage not initialized' });
+        return;
+      }
+      const members = (memberIds ?? []).map(id => {
+        const mType = (memberTypes?.[id] ?? 'agent') as 'human' | 'agent';
+        let mName = memberNames?.[id] ?? id;
+        if (mType === 'agent') {
+          try { mName = this.orgService.getAgentManager().getAgent(id)?.config?.name ?? mName; } catch { /* */ }
+        }
+        return { id, type: mType, name: mName };
+      });
+      const gc = this.storage.groupChatRepo.create({ orgId, name, creatorId, creatorName, members });
       this.ws?.broadcast({
         type: 'chat:group_created',
-        payload: { chatId, name, creatorId, creatorName },
+        payload: { chatId: gc.channelKey, name, creatorId, creatorName },
         timestamp: new Date().toISOString(),
       });
       this.json(res, 201, {
-        chat: { id: chatId, name, type: 'custom', creatorId, creatorName, channelKey: chatId },
+        chat: {
+          id: gc.id, name: gc.name, type: 'custom', creatorId: gc.creatorId,
+          creatorName: gc.creatorName, channelKey: gc.channelKey, memberCount: gc.members.length,
+          members: gc.members.map((m: { memberId: string; memberName: string; memberType: string }) => ({ id: m.memberId, name: m.memberName, type: m.memberType })),
+        },
       });
+      return;
+    }
+
+    // GET /api/group-chats/:id — get group chat details
+    if (path.match(/^\/api\/group-chats\/[^/]+$/) && req.method === 'GET') {
+      const gcId = path.split('/').pop()!;
+      if (!this.storage?.groupChatRepo) { this.json(res, 500, { error: 'Storage not initialized' }); return; }
+      const gc = this.storage.groupChatRepo.getById(gcId);
+      if (!gc) { this.json(res, 404, { error: 'Group chat not found' }); return; }
+      this.json(res, 200, {
+        chat: {
+          id: gc.id, name: gc.name, type: 'custom', channelKey: gc.channelKey,
+          creatorId: gc.creatorId, creatorName: gc.creatorName,
+          members: gc.members.map((m: any) => ({ id: m.memberId, name: m.memberName, type: m.memberType })),
+        },
+      });
+      return;
+    }
+
+    // PATCH /api/group-chats/:id — update group chat name
+    if (path.match(/^\/api\/group-chats\/[^/]+$/) && req.method === 'PATCH') {
+      const gcId = path.split('/').pop()!;
+      if (!this.storage?.groupChatRepo) { this.json(res, 500, { error: 'Storage not initialized' }); return; }
+      const body = await this.readBody(req);
+      const newName = body['name'] as string;
+      if (newName) this.storage.groupChatRepo.updateName(gcId, newName);
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
+    // DELETE /api/group-chats/:id — delete group chat
+    if (path.match(/^\/api\/group-chats\/[^/]+$/) && req.method === 'DELETE') {
+      const gcId = path.split('/').pop()!;
+      if (!this.storage?.groupChatRepo) { this.json(res, 500, { error: 'Storage not initialized' }); return; }
+      this.storage.groupChatRepo.delete(gcId);
+      this.ws?.broadcast({ type: 'chat:group_deleted', payload: { chatId: gcId }, timestamp: new Date().toISOString() });
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
+    // POST /api/group-chats/:id/members — add member
+    if (path.match(/^\/api\/group-chats\/[^/]+\/members$/) && req.method === 'POST') {
+      const gcId = path.split('/')[3]!;
+      if (!this.storage?.groupChatRepo) { this.json(res, 500, { error: 'Storage not initialized' }); return; }
+      const body = await this.readBody(req);
+      const memberId = body['memberId'] as string;
+      const memberType = (body['memberType'] as 'human' | 'agent') ?? 'agent';
+      let memberName = body['memberName'] as string ?? memberId;
+      if (memberType === 'agent') {
+        try { memberName = this.orgService.getAgentManager().getAgent(memberId)?.config?.name ?? memberName; } catch { /* */ }
+      }
+      this.storage.groupChatRepo.addMember(gcId, memberId, memberType, memberName);
+      this.ws?.broadcast({ type: 'chat:group_updated', payload: { chatId: gcId }, timestamp: new Date().toISOString() });
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
+    // DELETE /api/group-chats/:id/members/:memberId — remove member
+    if (path.match(/^\/api\/group-chats\/[^/]+\/members\/[^/]+$/) && req.method === 'DELETE') {
+      const parts = path.split('/');
+      const gcId = parts[3]!;
+      const memberId = parts[5]!;
+      if (!this.storage?.groupChatRepo) { this.json(res, 500, { error: 'Storage not initialized' }); return; }
+      this.storage.groupChatRepo.removeMember(gcId, memberId);
+      this.ws?.broadcast({ type: 'chat:group_updated', payload: { chatId: gcId }, timestamp: new Date().toISOString() });
+      this.json(res, 200, { ok: true });
       return;
     }
 

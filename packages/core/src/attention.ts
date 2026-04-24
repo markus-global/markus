@@ -54,9 +54,9 @@ export function detectAbnormalCompletion(
   const registry = MAILBOX_TYPE_REGISTRY[item.sourceType];
   if (!registry?.invokesLLM) return undefined;
 
-  // Intentional preemption by the attention controller — a higher-priority
-  // item arrived and this one was interrupted on purpose.
-  if (reply === '[preempted]') return undefined;
+  // Intentional preemption (pause) or cancellation by the attention controller
+  // — a higher-priority item arrived and this one was interrupted on purpose.
+  if (reply === '[preempted]' || reply === '[cancelled]') return undefined;
 
   // User-facing interactions: the response (even if partial) was already
   // delivered to the caller.  Requeuing would re-process the identical
@@ -149,6 +149,8 @@ export class AttentionController {
   private triageToolHandlers?: Map<string, { name: string; description: string; inputSchema: Record<string, unknown>; execute: (args: Record<string, unknown>) => Promise<string> }>;
   private triageChatFn?: TriageChatFn;
   private lastTriageResult?: TriageResult & { timestamp: string };
+  /** Tracks whether the last yield-point decision was 'cancel' vs 'preempt'. */
+  private lastYieldDecision?: DecisionType;
   private unsubscribeNewItem?: () => void;
   private decisions: AttentionDecision[] = [];
   private watchdogTimer?: ReturnType<typeof setInterval>;
@@ -390,6 +392,7 @@ export class AttentionController {
     this.interruptSignal = false;
     this.pendingInterruptItem = undefined;
     this.criticalInterruptResolve = undefined;
+    this.lastYieldDecision = undefined;
     this.processingStartedAt = Date.now();
     this.delegate?.onFocusChanged(item);
 
@@ -432,6 +435,35 @@ export class AttentionController {
     this.processingStartedAt = undefined;
 
     if (timedOut) {
+      this.mailbox.requeue(item);
+    } else if (reply === '[cancelled]' || this.lastYieldDecision === 'cancel') {
+      // Permanently cancelled by an explicit cancel decision — the new incoming
+      // message contradicts or revokes this work.  Drop the item; it will NOT
+      // be resumed.
+      log.info('Item cancelled — dropping permanently', {
+        agentId: this.agentId,
+        itemId: item.id,
+        type: item.sourceType,
+      });
+      this.mailbox.complete(item.id);
+    } else if (reply === '[preempted]' || this.lastYieldDecision === 'preempt') {
+      // Paused by a higher-priority item — defer so it can be resumed later.
+      // The session context is preserved by sessionId in the payload, so when
+      // the item resurfaces the agent continues where it left off.
+      log.info('Item preempted (paused) — deferring for later resumption', {
+        agentId: this.agentId,
+        itemId: item.id,
+        type: item.sourceType,
+      });
+      this.mailbox.deferDequeued(item);
+    } else if (!this.running) {
+      // Agent was stopped/paused during processing — requeue so the item
+      // is not lost and will be picked up when the agent resumes.
+      log.info('Agent stopped during processing — requeueing item', {
+        agentId: this.agentId,
+        itemId: item.id,
+        type: item.sourceType,
+      });
       this.mailbox.requeue(item);
     } else {
       const abnormalReason = detectAbnormalCompletion(reply, item);
@@ -518,7 +550,8 @@ export class AttentionController {
    *
    * Returns the decision type so the caller knows what to do:
    * - 'continue' → keep working on current task
-   * - 'preempt' → caller should save state and return; controller handles the switch
+   * - 'preempt' → caller should save state and return '[preempted]'; item is deferred for later resumption
+   * - 'cancel' → caller should abort and return '[cancelled]'; item is permanently dropped
    * - 'merge' → item was absorbed into current work (caller may inject into session)
    */
   async checkYieldPoint(): Promise<{
@@ -566,7 +599,13 @@ export class AttentionController {
     }
 
     if (decisionType === 'preempt') {
+      this.lastYieldDecision = 'preempt';
       return { decision: 'preempt', item: newItem, reasoning };
+    }
+
+    if (decisionType === 'cancel') {
+      this.lastYieldDecision = 'cancel';
+      return { decision: 'cancel', item: newItem, reasoning };
     }
 
     return { decision: 'continue', reasoning };
@@ -715,7 +754,7 @@ export class AttentionController {
     try {
       const prompt = this.buildJudgePrompt(currentItem, newItem);
       const llmDecision = await this.llmJudge(prompt);
-      const validDecisions: DecisionType[] = ['continue', 'preempt', 'merge', 'defer'];
+      const validDecisions: DecisionType[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];
       if (validDecisions.includes(llmDecision)) return llmDecision;
     } catch (err) {
       log.debug('LLM judge failed, falling back to heuristic', {
@@ -740,17 +779,30 @@ export class AttentionController {
       ? queuedItems.map(i => `  - [${i.sourceType}] p${i.priority}: "${i.payload.summary}"`).join('\n')
       : '  (empty)';
 
+    const currentContent = currentItem.payload.content?.slice(0, 500) ?? '';
+    const newContent = newItem.payload.content?.slice(0, 800) ?? '';
+
     return [
-      'You are deciding how to handle a new incoming item in your mailbox.',
-      'CRITICAL RULE: Human messages (human_chat) and human comments ALWAYS take priority over all other work.',
+      'You are deciding whether to INTERRUPT your current work to handle a new incoming message.',
+      '',
+      'RULES (in priority order):',
+      '1. Human messages (human_chat) ALWAYS preempt non-human work — users are top priority.',
+      '2. If the new message explicitly CANCELS or REVOKES the current work (e.g. "cancel that task",',
+      '   "don\'t publish this anymore", "delete the draft"), choose cancel — current work is permanently abandoned.',
+      '3. If the new message asks to PAUSE or DELAY current work (e.g. "hold off for now",',
+      '   "wait before deploying", "pause that"), choose preempt — current work is saved and can be resumed later.',
+      '4. If the new message is about the SAME task/topic as current work and adds info, consider merge.',
+      '5. If the new message is lower priority and unrelated, continue current work.',
       '',
       `CURRENT FOCUS: [${currentItem.sourceType}] priority=${currentItem.priority}`,
-      `  "${currentItem.payload.summary}"`,
+      `  Summary: "${currentItem.payload.summary}"`,
       `  Task: ${currentItem.payload.taskId ?? 'none'}`,
+      currentContent ? `  Content preview: ${currentContent}` : '',
       '',
       `NEW ITEM: [${newItem.sourceType}] priority=${newItem.priority}`,
-      `  "${newItem.payload.summary}"`,
+      `  Summary: "${newItem.payload.summary}"`,
       `  Task: ${newItem.payload.taskId ?? 'none'}`,
+      newContent ? `  Content: ${newContent}` : '',
       '',
       `FULL QUEUE (${this.mailbox.depth} items):`,
       queueSection,
@@ -758,7 +810,14 @@ export class AttentionController {
       'RECENT DECISIONS:',
       recentDecs || '(none)',
       '',
-      'Choose exactly one: continue | preempt | merge | defer',
+      'DECISIONS:',
+      '- preempt: PAUSE current work (session saved for later resumption) and handle the new item',
+      '- cancel: PERMANENTLY STOP current work (session dropped, will NOT be resumed) and handle the new item',
+      '- merge: Inject new item into current session as additional context (no interruption)',
+      '- defer: Put the new item aside for later (no interruption)',
+      '- continue: Ignore the new item for now, keep working',
+      '',
+      'Choose exactly one: continue | preempt | cancel | merge | defer',
       'Reply with ONLY the decision word, nothing else.',
     ].join('\n');
   }

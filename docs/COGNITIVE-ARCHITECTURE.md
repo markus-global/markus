@@ -303,7 +303,7 @@ AttentionController          Cognitive Preparation Pipeline
   |                            |
   +-- What to focus on?        +-- What context do I need?
   +-- Priority ordering        +-- How to retrieve it?
-  +-- Preempt/defer/drop       +-- What does it mean for me?
+  +-- Preempt/cancel/defer/drop +-- What does it mean for me?
   |                            |
   v                            v
   TriageResult                 PreparedContext

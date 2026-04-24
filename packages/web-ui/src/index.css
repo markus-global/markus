@@ -49,6 +49,8 @@ html.light {
   --color-fg-muted: oklch(0.70 0.010 264);
   --color-brand-300: oklch(0.50 0.22 270);
   --color-brand-400: oklch(0.45 0.22 270);
+  --color-brand-500: oklch(0.48 0.22 270);
+  --color-brand-600: oklch(0.42 0.22 270);
 }
 
 @media (prefers-color-scheme: light) {
@@ -67,6 +69,8 @@ html.light {
     --color-fg-muted: oklch(0.70 0.010 264);
     --color-brand-300: oklch(0.50 0.22 270);
     --color-brand-400: oklch(0.45 0.22 270);
+    --color-brand-500: oklch(0.48 0.22 270);
+    --color-brand-600: oklch(0.42 0.22 270);
   }
 }
 

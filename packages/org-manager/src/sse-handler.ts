@@ -357,22 +357,12 @@ export class SSEHandler {
         this.sseBuffer.sendProgress(this.processedTokens, this.totalTokens, `工具执行完成: ${event.tool}`);
       }
     } else if (event.type === 'message_end') {
-      const now = new Date().toISOString();
-      let turnThinking: string | undefined;
-      if (this.thinkingBuf) {
-        this.sseBuffer.send({ type: 'thinking_commit', thinking: this.thinkingBuf, createdAt: now });
-        turnThinking = this.thinkingBuf;
-        this.thinkingBuf = '';
-      }
-      if (this.textBuf) {
-        this.sseBuffer.send({ type: 'text_commit', text: this.textBuf, createdAt: now });
-        const seg: typeof this.msgSegments[number] = { type: 'text' as const, content: this.textBuf, createdAt: now };
-        if (turnThinking) (seg as { thinking?: string }).thinking = turnThinking;
-        this.msgSegments.push(seg);
-        this.textBuf = '';
-      } else if (turnThinking) {
-        this.msgSegments.push({ type: 'text', content: '', thinking: turnThinking, createdAt: now });
-      }
+      // Do NOT flush textBuf/thinkingBuf here.  The agent's
+      // streamMarkerDelta buffers the last N characters to strip completion
+      // markers, so textBuf is still incomplete at this point.  The
+      // remaining chars arrive via text_delta after streamMarkerDelta.flush()
+      // (which runs after chatStream returns).  The complete text is then
+      // flushed at the next agent_tool start or at stream end.
       if (event.usage?.outputTokens) {
         this.totalTokens = Math.max(this.totalTokens, event.usage.outputTokens);
         this.processedTokens = event.usage.outputTokens;

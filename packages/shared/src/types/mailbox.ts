@@ -132,6 +132,7 @@ export type DecisionType =
   | 'pick'
   | 'continue'
   | 'preempt'
+  | 'cancel'
   | 'defer'
   | 'merge'
   | 'delegate'

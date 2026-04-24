@@ -8,6 +8,14 @@
 - Check for tasks in `pending` — approve or reject promptly so work is not stalled.
 - **Failed task recovery**: Check `task_list` for tasks assigned to you with status `failed`. If found, retry by calling `task_update(status: "in_progress")` with a note — this auto-restarts execution.
 
+## Requirement Review
+
+- Use `requirement_list` to check requirements you created:
+  - **`in_progress`**: Are all linked tasks progressing? Are any stalled or blocked?
+  - **`in_progress` with all tasks done**: Evaluate whether the requirement is fully met. If yes, update status to `completed`. If not, create additional tasks.
+  - **`pending`**: Remind the user if a proposal has been waiting for approval too long (>24h).
+  - **`rejected`**: Review the rejection reason. Either resubmit with updates via `requirement_resubmit`, or abandon it.
+
 ## New-Hire & Artifact Monitoring
 
 - Check `team_status` for recently hired agents that are idle, stuck, or in error — proactively send guidance or assign work via `task_create`.

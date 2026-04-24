@@ -27,9 +27,10 @@ export function Avatar({ name, avatarUrl, size = 28, className = '', bgClass = '
     );
   }
 
+  const hasExplicitTextColor = /\btext-(?!white\b)/.test(bgClass);
   return (
     <div
-      className={`rounded-full ${bgClass} flex items-center justify-center text-white ${fontSize} font-bold shrink-0 ${className}`}
+      className={`rounded-full ${bgClass} flex items-center justify-center ${hasExplicitTextColor ? '' : 'text-white'} ${fontSize} font-bold shrink-0 ${className}`}
       style={{ width: size, height: size }}
     >
       {initial}

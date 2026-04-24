@@ -282,6 +282,13 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
 
   // ── 7. Network connectivity ─────────────────────────────────────────────
   section('Network');
+  const proxyUrl = process.env['HTTPS_PROXY'] || process.env['HTTP_PROXY']
+    || process.env['https_proxy'] || process.env['http_proxy'];
+  if (proxyUrl) {
+    checkOk('HTTP proxy configured', proxyUrl);
+  } else {
+    checkWarn('HTTP proxy', 'not configured — if behind firewall, set HTTPS_PROXY env var');
+  }
   try {
     const res = await fetch('https://api.anthropic.com/.well-known/ready', {
       method: 'HEAD',

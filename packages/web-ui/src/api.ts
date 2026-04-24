@@ -78,9 +78,24 @@ export interface ChannelMessageInfo {
   text: string;
   mentions: string[];
   metadata?: ChannelMsgMetadata | null;
+  replyToId?: string;
+  replyToSender?: string;
+  replyToText?: string;
   createdAt: string;
 }
 
+
+export interface GroupChatInfo {
+  id: string;
+  name: string;
+  type: 'team' | 'custom';
+  channelKey: string;
+  teamId?: string;
+  creatorId?: string;
+  creatorName?: string;
+  memberCount?: number;
+  members?: Array<{ id: string; name: string; type: 'human' | 'agent' }>;
+}
 
 // ─── Governance types ────────────────────────────────────────────────
 
@@ -832,10 +847,11 @@ export const api = {
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
     message: (id: string, text: string, images?: string[], sessionId?: string | null, fileNames?: string[]) =>
       request<{ reply: string; sessionId?: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, fileNames, sessionId: sessionId ?? undefined }) }),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[]): Promise<{ content: string; sessionId?: string }> => {
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[]): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[] }> => {
       return new Promise(async (resolve, reject) => {
         let fullContent = '';
         let resultSessionId: string | undefined;
+        let resultSegments: StoredSegment[] | undefined;
         try {
           const res = await fetch(`${BASE}/agents/${id}/message`, {
             method: 'POST',
@@ -868,6 +884,8 @@ export const api = {
                 } else if (event.type === 'done') {
                   fullContent = event.content ?? fullContent;
                   if (event.sessionId) resultSessionId = event.sessionId;
+                  const doneSegments = (event as Record<string, unknown>).segments as StoredSegment[] | undefined;
+                  if (doneSegments?.length) resultSegments = doneSegments;
                 } else if (event.type === 'error') {
                   const errEvent = event as { type: string; message?: string; error?: string; sessionId?: string };
                   if (errEvent.sessionId) resultSessionId = errEvent.sessionId;
@@ -893,9 +911,9 @@ export const api = {
               } catch { /* skip */ }
             }
           }
-          resolve({ content: fullContent, sessionId: resultSessionId });
+          resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments });
         } catch (err) {
-          if (err instanceof Error && err.name === 'AbortError') { resolve({ content: fullContent, sessionId: resultSessionId }); }
+          if (err instanceof Error && err.name === 'AbortError') { resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments }); }
           else { reject(err); }
         }
       });
@@ -1173,7 +1191,7 @@ export const api = {
       request<{ messages: ChannelMessageInfo[]; hasMore: boolean }>(
         `/channels/${encodeURIComponent(channel)}/messages?limit=${limit}${before ? `&before=${before}` : ''}`
       ),
-    sendMessage: (channel: string, data: { text: string; senderId?: string; senderName?: string; mentions?: string[]; targetAgentId?: string; orgId?: string; humanOnly?: boolean }) =>
+    sendMessage: (channel: string, data: { text: string; senderId?: string; senderName?: string; mentions?: string[]; targetAgentId?: string; orgId?: string; humanOnly?: boolean; replyToId?: string }) =>
       request<{ userMessage: ChannelMessageInfo | null; agentMessage: ChannelMessageInfo | null }>(
         `/channels/${encodeURIComponent(channel)}/messages`,
         { method: 'POST', body: JSON.stringify(data) }
@@ -1315,6 +1333,19 @@ export const api = {
   executionLogs: {
     get: (sourceType: string, sourceId: string) =>
       request<{ logs: ExecutionStreamEntryAPI[] }>(`/execution-logs?sourceType=${encodeURIComponent(sourceType)}&sourceId=${encodeURIComponent(sourceId)}`),
+  },
+  groupChats: {
+    list: () => request<{ chats: GroupChatInfo[] }>('/group-chats'),
+    create: (data: { name: string; memberIds: string[]; memberTypes?: Record<string, string>; memberNames?: Record<string, string>; creatorId?: string; creatorName?: string }) =>
+      request<{ chat: GroupChatInfo }>('/group-chats', { method: 'POST', body: JSON.stringify(data) }),
+    getById: (id: string) => request<{ chat: GroupChatInfo }>(`/group-chats/${id}`),
+    update: (id: string, data: { name: string }) =>
+      request<{ ok: boolean }>(`/group-chats/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    delete: (id: string) => request<{ ok: boolean }>(`/group-chats/${id}`, { method: 'DELETE' }),
+    addMember: (id: string, memberId: string, memberType: string, memberName: string) =>
+      request<{ ok: boolean }>(`/group-chats/${id}/members`, { method: 'POST', body: JSON.stringify({ memberId, memberType, memberName }) }),
+    removeMember: (id: string, memberId: string) =>
+      request<{ ok: boolean }>(`/group-chats/${id}/members/${memberId}`, { method: 'DELETE' }),
   },
 };
 

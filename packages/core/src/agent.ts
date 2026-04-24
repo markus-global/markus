@@ -507,6 +507,7 @@ export class Agent {
   }
 
   async stop(): Promise<void> {
+    this.cancelActiveStream();
     this.attentionController.stop();
     this.heartbeat.stop();
     this._bgCompletionUnsub?.();
@@ -782,7 +783,7 @@ export class Agent {
         }
       },
       evaluateInterrupt: async (currentItem: MailboxItem, newItem: MailboxItem) => {
-        return this.attentionController.heuristicDecision(currentItem, newItem);
+        return this.attentionController.evaluateWithLLMFallback(currentItem, newItem);
       },
       getTriageContext: async () => {
         const messages = this.currentSessionId
@@ -919,7 +920,7 @@ export class Agent {
               item.payload.content + markerSuffix,
               item.metadata?.senderId,
               senderInfo,
-              buildHandleOpts({ sessionId: `comment_${reqId}_${ts}`, scenario: 'comment_response' }),
+              buildHandleOpts({ sessionId: `requirement_${reqId}_${ts}`, scenario: 'requirement_action' }),
             );
             resolveResponse(reply);
             return reply;
@@ -1209,6 +1210,7 @@ export class Agent {
   pause(reason?: string): void {
     if (this.state.status === 'offline') return;
     this.pauseReason = reason;
+    this.cancelActiveStream();
     this.heartbeat.stop();
     this.attentionController.stop();
     if (this.memoryConsolidationTimer) {
@@ -2215,10 +2217,11 @@ export class Agent {
     if (!this.state.currentActivity) {
       let actType: AgentActivity['type'] = 'chat';
       let actLabel: string;
+      const peerName = senderInfo?.name || senderId || undefined;
       switch (scenario) {
         case 'a2a':
           actType = 'a2a';
-          actLabel = `Chat from ${senderInfo?.name ?? senderId}`;
+          actLabel = peerName ? `Chat from ${peerName}` : 'Agent Message';
           break;
         case 'heartbeat':
           actType = 'internal';
@@ -2228,14 +2231,14 @@ export class Agent {
           break;
         case 'comment_response':
           actType = 'chat';
-          actLabel = `Comment reply to ${senderInfo?.name ?? senderId ?? 'user'}`;
+          actLabel = peerName ? `Comment reply to ${peerName}` : 'Comment Reply';
           break;
         case 'review':
           actType = 'internal';
-          actLabel = `Reviewing task from ${senderInfo?.name ?? senderId ?? 'worker'}`;
+          actLabel = peerName ? `Reviewing task from ${peerName}` : 'Task Review';
           break;
         default:
-          actLabel = `Chat with ${senderInfo?.name ?? senderId ?? 'user'}`;
+          actLabel = peerName ? `Chat with ${peerName}` : 'Human Chat';
           break;
       }
       chatActivityId = this.startActivity(actType, actLabel);
@@ -2518,12 +2521,13 @@ export class Agent {
         // consolidation, etc.) allow full preemption; user-facing chat only
         // allows merge since the caller is awaiting a response.
         const chatYield = await this.checkAttentionYieldPoint();
-        if (chatYield.decision === 'preempt' && isPreemptable) {
-          log.info('handleMessage preempted by higher-priority item', {
+        if ((chatYield.decision === 'preempt' || chatYield.decision === 'cancel') && isPreemptable) {
+          const marker = chatYield.decision === 'cancel' ? '[cancelled]' : '[preempted]';
+          log.info(`handleMessage ${chatYield.decision} by higher-priority item`, {
             agentId: this.id, scenario,
             preemptedBy: chatYield.item?.sourceType,
           });
-          return '[preempted]';
+          return marker;
         }
         if (chatYield.decision === 'merge' && chatYield.item) {
           const mergeMsg = `[LIVE UPDATE] ${chatYield.item.payload.summary}\n\n${chatYield.item.payload.content}`;
@@ -2740,6 +2744,7 @@ export class Agent {
         ),
         'Stream LLM call',
       );
+      streamMarkerDelta.flush();
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(tokensThisCall);
       this.calibrateTokenCounter(response.usage.inputTokens);
@@ -2909,6 +2914,7 @@ export class Agent {
           ),
           'Stream LLM continuation',
         );
+        streamMarkerDelta.flush();
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(tokens2);
         this.calibrateTokenCounter(response.usage.inputTokens);
@@ -3429,14 +3435,16 @@ export class Agent {
         // mailbox items. All tool results are saved to the session, so we
         // can pause and resume without data loss.
         const yieldResult = await this.checkAttentionYieldPoint();
-        if (yieldResult.decision === 'preempt') {
-          emit('status', 'preempted', {
+        if (yieldResult.decision === 'preempt' || yieldResult.decision === 'cancel') {
+          const statusLabel = yieldResult.decision === 'cancel' ? 'cancelled' : 'preempted';
+          emit('status', statusLabel, {
             reason: yieldResult.reasoning,
             preemptedBy: yieldResult.item?.sourceType,
           });
-          log.info('Task preempted by higher-priority mailbox item', {
+          log.info(`Task ${statusLabel} by higher-priority mailbox item`, {
             taskId,
             agentId: this.id,
+            decision: yieldResult.decision,
             preemptedBy: yieldResult.item?.sourceType,
             reasoning: yieldResult.reasoning?.slice(0, 120),
           });

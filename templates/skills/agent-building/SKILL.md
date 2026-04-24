@@ -14,9 +14,10 @@ This skill teaches you how to create Markus agent packages — self-contained di
 ```
 ~/.markus/builder-artifacts/agents/{agent-name}/
 ├── agent.json       # Manifest (auto-created from your JSON output)
-├── ROLE.md          # Primary identity (you write via file_write)
-├── POLICIES.md      # Constraints & guardrails (you write via file_write, optional)
-└── CONTEXT.md       # Domain context & references (you write via file_write, optional)
+├── ROLE.md          # Identity and system prompt (REQUIRED)
+├── HEARTBEAT.md     # Periodic self-check checklist (RECOMMENDED)
+├── POLICIES.md      # Constraints & guardrails (optional)
+└── CONTEXT.md       # Domain context & references (optional)
 ```
 
 **Do NOT write artifacts to `~/.markus/shared/`, your working directory, or any other location.** Only `~/.markus/builder-artifacts/agents/` is recognized by the system.
@@ -80,17 +81,25 @@ After the JSON is saved, write each file individually using `file_write`. The ba
    - Output standards and quality criteria
    - Domain-specific knowledge and context
 
-2. **POLICIES.md** (recommended) — Safety constraints and guardrails:
+2. **HEARTBEAT.md** (RECOMMENDED) — Defines what the agent proactively checks every ~30 minutes via `HeartbeatScheduler`. **Without this file, the agent is purely reactive** — it will only respond to direct messages and task assignments, never proactively monitor its environment. Write a role-specific checklist:
+   - Check mailbox for new messages and respond to urgent items
+   - Review assigned tasks — update progress, unblock if possible
+   - Check team announcements for new information
+   - Role-specific patrol items (e.g., code agents: check build/CI status; review agents: check tasks awaiting review; managers: check team task board and unblock members)
+   - Scan recent channel messages for anything requiring attention
+
+3. **POLICIES.md** (recommended) — Safety constraints and guardrails:
    - What the agent should NOT do
    - Tool usage guidelines
    - Quality gates and review requirements
 
-3. **CONTEXT.md** (optional) — Additional domain context, references, or knowledge.
+4. **CONTEXT.md** (optional) — Additional domain context, references, or knowledge.
 
 **Example file_write calls:**
 
 ```
 file_write("~/.markus/builder-artifacts/agents/code-reviewer/ROLE.md", "# Code Reviewer\n\nYou are **Code Reviewer** — an expert...\n\n## Responsibilities\n...\n\n## Workflow\n...\n\n## Output Standards\n...")
+file_write("~/.markus/builder-artifacts/agents/code-reviewer/HEARTBEAT.md", "# Heartbeat Checklist\n\n- [ ] Check mailbox for new messages\n- [ ] Check tasks awaiting review — prioritize by deadline\n- [ ] Review assigned tasks and update progress\n- [ ] Scan team channels for review requests")
 file_write("~/.markus/builder-artifacts/agents/code-reviewer/POLICIES.md", "# Policies\n\n- Only use shell_execute for read-only commands...\n- Always show file contents before overwriting...")
 ```
 

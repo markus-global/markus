@@ -22,11 +22,15 @@ This skill teaches you how to create Markus team packages — self-contained dir
 ├── NORMS.md                     # Working norms (you write via file_write)
 └── members/
     ├── {manager-slug}/
-    │   ├── ROLE.md              # Manager identity (you write via file_write)
-    │   └── POLICIES.md          # Manager constraints (you write via file_write, optional)
+    │   ├── ROLE.md              # Identity and system prompt (REQUIRED)
+    │   ├── HEARTBEAT.md         # Periodic self-check checklist (RECOMMENDED)
+    │   ├── POLICIES.md          # Constraints and guardrails (optional)
+    │   └── CONTEXT.md           # Domain context and references (optional)
     └── {worker-slug}/
-        ├── ROLE.md              # Worker identity (you write via file_write)
-        └── POLICIES.md          # Worker constraints (you write via file_write, optional)
+        ├── ROLE.md              # Identity and system prompt (REQUIRED)
+        ├── HEARTBEAT.md         # Periodic self-check checklist (RECOMMENDED)
+        ├── POLICIES.md          # Constraints and guardrails (optional)
+        └── CONTEXT.md           # Domain context and references (optional)
 ```
 
 **Do NOT write artifacts to `~/.markus/shared/`, your working directory, or any other location.** Only `~/.markus/builder-artifacts/teams/` is recognized by the system.
@@ -38,7 +42,9 @@ This skill teaches you how to create Markus team packages — self-contained dir
 | `ANNOUNCEMENT.md` | `~/.markus/teams/{teamId}/ANNOUNCEMENT.md` | Injected into every member's context |
 | `NORMS.md` | `~/.markus/teams/{teamId}/NORMS.md` | Injected into every member's context |
 | `members/{name}/ROLE.md` | `~/.markus/agents/{agentId}/role/ROLE.md` | Agent's identity and system prompt |
+| `members/{name}/HEARTBEAT.md` | `~/.markus/agents/{agentId}/role/HEARTBEAT.md` | Periodic self-check checklist (every ~30 min) |
 | `members/{name}/POLICIES.md` | `~/.markus/agents/{agentId}/role/POLICIES.md` | Additional agent constraints |
+| `members/{name}/CONTEXT.md` | `~/.markus/agents/{agentId}/role/CONTEXT.md` | Domain context and references |
 
 ## Two-Step Workflow
 
@@ -119,7 +125,16 @@ After the JSON is saved, write each file individually using `file_write`. The ba
    - For reviewers: review-then-merge workflow (git merge or gh pr)
    - For managers: file ownership planning, dependency graphs, `spawn_subagent` for analysis
 
-4. **POLICIES.md** (optional) — For members that need specific constraints.
+4. **Each member's HEARTBEAT.md** (RECOMMENDED) — Defines what the agent proactively checks every ~30 minutes. Without this file, the agent is purely reactive and will only respond to direct messages. Write a role-specific checklist covering:
+   - Check mailbox for new messages and respond to urgent items
+   - Review assigned tasks — update progress, unblock if possible
+   - Check team announcements and norms for updates
+   - Role-specific patrol items (e.g., managers: check team task board and unblock members; developers: check build status and PR reviews; reviewers: check tasks awaiting review)
+   - Scan recent channel messages for anything requiring attention
+
+5. **POLICIES.md** (optional) — For members that need specific constraints.
+
+6. **CONTEXT.md** (optional) — Additional domain context, references, or knowledge specific to a member.
 
 **Example file_write calls:**
 
@@ -127,7 +142,9 @@ After the JSON is saved, write each file individually using `file_write`. The ba
 file_write("~/.markus/builder-artifacts/teams/research-team/ANNOUNCEMENT.md", "# Research Team — Team Announcement\n\n...")
 file_write("~/.markus/builder-artifacts/teams/research-team/NORMS.md", "# Research Team — Working Norms\n\n...")
 file_write("~/.markus/builder-artifacts/teams/research-team/members/research-director/ROLE.md", "# Research Director\n\nYou are **Research Director** — ...\n\n...")
+file_write("~/.markus/builder-artifacts/teams/research-team/members/research-director/HEARTBEAT.md", "# Heartbeat Checklist\n\n- [ ] Check mailbox ...\n- [ ] Review team task board ...\n- [ ] Unblock members ...")
 file_write("~/.markus/builder-artifacts/teams/research-team/members/senior-researcher/ROLE.md", "# Senior Researcher\n\nYou are **Senior Researcher** — ...\n\n...")
+file_write("~/.markus/builder-artifacts/teams/research-team/members/senior-researcher/HEARTBEAT.md", "# Heartbeat Checklist\n\n- [ ] Check mailbox ...\n- [ ] Review assigned tasks ...\n- [ ] Check build status ...")
 ```
 
 **IMPORTANT**: The member directory slug is derived from the member's `name` field — lowercased, spaces to hyphens, non-alphanumeric removed.

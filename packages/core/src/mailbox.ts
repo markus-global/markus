@@ -432,6 +432,19 @@ export class AgentMailbox {
   }
 
   /**
+   * Defer an item that has already been dequeued (not in the queue).
+   * Used when processing is interrupted (preempted) and the item should
+   * be resumed later.  Only updates persistence — does NOT re-insert
+   * into the in-memory queue (resurfaceDue handles that on the next idle cycle).
+   */
+  deferDequeued(item: MailboxItem, until?: string): void {
+    item.status = 'deferred';
+    item.deferredUntil = until;
+    item.startedAt = undefined;
+    this.persistence?.updateStatus(item.id, 'deferred', { deferredUntil: until });
+  }
+
+  /**
    * Mark an item as merged into another item.
    */
   merge(itemId: string, intoItemId: string): MailboxItem | undefined {

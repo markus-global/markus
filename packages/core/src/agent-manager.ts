@@ -38,7 +38,7 @@ import { DelegationManager, type TaskDelegation } from '@markus/a2a';
 import type { TemplateRegistry } from './templates/registry.js';
 import type { TemplateInstantiateRequest } from './templates/types.js';
 import { join } from 'node:path';
-import { mkdirSync, readFileSync, existsSync, copyFileSync, rmSync, readdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, existsSync, copyFileSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 const log = createLogger('agent-manager');
@@ -364,6 +364,11 @@ export class AgentManager {
     listGroupChats: () => Promise<
       Array<{ id: string; name: string; type: string; channelKey: string }>
     >;
+    getChannelMessages?: (
+      channelKey: string,
+      limit: number,
+      before?: string
+    ) => Promise<{ messages: Array<{ senderName: string; senderType: string; text: string; createdAt: string }>; hasMore: boolean }>;
   };
 
   private buildKnowledgeCallbacks(agentId: string, orgId: string): Pick<
@@ -713,6 +718,18 @@ export class AgentManager {
       }
     }
 
+    const heartbeatPath = join(agentRoleDir, 'HEARTBEAT.md');
+    if (!existsSync(heartbeatPath)) {
+      writeFileSync(heartbeatPath, [
+        '# Heartbeat Checklist',
+        '',
+        '- [ ] Check mailbox for new messages and respond to urgent items',
+        '- [ ] Review assigned tasks — update progress, unblock if possible',
+        '- [ ] Check team announcements for new information',
+        '- [ ] Scan recent channel messages for anything requiring attention',
+      ].join('\n'), 'utf-8');
+    }
+
     const config: AgentConfig = {
       id,
       name: request.name,
@@ -913,6 +930,7 @@ export class AgentManager {
             createGroupChat: (name: string, memberIds: string[]) =>
               this.groupChatHandlers!.createGroupChat(name, id, config.name, memberIds),
             listGroupChats: this.groupChatHandlers.listGroupChats,
+            getChannelMessages: this.groupChatHandlers.getChannelMessages,
           }
         : {}),
     };
@@ -1574,6 +1592,7 @@ export class AgentManager {
             createGroupChat: (name: string, memberIds: string[]) =>
               this.groupChatHandlers!.createGroupChat(name, id, config.name, memberIds),
             listGroupChats: this.groupChatHandlers.listGroupChats,
+            getChannelMessages: this.groupChatHandlers.getChannelMessages,
           }
         : {}),
     };
@@ -2218,6 +2237,11 @@ export class AgentManager {
     listGroupChats: () => Promise<
       Array<{ id: string; name: string; type: string; channelKey: string }>
     >;
+    getChannelMessages?: (
+      channelKey: string,
+      limit: number,
+      before?: string
+    ) => Promise<{ messages: Array<{ senderName: string; senderType: string; text: string; createdAt: string }>; hasMore: boolean }>;
   }): void {
     this.groupChatHandlers = handlers;
   }

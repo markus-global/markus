@@ -99,8 +99,9 @@ Key components:
 - **AgentMailbox** — Priority queue accepting 12 item types: `human_chat`, `a2a_message`, `task_status_update`, `task_comment`, `mention`, `review_request`, `requirement_update`, `session_reply`, `daily_report`, `heartbeat`, `memory_consolidation`, `system_event`
 - **AttentionController** — Event-driven focus loop; reacts to new mail with interrupt signals
 - **Yield Points** — Safe checkpoints in the tool loop where the agent can pause to evaluate interrupts
-- **Decision Engine** — Produces decisions: `continue`, `preempt`, `merge`, `defer`, `drop`
-- **Deferred Item Auto-Resume** — Items deferred with a `deferredUntil` timestamp are automatically resurfaced when the agent is idle and the timestamp has passed
+- **Decision Engine** — Produces decisions: `continue`, `preempt`, `cancel`, `merge`, `defer`, `drop`. Heuristic rules handle clear cases (e.g., user chat always preempts); an **LLM interrupt judge** handles ambiguous cases with semantic understanding (e.g., "stop publishing" → cancel, "hold off for now" → preempt)
+- **Preempt vs Cancel** — `preempt` pauses current work (item deferred, session preserved for later resumption); `cancel` permanently stops current work (item dropped, will NOT be resumed)
+- **Deferred Item Auto-Resume** — Items deferred by preemption or explicit deferral are automatically resurfaced when the agent is idle (`resurfaceDue()`)
 - **Triage with Read-Only Tools** — When multiple items compete for attention, the triage LLM can invoke a curated set of read-only tools (`task_list`, `task_get`, `requirement_list`, etc.) to gather context before deciding priority
 
 External callers use the mailbox API exclusively:
@@ -321,9 +322,11 @@ LLMRouter
 
 | Function | Description |
 |----------|-------------|
-| `pauseAllAgents(reason)` | Pause all Agents with reason |
-| `resumeAllAgents()` | Resume all Agents |
-| `emergencyStop()` | Emergency stop: cancel all active tasks and stop all Agents |
+| `pauseAllAgents(reason)` | Pause all Agents with reason. Cancels active LLM streams, stops attention loops, requeues in-flight items. |
+| `resumeAllAgents()` | Resume all Agents. Attention loops restart, deferred items resurface. |
+| `emergencyStop()` | Emergency stop: cancel all active streams and stop all Agents |
+| `agent.stop()` | Stop a single agent. Cancels active LLM stream, stops attention, requeues in-flight item. |
+| `agent.pause(reason)` | Pause a single agent. Same as stop but sets `paused` status (resumable). |
 | System announcements | Broadcast to all Agents and UI, injected into Agent system prompt |
 
 ### 4.2 Workspace Isolation
