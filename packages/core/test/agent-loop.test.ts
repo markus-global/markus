@@ -33,9 +33,13 @@ function makeMockRouter(chatFn: (...args: unknown[]) => Promise<unknown>) {
     chatStream: vi.fn(),
     getActiveModelContextWindow: () => 200000,
     getActiveModelMaxOutput: () => 8000,
+    getModelContextWindow: (model: string) => 200000,
+    getModelMaxOutput: (model: string) => 8000,
+    isCompactionSupported: (model: string) => true,
     listProviders: () => ['test'],
     getProvider: () => undefined,
     getDefaultProvider: () => 'test',
+    getActiveModelName: () => 'test-model',
   } as unknown;
 }
 
@@ -183,8 +187,9 @@ describe('Agent Loop Improvements', () => {
       const toolMsg = msgs.find(m => m.role === 'tool');
       if (toolMsg) {
         expect(toolMsg.content.length).toBeLessThan(hugeOutput.length);
-        expect(toolMsg.content).toContain('Tool output saved to file');
-        expect(toolMsg.content).toContain('file_read');
+        expect(toolMsg.content).toContain('Tool result compacted');
+        expect(toolMsg.content).toContain('head');
+        expect(toolMsg.content).toContain('tail');
       }
     }
   });

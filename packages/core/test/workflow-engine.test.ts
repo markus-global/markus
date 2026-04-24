@@ -447,33 +447,33 @@ describe('TeamTemplateRegistry', () => {
     const registry = createDefaultTeamTemplates();
     const results = registry.search('devops');
     expect(results.length).toBeGreaterThanOrEqual(1);
-    expect(results.some(t => t.id === 'team-devops-pipeline')).toBe(true);
+    expect(results.some(t => t.id === 'engineering-pod')).toBe(true);
   });
 
   it('should create default team templates', () => {
     const registry = createDefaultTeamTemplates();
     const all = registry.list();
-    expect(all.length).toBe(10);
+    expect(all.length).toBe(5);
 
-    const devSquad = registry.get('team-dev-squad');
+    const devSquad = registry.get('dev-squad');
     expect(devSquad).toBeDefined();
-    expect(devSquad!.members).toHaveLength(4);
-    expect(devSquad!.members.find(m => m.role === 'manager')!.templateId).toBe('tpl-project-manager');
+    expect(devSquad!.members).toHaveLength(5);
+    expect(devSquad!.members.find(m => m.role === 'manager')!.roleName).toBe('project-manager');
   });
 
   it('should unregister team templates', () => {
     const registry = createDefaultTeamTemplates();
-    expect(registry.list()).toHaveLength(10);
-    registry.unregister('team-dev-squad');
-    expect(registry.list()).toHaveLength(9);
-    expect(registry.get('team-dev-squad')).toBeUndefined();
+    expect(registry.list()).toHaveLength(5);
+    registry.unregister('dev-squad');
+    expect(registry.list()).toHaveLength(4);
+    expect(registry.get('dev-squad')).toBeUndefined();
   });
 
-  it('should have the full-stack team with all roles', () => {
+  it('should have the development squad with all roles', () => {
     const registry = createDefaultTeamTemplates();
-    const fullStack = registry.get('team-full-stack')!;
-    expect(fullStack.members).toHaveLength(6);
-    const totalAgents = fullStack.members.reduce((sum, m) => sum + (m.count ?? 1), 0);
-    expect(totalAgents).toBe(8);
+    const devSquad = registry.get('dev-squad')!;
+    expect(devSquad.members).toHaveLength(5);
+    expect(devSquad.members.find(m => m.role === 'manager')!.name).toBe('Tech Lead');
+    expect(devSquad.members.filter(m => m.role === 'worker')).toHaveLength(4);
   });
 });

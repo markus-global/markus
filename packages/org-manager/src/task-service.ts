@@ -1571,7 +1571,14 @@ export class TaskService {
       orgId: request.orgId,
       title: request.title,
       description: request.description,
-      status: approvalTier === 'auto' ? 'in_progress' : 'pending',
+      status: approvalTier === 'auto'
+        ? (request.blockedBy && request.blockedBy.length > 0 && !request.blockedBy.every(blockerId => {
+            const blocker = this.tasks.get(blockerId);
+            return blocker && blocker.status === 'completed';
+          })
+          ? 'blocked'
+          : 'in_progress')
+        : 'pending',
       priority: request.priority ?? 'medium',
       assignedAgentId: request.assignedAgentId,
       reviewerAgentId: request.reviewerAgentId,

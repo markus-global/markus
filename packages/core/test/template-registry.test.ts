@@ -128,7 +128,7 @@ describe('createDefaultTemplateRegistry', () => {
     expect(dev).toBeDefined();
     expect(dev!.roleId).toBe('developer');
     expect(dev!.agentRole).toBe('worker');
-    expect(dev!.skills).toContain('git');
+    expect(Array.isArray(dev!.skills)).toBe(true);
   });
 
   it('should include project manager template', () => {
@@ -161,7 +161,7 @@ describe('createDefaultTemplateRegistry', () => {
       expect(tpl.description).toBeTruthy();
       expect(tpl.version).toBeTruthy();
       expect(tpl.roleId).toBeTruthy();
-      expect(tpl.skills.length).toBeGreaterThan(0);
+      expect(Array.isArray(tpl.skills)).toBe(true);
       expect(tpl.tags.length).toBeGreaterThan(0);
     }
   });

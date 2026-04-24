@@ -166,7 +166,7 @@ describe('EnhancedMemorySystem', () => {
 
       const context = system.getAgentContext('agent-1', 'API design');
       expect(context).toContain('API Design Guidelines');
-      expect(context).toContain('Relevant Knowledge');
+      expect(context).toContain('Relevant Deliverables');
     });
 
     it('returns empty context for unrelated queries', () => {

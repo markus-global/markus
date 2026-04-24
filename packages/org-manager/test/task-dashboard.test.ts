@@ -3,7 +3,17 @@ import { TaskService } from '../src/task-service.js';
 
 describe('TaskService.getDashboard', () => {
   function createService(): TaskService {
-    return new TaskService();
+    const svc = new TaskService();
+    svc.setGovernancePolicy({
+      enabled: true,
+      defaultTier: 'auto',
+      maxPendingTasksPerAgent: 100,
+      maxTotalActiveTasks: 100,
+      requireApprovalForPriority: [],
+      requireRequirement: false,
+      rules: [],
+    });
+    return svc;
   }
 
   it('returns empty dashboard when no tasks exist', () => {
@@ -21,28 +31,29 @@ describe('TaskService.getDashboard', () => {
   it('counts tasks by status correctly', () => {
     const svc = createService();
 
-    svc.createTask({ orgId: 'org1', title: 'Task A', description: 'a' });
-    svc.createTask({ orgId: 'org1', title: 'Task B', description: 'b' });
-    const task3 = svc.createTask({ orgId: 'org1', title: 'Task C', description: 'c' });
+    svc.createTask({ orgId: 'org1', title: 'Task A', description: 'a', assignedAgentId: 'agent-a', reviewerAgentId: 'agent-r' });
+    svc.createTask({ orgId: 'org1', title: 'Task B', description: 'b', assignedAgentId: 'agent-b', reviewerAgentId: 'agent-r' });
+    const task3 = svc.createTask({ orgId: 'org1', title: 'Task C', description: 'c', assignedAgentId: 'agent-a', reviewerAgentId: 'agent-r' });
     svc.updateTaskStatus(task3.id, 'in_progress');
 
     const dashboard = svc.getDashboard('org1');
 
     expect(dashboard.totalTasks).toBe(3);
-    expect(dashboard.statusCounts.pending).toBe(2);
-    expect(dashboard.statusCounts.in_progress).toBe(1);
+    expect(dashboard.statusCounts.pending).toBe(0);
+    expect(dashboard.statusCounts.in_progress).toBe(3);
   });
 
   it('tracks agent workload across tasks', () => {
     const svc = createService();
 
-    const t1 = svc.createTask({ orgId: 'org1', title: 'T1', description: '', assignedAgentId: 'agent-a' });
+    const t1 = svc.createTask({ orgId: 'org1', title: 'T1', description: '', assignedAgentId: 'agent-a', reviewerAgentId: 'agent-r' });
     svc.updateTaskStatus(t1.id, 'in_progress');
 
-    const t2 = svc.createTask({ orgId: 'org1', title: 'T2', description: '', assignedAgentId: 'agent-a' });
+    const t2 = svc.createTask({ orgId: 'org1', title: 'T2', description: '', assignedAgentId: 'agent-a', reviewerAgentId: 'agent-r' });
+    svc.updateTaskStatus(t2.id, 'review');
     svc.updateTaskStatus(t2.id, 'completed');
 
-    svc.createTask({ orgId: 'org1', title: 'T3', description: '', assignedAgentId: 'agent-b' });
+    svc.createTask({ orgId: 'org1', title: 'T3', description: '', assignedAgentId: 'agent-b', reviewerAgentId: 'agent-r' });
 
     const dashboard = svc.getDashboard('org1');
 
@@ -62,8 +73,8 @@ describe('TaskService.getDashboard', () => {
   it('returns recent activity with all tasks represented', () => {
     const svc = createService();
 
-    svc.createTask({ orgId: 'org1', title: 'Task Alpha', description: '' });
-    const t2 = svc.createTask({ orgId: 'org1', title: 'Task Beta', description: '' });
+    svc.createTask({ orgId: 'org1', title: 'Task Alpha', description: '', assignedAgentId: 'agent-a', reviewerAgentId: 'agent-r' });
+    const t2 = svc.createTask({ orgId: 'org1', title: 'Task Beta', description: '', assignedAgentId: 'agent-b', reviewerAgentId: 'agent-r' });
     svc.updateTaskStatus(t2.id, 'in_progress');
 
     const dashboard = svc.getDashboard('org1');
@@ -77,8 +88,8 @@ describe('TaskService.getDashboard', () => {
   it('filters by orgId when provided', () => {
     const svc = createService();
 
-    svc.createTask({ orgId: 'org1', title: 'Org1 Task', description: '' });
-    svc.createTask({ orgId: 'org2', title: 'Org2 Task', description: '' });
+    svc.createTask({ orgId: 'org1', title: 'Org1 Task', description: '', assignedAgentId: 'agent-a', reviewerAgentId: 'agent-r' });
+    svc.createTask({ orgId: 'org2', title: 'Org2 Task', description: '', assignedAgentId: 'agent-b', reviewerAgentId: 'agent-r' });
 
     const dashboard1 = svc.getDashboard('org1');
     expect(dashboard1.totalTasks).toBe(1);
@@ -91,8 +102,9 @@ describe('TaskService.getDashboard', () => {
   it('calculates average completion time for completed tasks', () => {
     const svc = createService();
 
-    const task = svc.createTask({ orgId: 'org1', title: 'Fast Task', description: '' });
+    const task = svc.createTask({ orgId: 'org1', title: 'Fast Task', description: '', assignedAgentId: 'agent-a', reviewerAgentId: 'agent-r' });
     svc.updateTaskStatus(task.id, 'in_progress');
+    svc.updateTaskStatus(task.id, 'review');
     svc.updateTaskStatus(task.id, 'completed');
 
     const dashboard = svc.getDashboard('org1');
@@ -105,7 +117,7 @@ describe('TaskService.getDashboard', () => {
     const svc = createService();
 
     for (let i = 0; i < 30; i++) {
-      svc.createTask({ orgId: 'org1', title: `Task ${i}`, description: '' });
+      svc.createTask({ orgId: 'org1', title: `Task ${i}`, description: '', assignedAgentId: 'agent-a', reviewerAgentId: 'agent-r' });
     }
 
     const dashboard = svc.getDashboard('org1');
