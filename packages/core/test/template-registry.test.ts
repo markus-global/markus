@@ -11,7 +11,7 @@ const mockTemplate: AgentTemplate = {
   author: 'Test',
   roleId: 'test-role',
   agentRole: 'worker',
-  skills: ['git', 'code-analysis'],
+  skills: [],
   tags: ['test', 'development'],
   category: 'development',
 };
