@@ -1051,7 +1051,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
             temperature: TRIAGE_TEMPERATURE,
             maxTokens: TRIAGE_MAX_TOKENS,
           }, triageProvider);
-          return { content: response.content, toolCalls: response.toolCalls };
+          return { content: response.content, toolCalls: response.toolCalls, reasoningContent: response.reasoningContent };
         });
 
         // Wire read-only triage tools from the agent's tool set

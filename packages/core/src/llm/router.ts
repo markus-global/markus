@@ -183,11 +183,13 @@ export class LLMRouter {
    */
   private static isNonRetryableError(error: unknown): boolean {
     const msg = error instanceof Error ? error.message : String(error);
-    return /\b(402|403|401)\b/.test(msg) ||
+    return /\b(401|402|403)\b/.test(msg) ||
       /insufficient balance/i.test(msg) ||
       /not available in your region/i.test(msg) ||
       /invalid.*api.*key/i.test(msg) ||
-      /authentication/i.test(msg);
+      /authentication/i.test(msg) ||
+      /\b400\b.*invalid_request_error/i.test(msg) ||
+      /reasoning_content.*must be passed back/i.test(msg);
   }
 
   /** Detect rate-limit (429) errors which should use a shorter circuit breaker cooldown. */

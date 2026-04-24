@@ -116,7 +116,7 @@ export type TriageJudge = (prompt: string) => Promise<string>;
  * Extended triage function that supports tool use during deliberation.
  * When set, performTriage uses a mini tool loop for read-only context gathering.
  */
-export type TriageChatFn = (messages: Array<{ role: string; content: string; toolCalls?: any[]; toolCallId?: string }>, tools?: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>) => Promise<{ content: string; toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }> }>;
+export type TriageChatFn = (messages: Array<{ role: string; content: string; toolCalls?: any[]; toolCallId?: string; reasoningContent?: string }>, tools?: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>) => Promise<{ content: string; toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>; reasoningContent?: string }>;
 
 /**
  * Event-driven attention controller for a single agent.
@@ -872,7 +872,7 @@ export class AttentionController {
           description: t.description,
           inputSchema: t.inputSchema,
         }));
-        const messages: Array<{ role: string; content: string; toolCalls?: any[]; toolCallId?: string }> = [
+        const messages: Array<{ role: string; content: string; toolCalls?: any[]; toolCallId?: string; reasoningContent?: string }> = [
           { role: 'system', content: 'You are a mailbox triage assistant. You may call read-only tools to gather context before making your decision. When ready, output ONLY a single JSON object — no explanation, no markdown fences, no <think> tags. Start your response with {' },
           { role: 'user', content: prompt },
         ];
@@ -886,7 +886,7 @@ export class AttentionController {
             break;
           }
 
-          messages.push({ role: 'assistant', content: response.content, toolCalls: response.toolCalls });
+          messages.push({ role: 'assistant', content: response.content, toolCalls: response.toolCalls, reasoningContent: response.reasoningContent });
 
           for (const tc of response.toolCalls) {
             const handler = this.triageToolHandlers!.get(tc.name);
