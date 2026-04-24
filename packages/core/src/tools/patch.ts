@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname } from 'node:path';
 import type { PathAccessPolicy } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
@@ -76,10 +76,10 @@ export function createPatchTool(security?: SecurityGuard, workspacePath?: string
         return JSON.stringify({ status: 'error', error: 'patches array is required and must not be empty' });
       }
 
-      const basePath = workspacePath ?? process.cwd();
+      const resolvedPaths: string[] = [];
       const results: Array<{ file: string; action: string; status: string; detail?: string }> = [];
 
-      // Validation pass
+      // Validation pass — collect resolved paths so the apply pass reuses them
       for (const patch of patches) {
         const { resolved: filePath, access } = resolveAndCheckAccess(patch.file, workspacePath, policy);
 
@@ -125,6 +125,8 @@ export function createPatchTool(security?: SecurityGuard, workspacePath?: string
         if (patch.action === 'create' && !patch.content && patch.content !== '') {
           return JSON.stringify({ status: 'error', error: `create action requires content for ${patch.file}` });
         }
+
+        resolvedPaths.push(filePath);
       }
 
       if (dryRun) {
@@ -135,9 +137,10 @@ export function createPatchTool(security?: SecurityGuard, workspacePath?: string
         });
       }
 
-      // Apply pass
-      for (const patch of patches) {
-        const filePath = resolve(basePath, patch.file);
+      // Apply pass — use the already-validated resolved paths from the validation pass
+      for (let i = 0; i < patches.length; i++) {
+        const patch = patches[i]!;
+        const filePath = resolvedPaths[i]!;
 
         switch (patch.action) {
           case 'edit': {

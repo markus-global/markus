@@ -150,4 +150,127 @@ describe('apply_patch tool', () => {
     const parsed = JSON.parse(result);
     expect(parsed.status).toBe('denied');
   });
+
+  // ── Chinese / Unicode filename tests ────────────────────────────────────
+
+  it('should create a file with a Chinese filename', async () => {
+    const tool = createTool();
+    const result = await tool.execute({
+      patches: [
+        { file: '测试文件.txt', action: 'create', content: '中文内容\n' },
+      ],
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('success');
+    expect(parsed.appliedPatches).toBe(1);
+    expect(existsSync(join(tempDir, '测试文件.txt'))).toBe(true);
+    expect(readFileSync(join(tempDir, '测试文件.txt'), 'utf-8')).toContain('中文内容');
+  });
+
+  it('should edit a file with a Chinese filename', async () => {
+    const file = join(tempDir, '中文文档.txt');
+    writeFileSync(file, '你好，世界！\n');
+
+    const tool = createTool();
+    const result = await tool.execute({
+      patches: [
+        { file: '中文文档.txt', action: 'edit', hunks: [{ old_string: '你好，世界！', new_string: '你好，Markus！' }] },
+      ],
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('success');
+    expect(readFileSync(file, 'utf-8')).toContain('你好，Markus！');
+  });
+
+  it('should edit a file with Japanese filename', async () => {
+    const file = join(tempDir, '日本語ファイル.txt');
+    writeFileSync(file, 'こんにちは\n');
+
+    const tool = createTool();
+    const result = await tool.execute({
+      patches: [
+        { file: '日本語ファイル.txt', action: 'edit', hunks: [{ old_string: 'こんにちは', new_string: 'こんばんは' }] },
+      ],
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('success');
+    expect(readFileSync(file, 'utf-8')).toContain('こんばんは');
+  });
+
+  it('should delete a file with Chinese filename', async () => {
+    const file = join(tempDir, '待删除文件.txt');
+    writeFileSync(file, 'delete me');
+
+    const tool = createTool();
+    const result = await tool.execute({
+      patches: [{ file: '待删除文件.txt', action: 'delete' }],
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('success');
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it('should create a file in a deep Chinese path', async () => {
+    const tool = createTool();
+    const result = await tool.execute({
+      patches: [
+        { file: '深度目录/子文件夹/测试文件.txt', action: 'create', content: '深度路径测试\n' },
+      ],
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('success');
+    expect(existsSync(join(tempDir, '深度目录', '子文件夹', '测试文件.txt'))).toBe(true);
+  });
+
+  it('should handle filenames with mixed Chinese and special characters', async () => {
+    const tool = createTool();
+    const result = await tool.execute({
+      patches: [
+        { file: '测试-2024年_报告(v1).md', action: 'create', content: '# 混合文件名测试\n' },
+      ],
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('success');
+    expect(existsSync(join(tempDir, '测试-2024年_报告(v1).md'))).toBe(true);
+  });
+
+  it('should handle Korean filename', async () => {
+    const file = join(tempDir, '한글파일.txt');
+    writeFileSync(file, '안녕하세요\n');
+
+    const tool = createTool();
+    const result = await tool.execute({
+      patches: [
+        { file: '한글파일.txt', action: 'edit', hunks: [{ old_string: '안녕하세요', new_string: '감사합니다' }] },
+      ],
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('success');
+    expect(readFileSync(file, 'utf-8')).toContain('감사합니다');
+  });
+
+  it('should support multiple patches with mixed Chinese/English filenames', async () => {
+    const tool = createTool();
+    const result = await tool.execute({
+      patches: [
+        { file: '中文文件.txt', action: 'create', content: '中文内容\n' },
+        { file: 'english-file.txt', action: 'create', content: 'English content\n' },
+        { file: '混合-混合-file.txt', action: 'create', content: '混合内容\n' },
+      ],
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('success');
+    expect(parsed.appliedPatches).toBe(3);
+    expect(existsSync(join(tempDir, '中文文件.txt'))).toBe(true);
+    expect(existsSync(join(tempDir, 'english-file.txt'))).toBe(true);
+    expect(existsSync(join(tempDir, '混合-混合-file.txt'))).toBe(true);
+  });
 });
