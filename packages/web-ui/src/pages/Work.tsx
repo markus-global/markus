@@ -3727,7 +3727,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
                                   ${isSelected ? 'ring-2 ring-brand-500/50 border-brand-500/40' : ''}`}>
                                 <div className="flex items-center gap-1.5 mb-1">
                                   <span className="w-1 h-1 rounded-full bg-purple-500 shrink-0" />
-                                  <span className="text-[10px] font-semibold text-purple-500 uppercase tracking-wide shrink-0">REQ</span>
+                                  <span className="text-[10px] font-semibold text-purple-500 uppercase tracking-wide shrink-0">{t('work:task.requirementShort')}</span>
                                   <span className={`text-[10px] px-1.5 py-0.5 rounded-md shrink-0 ml-auto ${badge.cls}`}>{badge.label}</span>
                                 </div>
                                 <div className="text-[13px] font-medium leading-snug text-fg-primary line-clamp-2 mb-1">{req.title}</div>
@@ -4285,7 +4285,7 @@ function RequirementDetailPanel({
           )}
           <div className="flex-1 min-w-0 pb-4">
             <div className="flex items-center gap-2 mb-2">
-              <span className="text-[10px] font-bold text-brand-500 bg-brand-500/15 px-2 py-0.5 rounded">REQ</span>
+              <span className="text-[10px] font-bold text-brand-500 bg-brand-500/15 px-2 py-0.5 rounded">{t('work:task.requirementShort')}</span>
               <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${badge.cls}`}>{badge.label}</span>
               {req.priority === 'high' || req.priority === 'urgent' ? (
                 <span className={`text-[10px] font-medium ${req.priority === 'urgent' ? 'text-red-500' : 'text-amber-600'}`}>{req.priority}</span>
