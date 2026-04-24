@@ -1,4 +1,4 @@
-export type LLMProvider = 'anthropic' | 'openai' | 'openai-codex' | 'siliconflow' | 'openrouter' | 'google' | 'ollama' | 'minimax' | 'zai' | 'custom';
+export type LLMProvider = 'anthropic' | 'openai' | 'openai-codex' | 'siliconflow' | 'openrouter' | 'google' | 'ollama' | 'minimax' | 'zai' | 'deepseek' | 'custom';
 
 export type LLMAuthType = 'api-key' | 'oauth' | 'setup-token';
 

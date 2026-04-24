@@ -149,11 +149,11 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
           },
           base_url: {
             type: 'string',
-            description: 'Optional base URL for the API (e.g. "https://api.deepseek.com/v1")',
+            description: 'Optional base URL for the API (e.g. "https://api.deepseek.com")',
           },
           model: {
             type: 'string',
-            description: 'Default model ID (e.g. "deepseek-chat")',
+            description: 'Default model ID (e.g. "deepseek-v4-flash")',
           },
         },
         required: ['name', 'model'],
@@ -276,7 +276,7 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
           },
           id: {
             type: 'string',
-            description: 'Model ID (e.g. "deepseek-chat-v3")',
+            description: 'Model ID (e.g. "deepseek-v4-flash")',
           },
           name: {
             type: 'string',

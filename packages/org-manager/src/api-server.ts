@@ -6080,6 +6080,73 @@ EXPLANATION_END`;
       return;
     }
 
+    // Settings — Test provider connectivity
+    if (path.match(/^\/api\/settings\/llm\/providers\/[^/]+\/test$/) && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter) {
+        this.json(res, 503, { error: 'LLM router not available' });
+        return;
+      }
+      const providerName = path.split('/')[5]!;
+      const provider = this.llmRouter.getProvider(providerName);
+      if (!provider) {
+        this.json(res, 404, { ok: false, error: `Provider "${providerName}" not found or not configured` });
+        return;
+      }
+      try {
+        const startMs = Date.now();
+        const response = await this.llmRouter.chat({
+          messages: [{ role: 'user', content: 'Reply with exactly one word: hello' }],
+          maxTokens: 32,
+          temperature: 0,
+        }, providerName);
+        const durationMs = Date.now() - startMs;
+        const reply = (response.content ?? '').trim();
+        if (!reply) {
+          this.json(res, 200, {
+            ok: false,
+            error: 'Model returned empty response — API key or model may be misconfigured',
+            model: provider.model,
+            durationMs,
+          });
+        } else {
+          this.json(res, 200, {
+            ok: true,
+            durationMs,
+            model: provider.model,
+            reply: reply.slice(0, 100),
+            usage: response.usage,
+          });
+        }
+      } catch (err) {
+        const raw = String(err);
+        // Extract HTTP status code if present (e.g. "OpenAI API error 401: ...")
+        const statusMatch = raw.match(/(?:API error|status)\s+(\d{3})/i);
+        const errorCode = statusMatch ? Number(statusMatch[1]) : undefined;
+        // Extract the most useful portion of the error
+        let errorMsg = raw.replace(/^Error:\s*/, '');
+        // Try to parse JSON error body from the message
+        const jsonStart = errorMsg.indexOf('{');
+        if (jsonStart >= 0) {
+          try {
+            const jsonStr = errorMsg.slice(jsonStart);
+            const parsed = JSON.parse(jsonStr) as { error?: { message?: string; type?: string; code?: string } };
+            if (parsed.error?.message) {
+              errorMsg = `[${parsed.error.type ?? parsed.error.code ?? errorCode ?? 'error'}] ${parsed.error.message}`;
+            }
+          } catch { /* keep original */ }
+        }
+        this.json(res, 200, {
+          ok: false,
+          error: errorMsg.slice(0, 500),
+          errorCode,
+          model: provider.model,
+        });
+      }
+      return;
+    }
+
     // Settings — Detect model configs from environment variables
     if (path === '/api/settings/env-models' && req.method === 'GET') {
       const auth = await this.requireAuth(req, res);
@@ -6101,6 +6168,7 @@ EXPLANATION_END`;
         { provider: 'minimax', displayName: 'MiniMax', keyEnv: 'MINIMAX_API_KEY', modelEnv: 'MINIMAX_MODEL', baseUrlEnv: 'MINIMAX_BASE_URL', defaultModel: 'MiniMax-M2.7', defaultBaseUrl: 'https://api.minimax.io/v1' },
         { provider: 'openrouter', displayName: 'OpenRouter', keyEnv: 'OPENROUTER_API_KEY', modelEnv: 'OPENROUTER_MODEL', baseUrlEnv: 'OPENROUTER_BASE_URL', defaultModel: 'xiaomi/mimo-v2-pro', defaultBaseUrl: 'https://openrouter.ai/api/v1' },
         { provider: 'zai', displayName: 'ZAI', keyEnv: 'ZAI_API_KEY', modelEnv: 'ZAI_MODEL', baseUrlEnv: 'ZAI_BASE_URL', defaultModel: 'glm-5.1', defaultBaseUrl: 'https://api.z.ai/api/paas/v4' },
+        { provider: 'deepseek', displayName: 'DeepSeek', keyEnv: 'DEEPSEEK_API_KEY', modelEnv: 'DEEPSEEK_MODEL', baseUrlEnv: 'DEEPSEEK_BASE_URL', defaultModel: 'deepseek-v4-flash', defaultBaseUrl: 'https://api.deepseek.com' },
       ];
 
       const detected: Array<{
@@ -6172,6 +6240,8 @@ EXPLANATION_END`;
             siliconflow: 'SILICONFLOW_API_KEY',
             minimax: 'MINIMAX_API_KEY',
             openrouter: 'OPENROUTER_API_KEY',
+            zai: 'ZAI_API_KEY',
+            deepseek: 'DEEPSEEK_API_KEY',
           };
           const apiKey = process.env[envKeyMap[pu.provider] ?? ''];
           if (!apiKey) continue;

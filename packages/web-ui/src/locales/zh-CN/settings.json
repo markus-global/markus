@@ -114,7 +114,13 @@
     "placeholderCostOutput": "例如 5",
     "addProviderSubmit": "添加提供商",
     "saveFailed": "保存失败",
-    "failedToAdd": "添加失败"
+    "failedToAdd": "添加失败",
+    "test": "测试",
+    "testing": "测试中…",
+    "testOk": "正常（{{ms}}ms）",
+    "testFailed": "不可用",
+    "testFailedCode": "错误 {{code}}",
+    "testSuccess": "连接成功，耗时 {{ms}}ms — 回复：{{reply}}"
   },
   "oauth": {
     "loginFailed": "登录失败",

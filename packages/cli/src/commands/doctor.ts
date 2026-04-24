@@ -52,7 +52,7 @@ const PROVIDERS: ProviderDef[] = [
   { id: 'siliconflow', label: 'SiliconFlow', envKey: 'SILICONFLOW_API_KEY', baseUrl: 'https://api.siliconflow.cn/v1', defaultModel: 'Qwen/Qwen3.5-35B-A3B' },
   { id: 'openrouter', label: 'OpenRouter', envKey: 'OPENROUTER_API_KEY', baseUrl: 'https://openrouter.ai/api/v1', defaultModel: 'xiaomi/mimo-v2-pro:free' },
   { id: 'zai', label: 'ZAI', envKey: 'ZAI_API_KEY', baseUrl: 'https://api.z.ai/api/paas/v4', defaultModel: 'glm-5.1' },
-  { id: 'deepseek', label: 'DeepSeek', envKey: 'DEEPSEEK_API_KEY', baseUrl: 'https://api.deepseek.com/v1', defaultModel: 'deepseek-chat' },
+  { id: 'deepseek', label: 'DeepSeek', envKey: 'DEEPSEEK_API_KEY', baseUrl: 'https://api.deepseek.com', defaultModel: 'deepseek-v4-flash' },
 ];
 
 async function validateProviderKey(

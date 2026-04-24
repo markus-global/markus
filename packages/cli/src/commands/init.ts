@@ -22,7 +22,7 @@ export function registerInitCommand(program: Command) {
     .description('Setup wizard: configure LLM provider, API keys, and server settings')
     .option('--force', 'Overwrite existing configuration')
     .option('--non-interactive', 'Run without prompts (use env vars or --import-from)')
-    .option('--provider <name>', 'LLM provider (anthropic/openai/google/minimax/siliconflow/zai/ollama)')
+    .option('--provider <name>', 'LLM provider (anthropic/openai/google/minimax/siliconflow/zai/deepseek/ollama)')
     .option('--api-key <key>', 'LLM API key')
     .option('--port <port>', 'API server port', '8056')
     .option('--import-from <platform>', 'Import LLM config from an installed agent platform (e.g. openclaw, hermes)')
@@ -91,6 +91,7 @@ export async function quickInit(options?: InitOptions) {
     ollama: 'llama3',
     openrouter: 'xiaomi/mimo-v2-pro',
     zai: 'glm-5.1',
+    deepseek: 'deepseek-v4-flash',
   };
 
   const ENV_KEY_MAP: Array<{ provider: string; label: string; envKey: string; baseUrl?: string }> = [
@@ -101,6 +102,7 @@ export async function quickInit(options?: InitOptions) {
     { provider: 'minimax', label: 'MiniMax', envKey: 'MINIMAX_API_KEY', baseUrl: 'https://api.minimax.io/v1' },
     { provider: 'openrouter', label: 'OpenRouter', envKey: 'OPENROUTER_API_KEY', baseUrl: 'https://openrouter.ai/api/v1' },
     { provider: 'zai', label: 'ZAI', envKey: 'ZAI_API_KEY', baseUrl: 'https://api.z.ai/api/paas/v4' },
+    { provider: 'deepseek', label: 'DeepSeek', envKey: 'DEEPSEEK_API_KEY', baseUrl: 'https://api.deepseek.com' },
   ];
 
   console.log('  [1/3] LLM Provider Configuration\n');
@@ -269,6 +271,7 @@ export async function quickInit(options?: InitOptions) {
           minimax: 'https://api.minimax.io/v1',
           siliconflow: 'https://api.siliconflow.cn/v1',
           zai: 'https://api.z.ai/api/paas/v4',
+          deepseek: 'https://api.deepseek.com',
         };
         providers[provider] = {
           ...(apiKey ? { apiKey } : {}),
@@ -281,7 +284,7 @@ export async function quickInit(options?: InitOptions) {
         console.log('  Warning: No API key provided. Configure manually in ~/.markus/markus.json');
       }
     } else {
-      const provider = await ask('  LLM provider (anthropic/openai/google/minimax/siliconflow/zai/ollama)', 'anthropic');
+      const provider = await ask('  LLM provider (anthropic/openai/google/minimax/siliconflow/zai/deepseek/ollama)', 'anthropic');
       defaultProvider = provider;
       let apiKey = '';
       if (provider !== 'ollama') {
@@ -292,6 +295,7 @@ export async function quickInit(options?: InitOptions) {
           minimax: 'https://api.minimax.io/v1',
           siliconflow: 'https://api.siliconflow.cn/v1',
           zai: 'https://api.z.ai/api/paas/v4',
+          deepseek: 'https://api.deepseek.com',
         };
         providers[provider] = {
           ...(apiKey ? { apiKey } : {}),

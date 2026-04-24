@@ -114,7 +114,13 @@
     "placeholderCostOutput": "e.g. 5",
     "addProviderSubmit": "Add Provider",
     "saveFailed": "Save failed",
-    "failedToAdd": "Failed to add"
+    "failedToAdd": "Failed to add",
+    "test": "Test",
+    "testing": "Testing...",
+    "testOk": "OK ({{ms}}ms)",
+    "testFailed": "Failed",
+    "testFailedCode": "Error {{code}}",
+    "testSuccess": "Connected in {{ms}}ms — reply: {{reply}}"
   },
   "oauth": {
     "loginFailed": "Login failed",
