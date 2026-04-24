@@ -2217,10 +2217,11 @@ export class Agent {
     if (!this.state.currentActivity) {
       let actType: AgentActivity['type'] = 'chat';
       let actLabel: string;
+      const peerName = senderInfo?.name || senderId || undefined;
       switch (scenario) {
         case 'a2a':
           actType = 'a2a';
-          actLabel = `Chat from ${senderInfo?.name ?? senderId}`;
+          actLabel = peerName ? `Chat from ${peerName}` : 'Agent Message';
           break;
         case 'heartbeat':
           actType = 'internal';
@@ -2230,14 +2231,14 @@ export class Agent {
           break;
         case 'comment_response':
           actType = 'chat';
-          actLabel = `Comment reply to ${senderInfo?.name ?? senderId ?? 'user'}`;
+          actLabel = peerName ? `Comment reply to ${peerName}` : 'Comment Reply';
           break;
         case 'review':
           actType = 'internal';
-          actLabel = `Reviewing task from ${senderInfo?.name ?? senderId ?? 'worker'}`;
+          actLabel = peerName ? `Reviewing task from ${peerName}` : 'Task Review';
           break;
         default:
-          actLabel = `Chat with ${senderInfo?.name ?? senderId ?? 'user'}`;
+          actLabel = peerName ? `Chat with ${peerName}` : 'Human Chat';
           break;
       }
       chatActivityId = this.startActivity(actType, actLabel);

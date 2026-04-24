@@ -291,6 +291,8 @@ export class APIServer {
                   summary: `Group chat message from ${senderName}`,
                   content: `[Group chat message from ${senderName}]:\n${cleanText}`,
                   extra: { senderId, senderName, channelKey },
+                }, {
+                  metadata: { senderId, senderName, senderRole: 'agent' },
                 });
               } catch { /* agent may not exist */ }
             }
