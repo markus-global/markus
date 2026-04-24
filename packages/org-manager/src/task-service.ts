@@ -1633,7 +1633,7 @@ export class TaskService {
     });
     if (this.hitlService && request.createdBy && request.createdBy !== 'default') {
       this.hitlService.notify({
-        targetUserId: 'default',
+        targetUserId: 'all',
         type: 'task_created',
         title: `Task created: ${task.title}`,
         body: `Agent created task "${task.title}"`,
@@ -1956,7 +1956,7 @@ export class TaskService {
         : 'task_failed' as const;
       const priority = to === 'failed' ? 'high' as const : 'normal' as const;
       this.hitlService.notify({
-        targetUserId: 'default',
+        targetUserId: 'all',
         type: notifType,
         title: to === 'review' ? `Task ready for review: ${task.title}` :
                to === 'completed' ? `Task completed: ${task.title}` :

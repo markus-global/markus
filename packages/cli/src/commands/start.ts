@@ -566,7 +566,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // Wire user notifier through HITL service
   agentManager.setUserNotifier((opts) => {
     hitlService.notify({
-      targetUserId: 'default',
+      targetUserId: 'all',
       type: opts.type as any,
       title: opts.title,
       body: opts.body,
@@ -631,7 +631,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         });
         const hasTask = !!taskId;
         hitlService.notify({
-          targetUserId: 'default',
+          targetUserId: 'all',
           type: 'agent_report',
           title, body, priority,
           actionType: hasTask ? 'navigate' : 'open_chat',
@@ -660,7 +660,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
           isMainSession: true,
         });
         hitlService.notify({
-          targetUserId: 'default',
+          targetUserId: 'all',
           type: 'system',
           title: 'Agent needs help',
           body: reason,

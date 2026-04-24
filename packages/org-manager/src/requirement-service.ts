@@ -123,7 +123,7 @@ export class RequirementService {
         title: `Requirement approval: ${req.title}`,
         description: `Agent "${req.createdBy}" proposed requirement "${req.title}" (priority: ${req.priority}).`,
         details: { requirementId: req.id, priority: req.priority },
-        targetUserId: 'default',
+        targetUserId: 'all',
       }).then(result => {
         const current = this.requirements.get(req.id);
         if (!current || current.status !== 'pending') return;
@@ -290,7 +290,7 @@ export class RequirementService {
         title: `Requirement approval (resubmitted): ${req.title}`,
         description: `Agent "${req.createdBy}" resubmitted requirement "${req.title}" (priority: ${req.priority}).`,
         details: { requirementId: req.id, priority: req.priority },
-        targetUserId: 'default',
+        targetUserId: 'all',
       }).then(result => {
         const current = this.requirements.get(req.id);
         if (!current || current.status !== 'pending') return;
@@ -655,7 +655,7 @@ export class RequirementService {
         : `Requirement "${req.title}" has been rejected.${reason ? ` Reason: ${reason}` : ''}`;
 
       this.hitlService.notify({
-        targetUserId: 'default',
+        targetUserId: 'all',
         type: 'requirement_decision',
         title,
         body,

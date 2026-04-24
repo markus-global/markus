@@ -240,7 +240,7 @@ export class HITLService {
     log.info(`Approval requested: ${id} by ${opts.agentName}`);
 
     this.notify({
-      targetUserId: opts.targetUserId ?? 'default',
+      targetUserId: opts.targetUserId ?? 'all',
       type: 'approval_request',
       title: `Approval needed: ${opts.title}`,
       body: opts.description,
