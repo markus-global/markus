@@ -1,5 +1,31 @@
 # Release Log
 
+## v0.4.23
+
+Web UI 完整国际化（中英双语）；群聊增强（A2A 回复链、@mention、recall_context）；web_search 代理与降级；LaTeX 数学渲染；Requirement 审批生命周期修复；Mailbox 与 Agent 生命周期 bug 修复。
+
+### New Features
+
+- **Web UI 国际化（i18n）** — 完整的中英双语支持，覆盖所有页面和组件（Home / Work / Team / AgentProfile / AgentBuilder / Settings / Store / Reports / Deliverables / Onboarding 等），新增 i18n 基础设施（i18next + react-i18next）和语言切换
+- **群聊增强** — A2A 回复链支持，@mention 修复，新增 `recall_context` 工具供 Agent 检索群聊上下文；群聊中强制任务追踪；Builder 技能增加 HEARTBEAT.md
+- **LaTeX 数学渲染** — MarkdownMessage 支持 LaTeX 数学公式渲染（行内 `$...$` 和块级 `$$...$$`）
+
+### Bug Fixes
+
+- **修复 web_search 代理与降级** — web_search 工具支持 HTTP 代理，增加超时控制，DuckDuckGo 搜索失败时自动降级重试
+- **修复流式气泡结束后空白** — 流式输出结束后消息气泡显示空白内容，修复 SSE 事件处理
+- **修复 Requirement 审批生命周期** — 审批通过后正确触发 Agent 执行，移除需求自动完成逻辑
+- **修复 Mailbox drop 与 Agent 生命周期** — 修复 mailbox 项丢弃 bug，Agent stop/pause 生命周期正确处理，LLM 中断判断优化
+- **修复侧边栏活动标签 "Chat from undefined"** — 活动标签中发送者名称缺失显示 undefined
+- **修复 Team 页 Agent 状态标签 i18n** — 缺少 i18n 命名空间前缀导致状态标签显示翻译 key
+- **修复 AgentProfile 和 Work 页 TypeScript 错误**
+
+### Stats
+
+- 86 files changed, +7,594 / −1,645 lines
+
+---
+
 ## v0.4.22
 
 自演化路径增强（ROLE.md / HEARTBEAT.md）；Hub 发布 CORS 修复与 API 代理；Agent 创建 roleName 可选；Store 卡片链接 Hub 详情页。
