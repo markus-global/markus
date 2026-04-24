@@ -2576,10 +2576,10 @@ export class Agent {
       const outputCheck = await this.guardrails.checkOutput(displayReply, { agentId: this.id });
       if (!outputCheck.passed) {
         const filtered = `[Response filtered: ${outputCheck.reason}]`;
-        this.memory.appendMessage(sessionId, { role: 'assistant', content: filtered });
+        this.memory.appendMessage(sessionId, { role: 'assistant', content: filtered, reasoningContent: response.reasoningContent });
         return filtered;
       }
-      this.memory.appendMessage(sessionId, { role: 'assistant', content: displayReply });
+      this.memory.appendMessage(sessionId, { role: 'assistant', content: displayReply, reasoningContent: response.reasoningContent });
       if (!isLightweight && displayReply.length > 50 && senderId) {
         this.memory.writeDailyLog(
           this.id,
@@ -2937,10 +2937,10 @@ export class Agent {
       const outputCheck = await this.guardrails.checkOutput(displayReply, { agentId: this.id });
       if (!outputCheck.passed) {
         const filtered = `[Response filtered: ${outputCheck.reason}]`;
-        this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: filtered });
+        this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: filtered, reasoningContent: response.reasoningContent });
         return filtered;
       }
-      this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: displayReply });
+      this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: displayReply, reasoningContent: response.reasoningContent });
       if (streamChatActivityId && thinkingBuffer.trim()) {
         this.emitActivityLog(streamChatActivityId, 'text', thinkingBuffer, { isThinking: true });
       }
@@ -3643,12 +3643,12 @@ export class Agent {
         } else {
           flushText();
           const finalReply = stripCompletionMarker(sanitizeLLMReply(response.content));
-          this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
+          this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply, reasoningContent: response.reasoningContent });
         }
       } else {
         flushText();
         const finalReply = stripCompletionMarker(sanitizeLLMReply(response.content));
-        this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
+        this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply, reasoningContent: response.reasoningContent });
       }
 
       emit('status', 'execution_finished', {});
@@ -3899,7 +3899,7 @@ export class Agent {
       flushText();
       const rawReply = sanitizeLLMReply(response.content);
       const displayReply = stripCompletionMarker(rawReply);
-      this.memory.appendMessage(sessionId, { role: 'assistant', content: displayReply });
+      this.memory.appendMessage(sessionId, { role: 'assistant', content: displayReply, reasoningContent: response.reasoningContent });
       return rawReply;
     } catch (error) {
       if (textBuffer.trim()) {
