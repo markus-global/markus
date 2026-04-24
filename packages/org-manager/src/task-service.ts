@@ -2852,8 +2852,8 @@ export class TaskService {
 
     // For file-type deliverables, try to copy the file to shared space
     for (const d of deliverables) {
+      const src = d.reference ? resolve(d.reference) : '';
       if (d.type === 'file' && d.reference) {
-        const src = resolve(d.reference);
         if (existsSync(src)) {
           try {
             const destName = src.split('/').pop() ?? 'deliverable';
@@ -2864,8 +2864,9 @@ export class TaskService {
         }
       }
       // For file types without a physical path, write the summary as a file
-      if (d.type === 'file' && d.summary && !existsSync(d.reference)) {
-        const safeName = d.reference.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
+      if (d.type === 'file' && d.summary && d.reference && !existsSync(src)) {
+        const baseName = d.reference.split('/').pop() ?? 'deliverable';
+        const safeName = baseName.replace(/[^a-zA-Z0-9_\u4e00-\u9fff.-]/g, '_').slice(0, 80);
         writeFileSync(join(taskSharedDir, `${safeName}.md`), d.summary);
       }
     }
