@@ -4,10 +4,11 @@ import { Settings } from '../pages/Settings.tsx';
 import { ReportsPage } from '../pages/Reports.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import type { ThemeMode } from '../hooks/useTheme.ts';
+import type { AuthUser } from '../api.ts';
 
 type TabId = 'settings' | 'reports';
 
-export function MobileSettingsTabs({ theme, onThemeChange }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void }) {
+export function MobileSettingsTabs({ theme, onThemeChange, authUser }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void; authUser?: AuthUser }) {
   const { t } = useTranslation(['nav', 'common']);
   const tabs = useMemo(() => [
     { id: 'settings' as const, label: t('nav:settings') },
@@ -34,8 +35,8 @@ export function MobileSettingsTabs({ theme, onThemeChange }: { theme?: ThemeMode
         ))}
       </div>
       <div className="flex-1 overflow-hidden flex flex-col">
-        {activeTab === 'settings' && <Settings theme={theme} onThemeChange={onThemeChange} />}
-        {activeTab === 'reports' && <ReportsPage />}
+        {activeTab === 'settings' && <Settings theme={theme} onThemeChange={onThemeChange} authUser={authUser} />}
+        {activeTab === 'reports' && <ReportsPage authUser={authUser} />}
       </div>
     </div>
   );

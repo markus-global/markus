@@ -211,5 +211,39 @@
   },
   "oauthConnected": "Connected to {{provider}} via OAuth",
   "authProfileDeleted": "Auth profile deleted",
-  "browserOpened": "Browser opened for authorization. Complete the login in the browser window..."
+  "browserOpened": "Browser opened for authorization. Complete the login in the browser window...",
+  "userManagement": {
+    "title": "User Management",
+    "name": "Name",
+    "email": "Email",
+    "role": "Role",
+    "actions": "Actions",
+    "noUsers": "No users found",
+    "editUser": "Edit",
+    "deleteUser": "Delete",
+    "resetPassword": "Reset Password",
+    "save": "Save",
+    "cancel": "Cancel",
+    "confirmDelete": "Are you sure you want to remove this user? This action cannot be undone.",
+    "confirmDeleteTitle": "Remove User",
+    "newPassword": "New Password",
+    "confirmReset": "Reset",
+    "resetSuccess": "Password has been reset",
+    "updateSuccess": "User updated",
+    "deleteSuccess": "User removed",
+    "error": "Operation failed",
+    "cannotDeleteSelf": "You cannot delete your own account",
+    "cannotDeleteOwner": "Cannot remove the primary owner",
+    "inviteLink": "Invite",
+    "inviteLinkGenerated": "Invite link generated — copy and send to the user",
+    "copyInviteLink": "Send this link to the user so they can set up their account:",
+    "linkCopied": "Link copied to clipboard",
+    "copy": "Copy",
+    "roles": {
+      "owner": "Owner",
+      "admin": "Admin",
+      "member": "Member",
+      "guest": "Guest"
+    }
+  }
 }

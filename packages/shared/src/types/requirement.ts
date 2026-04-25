@@ -22,6 +22,8 @@ export interface Requirement {
   approvedBy?: string;
   approvedAt?: string;
   rejectedReason?: string;
+  /** User or actor who rejected this requirement */
+  rejectedBy?: string;
   /** IDs of tasks created to fulfill this requirement */
   taskIds: string[];
   tags?: string[];

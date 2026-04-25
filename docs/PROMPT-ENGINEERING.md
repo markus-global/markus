@@ -68,7 +68,7 @@ The system prompt is assembled by `ContextEngine.buildSystemPrompt()`. Sections 
 │  5. Team Announcements & Norms              │
 │  6. Project Context (governance)            │
 │  7. Workspace Info (paths)                  │
-│  8. User Profile (USER.md)                  │
+│  8. User Profiles (users/*.md) + Team Context│
 │  9. Trust Level                             │
 │ 10. System Announcements                    │
 │ 11. Human Feedback                          │
@@ -143,15 +143,17 @@ All 12 mailbox item types (`human_chat`, `task_status_update`, `session_reply`, 
 
 #### Scenario Section (§23)
 Source: `buildScenarioSection()`.  
-Five distinct instruction sets depending on `scenario` parameter. Each scenario is slim and references the global Task Workflow (§18) and Tool Usage Rules (§21) rather than re-explaining them:
+Seven distinct instruction sets depending on `scenario` parameter. Each scenario is slim and references the global Task Workflow (§18) and Tool Usage Rules (§21) rather than re-explaining them. Each scenario includes a **Communication channel** paragraph that specifies output visibility and appropriate tools:
 
-| Scenario | Key Instructions |
-|----------|-----------------|
-| `chat` | Inline immediate-answer work (questions, searches, lookups). Sustained implementation → `task_create` per Task Workflow. **Stop after creating tasks.** |
-| `task_execution` | Isolated session. Decompose → execute subtasks → delegate to subagents → `task_submit_review`. References Task Workflow. |
-| `heartbeat` | Brief check-in: review tasks, retry failures, daily report, self-evolution. No complex work. |
-| `a2a` | Coordination only. Concise, structured. Complex work → `task_create`. |
-| `comment_response` | **Context-first protocol**: fetch full item + read ALL prior comments before replying. **Conversation termination**: do NOT reply to acknowledgments or when the discussion is resolved — only comment when adding new information or requesting a decision. |
+| Scenario | Key Instructions | Output Visibility | Communication Tools |
+|----------|-----------------|-------------------|-------------------|
+| `chat` | Inline immediate-answer work. Sustained implementation → `task_create`. | **Directly visible** to the chatting human (real-time stream) | Speak naturally; `agent_send_message` for agents |
+| `task_execution` | Isolated session. Decompose → execute → `task_submit_review`. | Visible in **task execution logs** (Work page) | `notify_user` for critical updates; `agent_send_message` for agents |
+| `heartbeat` | Brief check-in: review tasks, retry failures, self-evolution. | **Not visible** to anyone | `notify_user` (only way to reach humans); `agent_send_message` for agents |
+| `a2a` | Coordination only. Concise, structured. Complex work → `task_create`. | Visible to **peer agent** only | Reply directly; `notify_user` to escalate to humans |
+| `comment_response` | Context-first protocol. Only comment when adding new information. | **Not directly visible** | `task_comment` / `requirement_comment` for thread; `notify_user` if urgent |
+| `review` | Evaluate deliverable quality against acceptance criteria. | **Not directly visible** | `task_update` for verdict; `notify_user` optionally |
+| `memory_consolidation` | Internal memory management. Purely private. | **Not visible**; internal only | No communication tools needed |
 
 ### 2.3 Skill Filtering
 
@@ -360,10 +362,12 @@ The heartbeat prompt is assembled inline (not via `buildSystemPrompt`) and inclu
 
 Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `notify_user`, `request_user_approval`, `recall_activity`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`, `team_hire_agent`, `team_list_templates`, `builder_install`, `builder_list`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
 
-Agent-to-user communication:
+Agent communication guidance (heartbeat context):
+
+**Reaching humans** — raw text output is NOT visible to humans in heartbeat mode:
 | Situation | Tool | Example |
 |-----------|------|---------|
-| Status report, finding, alert | `notify_user` (appears in chat, user may reply) | "Daily report: completed 3 tasks today" |
+| Status report, finding, alert | `notify_user` (appears in chat timeline + bell) | "Daily report: completed 3 tasks today" |
 | Task completed notification | `notify_user` + `related_task_id` | "Task X is ready for review" (clicks to task) |
 | Need user to approve/reject | `request_user_approval` | "Approve deployment to production?" |
 | Need user to choose between options | `request_user_approval` with custom `options` | "Should I use approach A or B for the auth refactor?" |
@@ -371,6 +375,8 @@ Agent-to-user communication:
 | Want to discuss interactively | Mention user via task/requirement comment | Use `task_comment` or `requirement_comment` |
 | Need to review past execution details | `recall_activity` | `recall_activity({ task_id: "tsk_abc" })` to find what happened |
 | Routine heartbeat, nothing notable | Neither | Agent responds with `HEARTBEAT_OK` |
+
+**Reaching agents** — use `agent_send_message` to send to a peer agent's mailbox.
 
 Retry: 3 retries with exponential backoff (3s base).
 

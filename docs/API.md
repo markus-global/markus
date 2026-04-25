@@ -125,10 +125,43 @@ All requests require authentication via one of:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/users` | List human users |
-| POST | `/api/users` | Create human user |
-| PUT | `/api/users/:id` | Update user info |
+| GET | `/api/users` | List human users (includes `hasJoined` flag) |
+| POST | `/api/users` | Create human user `{ name, email, role }` — returns invite token |
+| PATCH | `/api/users/:id` | Update user (name, role, email) |
+| POST | `/api/users/:id/reset-password` | Admin password reset |
 | DELETE | `/api/users/:id` | Delete user |
+
+### Invite Flow
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/auth/invite/:token` | Validate invite token — returns user info (name, email) |
+| POST | `/api/auth/invite/:token/setup` | Complete registration `{ password, name?, email? }` |
+
+---
+
+## Group Chats
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/group-chats` | List group chats for current user |
+| POST | `/api/group-chats` | Create custom group chat `{ name, memberIds: [{id, type}] }` |
+| GET | `/api/group-chats/:id` | Get group chat details (includes members) |
+| PATCH | `/api/group-chats/:id` | Update group chat (name, add/remove members) |
+| DELETE | `/api/group-chats/:id` | Delete group chat |
+| POST | `/api/group-chats/:id/members` | Add member `{ userId, userType, userName }` |
+| DELETE | `/api/group-chats/:id/members/:userId` | Remove member |
+
+---
+
+## Notifications
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/notifications` | List notifications for current user (supports `?unreadOnly=true&limit=N&offset=N&type=T`) |
+| GET | `/api/notifications/count` | Get unread notification count |
+| POST | `/api/notifications/:id/read` | Mark a single notification as read |
+| POST | `/api/notifications/read-all` | Mark all notifications as read |
 
 ---
 
@@ -153,11 +186,23 @@ All requests require authentication via one of:
 
 **Connection**: `ws://localhost:8056`
 
-| Event | Description |
-|-------|-------------|
-| `agent:update` | Agent status change |
-| `task:update` | Task status update |
-| `chat` | Agent message in channel |
-| `system:announcement` | System announcement broadcast |
-| `system:pause-all` | Global pause event |
-| `system:emergency-stop` | Emergency stop event |
+| Event | Direction | Description |
+|-------|-----------|-------------|
+| `agent:update` | Server → Client | Agent status change |
+| `agent:mailbox` | Server → Client | New item in agent mailbox |
+| `agent:decision` | Server → Client | Agent attention decision |
+| `agent:focus` | Server → Client | Agent switches focus |
+| `task:update` | Server → Client | Task status update |
+| `task:create` | Server → Client | New task created |
+| `requirement:created` | Server → Client | New requirement proposed |
+| `chat` | Server → Client | Agent message in channel |
+| `chat:message` | Server → Client | Channel/DM/group message (targeted to members) |
+| `chat:proactive_message` | Server → Client | Agent activity log or proactive message |
+| `chat:group_created` | Server → Client | Group chat created |
+| `chat:group_updated` | Server → Client | Group chat membership changed |
+| `chat:group_deleted` | Server → Client | Group chat deleted |
+| `notification` | Server → Client (targeted) | User notification (targeted by userId) |
+| `system:announcement` | Server → Client | System announcement broadcast |
+| `system:pause-all` | Server → Client | Global pause event |
+| `system:resume-all` | Server → Client | Global resume event |
+| `system:emergency-stop` | Server → Client | Emergency stop event |

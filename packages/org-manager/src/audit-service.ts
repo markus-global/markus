@@ -31,7 +31,15 @@ export type AuditEventType =
   | 'report_generated'
   | 'plan_approved'
   | 'plan_rejected'
-  | 'feedback_submitted';
+  | 'feedback_submitted'
+  | 'task_created'
+  | 'task_cancelled'
+  | 'user_created'
+  | 'user_updated'
+  | 'user_deleted'
+  | 'settings_changed'
+  | 'requirement_approved'
+  | 'requirement_rejected';
 
 export interface AuditEntry {
   id: string;

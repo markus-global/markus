@@ -1,13 +1,21 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import type { AgentInfo } from '../api.ts';
+import type { AgentInfo, HumanUserInfo } from '../api.ts';
 
-function MentionDropdown({ agents, filter, anchorRef, onSelect, selectedIndex, onIndexChange }: {
-  agents: AgentInfo[];
+export interface MentionCandidate {
+  id: string;
+  name: string;
+  type: 'agent' | 'human';
+  subtitle?: string;
+  online?: boolean;
+}
+
+function MentionDropdown({ candidates, filter, anchorRef, onSelect, selectedIndex, onIndexChange }: {
+  candidates: MentionCandidate[];
   filter: string;
   anchorRef: React.RefObject<HTMLTextAreaElement | null>;
-  onSelect: (agent: AgentInfo) => void;
+  onSelect: (c: MentionCandidate) => void;
   selectedIndex: number;
   onIndexChange: (index: number) => void;
 }) {
@@ -15,7 +23,7 @@ function MentionDropdown({ agents, filter, anchorRef, onSelect, selectedIndex, o
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const filtered = agents.filter(a => a.name.toLowerCase().includes(filter));
+  const filtered = candidates.filter(c => c.name.toLowerCase().includes(filter));
 
   useEffect(() => {
     const el = anchorRef.current;
@@ -56,24 +64,28 @@ function MentionDropdown({ agents, filter, anchorRef, onSelect, selectedIndex, o
       <div className="px-2.5 py-1.5 text-[10px] text-fg-tertiary font-medium uppercase tracking-wider border-b border-border-default">
         {t('commentInput.mentionHeading')}
       </div>
-      {filtered.map((a, i) => (
+      {filtered.map((c, i) => (
         <button
-          key={a.id}
+          key={c.id}
           data-selected={i === selectedIndex}
-          onMouseDown={e => { e.preventDefault(); onSelect(a); }}
+          onMouseDown={e => { e.preventDefault(); onSelect(c); }}
           onMouseEnter={() => onIndexChange(i)}
           className={`w-full text-left px-3 py-2 text-xs flex items-center gap-2 transition-colors ${
             i === selectedIndex ? 'bg-brand-500/15 text-brand-500' : 'hover:bg-surface-elevated'
           }`}
         >
-          <span className="w-6 h-6 rounded-full bg-brand-500/20 flex items-center justify-center text-[10px] font-bold text-brand-500 shrink-0">
-            {a.name.slice(0, 2).toUpperCase()}
+          <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+            c.type === 'human' ? 'bg-green-500/20 text-green-500' : 'bg-brand-500/20 text-brand-500'
+          }`}>
+            {c.name.slice(0, 2).toUpperCase()}
           </span>
           <div className="flex-1 min-w-0">
-            <span className="text-fg-primary font-medium">{a.name}</span>
-            <span className="text-fg-tertiary text-[10px] ml-1.5">{a.role}</span>
+            <span className="text-fg-primary font-medium">{c.name}</span>
+            <span className="text-fg-tertiary text-[10px] ml-1.5">{c.subtitle ?? c.type}</span>
           </div>
-          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${a.status === 'idle' || a.status === 'working' ? 'bg-green-400' : 'bg-gray-500'}`} />
+          {c.type === 'agent' && (
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${c.online ? 'bg-green-400' : 'bg-gray-500'}`} />
+          )}
         </button>
       ))}
     </div>,
@@ -148,8 +160,9 @@ export interface ReplyQuote {
   content: string;
 }
 
-export function CommentInput({ agents, onSubmit, placeholder, replyTo, onCancelReply }: {
+export function CommentInput({ agents, humans, onSubmit, placeholder, replyTo, onCancelReply }: {
   agents: AgentInfo[];
+  humans?: HumanUserInfo[];
   onSubmit: (content: string, mentions: string[], replyToId?: string) => Promise<void>;
   placeholder?: string;
   replyTo?: ReplyQuote | null;
@@ -166,7 +179,20 @@ export function CommentInput({ agents, onSubmit, placeholder, replyTo, onCancelR
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const lastSubmitRef = useRef<{ content: string; mentions: string[] } | null>(null);
 
-  const filteredAgents = agents.filter(a => a.name.toLowerCase().includes(mentionFilter));
+  const candidates: MentionCandidate[] = useMemo(() => {
+    const list: MentionCandidate[] = (humans ?? []).map(h => ({
+      id: h.id, name: h.name, type: 'human' as const, subtitle: h.role,
+    }));
+    for (const a of agents) {
+      list.push({
+        id: a.id, name: a.name, type: 'agent' as const, subtitle: a.role,
+        online: a.status === 'idle' || a.status === 'working',
+      });
+    }
+    return list;
+  }, [agents, humans]);
+
+  const filteredCandidates = candidates.filter(c => c.name.toLowerCase().includes(mentionFilter));
 
   const handleSend = async () => {
     if (!text.trim()) return;
@@ -201,14 +227,14 @@ export function CommentInput({ agents, onSubmit, placeholder, replyTo, onCancelR
     setSending(false);
   };
 
-  const insertMention = useCallback((agent: AgentInfo) => {
+  const insertMention = useCallback((c: MentionCandidate) => {
     setText(prev => {
       const atIdx = prev.lastIndexOf('@');
-      const mention = formatMention(agent.name);
+      const mention = formatMention(c.name);
       return atIdx >= 0 ? prev.slice(0, atIdx) + mention + ' ' : prev + mention + ' ';
     });
-    if (!selectedMentions.includes(agent.id)) {
-      setSelectedMentions(prev => [...prev, agent.id]);
+    if (!selectedMentions.includes(c.id)) {
+      setSelectedMentions(prev => [...prev, c.id]);
     }
     setShowMentions(false);
     setMentionFilter('');
@@ -223,7 +249,7 @@ export function CommentInput({ agents, onSubmit, placeholder, replyTo, onCancelR
     if (atIdx >= 0 && (atIdx === 0 || value[atIdx - 1] === ' ')) {
       const query = value.slice(atIdx + 1);
       const lowerQuery = query.toLowerCase();
-      const hasMatch = agents.some(a => a.name.toLowerCase().includes(lowerQuery));
+      const hasMatch = candidates.some(c => c.name.toLowerCase().includes(lowerQuery));
       if (hasMatch) {
         setMentionFilter(lowerQuery);
         setShowMentions(true);
@@ -235,7 +261,7 @@ export function CommentInput({ agents, onSubmit, placeholder, replyTo, onCancelR
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (showMentions && filteredAgents.length > 0) {
+    if (showMentions && filteredCandidates.length > 0) {
       const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
       const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
       const isSelect = e.key === 'Enter' || e.key === 'Tab';
@@ -243,18 +269,18 @@ export function CommentInput({ agents, onSubmit, placeholder, replyTo, onCancelR
 
       if (isUp) {
         e.preventDefault();
-        setSelectedIndex(prev => (prev - 1 + filteredAgents.length) % filteredAgents.length);
+        setSelectedIndex(prev => (prev - 1 + filteredCandidates.length) % filteredCandidates.length);
         return;
       }
       if (isDown) {
         e.preventDefault();
-        setSelectedIndex(prev => (prev + 1) % filteredAgents.length);
+        setSelectedIndex(prev => (prev + 1) % filteredCandidates.length);
         return;
       }
       if (isSelect) {
         e.preventDefault();
-        const agent = filteredAgents[selectedIndex];
-        if (agent) insertMention(agent);
+        const c = filteredCandidates[selectedIndex];
+        if (c) insertMention(c);
         return;
       }
       if (isClose) {
@@ -277,7 +303,7 @@ export function CommentInput({ agents, onSubmit, placeholder, replyTo, onCancelR
     <div className="relative">
       {showMentions && (
         <MentionDropdown
-          agents={agents}
+          candidates={candidates}
           filter={mentionFilter}
           anchorRef={inputRef}
           onSelect={insertMention}
@@ -301,10 +327,12 @@ export function CommentInput({ agents, onSubmit, placeholder, replyTo, onCancelR
         {selectedMentions.length > 0 && (
           <div className="flex gap-1 px-2.5 pt-2 flex-wrap">
             {selectedMentions.map(mid => {
-              const a = agents.find(ag => ag.id === mid);
+              const c = candidates.find(x => x.id === mid);
               return (
-                <span key={mid} className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] bg-brand-500/15 text-brand-500 rounded-full">
-                  @{a?.name ?? mid}
+                <span key={mid} className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded-full ${
+                  c?.type === 'human' ? 'bg-green-500/15 text-green-500' : 'bg-brand-500/15 text-brand-500'
+                }`}>
+                  @{c?.name ?? mid}
                   <button onClick={() => setSelectedMentions(prev => prev.filter(x => x !== mid))} className="hover:text-red-400">×</button>
                 </span>
               );

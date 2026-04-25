@@ -218,8 +218,8 @@ When a comment is posted on a task, the following agents are notified (in priori
 
 | # | Who | Condition | Mechanism |
 |---|-----|-----------|-----------|
-| 1 | @mentioned agents | Always (except self) | `enqueueToMailbox('requirement_update')` |
-| 2 | Creator (`createdBy`) | Always (except self) | `enqueueToMailbox('requirement_update')` |
+| 1 | @mentioned agents | Always (except self) | `enqueueToMailbox('requirement_comment')` |
+| 2 | Creator (`createdBy`) | Always (except self) | `enqueueToMailbox('requirement_comment')` |
 
 Requirements have no running agent, so there is no live injection mechanism. All notifications are routed through the mailbox.
 

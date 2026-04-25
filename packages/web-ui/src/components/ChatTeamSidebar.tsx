@@ -39,8 +39,10 @@ interface ChatTeamSidebarProps {
   onSelectDm: (userId: string) => void;
   onRefreshTeams: () => void;
   onRefreshAgents: () => void;
+  onRefreshHumans?: () => void;
   onRefreshGroupChats: () => void;
   onViewProfile: (agentId: string) => void;
+  onManageGroupMembers?: (channelKey: string) => void;
   width?: number;
   onResizeStart?: (e: React.MouseEvent) => void;
   hidden?: boolean;
@@ -180,7 +182,8 @@ export function ChatTeamSidebar({
   authUser, agents, teams, humans, tasks, externalAgents, groupChats,
   chatMode, selectedAgent, activeChannel, activeDmUserId,
   onSelectAgent, onSelectChannel, onSelectDm,
-  onRefreshTeams, onRefreshAgents, onRefreshGroupChats, onViewProfile,
+  onRefreshTeams, onRefreshAgents, onRefreshHumans, onRefreshGroupChats, onViewProfile,
+  onManageGroupMembers,
   width, onResizeStart, hidden,
 }: ChatTeamSidebarProps) {
   const { t } = useTranslation(['team', 'common']);
@@ -196,7 +199,7 @@ export function ChatTeamSidebar({
 
   // Modals
   const [showNewTeam, setShowNewTeam] = useState(false);
-  const [showAddHuman, setShowAddHuman] = useState<{ teamId?: string } | null>(null);
+  const [showAddHuman, setShowAddHuman] = useState(false);
   const [showAddExisting, setShowAddExisting] = useState<string | null>(null);
   const [showOpenClaw, setShowOpenClaw] = useState(false);
   const [showCreateGroupChat, setShowCreateGroupChat] = useState(false);
@@ -204,6 +207,7 @@ export function ChatTeamSidebar({
   // Context menus
   const [teamMenu, setTeamMenu] = useState<{ teamId: string; x: number; y: number } | null>(null);
   const [agentMenu, setAgentMenu] = useState<{ agentId: string; teamId?: string; x: number; y: number } | null>(null);
+  const [humanMenu, setHumanMenu] = useState<{ userId: string; x: number; y: number } | null>(null);
   const [addMenu, setAddMenu] = useState<string | null>(null); // teamId for which add menu is open
   const [gcMenu, setGcMenu] = useState<{ gcId: string; x: number; y: number } | null>(null);
 
@@ -345,16 +349,17 @@ export function ChatTeamSidebar({
 
   // Close menus on outside click
   useEffect(() => {
-    if (!teamMenu && !agentMenu && !actionMenu && !gcMenu) return;
+    if (!teamMenu && !agentMenu && !humanMenu && !actionMenu && !gcMenu) return;
     const handler = (e: MouseEvent) => {
       setTeamMenu(null);
       setAgentMenu(null);
+      setHumanMenu(null);
       setGcMenu(null);
       setActionMenu(false);
     };
     setTimeout(() => document.addEventListener('click', handler), 0);
     return () => document.removeEventListener('click', handler);
-  }, [teamMenu, agentMenu, actionMenu, gcMenu]);
+  }, [teamMenu, agentMenu, humanMenu, actionMenu, gcMenu]);
 
   // ── Team actions ──────────────────────────────────────────────────────────
 
@@ -816,15 +821,8 @@ export function ChatTeamSidebar({
                     </div>
                     <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.addAgentDesc')}</div>
                   </button>
-                  <button onClick={() => { setActionMenu(false); setShowOpenClaw(true); }}
-                    className="w-full text-left px-4 py-2.5 text-xs text-brand-500 hover:bg-surface-elevated border-t border-border-default transition-colors">
-                    <div className="font-medium flex items-center gap-1.5">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 0 1 9-9" /></svg>
-                      {t('chat.importOpenClaw')}
-                    </div>
-                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.importOpenClawDesc')}</div>
-                  </button>
-                  <button onClick={() => { setActionMenu(false); setShowAddHuman({}); }}
+                  {/* OpenClaw import — hidden until feature is ready */}
+                  <button onClick={() => { setActionMenu(false); setShowAddHuman(true); }}
                     className="w-full text-left px-4 py-2.5 text-xs text-green-600 hover:bg-surface-elevated border-t border-border-default transition-colors">
                     <div className="font-medium flex items-center gap-1.5">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="8.5" cy="7" r="4" /><line x1="20" y1="8" x2="20" y2="14" /><line x1="23" y1="11" x2="17" y2="11" /></svg>
@@ -838,41 +836,70 @@ export function ChatTeamSidebar({
           </div>
         )}
 
-        {/* Teams + Agents */}
+        {/* Sidebar content */}
         <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col">
-          {agents.length === 0 && teams.length === 0 && (
-            <p className="text-xs text-fg-tertiary px-1 mb-2">{t('chat.noAgentsYet')}</p>
-          )}
 
-          {/* Unmatched group chats (no matching team) */}
-          {groupChatsByTeam.unmatched.map(gc => (
-            <button
-              key={gc.id}
-              onClick={() => onSelectChannel(gc.channelKey)}
-              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
-                chatMode === 'channel' && activeChannel === gc.channelKey
-                  ? 'bg-brand-600/20 text-brand-500'
-                  : 'text-fg-secondary hover:bg-surface-elevated'
-              }`}
-            >
-              <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
-                chatMode === 'channel' && activeChannel === gc.channelKey ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-secondary'
-              }`}>
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
-              </div>
-              <div className="flex-1 min-w-0 text-left">
-                <span className="truncate font-medium text-[11px] leading-tight block">{gc.name}</span>
-                <div className="text-[10px] text-fg-tertiary leading-tight mt-0.5">{t('chat.groupChat')}</div>
-              </div>
-              {gc.memberCount !== undefined && gc.memberCount > 0 && (
-                <span className="text-[9px] text-fg-tertiary shrink-0">{gc.memberCount}</span>
-              )}
-            </button>
-          ))}
+          {/* People — shown first, flat list */}
+          <div className="mb-2">
+            <p className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1.5 px-2">{t('chat.people')}</p>
+
+            {authUser && (
+              <button
+                onClick={() => onSelectDm(authUser.id)}
+                className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
+                  chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId)
+                    ? 'bg-brand-600/20 text-brand-500'
+                    : 'text-fg-secondary hover:bg-surface-elevated'
+                }`}
+              >
+                <Avatar
+                  name={authUser.name}
+                  avatarUrl={authUser.avatarUrl}
+                  size={24}
+                  bgClass={chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId) ? 'bg-brand-600' : 'bg-brand-500/15 text-brand-500'}
+                />
+                <div className="flex-1 min-w-0 text-left">
+                  <div className="truncate font-medium text-[11px] leading-tight">{authUser.name}</div>
+                  <div className="text-fg-tertiary truncate text-[10px] leading-tight mt-0.5">{t('chat.myNotes')}</div>
+                </div>
+                <span className="text-fg-tertiary shrink-0"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg></span>
+              </button>
+            )}
+
+            {humans.filter(h => h.id !== authUser?.id).map(h => (
+              <button
+                key={h.id}
+                onClick={() => onSelectDm(h.id)}
+                onContextMenu={e => {
+                  if (!isAdmin || h.id === authUser?.id) return;
+                  e.preventDefault();
+                  const pos = clampMenuPos(e);
+                  setHumanMenu({ userId: h.id, ...pos });
+                }}
+                className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
+                  chatMode === 'dm' && activeDmUserId === h.id
+                    ? 'bg-green-500/10 text-green-600'
+                    : 'text-fg-secondary hover:bg-surface-elevated'
+                }`}
+              >
+                <Avatar
+                  name={h.name}
+                  avatarUrl={h.avatarUrl}
+                  size={24}
+                  bgClass={chatMode === 'dm' && activeDmUserId === h.id ? 'bg-green-600' : 'bg-green-500/10 text-green-600'}
+                />
+                <div className="flex-1 min-w-0 text-left">
+                  <div className="truncate font-medium text-[11px] leading-tight">{h.name}</div>
+                  <div className="text-fg-tertiary truncate text-[10px] leading-tight mt-0.5">{h.email || h.role}</div>
+                </div>
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
+              </button>
+            ))}
+          </div>
 
           {/* Custom group chats */}
           {groupChatsByTeam.custom.length > 0 && (
-            <div className="mt-1 mb-1">
+            <div className="mb-2">
               <p className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 px-2">Groups</p>
               {groupChatsByTeam.custom.map(gc => {
                 const isActive = chatMode === 'channel' && activeChannel === gc.channelKey;
@@ -904,6 +931,37 @@ export function ChatTeamSidebar({
             </div>
           )}
 
+          {/* Teams + Agents */}
+          {agents.length === 0 && teams.length === 0 && (
+            <p className="text-xs text-fg-tertiary px-1 mb-2">{t('chat.noAgentsYet')}</p>
+          )}
+
+          {/* Unmatched group chats (no matching team) */}
+          {groupChatsByTeam.unmatched.map(gc => (
+            <button
+              key={gc.id}
+              onClick={() => onSelectChannel(gc.channelKey)}
+              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
+                chatMode === 'channel' && activeChannel === gc.channelKey
+                  ? 'bg-brand-600/20 text-brand-500'
+                  : 'text-fg-secondary hover:bg-surface-elevated'
+              }`}
+            >
+              <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
+                chatMode === 'channel' && activeChannel === gc.channelKey ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-secondary'
+              }`}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+              </div>
+              <div className="flex-1 min-w-0 text-left">
+                <span className="truncate font-medium text-[11px] leading-tight block">{gc.name}</span>
+                <div className="text-[10px] text-fg-tertiary leading-tight mt-0.5">{t('chat.groupChat')}</div>
+              </div>
+              {gc.memberCount !== undefined && gc.memberCount > 0 && (
+                <span className="text-[9px] text-fg-tertiary shrink-0">{gc.memberCount}</span>
+              )}
+            </button>
+          ))}
+
           {/* Teams with agents or members */}
           {teams.map(t => {
             const agentList = agentsByTeam.byTeam.get(t.id) ?? [];
@@ -922,58 +980,6 @@ export function ChatTeamSidebar({
 
           {/* No teams — flat agent list */}
           {teams.length === 0 && agents.length > 0 && agents.map(a => renderAgentItem(a))}
-
-          {/* People */}
-          <div className="mt-3 pt-2 border-t border-border-default/60">
-            <p className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">{t('chat.people')}</p>
-
-            {authUser && (
-              <button
-                onClick={() => onSelectDm(authUser.id)}
-                className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
-                  chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId)
-                    ? 'bg-brand-600/20 text-brand-500'
-                    : 'text-fg-secondary hover:bg-surface-elevated'
-                }`}
-              >
-                <Avatar
-                  name={authUser.name}
-                  avatarUrl={authUser.avatarUrl}
-                  size={24}
-                  bgClass={chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId) ? 'bg-brand-600' : 'bg-brand-500/15 text-brand-500'}
-                />
-                <div className="flex-1 min-w-0 text-left">
-                  <div className="truncate font-medium text-[11px] leading-tight">{authUser.name}</div>
-                  <div className="text-fg-tertiary truncate text-[10px] leading-tight mt-0.5">{t('chat.myNotes')}</div>
-                </div>
-                <span className="text-fg-tertiary shrink-0"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg></span>
-              </button>
-            )}
-
-            {humans.filter(h => h.id !== authUser?.id).map(h => (
-              <button
-                key={h.id}
-                onClick={() => onSelectDm(h.id)}
-                className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
-                  chatMode === 'dm' && activeDmUserId === h.id
-                    ? 'bg-green-500/10 text-green-600'
-                    : 'text-fg-secondary hover:bg-surface-elevated'
-                }`}
-              >
-                <Avatar
-                  name={h.name}
-                  avatarUrl={h.avatarUrl}
-                  size={24}
-                  bgClass={chatMode === 'dm' && activeDmUserId === h.id ? 'bg-green-600' : 'bg-green-500/10 text-green-600'}
-                />
-                <div className="flex-1 min-w-0 text-left">
-                  <div className="truncate font-medium text-[11px] leading-tight">{h.name}</div>
-                  <div className="text-fg-tertiary truncate text-[10px] leading-tight mt-0.5">{h.email || h.role}</div>
-                </div>
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
-              </button>
-            ))}
-          </div>
         </div>
       </div>
 
@@ -1042,11 +1048,6 @@ export function ChatTeamSidebar({
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
               {t('chat.addAgent')}
             </button>
-            <button onClick={() => { setTeamMenu(null); setShowAddHuman({ teamId: teamMenu.teamId }); }}
-              className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-green-600 flex items-center gap-2">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="8.5" cy="7" r="4" /><line x1="20" y1="8" x2="20" y2="14" /><line x1="23" y1="11" x2="17" y2="11" /></svg>
-              {t('chat.addHuman')}
-            </button>
             {ungrouped.length > 0 && (
               <button onClick={() => { setTeamMenu(null); setShowAddExisting(teamMenu.teamId); }}
                 className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-fg-secondary flex items-center gap-2">
@@ -1071,6 +1072,7 @@ export function ChatTeamSidebar({
       {agentMenu && (() => {
         const a = agents.find(ag => ag.id === agentMenu.agentId);
         if (!a) return null;
+        if (!isAdmin) return null;
         const team = agentMenu.teamId ? teamMap.get(agentMenu.teamId) : undefined;
         const isManager = team?.managerId === a.id;
         const isSelf = a.id === authUser?.id;
@@ -1143,6 +1145,25 @@ export function ChatTeamSidebar({
         );
       })()}
 
+      {/* ── Context Menu: Human ── */}
+      {humanMenu && (() => {
+        const h = humans.find(u => u.id === humanMenu.userId);
+        if (!h || !isAdmin) return null;
+        return (
+          <div
+            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)]"
+            style={{ left: humanMenu.x, top: humanMenu.y }}
+            onClick={e => e.stopPropagation()}
+          >
+            <button onClick={() => { handleRemoveFromOrg(h.id, h.name, 'human'); setHumanMenu(null); }}
+              className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-500 flex items-center gap-2">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+              {t('contextMenu.removeFromOrg')}
+            </button>
+          </div>
+        );
+      })()}
+
       {/* ── Modals ── */}
       {showNewTeam && (
         <NewTeamModal
@@ -1165,15 +1186,17 @@ export function ChatTeamSidebar({
         />
       )}
 
-      {showAddHuman !== null && (
+      {showAddHuman && (
         <AddHumanModal
-          teamId={showAddHuman.teamId}
-          teams={teams}
-          onClose={() => setShowAddHuman(null)}
-          onAdd={async (name, role, email, password, teamId) => {
-            await api.users.create(name, role, undefined, email, password, teamId);
-            setShowAddHuman(null);
-            onRefreshTeams();
+          onClose={() => setShowAddHuman(false)}
+          onAdd={async (name, role, email, password) => {
+            try {
+              await api.users.create(name, role, undefined, email, password);
+              setShowAddHuman(false);
+              onRefreshHumans?.();
+            } catch (e) {
+              alert(`Failed to create user: ${e instanceof Error ? e.message : String(e)}`);
+            }
           }}
         />
       )}
@@ -1213,6 +1236,16 @@ export function ChatTeamSidebar({
             style={{ left: gcMenu.x, top: gcMenu.y }}
             onClick={e => e.stopPropagation()}
           >
+            {gc.type === 'custom' && (
+              <button onClick={() => {
+                setGcMenu(null);
+                if (onManageGroupMembers) onManageGroupMembers(gc.channelKey);
+                else onSelectChannel(gc.channelKey);
+              }} className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-fg-secondary flex items-center gap-2">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                {t('contextMenu.manageMembers')}
+              </button>
+            )}
             <button onClick={async () => {
               setGcMenu(null);
               askConfirm('Delete group chat?', `Delete "${gc.name}" and all its messages?`, async () => {

@@ -68,12 +68,10 @@ export function NewTeamModal({ onClose, onCreate }: { onClose: () => void; onCre
 // ─── AddHumanModal ────────────────────────────────────────────────────────────
 
 export function AddHumanModal({
-  teamId, teams, onClose, onAdd,
+  onClose, onAdd,
 }: {
-  teamId?: string;
-  teams: TeamInfo[];
   onClose: () => void;
-  onAdd: (name: string, role: string, email: string | undefined, password: string | undefined, teamId: string | undefined) => void;
+  onAdd: (name: string, role: string, email: string | undefined, password: string | undefined) => void;
 }) {
   const { t } = useTranslation(['team', 'common']);
   const [name, setName] = useState('');
@@ -81,7 +79,6 @@ export function AddHumanModal({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [selectedTeam, setSelectedTeam] = useState(teamId ?? '');
   const [error, setError] = useState('');
 
   const submit = () => {
@@ -91,7 +88,7 @@ export function AddHumanModal({
     if (email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { setError(t('team:modals.addHuman.invalidEmail')); return; }
     if (password && password.length < 6) { setError(t('team:modals.addHuman.passwordMinLength')); return; }
     if (password && password !== confirmPassword) { setError(t('team:modals.addHuman.passwordsMismatch')); return; }
-    onAdd(name.trim(), role, email.trim() || undefined, password || undefined, selectedTeam || undefined);
+    onAdd(name.trim(), role, email.trim() || undefined, password || undefined);
   };
 
   return (
@@ -100,24 +97,14 @@ export function AddHumanModal({
         <Field label={t('team:modals.addHuman.name')}>
           <input value={name} onChange={e => setName(e.target.value)} placeholder={t('team:modals.addHuman.namePlaceholder')} className="input" autoFocus />
         </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label={t('team:modals.addHuman.role')}>
-            <select value={role} onChange={e => setRole(e.target.value)} className="input">
-              <option value="owner">{t('common:role.owner')}</option>
-              <option value="admin">{t('common:role.admin')}</option>
-              <option value="member">{t('common:role.member')}</option>
-              <option value="guest">{t('common:role.guest')}</option>
-            </select>
-          </Field>
-          <Field label={t('team:modals.addHuman.assignToTeam')}>
-            <select value={selectedTeam} onChange={e => setSelectedTeam(e.target.value)} className="input">
-              <option value="">{t('team:modals.addHuman.noTeam')}</option>
-              {teams.map(tm => (
-                <option key={tm.id} value={tm.id}>{tm.name}</option>
-              ))}
-            </select>
-          </Field>
-        </div>
+        <Field label={t('team:modals.addHuman.role')}>
+          <select value={role} onChange={e => setRole(e.target.value)} className="input">
+            <option value="owner">{t('common:role.owner')}</option>
+            <option value="admin">{t('common:role.admin')}</option>
+            <option value="member">{t('common:role.member')}</option>
+            <option value="guest">{t('common:role.guest')}</option>
+          </select>
+        </Field>
         <Field label={t('team:modals.addHuman.email')}>
           <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder={t('team:modals.addHuman.emailPlaceholder')} className="input" />
         </Field>

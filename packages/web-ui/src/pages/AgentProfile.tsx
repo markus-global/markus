@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { api, wsClient, hubApi, kebab } from '../api.ts';
-import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem } from '../api.ts';
+import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem, AuthUser } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, taskLogToEntry, activityLogToEntry, filterCompletedStarts, attachSubagentLogsToEntries, CompactExecutionCard, FullExecutionLog, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
@@ -12,7 +12,7 @@ import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 
-interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string }
+interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string; authUser?: AuthUser }
 
 type ProfileTab = 'overview' | 'mind' | 'tools' | 'skills' | 'memory' | 'heartbeat' | 'files';
 
@@ -53,7 +53,7 @@ function fmtNum(n: number): string {
   return n.toLocaleString();
 }
 
-export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack, highlightMailboxId }: Props) {
+export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack, highlightMailboxId, authUser }: Props) {
   const { t } = useTranslation(['agent', 'common']);
   const isMobile = useIsMobile();
   const [agent, setAgent] = useState<AgentDetail | null>(null);
@@ -90,6 +90,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
   if (!agent) return <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm">{t('agent:profilePage.loadingAgent')}</div>;
 
   const statusDot = STATUS_DOT[agent.state.status] ?? 'bg-gray-500';
+  const canManageAgents = authUser?.role === 'owner' || authUser?.role === 'admin';
 
   return (
     <div className="flex-1 overflow-y-auto bg-surface-primary">
@@ -108,6 +109,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
           </div>
           <div className="flex gap-1.5 shrink-0">
             {!inline && <button onClick={() => navBus.navigate(PAGE.TEAM, { agentId })} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors flex items-center gap-1"><span>◈</span> {t('agent:profilePage.chat')}</button>}
+            {canManageAgents && (
             <button onClick={async () => {
               if (!agent) return;
               try {
@@ -128,6 +130,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
                 alert(t('agent:profilePage.publishSuccess', { name: agent.name }));
               } catch (e) { alert(t('agent:profilePage.publishFailed', { error: String(e) })); }
             }} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors flex items-center gap-1" title={t('agent:profilePage.publishTitle')}><span>↑</span> {t('agent:profilePage.hub')}</button>
+            )}
             {inline && <button onClick={onBack} className="p-1.5 text-fg-tertiary hover:text-fg-secondary text-lg leading-none">×</button>}
           </div>
         </div>
@@ -142,7 +145,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
         </div>
       </div>
       <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
-        {tab === 'overview' && <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} />}
+        {tab === 'overview' && <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />}
         {tab === 'mind' && <MindTab agentId={agentId} highlightId={highlightMailboxId} />}
         {tab === 'files' && <FilesTab agentId={agentId} />}
         {tab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}
@@ -156,7 +159,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
 
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
-function OverviewTab({ agent, onUpdate, externalInfo, t }: { agent: AgentDetail; onUpdate: () => void; externalInfo?: ExternalAgentInfo | null; t: TFunction }) {
+function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { agent: AgentDetail; onUpdate: () => void; externalInfo?: ExternalAgentInfo | null; t: TFunction; canManageAgents: boolean }) {
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(agent.name);
   const [editRole, setEditRole] = useState(agent.agentRole);
@@ -314,7 +317,8 @@ function OverviewTab({ agent, onUpdate, externalInfo, t }: { agent: AgentDetail;
   return (
     <div className="space-y-4">
       <Card title={t('agent:profilePage.overview.identity')} action={
-        editing
+        !canManageAgents ? null
+          : editing
           ? <div className="flex gap-2">
               <button onClick={() => setEditing(false)} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:cancel')}</button>
               <button onClick={save} disabled={saving} className="text-xs text-brand-500 hover:text-brand-500">{saving ? t('common:saving') : t('common:save')}</button>
@@ -322,6 +326,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t }: { agent: AgentDetail;
           : <button onClick={() => { setEditing(true); setEditName(agent.name); setEditRole(agent.agentRole); setEditModelMode((agent.config?.llmConfig as Record<string, unknown>)?.modelMode as 'default' | 'custom' ?? 'default'); setEditModel(agent.config?.llmConfig.primary ?? ''); setEditFallback(agent.config?.llmConfig.fallback ?? ''); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:edit')}</button>
       }>
         <div className="flex items-start gap-4 mb-3">
+          {canManageAgents ? (
           <AvatarUpload
             currentUrl={agent.avatarUrl}
             name={agent.name}
@@ -330,6 +335,9 @@ function OverviewTab({ agent, onUpdate, externalInfo, t }: { agent: AgentDetail;
             targetId={agent.id}
             onUploaded={() => onUpdate()}
           />
+          ) : (
+          <Avatar name={agent.name} avatarUrl={agent.avatarUrl} size={48} className="rounded-xl" />
+          )}
           <div className="flex-1 min-w-0 pt-1">
             <div className="text-sm font-medium text-fg-primary">{agent.name}</div>
             <div className="text-xs text-fg-tertiary mt-0.5">{agent.role} · {agent.agentRole ?? t('agent:profilePage.roles.worker')}</div>
@@ -391,11 +399,13 @@ function OverviewTab({ agent, onUpdate, externalInfo, t }: { agent: AgentDetail;
           </div>
         )}
 
+        {canManageAgents && (
         <div className="flex gap-2 mt-4 pt-3 border-t border-border-default/50">
           <button onClick={toggleAgent} className="px-3 py-1.5 text-xs border border-border-default rounded-lg hover:border-brand-500 transition-colors">
             {agent.state.status === 'offline' ? t('agent:profilePage.overview.startAgent') : t('agent:profilePage.overview.stopAgent')}
           </button>
         </div>
+        )}
       </Card>
 
       {usageInfo && (

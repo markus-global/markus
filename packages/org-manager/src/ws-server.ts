@@ -1,4 +1,4 @@
-import type { Server } from 'node:http';
+import type { IncomingMessage, Server } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createLogger } from '@markus/shared';
 
@@ -13,22 +13,56 @@ export interface WSEvent {
 export class WSBroadcaster {
   private wss?: WebSocketServer;
   private clients = new Set<WebSocket>();
+  /** Connections that identified with ?userId= (targeted events, e.g. notifications) */
+  private userConnections = new Map<string, Set<WebSocket>>();
 
   attach(server: Server): void {
     this.wss = new WebSocketServer({ server, path: '/ws' });
 
-    this.wss.on('connection', (ws, _req) => {
+    this.wss.on('connection', (ws, req: IncomingMessage) => {
       this.clients.add(ws);
-      log.info('WebSocket client connected', { clients: this.clients.size });
+
+      let trackedUserId: string | null = null;
+      try {
+        const host = req.headers.host ?? '127.0.0.1';
+        const u = new URL(req.url ?? '/', `http://${host}`);
+        const qUid = u.searchParams.get('userId');
+        if (qUid) {
+          trackedUserId = qUid;
+          let set = this.userConnections.get(trackedUserId);
+          if (!set) {
+            set = new Set();
+            this.userConnections.set(trackedUserId, set);
+          }
+          set.add(ws);
+        }
+      } catch {
+        /* ignore malformed URL */
+      }
+
+      log.info('WebSocket client connected', {
+        clients: this.clients.size,
+        userScoped: !!trackedUserId,
+      });
+
+      const detachUser = () => {
+        if (!trackedUserId) return;
+        const set = this.userConnections.get(trackedUserId);
+        if (!set) return;
+        set.delete(ws);
+        if (set.size === 0) this.userConnections.delete(trackedUserId);
+      };
 
       ws.on('close', () => {
         this.clients.delete(ws);
+        detachUser();
         log.debug('WebSocket client disconnected', { clients: this.clients.size });
       });
 
       ws.on('error', (err) => {
         log.error('WebSocket client error', { error: String(err) });
         this.clients.delete(ws);
+        detachUser();
       });
 
       // Send initial ping
@@ -40,6 +74,26 @@ export class WSBroadcaster {
     });
 
     log.info('WebSocket server attached');
+  }
+
+  sendToUser(userId: string, event: WSEvent): void {
+    this.sendToUsers([userId], event);
+  }
+
+  sendToUsers(userIds: string[], event: WSEvent): void {
+    const data = JSON.stringify(event);
+    const seen = new Set<string>();
+    for (const id of userIds) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const set = this.userConnections.get(id);
+      if (!set) continue;
+      for (const ws of set) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(data);
+        }
+      }
+    }
   }
 
   broadcast(event: WSEvent): void {
@@ -99,12 +153,17 @@ export class WSBroadcaster {
     });
   }
 
-  broadcastProactiveMessage(agentId: string, agentName: string, sessionId: string, messageId: string, message: string, metadata?: Record<string, unknown>): void {
-    this.broadcast({
-      type: 'chat:proactive_message',
-      payload: { agentId, agentName, sessionId, messageId, message, metadata },
+  broadcastProactiveMessage(agentId: string, agentName: string, sessionId: string, messageId: string, message: string, metadata?: Record<string, unknown>, targetUserId?: string): void {
+    const event = {
+      type: 'chat:proactive_message' as const,
+      payload: { agentId, agentName, sessionId, messageId, message, metadata, targetUserId },
       timestamp: new Date().toISOString(),
-    });
+    };
+    if (targetUserId) {
+      this.sendToUser(targetUserId, event);
+    } else {
+      this.broadcast(event);
+    }
   }
 
   broadcastExecutionLog(entry: Record<string, unknown>): void {

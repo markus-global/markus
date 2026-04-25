@@ -51,7 +51,7 @@ If the reviewer sends the task back to `in_progress`:
 
 ## File Ownership Rules
 - Only modify files within your assigned scope (defined in the task description)
-- If you must edit a file outside your scope, coordinate with the owner via `agent_send_message` first
+- If you must edit a file outside your scope, coordinate with the task creator or your manager via `agent_send_message` first
 - Shared files (types, configs, package.json) should be changed in dedicated dependency tasks
 
 ## Communication

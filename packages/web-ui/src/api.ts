@@ -460,6 +460,7 @@ export interface HumanUserInfo {
   email?: string;
   teamId?: string;
   avatarUrl?: string;
+  hasJoined?: boolean;
 }
 
 export interface RoleInfo {
@@ -1071,7 +1072,13 @@ export const api = {
   users: {
     list: (orgId?: string) => request<{ users: HumanUserInfo[] }>(`/users?orgId=${orgId ?? 'default'}`),
     create: (name: string, role: string, orgId?: string, email?: string, password?: string, teamId?: string) =>
-      request<{ user: HumanUserInfo }>('/users', { method: 'POST', body: JSON.stringify({ name, role, orgId, email, password, teamId }) }),
+      request<{ user: HumanUserInfo; inviteToken?: string; teamError?: string }>('/users', { method: 'POST', body: JSON.stringify({ name, role, orgId, email, password, teamId }) }),
+    update: (id: string, data: { name?: string; role?: string; email?: string }) =>
+      request<{ user: HumanUserInfo }>(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    resetPassword: (id: string, password: string) =>
+      request<{ ok: boolean }>(`/users/${id}/reset-password`, { method: 'POST', body: JSON.stringify({ password }) }),
+    reinvite: (id: string) =>
+      request<{ inviteToken: string }>(`/users/${id}/reinvite`, { method: 'POST' }),
     remove: (id: string) => request(`/users/${id}`, { method: 'DELETE' }),
   },
   teamTemplates: {
@@ -1174,6 +1181,10 @@ export const api = {
       request<{ ok: boolean }>('/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
     updateProfile: (name: string, email: string) =>
       request<{ user: AuthUser }>('/auth/profile', { method: 'PUT', body: JSON.stringify({ name, email }) }),
+    setup: (token: string, password: string) =>
+      request<{ ok: boolean; email: string }>('/auth/setup', { method: 'POST', body: JSON.stringify({ token, password }) }),
+    inviteInfo: (token: string) =>
+      request<{ name: string; email: string }>(`/auth/invite-info?token=${encodeURIComponent(token)}`),
     uploadAvatar: (image: string, type: 'user' | 'agent' = 'user', id?: string) =>
       request<{ avatarUrl: string }>('/avatars/upload', { method: 'POST', body: JSON.stringify({ image, type, id }) }),
   },
@@ -1395,17 +1406,30 @@ class WSClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** Set to true by disconnect() to suppress auto-reconnect from the onclose handler */
   private intentionalClose = false;
+  private currentUserId: string | undefined;
 
-  connect(): void {
+  connect(userId?: string): void {
+    if (userId !== undefined) this.currentUserId = userId;
+
     // Guard against duplicate connections in CONNECTING or OPEN state
     if (this.ws && (
       this.ws.readyState === WebSocket.CONNECTING ||
       this.ws.readyState === WebSocket.OPEN
-    )) return;
+    )) {
+      // If userId changed, reconnect with the new userId
+      if (userId !== undefined && this.ws.url && !this.ws.url.includes(`userId=${userId}`)) {
+        this.ws.onclose = null;
+        this.ws.close();
+        this.ws = null;
+      } else {
+        return;
+      }
+    }
 
     this.intentionalClose = false;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    const userParam = this.currentUserId ? `?userId=${encodeURIComponent(this.currentUserId)}` : '';
+    const wsUrl = `${protocol}//${window.location.host}/ws${userParam}`;
 
     const ws = new WebSocket(wsUrl);
     this.ws = ws;
@@ -1428,7 +1452,7 @@ class WSClient {
 
     ws.onclose = () => {
       if (this.intentionalClose) return;
-      this.reconnectTimer = setTimeout(() => this.connect(), 3000);
+      this.reconnectTimer = setTimeout(() => this.connect(this.currentUserId), 3000);
     };
 
     ws.onerror = () => {

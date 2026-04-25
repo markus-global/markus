@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, hubApi, type AgentInfo } from '../api.ts';
+import { api, hubApi, type AgentInfo, type AuthUser } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
@@ -80,7 +80,7 @@ function ConfirmDialog({ title, message, cancelLabel, confirmLabel, onConfirm, o
   );
 }
 
-export function AgentBuilder() {
+export function AgentBuilder({ authUser: _authUser }: { authUser?: AuthUser } = {}) {
   const { t } = useTranslation(['builder', 'common']);
   const isMobile = useIsMobile();
   const [agents, setAgents] = useState<AgentInfo[]>([]);

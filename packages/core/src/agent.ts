@@ -216,6 +216,7 @@ export class Agent {
   private userNotifier?: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void;
   private semanticSearch?: SemanticMemorySearch;
   private currentSessionId?: string;
+  private currentInteractingUserId?: string;
   private dbSessionMap = new Map<string, string>();
   private orgContext?: OrgContext;
   private contextMdPath?: string;
@@ -813,6 +814,9 @@ export class Agent {
    */
   private async processMailboxItemInternal(item: MailboxItem): Promise<string | void> {
     this.processingMailboxItemId = item.id;
+    if (item.sourceType === 'human_chat' && item.metadata?.senderId) {
+      this.currentInteractingUserId = item.metadata.senderId;
+    }
     const extra = item.payload.extra ?? {};
     const senderInfo = item.metadata?.senderName
       ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'user' }
@@ -4254,6 +4258,7 @@ export class Agent {
         this.eventBus.emit('agent:notify-user', {
           agentId: this.id,
           sessionId: this.currentSessionId,
+          targetUserId: this.currentInteractingUserId,
           title,
           body,
           priority,
@@ -4700,6 +4705,11 @@ export class Agent {
       '',
       '## Core Principle: Patrol, Don\'t Build',
       'Heartbeat is a patrol — observe, triage, and take lightweight actions. Heavy work belongs in tasks.',
+      '',
+      '## Communication Channels',
+      'Your raw text output is NOT visible to humans in heartbeat mode. To communicate:',
+      '- **Reach humans**: `notify_user` — your message appears in their chat timeline AND notification bell. This is the ONLY way humans will see your findings.',
+      '- **Reach agents**: `agent_send_message` — sends a message to a peer agent\'s mailbox.',
       '',
       '## What You CAN Do (lightweight actions)',
       '- **Check status**: `task_list`, `task_get`, `team_status` — see what\'s going on',

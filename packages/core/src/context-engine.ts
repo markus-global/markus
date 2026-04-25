@@ -455,10 +455,15 @@ export class ContextEngine {
       parts.push('- Task status notifications are placed in assignees\' mailboxes as **informational context only**.');
       parts.push('- Do NOT send A2A messages to notify about task status changes — only send A2A when you have substantive coordination needs beyond the status change itself.');
       parts.push('');
-      parts.push('**Communicating with the user**:');
-      parts.push('- `notify_user` — proactive message to user: status updates, progress reports, findings, alerts. Appears in chat and notification bell. User may reply. Write comprehensive body with full context.');
-      parts.push('- `request_user_approval` — when you need a user decision, approval, or input. BLOCKS until the user responds. Supports custom options and freeform text. Do NOT use for routine updates.');
+      parts.push('**Communicating with humans**:');
+      parts.push('- `notify_user` — proactive message to a human team member: status updates, progress reports, findings, alerts. Appears in chat timeline AND notification bell. The human can reply. Write comprehensive body with full context. **This is the ONLY way to reach humans from non-chat contexts** (heartbeat, autonomous tasks, etc.).');
+      parts.push('- `request_user_approval` — when you need a human decision, approval, or input. BLOCKS until the user responds. Supports custom options and freeform text. Do NOT use for routine updates.');
       parts.push('- `recall_activity` — query your own past execution logs by task or activity type. Use when you need to review what you did previously (e.g., to answer a follow-up question).');
+      parts.push('');
+      parts.push('**Communicating with other agents**:');
+      parts.push('- `agent_send_message` — send a direct message to a peer agent. Use for coordination, questions, sharing context, or instructions. The message enters their mailbox and they will process it.');
+      parts.push('- For substantial work requests, create a `task_create` assigned to the target agent instead of asking via message.');
+      parts.push('- Do NOT use A2A messages for routine task status notifications — the system handles those automatically.');
     }
 
     if (opts.environment) {
@@ -492,7 +497,7 @@ export class ContextEngine {
       parts.push('**Error handling**: If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action.');
       parts.push('**Subagent delegation**: For heavy subtasks needing many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
       parts.push('**Built-in tools over CLI**: ALWAYS prefer built-in tools (`task_create`, `task_assign`, `team_hire_agent`, `builder_install`, `agent_send_message`, `memory_save`, etc.) over running `markus` CLI commands via `shell_execute`. The CLI is for human operators — agents must use their native tool interface. Only fall back to CLI if no built-in tool exists for the operation.');
-      parts.push('**No auto-install/deploy**: NEVER automatically install or deploy agents, teams, or skills via `builder_install`, `team_hire_agent`, or `hub_install` unless the user explicitly requests it (e.g., "install", "deploy", "hire", "start"). Creating an artifact (writing files to `builder-artifacts/`) is separate from deploying it into the live organization.');
+      parts.push('**No auto-install/deploy**: NEVER automatically install or deploy agents, teams, or skills via `builder_install`, `team_hire_agent`, or `hub_install` unless explicitly requested by a human team member (e.g., "install", "deploy", "hire", "start"). Creating an artifact (writing files to `builder-artifacts/`) is separate from deploying it into the live organization.');
     }
 
     // --- Mailbox & attention context ---
@@ -534,7 +539,7 @@ export class ContextEngine {
 
     lines.push(`**Mailbox queue**: ${ctx.queueDepth} item(s) waiting`);
     if (ctx.topQueued && ctx.topQueued.length > 0) {
-      lines.push('You MUST review all waiting items and prioritize user chat/comments above everything else:');
+      lines.push('You MUST review all waiting items and prioritize human chat/comments above everything else:');
       for (const q of ctx.topQueued) {
         lines.push(`  - [${q.type}] p${q.priority}: ${q.summary.slice(0, SYSTEM_MAILBOX_ITEM_PREVIEW_CHARS)}`);
       }
@@ -561,10 +566,12 @@ export class ContextEngine {
       case 'chat':
         lines.push('You are in a **human chat session**.');
         lines.push('');
-        lines.push('**Do inline**: answer questions, status updates, searches, file lookups, and any work the user needs an immediate answer for. Follow role-specific chat workflows if defined.');
+        lines.push('**Communication channel**: Your text output is **directly visible** to the human in real-time (streamed to their chat UI). Speak naturally and conversationally — no need to use `notify_user` here since they already see everything you say. Use `agent_send_message` only if you need to coordinate with another agent.');
+        lines.push('');
+        lines.push('**Do inline**: answer questions, status updates, searches, file lookups, and any work the requester needs an immediate answer for. Follow role-specific chat workflows if defined.');
         lines.push('**Create tasks for**: sustained implementation work, multi-file code changes, or work that benefits from subtask decomposition, review, and team collaboration. Follow the Task Workflow above.');
         lines.push('');
-        lines.push('**After creating tasks, STOP.** Do NOT execute the task work yourself. The task runs in its own isolated context after user approval. Reply with a summary of created tasks, assignees, and dependency structure. Tell the user to review and approve.');
+        lines.push('**After creating tasks, STOP.** Do NOT execute the task work yourself. The task runs in its own isolated context after user approval. Reply with a summary of created tasks, assignees, and dependency structure. Tell the requester to review and approve.');
         lines.push('');
         lines.push('Keep responses concise and human-friendly. The user should not see raw tool outputs or complex operations.');
         break;
@@ -572,8 +579,9 @@ export class ContextEngine {
       case 'task_execution':
         lines.push('You are in **task execution mode** — an isolated session for focused, thorough work.');
         lines.push('');
+        lines.push('**Communication channel**: This session is **ISOLATED from chat**. Your text output appears in **task execution logs** which humans can view in the Work page, but it is NOT a live conversation. To proactively reach a human (e.g., to report a critical blocker or ask for help), use `notify_user`. To coordinate with another agent, use `agent_send_message`. Use `task_note` to record progress milestones visible in the task timeline.');
+        lines.push('');
         lines.push('**Context awareness:**');
-        lines.push('- This session is ISOLATED from chat — the user monitors progress through task logs');
         lines.push('- If there is `⚠ USER FEEDBACK` above, READ IT FIRST and adjust your approach');
         lines.push('- If there are dependency tasks, review ALL their deliverables before starting (`file_read` + `task_get`)');
         lines.push('');
@@ -589,6 +597,8 @@ export class ContextEngine {
 
       case 'heartbeat':
         lines.push('You are in **heartbeat mode** — a brief periodic check-in. NOT a work session.');
+        lines.push('');
+        lines.push('**Communication channel**: Your text output is **NOT visible** to any human. This is a background process. To reach a human, you MUST use `notify_user` — this is the **only** way your findings will appear in their chat and notification bell. To coordinate with another agent, use `agent_send_message`. Do NOT assume anyone reads your raw output.');
         lines.push('');
         lines.push('**Priority actions (in order):**');
         lines.push('1. **Review duty**: Check `task_list` for tasks in `review` status where you are the reviewer. Approve/reject per the Task Workflow above. Unreviewed tasks block the team.');
@@ -606,6 +616,8 @@ export class ContextEngine {
       case 'a2a':
         lines.push('You are in an **agent-to-agent (A2A) conversation**. This context is for COORDINATION, not for executing work.');
         lines.push('');
+        lines.push('**Communication channel**: Your text output is sent **directly to the peer agent** who messaged you. Humans do NOT see this conversation. To reach a human, use `notify_user`. To reach a different agent (not the one who messaged you), use `agent_send_message`.');
+        lines.push('');
         lines.push('**Communication rules:**');
         lines.push('- Be concise and structured — your colleague needs actionable information');
         lines.push('- Always use **absolute file paths** when referencing files or deliverables');
@@ -622,6 +634,8 @@ export class ContextEngine {
 
       case 'comment_response':
         lines.push('You are responding to a **comment on a task or requirement**. You MUST follow the context-first protocol below.');
+        lines.push('');
+        lines.push('**Communication channel**: Your text output is NOT directly visible. You MUST use `task_comment` or `requirement_comment` tool to post your reply — that is what appears in the comment thread visible to both humans and agents. To reach a human outside the comment thread, use `notify_user`. To reach another agent, use `agent_send_message`.');
         lines.push('');
         lines.push('**MANDATORY context-gathering protocol (do this BEFORE writing any reply):**');
         lines.push('1. **Fetch the full item**: Call `task_get` (for task comments) or `requirement_get` (for requirement comments) to retrieve the complete current state — title, description, status, assignee, linked items, comments, and all fields');
@@ -653,6 +667,8 @@ export class ContextEngine {
       case 'review':
         lines.push('You are in **task review mode** — you have been asked to review a completed task.');
         lines.push('');
+        lines.push('**Communication channel**: Your text output is NOT directly visible to humans. Use `task_update` to finalize the review (this updates the task status and records your review notes). Use `task_comment` if you want to leave detailed feedback visible in the comment thread. To alert a human about review results, use `notify_user`.');
+        lines.push('');
         lines.push('**MANDATORY review protocol:**');
         lines.push('1. **Understand the task**: Call `task_get` with the task ID to see the full task state, description, deliverables, and notes');
         lines.push('2. **Inspect deliverables**: Use `file_read` to examine ALL deliverable files listed in the task');
@@ -669,7 +685,8 @@ export class ContextEngine {
 
       case 'memory_consolidation':
         lines.push('You are in **memory consolidation mode** (dream cycle) — a background introspective process.');
-        lines.push('You are NOT executing tasks, NOT chatting with users, NOT in a heartbeat check-in.');
+        lines.push('');
+        lines.push('**Communication channel**: This is a purely internal process. Your output is NOT visible to anyone. Do NOT use any communication tools. Do NOT try to reach humans or agents.');
         lines.push('');
         lines.push('Your ONLY job is to review the memory entries provided in the user message and output a JSON consolidation plan.');
         lines.push('Do NOT call any tools. Do NOT take any actions. Do NOT discuss tasks or projects.');

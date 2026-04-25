@@ -1,4 +1,5 @@
 import { createLogger } from '@markus/shared';
+import type { OrganizationService } from './org-service.js';
 
 const log = createLogger('hitl');
 
@@ -14,6 +15,8 @@ export type NotificationType =
   | 'requirement_created'
   | 'requirement_decision'
   | 'agent_report'
+  | 'direct_message'
+  | 'group_message'
   | 'system';
 
 export type NotificationActionType = 'none' | 'navigate' | 'open_chat';
@@ -35,6 +38,8 @@ export interface ApprovalRequest {
   options?: Array<{ id: string; label: string; description?: string }>;
   allowFreeform?: boolean;
   selectedOption?: string;
+  /** When set, only these users (plus admins/owners) see and may respond to the approval in the API. */
+  approverUserIds?: string[];
 }
 
 
@@ -103,6 +108,7 @@ export interface ApprovalRepo {
     options?: Array<{ id: string; label: string; description?: string }>;
     allowFreeform?: boolean;
     selectedOption?: string;
+    approverUserIds?: string[];
   }): void;
   list(status?: string): Array<{
     id: string;
@@ -121,6 +127,7 @@ export interface ApprovalRepo {
     options?: Array<{ id: string; label: string; description?: string }>;
     allowFreeform?: boolean;
     selectedOption?: string;
+    approverUserIds?: string[];
   }>;
   get(id: string): {
     id: string;
@@ -139,6 +146,7 @@ export interface ApprovalRepo {
     options?: Array<{ id: string; label: string; description?: string }>;
     allowFreeform?: boolean;
     selectedOption?: string;
+    approverUserIds?: string[];
   } | undefined;
 }
 
@@ -151,10 +159,18 @@ function genId(prefix: string): string {
 
 export class HITLService {
   private approvals = new Map<string, ApprovalRequest>();
-  private pendingResolvers = new Map<string, (result: { approved: boolean; comment?: string; selectedOption?: string }) => void>();
+  private pendingResolvers = new Map<
+    string,
+    (result: { approved: boolean; comment?: string; selectedOption?: string; respondedBy?: string }) => void
+  >();
   private notificationHandlers: NotificationHandler[] = [];
   private notificationRepo?: NotificationRepo;
   private approvalRepo?: ApprovalRepo;
+  private orgService?: OrganizationService;
+
+  setOrgService(service: OrganizationService): void {
+    this.orgService = service;
+  }
 
   setNotificationRepo(repo: NotificationRepo): void {
     this.notificationRepo = repo;
@@ -184,6 +200,7 @@ export class HITLService {
             options: row.options,
             allowFreeform: row.allowFreeform,
             selectedOption: row.selectedOption,
+            approverUserIds: row.approverUserIds,
           });
         }
       }
@@ -218,6 +235,7 @@ export class HITLService {
     expiresInMs?: number;
     options?: Array<{ id: string; label: string; description?: string }>;
     allowFreeform?: boolean;
+    approverUserIds?: string[];
   }): ApprovalRequest {
     const id = genId('apr');
     const now = new Date().toISOString();
@@ -234,6 +252,7 @@ export class HITLService {
       expiresAt: opts.expiresInMs ? new Date(Date.now() + opts.expiresInMs).toISOString() : undefined,
       options: opts.options,
       allowFreeform: opts.allowFreeform,
+      approverUserIds: opts.approverUserIds,
     };
     this.approvals.set(id, approval);
     this.persistApproval(approval);
@@ -264,9 +283,10 @@ export class HITLService {
     expiresInMs?: number;
     options?: Array<{ id: string; label: string; description?: string }>;
     allowFreeform?: boolean;
-  }): Promise<{ approved: boolean; comment?: string; selectedOption?: string }> {
+    approverUserIds?: string[];
+  }): Promise<{ approved: boolean; comment?: string; selectedOption?: string; respondedBy?: string }> {
     const approval = this.requestApproval(opts);
-    return new Promise<{ approved: boolean; comment?: string; selectedOption?: string }>((resolve) => {
+    return new Promise<{ approved: boolean; comment?: string; selectedOption?: string; respondedBy?: string }>((resolve) => {
       this.pendingResolvers.set(approval.id, resolve);
       if (opts.expiresInMs) {
         setTimeout(() => {
@@ -291,21 +311,12 @@ export class HITLService {
     this.persistApproval(approval);
     log.info(`Approval ${id} ${approval.status} by ${respondedBy}`, { comment, selectedOption });
 
-    if (this.notificationRepo) {
-      try {
-        const rows = this.notificationRepo.list(approval.agentId, { type: 'approval_request', limit: 100 });
-        for (const row of rows) {
-          if (row.metadata && (row.metadata as Record<string, unknown>).approvalId === id && !row.read) {
-            this.notificationRepo.markRead(row.id);
-          }
-        }
-      } catch { /* best effort */ }
-    }
+    this.markApprovalNotificationsRead(id);
 
     const resolve = this.pendingResolvers.get(id);
     if (resolve) {
       this.pendingResolvers.delete(id);
-      resolve({ approved, comment, selectedOption });
+      resolve({ approved, comment, selectedOption, respondedBy });
     }
     return approval;
   }
@@ -330,6 +341,7 @@ export class HITLService {
         options: approval.options,
         allowFreeform: approval.allowFreeform,
         selectedOption: approval.selectedOption,
+        approverUserIds: approval.approverUserIds,
       });
     } catch (err) {
       log.warn('Failed to persist approval', { id: approval.id, error: String(err) });
@@ -392,6 +404,37 @@ export class HITLService {
     actionTarget?: string;
     metadata?: Record<string, unknown>;
   }): Notification {
+    let targetUserIds: string[];
+    if (opts.targetUserId === 'all') {
+      if (this.orgService) {
+        const humans = this.orgService.listHumanUsers('default');
+        targetUserIds = humans.map(h => h.id);
+        if (targetUserIds.length === 0) targetUserIds = ['all'];
+      } else {
+        targetUserIds = ['all'];
+      }
+    } else {
+      targetUserIds = [opts.targetUserId];
+    }
+
+    let first: Notification | undefined;
+    for (const targetUserId of targetUserIds) {
+      const n = this.notifySingle({ ...opts, targetUserId });
+      first ??= n;
+    }
+    return first!;
+  }
+
+  private notifySingle(opts: {
+    targetUserId: string;
+    type: NotificationType;
+    title: string;
+    body: string;
+    priority?: NotificationPriority;
+    actionType?: NotificationActionType;
+    actionTarget?: string;
+    metadata?: Record<string, unknown>;
+  }): Notification {
     const notification: Notification = {
       id: genId('ntf'),
       targetUserId: opts.targetUserId,
@@ -428,6 +471,27 @@ export class HITLService {
 
     this.emit(notification);
     return notification;
+  }
+
+  /** Mark unread approval_request rows for this approval across per-user and legacy shared user_ids. */
+  private markApprovalNotificationsRead(approvalId: string): void {
+    if (!this.notificationRepo) return;
+    const userIds = new Set<string>(['all', 'default']);
+    if (this.orgService) {
+      for (const h of this.orgService.listHumanUsers('default')) {
+        userIds.add(h.id);
+      }
+    }
+    for (const userId of userIds) {
+      try {
+        const rows = this.notificationRepo.list(userId, { type: 'approval_request', limit: 200 });
+        for (const row of rows) {
+          if (row.metadata && (row.metadata as Record<string, unknown>).approvalId === approvalId && !row.read) {
+            this.notificationRepo.markRead(row.id);
+          }
+        }
+      } catch { /* best effort */ }
+    }
   }
 
   private rowToNotification(r: {

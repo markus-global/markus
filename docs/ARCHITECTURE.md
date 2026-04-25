@@ -289,7 +289,7 @@ Before each conversation, the ContextEngine dynamically builds the system prompt
 2. Shared behavior norms (SHARED.md: workflow, governance, knowledge sharing)
 3. Identity and org awareness (colleague list, manager, human members)
 4. **Current project context** (project name, repos, governance rules)
-5. **Current workspace** (agent workspace path, shared workspace)
+5. **Current workspace** (agent workspace path, shared workspace, users/ and team/ directories)
 6. **Agent trust level** (current level and permission description)
 7. **System announcements** (urgent/high-priority announcements)
 8. **Human feedback** (annotations and instructions from report reviews)
@@ -416,8 +416,12 @@ users (id, org_id, name, email, role, password_hash, created_at, last_login_at)
 chat_sessions (id, agent_id, user_id, title, is_main, created_at, last_message_at)
 chat_messages (id, session_id, agent_id, role, content, metadata, tokens_used, created_at)
 
--- Channel messages
+-- Channel messages (DM, group chat, team channels)
 channel_messages (id, org_id, channel, sender_id, sender_type, sender_name, text, mentions, created_at)
+
+-- Group chats (custom groups with managed membership)
+group_chats (id, org_id, name, channel_key, creator_id, creator_name, created_at, updated_at)
+group_chat_members (id, group_chat_id, user_id, user_type, user_name, role, joined_at)
 
 -- Tasks (extended)
 tasks (id, org_id, title, description, status, priority, assigned_agent_id, subtasks,
@@ -471,12 +475,42 @@ agent_decisions (id, agent_id, mailbox_item_id, decision, reason, context, decid
 
 ---
 
-## 6. Authentication
+## 6. Authentication & Multi-User System
 
 - JWT Cookie (`markus_token`, 7-day validity)
 - Initial account: `admin@markus.local` / `markus123` (onboarding wizard prompts user to set real name, email, and password)
-- Roles: owner > admin > member > guest
+- Roles: `owner` > `admin` > `member` > `guest`
 - Only `owner` / `admin` can manage team members and Agents
+
+### 6.1 User Management
+
+| Operation | Access |
+|-----------|--------|
+| Create / invite user | `owner` / `admin` |
+| Set role | `owner` / `admin` (cannot promote above own role) |
+| Delete user | `owner` / `admin` (cannot delete self or higher roles) |
+| Invite link | Generated per user; expires in 7 days; new user sets password via link |
+
+**Invite flow:** Admin creates user (name, email, role) → system generates invite token → invite link displayed → new user opens link → sets password → joins the platform (`hasJoined` flag set).
+
+### 6.2 Chat Session Isolation
+
+Each human user has their own chat sessions with agents. Chat sessions are scoped by `user_id`:
+- `chat_sessions.user_id` tracks which human owns the session
+- `GET /api/agents/:agentId/sessions` filters by authenticated user
+- Agent "Main Sessions" (activity logs) are shared (visible to all users)
+- Historical sessions with `user_id = NULL` are auto-migrated to the first user on startup
+
+### 6.3 User Context Files
+
+Each human user has a profile file maintained by the Secretary agent:
+
+| File | Path | Purpose |
+|------|------|---------|
+| `USER.md` | `~/.markus/users/{userId}/USER.md` | User preferences, communication style, context notes |
+| `TEAM.md` | `~/.markus/teams/{teamId}/TEAM.md` | Team norms, conventions, shared practices |
+
+These files are injected into agent context when interacting with the corresponding user, allowing agents to personalize their behavior.
 
 ---
 
@@ -500,8 +534,12 @@ Connection: `ws://localhost:8056`
 | `task:create` | New task created |
 | `requirement:created` | Requirement proposed |
 | `requirement:approved` / `rejected` / `updated` / `completed` / `cancelled` | Requirement lifecycle |
-| `notification` | User notification (triggers NotificationBell refresh) |
+| `notification` | User notification — targeted by userId (triggers NotificationBell refresh) |
 | `chat:proactive_message` | Agent activity log or proactive message (main session) |
+| `chat:message` | New channel/DM/group chat message (targeted to members) |
+| `chat:group_created` | Group chat created |
+| `chat:group_updated` | Group chat membership changed |
+| `chat:group_deleted` | Group chat deleted |
 | `chat` | Agent sends message in channel |
 | `system:announcement` | System announcement broadcast |
 | `system:pause-all` | Global pause event |
@@ -517,8 +555,43 @@ Connection: `ws://localhost:8056`
 | Channel format | Purpose |
 |----------------|---------|
 | `#general` / `#dev` / `#support` | Team channels, @mention triggers Agent |
+| `group:{teamId}` | Team group chat (all team members) |
+| `group:custom:{id}` | Custom group chat (manually managed members) |
 | `notes:{userId}` | Personal notes (not routed to any Agent) |
-| `dm:{id1}:{id2}` | Direct message (not routed to any Agent) |
+| `dm:{id1}:{id2}` | Direct message between two humans (not routed to any Agent) |
+
+### 8.1 Multi-User Communication Model
+
+Markus supports multiple human users and agents communicating through various channels. The communication model varies by context:
+
+**Agent communication contexts and output visibility:**
+
+| Context | Agent output visible to | How to reach humans | How to reach agents |
+|---------|----------------------|--------------------|--------------------|
+| **Chat** (human_chat) | Directly visible to the chatting human (real-time stream) | Speak naturally — output is streamed live | `agent_send_message` |
+| **Task Execution** | Visible in task execution logs (Work page) | `notify_user` for critical updates | `agent_send_message` |
+| **Heartbeat** | Not visible to anyone | `notify_user` (only way) | `agent_send_message` |
+| **A2A** | Visible to the peer agent only | `notify_user` | Reply directly / `agent_send_message` for others |
+| **Comment Response** | Not directly visible | `task_comment` / `requirement_comment` (comment thread) | `agent_send_message` |
+| **Review** | Not directly visible | `task_update` + optionally `notify_user` | `agent_send_message` |
+| **Memory Consolidation** | Not visible; purely internal | N/A (no communication) | N/A |
+
+**Human-to-human communication:**
+
+| Channel | Delivery mechanism | Notification |
+|---------|-------------------|--------------|
+| DM (`dm:{id1}:{id2}`) | WebSocket push to recipient + persisted to `channel_messages` | Bell notification (`direct_message` type) with click-to-navigate |
+| Group chat (`group:*`) | WebSocket push to all human members + persisted | Bell notification (`group_message` type) with click-to-navigate |
+| @mention in comments | Persisted in task/requirement comments | Bell notification with click-to-navigate to task/requirement |
+
+**Key tools for agent communication:**
+
+| Tool | Purpose | When to use |
+|------|---------|-------------|
+| `notify_user` | Proactive message to human (chat + bell) | Any non-chat context when human attention needed |
+| `request_user_approval` | Block until human decides | Decisions, approvals, input needed |
+| `agent_send_message` | Direct message to peer agent | Coordination, questions, context sharing |
+| `task_comment` / `requirement_comment` | Post in comment thread | Responding to comments on tasks/requirements |
 
 ---
 

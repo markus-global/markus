@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient, type DeliverableInfo, type ProjectInfo, type AgentInfo } from '../api.ts';
+import { api, wsClient, type DeliverableInfo, type ProjectInfo, type AgentInfo, type AuthUser } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { copyPlainText } from '../components/markdown-copy.ts';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
@@ -29,7 +29,7 @@ const ARTIFACT_META: Record<string, { icon: string; color: string }> = {
   skill: { icon: '\u2B21', color: 'bg-amber-500/10 text-amber-600' },
 };
 
-export function DeliverablesPage() {
+export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser } = {}) {
   const { t } = useTranslation(['deliverables', 'common']);
   const isMobile = useIsMobile();
   const listPanel = useResizablePanel({ side: 'left', defaultWidth: 384, minWidth: 280, maxWidth: 600, storageKey: 'markus_deliverables_list' });

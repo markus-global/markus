@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary } from '../api.ts';
+import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, attachSubagentLogsToEntries, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
@@ -628,7 +628,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
           return <CommentBubble key={`c-${item.comment.id}`} comment={item.comment} agents={agents} onReply={handleReply} />;
         })}
       </div>
-      <CommentInput agents={agents} onSubmit={handleSubmit} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} placeholder={t('work:task.commentPlaceholder')} />
+      <CommentInput agents={agents} humans={users} onSubmit={handleSubmit} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} placeholder={t('work:task.commentPlaceholder')} />
     </div>
   );
 }
@@ -1502,19 +1502,32 @@ function TaskDetailPanel({
                       </div>
                       <div className="space-y-1.5">
                         {latest3.map((d, i) => {
-                          const fileName = d.reference.split('/').pop() ?? d.reference;
+                          const isUrl = /^https?:\/\//i.test(d.reference);
+                          const fileName = isUrl ? (d.summary || d.reference) : (d.reference.split('/').pop() ?? d.reference);
                           return (
                             <div key={i} className="flex items-start gap-2.5 bg-surface-elevated/60 rounded-lg px-3 py-2 group hover:bg-surface-elevated/80 transition-colors">
                               <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 mt-0.5 ${typeColors[d.type] ?? 'bg-gray-500/15 text-fg-secondary'}`}>{d.type}</span>
                               <div className="flex-1 min-w-0">
-                                <button
-                                  onClick={() => setPreviewFile(d.reference)}
-                                  className="text-sm text-brand-500 hover:text-brand-500 font-medium truncate block max-w-full text-left hover:underline"
-                                  title={d.reference}
-                                >
-                                  {fileName}
-                                </button>
-                                {d.summary && <p className="text-[11px] text-fg-secondary mt-0.5 line-clamp-2">{d.summary}</p>}
+                                {isUrl ? (
+                                  <a
+                                    href={d.reference}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-sm text-brand-500 hover:text-brand-500 font-medium truncate block max-w-full text-left hover:underline"
+                                    title={d.reference}
+                                  >
+                                    {fileName} <svg className="w-3 h-3 inline -mt-0.5 ml-0.5 opacity-60" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6.5v3a.5.5 0 0 1-.5.5h-6a.5.5 0 0 1-.5-.5v-6A.5.5 0 0 1 2.5 3H6"/><path d="M7 2h3v3"/><path d="M5 7 10 2"/></svg>
+                                  </a>
+                                ) : (
+                                  <button
+                                    onClick={() => setPreviewFile(d.reference)}
+                                    className="text-sm text-brand-500 hover:text-brand-500 font-medium truncate block max-w-full text-left hover:underline"
+                                    title={d.reference}
+                                  >
+                                    {fileName}
+                                  </button>
+                                )}
+                                {d.summary && !isUrl && <p className="text-[11px] text-fg-secondary mt-0.5 line-clamp-2">{d.summary}</p>}
                                 <p className="text-[10px] text-fg-tertiary font-mono truncate mt-0.5">{d.reference}</p>
                               </div>
                             </div>
@@ -1562,19 +1575,32 @@ function TaskDetailPanel({
                     </div>
                     <div className="space-y-1.5">
                       {paged.map((d, i) => {
-                        const fileName = d.reference.split('/').pop() ?? d.reference;
+                        const isUrl = /^https?:\/\//i.test(d.reference);
+                        const fileName = isUrl ? (d.summary || d.reference) : (d.reference.split('/').pop() ?? d.reference);
                         return (
                           <div key={i} className="flex items-start gap-2.5 bg-surface-elevated/60 rounded-lg px-3 py-2 group hover:bg-surface-elevated/80 transition-colors">
                             <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 mt-0.5 ${typeColors[d.type] ?? 'bg-gray-500/15 text-fg-secondary'}`}>{d.type}</span>
                             <div className="flex-1 min-w-0">
-                              <button
-                                onClick={() => setPreviewFile(d.reference)}
-                                className="text-sm text-brand-500 hover:text-brand-500 font-medium truncate block max-w-full text-left hover:underline"
-                                title={d.reference}
-                              >
-                                {fileName}
-                              </button>
-                              {d.summary && <p className="text-[11px] text-fg-secondary mt-0.5 line-clamp-2">{d.summary}</p>}
+                              {isUrl ? (
+                                <a
+                                  href={d.reference}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-sm text-brand-500 hover:text-brand-500 font-medium truncate block max-w-full text-left hover:underline"
+                                  title={d.reference}
+                                >
+                                  {fileName} <svg className="w-3 h-3 inline -mt-0.5 ml-0.5 opacity-60" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6.5v3a.5.5 0 0 1-.5.5h-6a.5.5 0 0 1-.5-.5v-6A.5.5 0 0 1 2.5 3H6"/><path d="M7 2h3v3"/><path d="M5 7 10 2"/></svg>
+                                </a>
+                              ) : (
+                                <button
+                                  onClick={() => setPreviewFile(d.reference)}
+                                  className="text-sm text-brand-500 hover:text-brand-500 font-medium truncate block max-w-full text-left hover:underline"
+                                  title={d.reference}
+                                >
+                                  {fileName}
+                                </button>
+                              )}
+                              {d.summary && !isUrl && <p className="text-[11px] text-fg-secondary mt-0.5 line-clamp-2">{d.summary}</p>}
                               <p className="text-[10px] text-fg-tertiary font-mono truncate mt-0.5">{d.reference}</p>
                             </div>
                           </div>
@@ -1718,9 +1744,14 @@ function TaskDetailPanel({
             {(isCompleted || isFailed || isRejected || isCancelled) && (
               <button onClick={() => doUpdate(() => api.tasks.archive(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-white disabled:opacity-50">Archive</button>
             )}
-            {/* ── Reopen (completed/failed only — FSM allows -> in_progress) ── */}
-            {(isCompleted || isFailed) && (
+            {/* ── Reopen (completed only) / Resume (failed — continue with context) ── */}
+            {isCompleted && (
               <button onClick={() => void reopenTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary disabled:opacity-50">Reopen</button>
+            )}
+            {isFailed && (
+              <button onClick={() => void reopenTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
+                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Resume
+              </button>
             )}
             {/* ── Cancel (non-terminal, non-pending) ── */}
             {!isTerminal && task.status !== 'pending' && (
@@ -2430,7 +2461,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
 
 // ─── Main Page ──────────────────────────────────────────────────────────────────
 
-export function WorkPage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } }) {
+export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   const { t } = useTranslation(['work', 'common']);
   const boardColumns = useMemo(() => BOARD_COLUMNS_BASE.map(c => ({ ...c, label: t(`work:boardColumn.${c.id}`) })), [t]);
   const subStatusBadges = useMemo(() => buildSubStatusBadges(t), [t]);
@@ -2474,6 +2505,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
   const [selectedTask, setSelectedTask] = useState<TaskInfo | null>(null);
   const [selectedReq, setSelectedReq] = useState<RequirementInfo | null>(null);
   const [agentFilter, setAgentFilter] = useState<Set<string>>(new Set());
+  const [myTasksOnly, setMyTasksOnly] = useState(false);
   const [projectFilter, setProjectFilter] = useState<Set<string>>(new Set());
   const savedProjectFilterRef = useRef<Set<string>>(new Set());
   const projectFilterRef = useRef<Set<string>>(new Set());
@@ -2922,8 +2954,11 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
     }
     if (projectFilter.size > 0) result = result.filter(t => t.projectId && projectFilter.has(t.projectId));
     if (agentFilter.size > 0) result = result.filter(t => t.assignedAgentId && agentFilter.has(t.assignedAgentId));
+    if (myTasksOnly && authUser?.id) result = result.filter(t => t.createdBy === authUser.id);
     return result;
   };
+
+  const agentIds = useMemo(() => new Set(agents.map(a => a.id)), [agents]);
 
   const getColumnTasks = (col: typeof BOARD_COLUMNS_BASE[number] & { label: string }) =>
     col.statuses.flatMap((s: string) => filterTasks(board[s] ?? []));
@@ -2933,9 +2968,17 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
     if (!showArchived) list = list.filter(r => !isArchived(r));
     if (viewMode === 'project' && selectedProjectId) list = list.filter(r => r.projectId === selectedProjectId);
     if (projectFilter.size > 0) list = list.filter(r => r.projectId && projectFilter.has(r.projectId));
-    if (agentFilter.size > 0) list = list.filter(r => agentFilter.has(r.createdBy));
+    if (agentFilter.size > 0) {
+      const uid = authUser?.id;
+      list = list.filter(r =>
+        agentFilter.has(r.createdBy)
+        || (uid != null && r.createdBy === uid)
+        || !agentIds.has(r.createdBy),
+      );
+    }
+    if (myTasksOnly && authUser?.id) list = list.filter(r => r.createdBy === authUser.id);
     return list;
-  }, [allRequirements, showArchived, viewMode, selectedProjectId, projectFilter, agentFilter]);
+  }, [allRequirements, showArchived, viewMode, selectedProjectId, projectFilter, agentFilter, myTasksOnly, authUser?.id, agentIds]);
 
   const getColumnReqs = useCallback((col: typeof BOARD_COLUMNS_BASE[number] & { label: string }) =>
     filteredReqs.filter(r => REQ_COLUMN_MAP[r.status] === col.id), [filteredReqs]);
@@ -3053,15 +3096,15 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
                 </button>
               )}
               <div className="flex-1" />
-              {(projectFilter.size > 0 || agentFilter.size > 0 || projects.length > 1 || agents.length > 0) && (
+              {(projectFilter.size > 0 || agentFilter.size > 0 || myTasksOnly || projects.length > 1 || agents.length > 0) && (
                 <button onClick={() => setShowFilterSheet(true)}
                   className={`px-2 py-1 text-[11px] rounded-md font-medium transition-colors flex items-center gap-1 ${
-                    projectFilter.size > 0 || agentFilter.size > 0
+                    projectFilter.size > 0 || agentFilter.size > 0 || myTasksOnly
                       ? 'bg-brand-600/20 text-brand-500 ring-1 ring-brand-500/30'
                       : 'border border-border-default text-fg-secondary'
                   }`}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" /></svg>
-                  Filter{(projectFilter.size + agentFilter.size) > 0 ? ` (${projectFilter.size + agentFilter.size})` : ''}
+                  Filter{(projectFilter.size + agentFilter.size + (myTasksOnly ? 1 : 0)) > 0 ? ` (${projectFilter.size + agentFilter.size + (myTasksOnly ? 1 : 0)})` : ''}
                 </button>
               )}
             </div>
@@ -3140,10 +3183,21 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
         )}
 
         {/* Agent filter bar — desktop only */}
-        {!isMobile && agents.length > 0 && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
+        {!isMobile && (agents.length > 0 || authUser?.id) && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
           <div className="px-6 py-1.5 border-b border-border-default/60 flex items-center gap-1.5 overflow-x-auto scrollbar-hide shrink-0">
-            <button onClick={() => setAgentFilter(new Set())}
-              className={`text-[10px] text-fg-tertiary hover:text-fg-secondary px-2 py-1 rounded-md bg-surface-elevated/60 hover:bg-surface-overlay shrink-0 transition-all ${agentFilter.size > 0 ? 'visible opacity-100' : 'invisible opacity-0'}`}>Clear</button>
+            <button type="button" onClick={() => { setAgentFilter(new Set()); setMyTasksOnly(false); }}
+              className={`text-[10px] text-fg-tertiary hover:text-fg-secondary px-2 py-1 rounded-md bg-surface-elevated/60 hover:bg-surface-overlay shrink-0 transition-all ${agentFilter.size > 0 || myTasksOnly ? 'visible opacity-100' : 'invisible opacity-0'}`}>{t('work:task.clear')}</button>
+            {authUser?.id && (
+              <button
+                type="button"
+                onClick={() => setMyTasksOnly(v => !v)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] shrink-0 transition-all ${
+                  myTasksOnly ? 'bg-green-600/20 text-green-500 ring-1 ring-green-500/40' : 'text-fg-tertiary hover:bg-surface-elevated hover:text-fg-secondary'
+                }`}
+              >
+                {t('work:task.myTasks')}
+              </button>
+            )}
             {sortedAgents.map(a => {
               const selected = agentFilter.has(a.id);
               return (
@@ -3605,9 +3659,9 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
             <div className="sticky top-0 bg-surface-secondary z-10 px-4 pt-3 pb-2 flex items-center justify-between border-b border-border-default/60">
               <h3 className="text-sm font-semibold text-fg-primary">Filters</h3>
               <div className="flex items-center gap-2">
-                {(projectFilter.size > 0 || agentFilter.size > 0) && (
-                  <button onClick={() => { setProjectFilter(new Set()); setAgentFilter(new Set()); }}
-                    className="text-[11px] text-brand-500 font-medium">Clear all</button>
+                {(projectFilter.size > 0 || agentFilter.size > 0 || myTasksOnly) && (
+                  <button onClick={() => { setProjectFilter(new Set()); setAgentFilter(new Set()); setMyTasksOnly(false); }}
+                    className="text-[11px] text-brand-500 font-medium">{t('work:task.clearAll')}</button>
                 )}
                 <button onClick={() => setShowFilterSheet(false)}
                   className="w-7 h-7 flex items-center justify-center rounded-full bg-surface-elevated text-fg-tertiary">
@@ -3634,6 +3688,19 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
                     );
                   })}
                 </div>
+              </div>
+            )}
+            {authUser?.id && (
+              <div className="px-4 py-3 border-t border-border-default/40">
+                <button
+                  type="button"
+                  onClick={() => setMyTasksOnly(v => !v)}
+                  className={`w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] transition-all ${
+                    myTasksOnly ? 'bg-green-600/20 text-green-500 ring-1 ring-green-500/40' : 'bg-surface-elevated text-fg-secondary'
+                  }`}
+                >
+                  {t('work:task.myTasks')}
+                </button>
               </div>
             )}
             {agents.length > 0 && (
@@ -3665,9 +3732,10 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
 
 // ─── Requirement Comment Thread ─────────────────────────────────────────────────
 
-function RequirementCommentThread({ requirementId, agents, authUser }: {
+function RequirementCommentThread({ requirementId, agents, users, authUser }: {
   requirementId: string;
   agents: AgentInfo[];
+  users?: HumanUserInfo[];
   authUser?: { id: string; name: string };
 }) {
   const [comments, setComments] = useState<RequirementComment[]>([]);
@@ -3718,7 +3786,7 @@ function RequirementCommentThread({ requirementId, agents, authUser }: {
           <CommentBubble key={c.id} comment={c} agents={agents} onReply={handleReply} />
         ))}
       </div>
-      <CommentInput agents={agents} onSubmit={handleSubmit} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} />
+      <CommentInput agents={agents} humans={users} onSubmit={handleSubmit} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} />
     </div>
   );
 }
@@ -3902,7 +3970,7 @@ function RequirementDetailPanel({
           )}
 
           {/* Requirement Comments Thread */}
-          <RequirementCommentThread requirementId={req.id} agents={agents} authUser={authUser} />
+          <RequirementCommentThread requirementId={req.id} agents={agents} users={users} authUser={authUser} />
         </div>
 
         {/* Actions */}

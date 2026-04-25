@@ -155,6 +155,11 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
   return hashHex === expectedHash;
 }
 
+function generateInviteToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 function parseCookies(cookieHeader: string | undefined): Record<string, string> {
   if (!cookieHeader) return {};
   const result: Record<string, string> = {};
@@ -230,9 +235,9 @@ export class APIServer {
           persistedMsgId = saved.id;
         }
 
-        // Broadcast to frontend via WebSocket
-        this.ws.broadcast({
-          type: 'chat:message',
+        // Send to frontend via WebSocket (scoped to channel members)
+        const channelEvent = {
+          type: 'chat:message' as const,
           payload: {
             channel: channelKey,
             senderId,
@@ -241,7 +246,17 @@ export class APIServer {
             text: cleanText,
           },
           timestamp: new Date().toISOString(),
-        });
+        };
+        if (channelKey.startsWith('dm:') || channelKey.startsWith('notes:')) {
+          const participants = channelKey.startsWith('notes:')
+            ? [channelKey.slice(6)]
+            : channelKey.slice(3).split(':');
+          this.ws.sendToUsers(participants, channelEvent);
+        } else {
+          const humanIds = this.resolveChannelHumanIds(channelKey);
+          if (humanIds.length > 0) this.ws.sendToUsers(humanIds, channelEvent);
+          else this.ws.broadcast(channelEvent);
+        }
 
         // Resolve all agent members in this group channel
         let allAgentIds: string[] = [];
@@ -314,6 +329,9 @@ export class APIServer {
               return { id, type: 'agent' as const, name: agentInfo?.config?.name ?? id };
             } catch { return { id, type: 'agent' as const, name: id }; }
           });
+          if (creatorId && !members.some(m => m.id === creatorId)) {
+            members.unshift({ id: creatorId, type: 'agent' as const, name: creatorName });
+          }
           const gc = this.storage.groupChatRepo.create({
             orgId: 'default', name, creatorId, creatorName, members,
           });
@@ -455,11 +473,12 @@ export class APIServer {
   setHITLService(service: HITLService): void {
     this.hitlService = service;
     service.onNotification(n => {
-      this.ws.broadcast({
+      const event = {
         type: 'notification',
         payload: { notification: n },
         timestamp: new Date().toISOString(),
-      });
+      };
+      this.ws.sendToUser(n.targetUserId, event);
     });
   }
 
@@ -693,7 +712,7 @@ export class APIServer {
   ): Promise<void> {
     if (!this.storage) return;
     try {
-      const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 1);
+      const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 1, senderId);
       let session = sessions[0];
       if (!session) {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
@@ -784,6 +803,33 @@ export class APIServer {
       idx = atPos + 1;
     }
     return [...mentioned];
+  }
+
+  /** Resolve display name for a group channel */
+  private resolveChannelName(channelKey: string): string {
+    if (channelKey.startsWith('group:custom:') && this.storage?.groupChatRepo) {
+      const gc = this.storage.groupChatRepo.getByChannelKey(channelKey);
+      if (gc) return gc.name;
+    }
+    if (channelKey.startsWith('group:')) {
+      const teamId = channelKey.replace(/^group:/, '');
+      const team = this.orgService.getTeam(teamId);
+      if (team) return team.name;
+    }
+    return channelKey;
+  }
+
+  /** Resolve human member IDs for a group channel (custom or team-based) */
+  private resolveChannelHumanIds(channelKey: string): string[] {
+    if (channelKey.startsWith('group:custom:') && this.storage?.groupChatRepo) {
+      return this.storage.groupChatRepo.getHumanMemberIds(channelKey);
+    }
+    if (channelKey.startsWith('group:')) {
+      const teamId = channelKey.replace(/^group:/, '');
+      const team = this.orgService.getTeam(teamId);
+      return team?.humanMemberIds ?? [];
+    }
+    return [];
   }
 
   /** Build name→id lookup for agents in a channel */
@@ -924,9 +970,9 @@ export class APIServer {
         persistedMsgId = saved.id;
       }
 
-      // Broadcast via WebSocket
-      this.ws.broadcast({
-        type: 'chat:message',
+      // Send via WebSocket (scoped for DM/notes channels)
+      const replyEvent = {
+        type: 'chat:message' as const,
         payload: {
           channel,
           senderId: agentId,
@@ -941,7 +987,17 @@ export class APIServer {
           } : {}),
         },
         timestamp: new Date().toISOString(),
-      });
+      };
+      if (channel.startsWith('dm:') || channel.startsWith('notes:')) {
+        const participants = channel.startsWith('notes:')
+          ? [channel.slice(6)]
+          : channel.slice(3).split(':');
+        this.ws.sendToUsers(participants, replyEvent);
+      } else {
+        const humanIds = this.resolveChannelHumanIds(channel);
+        if (humanIds.length > 0) this.ws.sendToUsers(humanIds, replyEvent);
+        else this.ws.broadcast(replyEvent);
+      }
 
       // ── Agent-to-agent chain: parse @mentions in the reply ──
       const allAgentIds = chainCtx?.allAgentIds ?? [];
@@ -1298,6 +1354,71 @@ export class APIServer {
       return;
     }
 
+    if (path === '/api/auth/setup' && req.method === 'POST') {
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Storage not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const token = (body['token'] as string) ?? '';
+      const password = (body['password'] as string) ?? '';
+      if (!token || !password) {
+        this.json(res, 400, { error: 'Token and password are required' });
+        return;
+      }
+      if (password.length < 6) {
+        this.json(res, 400, { error: 'Password must be at least 6 characters' });
+        return;
+      }
+      const userRow = this.storage.userRepo.findByInviteToken(token);
+      if (!userRow) {
+        this.json(res, 400, { error: 'Invalid or expired invite link' });
+        return;
+      }
+      if (userRow.inviteExpiresAt && new Date(userRow.inviteExpiresAt) < new Date()) {
+        this.json(res, 400, { error: 'Invite link has expired' });
+        return;
+      }
+      const hash = await hashPassword(password);
+      await this.storage.userRepo.updatePassword(userRow.id as string, hash);
+      this.storage.userRepo.clearInviteToken(userRow.id as string);
+      await this.storage.userRepo.updateLastLogin(userRow.id as string);
+      const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
+      const jwtToken = await signToken(
+        { userId: userRow.id, orgId: userRow.orgId, role: userRow.role, exp },
+        this.jwtSecret
+      );
+      res.setHeader(
+        'Set-Cookie',
+        `markus_token=${jwtToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
+      );
+      this.json(res, 200, { ok: true, email: userRow.email });
+      return;
+    }
+
+    if (path === '/api/auth/invite-info' && req.method === 'GET') {
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Storage not available' });
+        return;
+      }
+      const token = url.searchParams.get('token') ?? '';
+      if (!token) {
+        this.json(res, 400, { error: 'Token is required' });
+        return;
+      }
+      const userRow = this.storage.userRepo.findByInviteToken(token);
+      if (!userRow) {
+        this.json(res, 400, { error: 'Invalid or expired invite link' });
+        return;
+      }
+      if (userRow.inviteExpiresAt && new Date(userRow.inviteExpiresAt) < new Date()) {
+        this.json(res, 400, { error: 'Invite link has expired' });
+        return;
+      }
+      this.json(res, 200, { name: userRow.name, email: userRow.email });
+      return;
+    }
+
     if (path === '/api/auth/profile' && req.method === 'PUT') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
@@ -1412,22 +1533,33 @@ export class APIServer {
 
     // ── Chat sessions ──────────────────────────────────────────────────────
     if (path.match(/^\/api\/agents\/[^/]+\/sessions$/) && req.method === 'GET') {
+      const authUser = await this.getAuthUser(req);
       const agentId = path.split('/')[3]!;
       if (!this.storage) {
         this.json(res, 200, { sessions: [] });
         return;
       }
       const limit = parseInt(url.searchParams.get('limit') ?? '20');
-      const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, limit);
+      const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, limit, authUser?.userId);
       this.json(res, 200, { sessions });
       return;
     }
 
     if (path.match(/^\/api\/sessions\/[^/]+\/messages$/) && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const sessionId = path.split('/')[3]!;
       if (!this.storage) {
         this.json(res, 200, { messages: [], hasMore: false });
         return;
+      }
+      const session = this.storage.chatSessionRepo.getSession(sessionId);
+      if (session && session.userId && session.userId !== authUser.userId) {
+        const isAdminOrOwner = authUser.role === 'owner' || authUser.role === 'admin';
+        if (!isAdminOrOwner) {
+          this.json(res, 403, { error: 'Access denied: this session belongs to another user' });
+          return;
+        }
       }
       const limit = parseInt(url.searchParams.get('limit') ?? '50');
       const before = url.searchParams.get('before') ?? undefined;
@@ -1437,6 +1569,8 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/sessions\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const sessionId = path.split('/')[3]!;
       if (this.storage) await this.storage.chatSessionRepo.deleteSession(sessionId);
       this.json(res, 204, {});
@@ -1458,11 +1592,14 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/channels\/[^/]+\/messages$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const channel = decodeURIComponent(path.split('/')[3]!);
       const body = await this.readBody(req);
       const text = body['text'] as string;
-      const senderId = (body['senderId'] as string) ?? 'anonymous';
-      const senderName = (body['senderName'] as string) ?? 'You';
+      const resolvedIdentity = this.orgService.resolveHumanIdentity(authUser.userId);
+      const senderId = authUser.userId;
+      const senderName = resolvedIdentity?.name ?? (body['senderName'] as string) ?? 'You';
       const mentions = (body['mentions'] as string[]) ?? [];
       const targetAgentId = body['targetAgentId'] as string | undefined;
       const replyToId = body['replyToId'] as string | undefined;
@@ -1521,6 +1658,63 @@ export class APIServer {
         ...userMsg,
         ...(replyToAgentName ? { replyToSender: replyToAgentName, replyToText } : {}),
       } : null;
+
+      // Broadcast user message to other members so they see it in real time
+      if (enrichedUserMsg) {
+        let targetIds: string[] = [];
+        if (channel.startsWith('group:')) {
+          targetIds = this.resolveChannelHumanIds(channel).filter(id => id !== senderId);
+        } else if (channel.startsWith('dm:')) {
+          targetIds = channel.slice(3).split(':').filter(id => id !== senderId);
+        }
+        if (targetIds.length > 0) {
+          this.ws.sendToUsers(targetIds, {
+            type: 'chat:message',
+            payload: {
+              channel,
+              senderId,
+              senderType: 'human',
+              senderName,
+              text,
+              id: enrichedUserMsg.id,
+            },
+            timestamp: new Date().toISOString(),
+          });
+
+          // Create notification bell entry for each recipient
+          if (this.hitlService) {
+            const preview = text.length > 80 ? text.slice(0, 80) + '…' : text;
+            if (channel.startsWith('dm:')) {
+              for (const tid of targetIds) {
+                this.hitlService.notify({
+                  targetUserId: tid,
+                  type: 'direct_message',
+                  title: senderName,
+                  body: preview,
+                  priority: 'normal',
+                  actionType: 'navigate',
+                  actionTarget: JSON.stringify({ path: `/team?dm=${senderId}` }),
+                  metadata: { senderId, senderName, channel },
+                });
+              }
+            } else if (channel.startsWith('group:')) {
+              const gcName = this.resolveChannelName(channel);
+              for (const tid of targetIds) {
+                this.hitlService.notify({
+                  targetUserId: tid,
+                  type: 'group_message',
+                  title: `${senderName} in ${gcName}`,
+                  body: preview,
+                  priority: 'low',
+                  actionType: 'navigate',
+                  actionTarget: JSON.stringify({ path: `/team?channel=${encodeURIComponent(channel)}` }),
+                  metadata: { senderId, senderName, channel, groupName: gcName },
+                });
+              }
+            }
+          }
+        }
+      }
 
       // ── Group chat broadcast: all team members respond independently ──
       if (!isHumanChannel && channel.startsWith('group:')) {
@@ -1714,6 +1908,8 @@ export class APIServer {
     }
 
     if (path === '/api/agents' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const body = await this.readBody(req);
       const agentName = body['name'] as string;
       const roleName = body['roleName'] as string;
@@ -1721,14 +1917,25 @@ export class APIServer {
         this.json(res, 400, { error: 'name is required' });
         return;
       }
+      const orgId = (body['orgId'] as string) ?? 'default';
       const agent = await this.orgService.hireAgent({
         name: agentName,
         roleName: roleName?.trim() || undefined,
-        orgId: (body['orgId'] as string) ?? 'default',
+        orgId,
         teamId: body['teamId'] as string | undefined,
         skills: body['skills'] as string[] | undefined,
         agentRole: body['agentRole'] as 'manager' | 'worker' | undefined,
         tools: body['tools'] as AgentToolHandler[] | undefined,
+      });
+      this.auditService?.record({
+        orgId,
+        type: 'agent_hire',
+        action: 'hire_agent',
+        detail: `Agent "${agent.config.name}" hired`,
+        userId: authUser?.userId,
+        agentId: agent.id,
+        success: true,
+        metadata: { roleName: agent.role.name, teamId: body['teamId'] },
       });
       this.json(res, 201, {
         agent: {
@@ -1743,6 +1950,8 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/agents\/[^/]+\/(start|stop|daily-report|a2a|message)$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const parts = path.split('/');
       const agentId = parts[3];
       const action = parts[4];
@@ -1781,7 +1990,7 @@ export class APIServer {
       if (action === 'message') {
         const body = await this.readBody(req);
         const stream = body['stream'] as boolean | undefined;
-        const senderId = body['senderId'] as string | undefined;
+        const senderId = authUser.userId;
         const sessionId = body['sessionId'] as string | undefined ?? undefined;
         const images = (body['images'] as string[] | undefined)?.filter(Boolean);
         const fileNames = (body['fileNames'] as string[] | undefined)?.filter(Boolean);
@@ -1883,6 +2092,8 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/agents\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const agentId = path.split('/')[3]!;
       if (this.orgService.isProtectedAgent(agentId)) {
         this.json(res, 403, { error: 'The Secretary agent is a protected system agent and cannot be deleted.' });
@@ -1896,6 +2107,16 @@ export class APIServer {
       }
       const purgeFiles = url.searchParams.get('purgeFiles') === 'true';
       await this.orgService.fireAgent(agentId, { purgeFiles });
+      this.auditService?.record({
+        orgId: 'default',
+        type: 'agent_fire',
+        action: 'fire_agent',
+        detail: `Agent ${agentId} removed`,
+        userId: authUser?.userId,
+        agentId,
+        success: true,
+        metadata: { purgeFiles },
+      });
       this.json(res, 200, { deleted: true, purgedFiles: purgeFiles });
       return;
     }
@@ -1928,6 +2149,8 @@ export class APIServer {
     }
 
     if (path === '/api/group-chats' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const body = await this.readBody(req);
       const name = body['name'] as string;
       const orgId = (body['orgId'] as string) ?? 'default';
@@ -1952,6 +2175,10 @@ export class APIServer {
         }
         return { id, type: mType, name: mName };
       });
+      // Auto-add creator as a human member if not already included
+      if (creatorId && !members.some(m => m.id === creatorId)) {
+        members.unshift({ id: creatorId, type: 'human', name: creatorName ?? 'Unknown' });
+      }
       const gc = this.storage.groupChatRepo.create({ orgId, name, creatorId, creatorName, members });
       this.ws?.broadcast({
         type: 'chat:group_created',
@@ -1986,6 +2213,8 @@ export class APIServer {
 
     // PATCH /api/group-chats/:id — update group chat name
     if (path.match(/^\/api\/group-chats\/[^/]+$/) && req.method === 'PATCH') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const gcId = path.split('/').pop()!;
       if (!this.storage?.groupChatRepo) { this.json(res, 500, { error: 'Storage not initialized' }); return; }
       const body = await this.readBody(req);
@@ -1997,6 +2226,8 @@ export class APIServer {
 
     // DELETE /api/group-chats/:id — delete group chat
     if (path.match(/^\/api\/group-chats\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const gcId = path.split('/').pop()!;
       if (!this.storage?.groupChatRepo) { this.json(res, 500, { error: 'Storage not initialized' }); return; }
       this.storage.groupChatRepo.delete(gcId);
@@ -2007,6 +2238,8 @@ export class APIServer {
 
     // POST /api/group-chats/:id/members — add member
     if (path.match(/^\/api\/group-chats\/[^/]+\/members$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const gcId = path.split('/')[3]!;
       if (!this.storage?.groupChatRepo) { this.json(res, 500, { error: 'Storage not initialized' }); return; }
       const body = await this.readBody(req);
@@ -2024,6 +2257,8 @@ export class APIServer {
 
     // DELETE /api/group-chats/:id/members/:memberId — remove member
     if (path.match(/^\/api\/group-chats\/[^/]+\/members\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const parts = path.split('/');
       const gcId = parts[3]!;
       const memberId = parts[5]!;
@@ -2384,6 +2619,8 @@ export class APIServer {
     }
 
     if (path === '/api/deliverables' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
       const body = await this.readBody(req);
       try {
@@ -2406,6 +2643,8 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/deliverables\/[^/]+$/) && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
       const delivId = path.split('/')[3]!;
       const body = await this.readBody(req);
@@ -2427,6 +2666,8 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/deliverables\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
       const delivId = path.split('/')[3]!;
       await this.deliverableService.remove(delivId);
@@ -2453,7 +2694,8 @@ export class APIServer {
     }
 
     if (path === '/api/tasks' && req.method === 'POST') {
-      const authUser = await this.getAuthUser(req);
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const body = await this.readBody(req);
       const assignedAgentId = (body['assignedAgentId'] as string | undefined)?.trim();
       const reviewerAgentId = (body['reviewerAgentId'] as string | undefined)?.trim();
@@ -2492,12 +2734,25 @@ export class APIServer {
           maxRuns: scheduleRaw['maxRuns'] as number | undefined,
         } : undefined,
       });
+      this.auditService?.record({
+        orgId: task.orgId,
+        type: 'task_created',
+        action: 'create_task',
+        detail: `Task "${task.title}" created`,
+        userId: authUser?.userId,
+        agentId: task.assignedAgentId,
+        taskId: task.id,
+        projectId: task.projectId,
+        success: true,
+        metadata: { reviewerAgentId: task.reviewerAgentId, requirementId: task.requirementId },
+      });
       this.json(res, 201, { task });
       return;
     }
 
     if (path.startsWith('/api/tasks/') && req.method === 'PUT') {
-      const authUser = await this.getAuthUser(req);
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
       const body = await this.readBody(req);
 
@@ -2510,7 +2765,7 @@ export class APIServer {
       if ('assignedAgentId' in body) {
         const agentId = body['assignedAgentId'] as string | null;
         if (agentId) {
-          const task = this.taskService.assignTask(taskId, agentId);
+          const task = this.taskService.assignTask(taskId, agentId, authUser?.userId);
           this.json(res, 200, { task });
         } else {
           this.json(res, 400, { error: 'assignedAgentId is required — tasks must always have an assignee' });
@@ -2548,9 +2803,22 @@ export class APIServer {
     // Task approve/reject — the only way to transition out of pending.
     // If the UI changed the assignee before approving, that's already on the task object.
     if (path.match(/^\/api\/tasks\/[^/]+\/approve$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
       try {
-        const task = this.taskService.approveTask(taskId);
+        const task = this.taskService.approveTask(taskId, authUser?.userId);
+        this.auditService?.record({
+          orgId: task.orgId,
+          type: 'task_approval_granted',
+          action: 'approve_task',
+          detail: `Task "${task.title}" approved`,
+          userId: authUser?.userId,
+          agentId: task.assignedAgentId,
+          taskId: task.id,
+          projectId: task.projectId,
+          success: true,
+        });
         this.json(res, 200, { task });
       } catch (err: unknown) {
         this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
@@ -2559,9 +2827,22 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/tasks\/[^/]+\/reject$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
       try {
-        const task = this.taskService.rejectTask(taskId);
+        const task = this.taskService.rejectTask(taskId, authUser?.userId);
+        this.auditService?.record({
+          orgId: task.orgId,
+          type: 'task_approval_rejected',
+          action: 'reject_task',
+          detail: `Task "${task.title}" rejected`,
+          userId: authUser?.userId,
+          agentId: task.assignedAgentId,
+          taskId: task.id,
+          projectId: task.projectId,
+          success: true,
+        });
         this.json(res, 200, { task });
       } catch (err: unknown) {
         this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
@@ -2570,12 +2851,25 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/tasks\/[^/]+\/cancel$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
-      const authUser = await this.getAuthUser(req);
       const body = await this.readBody(req);
       const cascade = body['cascade'] === true;
       try {
         const task = this.taskService.cancelTask(taskId, cascade, authUser?.userId);
+        this.auditService?.record({
+          orgId: task.orgId,
+          type: 'task_cancelled',
+          action: 'cancel_task',
+          detail: `Task "${task.title}" cancelled`,
+          userId: authUser?.userId,
+          agentId: task.assignedAgentId,
+          taskId: task.id,
+          projectId: task.projectId,
+          success: true,
+          metadata: { cascade },
+        });
         this.json(res, 200, { task });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -2605,6 +2899,8 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/tasks\/[^/]+\/subtasks$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const body = await this.readBody(req);
       const taskId = path.split('/')[3]!;
       const subtask = this.taskService.addSubtask(taskId, body['title'] as string);
@@ -2615,6 +2911,8 @@ export class APIServer {
     // Complete/cancel a specific subtask
     const subtaskActionMatch = path.match(/^\/api\/tasks\/([^/]+)\/subtasks\/([^/]+)\/(complete|cancel)$/);
     if (subtaskActionMatch && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = subtaskActionMatch[1]!;
       const subtaskId = subtaskActionMatch[2]!;
       const action = subtaskActionMatch[3]!;
@@ -2628,6 +2926,8 @@ export class APIServer {
     // Delete a specific subtask
     const subtaskDeleteMatch = path.match(/^\/api\/tasks\/([^/]+)\/subtasks\/([^/]+)$/);
     if (subtaskDeleteMatch && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = subtaskDeleteMatch[1]!;
       const subtaskId = subtaskDeleteMatch[2]!;
       this.taskService.deleteSubtask(taskId, subtaskId);
@@ -2654,6 +2954,8 @@ export class APIServer {
 
     // Task execution: run a task with its assigned agent (fire-and-forget)
     if (path.match(/^\/api\/tasks\/[^/]+\/run$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
       try {
         const task = this.taskService.getTask(taskId);
@@ -2728,9 +3030,10 @@ export class APIServer {
 
     // Task comments — add a comment (text + optional image attachments + @mentions)
     if (path.match(/^\/api\/tasks\/[^/]+\/comments$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
       try {
-        const authUser = await this.getAuthUser(req);
         const body = await this.readBody(req);
         const mentions = (body['mentions'] as string[] | undefined) ?? [];
         let resolvedAuthorName = (body['authorName'] as string | undefined);
@@ -2772,17 +3075,12 @@ export class APIServer {
 
     // Task pause — explicitly pause a running task
     if (path.match(/^\/api\/tasks\/[^/]+\/pause$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
       try {
-        const task = this.taskService.getTask(taskId);
-        if (!task) { this.json(res, 404, { error: 'Task not found' }); return; }
-        if (task.status !== 'in_progress') {
-          this.json(res, 400, { error: `Cannot pause task in ${task.status} status` });
-          return;
-        }
-        const nextStatus: TaskStatus = 'blocked';
-        this.taskService.updateTaskStatus(taskId, nextStatus);
-        this.json(res, 200, { status: nextStatus, taskId });
+        this.taskService.pauseTask(taskId, authUser.userId);
+        this.json(res, 200, { status: 'blocked' as TaskStatus, taskId });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
       }
@@ -2793,15 +3091,11 @@ export class APIServer {
     // Transition blocked → in_progress via updateTaskStatus; the auto-start
     // side effect in handleTransitionSideEffects will schedule runTask.
     if (path.match(/^\/api\/tasks\/[^/]+\/resume$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
       try {
-        const task = this.taskService.getTask(taskId);
-        if (!task) { this.json(res, 404, { error: 'Task not found' }); return; }
-        if (task.status !== 'blocked') {
-          this.json(res, 400, { error: `Cannot resume task in ${task.status} status` });
-          return;
-        }
-        this.taskService.updateTaskStatus(taskId, 'in_progress');
+        this.taskService.resumeTask(taskId, authUser.userId);
         this.json(res, 202, { status: 'running', taskId });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -2811,6 +3105,8 @@ export class APIServer {
 
     // Task retry fresh — discard previous execution, start clean
     if (path.match(/^\/api\/tasks\/[^/]+\/retry$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
       try {
         const task = await this.taskService.retryTaskFresh(taskId);
@@ -2829,6 +3125,8 @@ export class APIServer {
     }
 
     if (path === '/api/orgs' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const body = await this.readBody(req);
       const org = await this.orgService.createOrganization(
         body['name'] as string,
@@ -3016,6 +3314,8 @@ export class APIServer {
 
     // Agent config update (PATCH)
     if (path.match(/^\/api\/agents\/[^/]+\/config$/) && req.method === 'PATCH') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
@@ -3130,6 +3430,8 @@ export class APIServer {
 
     // Agent memory: update daily log
     if (path.match(/^\/api\/agents\/[^/]+\/memory\/daily$/) && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
@@ -3145,6 +3447,8 @@ export class APIServer {
 
     // Agent memory: update long-term memory
     if (path.match(/^\/api\/agents\/[^/]+\/memory\/longterm$/) && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
@@ -3189,6 +3493,8 @@ export class APIServer {
 
     // Agent role/prompt files: update
     if (path.match(/^\/api\/agents\/[^/]+\/files\/[^/]+$/) && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const parts = path.split('/');
       const agentId = parts[3]!;
       const filename = decodeURIComponent(parts[5]!);
@@ -3216,6 +3522,8 @@ export class APIServer {
 
     // Agent system prompt: update (runtime only)
     if (path.match(/^\/api\/agents\/[^/]+\/system-prompt$/) && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
@@ -3259,6 +3567,8 @@ export class APIServer {
 
     // Sync agent's role files from template
     if (path.match(/^\/api\/agents\/[^/]+\/role-sync$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const agentId = path.split('/')[3]!;
       try {
         const body = await this.readBody(req);
@@ -3273,6 +3583,8 @@ export class APIServer {
 
     // Smart sync: use LLM to merge template changes while preserving agent customizations
     if (path.match(/^\/api\/agents\/[^/]+\/role-smart-sync$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const agentId = path.split('/')[3]!;
       if (!this.llmRouter) {
         this.json(res, 503, { error: 'LLM router not available for smart sync' });
@@ -3361,6 +3673,8 @@ EXPLANATION_END`;
 
     // Agent skills: add
     if (path.match(/^\/api\/agents\/[^/]+\/skills$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
@@ -3397,6 +3711,8 @@ EXPLANATION_END`;
 
     // Agent skills: remove
     if (path.match(/^\/api\/agents\/[^/]+\/skills\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const parts = path.split('/');
       const agentId = parts[3]!;
       const skillName = decodeURIComponent(parts[5]!);
@@ -4088,19 +4404,23 @@ EXPLANATION_END`;
       let users = this.orgService.listHumanUsers(targetOrgId) as unknown as Array<Record<string, unknown>>;
       if (this.storage) {
         const dbUsers = await this.storage.userRepo.listByOrg(targetOrgId);
-        const avatarMap = new Map(dbUsers.filter((u: any) => u.avatarUrl).map((u: any) => [u.id, u.avatarUrl]));
-        if (avatarMap.size > 0) {
-          users = users.map(u => {
-            const av = avatarMap.get(u.id as string);
-            return av ? { ...u, avatarUrl: av } : u;
-          });
-        }
+        const dbMap = new Map(dbUsers.map((u: any) => [u.id, u]));
+        users = users.map(u => {
+          const dbU = dbMap.get(u.id as string) as Record<string, unknown> | undefined;
+          return {
+            ...u,
+            ...(dbU?.avatarUrl ? { avatarUrl: dbU.avatarUrl } : {}),
+            hasJoined: !!dbU?.passwordHash,
+          };
+        });
       }
       this.json(res, 200, { users });
       return;
     }
 
     if (path === '/api/users' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const body = await this.readBody(req);
       const orgId = (body['orgId'] as string) ?? 'default';
       const name = body['name'] as string;
@@ -4110,8 +4430,9 @@ EXPLANATION_END`;
       const teamId = body['teamId'] as string | undefined;
       const userId = (body['id'] as string | undefined) ?? generateId('usr');
 
-      // Persist to DB if storage is available and login credentials are provided
-      if (this.storage && (email || password)) {
+      // Always persist to DB for durability (not just when email/password provided)
+      let inviteToken: string | undefined;
+      if (this.storage) {
         if (password && !email) {
           this.json(res, 400, { error: 'Email is required when setting a password' });
           return;
@@ -4125,32 +4446,140 @@ EXPLANATION_END`;
           role,
           passwordHash,
         });
+        // Generate invite token for email-only users (no password set)
+        if (email && !password) {
+          inviteToken = generateInviteToken();
+          const expires = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
+          this.storage.userRepo.setInviteToken(userId, inviteToken, expires);
+        }
       }
 
       const user = this.orgService.addHumanUser(orgId, name, role, { id: userId, email });
 
       // Add to team if specified
+      let teamError: string | undefined;
       if (teamId) {
         try {
           this.orgService.addMemberToTeam(teamId, userId, 'human');
-        } catch {
-          /* ok */
+        } catch (err) {
+          teamError = String(err);
         }
       }
 
-      this.json(res, 201, { user });
+      this.auditService?.record({
+        orgId,
+        type: 'user_created',
+        action: 'create_user',
+        detail: `User "${name}" created`,
+        userId: authUser.userId,
+        success: true,
+        metadata: { newUserId: userId, role },
+      });
+      this.json(res, 201, { user, inviteToken, ...(teamError ? { teamError } : {}) });
+      return;
+    }
+
+    if (path.match(/^\/api\/users\/[^/]+$/) && req.method === 'PATCH') {
+      const authUser = await this.getAuthUser(req);
+      const userId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      const updates: { name?: string; role?: string; email?: string } = {};
+      if (body['name'] !== undefined) updates.name = body['name'] as string;
+      if (body['role'] !== undefined) updates.role = body['role'] as string;
+      if (body['email'] !== undefined) updates.email = body['email'] as string;
+      try {
+        const user = this.orgService.updateHumanUser(userId, updates as any);
+        this.auditService?.record({
+          orgId: user.orgId,
+          type: 'user_updated',
+          action: 'update_user',
+          detail: `User "${user.name}" updated`,
+          userId: authUser?.userId,
+          success: true,
+          metadata: { targetUserId: userId, updates },
+        });
+        this.json(res, 200, { user });
+      } catch (err) {
+        this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/users\/[^/]+\/reset-password$/) && req.method === 'POST') {
+      const authUser = await this.getAuthUser(req);
+      const userId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      const newPassword = body['password'] as string;
+      if (!newPassword || newPassword.length < 6) {
+        this.json(res, 400, { error: 'Password must be at least 6 characters' });
+        return;
+      }
+      if (!this.storage) {
+        this.json(res, 500, { error: 'Storage not available' });
+        return;
+      }
+      try {
+        const hash = await hashPassword(newPassword);
+        await this.storage.userRepo.updatePassword(userId, hash);
+        this.auditService?.record({
+          orgId: 'default',
+          type: 'user_updated',
+          action: 'reset_password',
+          detail: `Password reset for user ${userId}`,
+          userId: authUser?.userId,
+          success: true,
+          metadata: { targetUserId: userId },
+        });
+        this.json(res, 200, { ok: true });
+      } catch (err) {
+        this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/users\/[^/]+\/reinvite$/) && req.method === 'POST') {
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Storage not available' });
+        return;
+      }
+      const userId = path.split('/')[3]!;
+      const userRow = this.storage.userRepo.findById(userId);
+      if (!userRow) {
+        this.json(res, 404, { error: 'User not found' });
+        return;
+      }
+      if (!userRow.email) {
+        this.json(res, 400, { error: 'User has no email address' });
+        return;
+      }
+      const inviteToken = generateInviteToken();
+      const expires = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
+      this.storage.userRepo.setInviteToken(userId, inviteToken, expires);
+      this.json(res, 200, { inviteToken });
       return;
     }
 
     if (path.startsWith('/api/users/') && req.method === 'DELETE') {
+      const authUser = await this.getAuthUser(req);
       const userId = path.split('/')[3]!;
       this.orgService.removeHumanUser(userId);
+      this.auditService?.record({
+        orgId: 'default',
+        type: 'user_deleted',
+        action: 'delete_user',
+        detail: `User ${userId} removed`,
+        userId: authUser?.userId,
+        success: true,
+        metadata: { deletedUserId: userId },
+      });
       this.json(res, 200, { deleted: true });
       return;
     }
 
     // Message routing — route to the right agent
     if (path === '/api/message' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const body = await this.readBody(req);
       const targetOrgId = (body['orgId'] as string) ?? 'default';
       const targetAgentId = this.orgService.routeMessage(targetOrgId, {
@@ -4164,7 +4593,7 @@ EXPLANATION_END`;
         return;
       }
 
-      const senderId = body['senderId'] as string | undefined;
+      const senderId = authUser.userId;
       const images = (body['images'] as string[] | undefined)?.filter(Boolean);
       const senderInfo = this.orgService.resolveHumanIdentity(senderId);
       const agent = this.orgService.getAgentManager().getAgent(targetAgentId);
@@ -5209,14 +5638,25 @@ EXPLANATION_END`;
 
     // HITL: Approvals
     if (path === '/api/approvals' && req.method === 'GET') {
+      const authUser = this.authEnabled
+        ? await this.requireAuth(req, res)
+        : await this.getAuthUser(req);
+      if (!authUser) return;
       const status = url.searchParams.get('status') as
         | 'pending'
         | 'approved'
         | 'rejected'
         | undefined;
-      this.json(res, 200, {
-        approvals: this.hitlService?.listApprovals(status ?? undefined) ?? [],
-      });
+      let approvals = this.hitlService?.listApprovals(status ?? undefined) ?? [];
+      const isPrivileged = authUser.role === 'owner' || authUser.role === 'admin';
+      if (!isPrivileged) {
+        approvals = approvals.filter(a => {
+          const ids = a.approverUserIds;
+          if (!ids || ids.length === 0) return true;
+          return ids.includes(authUser.userId);
+        });
+      }
+      this.json(res, 200, { approvals });
       return;
     }
 
@@ -5226,6 +5666,10 @@ EXPLANATION_END`;
         return;
       }
       const body = await this.readBody(req);
+      const rawApprovers = body['approverUserIds'];
+      const approverUserIds = Array.isArray(rawApprovers)
+        ? rawApprovers.map((x: unknown) => String(x))
+        : undefined;
       const approval = this.hitlService.requestApproval({
         agentId: body['agentId'] as string,
         agentName: (body['agentName'] as string) ?? 'Agent',
@@ -5234,6 +5678,7 @@ EXPLANATION_END`;
         description: body['description'] as string,
         details: body['details'] as Record<string, unknown>,
         targetUserId: body['targetUserId'] as string,
+        approverUserIds,
       });
       this.json(res, 201, { approval });
       return;
@@ -5244,11 +5689,32 @@ EXPLANATION_END`;
         this.json(res, 503, { error: 'HITL service not available' });
         return;
       }
-      const authUser = await this.getAuthUser(req);
+      const authUser = this.authEnabled
+        ? await this.requireAuth(req, res)
+        : await this.getAuthUser(req);
+      if (!authUser) return;
       const approvalId = path.split('/')[3]!;
+      const pending = this.hitlService.getApproval(approvalId);
+      if (!pending || pending.status !== 'pending') {
+        this.json(res, 404, { error: 'Approval not found or not pending' });
+        return;
+      }
+      const isPrivileged = authUser.role === 'owner' || authUser.role === 'admin';
+      const approvers = pending.approverUserIds;
+      const canRespond =
+        isPrivileged ||
+        !approvers ||
+        approvers.length === 0 ||
+        approvers.includes(authUser.userId);
+      if (!canRespond) {
+        this.json(res, 403, { error: 'Not authorized to respond to this approval' });
+        return;
+      }
       const body = await this.readBody(req);
       const approved = body['approved'] as boolean;
-      const respondedBy = (body['respondedBy'] as string) ?? authUser?.userId ?? 'anonymous';
+      const respondedBy = this.authEnabled
+        ? authUser.userId
+        : (body['respondedBy'] as string) ?? authUser.userId ?? 'anonymous';
       const comment = body['comment'] as string | undefined;
       const selectedOption = body['selectedOption'] as string | undefined;
       const result = this.hitlService.respondToApproval(
@@ -5268,9 +5734,9 @@ EXPLANATION_END`;
       if (taskId) {
         try {
           if (approved) {
-            this.taskService.approveTask(taskId);
+            this.taskService.approveTask(taskId, respondedBy);
           } else {
-            this.taskService.rejectTask(taskId);
+            this.taskService.rejectTask(taskId, respondedBy);
           }
         } catch { /* already transitioned by in-memory promise callback */ }
       }
@@ -5284,13 +5750,26 @@ EXPLANATION_END`;
         } catch { /* already transitioned by in-memory promise callback */ }
       }
 
+      this.auditService?.record({
+        orgId: 'default',
+        userId: respondedBy,
+        agentId: result.agentId,
+        type: 'approval_response',
+        action: approved ? 'approve' : 'reject',
+        detail: result.title,
+        success: approved,
+        metadata: { approvalId, taskId, requirementId, comment, selectedOption },
+      });
+
       this.json(res, 200, { approval: result });
       return;
     }
 
     // Notifications
     if (path === '/api/notifications' && req.method === 'GET') {
-      const userId = url.searchParams.get('userId') ?? 'default';
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const userId = authUser.userId;
       const unread = url.searchParams.get('unread') === 'true';
       const type = url.searchParams.get('type') ?? undefined;
       const limit = parseInt(url.searchParams.get('limit') ?? '50', 10);
@@ -5306,14 +5785,17 @@ EXPLANATION_END`;
     }
 
     if (path === '/api/notifications/mark-all-read' && req.method === 'POST') {
-      const body = await this.readBody(req);
-      const userId = (body.userId as string) ?? 'default';
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const userId = authUser.userId;
       const count = this.hitlService?.markAllNotificationsRead(userId) ?? 0;
       this.json(res, 200, { success: true, count });
       return;
     }
 
     if (path.startsWith('/api/notifications/') && path.endsWith('/read') && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const notifId = path.split('/')[3]!;
       const read = this.hitlService?.markNotificationRead(notifId);
       this.json(res, 200, { success: read ?? false });
@@ -5321,6 +5803,8 @@ EXPLANATION_END`;
     }
 
     if (path.startsWith('/api/notifications/') && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const notifId = path.split('/')[3]!;
       const read = this.hitlService?.markNotificationRead(notifId);
       this.json(res, 200, { success: read ?? false });
@@ -5423,6 +5907,8 @@ EXPLANATION_END`;
     }
 
     if (path === '/api/keys' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       if (!this.billingService) {
         this.json(res, 503, { error: 'Billing service not available' });
         return;
@@ -5439,6 +5925,8 @@ EXPLANATION_END`;
     }
 
     if (path.startsWith('/api/keys/') && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const keyId = path.split('/')[3]!;
       const revoked = this.billingService?.revokeAPIKey(keyId);
       this.json(res, 200, { revoked: revoked ?? false });
@@ -5609,6 +6097,7 @@ EXPLANATION_END`;
     // Settings — Hub Token (frontend pushes token so MCP skill servers can read it)
     if (path === '/api/settings/hub-token' && req.method === 'POST') {
       const body = await this.readBody(req);
+      const authUser = await this.getAuthUser(req);
       const token = body['token'] as string | null;
       const tokenPath = join(homedir(), '.markus', 'hub-token');
       try {
@@ -5622,6 +6111,14 @@ EXPLANATION_END`;
       } catch (err) {
         log.error('Failed to write hub token file', { error: String(err) });
       }
+      this.auditService?.record({
+        orgId: 'system',
+        type: 'settings_changed',
+        action: 'hub_token',
+        detail: token ? 'Hub token saved' : 'Hub token cleared',
+        userId: authUser?.userId,
+        success: true,
+      });
       this.json(res, 200, { ok: true });
       return;
     }
@@ -5656,6 +6153,14 @@ EXPLANATION_END`;
         } catch (e) {
           log.warn('Failed to persist defaultProvider to config file', { error: String(e) });
         }
+        this.auditService?.record({
+          orgId: 'system',
+          type: 'settings_changed',
+          action: 'llm_default_provider',
+          detail: `defaultProvider=${defaultProvider}`,
+          userId: auth.userId,
+          success: true,
+        });
         this.json(res, 200, this.llmRouter.getEnhancedSettings());
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -5690,6 +6195,14 @@ EXPLANATION_END`;
           const agent = am.getAgent(info.id);
           if (agent) agent.maxToolIterations = am.maxToolIterations;
         }
+        this.auditService?.record({
+          orgId: 'system',
+          type: 'settings_changed',
+          action: 'agent_max_tool_iterations',
+          detail: `maxToolIterations=${am.maxToolIterations}`,
+          userId: auth.userId,
+          success: true,
+        });
       }
       this.json(res, 200, { maxToolIterations: am.maxToolIterations });
       return;
@@ -5731,6 +6244,17 @@ EXPLANATION_END`;
       } catch (e) {
         log.warn('Failed to persist browser settings', { error: String(e) });
       }
+      if (Object.keys(updates).length > 0) {
+        this.auditService?.record({
+          orgId: 'system',
+          type: 'settings_changed',
+          action: 'browser',
+          detail: 'Browser automation settings updated',
+          userId: auth.userId,
+          success: true,
+          metadata: { updates },
+        });
+      }
       const { loadConfig: loadCfg } = await import('@markus/shared');
       const currentConfig = loadCfg(this.markusConfigPath);
       const browser = currentConfig.browser ?? {};
@@ -5769,6 +6293,15 @@ EXPLANATION_END`;
             cost?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
           }
         );
+        this.auditService?.record({
+          orgId: 'system',
+          type: 'settings_changed',
+          action: 'llm_provider_model_config',
+          detail: `PATCH provider ${providerName}`,
+          userId: auth.userId,
+          success: true,
+          metadata: { providerName, body },
+        });
         this.json(res, 200, this.llmRouter.getEnhancedSettings());
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -5833,6 +6366,15 @@ EXPLANATION_END`;
         } catch (e) {
           log.warn('Failed to persist new provider', { error: String(e) });
         }
+        this.auditService?.record({
+          orgId: 'system',
+          type: 'settings_changed',
+          action: 'llm_provider_add',
+          detail: `Added LLM provider ${name}`,
+          userId: auth.userId,
+          success: true,
+          metadata: { name, model, enabled: enabled !== false },
+        });
         this.json(res, 200, this.llmRouter.getEnhancedSettings());
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -5896,6 +6438,15 @@ EXPLANATION_END`;
         } catch (e) {
           log.warn('Failed to persist provider update', { error: String(e) });
         }
+        this.auditService?.record({
+          orgId: 'system',
+          type: 'settings_changed',
+          action: 'llm_provider_update',
+          detail: `Updated LLM provider ${providerName}`,
+          userId: auth.userId,
+          success: true,
+          metadata: { providerName, hasApiKey: !!apiKey, model, enabled },
+        });
         this.json(res, 200, this.llmRouter.getEnhancedSettings());
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -5928,6 +6479,15 @@ EXPLANATION_END`;
         } catch (e) {
           log.warn('Failed to persist provider deletion', { error: String(e) });
         }
+        this.auditService?.record({
+          orgId: 'system',
+          type: 'settings_changed',
+          action: 'llm_provider_delete',
+          detail: `Removed LLM provider ${providerName}`,
+          userId: auth.userId,
+          success: true,
+          metadata: { providerName },
+        });
         this.json(res, 200, this.llmRouter.getEnhancedSettings());
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -5971,6 +6531,15 @@ EXPLANATION_END`;
         } catch (e) {
           log.warn('Failed to persist custom model', { error: String(e) });
         }
+        this.auditService?.record({
+          orgId: 'system',
+          type: 'settings_changed',
+          action: 'llm_custom_model_add',
+          detail: `Custom model ${id} on provider ${providerName}`,
+          userId: auth.userId,
+          success: true,
+          metadata: { providerName, modelId: id },
+        });
         this.json(res, 200, this.llmRouter.getEnhancedSettings());
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -6003,6 +6572,15 @@ EXPLANATION_END`;
         } catch (e) {
           log.warn('Failed to persist custom model removal', { error: String(e) });
         }
+        this.auditService?.record({
+          orgId: 'system',
+          type: 'settings_changed',
+          action: 'llm_custom_model_delete',
+          detail: `Removed custom model ${modelId} from ${providerName}`,
+          userId: auth.userId,
+          success: true,
+          metadata: { providerName, modelId },
+        });
         this.json(res, 200, this.llmRouter.getEnhancedSettings());
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -6036,6 +6614,15 @@ EXPLANATION_END`;
         } catch (e) {
           log.warn('Failed to persist provider model change', { error: String(e) });
         }
+        this.auditService?.record({
+          orgId: 'system',
+          type: 'settings_changed',
+          action: 'llm_provider_model_switch',
+          detail: `Provider ${providerName} model → ${model}`,
+          userId: auth.userId,
+          success: true,
+          metadata: { providerName, model },
+        });
         this.json(res, 200, this.llmRouter.getEnhancedSettings());
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -6079,6 +6666,15 @@ EXPLANATION_END`;
         } catch (e) {
           log.warn('Failed to persist provider enabled state', { error: String(e) });
         }
+        this.auditService?.record({
+          orgId: 'system',
+          type: 'settings_changed',
+          action: 'llm_provider_toggle',
+          detail: `Provider ${providerName} enabled=${enabled}`,
+          userId: auth.userId,
+          success: true,
+          metadata: { providerName, enabled },
+        });
         this.json(res, 200, this.llmRouter.getEnhancedSettings());
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -6841,6 +7437,7 @@ EXPLANATION_END`;
 
     if (path === '/api/system/pause-all' && req.method === 'POST') {
       const body = await this.readBody(req);
+      const authUser = await this.getAuthUser(req);
       const am = this.orgService.getAgentManager();
       await am.pauseAllAgents(body['reason'] as string | undefined);
       this.auditService?.record({
@@ -6848,6 +7445,7 @@ EXPLANATION_END`;
         type: 'system_pause_all',
         action: 'pause_all',
         detail: body['reason'] as string,
+        userId: authUser?.userId,
         success: true,
       });
       this.json(res, 200, { status: 'paused', message: 'All agents paused' });
@@ -6855,12 +7453,14 @@ EXPLANATION_END`;
     }
 
     if (path === '/api/system/resume-all' && req.method === 'POST') {
+      const authUser = await this.getAuthUser(req);
       const am = this.orgService.getAgentManager();
       await am.resumeAllAgents();
       this.auditService?.record({
         orgId: 'system',
         type: 'system_resume_all',
         action: 'resume_all',
+        userId: authUser?.userId,
         success: true,
       });
       this.json(res, 200, { status: 'resumed', message: 'All agents resumed' });
@@ -6868,12 +7468,14 @@ EXPLANATION_END`;
     }
 
     if (path === '/api/system/emergency-stop' && req.method === 'POST') {
+      const authUser = await this.getAuthUser(req);
       const am = this.orgService.getAgentManager();
       await am.emergencyStop();
       this.auditService?.record({
         orgId: 'system',
         type: 'system_emergency_stop',
         action: 'emergency_stop',
+        userId: authUser?.userId,
         success: true,
       });
       this.json(res, 200, { status: 'stopped', message: 'EMERGENCY STOP — all agents terminated' });
@@ -6926,6 +7528,7 @@ EXPLANATION_END`;
 
     if (path === '/api/system/announcements' && req.method === 'POST') {
       const body = await this.readBody(req);
+      const authUser = await this.getAuthUser(req);
       const am = this.orgService.getAgentManager();
       const announcement = {
         id: generateId('ann'),
@@ -6946,6 +7549,7 @@ EXPLANATION_END`;
         type: 'announcement_broadcast',
         action: 'broadcast',
         detail: announcement.title,
+        userId: authUser?.userId,
         success: true,
       });
       this.json(res, 201, { announcement });
@@ -7138,7 +7742,8 @@ EXPLANATION_END`;
     }
 
     if (path === '/api/requirements' && req.method === 'POST') {
-      const authUser = await this.getAuthUser(req);
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const body = await this.readBody(req);
       if (!this.requirementService) {
         this.json(res, 503, { error: 'Requirement service not available' });
@@ -7191,18 +7796,19 @@ EXPLANATION_END`;
     }
 
     if (path.match(/^\/api\/requirements\/[^/]+\/status$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const reqId = path.split('/')[3]!;
       if (!this.requirementService) {
         this.json(res, 503, { error: 'Requirement service not available' });
         return;
       }
       const body = await this.readBody(req);
-      const authUser = await this.getAuthUser(req);
       try {
         const requirement = this.requirementService.updateRequirementStatus(
           reqId,
           body['status'] as string as RequirementStatus,
-          authUser?.userId ?? 'unknown'
+          authUser.userId
         );
         this.json(res, 200, { requirement });
       } catch (e) {
@@ -7212,17 +7818,27 @@ EXPLANATION_END`;
     }
 
     if (path.match(/^\/api\/requirements\/[^/]+\/approve$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const reqId = path.split('/')[3]!;
       if (!this.requirementService) {
         this.json(res, 503, { error: 'Requirement service not available' });
         return;
       }
-      const authUser = await this.getAuthUser(req);
       try {
         const requirement = this.requirementService.approveRequirement(
           reqId,
-          authUser?.userId ?? 'unknown'
+          authUser.userId
         );
+        this.auditService?.record({
+          orgId: requirement.orgId,
+          type: 'requirement_approved',
+          action: 'approve_requirement',
+          detail: `Requirement "${requirement.title}" approved`,
+          userId: authUser?.userId,
+          success: true,
+          metadata: { requirementId: reqId, projectId: requirement.projectId },
+        });
         this.json(res, 200, { requirement });
       } catch (e) {
         this.json(res, 400, { error: String(e) });
@@ -7231,19 +7847,29 @@ EXPLANATION_END`;
     }
 
     if (path.match(/^\/api\/requirements\/[^/]+\/reject$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const reqId = path.split('/')[3]!;
       if (!this.requirementService) {
         this.json(res, 503, { error: 'Requirement service not available' });
         return;
       }
-      const authUser = await this.getAuthUser(req);
       const body = await this.readBody(req);
       try {
         const requirement = this.requirementService.rejectRequirement(
           reqId,
-          authUser?.userId ?? 'unknown',
+          authUser.userId,
           (body['reason'] as string) ?? ''
         );
+        this.auditService?.record({
+          orgId: requirement.orgId,
+          type: 'requirement_rejected',
+          action: 'reject_requirement',
+          detail: `Requirement "${requirement.title}" rejected`,
+          userId: authUser?.userId,
+          success: true,
+          metadata: { requirementId: reqId, reason: (body['reason'] as string) ?? '' },
+        });
         this.json(res, 200, { requirement });
       } catch (e) {
         this.json(res, 400, { error: String(e) });
@@ -7252,6 +7878,8 @@ EXPLANATION_END`;
     }
 
     if (path.match(/^\/api\/requirements\/[^/]+\/cancel$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const reqId = path.split('/')[3]!;
       if (!this.requirementService) {
         this.json(res, 503, { error: 'Requirement service not available' });
@@ -7267,6 +7895,8 @@ EXPLANATION_END`;
     }
 
     if (path.match(/^\/api\/requirements\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const reqId = path.split('/')[3]!;
       if (!this.requirementService) {
         this.json(res, 503, { error: 'Requirement service not available' });
@@ -7284,9 +7914,10 @@ EXPLANATION_END`;
     // ── Requirement Comments ──────────────────────────────────────────────
 
     if (path.match(/^\/api\/requirements\/[^/]+\/comments$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const reqId = path.split('/')[3]!;
       try {
-        const authUser = await this.getAuthUser(req);
         const body = await this.readBody(req);
         const mentions = (body['mentions'] as string[] | undefined) ?? [];
         let resolvedAuthorName = (body['authorName'] as string | undefined);
@@ -7339,6 +7970,7 @@ EXPLANATION_END`;
         return;
       }
       const body = await this.readBody(req);
+      const authUser = await this.getAuthUser(req);
       const project = this.projectService.createProject({
         orgId: (body['orgId'] as string) ?? 'default',
         name: body['name'] as string,
@@ -7346,6 +7978,16 @@ EXPLANATION_END`;
         repositories: body['repositories'] as any,
         teamIds: body['teamIds'] as any,
         governancePolicy: body['governancePolicy'] as any,
+        createdBy: authUser?.userId,
+      });
+      this.auditService?.record({
+        orgId: project.orgId,
+        type: 'project_created',
+        action: 'create_project',
+        detail: `Project "${project.name}" created`,
+        userId: authUser?.userId,
+        success: true,
+        metadata: { projectId: project.id },
       });
       this.json(res, 201, { project });
       return;
