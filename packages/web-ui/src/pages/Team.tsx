@@ -116,16 +116,17 @@ function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
   return base;
 }
 
-function channelMsgToChat(m: ChannelMessageInfo): ChatMsg {
+function channelMsgToChat(m: ChannelMessageInfo, authUserId?: string): ChatMsg {
   const isError = m.senderType === 'system' || (m.senderType === 'agent' && m.text.startsWith('⚠'));
+  const isSelf = m.senderType === 'human' && (!authUserId || m.senderId === authUserId);
   const base: ChatMsg = {
     id: m.id,
-    sender: m.senderType === 'human' ? 'user' : 'agent',
+    sender: isSelf ? 'user' : 'agent',
     text: m.text,
     time: new Date(m.createdAt).toLocaleTimeString(),
     rawCreatedAt: m.createdAt,
-    agentName: m.senderType !== 'human' ? m.senderName : undefined,
-    agentId: m.senderType !== 'human' ? m.senderId : undefined,
+    agentName: isSelf ? undefined : m.senderName,
+    agentId: isSelf ? undefined : m.senderId,
     isError,
     replyToId: m.replyToId,
     replyToSender: m.replyToSender,
@@ -1047,7 +1048,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     const key = bufferKey ?? `ch:${channel}`;
     try {
       const result = await api.channels.getMessages(channel, 50);
-      const msgs = result.messages.map(channelMsgToChat);
+      const msgs = result.messages.map(m => channelMsgToChat(m, authUser?.id));
       msgBuffers.current.set(key, msgs);
       if (currentConvKeyRef.current === key) {
         setMessages(msgs);
@@ -1097,7 +1098,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       if (chatMode === 'channel' || chatMode === 'dm') {
         const channelName = chatMode === 'dm' ? makeDmChannel(authUser?.id ?? '', activeDmUserId) : activeChannel;
         const result = await api.channels.getMessages(channelName, 50, oldestMsgId.current);
-        const newMsgs = result.messages.map(channelMsgToChat);
+        const newMsgs = result.messages.map(m => channelMsgToChat(m, authUser?.id));
         skipScrollRef.current = true;
         setMessages(prev => {
           const combined = [...newMsgs, ...prev];
@@ -1251,13 +1252,14 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       const wsSenderName = (p['senderName'] as string) ?? (p['agentId'] as string) ?? t('page.fallbackAgent');
       const wsMeta = p['metadata'] as ChannelMsgMetadata | undefined;
 
+      const isSelf = senderType === 'human' && wsSenderId === (authUser?.id ?? '');
       const newMsg: ChatMsg = {
         id: `ws_${Date.now()}_${wsSenderId}`,
-        sender: senderType === 'human' ? 'user' : 'agent',
+        sender: isSelf ? 'user' : 'agent',
         text: wsText,
         time: new Date().toLocaleTimeString(),
-        agentName: senderType === 'agent' ? wsSenderName : undefined,
-        agentId: senderType === 'agent' ? wsSenderId : undefined,
+        agentName: isSelf ? undefined : wsSenderName,
+        agentId: isSelf ? undefined : wsSenderId,
         replyToId: (p['replyToId'] as string) ?? undefined,
         replyToSender: (p['replyToSender'] as string) ?? undefined,
         replyToText: (p['replyToText'] as string) ?? undefined,
@@ -1303,6 +1305,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   useEffect(() => {
     const unsub = wsClient.on('chat:proactive_message', (event) => {
       const p = event.payload;
+      const targetUserId = p['targetUserId'] as string | undefined;
+      if (targetUserId && targetUserId !== authUser?.id) return;
       const agentId = (p['agentId'] as string) ?? '';
       const agentName = (p['agentName'] as string) ?? t('page.fallbackAgent');
       const message = (p['message'] as string) ?? '';
@@ -1446,7 +1450,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         updateConvMsgs(sendKey, prev => {
           const without = prev.filter(m => m.id !== optId);
           const newMsgs: ChatMsg[] = [];
-          if (result.userMessage) newMsgs.push(channelMsgToChat(result.userMessage));
+          if (result.userMessage) newMsgs.push(channelMsgToChat(result.userMessage, authUser?.id));
           return newMsgs.length > 0 ? [...without, ...newMsgs] : prev;
         });
       } catch (e) {
@@ -1473,8 +1477,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         updateConvMsgs(sendKey, prev => {
           const without = prev.filter(m => m.id !== optId);
           const newMsgs: ChatMsg[] = [];
-          if (result.userMessage) newMsgs.push(channelMsgToChat(result.userMessage));
-          if (result.agentMessage) newMsgs.push(channelMsgToChat(result.agentMessage));
+          if (result.userMessage) newMsgs.push(channelMsgToChat(result.userMessage, authUser?.id));
+          if (result.agentMessage) newMsgs.push(channelMsgToChat(result.agentMessage, authUser?.id));
           return newMsgs.length > 0 ? [...without, ...newMsgs] : prev;
         });
       } catch (e) {

@@ -100,6 +100,7 @@ export function App() {
     api.auth.me()
       .then(({ user }) => {
         setAuthUser(user);
+        wsClient.connect(user.id);
         checkLlmConfig();
         api.health().then(h => {
           if (h.updateAvailable && h.latestVersion) {

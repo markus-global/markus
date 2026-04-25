@@ -590,9 +590,21 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       log.warn('Legacy chat message migration failed', { error: String(e) });
     }
 
+    // Resolve the owner/first user for session ownership
+    const orgUsers = storage.userRepo.listByOrg('default');
+    const ownerUser = orgUsers.find((u: any) => u.role === 'owner') ?? orgUsers[0];
+    const defaultSessionUserId: string = ownerUser?.id ?? 'default';
+
+    // Migrate legacy sessions with NULL user_id to the owner
+    try {
+      storage.chatSessionRepo.migrateNullUserSessions(defaultSessionUserId);
+    } catch (e) {
+      log.warn('NULL user_id session migration failed', { error: String(e) });
+    }
+
     for (const info of agentManager.listAgents()) {
       try {
-        storage.chatSessionRepo.getOrCreateMainSession(info.id);
+        storage.chatSessionRepo.getOrCreateMainSession(info.id, defaultSessionUserId);
       } catch { /* skip */ }
     }
     const ws = apiServer.getWSBroadcaster();
@@ -602,7 +614,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         metadata: Record<string, unknown>;
       };
       try {
-        const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId);
+        const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId, defaultSessionUserId);
         const msg = storage.chatSessionRepo.appendMessage(
           mainSession.id, agentId, 'assistant', message, 0, metadata,
         );
@@ -611,7 +623,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         ws.broadcastProactiveMessage(agentId, agent.config.name, mainSession.id, msg.id, message, {
           ...metadata,
           isMainSession: true,
-        });
+        }, defaultSessionUserId);
       } catch (e) {
         log.warn('Failed to persist activity log', { agentId, error: String(e) });
       }
@@ -623,7 +635,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         taskId?: string; requirementId?: string;
       };
       try {
-        const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId);
+        const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId, defaultSessionUserId);
         const agent = agentManager.getAgent(agentId);
         const formattedMsg = `**${title}**\n\n${body}`;
         const msg = storage.chatSessionRepo.appendMessage(
@@ -632,7 +644,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         storage.chatSessionRepo.updateLastMessage(mainSession.id);
         ws.broadcastProactiveMessage(agentId, agent.config.name, mainSession.id, msg.id, formattedMsg, {
           isMainSession: true,
-        });
+        }, defaultSessionUserId);
         const hasTask = !!taskId;
         hitlService.notify({
           targetUserId: 'all',
@@ -653,7 +665,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     agentManager.getEventBus().on('agent:escalation', async (evt: unknown) => {
       const { agentId, reason } = evt as { agentId: string; reason: string };
       try {
-        const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId);
+        const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId, defaultSessionUserId);
         const agent = agentManager.getAgent(agentId);
         const formattedMsg = `**I need help**\n\n${reason}`;
         const msg = storage.chatSessionRepo.appendMessage(
@@ -662,7 +674,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         storage.chatSessionRepo.updateLastMessage(mainSession.id);
         ws.broadcastProactiveMessage(agentId, agent.config.name, mainSession.id, msg.id, formattedMsg, {
           isMainSession: true,
-        });
+        }, defaultSessionUserId);
         hitlService.notify({
           targetUserId: 'all',
           type: 'system',
@@ -684,7 +696,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     // Also create main session for newly created agents
     agentManager.getEventBus().on('agent:created', (evt: unknown) => {
       const { agentId } = evt as { agentId: string };
-      try { storage.chatSessionRepo.getOrCreateMainSession(agentId); } catch { /* skip */ }
+      try { storage.chatSessionRepo.getOrCreateMainSession(agentId, defaultSessionUserId); } catch { /* skip */ }
     });
   }
 

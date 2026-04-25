@@ -1813,32 +1813,42 @@ export class SqliteChatSessionRepo {
     };
   }
 
-  getOrCreateMainSession(agentId: string) {
-    const existing = this.db
-      .prepare('SELECT * FROM chat_sessions WHERE agent_id = ? AND is_main = 1 LIMIT 1')
-      .get(agentId) as Record<string, unknown> | undefined;
-    if (existing) return this._mapSession(existing);
-    // Promote the oldest existing session to main instead of creating a duplicate
-    const oldest = this.db
-      .prepare('SELECT * FROM chat_sessions WHERE agent_id = ? ORDER BY created_at ASC LIMIT 1')
-      .get(agentId) as Record<string, unknown> | undefined;
+  getOrCreateMainSession(agentId: string, userId?: string) {
+    const existing = userId
+      ? this.db.prepare('SELECT * FROM chat_sessions WHERE agent_id = ? AND user_id = ? AND is_main = 1 LIMIT 1').get(agentId, userId)
+      : this.db.prepare('SELECT * FROM chat_sessions WHERE agent_id = ? AND is_main = 1 LIMIT 1').get(agentId);
+    if (existing) return this._mapSession(existing as Record<string, unknown>);
+    // Promote the oldest existing session for this user to main
+    const oldest = userId
+      ? this.db.prepare('SELECT * FROM chat_sessions WHERE agent_id = ? AND user_id = ? ORDER BY created_at ASC LIMIT 1').get(agentId, userId)
+      : this.db.prepare('SELECT * FROM chat_sessions WHERE agent_id = ? ORDER BY created_at ASC LIMIT 1').get(agentId);
     if (oldest) {
-      const title = (oldest['title'] as string) || 'Main';
+      const row = oldest as Record<string, unknown>;
+      const title = (row['title'] as string) || 'Main';
       this.db.prepare('UPDATE chat_sessions SET is_main = 1, title = ? WHERE id = ?')
-        .run(title, oldest['id'] as string);
-      oldest['is_main'] = 1;
-      oldest['title'] = title;
-      return this._mapSession(oldest);
+        .run(title, row['id'] as string);
+      row['is_main'] = 1;
+      row['title'] = title;
+      return this._mapSession(row);
     }
     const id = generateId('cs');
     const ts = now();
     this.db
       .prepare('INSERT INTO chat_sessions (id, agent_id, user_id, title, is_main, created_at, last_message_at) VALUES (?,?,?,?,1,?,?)')
-      .run(id, agentId, null, 'Main', ts, ts);
-    return { id, agentId, userId: null, title: 'Main', isMain: true, createdAt: new Date(ts), lastMessageAt: new Date(ts) };
+      .run(id, agentId, userId ?? null, 'Main', ts, ts);
+    return { id, agentId, userId: userId ?? null, title: 'Main', isMain: true, createdAt: new Date(ts), lastMessageAt: new Date(ts) };
   }
 
-  getSessionsByAgent(agentId: string, limit = 50) {
+  getSessionsByAgent(agentId: string, limit = 50, userId?: string) {
+    if (userId) {
+      return (
+        this.db
+          .prepare(
+            'SELECT * FROM chat_sessions WHERE agent_id = ? AND user_id = ? ORDER BY is_main DESC, last_message_at DESC LIMIT ?'
+          )
+          .all(agentId, userId, limit) as Record<string, unknown>[]
+      ).map(r => this._mapSession(r));
+    }
     return (
       this.db
         .prepare(
@@ -2017,6 +2027,21 @@ export class SqliteChatSessionRepo {
       log.info(`Migrated ${migrated} legacy chat messages to segment format`);
     }
     return migrated;
+  }
+
+  /**
+   * Migrate sessions with user_id = NULL to the given default userId.
+   * Called once at startup to fix legacy data from before per-user session isolation.
+   */
+  migrateNullUserSessions(defaultUserId: string): number {
+    const result = this.db.prepare(
+      'UPDATE chat_sessions SET user_id = ? WHERE user_id IS NULL'
+    ).run(defaultUserId);
+    const count = Number(result.changes);
+    if (count > 0) {
+      log.info(`Migrated ${count} chat sessions with NULL user_id to user ${defaultUserId}`);
+    }
+    return count;
   }
 
   private _parseContentToSegments(content: string, msgCreatedAt?: string): Array<Record<string, unknown>> {

@@ -1173,10 +1173,17 @@ export function ChatTeamSidebar({
           teams={teams}
           onClose={() => setShowAddHuman(null)}
           onAdd={async (name, role, email, password, teamId) => {
-            await api.users.create(name, role, undefined, email, password, teamId);
-            setShowAddHuman(null);
-            onRefreshTeams();
-            onRefreshHumans?.();
+            try {
+              const result = await api.users.create(name, role, undefined, email, password, teamId);
+              if (result.teamError) {
+                alert(`User created but failed to add to team: ${result.teamError}`);
+              }
+              setShowAddHuman(null);
+              onRefreshTeams();
+              onRefreshHumans?.();
+            } catch (e) {
+              alert(`Failed to create user: ${e instanceof Error ? e.message : String(e)}`);
+            }
           }}
         />
       )}

@@ -235,9 +235,9 @@ export class APIServer {
           persistedMsgId = saved.id;
         }
 
-        // Broadcast to frontend via WebSocket
-        this.ws.broadcast({
-          type: 'chat:message',
+        // Send to frontend via WebSocket (scoped for DM/notes channels)
+        const channelEvent = {
+          type: 'chat:message' as const,
           payload: {
             channel: channelKey,
             senderId,
@@ -246,7 +246,15 @@ export class APIServer {
             text: cleanText,
           },
           timestamp: new Date().toISOString(),
-        });
+        };
+        if (channelKey.startsWith('dm:') || channelKey.startsWith('notes:')) {
+          const participants = channelKey.startsWith('notes:')
+            ? [channelKey.slice(6)]
+            : channelKey.slice(3).split(':');
+          this.ws.sendToUsers(participants, channelEvent);
+        } else {
+          this.ws.broadcast(channelEvent);
+        }
 
         // Resolve all agent members in this group channel
         let allAgentIds: string[] = [];
@@ -699,7 +707,7 @@ export class APIServer {
   ): Promise<void> {
     if (!this.storage) return;
     try {
-      const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 1);
+      const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 1, senderId);
       let session = sessions[0];
       if (!session) {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
@@ -930,9 +938,9 @@ export class APIServer {
         persistedMsgId = saved.id;
       }
 
-      // Broadcast via WebSocket
-      this.ws.broadcast({
-        type: 'chat:message',
+      // Send via WebSocket (scoped for DM/notes channels)
+      const replyEvent = {
+        type: 'chat:message' as const,
         payload: {
           channel,
           senderId: agentId,
@@ -947,7 +955,15 @@ export class APIServer {
           } : {}),
         },
         timestamp: new Date().toISOString(),
-      });
+      };
+      if (channel.startsWith('dm:') || channel.startsWith('notes:')) {
+        const participants = channel.startsWith('notes:')
+          ? [channel.slice(6)]
+          : channel.slice(3).split(':');
+        this.ws.sendToUsers(participants, replyEvent);
+      } else {
+        this.ws.broadcast(replyEvent);
+      }
 
       // ── Agent-to-agent chain: parse @mentions in the reply ──
       const allAgentIds = chainCtx?.allAgentIds ?? [];
@@ -1332,6 +1348,16 @@ export class APIServer {
       const hash = await hashPassword(password);
       await this.storage.userRepo.updatePassword(userRow.id as string, hash);
       this.storage.userRepo.clearInviteToken(userRow.id as string);
+      await this.storage.userRepo.updateLastLogin(userRow.id as string);
+      const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
+      const jwtToken = await signToken(
+        { userId: userRow.id, orgId: userRow.orgId, role: userRow.role, exp },
+        this.jwtSecret
+      );
+      res.setHeader(
+        'Set-Cookie',
+        `markus_token=${jwtToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
+      );
       this.json(res, 200, { ok: true, email: userRow.email });
       return;
     }
@@ -1473,22 +1499,33 @@ export class APIServer {
 
     // ── Chat sessions ──────────────────────────────────────────────────────
     if (path.match(/^\/api\/agents\/[^/]+\/sessions$/) && req.method === 'GET') {
+      const authUser = await this.getAuthUser(req);
       const agentId = path.split('/')[3]!;
       if (!this.storage) {
         this.json(res, 200, { sessions: [] });
         return;
       }
       const limit = parseInt(url.searchParams.get('limit') ?? '20');
-      const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, limit);
+      const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, limit, authUser?.userId);
       this.json(res, 200, { sessions });
       return;
     }
 
     if (path.match(/^\/api\/sessions\/[^/]+\/messages$/) && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const sessionId = path.split('/')[3]!;
       if (!this.storage) {
         this.json(res, 200, { messages: [], hasMore: false });
         return;
+      }
+      const session = this.storage.chatSessionRepo.getSession(sessionId);
+      if (session && session.userId && session.userId !== authUser.userId) {
+        const isAdminOrOwner = authUser.role === 'owner' || authUser.role === 'admin';
+        if (!isAdminOrOwner) {
+          this.json(res, 403, { error: 'Access denied: this session belongs to another user' });
+          return;
+        }
       }
       const limit = parseInt(url.searchParams.get('limit') ?? '50');
       const before = url.searchParams.get('before') ?? undefined;
@@ -1498,6 +1535,8 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/sessions\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const sessionId = path.split('/')[3]!;
       if (this.storage) await this.storage.chatSessionRepo.deleteSession(sessionId);
       this.json(res, 204, {});
@@ -1519,11 +1558,14 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/channels\/[^/]+\/messages$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const channel = decodeURIComponent(path.split('/')[3]!);
       const body = await this.readBody(req);
       const text = body['text'] as string;
-      const senderId = (body['senderId'] as string) ?? 'anonymous';
-      const senderName = (body['senderName'] as string) ?? 'You';
+      const resolvedIdentity = this.orgService.resolveHumanIdentity(authUser.userId);
+      const senderId = authUser.userId;
+      const senderName = resolvedIdentity?.name ?? (body['senderName'] as string) ?? 'You';
       const mentions = (body['mentions'] as string[]) ?? [];
       const targetAgentId = body['targetAgentId'] as string | undefined;
       const replyToId = body['replyToId'] as string | undefined;
@@ -1775,8 +1817,9 @@ export class APIServer {
     }
 
     if (path === '/api/agents' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const body = await this.readBody(req);
-      const authUser = await this.getAuthUser(req);
       const agentName = body['name'] as string;
       const roleName = body['roleName'] as string;
       if (!agentName?.trim()) {
@@ -1816,6 +1859,8 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/agents\/[^/]+\/(start|stop|daily-report|a2a|message)$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const parts = path.split('/');
       const agentId = parts[3];
       const action = parts[4];
@@ -1854,7 +1899,7 @@ export class APIServer {
       if (action === 'message') {
         const body = await this.readBody(req);
         const stream = body['stream'] as boolean | undefined;
-        const senderId = body['senderId'] as string | undefined;
+        const senderId = authUser.userId;
         const sessionId = body['sessionId'] as string | undefined ?? undefined;
         const images = (body['images'] as string[] | undefined)?.filter(Boolean);
         const fileNames = (body['fileNames'] as string[] | undefined)?.filter(Boolean);
@@ -1956,8 +2001,9 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/agents\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const agentId = path.split('/')[3]!;
-      const authUser = await this.getAuthUser(req);
       if (this.orgService.isProtectedAgent(agentId)) {
         this.json(res, 403, { error: 'The Secretary agent is a protected system agent and cannot be deleted.' });
         return;
@@ -2012,6 +2058,8 @@ export class APIServer {
     }
 
     if (path === '/api/group-chats' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const body = await this.readBody(req);
       const name = body['name'] as string;
       const orgId = (body['orgId'] as string) ?? 'default';
@@ -2070,6 +2118,8 @@ export class APIServer {
 
     // PATCH /api/group-chats/:id — update group chat name
     if (path.match(/^\/api\/group-chats\/[^/]+$/) && req.method === 'PATCH') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const gcId = path.split('/').pop()!;
       if (!this.storage?.groupChatRepo) { this.json(res, 500, { error: 'Storage not initialized' }); return; }
       const body = await this.readBody(req);
@@ -2081,6 +2131,8 @@ export class APIServer {
 
     // DELETE /api/group-chats/:id — delete group chat
     if (path.match(/^\/api\/group-chats\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const gcId = path.split('/').pop()!;
       if (!this.storage?.groupChatRepo) { this.json(res, 500, { error: 'Storage not initialized' }); return; }
       this.storage.groupChatRepo.delete(gcId);
@@ -2091,6 +2143,8 @@ export class APIServer {
 
     // POST /api/group-chats/:id/members — add member
     if (path.match(/^\/api\/group-chats\/[^/]+\/members$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const gcId = path.split('/')[3]!;
       if (!this.storage?.groupChatRepo) { this.json(res, 500, { error: 'Storage not initialized' }); return; }
       const body = await this.readBody(req);
@@ -2108,6 +2162,8 @@ export class APIServer {
 
     // DELETE /api/group-chats/:id/members/:memberId — remove member
     if (path.match(/^\/api\/group-chats\/[^/]+\/members\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const parts = path.split('/');
       const gcId = parts[3]!;
       const memberId = parts[5]!;
@@ -2468,6 +2524,8 @@ export class APIServer {
     }
 
     if (path === '/api/deliverables' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
       const body = await this.readBody(req);
       try {
@@ -2490,6 +2548,8 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/deliverables\/[^/]+$/) && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
       const delivId = path.split('/')[3]!;
       const body = await this.readBody(req);
@@ -2511,6 +2571,8 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/deliverables\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
       const delivId = path.split('/')[3]!;
       await this.deliverableService.remove(delivId);
@@ -2537,7 +2599,8 @@ export class APIServer {
     }
 
     if (path === '/api/tasks' && req.method === 'POST') {
-      const authUser = await this.getAuthUser(req);
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const body = await this.readBody(req);
       const assignedAgentId = (body['assignedAgentId'] as string | undefined)?.trim();
       const reviewerAgentId = (body['reviewerAgentId'] as string | undefined)?.trim();
@@ -2593,7 +2656,8 @@ export class APIServer {
     }
 
     if (path.startsWith('/api/tasks/') && req.method === 'PUT') {
-      const authUser = await this.getAuthUser(req);
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
       const body = await this.readBody(req);
 
@@ -2644,8 +2708,9 @@ export class APIServer {
     // Task approve/reject — the only way to transition out of pending.
     // If the UI changed the assignee before approving, that's already on the task object.
     if (path.match(/^\/api\/tasks\/[^/]+\/approve$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
-      const authUser = await this.getAuthUser(req);
       try {
         const task = this.taskService.approveTask(taskId, authUser?.userId);
         this.auditService?.record({
@@ -2667,8 +2732,9 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/tasks\/[^/]+\/reject$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
-      const authUser = await this.getAuthUser(req);
       try {
         const task = this.taskService.rejectTask(taskId, authUser?.userId);
         this.auditService?.record({
@@ -2690,8 +2756,9 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/tasks\/[^/]+\/cancel$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
-      const authUser = await this.getAuthUser(req);
       const body = await this.readBody(req);
       const cascade = body['cascade'] === true;
       try {
@@ -2737,6 +2804,8 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/tasks\/[^/]+\/subtasks$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const body = await this.readBody(req);
       const taskId = path.split('/')[3]!;
       const subtask = this.taskService.addSubtask(taskId, body['title'] as string);
@@ -2747,6 +2816,8 @@ export class APIServer {
     // Complete/cancel a specific subtask
     const subtaskActionMatch = path.match(/^\/api\/tasks\/([^/]+)\/subtasks\/([^/]+)\/(complete|cancel)$/);
     if (subtaskActionMatch && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = subtaskActionMatch[1]!;
       const subtaskId = subtaskActionMatch[2]!;
       const action = subtaskActionMatch[3]!;
@@ -2760,6 +2831,8 @@ export class APIServer {
     // Delete a specific subtask
     const subtaskDeleteMatch = path.match(/^\/api\/tasks\/([^/]+)\/subtasks\/([^/]+)$/);
     if (subtaskDeleteMatch && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = subtaskDeleteMatch[1]!;
       const subtaskId = subtaskDeleteMatch[2]!;
       this.taskService.deleteSubtask(taskId, subtaskId);
@@ -2786,6 +2859,8 @@ export class APIServer {
 
     // Task execution: run a task with its assigned agent (fire-and-forget)
     if (path.match(/^\/api\/tasks\/[^/]+\/run$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
       try {
         const task = this.taskService.getTask(taskId);
@@ -2860,9 +2935,10 @@ export class APIServer {
 
     // Task comments — add a comment (text + optional image attachments + @mentions)
     if (path.match(/^\/api\/tasks\/[^/]+\/comments$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
       try {
-        const authUser = await this.getAuthUser(req);
         const body = await this.readBody(req);
         const mentions = (body['mentions'] as string[] | undefined) ?? [];
         let resolvedAuthorName = (body['authorName'] as string | undefined);
@@ -2904,10 +2980,11 @@ export class APIServer {
 
     // Task pause — explicitly pause a running task
     if (path.match(/^\/api\/tasks\/[^/]+\/pause$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
-      const authUser = await this.getAuthUser(req);
       try {
-        this.taskService.pauseTask(taskId, authUser?.userId);
+        this.taskService.pauseTask(taskId, authUser.userId);
         this.json(res, 200, { status: 'blocked' as TaskStatus, taskId });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -2919,10 +2996,11 @@ export class APIServer {
     // Transition blocked → in_progress via updateTaskStatus; the auto-start
     // side effect in handleTransitionSideEffects will schedule runTask.
     if (path.match(/^\/api\/tasks\/[^/]+\/resume$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
-      const authUser = await this.getAuthUser(req);
       try {
-        this.taskService.resumeTask(taskId, authUser?.userId);
+        this.taskService.resumeTask(taskId, authUser.userId);
         this.json(res, 202, { status: 'running', taskId });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -2932,6 +3010,8 @@ export class APIServer {
 
     // Task retry fresh — discard previous execution, start clean
     if (path.match(/^\/api\/tasks\/[^/]+\/retry$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const taskId = path.split('/')[3]!;
       try {
         const task = await this.taskService.retryTaskFresh(taskId);
@@ -2950,6 +3030,8 @@ export class APIServer {
     }
 
     if (path === '/api/orgs' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const body = await this.readBody(req);
       const org = await this.orgService.createOrganization(
         body['name'] as string,
@@ -3137,6 +3219,8 @@ export class APIServer {
 
     // Agent config update (PATCH)
     if (path.match(/^\/api\/agents\/[^/]+\/config$/) && req.method === 'PATCH') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
@@ -3251,6 +3335,8 @@ export class APIServer {
 
     // Agent memory: update daily log
     if (path.match(/^\/api\/agents\/[^/]+\/memory\/daily$/) && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
@@ -3266,6 +3352,8 @@ export class APIServer {
 
     // Agent memory: update long-term memory
     if (path.match(/^\/api\/agents\/[^/]+\/memory\/longterm$/) && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
@@ -3310,6 +3398,8 @@ export class APIServer {
 
     // Agent role/prompt files: update
     if (path.match(/^\/api\/agents\/[^/]+\/files\/[^/]+$/) && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const parts = path.split('/');
       const agentId = parts[3]!;
       const filename = decodeURIComponent(parts[5]!);
@@ -3337,6 +3427,8 @@ export class APIServer {
 
     // Agent system prompt: update (runtime only)
     if (path.match(/^\/api\/agents\/[^/]+\/system-prompt$/) && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
@@ -3380,6 +3472,8 @@ export class APIServer {
 
     // Sync agent's role files from template
     if (path.match(/^\/api\/agents\/[^/]+\/role-sync$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const agentId = path.split('/')[3]!;
       try {
         const body = await this.readBody(req);
@@ -3394,6 +3488,8 @@ export class APIServer {
 
     // Smart sync: use LLM to merge template changes while preserving agent customizations
     if (path.match(/^\/api\/agents\/[^/]+\/role-smart-sync$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const agentId = path.split('/')[3]!;
       if (!this.llmRouter) {
         this.json(res, 503, { error: 'LLM router not available for smart sync' });
@@ -3482,6 +3578,8 @@ EXPLANATION_END`;
 
     // Agent skills: add
     if (path.match(/^\/api\/agents\/[^/]+\/skills$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
@@ -3518,6 +3616,8 @@ EXPLANATION_END`;
 
     // Agent skills: remove
     if (path.match(/^\/api\/agents\/[^/]+\/skills\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const parts = path.split('/');
       const agentId = parts[3]!;
       const skillName = decodeURIComponent(parts[5]!);
@@ -4222,8 +4322,9 @@ EXPLANATION_END`;
     }
 
     if (path === '/api/users' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const body = await this.readBody(req);
-      const authUser = await this.getAuthUser(req);
       const orgId = (body['orgId'] as string) ?? 'default';
       const name = body['name'] as string;
       const role = (body['role'] as 'owner' | 'admin' | 'member' | 'guest') ?? 'member';
@@ -4232,9 +4333,9 @@ EXPLANATION_END`;
       const teamId = body['teamId'] as string | undefined;
       const userId = (body['id'] as string | undefined) ?? generateId('usr');
 
-      // Persist to DB if storage is available and login credentials are provided
+      // Always persist to DB for durability (not just when email/password provided)
       let inviteToken: string | undefined;
-      if (this.storage && (email || password)) {
+      if (this.storage) {
         if (password && !email) {
           this.json(res, 400, { error: 'Email is required when setting a password' });
           return;
@@ -4259,11 +4360,12 @@ EXPLANATION_END`;
       const user = this.orgService.addHumanUser(orgId, name, role, { id: userId, email });
 
       // Add to team if specified
+      let teamError: string | undefined;
       if (teamId) {
         try {
           this.orgService.addMemberToTeam(teamId, userId, 'human');
-        } catch {
-          /* ok */
+        } catch (err) {
+          teamError = String(err);
         }
       }
 
@@ -4272,11 +4374,11 @@ EXPLANATION_END`;
         type: 'user_created',
         action: 'create_user',
         detail: `User "${name}" created`,
-        userId: authUser?.userId,
+        userId: authUser.userId,
         success: true,
         metadata: { newUserId: userId, role },
       });
-      this.json(res, 201, { user, inviteToken });
+      this.json(res, 201, { user, inviteToken, ...(teamError ? { teamError } : {}) });
       return;
     }
 
@@ -4379,6 +4481,8 @@ EXPLANATION_END`;
 
     // Message routing — route to the right agent
     if (path === '/api/message' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const body = await this.readBody(req);
       const targetOrgId = (body['orgId'] as string) ?? 'default';
       const targetAgentId = this.orgService.routeMessage(targetOrgId, {
@@ -4392,7 +4496,7 @@ EXPLANATION_END`;
         return;
       }
 
-      const senderId = body['senderId'] as string | undefined;
+      const senderId = authUser.userId;
       const images = (body['images'] as string[] | undefined)?.filter(Boolean);
       const senderInfo = this.orgService.resolveHumanIdentity(senderId);
       const agent = this.orgService.getAgentManager().getAgent(targetAgentId);
@@ -5566,7 +5670,9 @@ EXPLANATION_END`;
 
     // Notifications
     if (path === '/api/notifications' && req.method === 'GET') {
-      const userId = url.searchParams.get('userId') ?? 'default';
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const userId = authUser.userId;
       const unread = url.searchParams.get('unread') === 'true';
       const type = url.searchParams.get('type') ?? undefined;
       const limit = parseInt(url.searchParams.get('limit') ?? '50', 10);
@@ -5582,14 +5688,17 @@ EXPLANATION_END`;
     }
 
     if (path === '/api/notifications/mark-all-read' && req.method === 'POST') {
-      const body = await this.readBody(req);
-      const userId = (body.userId as string) ?? 'default';
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const userId = authUser.userId;
       const count = this.hitlService?.markAllNotificationsRead(userId) ?? 0;
       this.json(res, 200, { success: true, count });
       return;
     }
 
     if (path.startsWith('/api/notifications/') && path.endsWith('/read') && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const notifId = path.split('/')[3]!;
       const read = this.hitlService?.markNotificationRead(notifId);
       this.json(res, 200, { success: read ?? false });
@@ -5597,6 +5706,8 @@ EXPLANATION_END`;
     }
 
     if (path.startsWith('/api/notifications/') && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const notifId = path.split('/')[3]!;
       const read = this.hitlService?.markNotificationRead(notifId);
       this.json(res, 200, { success: read ?? false });
@@ -5699,6 +5810,8 @@ EXPLANATION_END`;
     }
 
     if (path === '/api/keys' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       if (!this.billingService) {
         this.json(res, 503, { error: 'Billing service not available' });
         return;
@@ -5715,6 +5828,8 @@ EXPLANATION_END`;
     }
 
     if (path.startsWith('/api/keys/') && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const keyId = path.split('/')[3]!;
       const revoked = this.billingService?.revokeAPIKey(keyId);
       this.json(res, 200, { revoked: revoked ?? false });
@@ -7530,7 +7645,8 @@ EXPLANATION_END`;
     }
 
     if (path === '/api/requirements' && req.method === 'POST') {
-      const authUser = await this.getAuthUser(req);
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const body = await this.readBody(req);
       if (!this.requirementService) {
         this.json(res, 503, { error: 'Requirement service not available' });
@@ -7583,18 +7699,19 @@ EXPLANATION_END`;
     }
 
     if (path.match(/^\/api\/requirements\/[^/]+\/status$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const reqId = path.split('/')[3]!;
       if (!this.requirementService) {
         this.json(res, 503, { error: 'Requirement service not available' });
         return;
       }
       const body = await this.readBody(req);
-      const authUser = await this.getAuthUser(req);
       try {
         const requirement = this.requirementService.updateRequirementStatus(
           reqId,
           body['status'] as string as RequirementStatus,
-          authUser?.userId ?? 'unknown'
+          authUser.userId
         );
         this.json(res, 200, { requirement });
       } catch (e) {
@@ -7604,16 +7721,17 @@ EXPLANATION_END`;
     }
 
     if (path.match(/^\/api\/requirements\/[^/]+\/approve$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const reqId = path.split('/')[3]!;
       if (!this.requirementService) {
         this.json(res, 503, { error: 'Requirement service not available' });
         return;
       }
-      const authUser = await this.getAuthUser(req);
       try {
         const requirement = this.requirementService.approveRequirement(
           reqId,
-          authUser?.userId ?? 'unknown'
+          authUser.userId
         );
         this.auditService?.record({
           orgId: requirement.orgId,
@@ -7632,17 +7750,18 @@ EXPLANATION_END`;
     }
 
     if (path.match(/^\/api\/requirements\/[^/]+\/reject$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const reqId = path.split('/')[3]!;
       if (!this.requirementService) {
         this.json(res, 503, { error: 'Requirement service not available' });
         return;
       }
-      const authUser = await this.getAuthUser(req);
       const body = await this.readBody(req);
       try {
         const requirement = this.requirementService.rejectRequirement(
           reqId,
-          authUser?.userId ?? 'unknown',
+          authUser.userId,
           (body['reason'] as string) ?? ''
         );
         this.auditService?.record({
@@ -7662,6 +7781,8 @@ EXPLANATION_END`;
     }
 
     if (path.match(/^\/api\/requirements\/[^/]+\/cancel$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const reqId = path.split('/')[3]!;
       if (!this.requirementService) {
         this.json(res, 503, { error: 'Requirement service not available' });
@@ -7677,6 +7798,8 @@ EXPLANATION_END`;
     }
 
     if (path.match(/^\/api\/requirements\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const reqId = path.split('/')[3]!;
       if (!this.requirementService) {
         this.json(res, 503, { error: 'Requirement service not available' });
@@ -7694,9 +7817,10 @@ EXPLANATION_END`;
     // ── Requirement Comments ──────────────────────────────────────────────
 
     if (path.match(/^\/api\/requirements\/[^/]+\/comments$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const reqId = path.split('/')[3]!;
       try {
-        const authUser = await this.getAuthUser(req);
         const body = await this.readBody(req);
         const mentions = (body['mentions'] as string[] | undefined) ?? [];
         let resolvedAuthorName = (body['authorName'] as string | undefined);

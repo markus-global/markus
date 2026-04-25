@@ -153,12 +153,17 @@ export class WSBroadcaster {
     });
   }
 
-  broadcastProactiveMessage(agentId: string, agentName: string, sessionId: string, messageId: string, message: string, metadata?: Record<string, unknown>): void {
-    this.broadcast({
-      type: 'chat:proactive_message',
-      payload: { agentId, agentName, sessionId, messageId, message, metadata },
+  broadcastProactiveMessage(agentId: string, agentName: string, sessionId: string, messageId: string, message: string, metadata?: Record<string, unknown>, targetUserId?: string): void {
+    const event = {
+      type: 'chat:proactive_message' as const,
+      payload: { agentId, agentName, sessionId, messageId, message, metadata, targetUserId },
       timestamp: new Date().toISOString(),
-    });
+    };
+    if (targetUserId) {
+      this.sendToUser(targetUserId, event);
+    } else {
+      this.broadcast(event);
+    }
   }
 
   broadcastExecutionLog(entry: Record<string, unknown>): void {
