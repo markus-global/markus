@@ -460,6 +460,7 @@ export interface HumanUserInfo {
   email?: string;
   teamId?: string;
   avatarUrl?: string;
+  hasJoined?: boolean;
 }
 
 export interface RoleInfo {

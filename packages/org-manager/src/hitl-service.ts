@@ -15,6 +15,8 @@ export type NotificationType =
   | 'requirement_created'
   | 'requirement_decision'
   | 'agent_report'
+  | 'direct_message'
+  | 'group_message'
   | 'system';
 
 export type NotificationActionType = 'none' | 'navigate' | 'open_chat';

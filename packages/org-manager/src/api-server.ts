@@ -235,7 +235,7 @@ export class APIServer {
           persistedMsgId = saved.id;
         }
 
-        // Send to frontend via WebSocket (scoped for DM/notes channels)
+        // Send to frontend via WebSocket (scoped to channel members)
         const channelEvent = {
           type: 'chat:message' as const,
           payload: {
@@ -253,7 +253,9 @@ export class APIServer {
             : channelKey.slice(3).split(':');
           this.ws.sendToUsers(participants, channelEvent);
         } else {
-          this.ws.broadcast(channelEvent);
+          const humanIds = this.resolveChannelHumanIds(channelKey);
+          if (humanIds.length > 0) this.ws.sendToUsers(humanIds, channelEvent);
+          else this.ws.broadcast(channelEvent);
         }
 
         // Resolve all agent members in this group channel
@@ -800,6 +802,33 @@ export class APIServer {
     return [...mentioned];
   }
 
+  /** Resolve display name for a group channel */
+  private resolveChannelName(channelKey: string): string {
+    if (channelKey.startsWith('group:custom:') && this.storage?.groupChatRepo) {
+      const gc = this.storage.groupChatRepo.getByChannelKey(channelKey);
+      if (gc) return gc.name;
+    }
+    if (channelKey.startsWith('group:')) {
+      const teamId = channelKey.replace(/^group:/, '');
+      const team = this.orgService.getTeam(teamId);
+      if (team) return team.name;
+    }
+    return channelKey;
+  }
+
+  /** Resolve human member IDs for a group channel (custom or team-based) */
+  private resolveChannelHumanIds(channelKey: string): string[] {
+    if (channelKey.startsWith('group:custom:') && this.storage?.groupChatRepo) {
+      return this.storage.groupChatRepo.getHumanMemberIds(channelKey);
+    }
+    if (channelKey.startsWith('group:')) {
+      const teamId = channelKey.replace(/^group:/, '');
+      const team = this.orgService.getTeam(teamId);
+      return team?.humanMemberIds ?? [];
+    }
+    return [];
+  }
+
   /** Build name→id lookup for agents in a channel */
   private buildAgentNameMap(agentIds: string[], agentManager: AgentManager): Map<string, string> {
     const map = new Map<string, string>();
@@ -962,7 +991,9 @@ export class APIServer {
           : channel.slice(3).split(':');
         this.ws.sendToUsers(participants, replyEvent);
       } else {
-        this.ws.broadcast(replyEvent);
+        const humanIds = this.resolveChannelHumanIds(channel);
+        if (humanIds.length > 0) this.ws.sendToUsers(humanIds, replyEvent);
+        else this.ws.broadcast(replyEvent);
       }
 
       // ── Agent-to-agent chain: parse @mentions in the reply ──
@@ -1624,6 +1655,63 @@ export class APIServer {
         ...userMsg,
         ...(replyToAgentName ? { replyToSender: replyToAgentName, replyToText } : {}),
       } : null;
+
+      // Broadcast user message to other members so they see it in real time
+      if (enrichedUserMsg) {
+        let targetIds: string[] = [];
+        if (channel.startsWith('group:')) {
+          targetIds = this.resolveChannelHumanIds(channel).filter(id => id !== senderId);
+        } else if (channel.startsWith('dm:')) {
+          targetIds = channel.slice(3).split(':').filter(id => id !== senderId);
+        }
+        if (targetIds.length > 0) {
+          this.ws.sendToUsers(targetIds, {
+            type: 'chat:message',
+            payload: {
+              channel,
+              senderId,
+              senderType: 'human',
+              senderName,
+              text,
+              id: enrichedUserMsg.id,
+            },
+            timestamp: new Date().toISOString(),
+          });
+
+          // Create notification bell entry for each recipient
+          if (this.hitlService) {
+            const preview = text.length > 80 ? text.slice(0, 80) + '…' : text;
+            if (channel.startsWith('dm:')) {
+              for (const tid of targetIds) {
+                this.hitlService.notify({
+                  targetUserId: tid,
+                  type: 'direct_message',
+                  title: senderName,
+                  body: preview,
+                  priority: 'normal',
+                  actionType: 'navigate',
+                  actionTarget: JSON.stringify({ path: `/team?dm=${senderId}` }),
+                  metadata: { senderId, senderName, channel },
+                });
+              }
+            } else if (channel.startsWith('group:')) {
+              const gcName = this.resolveChannelName(channel);
+              for (const tid of targetIds) {
+                this.hitlService.notify({
+                  targetUserId: tid,
+                  type: 'group_message',
+                  title: `${senderName} in ${gcName}`,
+                  body: preview,
+                  priority: 'low',
+                  actionType: 'navigate',
+                  actionTarget: JSON.stringify({ path: `/team?channel=${encodeURIComponent(channel)}` }),
+                  metadata: { senderId, senderName, channel, groupName: gcName },
+                });
+              }
+            }
+          }
+        }
+      }
 
       // ── Group chat broadcast: all team members respond independently ──
       if (!isHumanChannel && channel.startsWith('group:')) {
@@ -4309,13 +4397,15 @@ EXPLANATION_END`;
       let users = this.orgService.listHumanUsers(targetOrgId) as unknown as Array<Record<string, unknown>>;
       if (this.storage) {
         const dbUsers = await this.storage.userRepo.listByOrg(targetOrgId);
-        const avatarMap = new Map(dbUsers.filter((u: any) => u.avatarUrl).map((u: any) => [u.id, u.avatarUrl]));
-        if (avatarMap.size > 0) {
-          users = users.map(u => {
-            const av = avatarMap.get(u.id as string);
-            return av ? { ...u, avatarUrl: av } : u;
-          });
-        }
+        const dbMap = new Map(dbUsers.map((u: any) => [u.id, u]));
+        users = users.map(u => {
+          const dbU = dbMap.get(u.id as string) as Record<string, unknown> | undefined;
+          return {
+            ...u,
+            ...(dbU?.avatarUrl ? { avatarUrl: dbU.avatarUrl } : {}),
+            hasJoined: !!dbU?.passwordHash,
+          };
+        });
       }
       this.json(res, 200, { users });
       return;

@@ -942,6 +942,16 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           setInput(detail.params.prefillMessage);
           setTimeout(() => textareaRef.current?.focus(), 100);
         }
+        if (detail.params?.dm) {
+          setChatMode('dm');
+          setActiveDmUserId(detail.params.dm);
+          setMainTab('chat');
+        }
+        if (detail.params?.channel) {
+          setChatMode('channel');
+          setActiveChannel(detail.params.channel);
+          setMainTab('chat');
+        }
         if (detail.params?.openHire === 'true') {
           // handled by ChatTeamSidebar via nav events
         }
@@ -953,6 +963,16 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       const pTab = localStorage.getItem('markus_nav_profileTab');
       if (pTab) { localStorage.removeItem('markus_nav_profileTab'); handleViewProfile(navAgent, { tab: pTab as 'mind' }); }
       else { setChatMode('direct'); setSelectedAgent(navAgent); }
+    }
+    const navDm = localStorage.getItem('markus_nav_dm');
+    if (navDm) {
+      localStorage.removeItem('markus_nav_dm');
+      setChatMode('dm'); setActiveDmUserId(navDm); setMainTab('chat');
+    }
+    const navChannel = localStorage.getItem('markus_nav_channel');
+    if (navChannel) {
+      localStorage.removeItem('markus_nav_channel');
+      setChatMode('channel'); setActiveChannel(navChannel); setMainTab('chat');
     }
     const selectAgent = localStorage.getItem('markus_nav_selectAgent');
     if (selectAgent) {

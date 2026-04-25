@@ -630,9 +630,9 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     });
     // notify_user: persist as regular chat message + WS broadcast + notification bell
     agentManager.getEventBus().on('agent:notify-user', async (evt: unknown) => {
-      const { agentId, title, body, priority, taskId, requirementId } = evt as {
+      const { agentId, title, body, priority, taskId, requirementId, targetUserId } = evt as {
         agentId: string; title: string; body: string; priority?: NotificationPriority;
-        taskId?: string; requirementId?: string;
+        taskId?: string; requirementId?: string; targetUserId?: string;
       };
       try {
         const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId, defaultSessionUserId);
@@ -647,7 +647,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         }, defaultSessionUserId);
         const hasTask = !!taskId;
         hitlService.notify({
-          targetUserId: 'all',
+          targetUserId: targetUserId ?? 'all',
           type: 'agent_report',
           title, body, priority,
           actionType: hasTask ? 'navigate' : 'open_chat',

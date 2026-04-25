@@ -28,6 +28,8 @@ const TYPE_ICON: Record<string, string> = {
   requirement_created: 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7 M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z',
   requirement_decision: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
   agent_report: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8',
+  direct_message: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
+  group_message: 'M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2 M9 7a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M23 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75',
   system: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
 };
 
@@ -40,6 +42,8 @@ const TYPE_COLOR: Record<string, string> = {
   requirement_created: 'text-amber-500',
   requirement_decision: 'text-green-500',
   agent_report: 'text-blue-500',
+  direct_message: 'text-green-500',
+  group_message: 'text-brand-500',
   system: 'text-fg-tertiary',
 };
 
@@ -65,6 +69,10 @@ function actionHint(n: NotificationInfo, t: TFunction): string | null {
       return meta.requirementId ? t('team:notifications.actionHints.viewRequirement') : null;
     case 'agent_report':
       return meta.agentId ? t('team:notifications.actionHints.viewAgent') : null;
+    case 'direct_message':
+      return t('team:notifications.actionHints.openChat');
+    case 'group_message':
+      return t('team:notifications.actionHints.openChat');
     case 'approval_request':
       return t('team:notifications.actionHints.viewApproval');
     default:
@@ -227,6 +235,13 @@ export function NotificationBell({ collapsed, userId }: Props) {
       try {
         const target = typeof actionTarget === 'string' ? JSON.parse(actionTarget) : actionTarget;
         if (target.path) {
+          if (target.path.startsWith('/team')) {
+            const params: Record<string, string> = {};
+            const searchParams = new URLSearchParams(target.path.split('?')[1] || '');
+            for (const [k, v] of searchParams.entries()) params[k] = v;
+            navBus.navigate(PAGE.TEAM, params);
+            return;
+          }
           if (target.path.startsWith('/work')) {
             const params: Record<string, string> = {};
             const searchParams = new URLSearchParams(target.path.split('?')[1] || '');
@@ -270,6 +285,18 @@ export function NotificationBell({ collapsed, userId }: Props) {
         } else {
           navBus.navigate(PAGE.TEAM);
         }
+        break;
+      }
+      case 'direct_message': {
+        const dmUserId = meta.senderId as string | undefined;
+        if (dmUserId) navBus.navigate(PAGE.TEAM, { dm: dmUserId });
+        else navBus.navigate(PAGE.TEAM);
+        break;
+      }
+      case 'group_message': {
+        const ch = meta.channel as string | undefined;
+        if (ch) navBus.navigate(PAGE.TEAM, { channel: ch });
+        else navBus.navigate(PAGE.TEAM);
         break;
       }
       default:

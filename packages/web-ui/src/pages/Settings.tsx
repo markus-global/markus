@@ -1621,7 +1621,7 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
                         {u.email && (
                           <button onClick={() => { setResetPwdId(u.id); setNewPassword(''); setMsg(null); }} className="text-[11px] text-fg-tertiary hover:text-fg-secondary px-1.5 py-0.5 rounded hover:bg-surface-elevated">{t('settings:userManagement.resetPassword')}</button>
                         )}
-                        {u.email && !isPrimaryOwner && (
+                        {u.email && !isPrimaryOwner && !u.hasJoined && (
                           <button onClick={async () => {
                             try {
                               const { inviteToken } = await api.users.reinvite(u.id);

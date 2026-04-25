@@ -4006,6 +4006,15 @@ export class SqliteGroupChatRepo {
     return rows.map(r => r.member_id);
   }
 
+  getHumanMemberIds(channelKey: string): string[] {
+    const gc = this.db.prepare('SELECT id FROM group_chats WHERE channel_key = ?').get(channelKey) as { id: string } | undefined;
+    if (!gc) return [];
+    const rows = this.db.prepare(
+      "SELECT member_id FROM group_chat_members WHERE group_chat_id = ? AND member_type = 'human'"
+    ).all(gc.id) as Array<{ member_id: string }>;
+    return rows.map(r => r.member_id);
+  }
+
   addMember(groupChatId: string, memberId: string, memberType: 'human' | 'agent', memberName: string): void {
     this.db.prepare(
       'INSERT OR IGNORE INTO group_chat_members (group_chat_id, member_id, member_type, member_name, added_at) VALUES (?,?,?,?,?)'
