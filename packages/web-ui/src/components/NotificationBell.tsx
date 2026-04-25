@@ -120,6 +120,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number; width: number; maxHeight: number }>({ top: 0, left: 0, width: 448, maxHeight: 576 });
   const prevPendingRef = useRef<number | null>(null);
+  const initialFetchDone = useRef(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -130,6 +131,11 @@ export function NotificationBell({ collapsed, userId }: Props) {
       setNotifications(n.notifications);
       setUnreadCount(n.unreadCount ?? n.notifications.filter((x: NotificationInfo) => !x.read).length);
       setApprovals(a.approvals);
+      if (!initialFetchDone.current) {
+        const pending = a.approvals.filter((ap: any) => ap.status === 'pending').length;
+        prevPendingRef.current = pending;
+        initialFetchDone.current = true;
+      }
     } catch { /* */ }
   }, [userId]);
 
