@@ -628,7 +628,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
           return <CommentBubble key={`c-${item.comment.id}`} comment={item.comment} agents={agents} onReply={handleReply} />;
         })}
       </div>
-      <CommentInput agents={agents} onSubmit={handleSubmit} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} placeholder={t('work:task.commentPlaceholder')} />
+      <CommentInput agents={agents} humans={users} onSubmit={handleSubmit} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} placeholder={t('work:task.commentPlaceholder')} />
     </div>
   );
 }
@@ -3732,9 +3732,10 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
 // ─── Requirement Comment Thread ─────────────────────────────────────────────────
 
-function RequirementCommentThread({ requirementId, agents, authUser }: {
+function RequirementCommentThread({ requirementId, agents, users, authUser }: {
   requirementId: string;
   agents: AgentInfo[];
+  users?: HumanUserInfo[];
   authUser?: { id: string; name: string };
 }) {
   const [comments, setComments] = useState<RequirementComment[]>([]);
@@ -3785,7 +3786,7 @@ function RequirementCommentThread({ requirementId, agents, authUser }: {
           <CommentBubble key={c.id} comment={c} agents={agents} onReply={handleReply} />
         ))}
       </div>
-      <CommentInput agents={agents} onSubmit={handleSubmit} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} />
+      <CommentInput agents={agents} humans={users} onSubmit={handleSubmit} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} />
     </div>
   );
 }
@@ -3969,7 +3970,7 @@ function RequirementDetailPanel({
           )}
 
           {/* Requirement Comments Thread */}
-          <RequirementCommentThread requirementId={req.id} agents={agents} authUser={authUser} />
+          <RequirementCommentThread requirementId={req.id} agents={agents} users={users} authUser={authUser} />
         </div>
 
         {/* Actions */}

@@ -262,7 +262,12 @@ export class TaskService {
       // 1. Notify @mentioned agents as 'mention' type (always, even during review)
       if (mentions) {
         for (const mid of mentions) {
-          enqueueFor(mid, 'mention', `You were mentioned by ${authorName} in a comment`);
+          if (this.isHumanUser(mid)) {
+            this.notifyHumanMention(mid, authorName, content, { taskId, taskTitle });
+            notified.add(mid);
+          } else {
+            enqueueFor(mid, 'mention', `You were mentioned by ${authorName} in a comment`);
+          }
         }
       }
 
@@ -355,10 +360,15 @@ export class TaskService {
         } catch { /* agent not found */ }
       };
 
-      // 1. Notify @mentioned agents as 'mention' type
+      // 1. Notify @mentioned agents/humans as 'mention' type
       if (mentions) {
         for (const mid of mentions) {
-          enqueueFor(mid, 'mention', `You were mentioned by ${authorName} in a comment`);
+          if (this.isHumanUser(mid)) {
+            this.notifyHumanMention(mid, authorName, content, { requirementId, requirementTitle: reqTitle });
+            notified.add(mid);
+          } else {
+            enqueueFor(mid, 'mention', `You were mentioned by ${authorName} in a comment`);
+          }
         }
       }
 
@@ -410,6 +420,41 @@ export class TaskService {
 
   setOrgService(os: OrganizationService): void {
     this.orgService = os;
+  }
+
+  private isHumanUser(userId: string): boolean {
+    if (!this.orgService) return false;
+    const identity = this.orgService.resolveHumanIdentity(userId);
+    return !!identity;
+  }
+
+  private notifyHumanMention(
+    userId: string,
+    authorName: string,
+    commentContent: string,
+    context: { taskId?: string; taskTitle?: string; requirementId?: string; requirementTitle?: string },
+  ): void {
+    if (!this.hitlService || userId === 'default') return;
+    const preview = commentContent.length > 80 ? commentContent.slice(0, 80) + '…' : commentContent;
+    const itemTitle = context.taskTitle ?? context.requirementTitle ?? '';
+    const isTask = !!context.taskId;
+    this.hitlService.notify({
+      targetUserId: userId,
+      type: isTask ? 'task_review' : 'requirement_created',
+      title: `${authorName} mentioned you`,
+      body: `${itemTitle}: ${preview}`,
+      priority: 'normal',
+      actionType: 'navigate',
+      actionTarget: isTask
+        ? JSON.stringify({ path: `/work?openTask=${context.taskId}` })
+        : JSON.stringify({ path: `/work?openRequirement=${context.requirementId}` }),
+      metadata: {
+        ...(context.taskId ? { taskId: context.taskId } : {}),
+        ...(context.requirementId ? { requirementId: context.requirementId } : {}),
+        authorName,
+        mentionType: 'comment',
+      },
+    });
   }
 
   setSharedDataDir(dir: string): void {
