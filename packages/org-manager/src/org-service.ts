@@ -793,7 +793,9 @@ export class OrganizationService {
       for (const row of userRows) {
         const existing = this.humans.get(row.id);
         if (existing) {
+          if (row.name) existing.name = row.name;
           if (row.email) existing.email = row.email;
+          if (row.role) existing.role = row.role as HumanRole;
           if (row.teamId) {
             existing.teamId = row.teamId;
             const team = this.teams.get(row.teamId);

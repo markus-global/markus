@@ -329,6 +329,9 @@ export class APIServer {
               return { id, type: 'agent' as const, name: agentInfo?.config?.name ?? id };
             } catch { return { id, type: 'agent' as const, name: id }; }
           });
+          if (creatorId && !members.some(m => m.id === creatorId)) {
+            members.unshift({ id: creatorId, type: 'agent' as const, name: creatorName });
+          }
           const gc = this.storage.groupChatRepo.create({
             orgId: 'default', name, creatorId, creatorName, members,
           });
@@ -2172,6 +2175,10 @@ export class APIServer {
         }
         return { id, type: mType, name: mName };
       });
+      // Auto-add creator as a human member if not already included
+      if (creatorId && !members.some(m => m.id === creatorId)) {
+        members.unshift({ id: creatorId, type: 'human', name: creatorName ?? 'Unknown' });
+      }
       const gc = this.storage.groupChatRepo.create({ orgId, name, creatorId, creatorName, members });
       this.ws?.broadcast({
         type: 'chat:group_created',
