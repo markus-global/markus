@@ -40,7 +40,8 @@
     "setAsManager": "设为管理者",
     "removeFromTeam": "从团队移除",
     "moveTo": "移动到",
-    "removeFromOrg": "从组织移除"
+    "removeFromOrg": "从组织移除",
+    "manageMembers": "管理成员"
   },
   "modals": {
     "createTeam": {
@@ -227,6 +228,8 @@
     "messageCount": "{{count}} 条消息",
     "privateNotepad": "· 私人笔记",
     "dmWith": "· 与 {{name}} 的私信",
+    "members": "成员",
+    "addMemberPlaceholder": "+ 添加成员...",
     "placeholder": {
       "channelWithMention": "在 {{name}} 中发消息…（使用 @名称 提及）",
       "channel": "在 {{name}} 中发消息…",

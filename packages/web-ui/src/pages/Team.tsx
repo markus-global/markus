@@ -802,6 +802,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
   // Group chats
   const [groupChats, setGroupChats] = useState<Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number; teamId?: string; creatorId?: string; creatorName?: string; members?: Array<{ id: string; name: string; type: 'human' | 'agent' }> }>>([]);
+  const [showMemberPanel, setShowMemberPanel] = useState(false);
 
   // Teams
   const [teams, setTeams] = useState<TeamInfo[]>([]);
@@ -2211,14 +2212,15 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         selectedAgent={selectedAgent}
         activeChannel={activeChannel}
         activeDmUserId={activeDmUserId}
-        onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); if (isMobile) enterMobileDetail(); }}
-        onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); if (isMobile) enterMobileDetail(); }}
-        onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); if (isMobile) enterMobileDetail(); }}
+        onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); setShowMemberPanel(false); if (isMobile) enterMobileDetail(); }}
+        onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); setShowMemberPanel(false); if (isMobile) enterMobileDetail(); }}
+        onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); setShowMemberPanel(false); if (isMobile) enterMobileDetail(); }}
         onRefreshTeams={refreshTeams}
         onRefreshAgents={refreshAgents}
         onRefreshHumans={refreshHumans}
         onRefreshGroupChats={refreshGroupChats}
         onViewProfile={handleViewProfile}
+        onManageGroupMembers={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); setShowMemberPanel(true); if (isMobile) enterMobileDetail(); }}
         width={isMobile ? undefined : chatSidebar.width}
         onResizeStart={isMobile ? undefined : chatSidebar.onResizeStart}
         hidden={isMobile && mobileShowChat}
@@ -2259,6 +2261,17 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                   }`}
                 >{chatMode === 'channel' ? t('page.teamTab') : t('page.profileTab')}</button>
                 <div className="flex-1" />
+                {chatMode === 'channel' && activeGroupChat?.type === 'custom' && (
+                  <button
+                    onClick={() => setShowMemberPanel(!showMemberPanel)}
+                    className={`text-[11px] px-2 py-1 rounded-md font-medium shrink-0 flex items-center gap-1 ${
+                      showMemberPanel ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'
+                    }`}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                    {activeGroupChat.members?.length ?? activeGroupChat.memberCount ?? 0}
+                  </button>
+                )}
                 {chatMode === 'direct' && mainTab !== 'profile' && (
                   <>
                     <button
@@ -2322,6 +2335,19 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
             {/* Right side buttons */}
             <div className="ml-auto flex items-center gap-2">
+            {chatMode === 'channel' && activeGroupChat?.type === 'custom' && (
+              <button
+                onClick={() => setShowMemberPanel(!showMemberPanel)}
+                className={`text-xs px-2.5 py-1 rounded-md border transition-colors flex items-center gap-1.5 ${
+                  showMemberPanel
+                    ? 'bg-brand-500/15 text-brand-500 border-brand-500/30'
+                    : 'text-fg-secondary hover:text-fg-primary border-border-default hover:bg-surface-elevated'
+                }`}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                {activeGroupChat.members?.length ?? activeGroupChat.memberCount ?? 0}
+              </button>
+            )}
             {chatMode === 'direct' && currentAgent && mainTab !== 'profile' && (
               <div className="flex items-center gap-1.5">
                 <button
@@ -2382,6 +2408,84 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               ))}
             </div>
           )}
+
+          {/* Group chat member management panel */}
+          {chatMode === 'channel' && activeGroupChat?.type === 'custom' && showMemberPanel && (() => {
+            const gc = activeGroupChat;
+            const currentMembers = gc.members ?? [];
+            const allCandidates: Array<{ id: string; name: string; type: 'human' | 'agent'; subtitle: string }> = [];
+            for (const a of agents) {
+              if (!currentMembers.some(m => m.id === a.id)) {
+                allCandidates.push({ id: a.id, name: a.name, type: 'agent', subtitle: a.role || 'Agent' });
+              }
+            }
+            for (const h of humans) {
+              if (!currentMembers.some(m => m.id === h.id)) {
+                allCandidates.push({ id: h.id, name: h.name, type: 'human', subtitle: h.email || h.role || '' });
+              }
+            }
+            return (
+              <div className="border-b border-border-default bg-surface-secondary/80 px-4 py-3 flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-fg-secondary">{t('page.members')} ({currentMembers.length})</span>
+                  <button onClick={() => setShowMemberPanel(false)} className="text-fg-tertiary hover:text-fg-secondary text-xs">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {currentMembers.map(m => (
+                    <span key={m.id} className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] font-medium ${
+                      m.type === 'agent' ? 'bg-brand-500/10 text-brand-500' : 'bg-green-500/10 text-green-600'
+                    }`}>
+                      <Avatar name={m.name} size={16} bgClass={m.type === 'agent' ? 'bg-brand-500/15 text-brand-500' : 'bg-green-500/15 text-green-600'} />
+                      {m.name}
+                      {m.id !== authUser?.id && (
+                        <button
+                          onClick={async () => {
+                            try {
+                              await api.groupChats.removeMember(gc.id, m.id);
+                              setGroupChats(prev => prev.map(g => g.id === gc.id ? { ...g, members: (g.members ?? []).filter(x => x.id !== m.id), memberCount: (g.memberCount ?? 1) - 1 } : g));
+                            } catch { /* ignore */ }
+                          }}
+                          className="ml-0.5 hover:text-red-500 transition-colors"
+                          title={t('common:remove')}
+                        >
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                </div>
+                {allCandidates.length > 0 && (
+                  <div className="mt-1">
+                    <select
+                      className="w-full bg-surface-primary border border-border-default rounded-lg px-2.5 py-1.5 text-xs text-fg-primary outline-none focus:ring-1 focus:ring-brand-500/50"
+                      value=""
+                      onChange={async (e) => {
+                        const id = e.target.value;
+                        if (!id) return;
+                        const c = allCandidates.find(x => x.id === id);
+                        if (!c) return;
+                        try {
+                          await api.groupChats.addMember(gc.id, c.id, c.type, c.name);
+                          setGroupChats(prev => prev.map(g => g.id === gc.id ? {
+                            ...g,
+                            members: [...(g.members ?? []), { id: c.id, name: c.name, type: c.type }],
+                            memberCount: (g.memberCount ?? 0) + 1,
+                          } : g));
+                        } catch { /* ignore */ }
+                      }}
+                    >
+                      <option value="">{t('page.addMemberPlaceholder')}</option>
+                      {allCandidates.map(c => (
+                        <option key={c.id} value={c.id}>[{c.type === 'agent' ? 'Agent' : 'Human'}] {c.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Floating history panel */}
           {chatMode === 'direct' && selectedAgent && showSessions && (
