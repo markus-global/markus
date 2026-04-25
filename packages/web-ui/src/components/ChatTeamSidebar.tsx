@@ -821,14 +821,7 @@ export function ChatTeamSidebar({
                     </div>
                     <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.addAgentDesc')}</div>
                   </button>
-                  <button onClick={() => { setActionMenu(false); setShowOpenClaw(true); }}
-                    className="w-full text-left px-4 py-2.5 text-xs text-brand-500 hover:bg-surface-elevated border-t border-border-default transition-colors">
-                    <div className="font-medium flex items-center gap-1.5">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 0 1 9-9" /></svg>
-                      {t('chat.importOpenClaw')}
-                    </div>
-                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.importOpenClawDesc')}</div>
-                  </button>
+                  {/* OpenClaw import — hidden until feature is ready */}
                   <button onClick={() => { setActionMenu(false); setShowAddHuman(true); }}
                     className="w-full text-left px-4 py-2.5 text-xs text-green-600 hover:bg-surface-elevated border-t border-border-default transition-colors">
                     <div className="font-medium flex items-center gap-1.5">
