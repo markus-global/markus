@@ -78,6 +78,30 @@ export class OrganizationService {
     return [...this.humans.values()].filter(h => h.orgId === orgId);
   }
 
+  updateHumanUser(userId: string, updates: { name?: string; role?: HumanRole; email?: string }): HumanUser {
+    const user = this.humans.get(userId);
+    if (!user) throw new Error(`User not found: ${userId}`);
+
+    if (updates.name !== undefined) user.name = updates.name;
+    if (updates.role !== undefined) user.role = updates.role;
+    if (updates.email !== undefined) user.email = updates.email;
+
+    this.refreshIdentityContextsForOrg(user.orgId);
+
+    if (this.storage) {
+      this.storage.userRepo.updateProfile(userId, {
+        name: updates.name,
+        email: updates.email,
+        role: updates.role,
+      }).catch((error: unknown) => {
+        log.warn('Failed to update user in DB', { error: String(error) });
+      });
+    }
+
+    log.info(`Human user updated: ${user.name}`, { userId, updates });
+    return user;
+  }
+
   removeHumanUser(userId: string): void {
     const user = this.humans.get(userId);
     if (user) {

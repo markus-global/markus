@@ -16,6 +16,8 @@ export interface Project {
   archivePolicy?: ArchivePolicy;
   reportSchedule?: ReportSchedule;
   onboardingConfig?: ProjectOnboardingConfig;
+  /** Human user id who created the project, when known */
+  createdBy?: string;
   createdAt: string;
   updatedAt: string;
 }

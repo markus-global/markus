@@ -39,6 +39,7 @@ interface ChatTeamSidebarProps {
   onSelectDm: (userId: string) => void;
   onRefreshTeams: () => void;
   onRefreshAgents: () => void;
+  onRefreshHumans?: () => void;
   onRefreshGroupChats: () => void;
   onViewProfile: (agentId: string) => void;
   width?: number;
@@ -180,7 +181,7 @@ export function ChatTeamSidebar({
   authUser, agents, teams, humans, tasks, externalAgents, groupChats,
   chatMode, selectedAgent, activeChannel, activeDmUserId,
   onSelectAgent, onSelectChannel, onSelectDm,
-  onRefreshTeams, onRefreshAgents, onRefreshGroupChats, onViewProfile,
+  onRefreshTeams, onRefreshAgents, onRefreshHumans, onRefreshGroupChats, onViewProfile,
   width, onResizeStart, hidden,
 }: ChatTeamSidebarProps) {
   const { t } = useTranslation(['team', 'common']);
@@ -1071,6 +1072,7 @@ export function ChatTeamSidebar({
       {agentMenu && (() => {
         const a = agents.find(ag => ag.id === agentMenu.agentId);
         if (!a) return null;
+        if (!isAdmin) return null;
         const team = agentMenu.teamId ? teamMap.get(agentMenu.teamId) : undefined;
         const isManager = team?.managerId === a.id;
         const isSelf = a.id === authUser?.id;
@@ -1174,6 +1176,7 @@ export function ChatTeamSidebar({
             await api.users.create(name, role, undefined, email, password, teamId);
             setShowAddHuman(null);
             onRefreshTeams();
+            onRefreshHumans?.();
           }}
         />
       )}

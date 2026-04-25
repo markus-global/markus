@@ -226,6 +226,7 @@ CREATE TABLE IF NOT EXISTS requirements (
   approved_by TEXT,
   approved_at TEXT,
   rejected_reason TEXT,
+  rejected_by TEXT,
   tags TEXT DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -246,6 +247,7 @@ CREATE TABLE IF NOT EXISTS projects (
   archive_policy TEXT,
   report_schedule TEXT,
   onboarding_config TEXT,
+  created_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -380,6 +382,8 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL DEFAULT 'member',
   team_id TEXT,
   password_hash TEXT,
+  invite_token TEXT,
+  invite_expires_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_login_at TEXT
 );
@@ -527,7 +531,8 @@ CREATE TABLE IF NOT EXISTS approvals (
   expires_at TEXT,
   options TEXT,
   allow_freeform INTEGER NOT NULL DEFAULT 0,
-  selected_option TEXT
+  selected_option TEXT,
+  approver_user_ids TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at DESC);
 
@@ -550,6 +555,20 @@ CREATE TABLE IF NOT EXISTS group_chat_members (
   PRIMARY KEY (group_chat_id, member_id)
 );
 CREATE INDEX IF NOT EXISTS idx_group_chat_members_group ON group_chat_members(group_chat_id);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id TEXT PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  agent_id TEXT,
+  user_id TEXT,
+  details TEXT,
+  metadata TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_type ON audit_logs(event_type);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_agent ON audit_logs(agent_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -597,8 +616,13 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'chat_sessions', column: 'is_main', sql: "ALTER TABLE chat_sessions ADD COLUMN is_main INTEGER NOT NULL DEFAULT 0" },
     { table: 'mailbox_items', column: 'retry_count', sql: "ALTER TABLE mailbox_items ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0" },
     { table: 'users', column: 'avatar_url', sql: "ALTER TABLE users ADD COLUMN avatar_url TEXT" },
+    { table: 'users', column: 'invite_token', sql: "ALTER TABLE users ADD COLUMN invite_token TEXT" },
+    { table: 'users', column: 'invite_expires_at', sql: "ALTER TABLE users ADD COLUMN invite_expires_at TEXT" },
     { table: 'agents', column: 'avatar_url', sql: "ALTER TABLE agents ADD COLUMN avatar_url TEXT" },
     { table: 'channel_messages', column: 'reply_to_id', sql: "ALTER TABLE channel_messages ADD COLUMN reply_to_id TEXT" },
+    { table: 'approvals', column: 'approver_user_ids', sql: "ALTER TABLE approvals ADD COLUMN approver_user_ids TEXT" },
+    { table: 'requirements', column: 'rejected_by', sql: 'ALTER TABLE requirements ADD COLUMN rejected_by TEXT' },
+    { table: 'projects', column: 'created_by', sql: 'ALTER TABLE projects ADD COLUMN created_by TEXT' },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -926,12 +950,20 @@ export class SqliteTaskRepo {
     this.db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
   }
 
-  async assign(id: string, agentId: string) {
-    this.db
-      .prepare(
-        "UPDATE tasks SET assigned_agent_id = ?, updated_at = ? WHERE id = ?"
-      )
-      .run(agentId, now(), id);
+  async assign(id: string, agentId: string, updatedBy?: string) {
+    if (updatedBy) {
+      this.db
+        .prepare(
+          'UPDATE tasks SET assigned_agent_id = ?, updated_by = ?, updated_at = ? WHERE id = ?'
+        )
+        .run(agentId, updatedBy, now(), id);
+    } else {
+      this.db
+        .prepare(
+          'UPDATE tasks SET assigned_agent_id = ?, updated_at = ? WHERE id = ?'
+        )
+        .run(agentId, now(), id);
+    }
   }
 
   async update(
@@ -1164,8 +1196,8 @@ export class SqliteRequirementRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO requirements (id, org_id, title, description, status, priority, source, created_by, project_id, approved_by, approved_at, tags, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO requirements (id, org_id, title, description, status, priority, source, created_by, project_id, approved_by, approved_at, rejected_reason, rejected_by, tags, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id,
@@ -1179,6 +1211,8 @@ export class SqliteRequirementRepo {
         data.projectId ?? null,
         data.approvedBy ?? null,
         data.approvedAt?.toISOString() ?? null,
+        null,
+        null,
         toJson(data.tags ?? []),
         ts,
         ts
@@ -1204,10 +1238,17 @@ export class SqliteRequirementRepo {
       .run('in_progress', approvedBy, ts, ts, id);
   }
 
-  async reject(id: string, reason: string) {
+  async reject(id: string, reason: string, rejectedBy?: string) {
     this.db
-      .prepare('UPDATE requirements SET status = ?, rejected_reason = ?, updated_at = ? WHERE id = ?')
-      .run('rejected', reason, now(), id);
+      .prepare('UPDATE requirements SET status = ?, rejected_reason = ?, rejected_by = ?, updated_at = ? WHERE id = ?')
+      .run('rejected', reason, rejectedBy ?? null, now(), id);
+  }
+
+  /** Clear rejection columns when resubmitting or similar. */
+  async clearRejectionMetadata(id: string): Promise<void> {
+    this.db
+      .prepare('UPDATE requirements SET rejected_reason = NULL, rejected_by = NULL, updated_at = ? WHERE id = ?')
+      .run(now(), id);
   }
 
   async update(
@@ -1256,6 +1297,7 @@ export class SqliteRequirementRepo {
       approvedBy: r['approved_by'] as string | null,
       approvedAt: toDate(r['approved_at'] as string),
       rejectedReason: r['rejected_reason'] as string | null,
+      rejectedBy: r['rejected_by'] as string | null,
       tags: fromJson<string[]>(r['tags'] as string),
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),
@@ -1278,12 +1320,13 @@ export class SqliteProjectRepo {
     archivePolicy?: unknown;
     reportSchedule?: unknown;
     onboardingConfig?: unknown;
+    createdBy?: string;
   }) {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO projects (id, org_id, name, description, status, repositories, team_ids, governance_policy, archive_policy, report_schedule, onboarding_config, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO projects (id, org_id, name, description, status, repositories, team_ids, governance_policy, archive_policy, report_schedule, onboarding_config, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id, data.orgId, data.name, data.description ?? '',
@@ -1291,6 +1334,7 @@ export class SqliteProjectRepo {
         toJson(data.repositories ?? []), toJson(data.teamIds ?? []),
         toJson(data.governancePolicy), toJson(data.archivePolicy),
         toJson(data.reportSchedule), toJson(data.onboardingConfig),
+        data.createdBy ?? null,
         ts, ts
       );
     return this.findById(data.id)!;
@@ -1351,9 +1395,114 @@ export class SqliteProjectRepo {
       archivePolicy: fromJson(r['archive_policy'] as string),
       reportSchedule: fromJson(r['report_schedule'] as string),
       onboardingConfig: fromJson(r['onboarding_config'] as string),
+      createdBy: r['created_by'] as string | null,
       createdAt: r['created_at'] as string,
       updatedAt: r['updated_at'] as string,
     };
+  }
+}
+
+/** Persists audit log rows consumed by org-manager AuditService. */
+export class SqliteAuditRepo {
+  constructor(private db: DatabaseSync) {}
+
+  /** Alias for {@link insert} — same row shape as `AuditLogRepository.insert`. */
+  save(row: Parameters<SqliteAuditRepo['insert']>[0]): ReturnType<SqliteAuditRepo['insert']> {
+    return this.insert(row);
+  }
+
+  async insert(row: {
+    id: string;
+    orgId: string;
+    agentId?: string;
+    userId?: string;
+    type: string;
+    action: string;
+    detail?: string;
+    metadata?: Record<string, unknown>;
+    tokensUsed?: number;
+    durationMs?: number;
+    success: boolean;
+    createdAt: Date;
+  }): Promise<void> {
+    const meta: Record<string, unknown> = {
+      orgId: row.orgId,
+      action: row.action,
+      success: row.success,
+      ...(row.metadata ? row.metadata : {}),
+    };
+    if (row.tokensUsed != null) meta['tokensUsed'] = row.tokensUsed;
+    if (row.durationMs != null) meta['durationMs'] = row.durationMs;
+
+    const ts = row.createdAt.toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO audit_logs (id, event_type, agent_id, user_id, details, metadata, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(row.id, row.type, row.agentId ?? null, row.userId ?? null, row.detail ?? null, toJson(meta), ts);
+  }
+
+  list(options?: {
+    eventType?: string;
+    agentId?: string;
+    userId?: string;
+    orgId?: string;
+    dateRange?: { from?: Date; to?: Date };
+    limit?: number;
+    offset?: number;
+  }): Array<{
+    id: string;
+    eventType: string;
+    agentId: string | null;
+    userId: string | null;
+    details: string | null;
+    metadata: Record<string, unknown>;
+    createdAt: string;
+  }> {
+    const clauses: string[] = [];
+    const params: SqlParams = [];
+    if (options?.eventType) {
+      clauses.push('event_type = ?');
+      params.push(options.eventType);
+    }
+    if (options?.agentId) {
+      clauses.push('agent_id = ?');
+      params.push(options.agentId);
+    }
+    if (options?.userId) {
+      clauses.push('user_id = ?');
+      params.push(options.userId);
+    }
+    if (options?.orgId) {
+      clauses.push(`json_extract(metadata, '$.orgId') = ?`);
+      params.push(options.orgId);
+    }
+    if (options?.dateRange?.from) {
+      clauses.push('created_at >= ?');
+      params.push(options.dateRange.from.toISOString());
+    }
+    if (options?.dateRange?.to) {
+      clauses.push('created_at <= ?');
+      params.push(options.dateRange.to.toISOString());
+    }
+    let q = 'SELECT id, event_type, agent_id, user_id, details, metadata, created_at FROM audit_logs';
+    if (clauses.length) q += ' WHERE ' + clauses.join(' AND ');
+    q += ' ORDER BY created_at DESC';
+    const limit = Math.min(Math.max(options?.limit ?? 100, 1), 1000);
+    const offset = Math.max(options?.offset ?? 0, 0);
+    q += ' LIMIT ? OFFSET ?';
+    params.push(limit, offset);
+    const rows = this.db.prepare(q).all(...params) as Record<string, unknown>[];
+    return rows.map(r => ({
+      id: r['id'] as string,
+      eventType: r['event_type'] as string,
+      agentId: r['agent_id'] as string | null,
+      userId: r['user_id'] as string | null,
+      details: r['details'] as string | null,
+      metadata: (fromJson(r['metadata'] as string) as Record<string, unknown>) ?? {},
+      createdAt: r['created_at'] as string,
+    }));
   }
 }
 
@@ -2141,6 +2290,21 @@ export class SqliteUserRepo {
     this.db.prepare('UPDATE users SET avatar_url = ? WHERE id = ?').run(avatarUrl, id);
   }
 
+  setInviteToken(id: string, token: string, expiresAt: string) {
+    this.db.prepare('UPDATE users SET invite_token = ?, invite_expires_at = ? WHERE id = ?').run(token, expiresAt, id);
+  }
+
+  findByInviteToken(token: string) {
+    const r = this.db.prepare('SELECT * FROM users WHERE invite_token = ?').get(token) as
+      | Record<string, unknown>
+      | undefined;
+    return r ? this._map(r) : null;
+  }
+
+  clearInviteToken(id: string) {
+    this.db.prepare('UPDATE users SET invite_token = NULL, invite_expires_at = NULL WHERE id = ?').run(id);
+  }
+
   private _map(r: Record<string, unknown>) {
     return {
       id: r['id'],
@@ -2151,6 +2315,8 @@ export class SqliteUserRepo {
       teamId: r['team_id'],
       passwordHash: r['password_hash'],
       avatarUrl: r['avatar_url'] as string | null,
+      inviteToken: r['invite_token'] as string | null,
+      inviteExpiresAt: r['invite_expires_at'] as string | null,
       createdAt: toDate(r['created_at'] as string),
       lastLoginAt: toDate(r['last_login_at'] as string),
     };
@@ -3655,6 +3821,7 @@ export interface ApprovalRow {
   options?: Array<{ id: string; label: string; description?: string }>;
   allowFreeform?: boolean;
   selectedOption?: string;
+  approverUserIds?: string[];
 }
 
 export class SqliteApprovalRepo {
@@ -3662,8 +3829,8 @@ export class SqliteApprovalRepo {
 
   upsert(a: ApprovalRow): void {
     this.db.prepare(
-      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option, approver_user_ids)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          status = excluded.status,
          responded_at = excluded.responded_at,
@@ -3687,6 +3854,7 @@ export class SqliteApprovalRepo {
       a.options ? JSON.stringify(a.options) : null,
       a.allowFreeform ? 1 : 0,
       a.selectedOption ?? null,
+      a.approverUserIds?.length ? JSON.stringify(a.approverUserIds) : null,
     );
   }
 
@@ -3725,6 +3893,7 @@ export class SqliteApprovalRepo {
       options: fromJson<Array<{ id: string; label: string; description?: string }>>(r['options'] as string) ?? undefined,
       allowFreeform: !!(r['allow_freeform'] as number),
       selectedOption: r['selected_option'] as string | undefined,
+      approverUserIds: fromJson<string[]>(r['approver_user_ids'] as string) ?? undefined,
     };
   }
 }

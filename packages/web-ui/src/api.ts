@@ -1072,6 +1072,12 @@ export const api = {
     list: (orgId?: string) => request<{ users: HumanUserInfo[] }>(`/users?orgId=${orgId ?? 'default'}`),
     create: (name: string, role: string, orgId?: string, email?: string, password?: string, teamId?: string) =>
       request<{ user: HumanUserInfo }>('/users', { method: 'POST', body: JSON.stringify({ name, role, orgId, email, password, teamId }) }),
+    update: (id: string, data: { name?: string; role?: string; email?: string }) =>
+      request<{ user: HumanUserInfo }>(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    resetPassword: (id: string, password: string) =>
+      request<{ ok: boolean }>(`/users/${id}/reset-password`, { method: 'POST', body: JSON.stringify({ password }) }),
+    reinvite: (id: string) =>
+      request<{ inviteToken: string }>(`/users/${id}/reinvite`, { method: 'POST' }),
     remove: (id: string) => request(`/users/${id}`, { method: 'DELETE' }),
   },
   teamTemplates: {
@@ -1174,6 +1180,10 @@ export const api = {
       request<{ ok: boolean }>('/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
     updateProfile: (name: string, email: string) =>
       request<{ user: AuthUser }>('/auth/profile', { method: 'PUT', body: JSON.stringify({ name, email }) }),
+    setup: (token: string, password: string) =>
+      request<{ ok: boolean; email: string }>('/auth/setup', { method: 'POST', body: JSON.stringify({ token, password }) }),
+    inviteInfo: (token: string) =>
+      request<{ name: string; email: string }>(`/auth/invite-info?token=${encodeURIComponent(token)}`),
     uploadAvatar: (image: string, type: 'user' | 'agent' = 'user', id?: string) =>
       request<{ avatarUrl: string }>('/avatars/upload', { method: 'POST', body: JSON.stringify({ image, type, id }) }),
   },

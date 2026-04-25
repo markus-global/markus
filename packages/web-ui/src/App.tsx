@@ -13,7 +13,7 @@ import { BottomNav } from './components/BottomNav.tsx';
 import { MobileBuilderTabs } from './components/MobileBuilderTabs.tsx';
 import { MobileSettingsTabs } from './components/MobileSettingsTabs.tsx';
 import { Onboarding } from './components/Onboarding.tsx';
-import { Login } from './pages/Login.tsx';
+import { Login, InviteSetup } from './pages/Login.tsx';
 import { ChangePassword } from './pages/ChangePassword.tsx';
 import { api, hubApi, type AuthUser, wsClient } from './api.ts';
 import { navBus } from './navBus.ts';
@@ -137,23 +137,23 @@ export function App() {
         [PAGE.HOME]: <HomePage authUser={currentUser} />,
         [PAGE.TEAM]: <TeamPage authUser={currentUser} />,
         [PAGE.BUILDER]: <MobileBuilderTabs authUser={currentUser} />,
-        [PAGE.SETTINGS]: <MobileSettingsTabs theme={theme.mode} onThemeChange={theme.setMode} />,
+        [PAGE.SETTINGS]: <MobileSettingsTabs theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} />,
         [PAGE.WORK]: <WorkPage authUser={currentUser} />,
-        [PAGE.DELIVERABLES]: <DeliverablesPage />,
+        [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
       };
     }
     return {
-      [PAGE.HOME]: <HomePage />,
+      [PAGE.HOME]: <HomePage authUser={currentUser} />,
       [PAGE.TEAM]: <TeamPage authUser={currentUser} />,
-      [PAGE.SETTINGS]: <Settings theme={theme.mode} onThemeChange={theme.setMode} />,
+      [PAGE.SETTINGS]: <Settings theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} />,
       [PAGE.STORE]: <StorePage authUser={currentUser} />,
-      [PAGE.BUILDER]: <AgentBuilder />,
+      [PAGE.BUILDER]: <AgentBuilder authUser={currentUser} />,
       [PAGE.WORK]: <WorkPage authUser={currentUser} />,
-      [PAGE.DELIVERABLES]: <DeliverablesPage />,
+      [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
       [PAGE.REPORTS]: <ReportsPage authUser={currentUser} />,
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser?.id, theme.mode, isMobile]);
+  }, [currentUser?.id, currentUser?.role, theme.mode, isMobile]);
 
   if (authUser === 'loading') {
     return (
@@ -161,6 +161,17 @@ export function App() {
         <div className="text-fg-tertiary text-sm animate-pulse">{t('loading')}</div>
       </div>
     );
+  }
+
+  // Handle invite setup flow: /#invite?token=xxx
+  const hashStr = typeof window !== 'undefined' ? window.location.hash : '';
+  const inviteMatch = hashStr.match(/^#invite\?token=([a-f0-9]+)/);
+  if (inviteMatch) {
+    return <InviteSetup token={inviteMatch[1]!} onComplete={() => {
+      window.location.hash = '';
+      setAuthUser('loading');
+      api.auth.me().then(d => setAuthUser(d.user)).catch(() => setAuthUser(null));
+    }} />;
   }
 
   if (authUser === null) {

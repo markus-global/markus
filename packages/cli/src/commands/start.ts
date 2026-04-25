@@ -289,11 +289,15 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   orgService.addHumanUser('default', 'Owner', 'owner', { id: 'default' });
 
   const hitlService = new HITLService();
+  hitlService.setOrgService(orgService);
   taskService.setHITLService(hitlService);
   const billingService = new BillingService();
   billingService.setOrgPlan('default', 'free');
   const auditService = new AuditService();
   taskService.setAuditService(auditService);
+  if (storage?.auditRepo) {
+    auditService.setRepository(storage.auditRepo);
+  }
 
   return {
     agentManager,
@@ -792,6 +796,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     auditService.record({
       orgId: 'default',
       agentId,
+      userId: result.respondedBy,
       type: 'approval_response',
       action: request.toolName,
       detail: result.approved ? 'approved' : `rejected${result.comment ? ': ' + result.comment : ''}`,

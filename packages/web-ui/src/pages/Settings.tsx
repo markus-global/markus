@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation, Trans } from 'react-i18next';
-import { api, type StorageInfo, type OrphanInfo } from '../api.ts';
+import { api, type StorageInfo, type OrphanInfo, type AuthUser, type HumanUserInfo } from '../api.ts';
 import { THEME_OPTIONS, type ThemeMode } from '../hooks/useTheme.ts';
 import { SUPPORTED_LANGUAGES } from '../i18n/index.ts';
 import { navBus } from '../navBus.ts';
@@ -27,7 +27,7 @@ interface EnvModelDetected {
 }
 interface EnvModelsResponse { detected: EnvModelDetected[]; timeoutMs?: number }
 
-export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void } = {}) {
+export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void; authUser?: AuthUser } = {}) {
   const { t, i18n } = useTranslation(['settings', 'common']);
   const [health, setHealth] = useState<{ status: string; version: string; agents: number } | null>(null);
   const [llm, setLlm] = useState<LLMSettings | null>(null);
@@ -536,6 +536,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
     ? Object.entries(llm.providers).filter(([, v]) => v.configured && v.enabled).map(([k]) => k) : [];
 
   const showSetupGuide = llm && !hasConfiguredProviders && !setupDismissed;
+  const canManageOrgSettings = authUser?.role === 'owner' || authUser?.role === 'admin';
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -590,6 +591,8 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
           </div>
         </Section>
 
+        {canManageOrgSettings && (
+        <>
         {/* ───── First-Run Setup Guide ───── */}
         {showSetupGuide && (
           <div className="relative bg-gradient-to-br from-brand-500/10 to-surface-secondary border border-brand-500/20 rounded-2xl p-6 space-y-5">
@@ -1426,9 +1429,221 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
           </div>
         </Section>
 
+        <UserManagementSection authUser={authUser} />
+
+        </>
+        )}
+
         <div className="h-8" />
       </div>
     </div>
+  );
+}
+
+/* ─── User Management ─── */
+
+const ROLE_OPTIONS = ['owner', 'admin', 'member', 'guest'] as const;
+const ROLE_COLORS: Record<string, string> = {
+  owner: 'bg-amber-500/10 text-amber-600 border-amber-500/30',
+  admin: 'bg-brand-500/10 text-brand-500 border-brand-500/30',
+  member: 'bg-green-500/10 text-green-600 border-green-500/30',
+  guest: 'bg-gray-500/10 text-gray-500 border-gray-500/30',
+};
+
+function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
+  const { t } = useTranslation(['settings', 'common']);
+  const [users, setUsers] = useState<HumanUserInfo[]>([]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editRole, setEditRole] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [resetPwdId, setResetPwdId] = useState<string | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
+  const loadUsers = useCallback(() => {
+    api.users.list(authUser?.orgId).then(d => setUsers(d.users)).catch(() => {});
+  }, [authUser?.orgId]);
+
+  useEffect(() => { loadUsers(); }, [loadUsers]);
+
+  const startEdit = (u: HumanUserInfo) => {
+    setEditingId(u.id);
+    setEditName(u.name);
+    setEditRole(u.role);
+    setEditEmail(u.email ?? '');
+    setMsg(null);
+  };
+
+  const saveEdit = async () => {
+    if (!editingId) return;
+    try {
+      await api.users.update(editingId, { name: editName, role: editRole, email: editEmail || undefined });
+      setEditingId(null);
+      setMsg({ type: 'ok', text: t('settings:userManagement.updateSuccess') });
+      loadUsers();
+    } catch (e) {
+      setMsg({ type: 'err', text: `${t('settings:userManagement.error')}: ${String(e)}` });
+    }
+  };
+
+  const resetPassword = async () => {
+    if (!resetPwdId || !newPassword) return;
+    try {
+      await api.users.resetPassword(resetPwdId, newPassword);
+      setResetPwdId(null);
+      setNewPassword('');
+      setMsg({ type: 'ok', text: t('settings:userManagement.resetSuccess') });
+    } catch (e) {
+      setMsg({ type: 'err', text: `${t('settings:userManagement.error')}: ${String(e)}` });
+    }
+  };
+
+  const deleteUser = async (userId: string) => {
+    if (userId === authUser?.id) {
+      setMsg({ type: 'err', text: t('settings:userManagement.cannotDeleteSelf') });
+      setConfirmDeleteId(null);
+      return;
+    }
+    if (userId === 'default') {
+      setMsg({ type: 'err', text: t('settings:userManagement.cannotDeleteOwner') });
+      setConfirmDeleteId(null);
+      return;
+    }
+    try {
+      await api.users.remove(userId);
+      setConfirmDeleteId(null);
+      setMsg({ type: 'ok', text: t('settings:userManagement.deleteSuccess') });
+      loadUsers();
+    } catch (e) {
+      setMsg({ type: 'err', text: `${t('settings:userManagement.error')}: ${String(e)}` });
+    }
+  };
+
+  return (
+    <Section title={t('settings:userManagement.title')}>
+      <div className="bg-surface-secondary border border-border-default rounded-xl overflow-hidden">
+        {msg && (
+          <div className={`px-4 py-2 text-xs border-b ${msg.type === 'ok' ? 'bg-green-500/10 text-green-600 border-green-500/20' : 'bg-red-500/10 text-red-500 border-red-500/20'}`}>
+            {msg.text}
+          </div>
+        )}
+        {inviteLink && (
+          <div className="px-4 py-3 bg-brand-500/5 border-b border-brand-500/20 flex items-center gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="text-[11px] text-fg-tertiary mb-1">{t('settings:userManagement.copyInviteLink')}</div>
+              <code className="text-[10px] text-brand-500 bg-surface-elevated px-2 py-1 rounded block truncate">{inviteLink}</code>
+            </div>
+            <button onClick={() => { navigator.clipboard.writeText(inviteLink); setMsg({ type: 'ok', text: t('settings:userManagement.linkCopied') }); }}
+              className="shrink-0 px-3 py-1.5 text-[11px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium">{t('settings:userManagement.copy')}</button>
+            <button onClick={() => setInviteLink(null)} className="shrink-0 text-fg-tertiary hover:text-fg-secondary text-sm">×</button>
+          </div>
+        )}
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border-default/60 text-fg-tertiary text-[11px] uppercase tracking-wider">
+              <th className="text-left px-4 py-2.5 font-medium">{t('settings:userManagement.name')}</th>
+              <th className="text-left px-4 py-2.5 font-medium">{t('settings:userManagement.email')}</th>
+              <th className="text-left px-4 py-2.5 font-medium">{t('settings:userManagement.role')}</th>
+              <th className="text-right px-4 py-2.5 font-medium">{t('settings:userManagement.actions')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.length === 0 && (
+              <tr><td colSpan={4} className="px-4 py-6 text-center text-fg-tertiary text-xs">{t('settings:userManagement.noUsers')}</td></tr>
+            )}
+            {users.map(u => {
+              const isEditing = editingId === u.id;
+              const isResetPwd = resetPwdId === u.id;
+              const isConfirmDel = confirmDeleteId === u.id;
+              const isSelf = u.id === authUser?.id;
+              const isPrimaryOwner = u.id === 'default';
+              return (
+                <tr key={u.id} className="border-b border-border-default/40 last:border-b-0 hover:bg-surface-elevated/40 transition-colors">
+                  <td className="px-4 py-2.5">
+                    {isEditing ? (
+                      <input value={editName} onChange={e => setEditName(e.target.value)}
+                        className="w-full px-2 py-1 text-xs bg-surface-primary border border-border-default rounded-md focus:outline-none focus:ring-1 focus:ring-brand-500/50" />
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <span className="text-fg-primary font-medium text-xs">{u.name}</span>
+                        {isSelf && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-brand-500/10 text-brand-500">you</span>}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    {isEditing ? (
+                      <input value={editEmail} onChange={e => setEditEmail(e.target.value)} placeholder="email@example.com"
+                        className="w-full px-2 py-1 text-xs bg-surface-primary border border-border-default rounded-md focus:outline-none focus:ring-1 focus:ring-brand-500/50" />
+                    ) : (
+                      <span className="text-fg-secondary text-xs">{u.email || '—'}</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    {isEditing ? (
+                      <select value={editRole} onChange={e => setEditRole(e.target.value)}
+                        className="px-2 py-1 text-xs bg-surface-primary border border-border-default rounded-md focus:outline-none focus:ring-1 focus:ring-brand-500/50">
+                        {ROLE_OPTIONS.map(r => (
+                          <option key={r} value={r}>{t(`settings:userManagement.roles.${r}`)}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className={`inline-block text-[10px] px-2 py-0.5 rounded-full border font-medium ${ROLE_COLORS[u.role] ?? ''}`}>
+                        {t(`settings:userManagement.roles.${u.role}`)}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5 text-right">
+                    {isEditing ? (
+                      <div className="flex items-center justify-end gap-2">
+                        <button onClick={() => setEditingId(null)} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">{t('settings:userManagement.cancel')}</button>
+                        <button onClick={saveEdit} className="text-[11px] text-brand-500 hover:text-brand-400 font-medium">{t('settings:userManagement.save')}</button>
+                      </div>
+                    ) : isResetPwd ? (
+                      <div className="flex items-center justify-end gap-2">
+                        <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)}
+                          placeholder={t('settings:userManagement.newPassword')} autoFocus
+                          className="w-32 px-2 py-1 text-xs bg-surface-primary border border-border-default rounded-md focus:outline-none focus:ring-1 focus:ring-brand-500/50" />
+                        <button onClick={() => { setResetPwdId(null); setNewPassword(''); }} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">{t('settings:userManagement.cancel')}</button>
+                        <button onClick={resetPassword} disabled={newPassword.length < 6} className="text-[11px] text-brand-500 hover:text-brand-400 font-medium disabled:opacity-40">{t('settings:userManagement.confirmReset')}</button>
+                      </div>
+                    ) : isConfirmDel ? (
+                      <div className="flex items-center justify-end gap-2">
+                        <span className="text-[10px] text-red-500">{t('settings:userManagement.confirmDelete')}</span>
+                        <button onClick={() => setConfirmDeleteId(null)} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">{t('settings:userManagement.cancel')}</button>
+                        <button onClick={() => deleteUser(u.id)} className="text-[11px] text-red-500 hover:text-red-400 font-medium">{t('settings:userManagement.deleteUser')}</button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button onClick={() => startEdit(u)} className="text-[11px] text-fg-tertiary hover:text-fg-secondary px-1.5 py-0.5 rounded hover:bg-surface-elevated">{t('settings:userManagement.editUser')}</button>
+                        {u.email && (
+                          <button onClick={() => { setResetPwdId(u.id); setNewPassword(''); setMsg(null); }} className="text-[11px] text-fg-tertiary hover:text-fg-secondary px-1.5 py-0.5 rounded hover:bg-surface-elevated">{t('settings:userManagement.resetPassword')}</button>
+                        )}
+                        {u.email && !isPrimaryOwner && (
+                          <button onClick={async () => {
+                            try {
+                              const { inviteToken } = await api.users.reinvite(u.id);
+                              const link = `${window.location.origin}/#invite?token=${inviteToken}`;
+                              setInviteLink(link);
+                              setMsg({ type: 'ok', text: t('settings:userManagement.inviteLinkGenerated') });
+                            } catch (e) { setMsg({ type: 'err', text: String(e) }); }
+                          }} className="text-[11px] text-brand-400 hover:text-brand-500 px-1.5 py-0.5 rounded hover:bg-brand-500/10">{t('settings:userManagement.inviteLink')}</button>
+                        )}
+                        {!isPrimaryOwner && !isSelf && (
+                          <button onClick={() => { setConfirmDeleteId(u.id); setMsg(null); }} className="text-[11px] text-red-400 hover:text-red-500 px-1.5 py-0.5 rounded hover:bg-red-500/10">{t('settings:userManagement.deleteUser')}</button>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Section>
   );
 }
 

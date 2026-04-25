@@ -885,10 +885,13 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const refreshAgents = useCallback(() => api.agents.list().then(d => setAgents(d.agents)).catch(() => {}), []);
   const refreshTeams = useCallback(() => api.teams.list().then(d => setTeams(d.teams)).catch(() => {}), []);
   const refreshGroupChats = useCallback(() => api.groupChats.list().then(d => setGroupChats(d.chats)).catch(() => {}), []);
+  const refreshHumans = useCallback(() => {
+    api.users.list(authUser?.orgId).then(d => setHumans(d.users)).catch(() => {});
+  }, [authUser?.orgId]);
 
   useEffect(() => {
     refreshAgents();
-    api.users.list().then(d => setHumans(d.users)).catch(() => {});
+    refreshHumans();
     api.tasks.list().then(d => setTasks(d.tasks)).catch(() => {});
     refreshTeams();
     api.externalAgents.list().then(d => setExternalAgents(d.agents)).catch(() => {});
@@ -905,7 +908,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     window.addEventListener('markus:data-changed', onDataChanged);
     return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeam(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); window.removeEventListener('markus:data-changed', onDataChanged); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [refreshHumans]);
 
   // Check for nav params (e.g., navigated here from AgentProfile or Team redirect)
   useEffect(() => {
@@ -2209,6 +2212,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); if (isMobile) enterMobileDetail(); }}
         onRefreshTeams={refreshTeams}
         onRefreshAgents={refreshAgents}
+        onRefreshHumans={refreshHumans}
         onRefreshGroupChats={refreshGroupChats}
         onViewProfile={handleViewProfile}
         width={isMobile ? undefined : chatSidebar.width}
@@ -2446,6 +2450,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               defaultTab={profileDefaultTab}
               highlightMailboxId={profileHighlightMailboxId}
               onSwipeBack={() => { if (mainTabRef.current === 'profile') history.back(); else setMainTab('chat'); }}
+              authUser={authUser}
             />
           </div>
         )}

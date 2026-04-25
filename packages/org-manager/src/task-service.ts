@@ -416,24 +416,6 @@ export class TaskService {
     this.sharedDataDir = dir;
     mkdirSync(join(dir, 'tasks'), { recursive: true });
     mkdirSync(join(dir, 'knowledge'), { recursive: true });
-
-    // Seed USER.md if it doesn't exist (OpenClaw-inspired shared user profile)
-    const userMdPath = join(dir, 'USER.md');
-    if (!existsSync(userMdPath)) {
-      writeFileSync(userMdPath, [
-        '# About the Owner',
-        '',
-        '- Name:',
-        '- What to call them:',
-        '- Timezone:',
-        '',
-        '## Context',
-        '',
-        '(What do they care about? What projects are they working on? What annoys them?',
-        'Build this over time. The Secretary agent maintains this file.)',
-        '',
-      ].join('\n'));
-    }
   }
 
   getSharedDataDir(): string | undefined {
@@ -1670,15 +1652,15 @@ export class TaskService {
         const current = this.tasks.get(task.id);
         if (!current || current.status !== 'pending') return;
         if (result.approved) {
-          this.approveTask(task.id);
+          this.approveTask(task.id, result.respondedBy);
         } else {
-          this.rejectTask(task.id);
+          this.rejectTask(task.id, result.respondedBy);
         }
       }).catch(err => {
         log.error('HITL approval flow error, auto-rejecting task', { taskId: task.id, error: String(err) });
         const current = this.tasks.get(task.id);
         if (current?.status === 'pending') {
-          this.rejectTask(task.id);
+          this.rejectTask(task.id, 'system');
         }
       });
     }
@@ -1689,7 +1671,7 @@ export class TaskService {
   /** Approve a pending task and transition it to normal flow.
    * Uses the task's current assignedAgentId (the human reviewer may have changed it).
    * Optionally resolves the associated HITL promise to prevent double-fire. */
-  approveTask(taskIdStr: string): Task {
+  approveTask(taskIdStr: string, userId?: string): Task {
     const task = this.tasks.get(taskIdStr);
     if (!task) throw new Error(`Task not found: ${taskIdStr}`);
     if (task.status !== 'pending') {
@@ -1699,16 +1681,16 @@ export class TaskService {
     if (this.hitlService) {
       const pending = this.hitlService.listApprovals('pending');
       const hitl = pending.find(a => (a.details as Record<string, unknown>)?.['taskId'] === taskIdStr);
-      if (hitl) this.hitlService.respondToApproval(hitl.id, true, 'direct');
+      if (hitl) this.hitlService.respondToApproval(hitl.id, true, userId ?? 'direct');
     }
 
     task.approvedVia = 'human';
     const hasBlockers = task.blockedBy && task.blockedBy.length > 0 && !this.areBlockersSatisfied(task);
     const targetStatus: TaskStatus = hasBlockers ? 'blocked' : 'in_progress';
-    return this.updateTaskStatus(taskIdStr, targetStatus, undefined, true);
+    return this.updateTaskStatus(taskIdStr, targetStatus, userId, true);
   }
 
-  rejectTask(taskIdStr: string): Task {
+  rejectTask(taskIdStr: string, userId?: string): Task {
     const task = this.tasks.get(taskIdStr);
     if (!task) throw new Error(`Task not found: ${taskIdStr}`);
     if (task.status !== 'pending') {
@@ -1718,10 +1700,30 @@ export class TaskService {
     if (this.hitlService) {
       const pending = this.hitlService.listApprovals('pending');
       const hitl = pending.find(a => (a.details as Record<string, unknown>)?.['taskId'] === taskIdStr);
-      if (hitl) this.hitlService.respondToApproval(hitl.id, false, 'direct');
+      if (hitl) this.hitlService.respondToApproval(hitl.id, false, userId ?? 'direct');
     }
 
-    return this.updateTaskStatus(taskIdStr, 'rejected', undefined, true);
+    return this.updateTaskStatus(taskIdStr, 'rejected', userId, true);
+  }
+
+  /** Pause an in-progress task (transition to blocked). */
+  pauseTask(id: string, updatedBy?: string): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    if (task.status !== 'in_progress') {
+      throw new Error(`Cannot pause task in ${task.status} status`);
+    }
+    return this.updateTaskStatus(id, 'blocked', updatedBy);
+  }
+
+  /** Resume a blocked task to in_progress (auto-start runs via side effects). */
+  resumeTask(id: string, updatedBy?: string): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    if (task.status !== 'blocked') {
+      throw new Error(`Cannot resume task in ${task.status} status`);
+    }
+    return this.updateTaskStatus(id, 'in_progress', updatedBy);
   }
 
   getTask(id: string): Task | undefined {
@@ -2002,14 +2004,15 @@ export class TaskService {
     return count;
   }
 
-  assignTask(id: string, agentId: string): Task {
+  assignTask(id: string, agentId: string, updatedBy?: string): Task {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
     task.assignedAgentId = agentId;
     task.updatedAt = new Date().toISOString();
+    if (updatedBy) task.updatedBy = updatedBy;
 
     if (this.taskRepo) {
-      this.taskRepo.assign(id, agentId)
+      this.taskRepo.assign(id, agentId, updatedBy)
         .catch(err => log.warn('Failed to persist task assignment to DB', { error: String(err) }));
     }
 
@@ -2689,7 +2692,7 @@ export class TaskService {
 
     // Transition to review — updateTaskStatus handles persistence, WS broadcast,
     // event emission, and reviewer notification
-    this.updateTaskStatus(task.id, 'review');
+    this.updateTaskStatus(task.id, 'review', task.assignedAgentId);
 
     log.info(`Task submitted for review: ${task.title}`, { id: task.id });
     return task;
@@ -3095,20 +3098,21 @@ export class TaskService {
       }
     }
 
+    const reviewerActor = author ?? task.reviewerAgentId;
     this.auditService?.record({
       orgId: task.orgId,
-      agentId: task.assignedAgentId,
+      agentId: reviewerActor ?? task.assignedAgentId,
       type: 'task_review_revision_requested',
       action: 'request_revision',
       detail: `Revision requested for task "${task.title}" (round ${task.executionRound}): ${reason.slice(0, REVISION_REASON_CHARS)}`,
       taskId: task.id,
       projectId: task.projectId,
       success: true,
-      metadata: { reason, executionRound: task.executionRound },
+      metadata: { reason, executionRound: task.executionRound, workerAgentId: task.assignedAgentId },
     });
 
     // Transition directly to in_progress (auto re-execute)
-    this.updateTaskStatus(task.id, 'in_progress');
+    this.updateTaskStatus(task.id, 'in_progress', author);
     log.info(`Revision requested, auto-restarting task: ${task.title}`, { id: task.id, reason, round: task.executionRound });
     return task;
   }

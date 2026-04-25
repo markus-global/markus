@@ -289,7 +289,7 @@ Before each conversation, the ContextEngine dynamically builds the system prompt
 2. Shared behavior norms (SHARED.md: workflow, governance, knowledge sharing)
 3. Identity and org awareness (colleague list, manager, human members)
 4. **Current project context** (project name, repos, governance rules)
-5. **Current workspace** (agent workspace path, shared workspace)
+5. **Current workspace** (agent workspace path, shared workspace, users/ and team/ directories)
 6. **Agent trust level** (current level and permission description)
 7. **System announcements** (urgent/high-priority announcements)
 8. **Human feedback** (annotations and instructions from report reviews)

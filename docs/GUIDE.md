@@ -272,8 +272,18 @@ Requests must include a Cookie (set after login) or an `Authorization: Bearer <t
 |--------|------|-------------|
 | GET | `/api/users` | List human users |
 | POST | `/api/users` | Create human user |
+| PATCH | `/api/users/:id` | Update user (name, role, email) |
+| POST | `/api/users/:id/reset-password` | Admin password reset |
 | DELETE | `/api/users/:id` | Delete user |
-| PUT | `/api/users/:id` | Update user info |
+
+### Notifications
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/notifications` | List notifications for current user |
+| GET | `/api/notifications/count` | Get unread notification count |
+| POST | `/api/notifications/:id/read` | Mark notification as read |
+| POST | `/api/notifications/read-all` | Mark all notifications as read |
 
 ### Role Templates
 

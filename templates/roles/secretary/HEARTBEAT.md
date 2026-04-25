@@ -35,9 +35,9 @@ Always check `memory_search("self:corrections")` first to avoid duplicates.
 
 ## Shared User Profile Update
 
-Check if recent interactions revealed new information about the owner:
+Check if recent interactions revealed new information about any team member:
 - New communication preference? New project focus? New pet peeve?
-- If yes, update the shared `USER.md` in the shared workspace via `file_write`. This file is loaded by **all agents**, so keep it concise (<50 lines).
+- If yes, update the corresponding user profile in `~/.markus/users/{userId}.md` via `file_write`. It is loaded when that user starts a conversation with any agent. Keep it concise (<50 lines).
 - Also save detailed observations to your private memory: `memory_save` with key `user:profile` and tag `user-preference`.
 - Check `memory_search("user:profile")` first to avoid duplicates.
 
@@ -51,7 +51,7 @@ Check if team dynamics, agent capabilities, or project context changed:
 
 Check `task_list` for tasks recently completed by you or your team members. For each:
 - **What went well?** — Identify approaches that led to smooth completions (first-pass approvals, effective coordination, clean artifact management).
-- **What patterns are worth standardizing?** — Repeatable workflows for hiring, onboarding, knowledge management, user profile updates.
+- **What patterns are worth standardizing?** — Repeatable workflows for hiring, onboarding, knowledge management, user profile maintenance.
 - **Any reviewer feedback worth preserving?** — Positive signals indicate proven practices.
 
 For identified best practices:

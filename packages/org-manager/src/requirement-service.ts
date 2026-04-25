@@ -128,9 +128,13 @@ export class RequirementService {
         const current = this.requirements.get(req.id);
         if (!current || current.status !== 'pending') return;
         if (result.approved) {
-          this.approveRequirement(req.id, result.comment ?? 'hitl');
+          this.approveRequirement(req.id, result.respondedBy ?? 'hitl');
         } else {
-          this.rejectRequirement(req.id, result.comment ?? 'hitl', result.comment || 'Rejected via approval');
+          this.rejectRequirement(
+            req.id,
+            result.respondedBy ?? 'hitl',
+            result.comment || 'Rejected via approval',
+          );
         }
       }).catch(err => {
         log.error('HITL approval flow error for requirement', { requirementId: req.id, error: String(err) });
@@ -226,11 +230,12 @@ export class RequirementService {
     const now = new Date().toISOString();
     req.status = 'rejected';
     req.rejectedReason = reason;
+    req.rejectedBy = userId;
     req.updatedAt = now;
 
     if (this.requirementRepo) {
       this.requirementRepo
-        .reject(id, reason)
+        .reject(id, reason, userId)
         .catch((e: unknown) =>
           log.error('Failed to persist requirement rejection', { id, error: String(e) })
         );
@@ -266,6 +271,7 @@ export class RequirementService {
 
     req.status = 'pending';
     req.rejectedReason = undefined;
+    req.rejectedBy = undefined;
     req.approvedBy = undefined;
     req.approvedAt = undefined;
     req.updatedAt = now;
@@ -274,6 +280,7 @@ export class RequirementService {
       const persistErr = (e: unknown) =>
         log.error('Failed to persist requirement resubmission', { id, error: String(e) });
       this.requirementRepo.updateStatus(id, 'pending').catch(persistErr);
+      this.requirementRepo.clearRejectionMetadata(id).catch(persistErr);
       if (updates) {
         this.requirementRepo.update(id, updates).catch(persistErr);
       }
@@ -295,9 +302,13 @@ export class RequirementService {
         const current = this.requirements.get(req.id);
         if (!current || current.status !== 'pending') return;
         if (result.approved) {
-          this.approveRequirement(req.id, result.comment ?? 'hitl');
+          this.approveRequirement(req.id, result.respondedBy ?? 'hitl');
         } else {
-          this.rejectRequirement(req.id, result.comment ?? 'hitl', result.comment || 'Rejected via approval');
+          this.rejectRequirement(
+            req.id,
+            result.respondedBy ?? 'hitl',
+            result.comment || 'Rejected via approval',
+          );
         }
       }).catch(err => {
         log.error('HITL approval flow error for resubmitted requirement', { requirementId: req.id, error: String(err) });
@@ -332,10 +343,13 @@ export class RequirementService {
       req.approvedBy = userId ?? req.approvedBy ?? 'unknown';
       req.approvedAt = now;
       req.rejectedReason = undefined;
+      req.rejectedBy = undefined;
     } else if (newStatus === 'rejected') {
       if (!req.rejectedReason) req.rejectedReason = 'Moved to closed';
+      req.rejectedBy = userId ?? req.rejectedBy;
     } else if (newStatus === 'pending') {
       req.rejectedReason = undefined;
+      req.rejectedBy = undefined;
     }
 
     if (this.requirementRepo) {
@@ -345,7 +359,7 @@ export class RequirementService {
       if (newStatus === 'in_progress' && oldStatus === 'pending') {
         this.requirementRepo.approve(id, req.approvedBy ?? 'unknown').catch(persistErr);
       } else if (newStatus === 'rejected') {
-        this.requirementRepo.reject(id, req.rejectedReason ?? '').catch(persistErr);
+        this.requirementRepo.reject(id, req.rejectedReason ?? '', userId).catch(persistErr);
       } else {
         this.requirementRepo.updateStatus(id, newStatus).catch(persistErr);
       }
@@ -541,6 +555,7 @@ export class RequirementService {
           approvedBy: row.approvedBy ?? undefined,
           approvedAt: row.approvedAt ? new Date(row.approvedAt as any).toISOString() : undefined,
           rejectedReason: row.rejectedReason ?? undefined,
+          rejectedBy: row.rejectedBy ?? undefined,
           taskIds: [],
           tags: (row.tags as string[]) ?? [],
           createdAt: new Date(row.createdAt as any).toISOString(),

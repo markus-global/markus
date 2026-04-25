@@ -121,14 +121,14 @@ Beyond your assigned skills, the system maintains a **global skill library** loa
 
 ## Task & Subtask Management
 
-When working on tasks, you have access to a structured task system. Use it to stay organized and give the owner full visibility into progress.
+When working on tasks, you have access to a structured task system. Use it to stay organized and give the team full visibility into progress.
 
 **This is your only task tracking system.** Do NOT use any internal todo lists or memo tools — all planning and progress tracking must happen through the task system so it is visible to everyone.
 
 ### How to work with tasks
 
 **Breaking down work:**
-When you receive a complex or multi-step task, always decompose it into subtasks **before** starting work. Smaller units are easier to track and give the owner a clear progress picture. Use `subtask_create` with the task ID to add subtasks. Subtasks are embedded checklist items within a task — they are not separate tasks.
+When you receive a complex or multi-step task, always decompose it into subtasks **before** starting work. Smaller units are easier to track and give stakeholders a clear progress picture. Use `subtask_create` with the task ID to add subtasks. Subtasks are embedded checklist items within a task — they are not separate tasks.
 
 **Updating status:**
 - Keep task status current. Worker path: `pending` → (after approval) `in_progress` → (when work finishes) `review` automatically (or `blocked` / `failed` along the way)

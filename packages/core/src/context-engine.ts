@@ -455,9 +455,9 @@ export class ContextEngine {
       parts.push('- Task status notifications are placed in assignees\' mailboxes as **informational context only**.');
       parts.push('- Do NOT send A2A messages to notify about task status changes — only send A2A when you have substantive coordination needs beyond the status change itself.');
       parts.push('');
-      parts.push('**Communicating with the user**:');
-      parts.push('- `notify_user` — proactive message to user: status updates, progress reports, findings, alerts. Appears in chat and notification bell. User may reply. Write comprehensive body with full context.');
-      parts.push('- `request_user_approval` — when you need a user decision, approval, or input. BLOCKS until the user responds. Supports custom options and freeform text. Do NOT use for routine updates.');
+      parts.push('**Communicating with humans**:');
+      parts.push('- `notify_user` — proactive message to a human team member: status updates, progress reports, findings, alerts. Appears in chat and notification bell. User may reply. Write comprehensive body with full context.');
+      parts.push('- `request_user_approval` — when you need a human decision, approval, or input. BLOCKS until the user responds. Supports custom options and freeform text. Do NOT use for routine updates.');
       parts.push('- `recall_activity` — query your own past execution logs by task or activity type. Use when you need to review what you did previously (e.g., to answer a follow-up question).');
     }
 
@@ -492,7 +492,7 @@ export class ContextEngine {
       parts.push('**Error handling**: If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action.');
       parts.push('**Subagent delegation**: For heavy subtasks needing many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
       parts.push('**Built-in tools over CLI**: ALWAYS prefer built-in tools (`task_create`, `task_assign`, `team_hire_agent`, `builder_install`, `agent_send_message`, `memory_save`, etc.) over running `markus` CLI commands via `shell_execute`. The CLI is for human operators — agents must use their native tool interface. Only fall back to CLI if no built-in tool exists for the operation.');
-      parts.push('**No auto-install/deploy**: NEVER automatically install or deploy agents, teams, or skills via `builder_install`, `team_hire_agent`, or `hub_install` unless the user explicitly requests it (e.g., "install", "deploy", "hire", "start"). Creating an artifact (writing files to `builder-artifacts/`) is separate from deploying it into the live organization.');
+      parts.push('**No auto-install/deploy**: NEVER automatically install or deploy agents, teams, or skills via `builder_install`, `team_hire_agent`, or `hub_install` unless explicitly requested by a human team member (e.g., "install", "deploy", "hire", "start"). Creating an artifact (writing files to `builder-artifacts/`) is separate from deploying it into the live organization.');
     }
 
     // --- Mailbox & attention context ---
@@ -534,7 +534,7 @@ export class ContextEngine {
 
     lines.push(`**Mailbox queue**: ${ctx.queueDepth} item(s) waiting`);
     if (ctx.topQueued && ctx.topQueued.length > 0) {
-      lines.push('You MUST review all waiting items and prioritize user chat/comments above everything else:');
+      lines.push('You MUST review all waiting items and prioritize human chat/comments above everything else:');
       for (const q of ctx.topQueued) {
         lines.push(`  - [${q.type}] p${q.priority}: ${q.summary.slice(0, SYSTEM_MAILBOX_ITEM_PREVIEW_CHARS)}`);
       }
@@ -561,10 +561,10 @@ export class ContextEngine {
       case 'chat':
         lines.push('You are in a **human chat session**.');
         lines.push('');
-        lines.push('**Do inline**: answer questions, status updates, searches, file lookups, and any work the user needs an immediate answer for. Follow role-specific chat workflows if defined.');
+        lines.push('**Do inline**: answer questions, status updates, searches, file lookups, and any work the requester needs an immediate answer for. Follow role-specific chat workflows if defined.');
         lines.push('**Create tasks for**: sustained implementation work, multi-file code changes, or work that benefits from subtask decomposition, review, and team collaboration. Follow the Task Workflow above.');
         lines.push('');
-        lines.push('**After creating tasks, STOP.** Do NOT execute the task work yourself. The task runs in its own isolated context after user approval. Reply with a summary of created tasks, assignees, and dependency structure. Tell the user to review and approve.');
+        lines.push('**After creating tasks, STOP.** Do NOT execute the task work yourself. The task runs in its own isolated context after user approval. Reply with a summary of created tasks, assignees, and dependency structure. Tell the requester to review and approve.');
         lines.push('');
         lines.push('Keep responses concise and human-friendly. The user should not see raw tool outputs or complex operations.');
         break;
@@ -573,7 +573,7 @@ export class ContextEngine {
         lines.push('You are in **task execution mode** — an isolated session for focused, thorough work.');
         lines.push('');
         lines.push('**Context awareness:**');
-        lines.push('- This session is ISOLATED from chat — the user monitors progress through task logs');
+        lines.push('- This session is ISOLATED from chat — humans monitor progress through task logs');
         lines.push('- If there is `⚠ USER FEEDBACK` above, READ IT FIRST and adjust your approach');
         lines.push('- If there are dependency tasks, review ALL their deliverables before starting (`file_read` + `task_get`)');
         lines.push('');

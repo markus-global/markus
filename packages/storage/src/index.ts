@@ -42,6 +42,7 @@ export {
   SqliteNotificationRepo,
   SqliteApprovalRepo,
   SqliteGroupChatRepo,
+  SqliteAuditRepo,
   migrateToExecutionStreamLogs,
   type SqliteExternalAgentRegistration,
   type ActivityRecord,

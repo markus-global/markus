@@ -127,8 +127,20 @@ All requests require authentication via one of:
 |--------|------|-------------|
 | GET | `/api/users` | List human users |
 | POST | `/api/users` | Create human user |
-| PUT | `/api/users/:id` | Update user info |
+| PATCH | `/api/users/:id` | Update user (name, role, email) |
+| POST | `/api/users/:id/reset-password` | Admin password reset |
 | DELETE | `/api/users/:id` | Delete user |
+
+---
+
+## Notifications
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/notifications` | List notifications for current user (supports `?unreadOnly=true&limit=N&offset=N&type=T`) |
+| GET | `/api/notifications/count` | Get unread notification count |
+| POST | `/api/notifications/:id/read` | Mark a single notification as read |
+| POST | `/api/notifications/read-all` | Mark all notifications as read |
 
 ---
 

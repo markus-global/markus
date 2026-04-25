@@ -215,10 +215,10 @@ export interface TaskServiceBridge {
         subtasks?: Array<{ id: string; title: string; status: string }>;
       }
     | undefined;
-  assignTask(id: string, agentId: string): { id: string; status: string };
+  assignTask(id: string, agentId: string, updatedBy?: string): { id: string; status: string };
   addTaskNote(id: string, note: string, author?: string): void;
   updateTask(id: string, data: { description?: string; blockedBy?: string[] }, updatedBy?: string): { id: string; title: string; status: string };
-  rejectTask(id: string): { id: string; title: string; status: string };
+  rejectTask(id: string, userId?: string): { id: string; title: string; status: string };
   addSubtask(taskId: string, title: string): { id: string; title: string; status: string };
   completeSubtask(taskId: string, subtaskId: string): { id: string; title: string; status: string };
   getSubtasks?(taskId: string): Array<{ id: string; title: string; status: string }>;
@@ -1014,7 +1014,7 @@ export class AgentManager {
           return ts.getTask(taskId) ?? null;
         },
         assignTask: async (taskId, agentId) => {
-          return ts.assignTask(taskId, agentId);
+          return ts.assignTask(taskId, agentId, id);
         },
         addTaskNote: async (taskId, note, author) => {
           ts.addTaskNote(taskId, note, author);
@@ -1024,7 +1024,7 @@ export class AgentManager {
           return { id: task.id, title: task.title, status: task.status };
         },
         cancelPendingTask: async (taskId) => {
-          const task = ts.rejectTask(taskId);
+          const task = ts.rejectTask(taskId, id);
           return { id: task.id, title: task.title, status: task.status };
         },
         addSubtask: async (taskId, title) => {
@@ -1648,7 +1648,7 @@ export class AgentManager {
         updateTaskStatus: async (taskId, status) => ts.updateTaskStatus(taskId, status, id),
         requestRevision: async (taskId, reason) => ts.requestRevision(taskId, reason, id),
         getTask: async taskId => ts.getTask(taskId) ?? null,
-        assignTask: async (taskId, agentId) => ts.assignTask(taskId, agentId),
+        assignTask: async (taskId, agentId) => ts.assignTask(taskId, agentId, id),
         addTaskNote: async (taskId, note, author) => {
           ts.addTaskNote(taskId, note, author);
         },
@@ -1657,7 +1657,7 @@ export class AgentManager {
           return { id: task.id, title: task.title, status: task.status };
         },
         cancelPendingTask: async (taskId) => {
-          const task = ts.rejectTask(taskId);
+          const task = ts.rejectTask(taskId, id);
           return { id: task.id, title: task.title, status: task.status };
         },
         addSubtask: async (taskId, title) => {

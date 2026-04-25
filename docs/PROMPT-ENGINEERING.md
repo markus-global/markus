@@ -68,7 +68,7 @@ The system prompt is assembled by `ContextEngine.buildSystemPrompt()`. Sections 
 │  5. Team Announcements & Norms              │
 │  6. Project Context (governance)            │
 │  7. Workspace Info (paths)                  │
-│  8. User Profile (USER.md)                  │
+│  8. User Profiles (users/*.md) + Team Context│
 │  9. Trust Level                             │
 │ 10. System Announcements                    │
 │ 11. Human Feedback                          │

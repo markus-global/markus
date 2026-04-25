@@ -185,12 +185,12 @@ export class ToolSelector {
 
     pushUnique({
       name: 'notify_user',
-      description: 'Send a message to the user. The message appears in the agent chat and as a notification. Write a comprehensive body — the user sees the full content and may reply. Use for status updates, reports, alerts, and findings.',
+      description: 'Send a notification to a human team member. The message appears in the agent chat and as a notification. Write a comprehensive body — the user sees the full content and may reply. Use for status updates, reports, alerts, and findings.',
       inputSchema: {
         type: 'object',
         properties: {
           title: { type: 'string', description: 'Short headline (1 line)' },
-          body: { type: 'string', description: 'Full message content. Be thorough — this is what the user reads in chat.' },
+          body: { type: 'string', description: 'Full message content. Be thorough — this is what the recipient reads in chat.' },
           priority: { type: 'string', enum: ['low', 'normal', 'high', 'urgent'], description: 'Default: normal' },
           related_task_id: { type: 'string', description: 'If related to a task, include the task ID for deep-linking' },
         },
@@ -200,7 +200,7 @@ export class ToolSelector {
 
     pushUnique({
       name: 'request_user_approval',
-      description: 'Request a decision or approval from the user. The tool BLOCKS until the user responds. Use when you need human approval, a choice between options, or any user decision/input. Default options: Approve / Reject (reject requires a reason). You can provide custom options and optionally allow freeform text input.',
+      description: 'Request a decision or approval from a human team member. The tool BLOCKS until a human responds. Use when you need human approval, a choice between options, or any user decision/input. Default options: Approve / Reject (reject requires a reason). You can provide custom options and optionally allow freeform text input.',
       inputSchema: {
         type: 'object',
         properties: {
