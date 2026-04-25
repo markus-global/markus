@@ -118,6 +118,58 @@ After onboarding, you can add more human members or hire AI agents from the Team
 
 ---
 
+## Multi-User Collaboration
+
+Markus supports small team collaboration with multiple human users and AI agents.
+
+### Inviting Users
+
+1. Go to **Settings > User Management**
+2. Click **Create User** — provide name, email, and role (`admin`, `member`, or `guest`)
+3. The system generates an **invite link** (valid for 7 days)
+4. Share the link with the new user — they set their own password via the link
+5. Once joined, the invite button disappears and the user shows as active
+
+### Roles & Permissions
+
+| Role | Manage Users | Manage Agents | Manage Teams | View All Data |
+|------|-------------|--------------|-------------|--------------|
+| `owner` | Yes | Yes | Yes | Yes |
+| `admin` | Yes | Yes | Yes | Yes |
+| `member` | No | No | No | Yes |
+| `guest` | No | No | No | Limited |
+
+### Communication Channels
+
+| Channel | How to Access | Description |
+|---------|--------------|-------------|
+| **Agent Chat** | Team page > click agent | One-on-one conversation with an AI agent (session isolated per user) |
+| **DM** | Team page > People > click user | Private messages between two humans |
+| **Team Group** | Team page > select team channel | Group chat for all team members (auto-created per team) |
+| **Custom Group** | Team page > Create Group Chat | Manually managed group with selected humans and agents |
+| **@Mention** | Task/Requirement comments | Mention humans or agents in comment threads — triggers bell notification |
+
+### Notification Bell
+
+The notification bell (top-right) shows:
+- **Agent reports**: Proactive messages from agents (`notify_user`)
+- **DM notifications**: New direct messages from other humans
+- **Group messages**: New messages in group chats you belong to
+- **@Mentions**: When someone mentions you in task/requirement comments
+- **Approval requests**: Pending items requiring your decision
+- **Task updates**: Status changes on tasks you're involved with
+
+Click any notification to navigate directly to the relevant page.
+
+### Chat Session Isolation
+
+Each human user has their own private chat sessions with agents:
+- Your conversations with an agent are not visible to other users
+- Agent "Activity Logs" (main sessions) are shared — visible to all users
+- Group chats and channel messages are visible to all channel members
+
+---
+
 ## Web UI Usage
 
 ### Chat Page
@@ -171,15 +223,28 @@ The left sidebar lets you choose a conversation target:
 
 ### Team Page
 
+The Team page serves dual purposes: team management and communication hub.
+
+**Sidebar (left):**
+- **Smart Route** — System routes messages to the most suitable Agent
+- **People** — Human users list (DM and notes)
+- **Agents** — All AI agents with online status indicators
+- **Group Chats** — Team channels and custom group chats (create, manage members)
+
+**Team Management:**
 - Displays all teams and their members (humans and AI Agents) as cards
 - Members without a team appear in the "Ungrouped" area
 - Owners and Admins can:
   - Create or delete teams
   - Hire new AI Agents in a team (specify role and position: Worker or Manager)
-  - Add human members or assign existing members to teams
   - Set a Manager for a team (via the member `...` menu)
-  - Remove a member from a team (member stays in the org) or remove from the org entirely
-  - All delete/remove actions use a confirmation dialog
+  - Remove a member from a team or from the org entirely
+
+**Group Chat Management:**
+- Each team automatically gets a group channel
+- Create custom group chats with any combination of humans and agents
+- Add or remove members from custom group chats (via the member management panel)
+- Creator is automatically added as a member
 
 ---
 
@@ -369,3 +434,12 @@ A: Agents contribute via the `knowledge_contribute` tool to the project knowledg
 
 **Q: How do I assign Agents to different projects?**  
 A: Create projects on the Projects page and link them to Teams. When Agents are assigned to tasks within a project, they automatically get project context and isolated workspaces.
+
+**Q: Can other users see my conversations with an Agent?**  
+A: No. Each user's chat sessions with agents are private, scoped by your user ID. Only the agent's "Activity Log" (main session) is shared across all users.
+
+**Q: How do I add someone to a group chat?**  
+A: Open the group chat, click the member management icon, and add or remove humans and agents. Team group chats include all team members automatically; custom group chats allow manual member management.
+
+**Q: How do Agents know who they're talking to?**  
+A: The system injects the current user's identity into the agent's context. Agents also have access to per-user profile files (`USER.md`) maintained by the Secretary, allowing personalized interactions.

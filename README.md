@@ -107,13 +107,13 @@ Session context, structured memories, daily logs, long-term knowledge (`MEMORY.m
 Agents don't just wait for instructions. The heartbeat scheduler drives periodic check-ins — patrol open tasks, process background completions, surface blockers. Your team works while you sleep.
 
 ### Team Collaboration & A2A
-Role-based architecture with managers and workers. Agents delegate tasks, send structured messages, and collaborate through a built-in Agent-to-Agent protocol. Subagent spawning lets any agent split work into lightweight parallel workers.
+Role-based architecture with managers, workers, and multiple human users. Agents delegate tasks, send structured messages, and collaborate through a built-in Agent-to-Agent protocol. Humans communicate via DMs, group chats, and @mentions — with targeted notifications and session isolation. Subagent spawning lets any agent split work into lightweight parallel workers.
 
 ### Governance & Trust
 Progressive trust levels (probation, standard, trusted, senior) control what agents can do autonomously. Formal submit-review-merge delivery. Emergency stop, pause-all, and announcement broadcasts. Full audit trail for every action.
 
-### Communication Bridges
-Smart routing across channels, DMs, and external platforms. Native bridges to Slack, Feishu, WhatsApp, and Telegram — agents meet your team where they already talk.
+### Multi-User Communication
+Smart routing across channels, DMs, group chats, and external platforms. Invite team members, manage roles (owner/admin/member/guest), and keep conversations organized. Native bridges to Slack, Feishu, WhatsApp, and Telegram — agents meet your team where they already talk.
 
 ### Skills Marketplace
 Browse and install agent templates, team configurations, and reusable skills from the Markus Hub. Share what works with the community.
