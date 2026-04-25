@@ -988,7 +988,7 @@ export const api = {
     },
     get: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}`),
     create: (title: string, description: string, assignedAgentId: string, reviewerAgentId: string, priority?: string, projectId?: string, blockedBy?: string[], requirementId?: string, taskType?: string, scheduleConfig?: { every?: string; cron?: string }) =>
-      request('/tasks', { method: 'POST', body: JSON.stringify({ title, description, assignedAgentId, reviewerAgentId, priority, projectId, blockedBy, requirementId, taskType, scheduleConfig }) }),
+      request<{ task: TaskInfo }>('/tasks', { method: 'POST', body: JSON.stringify({ title, description, assignedAgentId, reviewerAgentId, priority, projectId, blockedBy, requirementId, taskType, scheduleConfig }) }),
     update: (id: string, data: { title?: string; description?: string; priority?: string; projectId?: string | null; requirementId?: string | null; blockedBy?: string[]; reviewerAgentId?: string }) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     updateStatus: (id: string, status: string) =>

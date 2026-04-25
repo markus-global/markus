@@ -2467,7 +2467,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   const subStatusBadges = useMemo(() => buildSubStatusBadges(t), [t]);
   const reqStatusBadges = useMemo(() => buildReqStatusBadges(t), [t]);
   const isMobile = useIsMobile();
-  const detailPanel = useResizablePanel({ side: 'right', defaultWidth: Math.round(window.innerWidth * 2 / 3), minWidth: 380, maxWidth: Math.round(window.innerWidth * 0.8), storageKey: 'markus_projects_detail_v3' });
+  const detailPanel = useResizablePanel({ side: 'right', defaultWidth: Math.round(window.innerWidth / 2), minWidth: 380, maxWidth: Math.round(window.innerWidth * 0.8), storageKey: 'markus_projects_detail_v3' });
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
   const mobileShowDetailRef = useRef(mobileShowDetail);
   mobileShowDetailRef.current = mobileShowDetail;
@@ -2819,7 +2819,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     const projId = taskProjectId || undefined;
     const reqId = taskRequirementId || undefined;
     try {
-      await api.tasks.create(
+      const { task } = await api.tasks.create(
         taskTitle, taskDesc,
         taskAssignTo,
         taskReviewer,
@@ -2832,6 +2832,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
       );
       setTaskTitle(''); setTaskDesc(''); setTaskBlockedBy([]); setTaskRequirementId(''); setTaskType('standard'); setTaskScheduleEvery('4h'); setShowCreateTask(false);
       refreshBoard();
+      if (task) forceOpenTask(task);
     } catch (e) { msg(`Error creating task: ${e}`); }
   };
 
@@ -2857,10 +2858,11 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     if (!reqDesc.trim()) { msg('Please enter a description for this requirement'); return; }
     if (!reqProjectId) { msg('Please select a project for this requirement'); return; }
     try {
-      await api.requirements.create({ title: reqTitle.trim(), description: reqDesc.trim(), priority: reqPriority, projectId: reqProjectId });
+      const { requirement } = await api.requirements.create({ title: reqTitle.trim(), description: reqDesc.trim(), priority: reqPriority, projectId: reqProjectId });
       msg('Requirement created');
       setReqTitle(''); setReqDesc(''); setShowCreateReq(false);
       refreshRequirements();
+      if (requirement) forceOpenReq(requirement);
     } catch (e) { msg(`Error: ${e}`); }
   };
 
@@ -3818,6 +3820,7 @@ function RequirementDetailPanel({
   const [editingDesc, setEditingDesc] = useState(false);
   const [descDraft, setDescDraft] = useState(req.description);
   const [savingDesc, setSavingDesc] = useState(false);
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const reqScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -3999,9 +4002,18 @@ function RequirementDetailPanel({
           )}
           <div className="flex-1" />
           {canCancel && !needsReview && (
-            <button onClick={() => onCancel(req.id)} className="px-3 py-1.5 text-xs text-red-500/70 hover:text-red-500 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 rounded-lg transition-colors">Cancel Requirement</button>
+            <button onClick={() => setShowCancelConfirm(true)} className="px-3 py-1.5 text-xs text-red-500/70 hover:text-red-500 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 rounded-lg transition-colors">Cancel Requirement</button>
           )}
         </div>
+      {showCancelConfirm && (
+        <ConfirmModal
+          title={t('work:requirement.cancelConfirmTitle', 'Cancel Requirement')}
+          message={t('work:requirement.cancelConfirmMessage', 'Are you sure you want to cancel this requirement? This action cannot be undone.')}
+          confirmLabel={t('work:requirement.cancelConfirmLabel', 'Cancel Requirement')}
+          onConfirm={() => { setShowCancelConfirm(false); onCancel(req.id); }}
+          onCancel={() => setShowCancelConfirm(false)}
+        />
+      )}
     </div>
   );
 }
