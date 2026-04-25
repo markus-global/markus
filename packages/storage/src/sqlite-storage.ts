@@ -1431,8 +1431,8 @@ export class SqliteAuditRepo {
       success: row.success,
       ...(row.metadata ? row.metadata : {}),
     };
-    if (row.tokensUsed != null) meta['tokensUsed'] = row.tokensUsed;
-    if (row.durationMs != null) meta['durationMs'] = row.durationMs;
+    if (row.tokensUsed !== null && row.tokensUsed !== undefined) meta['tokensUsed'] = row.tokensUsed;
+    if (row.durationMs !== null && row.durationMs !== undefined) meta['durationMs'] = row.durationMs;
 
     const ts = row.createdAt.toISOString();
     this.db
