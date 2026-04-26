@@ -21,11 +21,17 @@ interface AuthProfileSafe {
   hasApiKey: boolean; hasOAuth: boolean; oauthExpired?: boolean; accountId?: string;
 }
 interface OpenClawPreview { found: boolean; summary: { configPath: string; models?: { providerCount: number; providers: Array<{ name: string; modelCount: number; baseUrl?: string }> }; channels?: string[] } }
+interface OllamaModelInfo { name: string; size?: number; parameterSize?: string; family?: string }
 interface EnvModelDetected {
   provider: string; displayName: string; apiKeySet: boolean; apiKeyPreview: string;
   model: string; baseUrl?: string; envVars: Record<string, string>;
+  ollamaModels?: OllamaModelInfo[];
 }
 interface EnvModelsResponse { detected: EnvModelDetected[]; timeoutMs?: number }
+interface OllamaDetectResult {
+  found: boolean; baseUrl?: string; error?: string;
+  models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
+}
 
 export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void; authUser?: AuthUser } = {}) {
   const { t, i18n } = useTranslation(['settings', 'common']);
@@ -48,6 +54,13 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
   const [envMsg, setEnvMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [envSelected, setEnvSelected] = useState<Record<string, boolean>>({});
   const [envApplying, setEnvApplying] = useState(false);
+
+  // Ollama auto-detect state
+  const [ollamaDetect, setOllamaDetect] = useState<OllamaDetectResult | null>(null);
+  const [ollamaLoading, setOllamaLoading] = useState(false);
+  const [ollamaSelectedModel, setOllamaSelectedModel] = useState('');
+  const [ollamaApplying, setOllamaApplying] = useState(false);
+  const [ollamaMsg, setOllamaMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   // OAuth state
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([]);
@@ -168,7 +181,26 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
     finally { setEnvLoading(false); }
   }, [t]);
 
-  // Auto-detect env vars on first load when no providers are configured
+  const detectOllama = useCallback(async () => {
+    setOllamaLoading(true); setOllamaMsg(null); setOllamaDetect(null);
+    try {
+      const res = await fetch('/api/settings/detect-ollama', { headers: authHeaders() });
+      if (!res.ok) {
+        setOllamaMsg({ type: 'err', text: t('ollama.detectFailed') });
+        return;
+      }
+      const data = await res.json() as OllamaDetectResult;
+      setOllamaDetect(data);
+      if (data.found && data.models && data.models.length > 0) {
+        setOllamaSelectedModel(data.models[0]!.name);
+      } else if (!data.found) {
+        setOllamaMsg({ type: 'err', text: data.error || t('ollama.notRunning') });
+      }
+    } catch { setOllamaMsg({ type: 'err', text: t('ollama.detectFailed') }); }
+    finally { setOllamaLoading(false); }
+  }, [t]);
+
+  // Auto-detect env vars + local Ollama on first load when no providers are configured
   const hasConfiguredProviders = llm
     ? Object.values(llm.providers).some(p => p.configured)
     : false;
@@ -177,8 +209,9 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
     if (llm && !hasConfiguredProviders && !autoDetectDone.current) {
       autoDetectDone.current = true;
       void detectEnvModels();
+      void detectOllama();
     }
-  }, [llm, hasConfiguredProviders, detectEnvModels]);
+  }, [llm, hasConfiguredProviders, detectEnvModels, detectOllama]);
 
   const saveLLM = async () => {
     if (!selectedProvider || selectedProvider === llm?.defaultProvider) return;
@@ -268,6 +301,31 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
       loadSettings();
     } catch { setEnvMsg({ type: 'err', text: t('envConfig.failedToApply') }); }
     finally { setEnvApplying(false); }
+  };
+
+  const applyOllama = async () => {
+    if (!ollamaDetect?.found || !ollamaSelectedModel) return;
+    setOllamaApplying(true); setOllamaMsg(null);
+    try {
+      const res = await fetch('/api/settings/llm/providers', {
+        method: 'POST', headers: authHeaders(),
+        body: JSON.stringify({
+          name: 'ollama',
+          model: ollamaSelectedModel,
+          baseUrl: ollamaDetect.baseUrl || 'http://localhost:11434',
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json() as LLMSettings;
+        setLlm(data);
+        setOllamaMsg({ type: 'ok', text: t('ollama.configured', { model: ollamaSelectedModel }) });
+        setOllamaDetect(null);
+      } else {
+        const err = await res.json() as { error?: string };
+        setOllamaMsg({ type: 'err', text: err.error || t('ollama.applyFailed') });
+      }
+    } catch { setOllamaMsg({ type: 'err', text: t('ollama.applyFailed') }); }
+    finally { setOllamaApplying(false); }
   };
 
   const startOAuthLogin = async (provider: string) => {
@@ -639,7 +697,46 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
               {envMsg && <Msg type={envMsg.type} text={envMsg.text} />}
             </SetupCard>
 
-            {/* Option 2: OpenClaw */}
+            {/* Option 2: Local Ollama */}
+            <SetupCard
+              step={t('setupGuide.fromOllama.step')}
+              title={t('setupGuide.fromOllama.title')}
+              description={t('setupGuide.fromOllama.description')}
+              active={!!(ollamaDetect?.found)}
+            >
+              {ollamaLoading && <div className="text-xs text-fg-tertiary">{t('common:detecting')}</div>}
+              {ollamaDetect?.found && ollamaDetect.models && ollamaDetect.models.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs text-green-600">{t('ollama.foundModels', { count: ollamaDetect.models.length, url: ollamaDetect.baseUrl })}</div>
+                  <select
+                    value={ollamaSelectedModel}
+                    onChange={e => setOllamaSelectedModel(e.target.value)}
+                    className="w-full px-3 py-2 bg-surface-overlay border border-border-default rounded-lg text-sm text-fg-primary focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  >
+                    {ollamaDetect.models.map(m => (
+                      <option key={m.name} value={m.name}>
+                        {m.name}{m.parameterSize ? ` (${m.parameterSize})` : ''}{m.family ? ` — ${m.family}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <button onClick={() => void applyOllama()} disabled={ollamaApplying || !ollamaSelectedModel}
+                    className="w-full px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
+                    {ollamaApplying ? t('common:applying') : t('ollama.useModel', { model: ollamaSelectedModel })}
+                  </button>
+                </div>
+              )}
+              {!ollamaLoading && !ollamaDetect && (
+                <button onClick={() => void detectOllama()} className="px-4 py-2 border border-border-default hover:bg-surface-elevated text-fg-secondary text-sm rounded-lg transition-colors">
+                  {t('ollama.detect')}
+                </button>
+              )}
+              {ollamaDetect && !ollamaDetect.found && (
+                <div className="text-xs text-fg-tertiary">{t('ollama.notRunning')}</div>
+              )}
+              {ollamaMsg && <Msg type={ollamaMsg.type} text={ollamaMsg.text} />}
+            </SetupCard>
+
+            {/* Option 3: OpenClaw */}
             <SetupCard
               step={t('setupGuide.fromOpenClaw.step')}
               title={t('setupGuide.fromOpenClaw.title')}
@@ -667,7 +764,7 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
               {openclawMsg && <Msg type={openclawMsg.type} text={openclawMsg.text} />}
             </SetupCard>
 
-            {/* Option 3: Manual hint */}
+            {/* Option 4: Manual hint */}
             <SetupCard
               step={t('setupGuide.manual.step')}
               title={t('setupGuide.manual.title')}
@@ -1104,93 +1201,142 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
 
         <div className="border-t border-border-default" />
 
-        {/* ───── Environment Variable Config ───── */}
-        <Section title={t('envConfig.title')}>
-          <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
-            <div className="text-sm text-fg-secondary">{t('envConfig.description')}</div>
-            <button onClick={() => void detectEnvModels()} disabled={envLoading}
-              className="px-4 py-2 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-secondary text-sm rounded-lg transition-colors flex items-center gap-2">
-              <svg className={`w-4 h-4 ${envLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-              {envLoading ? t('common:detecting') : t('envConfig.refreshEnv')}
-            </button>
+        {/* ───── Auto-detect & Import ───── */}
+        <Section title={t('autoDetect.title')}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-5">
+            <div className="text-sm text-fg-secondary">{t('autoDetect.description')}</div>
 
-            {envModels && envModels.detected.length > 0 && (
-              <div className="border-t border-border-default pt-4 space-y-3">
-                <div className="text-xs text-fg-tertiary uppercase tracking-wider">{t('envConfig.detectedProviders')}</div>
-                {envModels.detected.map(d => (
-                  <label key={d.provider} className="flex items-center justify-between bg-surface-elevated/30 rounded-lg px-4 py-3 cursor-pointer hover:bg-surface-elevated/50 transition-colors">
-                    <div className="flex items-center gap-3">
-                      <input type="checkbox" checked={envSelected[d.provider] ?? false}
-                        onChange={e => setEnvSelected({ ...envSelected, [d.provider]: e.target.checked })}
-                        className="w-4 h-4 rounded bg-surface-overlay border-gray-600 text-brand-500 focus:ring-brand-500" />
-                      <div>
-                        <div className="text-sm text-fg-primary font-medium">{d.displayName}</div>
-                        <div className="text-xs text-fg-tertiary mt-0.5">
-                          {t('envConfig.keyLabel')} <code className="text-fg-secondary">{d.apiKeyPreview}</code>
-                          {' / '}{t('envConfig.modelLabel')} <code className="text-fg-secondary">{d.model}</code>
-                          {d.baseUrl && <>{' / '}{t('envConfig.urlLabel')} <code className="text-fg-secondary">{d.baseUrl}</code></>}
+            {/* — Environment Variables — */}
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <h4 className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{t('envConfig.title')}</h4>
+                <button onClick={() => void detectEnvModels()} disabled={envLoading}
+                  className="px-3 py-1 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-tertiary text-xs rounded-md transition-colors flex items-center gap-1.5">
+                  <svg className={`w-3.5 h-3.5 ${envLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                  {envLoading ? t('common:detecting') : t('envConfig.refreshEnv')}
+                </button>
+              </div>
+              {envModels && envModels.detected.length > 0 && (
+                <div className="space-y-2">
+                  {envModels.detected.map(d => (
+                    <label key={d.provider} className="flex items-center justify-between bg-surface-elevated/30 rounded-lg px-4 py-3 cursor-pointer hover:bg-surface-elevated/50 transition-colors">
+                      <div className="flex items-center gap-3">
+                        <input type="checkbox" checked={envSelected[d.provider] ?? false}
+                          onChange={e => setEnvSelected({ ...envSelected, [d.provider]: e.target.checked })}
+                          className="w-4 h-4 rounded bg-surface-overlay border-gray-600 text-brand-500 focus:ring-brand-500" />
+                        <div>
+                          <div className="text-sm text-fg-primary font-medium">{d.displayName}</div>
+                          <div className="text-xs text-fg-tertiary mt-0.5">
+                            {t('envConfig.keyLabel')} <code className="text-fg-secondary">{d.apiKeyPreview}</code>
+                            {' / '}{t('envConfig.modelLabel')} <code className="text-fg-secondary">{d.model}</code>
+                            {d.baseUrl && <>{' / '}{t('envConfig.urlLabel')} <code className="text-fg-secondary">{d.baseUrl}</code></>}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <div className="text-xs text-fg-tertiary">
-                      {Object.keys(d.envVars).map(k => <div key={k}><code>{k}</code></div>)}
-                    </div>
-                  </label>
-                ))}
-                {envModels.timeoutMs && (
-                  <div className="text-xs text-fg-tertiary">
-                    {t('envConfig.llmTimeout', { ms: envModels.timeoutMs })}
-                  </div>
-                )}
-                <button onClick={() => void applyEnvModels()} disabled={envApplying || Object.values(envSelected).filter(Boolean).length === 0}
-                  className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                  {envApplying ? t('common:applying') : t('envConfig.applyToConfig', { count: Object.values(envSelected).filter(Boolean).length })}
-                </button>
-              </div>
-            )}
-            {envMsg && <Msg type={envMsg.type} text={envMsg.text} />}
-          </div>
-        </Section>
-
-        {/* ───── Import from OpenClaw ───── */}
-        <Section title={t('openClaw.title')}>
-          <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
-            <div className="text-sm text-fg-secondary">{t('openClaw.description')}</div>
-            <div className="flex gap-3">
-              <button onClick={() => void detectOpenclaw()} disabled={openclawLoading}
-                className="px-4 py-2 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-secondary text-sm rounded-lg transition-colors">
-                {openclawLoading ? t('common:detecting') : t('openClaw.detect')}
-              </button>
+                      <div className="text-xs text-fg-tertiary">
+                        {Object.keys(d.envVars).map(k => <div key={k}><code>{k}</code></div>)}
+                      </div>
+                    </label>
+                  ))}
+                  {envModels.timeoutMs && (
+                    <div className="text-xs text-fg-tertiary">{t('envConfig.llmTimeout', { ms: envModels.timeoutMs })}</div>
+                  )}
+                  <button onClick={() => void applyEnvModels()} disabled={envApplying || Object.values(envSelected).filter(Boolean).length === 0}
+                    className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
+                    {envApplying ? t('common:applying') : t('envConfig.applyToConfig', { count: Object.values(envSelected).filter(Boolean).length })}
+                  </button>
+                </div>
+              )}
+              {envMsg && <Msg type={envMsg.type} text={envMsg.text} />}
             </div>
 
-            {openclawPreview && openclawPreview.found && (
-              <div className="border-t border-border-default pt-4 space-y-3">
-                <div className="text-xs text-green-600">{t('openClaw.foundAt')} <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code></div>
-                {openclawPreview.summary.models && (
-                  <div className="bg-surface-elevated/30 rounded-lg p-3">
-                    <div className="text-xs text-fg-tertiary mb-2">{t('openClaw.modelProvidersFound', { count: openclawPreview.summary.models.providerCount })}</div>
-                    <div className="space-y-1">
-                      {openclawPreview.summary.models.providers.map(p => (
-                        <div key={p.name} className="flex items-center justify-between text-xs">
-                          <span className="text-fg-secondary">{p.name}</span>
-                          <span className="text-fg-tertiary">{t('openClaw.modelsCountSuffix', { count: p.modelCount })}{p.baseUrl ? t('openClaw.withBaseUrl', { url: p.baseUrl }) : ''}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {openclawPreview.summary.channels && openclawPreview.summary.channels.length > 0 && (
-                  <div className="bg-surface-elevated/30 rounded-lg p-3">
-                    <div className="text-xs text-fg-tertiary mb-1">{t('openClaw.channelsPrefix')} {openclawPreview.summary.channels.join(', ')}</div>
-                  </div>
-                )}
-                <button onClick={() => void importOpenclaw()} disabled={openclawLoading}
-                  className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                  {openclawLoading ? t('common:importing') : t('openClaw.importConfigs')}
+            <div className="border-t border-border-default" />
+
+            {/* — Local Ollama — */}
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <h4 className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{t('ollama.title')}</h4>
+                <button onClick={() => void detectOllama()} disabled={ollamaLoading}
+                  className="px-3 py-1 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-tertiary text-xs rounded-md transition-colors flex items-center gap-1.5">
+                  <svg className={`w-3.5 h-3.5 ${ollamaLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                  {ollamaLoading ? t('common:detecting') : t('ollama.detect')}
                 </button>
               </div>
-            )}
-            {openclawMsg && <Msg type={openclawMsg.type} text={openclawMsg.text} />}
+              {ollamaDetect?.found && ollamaDetect.models && ollamaDetect.models.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs text-green-600">{t('ollama.foundModels', { count: ollamaDetect.models.length, url: ollamaDetect.baseUrl })}</div>
+                  <div className="space-y-1">
+                    {ollamaDetect.models.map(m => (
+                      <label key={m.name} className={`flex items-center justify-between rounded-lg px-4 py-3 cursor-pointer transition-colors ${ollamaSelectedModel === m.name ? 'bg-brand-500/15 border border-brand-500/40' : 'bg-surface-elevated/30 hover:bg-surface-elevated/50'}`}>
+                        <div className="flex items-center gap-3">
+                          <input type="radio" name="ollama-model" value={m.name} checked={ollamaSelectedModel === m.name}
+                            onChange={() => setOllamaSelectedModel(m.name)}
+                            className="w-4 h-4 text-brand-500 focus:ring-brand-500" />
+                          <div>
+                            <div className="text-sm text-fg-primary font-medium">{m.name}</div>
+                            <div className="text-xs text-fg-tertiary mt-0.5">
+                              {m.parameterSize && <span>{m.parameterSize}</span>}
+                              {m.family && <span className="ml-2">{m.family}</span>}
+                              {m.quantization && <span className="ml-2">{m.quantization}</span>}
+                              {m.size && <span className="ml-2">{formatBytes(m.size)}</span>}
+                            </div>
+                          </div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                  <button onClick={() => void applyOllama()} disabled={ollamaApplying || !ollamaSelectedModel}
+                    className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
+                    {ollamaApplying ? t('common:applying') : t('ollama.useModel', { model: ollamaSelectedModel })}
+                  </button>
+                </div>
+              )}
+              {ollamaDetect && !ollamaDetect.found && (
+                <div className="text-xs text-fg-tertiary">{ollamaDetect.error || t('ollama.notRunning')}</div>
+              )}
+              {ollamaMsg && <Msg type={ollamaMsg.type} text={ollamaMsg.text} />}
+            </div>
+
+            <div className="border-t border-border-default" />
+
+            {/* — Import from OpenClaw — */}
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <h4 className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{t('openClaw.title')}</h4>
+                <button onClick={() => void detectOpenclaw()} disabled={openclawLoading}
+                  className="px-3 py-1 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-tertiary text-xs rounded-md transition-colors flex items-center gap-1.5">
+                  {openclawLoading ? t('common:detecting') : t('openClaw.detectShort')}
+                </button>
+              </div>
+              {openclawPreview && openclawPreview.found && (
+                <div className="space-y-2">
+                  <div className="text-xs text-green-600">{t('openClaw.foundAt')} <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code></div>
+                  {openclawPreview.summary.models && (
+                    <div className="bg-surface-elevated/30 rounded-lg p-3">
+                      <div className="text-xs text-fg-tertiary mb-2">{t('openClaw.modelProvidersFound', { count: openclawPreview.summary.models.providerCount })}</div>
+                      <div className="space-y-1">
+                        {openclawPreview.summary.models.providers.map(p => (
+                          <div key={p.name} className="flex items-center justify-between text-xs">
+                            <span className="text-fg-secondary">{p.name}</span>
+                            <span className="text-fg-tertiary">{t('openClaw.modelsCountSuffix', { count: p.modelCount })}{p.baseUrl ? t('openClaw.withBaseUrl', { url: p.baseUrl }) : ''}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {openclawPreview.summary.channels && openclawPreview.summary.channels.length > 0 && (
+                    <div className="bg-surface-elevated/30 rounded-lg p-3">
+                      <div className="text-xs text-fg-tertiary mb-1">{t('openClaw.channelsPrefix')} {openclawPreview.summary.channels.join(', ')}</div>
+                    </div>
+                  )}
+                  <button onClick={() => void importOpenclaw()} disabled={openclawLoading}
+                    className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
+                    {openclawLoading ? t('common:importing') : t('openClaw.importConfigs')}
+                  </button>
+                </div>
+              )}
+              {openclawMsg && <Msg type={openclawMsg.type} text={openclawMsg.text} />}
+            </div>
           </div>
         </Section>
 
@@ -1706,9 +1852,9 @@ function MiniStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function formatBytes(bytes: number, t: (key: string) => string): string {
-  if (bytes === 0) return t('dataStorage.bytesZero');
-  const units = [t('dataStorage.unitB'), t('dataStorage.unitKB'), t('dataStorage.unitMB'), t('dataStorage.unitGB')];
+function formatBytes(bytes: number, t?: (key: string) => string): string {
+  if (bytes === 0) return t ? t('dataStorage.bytesZero') : '0 B';
+  const units = t ? [t('dataStorage.unitB'), t('dataStorage.unitKB'), t('dataStorage.unitMB'), t('dataStorage.unitGB')] : ['B', 'KB', 'MB', 'GB'];
   const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const val = bytes / Math.pow(1024, i);
   return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;

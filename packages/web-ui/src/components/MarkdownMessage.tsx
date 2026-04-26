@@ -135,7 +135,7 @@ function CopyMenu({ content, contentRef }: { content: string; contentRef: React.
   };
 
   return (
-    <div className="absolute -top-1 -right-1 z-10" ref={menuRef}>
+    <div className="absolute top-1 right-1 z-10 opacity-0 group-hover/md:opacity-100 transition-opacity" ref={menuRef}>
       {flash && (
         <div className="absolute right-0 top-full mt-1 z-20 px-2 py-0.5 rounded bg-surface-elevated border border-border-default text-[10px] text-fg-secondary whitespace-nowrap shadow-lg">
           {flash}
@@ -219,7 +219,7 @@ export function MarkdownMessage({ content, className = '', onMentionClick }: Pro
     <div className="relative group/md">
       <CopyMenu content={content} contentRef={contentRef} />
       <div ref={contentRef}>
-        <div className={`prose prose-sm max-w-none break-words ${className}`}>
+        <div className={`prose prose-sm max-w-none break-words pr-8 ${className}`}>
           {thinking.length > 0 && (() => {
             const full = thinking.join('\n\n');
             const firstLine = full.split('\n')[0] ?? '';

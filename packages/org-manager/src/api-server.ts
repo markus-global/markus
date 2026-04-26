@@ -6781,6 +6781,7 @@ EXPLANATION_END`;
         model: string;
         baseUrl?: string;
         envVars: Record<string, string>;
+        ollamaModels?: Array<{ name: string; size?: number; parameterSize?: string; family?: string }>;
       }> = [];
 
       for (const def of ENV_MODEL_MAP) {
@@ -6804,11 +6805,74 @@ EXPLANATION_END`;
         });
       }
 
+      // Also probe local Ollama service (no API key needed)
+      try {
+        const ollamaUrl = process.env['OLLAMA_BASE_URL'] || 'http://localhost:11434';
+        const ctrl = new AbortController();
+        const tmr = setTimeout(() => ctrl.abort(), 3000);
+        const ollamaRes = await fetch(`${ollamaUrl.replace(/\/+$/, '')}/api/tags`, { signal: ctrl.signal });
+        clearTimeout(tmr);
+        if (ollamaRes.ok) {
+          const ollamaData = await ollamaRes.json() as { models?: Array<{ name: string; size?: number; details?: { parameter_size?: string; family?: string } }> };
+          const models = ollamaData.models ?? [];
+          if (models.length > 0) {
+            detected.push({
+              provider: 'ollama',
+              displayName: 'Ollama (Local)',
+              apiKeySet: false,
+              apiKeyPreview: 'local',
+              model: models[0]!.name.replace(/:latest$/, ''),
+              baseUrl: ollamaUrl,
+              envVars: { OLLAMA_BASE_URL: ollamaUrl },
+              ollamaModels: models.map(m => ({
+                name: m.name.replace(/:latest$/, ''),
+                size: m.size,
+                parameterSize: m.details?.parameter_size,
+                family: m.details?.family,
+              })),
+            });
+          }
+        }
+      } catch { /* Ollama not running — skip silently */ }
+
       const timeoutMs = process.env['LLM_TIMEOUT_MS'];
       this.json(res, 200, {
         detected,
         timeoutMs: timeoutMs ? Number(timeoutMs) : undefined,
       });
+      return;
+    }
+
+    // Settings — Detect local Ollama service and list available models
+    if (path === '/api/settings/detect-ollama' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+
+      const ollamaUrl = process.env['OLLAMA_BASE_URL'] || 'http://localhost:11434';
+      try {
+        const ctrl = new AbortController();
+        const tmr = setTimeout(() => ctrl.abort(), 5000);
+        const ollamaRes = await fetch(`${ollamaUrl.replace(/\/+$/, '')}/api/tags`, { signal: ctrl.signal });
+        clearTimeout(tmr);
+        if (!ollamaRes.ok) {
+          this.json(res, 200, { found: false, error: `Ollama returned HTTP ${ollamaRes.status}` });
+          return;
+        }
+        const data = await ollamaRes.json() as { models?: Array<{ name: string; size?: number; modified_at?: string; details?: { parameter_size?: string; family?: string; quantization_level?: string } }> };
+        const models = (data.models ?? []).map(m => ({
+          name: m.name.replace(/:latest$/, ''),
+          fullName: m.name,
+          size: m.size,
+          modifiedAt: m.modified_at,
+          parameterSize: m.details?.parameter_size,
+          family: m.details?.family,
+          quantization: m.details?.quantization_level,
+        }));
+        this.json(res, 200, { found: true, baseUrl: ollamaUrl, models });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.json(res, 200, { found: false, error: msg.includes('abort') ? 'Connection timed out' : msg });
+      }
       return;
     }
 
@@ -6846,10 +6910,10 @@ EXPLANATION_END`;
             deepseek: 'DEEPSEEK_API_KEY',
           };
           const apiKey = process.env[envKeyMap[pu.provider] ?? ''];
-          if (!apiKey) continue;
+          if (!apiKey && pu.provider !== 'ollama') continue;
           updatedProviders[pu.provider] = {
             ...updatedProviders[pu.provider],
-            apiKey,
+            ...(apiKey ? { apiKey } : {}),
             model: pu.model,
             ...(pu.baseUrl ? { baseUrl: pu.baseUrl } : {}),
             enabled: pu.enabled !== false,

@@ -24,13 +24,18 @@
       "description": "自动检测来自 .env 或系统环境的 API Key。",
       "noKeysHint": "未找到 API Key。请设置诸如 <code>ANTHROPIC_API_KEY</code> 或 <code>OPENAI_API_KEY</code> 等环境变量，然后重启服务器。"
     },
-    "fromOpenClaw": {
+    "fromOllama": {
       "step": "2",
+      "title": "本地 Ollama",
+      "description": "自动检测本地运行的 Ollama 服务并选择模型。"
+    },
+    "fromOpenClaw": {
+      "step": "3",
       "title": "从 OpenClaw 配置导入",
       "description": "从已有的 OpenClaw 安装导入模型配置。"
     },
     "manual": {
-      "step": "3",
+      "step": "4",
       "title": "手动配置",
       "description": "直接编辑 <code>~/.markus/markus.json</code>，然后重启服务器。"
     },
@@ -126,6 +131,23 @@
     "loginFailed": "登录失败",
     "networkErrorDuringLogin": "OAuth 登录时网络错误",
     "callbackFailed": "回调失败"
+  },
+  "autoDetect": {
+    "title": "自动检测与导入",
+    "description": "从环境变量、本地 Ollama 服务或已有配置中发现 LLM 提供商。"
+  },
+  "ollama": {
+    "title": "本地 Ollama",
+    "description": "自动检测本地运行的 Ollama 服务，并将其配置为模型提供商。无需 API Key。",
+    "detect": "检测 Ollama",
+    "detecting": "检测中…",
+    "foundModels": "在 {{url}} 发现 {{count}} 个模型",
+    "notRunning": "本地未检测到 Ollama 服务。请先启动 Ollama，然后点击检测。",
+    "detectFailed": "检测 Ollama 服务失败",
+    "useModel": "使用 {{model}}",
+    "configured": "已配置 Ollama，模型为 {{model}}",
+    "applyFailed": "配置 Ollama 失败",
+    "switchModel": "切换模型"
   },
   "envConfig": {
     "title": "环境变量配置",

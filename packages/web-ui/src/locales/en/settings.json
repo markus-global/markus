@@ -24,13 +24,18 @@
       "description": "Automatically detected API keys from .env or system environment.",
       "noKeysHint": "No API keys found. Set environment variables like <code>ANTHROPIC_API_KEY</code> or <code>OPENAI_API_KEY</code> and restart the server."
     },
-    "fromOpenClaw": {
+    "fromOllama": {
       "step": "2",
+      "title": "Local Ollama",
+      "description": "Auto-detect a locally running Ollama service and select a model."
+    },
+    "fromOpenClaw": {
+      "step": "3",
       "title": "From OpenClaw Config",
       "description": "Import model configs from an existing OpenClaw installation."
     },
     "manual": {
-      "step": "3",
+      "step": "4",
       "title": "Manual Configuration",
       "description": "Edit <code>~/.markus/markus.json</code> directly, then restart the server."
     },
@@ -126,6 +131,23 @@
     "loginFailed": "Login failed",
     "networkErrorDuringLogin": "Network error during OAuth login",
     "callbackFailed": "Callback failed"
+  },
+  "autoDetect": {
+    "title": "Auto-detect & Import",
+    "description": "Discover LLM providers from environment variables, local Ollama service, or existing configurations."
+  },
+  "ollama": {
+    "title": "Local Ollama",
+    "description": "Auto-detect a locally running Ollama service and configure it as a model provider. No API key required.",
+    "detect": "Detect Ollama",
+    "detecting": "Detecting...",
+    "foundModels": "Found {{count}} model(s) at {{url}}",
+    "notRunning": "Ollama is not running locally. Start Ollama first, then click detect.",
+    "detectFailed": "Failed to detect Ollama service",
+    "useModel": "Use {{model}}",
+    "configured": "Ollama configured with model {{model}}",
+    "applyFailed": "Failed to configure Ollama",
+    "switchModel": "Switch Model"
   },
   "envConfig": {
     "title": "Environment Variable Configuration",
