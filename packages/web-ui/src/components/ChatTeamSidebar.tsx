@@ -46,6 +46,8 @@ interface ChatTeamSidebarProps {
   width?: number;
   onResizeStart?: (e: React.MouseEvent) => void;
   hidden?: boolean;
+  /** True while the initial data load is in progress; sidebar shows skeleton placeholders */
+  initialLoading?: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -185,6 +187,7 @@ export function ChatTeamSidebar({
   onRefreshTeams, onRefreshAgents, onRefreshHumans, onRefreshGroupChats, onViewProfile,
   onManageGroupMembers,
   width, onResizeStart, hidden,
+  initialLoading,
 }: ChatTeamSidebarProps) {
   const { t } = useTranslation(['team', 'common']);
   const isMobile = useIsMobile();
@@ -225,18 +228,19 @@ export function ChatTeamSidebar({
     setTimeout(() => setToast(null), 3000);
   };
 
-  // System pause/resume
-  const [globalPaused, setGlobalPaused] = useState(false);
+  // System pause/resume – default to null (unknown) until API responds
+  const [globalPaused, setGlobalPaused] = useState<boolean | null>(null);
   const [pauseLoading, setPauseLoading] = useState(false);
 
   useEffect(() => {
-    api.governance.getSystemStatus().then(s => setGlobalPaused(s.globalPaused)).catch(() => {});
+    api.governance.getSystemStatus().then(s => setGlobalPaused(s.globalPaused)).catch(() => setGlobalPaused(false));
     const unsubPause = wsClient.on('system:pause-all', () => setGlobalPaused(true));
     const unsubResume = wsClient.on('system:resume-all', () => setGlobalPaused(false));
     return () => { unsubPause(); unsubResume(); };
   }, []);
 
   const handlePauseClick = useCallback(() => {
+    if (globalPaused === null) return;
     setPendingConfirm({
       title: globalPaused ? t('modals.resumeAll.title') : t('modals.pauseAll.title'),
       message: globalPaused
@@ -756,22 +760,29 @@ export function ChatTeamSidebar({
         <div className="px-4 h-14 flex items-center border-b border-border-default shrink-0">
           <h2 className="text-lg font-semibold">{t('chat.title')}</h2>
           <div className="ml-auto">
-            <button
-              onClick={handlePauseClick}
-              disabled={pauseLoading}
-              title={globalPaused ? t('modals.resumeAll.title') : t('modals.pauseAll.title')}
-              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border transition-colors ${
-                globalPaused
-                  ? 'bg-green-500/10 border-green-500/30 text-green-500 hover:bg-green-500/20'
-                  : 'bg-amber-500/10 border-amber-500/30 text-amber-600 hover:bg-amber-500/20'
-              } disabled:opacity-50`}
-            >
-              {globalPaused ? (
-                <><svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg> {t('chat.resume')}</>
-              ) : (
-                <><svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg> {t('chat.pause')}</>
-              )}
-            </button>
+            {globalPaused === null ? (
+              <span className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border border-border-default text-fg-tertiary opacity-60">
+                <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" strokeDasharray="31.4 31.4" strokeLinecap="round" /></svg>
+                {t('common:status.loading', { defaultValue: '...' })}
+              </span>
+            ) : (
+              <button
+                onClick={handlePauseClick}
+                disabled={pauseLoading}
+                title={globalPaused ? t('modals.resumeAll.title') : t('modals.pauseAll.title')}
+                className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border transition-colors ${
+                  globalPaused
+                    ? 'bg-green-500/10 border-green-500/30 text-green-500 hover:bg-green-500/20'
+                    : 'bg-amber-500/10 border-amber-500/30 text-amber-600 hover:bg-amber-500/20'
+                } disabled:opacity-50`}
+              >
+                {globalPaused ? (
+                  <><svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg> {t('chat.resume')}</>
+                ) : (
+                  <><svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg> {t('chat.pause')}</>
+                )}
+              </button>
+            )}
           </div>
         </div>
         {/* Action bar */}
@@ -932,9 +943,22 @@ export function ChatTeamSidebar({
           )}
 
           {/* Teams + Agents */}
-          {agents.length === 0 && teams.length === 0 && (
+          {initialLoading ? (
+            <div className="space-y-3 px-1 mb-2">
+              {[...Array(6)].map((_, i) => (
+                <div key={i} className="flex items-center gap-2.5 animate-pulse">
+                  <div className="w-6 h-6 rounded-lg bg-surface-overlay shrink-0" />
+                  <div className="flex-1 space-y-1.5">
+                    <div className="h-2.5 bg-surface-overlay rounded w-24" />
+                    <div className="h-2 bg-surface-overlay rounded w-36" />
+                  </div>
+                  <div className="w-2 h-2 rounded-full bg-surface-overlay shrink-0" />
+                </div>
+              ))}
+            </div>
+          ) : agents.length === 0 && teams.length === 0 ? (
             <p className="text-xs text-fg-tertiary px-1 mb-2">{t('chat.noAgentsYet')}</p>
-          )}
+          ) : null}
 
           {/* Unmatched group chats (no matching team) */}
           {groupChatsByTeam.unmatched.map(gc => (

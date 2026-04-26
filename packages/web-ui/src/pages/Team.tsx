@@ -678,6 +678,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const { t, i18n } = useTranslation(['team', 'common']);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [humans, setHumans] = useState<HumanUserInfo[]>([]);
+  const [initialLoading, setInitialLoading] = useState(true);
   const isMobile = useIsMobile();
 
   // Mobile: URL hash is the single source of truth (#chat = list, #chat/d = detail)
@@ -892,10 +893,12 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   }, [authUser?.orgId]);
 
   useEffect(() => {
-    refreshAgents();
+    Promise.all([
+      refreshAgents(),
+      refreshTeams(),
+    ]).finally(() => setInitialLoading(false));
     refreshHumans();
     api.tasks.list().then(d => setTasks(d.tasks)).catch(() => {});
-    refreshTeams();
     api.externalAgents.list().then(d => setExternalAgents(d.agents)).catch(() => {});
     refreshGroupChats();
 
@@ -2244,6 +2247,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         width={isMobile ? undefined : chatSidebar.width}
         onResizeStart={isMobile ? undefined : chatSidebar.onResizeStart}
         hidden={isMobile && mobileShowChat}
+        initialLoading={initialLoading}
       />
 
       {/* ── Main area ── */}

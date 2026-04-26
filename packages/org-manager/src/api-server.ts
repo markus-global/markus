@@ -8211,6 +8211,25 @@ EXPLANATION_END`;
       return;
     }
 
+    if (path.match(/^\/api\/tasks\/[^/]+\/schedule$/) && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const taskId = path.split('/')[3]!;
+      try {
+        const body = await this.readBody(req);
+        const task = await this.taskService.updateScheduleFields(taskId, {
+          every: body['every'] as string | undefined,
+          cron: body['cron'] as string | undefined,
+          maxRuns: body['maxRuns'] != null ? Number(body['maxRuns']) : undefined,
+          timezone: body['timezone'] as string | undefined,
+        });
+        this.json(res, 200, { task });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
     // ── Governance: Governance Policy ─────────────────────────────────────
 
     if (path === '/api/governance/policy' && req.method === 'GET') {

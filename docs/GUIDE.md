@@ -423,8 +423,11 @@ A: Open the Agents page, click an Agent row, and use the Profile panel on the ri
 **Q: How do I give an Agent scheduled tasks?**  
 A: Create a `HEARTBEAT.md` file in the Agent's role directory describing what the Agent should do on a schedule. The heartbeat interval can be configured at startup.
 
-**Q: How do I pause all Agents?**  
+**Q: How do I pause all Agents?**
 A: On the Governance page, click "Pause All Agents", or call `POST /api/system/pause-all`. Use "Emergency Stop" for critical situations.
+
+**Q: Does the paused state persist after restarting Markus?**
+A: Yes. Individual agent, team-level, and global pause states are all persisted in the database. When Markus restarts, paused agents remain paused and the UI correctly reflects the paused state. You can also pause/resume individual agents or teams from the Team page.
 
 **Q: Do tasks created by Agents need approval?**  
 A: This depends on the governance policy. By default, standard tasks need Manager approval and high-priority tasks need human approval. Configure this on the Governance page.

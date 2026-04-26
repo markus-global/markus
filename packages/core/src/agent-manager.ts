@@ -231,6 +231,7 @@ export interface TaskServiceBridge {
   postRequirementComment?(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string; comment?: Record<string, unknown> }>;
   getRequirementComments?(requirementId: string): Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }>;
   getTaskComments?(taskId: string): Promise<Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }>>;
+  updateScheduleFields?(taskId: string, fields: { every?: string; cron?: string; maxRuns?: number; timezone?: string }): Promise<{ id: string; title: string; status: string }>;
 }
 
 export interface MCPServerConfig {
@@ -1023,6 +1024,11 @@ export class AgentManager {
           const task = ts.updateTask(taskId, fields, id);
           return { id: task.id, title: task.title, status: task.status };
         },
+        updateScheduleConfig: async (taskId, config) => {
+          if (!ts.updateScheduleFields) throw new Error('Schedule editing not supported');
+          const task = await ts.updateScheduleFields(taskId, config);
+          return { id: task.id, title: task.title, status: task.status };
+        },
         cancelPendingTask: async (taskId) => {
           const task = ts.rejectTask(taskId, id);
           return { id: task.id, title: task.title, status: task.status };
@@ -1149,13 +1155,15 @@ export class AgentManager {
       log.info(`Task tools injected for agent ${id}`);
     }
 
-    // Project tools — every agent can list/view projects
+    // Project tools — every agent can list/view/create/update projects
     if (this.projectService) {
+      const ah = this.approvalHandler;
       for (const tool of createProjectTools({
         agentId: id,
         orgId: config.orgId,
         webUiBaseUrl: this.webUiBaseUrl,
         projectService: this.projectService,
+        requestApproval: ah ? (req) => ah(id, req) : undefined,
         ...this.buildKnowledgeCallbacks(id, config.orgId),
         ...this.buildDeliverableCallbacks(id, config.orgId),
       })) {
@@ -1656,6 +1664,11 @@ export class AgentManager {
           const task = ts.updateTask(taskId, fields, id);
           return { id: task.id, title: task.title, status: task.status };
         },
+        updateScheduleConfig: async (taskId, config) => {
+          if (!ts.updateScheduleFields) throw new Error('Schedule editing not supported');
+          const task = await ts.updateScheduleFields(taskId, config);
+          return { id: task.id, title: task.title, status: task.status };
+        },
         cancelPendingTask: async (taskId) => {
           const task = ts.rejectTask(taskId, id);
           return { id: task.id, title: task.title, status: task.status };
@@ -1776,11 +1789,13 @@ export class AgentManager {
     }
 
     if (this.projectService) {
+      const ah2 = this.approvalHandler;
       for (const tool of createProjectTools({
         agentId: id,
         orgId: config.orgId,
         webUiBaseUrl: this.webUiBaseUrl,
         projectService: this.projectService,
+        requestApproval: ah2 ? (req) => ah2(id, req) : undefined,
         ...this.buildKnowledgeCallbacks(id, config.orgId),
         ...this.buildDeliverableCallbacks(id, config.orgId),
       })) {
@@ -1963,7 +1978,7 @@ export class AgentManager {
     }
   }
 
-  async startAgent(agentId: string, options?: { initialHeartbeatDelayMs?: number }): Promise<void> {
+  async startAgent(agentId: string, options?: { initialHeartbeatDelayMs?: number; startAsPaused?: boolean }): Promise<void> {
     const agent = this.getAgent(agentId);
     await agent.start(options);
   }
@@ -2314,9 +2329,7 @@ export class AgentManager {
     for (const id of ids) {
       try {
         const agent = this.getAgent(id);
-        if (agent.getState().status !== 'offline') {
-          agent.pause(reason);
-        }
+        agent.pause(reason);
         success.push(id);
       } catch (err) {
         failed.push({ id, error: String(err) });
@@ -2350,9 +2363,7 @@ export class AgentManager {
   async pauseAllAgents(reason?: string): Promise<void> {
     for (const [id, agent] of this.agents) {
       try {
-        if (agent.getState().status !== 'offline') {
-          agent.pause(reason);
-        }
+        agent.pause(reason);
       } catch (err) {
         log.warn('Failed to pause agent', { agentId: id, error: String(err) });
       }
@@ -2395,6 +2406,10 @@ export class AgentManager {
 
   isGlobalPaused(): boolean {
     return this.globalPaused;
+  }
+
+  setGlobalPaused(paused: boolean): void {
+    this.globalPaused = paused;
   }
 
   isEmergencyMode(): boolean {
@@ -2586,8 +2601,13 @@ export class AgentManager {
     orgName: string,
     humans: HumanUser[],
     teams?: Array<{ id: string; name: string; description?: string; memberAgentIds: string[] }>,
+    projects?: Array<{ id: string; name: string; description: string; status: string; teamIds: string[] }>,
   ): void {
     const orgAgents = [...this.agents.values()].filter(a => a.config.orgId === orgId);
+
+    const resolvedProjects = projects ?? (this.projectService
+      ? this.projectService.listProjects(orgId)
+      : []);
 
     const agentTeamMap = new Map<string, string>();
     for (const t of teams ?? []) {
@@ -2629,6 +2649,12 @@ export class AgentManager {
         }))
         .filter(t => t.members.length > 0);
 
+      const teamProjects = myTeamId && resolvedProjects.length > 0
+        ? resolvedProjects
+            .filter(p => p.teamIds.includes(myTeamId))
+            .map(p => ({ id: p.id, name: p.name, description: p.description, status: p.status }))
+        : undefined;
+
       const identity: IdentityContext = {
         self: {
           id: agent.id,
@@ -2646,6 +2672,7 @@ export class AgentManager {
           teamManager && teamManager.id !== agent.id
             ? { id: teamManager.id, name: teamManager.config.name }
             : undefined,
+        teamProjects: teamProjects && teamProjects.length > 0 ? teamProjects : undefined,
       };
 
       agent.setIdentityContext(identity);

@@ -14,6 +14,167 @@ import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 
+/* ── useDropdownPosition: compute fixed position for dropdown escaping overflow containers ── */
+function useDropdownPosition(triggerRef: React.RefObject<HTMLDivElement | null>, open: boolean) {
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  useEffect(() => {
+    if (!open || !triggerRef.current) { setPos(null); return; }
+    const update = () => {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (rect) setPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => { window.removeEventListener('scroll', update, true); window.removeEventListener('resize', update); };
+  }, [open, triggerRef]);
+  return pos;
+}
+
+/* ── SearchableSelect: filterable dropdown for create modals ── */
+function SearchableSelect({ options, value, onChange, placeholder, noMatchesText, className }: {
+  options: { value: string; label: string }[];
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  noMatchesText?: string;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const pos = useDropdownPosition(triggerRef, open);
+
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node) &&
+          dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, []);
+
+  const selectedLabel = options.find(o => o.value === value)?.label ?? '';
+  const filtered = query
+    ? options.filter(o => o.label.toLowerCase().includes(query.toLowerCase()))
+    : options;
+
+  return (
+    <div ref={ref} className={className ?? ''}>
+      <div
+        ref={triggerRef}
+        onClick={() => { setOpen(!open); setQuery(''); setTimeout(() => inputRef.current?.focus(), 0); }}
+        className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus-within:border-brand-500 outline-none flex items-center cursor-pointer"
+      >
+        {open ? (
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onClick={e => e.stopPropagation()}
+            className="w-full bg-transparent outline-none text-fg-primary text-sm"
+            placeholder={selectedLabel || placeholder}
+            autoFocus
+          />
+        ) : (
+          <span className={selectedLabel ? 'text-fg-primary' : 'text-fg-tertiary'}>
+            {selectedLabel || placeholder}
+          </span>
+        )}
+        <svg className="w-4 h-4 ml-auto text-fg-tertiary shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+      </div>
+      {open && pos && (
+        <div ref={dropdownRef} className="fixed z-[100] max-h-60 overflow-y-auto bg-surface-elevated border border-border-default rounded-lg shadow-lg"
+          style={{ top: pos.top, left: pos.left, width: pos.width }}>
+          {filtered.length === 0 ? (
+            <div className="px-3 py-2 text-sm text-fg-tertiary">{noMatchesText ?? 'No matches'}</div>
+          ) : filtered.map(o => (
+            <div
+              key={o.value}
+              onClick={() => { onChange(o.value); setOpen(false); setQuery(''); }}
+              className={`px-3 py-2 text-sm cursor-pointer hover:bg-brand-500/10 ${o.value === value ? 'bg-brand-500/10 text-brand-500 font-medium' : 'text-fg-primary'}`}
+            >{o.label}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── MultiSearchableSelect: filterable dropdown for multi-value selection ── */
+function MultiSearchableSelect({ options, selected, onAdd, placeholder, noMatchesText, className }: {
+  options: { value: string; label: string }[];
+  selected: string[];
+  onAdd: (v: string) => void;
+  placeholder?: string;
+  noMatchesText?: string;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const pos = useDropdownPosition(triggerRef, open);
+
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node) &&
+          dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, []);
+
+  const available = options.filter(o => !selected.includes(o.value));
+  const filtered = query
+    ? available.filter(o => o.label.toLowerCase().includes(query.toLowerCase()))
+    : available;
+
+  return (
+    <div ref={ref} className={className ?? ''}>
+      <div
+        ref={triggerRef}
+        onClick={() => { setOpen(!open); setQuery(''); setTimeout(() => inputRef.current?.focus(), 0); }}
+        className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus-within:border-brand-500 outline-none flex items-center cursor-pointer"
+      >
+        {open ? (
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onClick={e => e.stopPropagation()}
+            className="w-full bg-transparent outline-none text-fg-primary text-sm"
+            placeholder={placeholder}
+            autoFocus
+          />
+        ) : (
+          <span className="text-fg-tertiary">{placeholder}</span>
+        )}
+        <svg className="w-4 h-4 ml-auto text-fg-tertiary shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+      </div>
+      {open && pos && (
+        <div ref={dropdownRef} className="fixed z-[100] max-h-60 overflow-y-auto bg-surface-elevated border border-border-default rounded-lg shadow-lg"
+          style={{ top: pos.top, left: pos.left, width: pos.width }}>
+          {filtered.length === 0 ? (
+            <div className="px-3 py-2 text-sm text-fg-tertiary">{noMatchesText ?? 'No matches'}</div>
+          ) : filtered.map(o => (
+            <div
+              key={o.value}
+              onClick={() => { onAdd(o.value); setQuery(''); }}
+              className="px-3 py-2 text-sm cursor-pointer hover:bg-brand-500/10 text-fg-primary"
+            >{o.label}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function resolveActorName(id: string | undefined, agents: AgentInfo[], users: HumanUserInfo[], adminLabel = 'Admin'): string | null {
   if (!id) return null;
   const agent = agents.find(a => a.id === id);
@@ -1045,6 +1206,13 @@ function TaskDetailPanel({
   const [showAllSubtasks, setShowAllSubtasks] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string; status: string } | null>(null);
   const [cancelConfirm, setCancelConfirm] = useState<{ dependentCount: number } | null>(null);
+  const [rejectConfirm, setRejectConfirm] = useState(false);
+  const [archiveConfirm, setArchiveConfirm] = useState(false);
+  const [editingSchedule, setEditingSchedule] = useState(false);
+  const [scheduleMode, setScheduleMode] = useState<'every' | 'cron'>('every');
+  const [scheduleEveryDraft, setScheduleEveryDraft] = useState('');
+  const [scheduleCronDraft, setScheduleCronDraft] = useState('');
+  const [scheduleMaxRunsDraft, setScheduleMaxRunsDraft] = useState('');
   const [actionInFlight, setActionInFlight] = useState(false);
   const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables'>('details');
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -1226,14 +1394,13 @@ function TaskDetailPanel({
 
         {/* Tabs — fixed at top */}
         <div className="flex gap-1 px-6 pt-2 pb-0 border-b border-border-default shrink-0 bg-surface-secondary">
-          <button onClick={() => switchTab('details')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'details' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>Details</button>
+          <button onClick={() => switchTab('details')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'details' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>{t('work:task.detailsTab')}</button>
           <button onClick={() => switchTab('logs')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'logs' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-            Execution Log
+            {t('work:task.executionLogTab')}
             {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" />}
           </button>
           <button onClick={() => switchTab('deliverables')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'deliverables' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-            Deliverables
-            {(() => { const c = (task.deliverables ?? []).filter(d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0).length; return c > 0 ? <span className="text-[10px] text-fg-tertiary font-normal">{c}</span> : null; })()}
+            {(() => { const c = (task.deliverables ?? []).filter(d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0).length; return c > 0 ? t('work:task.deliverablesCount', { count: c }) : t('work:task.deliverables'); })()}
           </button>
         </div>
 
@@ -1245,7 +1412,7 @@ function TaskDetailPanel({
             <div className="overflow-x-clip min-w-0 min-h-full">
               {runError && (
                 <div className="mx-4 mt-3 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-500">
-                  <span className="font-medium">Failed to start:</span> {runError}
+                  <span className="font-medium">{t('work:task.failedToStart')}</span> {runError}
                 </div>
               )}
               <TaskExecutionLogs taskId={task.id} isRunning={task.status === 'in_progress'} authUser={authUser} agents={agents} />
@@ -1263,15 +1430,15 @@ function TaskDetailPanel({
                       onChange={e => setDescDraft(e.target.value)}
                       className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none resize-y min-h-[80px]"
                       rows={4}
-                      placeholder="Add a description…"
+                      placeholder={t('work:task.addDescription')}
                     />
                     <div className="flex gap-2 justify-end">
-                      <button onClick={() => { setEditingDesc(false); setDescDraft(task.description); }} className="px-2.5 py-1 text-xs border border-border-default rounded-lg hover:bg-surface-elevated">Cancel</button>
+                      <button onClick={() => { setEditingDesc(false); setDescDraft(task.description); }} className="px-2.5 py-1 text-xs border border-border-default rounded-lg hover:bg-surface-elevated">{t('common:cancel')}</button>
                       <button
                         onClick={() => { void doUpdate(() => api.tasks.update(task.id, { description: descDraft })); setEditingDesc(false); }}
                         disabled={actionInFlight}
                         className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50"
-                      >Save</button>
+                      >{t('common:save')}</button>
                     </div>
                   </div>
                 ) : (
@@ -1284,17 +1451,17 @@ function TaskDetailPanel({
                         {isMobile && task.description.length > 150 && (
                           <button onClick={() => setDescExpanded(!descExpanded)}
                             className="text-[11px] text-brand-500 mt-1 font-medium">
-                            {descExpanded ? 'Collapse' : 'Show more'}
+                            {descExpanded ? t('work:task.collapse') : t('common:showMore')}
                           </button>
                         )}
                       </div>
                     ) : (
-                      <p className="text-sm text-fg-tertiary italic">No description</p>
+                      <p className="text-sm text-fg-tertiary italic">{t('work:task.noDescription')}</p>
                     )}
                     <button
                       onClick={() => { setDescDraft(task.description); setEditingDesc(true); }}
                       className="absolute top-0 right-0 text-[10px] text-fg-tertiary hover:text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >Edit</button>
+                    >{t('common:edit')}</button>
                   </div>
                 )}
               </div>
@@ -1304,13 +1471,13 @@ function TaskDetailPanel({
                 <div className="px-6 py-2.5 border-b border-border-default flex flex-wrap items-center gap-2">
                   {taskProject && (
                     <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-brand-500/10 text-brand-500 rounded-full">
-                      <span className="text-[9px] text-brand-500/60">Project</span>
+                      <span className="text-[9px] text-brand-500/60">{t('work:task.projectLabel')}</span>
                       {taskProject.name}
                     </span>
                   )}
                   {taskRequirement && (
                     <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-brand-500/10 text-brand-500 rounded-full">
-                      <span className="text-[9px] text-brand-500/60">Req</span>
+                      <span className="text-[9px] text-brand-500/60">{t('work:task.requirementLabel')}</span>
                       {taskRequirement.title.length > 40 ? taskRequirement.title.slice(0, 40) + '…' : taskRequirement.title}
                     </span>
                   )}
@@ -1320,7 +1487,7 @@ function TaskDetailPanel({
               {/* Dependencies — editable */}
               <div className="px-6 py-2.5 border-b border-border-default">
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">Dependencies</span>
+                  <span className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">{t('work:task.dependencies')}</span>
                 </div>
                 {task.blockedBy && task.blockedBy.length > 0 ? (
                   <div className="flex flex-wrap gap-1.5 mb-2">
@@ -1339,7 +1506,7 @@ function TaskDetailPanel({
                                 onRefresh();
                               }}
                               className="ml-0.5 text-current opacity-40 hover:opacity-100 transition-opacity"
-                              title="Remove dependency"
+                              title={t('work:task.removeDependency')}
                             >×</button>
                           )}
                         </span>
@@ -1347,7 +1514,7 @@ function TaskDetailPanel({
                     })}
                   </div>
                 ) : (
-                  <p className="text-[11px] text-fg-tertiary mb-2">No dependencies</p>
+                  <p className="text-[11px] text-fg-tertiary mb-2">{t('work:task.noDependencies')}</p>
                 )}
                 {!isTerminal && (
                   <select
@@ -1361,7 +1528,7 @@ function TaskDetailPanel({
                     }}
                     className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-[11px] text-fg-secondary focus:border-brand-500 outline-none"
                   >
-                    <option value="">+ Add dependency…</option>
+                    <option value="">{t('work:task.addDependency')}</option>
                     {allTasks
                       .filter(t => t.id !== task.id && !(task.blockedBy ?? []).includes(t.id))
                       .map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
@@ -1373,43 +1540,43 @@ function TaskDetailPanel({
               <div className="px-6 py-4 border-b border-border-default/60 space-y-3">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">Project</label>
+                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('work:task.projectLabel')}</label>
                     <select value={task.projectId ?? ''} onChange={e => void updateProject(e.target.value)} disabled={actionInFlight}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
-                      <option value="">No Project</option>
+                      <option value="">{t('work:task.noProject')}</option>
                       {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                     </select>
                   </div>
                   <div>
-                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">Requirement</label>
+                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('work:task.requirementLabel')}</label>
                     <select value={task.requirementId ?? ''} onChange={e => doUpdate(() => api.tasks.update(task.id, { requirementId: e.target.value || null }))} disabled={actionInFlight}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
-                      <option value="">No Requirement</option>
+                      <option value="">{t('work:task.noRequirement')}</option>
                       {requirements.filter(r => !task.projectId || r.projectId === task.projectId).map(r => <option key={r.id} value={r.id}>{r.title}</option>)}
                     </select>
                   </div>
                 </div>
                 <div className="grid grid-cols-3 gap-4">
                   <div>
-                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">Assignee</label>
+                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('work:task.assignee')}</label>
                     <select value={task.assignedAgentId ?? ''} onChange={e => void assignAgent(e.target.value)} disabled={actionInFlight}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
-                      <option value="">Unassigned</option>
+                      <option value="">{t('work:task.unassigned')}</option>
                       {agents.map(a => <option key={a.id} value={a.id}>{a.name} ({a.status})</option>)}
                     </select>
                   </div>
                   <div>
-                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">Reviewer</label>
+                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('work:task.reviewer')}</label>
                     <select value={task.reviewerAgentId ?? ''} onChange={e => { if (e.target.value && e.target.value !== task.reviewerAgentId) void doUpdate(() => api.tasks.update(task.id, { reviewerAgentId: e.target.value })); }} disabled={actionInFlight}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
                       {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                     </select>
                   </div>
                   <div>
-                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">Priority</label>
+                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('work:task.priority')}</label>
                     <select value={task.priority} onChange={e => void updatePriority(e.target.value)} disabled={actionInFlight}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
-                      <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
+                      <option value="low">{t('work:priority.low')}</option><option value="medium">{t('work:priority.medium')}</option><option value="high">{t('work:priority.high')}</option><option value="urgent">{t('work:priority.urgent')}</option>
                     </select>
                   </div>
                 </div>
@@ -1418,26 +1585,26 @@ function TaskDetailPanel({
               {/* Metadata */}
               <div className="px-6 py-3 border-b border-border-default/60 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-fg-tertiary">
                 {task.createdBy && (
-                  <span>Created by <span className="text-fg-secondary">{resolveActorName(task.createdBy, agents, users) ?? task.createdBy}</span></span>
+                  <span>{t('work:task.createdBy', { name: resolveActorName(task.createdBy, agents, users) ?? task.createdBy })}</span>
                 )}
                 {task.updatedBy && (
-                  <span>Updated by <span className="text-fg-secondary">{resolveActorName(task.updatedBy, agents, users) ?? task.updatedBy}</span></span>
+                  <span>{t('work:task.updatedBy', { name: resolveActorName(task.updatedBy, agents, users) ?? task.updatedBy })}</span>
                 )}
                 {task.createdAt && <span>{new Date(task.createdAt).toLocaleDateString()}</span>}
-                {task.startedAt && <span>Started {new Date(task.startedAt).toLocaleDateString()}</span>}
-                {task.updatedAt && <span>Updated {new Date(task.updatedAt).toLocaleDateString()}</span>}
+                {task.startedAt && <span>{t('work:task.started', { date: new Date(task.startedAt).toLocaleDateString() })}</span>}
+                {task.updatedAt && <span>{t('work:task.updatedMeta', { date: new Date(task.updatedAt).toLocaleDateString() })}</span>}
                 {task.projectId && (
                   <span className="font-mono text-blue-600/70">task/{task.id}</span>
                 )}
                 {(task.executionRound ?? 1) > 1 && (
-                  <span className="text-amber-600">Round {task.executionRound}</span>
+                  <span className="text-amber-600">{t('work:task.executionRound', { n: task.executionRound })}</span>
                 )}
               </div>
 
               <div className="px-6 py-4">
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">
-                    Subtasks {subtasks.length > 0 && <span className="ml-1.5 text-fg-tertiary font-normal normal-case">{completedCount}/{subtasks.length} done</span>}
+                    {t('work:task.subtasks')} {subtasks.length > 0 && <span className="ml-1.5 text-fg-tertiary font-normal normal-case">{t('work:task.subtasksProgress', { done: completedCount, total: subtasks.length })}</span>}
                   </span>
                   <div className="flex items-center gap-2">
                     {completedCount > 0 && (
@@ -1445,10 +1612,10 @@ function TaskDetailPanel({
                         onClick={() => setShowAllSubtasks(v => !v)}
                         className={`text-[10px] px-2 py-0.5 rounded-full border transition-colors ${showAllSubtasks ? 'bg-brand-500/15 text-brand-500 border-brand-500/30' : 'text-fg-tertiary border-border-default hover:text-fg-secondary'}`}
                       >
-                        {showAllSubtasks ? 'Hide completed' : `Show completed (${completedCount})`}
+                        {showAllSubtasks ? t('work:task.hideCompleted') : t('work:task.showCompleted', { count: completedCount })}
                       </button>
                     )}
-                    <button onClick={() => setAddingSubtask(true)} className="text-xs text-brand-500 hover:text-brand-500 transition-colors">+ Add subtask</button>
+                    <button onClick={() => setAddingSubtask(true)} className="text-xs text-brand-500 hover:text-brand-500 transition-colors">{t('work:task.addSubtask')}</button>
                   </div>
                 </div>
                 {(() => {
@@ -1467,14 +1634,14 @@ function TaskDetailPanel({
                     </div>
                   ) : null;
                 })()}
-                {subtasks.length === 0 && !addingSubtask && <div className="text-xs text-fg-tertiary text-center py-4">No subtasks yet.</div>}
+                {subtasks.length === 0 && !addingSubtask && <div className="text-xs text-fg-tertiary text-center py-4">{t('work:task.noSubtasksYet')}</div>}
                 {addingSubtask && (
                   <div className="flex gap-2 mt-2">
                     <input autoFocus value={newSubtask} onChange={e => setNewSubtask(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') void addSubtask(); if (e.key === 'Escape') { setAddingSubtask(false); setNewSubtask(''); } }}
-                      placeholder="Subtask title..." className="flex-1 px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none" />
-                    <button onClick={() => void addSubtask()} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg">Add</button>
-                    <button onClick={() => { setAddingSubtask(false); setNewSubtask(''); }} className="px-3 py-1.5 border border-border-default text-xs rounded-lg hover:bg-surface-elevated">Cancel</button>
+                      placeholder={t('work:task.subtaskTitlePlaceholder')} className="flex-1 px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none" />
+                    <button onClick={() => void addSubtask()} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg">{t('work:task.add')}</button>
+                    <button onClick={() => { setAddingSubtask(false); setNewSubtask(''); }} className="px-3 py-1.5 border border-border-default text-xs rounded-lg hover:bg-surface-elevated">{t('common:cancel')}</button>
                   </div>
                 )}
                 {/* Deliverables preview — latest 3 (newest first) */}
@@ -1495,9 +1662,9 @@ function TaskDetailPanel({
                   return (
                     <div className="mt-5">
                       <div className="flex items-center justify-between mb-2">
-                        <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">Deliverables <span className="text-fg-tertiary font-normal">({validDeliverables.length})</span></p>
+                        <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('work:task.deliverablesCount', { count: validDeliverables.length })}</p>
                         {validDeliverables.length > 3 && (
-                          <button onClick={() => switchTab('deliverables')} className="text-[10px] text-brand-500 hover:text-brand-500">View all →</button>
+                          <button onClick={() => switchTab('deliverables')} className="text-[10px] text-brand-500 hover:text-brand-500">{t('work:task.viewAll')}</button>
                         )}
                       </div>
                       <div className="space-y-1.5">
@@ -1550,7 +1717,7 @@ function TaskDetailPanel({
                 const validDeliverables = (task.deliverables ?? []).filter(
                   d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0
                 );
-                if (validDeliverables.length === 0) return <div className="flex items-center justify-center py-12 text-xs text-fg-tertiary">No deliverables yet.</div>;
+                if (validDeliverables.length === 0) return <div className="flex items-center justify-center py-12 text-xs text-fg-tertiary">{t('work:task.noDeliverablesYet')}</div>;
                 const typeColors: Record<string, string> = {
                   file: 'bg-blue-500/15 text-blue-600',
                   document: 'bg-blue-500/15 text-blue-600',
@@ -1564,7 +1731,7 @@ function TaskDetailPanel({
                 return (
                   <>
                     <div className="flex items-center justify-between mb-3">
-                      <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">Deliverables <span className="text-fg-tertiary font-normal">({validDeliverables.length})</span></p>
+                      <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('work:task.deliverablesCount', { count: validDeliverables.length })}</p>
                       {totalPages > 1 && (
                         <div className="flex items-center gap-1.5 text-[10px] text-fg-tertiary">
                           <button disabled={deliverablesPage <= 1} onClick={() => setDeliverablesPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">‹</button>
@@ -1618,7 +1785,7 @@ function TaskDetailPanel({
           <button
             onClick={() => scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
             className="absolute bottom-20 right-4 md:bottom-14 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
-            title="Scroll to top"
+            title={t('work:task.scrollToTop')}
           >
             <svg className="w-6 h-6 md:w-4 md:h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M14.77 12.79a.75.75 0 01-1.06-.02L10 8.832l-3.71 3.938a.75.75 0 11-1.08-1.04l4.25-4.5a.75.75 0 011.08 0l4.25 4.5a.75.75 0 01-.02 1.06z" clipRule="evenodd" /></svg>
           </button>
@@ -1627,7 +1794,7 @@ function TaskDetailPanel({
           <button
             onClick={() => { const el = scrollContainerRef.current; if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }}
             className="absolute bottom-6 right-4 md:bottom-4 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
-            title="Scroll to bottom"
+            title={t('work:task.scrollToBottom')}
           >
             <svg className="w-6 h-6 md:w-4 md:h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
           </button>
@@ -1639,42 +1806,95 @@ function TaskDetailPanel({
           <div className={`mx-6 mt-3 mb-0 px-4 py-2.5 rounded-lg border text-xs ${schedPaused ? 'bg-amber-500/5 border-amber-500/20' : 'bg-brand-500/5 border-brand-500/20'}`}>
             <div className="flex items-center gap-2 flex-wrap">
               <span className={schedPaused ? 'text-amber-600' : 'text-brand-500'}>
-                {schedPaused ? '⏸ Schedule Paused' : <><svg className="w-3.5 h-3.5 inline -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg> Scheduled</>}
+                {schedPaused ? t('work:task.schedulePaused') : <><svg className="w-3.5 h-3.5 inline -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg> {t('work:task.scheduled')}</>}
               </span>
               <span className="text-fg-tertiary">·</span>
               <span className="text-fg-secondary">
-                {task.scheduleConfig.every ? `Every ${task.scheduleConfig.every}` : task.scheduleConfig.cron ? `Cron: ${task.scheduleConfig.cron}` : task.scheduleConfig.runAt ? 'One-shot' : 'N/A'}
+                {task.scheduleConfig.every ? t('work:task.scheduleEvery', { interval: task.scheduleConfig.every }) : task.scheduleConfig.cron ? t('work:task.scheduleCron', { expr: task.scheduleConfig.cron }) : task.scheduleConfig.runAt ? t('work:task.scheduleOneShot') : t('work:task.scheduleNA')}
               </span>
               {!schedPaused && task.scheduleConfig.nextRunAt && (
                 <>
                   <span className="text-fg-tertiary">·</span>
-                  <span className="text-fg-secondary">Next: {(() => {
-                    const diff = new Date(task.scheduleConfig.nextRunAt).getTime() - Date.now();
-                    if (diff <= 0) return 'due now';
+                  <span className="text-fg-secondary">{t('work:task.scheduleNext', { when: (() => {
+                    const diff = new Date(task.scheduleConfig!.nextRunAt!).getTime() - Date.now();
+                    if (diff <= 0) return t('work:task.scheduleDueNow');
                     const m = Math.floor(diff / 60000);
-                    if (m < 60) return `in ${m}m`;
+                    if (m < 60) return t('work:task.scheduleInMinutes', { count: m });
                     const h = Math.floor(m / 60);
-                    return h < 24 ? `in ${h}h ${m % 60}m` : `in ${Math.floor(h / 24)}d ${h % 24}h`;
-                  })()}</span>
+                    return h < 24 ? t('work:task.scheduleInHoursMinutes', { h, m: m % 60 }) : t('work:task.scheduleInDaysHours', { d: Math.floor(h / 24), h: h % 24 });
+                  })() })}</span>
                 </>
               )}
-            </div>
-            <div className="flex items-center gap-2 mt-1 text-fg-tertiary">
-              <span>Runs: {task.scheduleConfig.currentRuns ?? 0}{task.scheduleConfig.maxRuns != null ? ` / ${task.scheduleConfig.maxRuns}` : ''}</span>
-              {task.scheduleConfig.lastRunAt && (
-                <>
-                  <span>·</span>
-                  <span>Last: {(() => {
-                    const diff = Date.now() - new Date(task.scheduleConfig.lastRunAt).getTime();
-                    const m = Math.floor(diff / 60000);
-                    if (m < 1) return 'just now';
-                    if (m < 60) return `${m}m ago`;
-                    const h = Math.floor(m / 60);
-                    return h < 24 ? `${h}h ${m % 60}m ago` : `${Math.floor(h / 24)}d ago`;
-                  })()}</span>
-                </>
+              {!isRunning && !editingSchedule && !task.scheduleConfig.runAt && (
+                <button onClick={() => {
+                  setScheduleMode(task.scheduleConfig?.cron ? 'cron' : 'every');
+                  setScheduleEveryDraft(task.scheduleConfig?.every ?? '4h');
+                  setScheduleCronDraft(task.scheduleConfig?.cron ?? '');
+                  setScheduleMaxRunsDraft(task.scheduleConfig?.maxRuns != null ? String(task.scheduleConfig.maxRuns) : '');
+                  setEditingSchedule(true);
+                }} className="text-brand-500 hover:text-brand-400 ml-1">{t('work:task.editSchedule')}</button>
               )}
             </div>
+            {editingSchedule ? (
+              <div className="mt-2 pt-2 border-t border-border-default/50 space-y-2">
+                <div className="flex items-center gap-2">
+                  <select value={scheduleMode} onChange={e => setScheduleMode(e.target.value as 'every' | 'cron')}
+                    className="px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded-lg">
+                    <option value="every">{t('work:task.scheduleEveryMode')}</option>
+                    <option value="cron">{t('work:task.scheduleCronMode')}</option>
+                  </select>
+                  {scheduleMode === 'every' ? (
+                    <select value={scheduleEveryDraft} onChange={e => setScheduleEveryDraft(e.target.value)}
+                      className="flex-1 px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded-lg">
+                      <option value="30m">{t('work:task.freq30m')}</option>
+                      <option value="1h">{t('work:task.freq1h')}</option>
+                      <option value="2h">{t('work:task.freq2h')}</option>
+                      <option value="4h">{t('work:task.freq4h')}</option>
+                      <option value="8h">{t('work:task.freq8h')}</option>
+                      <option value="12h">{t('work:task.freq12h')}</option>
+                      <option value="1d">{t('work:task.freq1d')}</option>
+                      <option value="1w">{t('work:task.freq1w')}</option>
+                    </select>
+                  ) : (
+                    <input value={scheduleCronDraft} onChange={e => setScheduleCronDraft(e.target.value)}
+                      placeholder="0 9 * * 1-5" className="flex-1 px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded-lg outline-none focus:border-brand-500" />
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-fg-tertiary shrink-0">{t('work:task.scheduleMaxRuns')}</label>
+                  <input value={scheduleMaxRunsDraft} onChange={e => setScheduleMaxRunsDraft(e.target.value.replace(/\D/g, ''))}
+                    placeholder={t('work:task.scheduleMaxRunsPlaceholder')} className="w-20 px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded-lg outline-none focus:border-brand-500" />
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <button onClick={async () => {
+                    const config: { every?: string; cron?: string; maxRuns?: number } = {};
+                    if (scheduleMode === 'every') config.every = scheduleEveryDraft;
+                    else config.cron = scheduleCronDraft.trim();
+                    if (scheduleMaxRunsDraft) config.maxRuns = parseInt(scheduleMaxRunsDraft, 10);
+                    await doUpdate(() => api.tasks.updateSchedule(task.id, config));
+                    setEditingSchedule(false);
+                  }} disabled={actionInFlight} className="px-3 py-1 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50">{t('common:save')}</button>
+                  <button onClick={() => setEditingSchedule(false)} className="px-3 py-1 text-xs text-fg-secondary hover:text-fg-primary">{t('common:cancel')}</button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 mt-1 text-fg-tertiary">
+                <span>{t('work:task.scheduleRuns', { current: task.scheduleConfig.currentRuns ?? 0, max: task.scheduleConfig.maxRuns != null ? t('work:task.scheduleRunsMax', { max: task.scheduleConfig.maxRuns }) : '' })}</span>
+                {task.scheduleConfig.lastRunAt && (
+                  <>
+                    <span>·</span>
+                    <span>{t('work:task.scheduleLast', { when: (() => {
+                      const diff = Date.now() - new Date(task.scheduleConfig!.lastRunAt!).getTime();
+                      const m = Math.floor(diff / 60000);
+                      if (m < 1) return t('work:task.noteTimeJustNow');
+                      if (m < 60) return t('work:task.noteTimeMinutes', { count: m });
+                      const h = Math.floor(m / 60);
+                      return h < 24 ? t('work:task.noteTimeHours', { count: h }) : t('work:task.noteTimeDays', { count: Math.floor(h / 24) });
+                    })() })}</span>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -1684,24 +1904,24 @@ function TaskDetailPanel({
             {/* ── Approve / Reject (pending) ── */}
             {task.status === 'pending' && (
               <>
-                <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">Approve</button>
-                <button onClick={() => doUpdate(() => api.tasks.reject(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Reject</button>
+                <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">{t('work:task.approve')}</button>
+                <button onClick={() => setRejectConfirm(true)} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">{t('work:task.reject')}</button>
               </>
             )}
             {/* ── Review actions ── */}
             {task.status === 'review' && (
               <>
-                <button onClick={() => void doUpdate(() => api.tasks.accept(task.id, authUser?.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">✓ Approve</button>
+                <button onClick={() => void doUpdate(() => api.tasks.accept(task.id, authUser?.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">{t('work:task.approveCheck')}</button>
                 {!showRevision ? (
-                  <button onClick={() => setShowRevision(true)} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">↻ Request Revision</button>
+                  <button onClick={() => setShowRevision(true)} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">{t('work:task.requestRevision')}</button>
                 ) : (
                   <div className="flex items-center gap-1.5">
                     <input type="text" value={revisionReason} onChange={e => setRevisionReason(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter' && revisionReason.trim()) { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim(), authUser?.id)); setShowRevision(false); setRevisionReason(''); } }}
-                      placeholder="Revision reason…" autoFocus
+                      placeholder={t('work:task.revisionReasonPlaceholder')} autoFocus
                       className="px-2 py-1 text-xs bg-surface-elevated border border-amber-500/40 rounded-lg text-fg-primary focus:border-amber-400 outline-none w-48" />
-                    <button onClick={() => { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim() || 'Revisions needed', authUser?.id)); setShowRevision(false); setRevisionReason(''); }}
-                      disabled={actionInFlight} className="px-2.5 py-1 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">Send</button>
+                    <button onClick={() => { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim() || t('work:task.revisionsNeededDefault'), authUser?.id)); setShowRevision(false); setRevisionReason(''); }}
+                      disabled={actionInFlight} className="px-2.5 py-1 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">{t('common:send')}</button>
                     <button onClick={() => { setShowRevision(false); setRevisionReason(''); }}
                       className="px-1.5 py-1 text-xs text-fg-secondary hover:text-fg-primary">✕</button>
                   </div>
@@ -1712,82 +1932,109 @@ function TaskDetailPanel({
             {isRunning && (
               <>
                 <button onClick={() => void pauseTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-amber-500/30 text-amber-600 rounded-lg hover:bg-amber-500/10 disabled:opacity-50 flex items-center gap-1">
-                  <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><rect x="2" y="1.5" width="3" height="9" rx="0.5"/><rect x="7" y="1.5" width="3" height="9" rx="0.5"/></svg>Pause
+                  <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><rect x="2" y="1.5" width="3" height="9" rx="0.5"/><rect x="7" y="1.5" width="3" height="9" rx="0.5"/></svg>{t('work:task.pause')}
                 </button>
                 <button onClick={() => void retryFresh()} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-blue-500/30 text-blue-600 rounded-lg hover:bg-blue-500/10 disabled:opacity-50 flex items-center gap-1">
-                  <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 6a4.5 4.5 0 1 1 1.3 3.2" strokeLinecap="round"/><path d="M1 3.5V6h2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>Retry
+                  <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 6a4.5 4.5 0 1 1 1.3 3.2" strokeLinecap="round"/><path d="M1 3.5V6h2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>{t('work:task.retry')}
                 </button>
               </>
             )}
             {isBlocked && (
               <button onClick={() => void resumeTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
-                {actionInFlight ? <>Resuming…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Resume</>}
+                {actionInFlight ? <>{t('work:task.resuming')}</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>{t('work:task.resume')}</>}
               </button>
             )}
-            {isFailed && (
-              <button onClick={() => void retryFresh()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
-                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 6a4.5 4.5 0 1 1 1.3 3.2" strokeLinecap="round"/><path d="M1 3.5V6h2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>Retry
-              </button>
+            {/* ── Failed: Retry (fresh) + Continue (keep context) — not for scheduled tasks ── */}
+            {isFailed && !isScheduled && (
+              <>
+                <button onClick={() => void retryFresh()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
+                  <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 6a4.5 4.5 0 1 1 1.3 3.2" strokeLinecap="round"/><path d="M1 3.5V6h2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>{t('work:task.retry')}
+                </button>
+                <button onClick={() => void reopenTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
+                  <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>{t('work:task.continueTask')}
+                </button>
+              </>
             )}
             {/* ── Scheduled task: Run Now / Schedule controls ── */}
             {isScheduled && (isCompleted || isFailed) && (
               <button onClick={() => void runScheduledNow()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
-                {actionInFlight ? <>Running…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Run Now</>}
+                {actionInFlight ? <>{t('work:task.running')}</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>{t('work:task.runNow')}</>}
               </button>
             )}
             {isScheduled && !isRunning && (
               schedPaused
-                ? <button onClick={() => void doUpdate(() => api.tasks.resumeSchedule(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">▶ Resume Schedule</button>
-                : <button onClick={() => void doUpdate(() => api.tasks.pauseSchedule(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-amber-500/30 text-amber-600 rounded-lg hover:bg-amber-500/10 disabled:opacity-50">⏸ Pause Schedule</button>
+                ? <button onClick={() => void doUpdate(() => api.tasks.resumeSchedule(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">{t('work:task.resumeSchedule')}</button>
+                : <button onClick={() => void doUpdate(() => api.tasks.pauseSchedule(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-amber-500/30 text-amber-600 rounded-lg hover:bg-amber-500/10 disabled:opacity-50">{t('work:task.pauseSchedule')}</button>
             )}
-            {/* ── Archive (all archivable terminal states) ── */}
+            {/* ── Archive (all archivable terminal states) — requires confirmation ── */}
             {(isCompleted || isFailed || isRejected || isCancelled) && (
-              <button onClick={() => doUpdate(() => api.tasks.archive(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-white disabled:opacity-50">Archive</button>
+              <button onClick={() => setArchiveConfirm(true)} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-white disabled:opacity-50">{t('work:task.archive')}</button>
             )}
-            {/* ── Reopen (completed only) / Resume (failed — continue with context) ── */}
-            {isCompleted && (
-              <button onClick={() => void reopenTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary disabled:opacity-50">Reopen</button>
+            {/* ── Reopen (completed standard task only) ── */}
+            {isCompleted && !isScheduled && (
+              <button onClick={() => void reopenTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary disabled:opacity-50">{t('work:task.reopen')}</button>
             )}
-            {isFailed && (
-              <button onClick={() => void reopenTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
-                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Resume
-              </button>
-            )}
-            {/* ── Cancel (non-terminal, non-pending) ── */}
+            {/* ── Cancel (non-terminal, non-pending) — always requires confirmation ── */}
             {!isTerminal && task.status !== 'pending' && (
               <button onClick={async () => {
                 const { count } = await api.tasks.getDependentCount(task.id);
-                if (count > 0) { setCancelConfirm({ dependentCount: count }); } else { void doUpdate(() => api.tasks.cancel(task.id)); }
-              }} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Cancel</button>
+                setCancelConfirm({ dependentCount: count });
+              }} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">{t('work:task.cancelTask')}</button>
             )}
           </div>
         </div>
 
-      {pendingDelete && <ConfirmModal title={`Delete subtask "${pendingDelete.title}"?`} message="This subtask will be permanently deleted." confirmLabel="Delete" onConfirm={() => void deleteSubtask(pendingDelete)} onCancel={() => setPendingDelete(null)} />}
-      {cancelConfirm && (
+      {pendingDelete && <ConfirmModal title={t('work:task.deleteSubtaskTitle', { title: pendingDelete.title })} message={t('work:task.deleteSubtaskMessage')} confirmLabel={t('common:delete')} onConfirm={() => void deleteSubtask(pendingDelete)} onCancel={() => setPendingDelete(null)} />}
+      {rejectConfirm && (
+        <ConfirmModal
+          title={t('work:task.rejectConfirmTitle')}
+          message={t('work:task.rejectConfirmMessage')}
+          confirmLabel={t('work:task.reject')}
+          onConfirm={() => { setRejectConfirm(false); void doUpdate(() => api.tasks.reject(task.id)); }}
+          onCancel={() => setRejectConfirm(false)}
+        />
+      )}
+      {archiveConfirm && (
+        <ConfirmModal
+          title={t('work:task.archiveConfirmTitle')}
+          message={isScheduled ? t('work:task.archiveScheduledConfirmMessage') : t('work:task.archiveConfirmMessage')}
+          confirmLabel={t('work:task.archive')}
+          onConfirm={() => { setArchiveConfirm(false); void doUpdate(() => api.tasks.archive(task.id)); }}
+          onCancel={() => setArchiveConfirm(false)}
+        />
+      )}
+      {cancelConfirm && cancelConfirm.dependentCount > 0 ? (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60]" onClick={() => setCancelConfirm(null)}>
           <div className="bg-surface-default border border-border-default rounded-xl p-6 max-w-md w-full shadow-2xl" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-fg-primary mb-2">Cancel Task</h3>
+            <h3 className="text-base font-semibold text-fg-primary mb-2">{t('work:task.cancelTaskModalTitle')}</h3>
             <p className="text-sm text-fg-secondary mb-4">
-              This task has <span className="text-amber-600 font-medium">{cancelConfirm.dependentCount}</span> dependent task{cancelConfirm.dependentCount > 1 ? 's' : ''} that {cancelConfirm.dependentCount > 1 ? 'are' : 'is'} currently blocked by it.
+              {t('work:task.cancelTaskDependent', { count: cancelConfirm.dependentCount })}
             </p>
             <div className="flex flex-col gap-2">
               <button onClick={() => { setCancelConfirm(null); void doUpdate(() => api.tasks.cancel(task.id, false)); }}
                 className="w-full px-4 py-2.5 text-sm bg-surface-elevated border border-border-default rounded-lg hover:bg-surface-overlay text-fg-primary text-left">
-                <span className="font-medium">Cancel this task only</span>
-                <span className="block text-xs text-fg-tertiary mt-0.5">Dependent tasks will start if they have no other blockers</span>
+                <span className="font-medium">{t('work:task.cancelTaskOnly')}</span>
+                <span className="block text-xs text-fg-tertiary mt-0.5">{t('work:task.cancelTaskOnlyHint')}</span>
               </button>
               <button onClick={() => { setCancelConfirm(null); void doUpdate(() => api.tasks.cancel(task.id, true)); }}
                 className="w-full px-4 py-2.5 text-sm bg-red-500/10 border border-red-500/30 rounded-lg hover:bg-red-500/20 text-red-500 text-left">
-                <span className="font-medium">Cancel with all dependents</span>
-                <span className="block text-xs text-red-500/70 mt-0.5">Also cancels {cancelConfirm.dependentCount} blocked task{cancelConfirm.dependentCount > 1 ? 's' : ''}</span>
+                <span className="font-medium">{t('work:task.cancelWithDependents')}</span>
+                <span className="block text-xs text-red-500/70 mt-0.5">{t('work:task.cancelWithDependentsHint', { count: cancelConfirm.dependentCount })}</span>
               </button>
               <button onClick={() => setCancelConfirm(null)} className="w-full px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary">
-                Keep task running
+                {t('work:task.keepTaskRunning')}
               </button>
             </div>
           </div>
         </div>
+      ) : cancelConfirm && (
+        <ConfirmModal
+          title={t('work:task.cancelTaskModalTitle')}
+          message={t('work:task.cancelConfirmMessage')}
+          confirmLabel={t('work:task.cancelTask')}
+          onConfirm={() => { setCancelConfirm(null); void doUpdate(() => api.tasks.cancel(task.id)); }}
+          onCancel={() => setCancelConfirm(null)}
+        />
       )}
       {previewFile && <FilePreviewModal filePath={previewFile} onClose={() => setPreviewFile(null)} />}
     </div>
@@ -1827,11 +2074,12 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
   const [newRepoPath, setNewRepoPath] = useState('');
   const [newRepoBranch, setNewRepoBranch] = useState('main');
   const [statusUpdating, setStatusUpdating] = useState(false);
+  const { t } = useTranslation(['work', 'common']);
 
   const PROJECT_STATUSES: Array<{ value: string; label: string; desc: string }> = [
-    { value: 'active', label: 'Active', desc: 'Work is ongoing' },
-    { value: 'paused', label: 'Paused', desc: 'Temporarily on hold' },
-    { value: 'archived', label: 'Archived', desc: 'No longer active' },
+    { value: 'active', label: t('work:project.statusActive'), desc: t('work:project.statusActiveDesc') },
+    { value: 'paused', label: t('work:project.statusPaused'), desc: t('work:project.statusPausedDesc') },
+    { value: 'archived', label: t('work:project.statusArchived'), desc: t('work:project.statusArchivedDesc') },
   ];
 
   const handleStatusChange = async (newStatus: string) => {
@@ -1868,17 +2116,17 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
           value={project.description ?? ''}
           onSave={async (desc) => { await onUpdateProject({ description: desc }); onRefresh(); }}
           className="text-sm text-fg-secondary"
-          placeholder="Add a project description…"
+          placeholder={t('work:project.descriptionPlaceholderLong')}
         />
         <div className="flex items-center gap-3 text-xs text-fg-tertiary">
-          {project.createdAt && <span>Created {new Date(project.createdAt).toLocaleDateString()}</span>}
-          {project.updatedAt && <span>Updated {new Date(project.updatedAt).toLocaleDateString()}</span>}
+          {project.createdAt && <span>{t('work:project.createdLabel')} {new Date(project.createdAt).toLocaleDateString()}</span>}
+          {project.updatedAt && <span>{t('work:project.updatedLabel')} {new Date(project.updatedAt).toLocaleDateString()}</span>}
         </div>
       </div>
 
       {/* Status toggle */}
       <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
-        <h4 className="text-xs font-semibold text-fg-secondary mb-3">Project Status</h4>
+        <h4 className="text-xs font-semibold text-fg-secondary mb-3">{t('work:project.projectStatusHeading')}</h4>
         <div className="flex gap-2">
           {PROJECT_STATUSES.map(s => (
             <button
@@ -1902,14 +2150,14 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
 
       {/* Task Statistics */}
       <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
-        <h4 className="text-xs font-semibold text-fg-secondary mb-3">Task Overview</h4>
+        <h4 className="text-xs font-semibold text-fg-secondary mb-3">{t('work:project.taskOverview')}</h4>
         <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
-          <StatCard label="Total" value={stats.total} color="text-fg-primary" />
-          <StatCard label="Completed" value={stats.completed} color="text-green-600" />
-          <StatCard label="In Progress" value={stats.inProgress} color="text-brand-500" />
-          <StatCard label="In Review" value={stats.inReview} color="text-brand-500" />
-          <StatCard label="Blocked" value={stats.blocked} color="text-amber-600" />
-          <StatCard label="Failed" value={stats.failed} color="text-red-500" />
+          <StatCard label={t('work:project.statTotal')} value={stats.total} color="text-fg-primary" />
+          <StatCard label={t('work:project.statCompleted')} value={stats.completed} color="text-green-600" />
+          <StatCard label={t('work:project.statInProgress')} value={stats.inProgress} color="text-brand-500" />
+          <StatCard label={t('work:project.statInReview')} value={stats.inReview} color="text-brand-500" />
+          <StatCard label={t('work:project.statBlocked')} value={stats.blocked} color="text-amber-600" />
+          <StatCard label={t('work:project.statFailed')} value={stats.failed} color="text-red-500" />
         </div>
         {stats.total > 0 && (
           <div className="mt-3 flex h-2 rounded-full overflow-hidden bg-surface-elevated">
@@ -1925,18 +2173,18 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
 
       {/* Requirement Stats */}
       <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
-        <h4 className="text-xs font-semibold text-fg-secondary mb-3">Requirements</h4>
+        <h4 className="text-xs font-semibold text-fg-secondary mb-3">{t('work:project.requirementsHeading')}</h4>
         <div className="grid grid-cols-3 gap-3">
-          <StatCard label="Total" value={stats.reqs} color="text-fg-primary" />
-          <StatCard label="Completed" value={stats.reqsDone} color="text-green-600" />
-          <StatCard label="Active" value={stats.reqs - stats.reqsDone} color="text-brand-500" />
+          <StatCard label={t('work:project.statTotal')} value={stats.reqs} color="text-fg-primary" />
+          <StatCard label={t('work:project.statCompleted')} value={stats.reqsDone} color="text-green-600" />
+          <StatCard label={t('work:project.statActive')} value={stats.reqs - stats.reqsDone} color="text-brand-500" />
         </div>
       </div>
 
       {/* Agents working on this project */}
       {projAgents.length > 0 && (
         <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
-          <h4 className="text-xs font-semibold text-fg-secondary mb-3">Agents ({projAgents.length})</h4>
+          <h4 className="text-xs font-semibold text-fg-secondary mb-3">{t('work:project.agentsHeading', { count: projAgents.length })}</h4>
           <div className="flex flex-wrap gap-2">
             {projAgents.map(a => {
               const agentTasks = projTasks.filter(t => t.assignedAgentId === a.id);
@@ -1945,7 +2193,7 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
                 <div key={a.id} className="flex items-center gap-2 px-3 py-2 bg-surface-elevated/60 rounded-lg">
                   <span className={`w-2 h-2 rounded-full shrink-0 ${a.status === 'working' ? 'bg-blue-500' : a.status === 'idle' ? 'bg-green-500' : 'bg-gray-500'}`} />
                   <span className="text-xs text-fg-secondary">{a.name}</span>
-                  <span className="text-[10px] text-fg-tertiary">{activeTasks.length} active / {agentTasks.length} total</span>
+                  <span className="text-[10px] text-fg-tertiary">{t('work:project.agentTaskCounts', { active: activeTasks.length, total: agentTasks.length })}</span>
                 </div>
               );
             })}
@@ -1956,13 +2204,13 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
       {/* Repositories */}
       <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
         <div className="flex items-center justify-between mb-3">
-          <h4 className="text-xs font-semibold text-fg-secondary">Repositories</h4>
+          <h4 className="text-xs font-semibold text-fg-secondary">{t('work:project.repositories')}</h4>
           <button onClick={() => setAddRepoOpen(!addRepoOpen)} className="text-[10px] text-brand-500 hover:text-brand-500">
-            {addRepoOpen ? 'Cancel' : '+ Add'}
+            {addRepoOpen ? t('common:cancel') : t('work:project.addRepo')}
           </button>
         </div>
         {(project.repositories ?? []).length === 0 && !addRepoOpen && (
-          <p className="text-xs text-fg-tertiary">No repositories linked.</p>
+          <p className="text-xs text-fg-tertiary">{t('work:project.noReposLinked')}</p>
         )}
         {(project.repositories ?? []).map((r, i) => (
           <div key={i} className="flex items-center gap-2 py-1.5 group">
@@ -1972,7 +2220,7 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
             <button
               onClick={() => handleRemoveRepo(i)}
               className="text-fg-tertiary hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-              title="Remove repository"
+              title={t('work:project.removeRepo')}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
             </button>
@@ -1983,21 +2231,21 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
             <input
               value={newRepoPath}
               onChange={e => setNewRepoPath(e.target.value)}
-              placeholder="Local path (e.g. /Users/me/project)"
+              placeholder={t('work:project.repoPathPlaceholder')}
               className="w-full px-2.5 py-1.5 text-xs bg-surface-primary border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary"
             />
             <div className="flex gap-2">
               <input
                 value={newRepoBranch}
                 onChange={e => setNewRepoBranch(e.target.value)}
-                placeholder="Branch (default: main)"
+                placeholder={t('work:project.repoBranchPlaceholder')}
                 className="flex-1 px-2.5 py-1.5 text-xs bg-surface-primary border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary"
               />
               <button
                 onClick={handleAddRepo}
                 disabled={!newRepoPath.trim()}
                 className="px-3 py-1.5 text-xs bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              >Add</button>
+              >{t('work:task.add')}</button>
             </div>
           </div>
         )}
@@ -2005,9 +2253,9 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
 
       {/* Danger zone */}
       <div className="border border-red-500/20 rounded-xl p-4">
-        <h4 className="text-xs font-semibold text-red-500/80 mb-2">Danger Zone</h4>
-        <p className="text-[11px] text-fg-tertiary mb-3">Deleting a project is permanent and cannot be undone. Tasks and requirements will be unlinked.</p>
-        <button onClick={onDeleteProject} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 hover:bg-red-500/10 rounded-lg transition-colors">Delete Project</button>
+        <h4 className="text-xs font-semibold text-red-500/80 mb-2">{t('work:project.dangerZone')}</h4>
+        <p className="text-[11px] text-fg-tertiary mb-3">{t('work:project.dangerZoneDeleteHint')}</p>
+        <button onClick={onDeleteProject} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 hover:bg-red-500/10 rounded-lg transition-colors">{t('work:project.deleteProject')}</button>
       </div>
     </div>
   );
@@ -2529,6 +2777,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   const [reqProjectId, setReqProjectId] = useState('');
   const [rejectReqId, setRejectReqId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [pendingDeleteProjectId, setPendingDeleteProjectId] = useState<string | null>(null);
 
   const msg = (m: string) => { setFlash(m); setTimeout(() => setFlash(''), 3000); };
 
@@ -2798,7 +3047,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
   const handleProjectCreated = () => {
     setShowCreateProject(false);
-    msg('Project created');
+    msg(t('work:task.projectCreated'));
     refreshProjects();
   };
 
@@ -2815,7 +3064,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
   const createTask = async () => {
     if (!taskTitle || !taskAssignTo || !taskReviewer) return;
-    if (taskAssignTo === taskReviewer) { msg('Assigned agent and reviewer must be different'); return; }
+    if (taskAssignTo === taskReviewer) { msg(t('work:task.assignedReviewerDifferent')); return; }
     const projId = taskProjectId || undefined;
     const reqId = taskRequirementId || undefined;
     try {
@@ -2833,7 +3082,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
       setTaskTitle(''); setTaskDesc(''); setTaskBlockedBy([]); setTaskRequirementId(''); setTaskType('standard'); setTaskScheduleEvery('4h'); setShowCreateTask(false);
       refreshBoard();
       if (task) forceOpenTask(task);
-    } catch (e) { msg(`Error creating task: ${e}`); }
+    } catch (e) { msg(t('work:task.errorCreatingTask', { message: String(e) })); }
   };
 
   const handleTaskRefresh = () => {
@@ -2854,12 +3103,12 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   // ── Requirement actions ──
 
   const handleCreateReq = async () => {
-    if (!reqTitle.trim()) { msg('Please enter a title for this requirement'); return; }
-    if (!reqDesc.trim()) { msg('Please enter a description for this requirement'); return; }
-    if (!reqProjectId) { msg('Please select a project for this requirement'); return; }
+    if (!reqTitle.trim()) { msg(t('work:task.pleaseReqTitle')); return; }
+    if (!reqDesc.trim()) { msg(t('work:task.pleaseReqDesc')); return; }
+    if (!reqProjectId) { msg(t('work:task.pleaseReqProject')); return; }
     try {
       const { requirement } = await api.requirements.create({ title: reqTitle.trim(), description: reqDesc.trim(), priority: reqPriority, projectId: reqProjectId });
-      msg('Requirement created');
+      msg(t('work:task.requirementCreated'));
       setReqTitle(''); setReqDesc(''); setShowCreateReq(false);
       refreshRequirements();
       if (requirement) forceOpenReq(requirement);
@@ -3045,7 +3294,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
   const totalTaskCount = Object.values(allTaskCounts).reduce((a, b) => a + b, 0);
 
-  if (loading) return <div className="flex-1 flex items-center justify-center text-fg-tertiary">Loading…</div>;
+  if (loading) return <div className="flex-1 flex items-center justify-center text-fg-tertiary">{t('work:task.loadingPage')}</div>;
 
   const hasDetail = !!(selectedTask || selectedReq);
 
@@ -3074,13 +3323,13 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
                 </div>
               ) : (
                 <h2 className="text-sm font-semibold text-fg-primary min-w-0 flex-1 truncate">
-                  {projects.length === 1 ? projects[0].name : `${projects.length} Projects`}
+                  {projects.length === 1 ? projects[0].name : t('work:task.projectsCount', { count: projects.length })}
                 </h2>
               )}
               <div className="flex items-center gap-1 shrink-0">
-                <button onClick={() => setShowCreateProject(true)} className="px-2 py-1 text-[11px] border border-border-default text-fg-secondary rounded-md">+ Project</button>
-                <button onClick={openCreateReq} className="px-2 py-1 text-[11px] bg-brand-600 text-white rounded-md">+ Req</button>
-                <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-2 py-1 text-[11px] border border-border-default text-fg-secondary rounded-md">+ Task</button>
+                <button onClick={() => setShowCreateProject(true)} className="px-2 py-1 text-[11px] bg-teal-600 text-white rounded-md">{t('work:task.shortProject')}</button>
+                <button onClick={openCreateReq} className="px-2 py-1 text-[11px] bg-brand-600 text-white rounded-md">{t('work:task.shortReq')}</button>
+                <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-2 py-1 text-[11px] border border-amber-500/60 text-amber-600 rounded-md">{t('work:task.shortTask')}</button>
               </div>
             </div>
             {/* Mobile Row 2: view toggle + filter */}
@@ -3089,12 +3338,12 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
                 {(['backlog', 'kanban', 'dag'] as const).map(v => (
                   <button key={v} onClick={() => setBoardType(v)}
                     className={`px-2 py-0.5 text-[10px] font-medium transition-colors ${boardType === v ? 'bg-brand-600/25 text-brand-500' : 'text-fg-tertiary'}`}
-                  >{v === 'backlog' ? 'Backlog' : v === 'kanban' ? 'Kanban' : 'DAG'}</button>
+                  >{v === 'backlog' ? t('work:task.backlog') : v === 'kanban' ? t('work:task.kanban') : t('work:task.dag')}</button>
                 ))}
               </div>
               {archivedCount > 0 && (
                 <button onClick={() => setShowArchived(v => !v)} className={`text-[10px] shrink-0 px-2 py-0.5 rounded-md transition-colors ${showArchived ? 'bg-surface-overlay text-fg-secondary' : 'text-fg-tertiary'}`}>
-                  {showArchived ? `Hide archived` : `${archivedCount} archived`}
+                  {showArchived ? t('work:task.hideArchived') : t('work:task.archivedCount', { count: archivedCount })}
                 </button>
               )}
               <div className="flex-1" />
@@ -3106,7 +3355,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
                       : 'border border-border-default text-fg-secondary'
                   }`}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" /></svg>
-                  Filter{(projectFilter.size + agentFilter.size + (myTasksOnly ? 1 : 0)) > 0 ? ` (${projectFilter.size + agentFilter.size + (myTasksOnly ? 1 : 0)})` : ''}
+                  {(projectFilter.size + agentFilter.size + (myTasksOnly ? 1 : 0)) > 0 ? t('work:task.filterWithCount', { count: projectFilter.size + agentFilter.size + (myTasksOnly ? 1 : 0) }) : t('work:task.filter')}
                 </button>
               )}
             </div>
@@ -3126,19 +3375,19 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
                 className={`w-6 h-6 flex items-center justify-center rounded-md transition-colors ${
                   showProjectSettings ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
                 }`}
-                title="Project settings"
+                title={t('work:project.settingsTitle')}
               >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
               </button>
             </div>
           ) : (
             <h2 className="text-sm font-semibold text-fg-primary shrink-0">
-              {projects.length === 1 ? projects[0].name : `${projects.length} Projects`}
+              {projects.length === 1 ? projects[0].name : t('work:task.projectsCount', { count: projects.length })}
             </h2>
           )}
           {archivedCount > 0 && (
             <button onClick={() => setShowArchived(v => !v)} className={`text-[10px] shrink-0 px-2 py-0.5 rounded-md transition-colors ${showArchived ? 'bg-surface-overlay text-fg-secondary' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-              {showArchived ? `Hide ${archivedCount} archived` : `${archivedCount} archived`}
+              {showArchived ? t('work:task.hideArchivedWithCount', { count: archivedCount }) : t('work:task.archivedCount', { count: archivedCount })}
             </button>
           )}
 
@@ -3147,14 +3396,15 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
             {(['backlog', 'kanban', 'dag'] as const).map(v => (
               <button key={v} onClick={() => setBoardType(v)}
                 className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${boardType === v ? 'bg-brand-600/25 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
-              >{v === 'backlog' ? 'Backlog' : v === 'kanban' ? 'Kanban' : 'DAG'}</button>
+              >{v === 'backlog' ? t('work:task.backlog') : v === 'kanban' ? t('work:task.kanban') : t('work:task.dag')}</button>
             ))}
           </div>
 
           {/* Actions */}
           <div className="flex items-center gap-1.5 shrink-0">
-            <button onClick={openCreateReq} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg font-medium transition-colors">+ Requirement</button>
-            <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-3 py-1.5 border border-border-default hover:bg-surface-elevated text-fg-secondary text-xs rounded-lg font-medium transition-colors">+ Task</button>
+            <button onClick={() => setShowCreateProject(true)} className="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 text-white text-xs rounded-lg font-medium transition-colors">{t('work:task.shortProject')}</button>
+            <button onClick={openCreateReq} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg font-medium transition-colors">{t('work:task.newRequirement')}</button>
+            <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-3 py-1.5 border border-amber-500/60 text-amber-600 hover:bg-amber-500/10 text-xs rounded-lg font-medium transition-colors">{t('work:task.newTaskBtn')}</button>
           </div>
 
           <div className="flex-1" />
@@ -3166,7 +3416,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
         {!isMobile && projects.length > 1 && !selectedProjectId && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
           <div className="px-6 py-1.5 border-b border-border-default/60 flex items-center gap-1.5 overflow-x-auto scrollbar-hide shrink-0">
             <button onClick={() => setProjectFilter(new Set())}
-              className={`text-[10px] text-fg-tertiary hover:text-fg-secondary px-2 py-1 rounded-md bg-surface-elevated/60 hover:bg-surface-overlay shrink-0 transition-all ${projectFilter.size > 0 ? 'visible opacity-100' : 'invisible opacity-0'}`}>Clear</button>
+              className={`text-[10px] text-fg-tertiary hover:text-fg-secondary px-2 py-1 rounded-md bg-surface-elevated/60 hover:bg-surface-overlay shrink-0 transition-all ${projectFilter.size > 0 ? 'visible opacity-100' : 'invisible opacity-0'}`}>{t('work:task.clear')}</button>
             {sortedProjects.map(p => {
               const selected = projectFilter.has(p.id);
               const count = allTaskCounts[p.id] ?? 0;
@@ -3229,19 +3479,29 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
           </div>
         ) : totalTaskCount === 0 && filteredReqs.length === 0 ? (
           <div className="flex-1 flex items-center justify-center p-8">
-            <div className="max-w-sm w-full text-center space-y-3">
-              <div className="w-10 h-10 mx-auto rounded-lg bg-surface-elevated flex items-center justify-center">
-                <span className="text-fg-tertiary text-lg">&#9744;</span>
+            {projects.length === 0 ? (
+              <div className="max-w-sm w-full text-center space-y-3">
+                <div className="w-12 h-12 mx-auto rounded-xl bg-brand-500/10 flex items-center justify-center">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-brand-500"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
+                </div>
+                <h3 className="text-sm font-medium text-fg-secondary">{t('work:task.emptyNoProjectsTitle')}</h3>
+                <p className="text-xs text-fg-tertiary leading-relaxed">{t('work:task.emptyNoProjectsHint')}</p>
+                <button onClick={() => setShowCreateProject(true)} className="inline-flex items-center gap-1.5 px-4 py-2 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors">
+                  {t('work:project.newProject')}
+                </button>
               </div>
-              <h3 className="text-sm font-medium text-fg-secondary">No items yet</h3>
-              <p className="text-xs text-fg-tertiary leading-relaxed">
-                Create a requirement to tell agents what you need.<br />
-                Once approved, tasks will appear here automatically.
-              </p>
-              <button onClick={openCreateReq} className="text-xs text-brand-500 hover:text-brand-500 font-medium">
-                + Create a requirement
-              </button>
-            </div>
+            ) : (
+              <div className="max-w-sm w-full text-center space-y-3">
+                <div className="w-12 h-12 mx-auto rounded-xl bg-brand-500/10 flex items-center justify-center">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-brand-500"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="12" y1="18" x2="12" y2="12" /><line x1="9" y1="15" x2="15" y2="15" /></svg>
+                </div>
+                <h3 className="text-sm font-medium text-fg-secondary">{t('work:task.emptyNoReqsTitle')}</h3>
+                <p className="text-xs text-fg-tertiary leading-relaxed whitespace-pre-line">{t('work:task.emptyNoReqsHint')}</p>
+                <button onClick={openCreateReq} className="inline-flex items-center gap-1.5 px-4 py-2 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors">
+                  {t('work:task.createRequirementCta')}
+                </button>
+              </div>
+            )}
           </div>
         ) : boardType === 'backlog' ? (
           <div className="flex-1 min-h-0 flex flex-col" onTouchStart={isMobile ? boardSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? boardSwipe.onTouchEnd : undefined}>
@@ -3272,7 +3532,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
             selectedReqId={selectedReq?.id}
           />
           {isMobile && (
-            <button onClick={() => setBoardType('kanban')} className="absolute left-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-brand-500 border border-brand-400/60 shadow-xl shadow-brand-500/30 flex items-center justify-center text-white active:bg-brand-400 backdrop-blur-sm z-10" title="Back to Kanban">
+            <button onClick={() => setBoardType('kanban')} className="absolute left-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-brand-500 border border-brand-400/60 shadow-xl shadow-brand-500/30 flex items-center justify-center text-white active:bg-brand-400 backdrop-blur-sm z-10" title={t('work:task.backToKanban')}>
               <svg className="w-5 h-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z" clipRule="evenodd" /></svg>
             </button>
           )}
@@ -3340,9 +3600,9 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
                                 {needsReview && (
                                   <div className="flex items-center gap-2 mt-2 pt-2 border-t border-amber-500/15">
                                     <button onClick={e => { e.stopPropagation(); handleApproveReq(req.id); }}
-                                      className="flex-1 py-1 bg-green-600 hover:bg-green-500 text-white text-[10px] rounded-md font-medium transition-colors">Approve</button>
+                                      className="flex-1 py-1 bg-green-600 hover:bg-green-500 text-white text-[10px] rounded-md font-medium transition-colors">{t('work:task.approve')}</button>
                                     <button onClick={e => { e.stopPropagation(); setRejectReqId(req.id); }}
-                                      className="flex-1 py-1 border border-red-500/30 hover:bg-red-500/10 text-red-500 text-[10px] rounded-md font-medium transition-colors">Reject</button>
+                                      className="flex-1 py-1 border border-red-500/30 hover:bg-red-500/10 text-red-500 text-[10px] rounded-md font-medium transition-colors">{t('work:task.reject')}</button>
                                   </div>
                                 )}
                               </div>
@@ -3353,7 +3613,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
                             const badge = subStatusBadges[task.status];
                             const isApprovalTask = task.status === 'pending';
                             const isSchedTask = task.taskType === 'scheduled' && !!task.scheduleConfig;
-                            const schedLabel = isSchedTask ? (task.scheduleConfig!.every ? `Every ${task.scheduleConfig!.every}` : task.scheduleConfig!.cron ? `Cron` : 'Scheduled') : null;
+                            const schedLabel = isSchedTask ? (task.scheduleConfig!.every ? t('work:task.everyInterval', { interval: task.scheduleConfig!.every }) : task.scheduleConfig!.cron ? t('work:task.cronLabel') : t('work:task.scheduledShort')) : null;
                             const taskProjName = viewMode === 'all' && task.projectId ? projects.find(p => p.id === task.projectId)?.name : null;
                             const taskReqTitle = task.requirementId ? allRequirements.find(r => r.id === task.requirementId)?.title : null;
                             const taskCreatorName = task.createdBy ? (resolveActorName(task.createdBy, agents, users) ?? task.createdBy) : null;
@@ -3408,7 +3668,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
                     </div>
                     {isOver && (
                       <div className="mx-2 mb-2 border-2 border-dashed border-brand-500/25 rounded-lg h-10 flex items-center justify-center shrink-0">
-                        <span className="text-[11px] text-brand-500/50">Drop here</span>
+                        <span className="text-[11px] text-brand-500/50">{t('work:task.dropHere')}</span>
                       </div>
                     )}
                   </div>
@@ -3460,6 +3720,12 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
               onScrollToCommentsDone={() => setScrollToComments(false)}
               onRefresh={refreshRequirements}
               authUser={authUser}
+              onTaskClick={task => handleSelectTask(task)}
+              onCreateTask={(reqId, projectId) => {
+                setTaskRequirementId(reqId);
+                if (projectId) setTaskProjectId(projectId);
+                setShowCreateTask(true);
+              }}
             />
           ) : null}
         </div>
@@ -3477,109 +3743,118 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
       {showCreateTask && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3" onClick={() => setShowCreateTask(false)}>
           <div className={`bg-surface-secondary border border-border-default rounded-xl p-6 space-y-4 max-h-[90dvh] overflow-y-auto ${isMobile ? 'w-full' : 'w-[28rem]'}`} onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-fg-primary">New Task</h3>
+            <h3 className="text-base font-semibold text-fg-primary">{t('work:task.newTask')}</h3>
             <div>
-              <label className="block text-sm text-fg-secondary mb-1.5">Project</label>
-              <select value={taskProjectId} onChange={e => setTaskProjectId(e.target.value)}
-                className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
-                <option value="">No Project</option>
-                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm text-fg-secondary mb-1.5">Requirement</label>
-              <select value={taskRequirementId} onChange={e => setTaskRequirementId(e.target.value)}
-                className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
-                <option value="">Select a requirement…</option>
-                {allRequirements
-                  .filter(r => r.status === 'in_progress' && (!taskProjectId || r.projectId === taskProjectId))
-                  .map(r => <option key={r.id} value={r.id}>{r.title}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm text-fg-secondary mb-1.5">Title</label>
+              <label className="block text-sm text-fg-secondary mb-1.5">{t('work:task.titleLabel')}</label>
               <input autoFocus={!isMobile} value={taskTitle} onChange={e => setTaskTitle(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') void createTask(); }}
                 className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none" />
             </div>
             <div>
-              <label className="block text-sm text-fg-secondary mb-1.5">Description</label>
+              <label className="block text-sm text-fg-secondary mb-1.5">{t('work:task.descriptionField')}</label>
               <textarea value={taskDesc} onChange={e => setTaskDesc(e.target.value)} rows={2}
                 className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none resize-none" />
             </div>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm text-fg-secondary mb-1.5">Priority</label>
-                <select value={taskPriority} onChange={e => setTaskPriority(e.target.value)}
-                  className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
-                  <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
-                </select>
+                <label className="block text-sm text-fg-secondary mb-1.5">{t('work:task.projectLabel')}</label>
+                <SearchableSelect
+                  options={[{ value: '', label: t('work:task.noProject') }, ...projects.map(p => ({ value: p.id, label: p.name }))]}
+                  value={taskProjectId}
+                  onChange={v => { setTaskProjectId(v); setTaskRequirementId(''); }}
+                  placeholder={t('work:task.noProject')}
+                  noMatchesText={t('work:task.noMatches')}
+                />
               </div>
               <div>
-                <label className="block text-sm text-fg-secondary mb-1.5">Assign to <span className="text-red-500">*</span></label>
-                <select value={taskAssignTo} onChange={e => setTaskAssignTo(e.target.value)}
-                  className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
-                  <option value="">Select agent…</option>
-                  {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm text-fg-secondary mb-1.5">Reviewer <span className="text-red-500">*</span></label>
-                <select value={taskReviewer} onChange={e => setTaskReviewer(e.target.value)}
-                  className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
-                  <option value="">Select reviewer…</option>
-                  {agents.filter(a => a.id !== taskAssignTo).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
+                <label className="block text-sm text-fg-secondary mb-1.5">{t('work:task.requirementLabel')}</label>
+                <SearchableSelect
+                  options={[
+                    { value: '', label: t('work:task.selectRequirement') },
+                    ...allRequirements
+                      .filter(r => r.status === 'in_progress' && (!taskProjectId || r.projectId === taskProjectId))
+                      .map(r => ({ value: r.id, label: r.title })),
+                  ]}
+                  value={taskRequirementId}
+                  onChange={setTaskRequirementId}
+                  placeholder={t('work:task.selectRequirement')}
+                  noMatchesText={t('work:task.noMatches')}
+                />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm text-fg-secondary mb-1.5">Task Type</label>
+                <label className="block text-sm text-fg-secondary mb-1.5">{t('work:task.assignToRequired')} <span className="text-red-500">*</span></label>
+                <SearchableSelect
+                  options={agents.map(a => ({ value: a.id, label: `${a.name} (${a.status})` }))}
+                  value={taskAssignTo}
+                  onChange={setTaskAssignTo}
+                  placeholder={t('work:task.selectAgent')}
+                  noMatchesText={t('work:task.noMatches')}
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-fg-secondary mb-1.5">{t('work:task.reviewerRequired')} <span className="text-red-500">*</span></label>
+                <SearchableSelect
+                  options={agents.filter(a => a.id !== taskAssignTo).map(a => ({ value: a.id, label: `${a.name} (${a.status})` }))}
+                  value={taskReviewer}
+                  onChange={setTaskReviewer}
+                  placeholder={t('work:task.selectReviewer')}
+                  noMatchesText={t('work:task.noMatches')}
+                />
+              </div>
+            </div>
+            <div className={`grid gap-4 ${taskType === 'scheduled' ? 'grid-cols-3' : 'grid-cols-2'}`}>
+              <div>
+                <label className="block text-sm text-fg-secondary mb-1.5">{t('work:task.priorityField')}</label>
+                <select value={taskPriority} onChange={e => setTaskPriority(e.target.value)}
+                  className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
+                  <option value="low">{t('work:priority.low')}</option><option value="medium">{t('work:priority.medium')}</option><option value="high">{t('work:priority.high')}</option><option value="urgent">{t('work:priority.urgent')}</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm text-fg-secondary mb-1.5">{t('work:task.taskType')}</label>
                 <select value={taskType} onChange={e => setTaskType(e.target.value as 'standard' | 'scheduled')}
                   className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
-                  <option value="standard">Standard</option>
-                  <option value="scheduled">Scheduled (recurring)</option>
+                  <option value="standard">{t('work:task.taskTypeStandard')}</option>
+                  <option value="scheduled">{t('work:task.taskTypeScheduled')}</option>
                 </select>
               </div>
               {taskType === 'scheduled' && (
                 <div>
-                  <label className="block text-sm text-fg-secondary mb-1.5">Frequency</label>
+                  <label className="block text-sm text-fg-secondary mb-1.5">{t('work:task.frequency')}</label>
                   <select value={taskScheduleEvery} onChange={e => setTaskScheduleEvery(e.target.value)}
                     className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
-                    <option value="30m">Every 30 min</option>
-                    <option value="1h">Every 1 hour</option>
-                    <option value="2h">Every 2 hours</option>
-                    <option value="4h">Every 4 hours</option>
-                    <option value="8h">Every 8 hours</option>
-                    <option value="12h">Every 12 hours</option>
-                    <option value="1d">Every day</option>
-                    <option value="1w">Every week</option>
+                    <option value="30m">{t('work:task.freq30m')}</option>
+                    <option value="1h">{t('work:task.freq1h')}</option>
+                    <option value="2h">{t('work:task.freq2h')}</option>
+                    <option value="4h">{t('work:task.freq4h')}</option>
+                    <option value="8h">{t('work:task.freq8h')}</option>
+                    <option value="12h">{t('work:task.freq12h')}</option>
+                    <option value="1d">{t('work:task.freq1d')}</option>
+                    <option value="1w">{t('work:task.freq1w')}</option>
                   </select>
                 </div>
               )}
             </div>
-            {/* Dependency selector */}
             <div>
-              <label className="block text-sm text-fg-secondary mb-1.5">Blocked By (dependencies)</label>
-              <select
-                value=""
-                onChange={e => {
-                  const id = e.target.value;
-                  if (id && !taskBlockedBy.includes(id)) setTaskBlockedBy([...taskBlockedBy, id]);
-                }}
-                className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
-                <option value="">Select a task to depend on…</option>
-                {Object.values(board).flat()
-                  .filter(t => t.status !== 'completed' && t.status !== 'cancelled' && !taskBlockedBy.includes(t.id))
-                  .map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
-              </select>
+              <label className="block text-sm text-fg-secondary mb-1.5">{t('work:task.blockedBy')}</label>
+              <MultiSearchableSelect
+                options={Object.values(board).flat()
+                  .filter(tk => tk.status !== 'completed' && tk.status !== 'cancelled')
+                  .map(tk => ({ value: tk.id, label: tk.title }))}
+                selected={taskBlockedBy}
+                onAdd={id => setTaskBlockedBy([...taskBlockedBy, id])}
+                placeholder={t('work:task.selectDependency')}
+                noMatchesText={t('work:task.noMatches')}
+              />
               {taskBlockedBy.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {taskBlockedBy.map(id => {
-                    const dep = Object.values(board).flat().find(t => t.id === id);
+                    const dep = Object.values(board).flat().find(tk => tk.id === id);
                     return (
                       <span key={id} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 bg-amber-500/10 text-amber-600 rounded-full">
-                        ⏳ {dep ? dep.title.slice(0, 30) : id.slice(-8)}
+                        {dep ? dep.title.slice(0, 30) : id.slice(-8)}
                         <button onClick={() => setTaskBlockedBy(taskBlockedBy.filter(x => x !== id))} className="ml-0.5 text-amber-600/60 hover:text-amber-600">×</button>
                       </span>
                     );
@@ -3588,8 +3863,8 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
               )}
             </div>
             <div className="flex justify-end gap-3 pt-1">
-              <button onClick={() => setShowCreateTask(false)} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">Cancel</button>
-              <button onClick={() => void createTask()} disabled={!taskAssignTo || !taskReviewer} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50">Create</button>
+              <button onClick={() => setShowCreateTask(false)} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">{t('common:cancel')}</button>
+              <button onClick={() => void createTask()} disabled={!taskTitle.trim() || !taskAssignTo || !taskReviewer} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50">{t('common:create')}</button>
             </div>
           </div>
         </div>
@@ -3599,37 +3874,41 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
       {showCreateReq && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3" onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); }}>
           <div className={`bg-surface-secondary border border-border-default rounded-xl p-6 space-y-4 max-h-[90dvh] overflow-y-auto ${isMobile ? 'w-full' : 'w-[28rem]'}`} onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-fg-primary">New Requirement</h3>
-            <p className="text-xs text-fg-tertiary -mt-2">Describe what you need. Agents will break approved requirements into tasks.</p>
             <div>
-              <label className="block text-sm text-fg-secondary mb-1.5">Project</label>
-              <select value={reqProjectId} onChange={e => setReqProjectId(e.target.value)}
-                className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none">
-                <option value="">Select a project…</option>
-                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
+              <h3 className="text-base font-semibold text-fg-primary">{t('work:task.newRequirementModalTitle')}</h3>
+              <p className="text-xs text-fg-tertiary mt-1">{t('work:task.newRequirementModalHint')}</p>
             </div>
             <div>
-              <label className="block text-sm text-fg-secondary mb-1.5">Title</label>
-              <input value={reqTitle} onChange={e => setReqTitle(e.target.value)} placeholder="e.g. Add user authentication"
+              <label className="block text-sm text-fg-secondary mb-1.5">{t('work:task.projectLabel')} <span className="text-red-500">*</span></label>
+              <SearchableSelect
+                options={projects.map(p => ({ value: p.id, label: p.name }))}
+                value={reqProjectId}
+                onChange={setReqProjectId}
+                placeholder={t('work:task.selectProject')}
+                noMatchesText={t('work:task.noMatches')}
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-fg-secondary mb-1.5">{t('work:task.titleField')} <span className="text-red-500">*</span></label>
+              <input value={reqTitle} onChange={e => setReqTitle(e.target.value)} placeholder={t('work:task.reqTitleExample')}
                 className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none" autoFocus={!isMobile}
                 onKeyDown={e => { if (e.key === 'Enter' && reqTitle.trim()) void handleCreateReq(); }} />
             </div>
             <div>
-              <label className="block text-sm text-fg-secondary mb-1.5">Description</label>
-              <textarea value={reqDesc} onChange={e => setReqDesc(e.target.value)} placeholder="What is needed and why..."
+              <label className="block text-sm text-fg-secondary mb-1.5">{t('work:task.descriptionField')} <span className="text-red-500">*</span></label>
+              <textarea value={reqDesc} onChange={e => setReqDesc(e.target.value)} placeholder={t('work:task.reqDescPlaceholder')}
                 rows={3} className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none resize-none" />
             </div>
             <div>
-              <label className="block text-sm text-fg-secondary mb-1.5">Priority</label>
+              <label className="block text-sm text-fg-secondary mb-1.5">{t('work:task.priorityField')}</label>
               <select value={reqPriority} onChange={e => setReqPriority(e.target.value)}
                 className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none">
-                <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
+                <option value="low">{t('work:priority.low')}</option><option value="medium">{t('work:priority.medium')}</option><option value="high">{t('work:priority.high')}</option><option value="urgent">{t('work:priority.urgent')}</option>
               </select>
             </div>
             <div className="flex justify-end gap-3 pt-1">
-              <button onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); }} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">Cancel</button>
-              <button onClick={() => void handleCreateReq()} disabled={!reqTitle.trim() || !reqDesc.trim() || !reqProjectId} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-40 disabled:cursor-not-allowed">Create</button>
+              <button onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); }} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">{t('common:cancel')}</button>
+              <button onClick={() => void handleCreateReq()} disabled={!reqTitle.trim() || !reqDesc.trim() || !reqProjectId} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-40 disabled:cursor-not-allowed">{t('common:create')}</button>
             </div>
           </div>
         </div>
@@ -3639,15 +3918,15 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
       {rejectReqId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3" onClick={() => setRejectReqId(null)}>
           <div className={`bg-surface-secondary border border-border-default rounded-xl p-6 space-y-4 ${isMobile ? 'w-full' : 'w-96'}`} onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-fg-primary">Reject Requirement</h3>
+            <h3 className="text-base font-semibold text-fg-primary">{t('work:task.rejectRequirementTitle')}</h3>
             <div>
-              <label className="block text-sm text-fg-secondary mb-1.5">Reason</label>
-              <textarea value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="Why is this being rejected..."
+              <label className="block text-sm text-fg-secondary mb-1.5">{t('work:task.rejectReasonLabel')}</label>
+              <textarea value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder={t('work:task.rejectReasonPlaceholder')}
                 rows={3} className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-red-500 outline-none resize-none" autoFocus={!isMobile} />
             </div>
             <div className="flex justify-end gap-3">
-              <button onClick={() => setRejectReqId(null)} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">Cancel</button>
-              <button onClick={() => void handleRejectReq()} className="px-4 py-2 text-sm bg-red-600 hover:bg-red-500 rounded-lg text-white">Reject</button>
+              <button onClick={() => setRejectReqId(null)} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">{t('common:cancel')}</button>
+              <button onClick={() => void handleRejectReq()} className="px-4 py-2 text-sm bg-red-600 hover:bg-red-500 rounded-lg text-white">{t('work:task.reject')}</button>
             </div>
           </div>
         </div>
@@ -3659,7 +3938,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
           <div className="absolute inset-0 bg-black/50" />
           <div className="relative bg-surface-secondary rounded-t-2xl border-t border-border-default max-h-[70vh] overflow-y-auto pb-16" onClick={e => e.stopPropagation()}>
             <div className="sticky top-0 bg-surface-secondary z-10 px-4 pt-3 pb-2 flex items-center justify-between border-b border-border-default/60">
-              <h3 className="text-sm font-semibold text-fg-primary">Filters</h3>
+              <h3 className="text-sm font-semibold text-fg-primary">{t('work:task.filtersSheetTitle')}</h3>
               <div className="flex items-center gap-2">
                 {(projectFilter.size > 0 || agentFilter.size > 0 || myTasksOnly) && (
                   <button onClick={() => { setProjectFilter(new Set()); setAgentFilter(new Set()); setMyTasksOnly(false); }}
@@ -3673,7 +3952,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
             </div>
             {projects.length > 1 && (
               <div className="px-4 py-3">
-                <div className="text-[11px] text-fg-tertiary font-medium uppercase tracking-wider mb-2">Projects</div>
+                <div className="text-[11px] text-fg-tertiary font-medium uppercase tracking-wider mb-2">{t('work:task.projectsFilterGroup')}</div>
                 <div className="flex flex-wrap gap-1.5">
                   {sortedProjects.map(p => {
                     const selected = projectFilter.has(p.id);
@@ -3707,7 +3986,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
             )}
             {agents.length > 0 && (
               <div className="px-4 py-3 border-t border-border-default/40">
-                <div className="text-[11px] text-fg-tertiary font-medium uppercase tracking-wider mb-2">Agents</div>
+                <div className="text-[11px] text-fg-tertiary font-medium uppercase tracking-wider mb-2">{t('work:task.agentsFilterGroup')}</div>
                 <div className="flex flex-wrap gap-1.5">
                   {sortedAgents.map(a => {
                     const selected = agentFilter.has(a.id);
@@ -3740,6 +4019,7 @@ function RequirementCommentThread({ requirementId, agents, users, authUser }: {
   users?: HumanUserInfo[];
   authUser?: { id: string; name: string };
 }) {
+  const { t } = useTranslation(['work', 'common']);
   const [comments, setComments] = useState<RequirementComment[]>([]);
 
   useEffect(() => {
@@ -3778,11 +4058,11 @@ function RequirementCommentThread({ requirementId, agents, users, authUser }: {
   return (
     <div>
       <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2 block">
-        Comments {comments.length > 0 && <span className="font-normal">({comments.length})</span>}
+        {comments.length > 0 ? t('work:task.commentsWithCount', { count: comments.length }) : t('work:task.comments')}
       </label>
       <div className="space-y-0.5 mb-3">
         {comments.length === 0 && (
-          <p className="text-xs text-fg-tertiary text-center py-4">No comments yet.</p>
+          <p className="text-xs text-fg-tertiary text-center py-4">{t('work:task.noCommentsYet')}</p>
         )}
         {comments.map(c => (
           <CommentBubble key={c.id} comment={c} agents={agents} onReply={handleReply} />
@@ -3796,7 +4076,7 @@ function RequirementCommentThread({ requirementId, agents, users, authUser }: {
 // ─── Requirement Detail Modal ────────────────────────────────────────────────────
 
 function RequirementDetailPanel({
-  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange, onRefresh, authUser, scrollToComments, onScrollToCommentsDone,
+  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange, onRefresh, authUser, scrollToComments, onScrollToCommentsDone, onTaskClick, onCreateTask,
 }: {
   req: RequirementInfo;
   agents: AgentInfo[];
@@ -3812,6 +4092,8 @@ function RequirementDetailPanel({
   authUser?: { id: string; name: string };
   scrollToComments?: boolean;
   onScrollToCommentsDone?: () => void;
+  onTaskClick?: (task: TaskInfo) => void;
+  onCreateTask?: (reqId: string, projectId?: string) => void;
 }) {
   const { t } = useTranslation(['work', 'common']);
   const reqBadges = useMemo(() => buildReqStatusBadges(t), [t]);
@@ -3872,7 +4154,7 @@ function RequirementDetailPanel({
       {/* Body */}
       <div ref={reqScrollRef} className="flex-1 overflow-y-auto p-5 space-y-4">
           <div>
-            <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 block">Description</label>
+            <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 block">{t('work:task.requirementDetailDescription')}</label>
             {editingDesc ? (
               <div className="space-y-2">
                 <textarea
@@ -3883,7 +4165,7 @@ function RequirementDetailPanel({
                   autoFocus
                 />
                 <div className="flex gap-2 justify-end">
-                  <button onClick={() => { setEditingDesc(false); setDescDraft(req.description); }} className="px-2.5 py-1 text-xs border border-border-default rounded-lg hover:bg-surface-elevated">Cancel</button>
+                  <button onClick={() => { setEditingDesc(false); setDescDraft(req.description); }} className="px-2.5 py-1 text-xs border border-border-default rounded-lg hover:bg-surface-elevated">{t('common:cancel')}</button>
                   <button
                     onClick={async () => {
                       setSavingDesc(true);
@@ -3896,7 +4178,7 @@ function RequirementDetailPanel({
                     }}
                     disabled={savingDesc}
                     className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50"
-                  >Save</button>
+                  >{t('common:save')}</button>
                 </div>
               </div>
             ) : (
@@ -3904,13 +4186,13 @@ function RequirementDetailPanel({
                 {req.description ? (
                   <MarkdownMessage content={req.description} className="text-sm text-fg-secondary leading-relaxed" />
                 ) : (
-                  <p className="text-sm text-fg-tertiary italic">No description</p>
+                  <p className="text-sm text-fg-tertiary italic">{t('work:task.requirementNoDescription')}</p>
                 )}
                 {!isTerminal && (
                   <button
                     onClick={() => { setDescDraft(req.description); setEditingDesc(true); }}
                     className="absolute top-0 right-0 text-[10px] text-fg-tertiary hover:text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                  >Edit</button>
+                  >{t('common:edit')}</button>
                 )}
               </div>
             )}
@@ -3918,23 +4200,23 @@ function RequirementDetailPanel({
 
           <div className="grid grid-cols-2 gap-3 text-xs">
             <div className="bg-surface-elevated/60 rounded-lg p-2.5">
-              <span className="text-[10px] text-fg-tertiary block mb-1">Created by</span>
+              <span className="text-[10px] text-fg-tertiary block mb-1">{t('work:task.createdByLabel')}</span>
               <span className="text-fg-secondary">{creatorName}</span>
-              {isAgent && <span className="text-[10px] text-brand-500 ml-1.5">(Agent)</span>}
+              {isAgent && <span className="text-[10px] text-brand-500 ml-1.5">{t('work:task.agentTag')}</span>}
             </div>
             <div className="bg-surface-elevated/60 rounded-lg p-2.5">
-              <span className="text-[10px] text-fg-tertiary block mb-1">Created</span>
+              <span className="text-[10px] text-fg-tertiary block mb-1">{t('work:task.createdLabel')}</span>
               <span className="text-fg-secondary">{new Date(req.createdAt).toLocaleString()}</span>
             </div>
             {reqProject && (
               <div className="bg-surface-elevated/60 rounded-lg p-2.5">
-                <span className="text-[10px] text-fg-tertiary block mb-1">Project</span>
+                <span className="text-[10px] text-fg-tertiary block mb-1">{t('work:task.projectLabel')}</span>
                 <span className="text-fg-secondary">{reqProject.name}</span>
               </div>
             )}
             {req.approvedBy && (
               <div className="bg-surface-elevated/60 rounded-lg p-2.5">
-                <span className="text-[10px] text-fg-tertiary block mb-1">Approved by</span>
+                <span className="text-[10px] text-fg-tertiary block mb-1">{t('work:task.approvedBy')}</span>
                 <span className="text-fg-secondary">{resolveActorName(req.approvedBy, agents, users) ?? req.approvedBy.slice(0, 12)}</span>
                 {req.approvedAt && <span className="text-[10px] text-fg-tertiary ml-1">{new Date(req.approvedAt).toLocaleDateString()}</span>}
               </div>
@@ -3943,7 +4225,7 @@ function RequirementDetailPanel({
 
           {req.rejectedReason && (
             <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3">
-              <span className="text-[10px] font-semibold text-red-500 uppercase tracking-wider block mb-1">Rejection Reason</span>
+              <span className="text-[10px] font-semibold text-red-500 uppercase tracking-wider block mb-1">{t('work:task.rejectionReason')}</span>
               <p className="text-sm text-red-500/80">{req.rejectedReason}</p>
             </div>
           )}
@@ -3954,14 +4236,22 @@ function RequirementDetailPanel({
             </div>
           )}
 
-          {linkedTasks.length > 0 && (
-            <div>
-              <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2 block">Linked Tasks ({linkedTasks.length})</label>
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">{t('work:task.linkedTasks', { count: linkedTasks.length })}</label>
+              {!isTerminal && onCreateTask && (
+                <button onClick={() => onCreateTask(req.id, req.projectId)} className="text-[11px] text-amber-500 hover:text-amber-400 font-medium flex items-center gap-1">
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                  {t('work:requirement.createTask')}
+                </button>
+              )}
+            </div>
+            {linkedTasks.length > 0 ? (
               <div className="space-y-1.5">
                 {linkedTasks.map(lt => {
                   const sb = subBadges[lt.status];
                   return (
-                    <div key={lt.id} className="flex items-center gap-2 bg-surface-elevated/60 rounded-lg px-3 py-2">
+                    <div key={lt.id} onClick={() => onTaskClick?.(lt)} className={`flex items-center gap-2 bg-surface-elevated/60 rounded-lg px-3 py-2 ${onTaskClick ? 'cursor-pointer hover:bg-surface-elevated transition-colors' : ''}`}>
                       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_COLORS[lt.priority]?.replace('border-l-', 'bg-') ?? 'bg-gray-500'}`} />
                       <span className="text-xs text-fg-secondary flex-1 truncate">{lt.title}</span>
                       {sb && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${sb.cls}`}>{sb.label}</span>}
@@ -3969,8 +4259,10 @@ function RequirementDetailPanel({
                   );
                 })}
               </div>
-            </div>
-          )}
+            ) : (
+              <div className="text-xs text-fg-tertiary italic py-2">{t('work:requirement.noLinkedTasks')}</div>
+            )}
+          </div>
 
           {/* Requirement Comments Thread */}
           <RequirementCommentThread requirementId={req.id} agents={agents} users={users} authUser={authUser} />
@@ -3980,8 +4272,8 @@ function RequirementDetailPanel({
         <div className="flex items-center gap-2 p-5 pt-3 border-t border-border-default">
           {needsReview && (
             <>
-              <button onClick={() => onApprove(req.id)} className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white text-sm rounded-lg font-medium transition-colors">Approve</button>
-              <button onClick={() => onReject(req.id)} className="px-4 py-2 border border-red-500/30 hover:bg-red-500/10 text-red-500 text-sm rounded-lg font-medium transition-colors">Reject</button>
+              <button onClick={() => onApprove(req.id)} className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white text-sm rounded-lg font-medium transition-colors">{t('work:requirement.approveRequirement')}</button>
+              <button onClick={() => onReject(req.id)} className="px-4 py-2 border border-red-500/30 hover:bg-red-500/10 text-red-500 text-sm rounded-lg font-medium transition-colors">{t('work:requirement.rejectRequirement')}</button>
             </>
           )}
           {!needsReview && onStatusChange && !isTerminal && (
@@ -3998,11 +4290,11 @@ function RequirementDetailPanel({
             </select>
           )}
           {isTerminal && onStatusChange && (
-            <button onClick={() => onStatusChange(req.id, 'in_progress')} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors">Reopen</button>
+            <button onClick={() => onStatusChange(req.id, 'in_progress')} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors">{t('work:task.reopen')}</button>
           )}
           <div className="flex-1" />
           {canCancel && !needsReview && (
-            <button onClick={() => setShowCancelConfirm(true)} className="px-3 py-1.5 text-xs text-red-500/70 hover:text-red-500 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 rounded-lg transition-colors">Cancel Requirement</button>
+            <button onClick={() => setShowCancelConfirm(true)} className="px-3 py-1.5 text-xs text-red-500/70 hover:text-red-500 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 rounded-lg transition-colors">{t('work:task.cancelRequirement')}</button>
           )}
         </div>
       {showCancelConfirm && (

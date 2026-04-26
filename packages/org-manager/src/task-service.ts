@@ -3367,6 +3367,26 @@ export class TaskService {
   }
 
   /**
+   * Update user-editable schedule fields (every, cron, maxRuns, timezone)
+   * and recompute nextRunAt. Does NOT touch runtime fields like currentRuns/lastRunAt/paused.
+   */
+  async updateScheduleFields(taskIdStr: string, fields: { every?: string; cron?: string; maxRuns?: number; timezone?: string }): Promise<Task> {
+    const task = this.tasks.get(taskIdStr);
+    if (!task) throw new Error(`Task not found: ${taskIdStr}`);
+    if (task.taskType !== 'scheduled' || !task.scheduleConfig) {
+      throw new Error('Task is not a scheduled task');
+    }
+    const updated: ScheduleConfig = { ...task.scheduleConfig };
+    if (fields.every !== undefined) { updated.every = fields.every; updated.cron = undefined; updated.runAt = undefined; }
+    if (fields.cron !== undefined) { updated.cron = fields.cron; updated.every = undefined; updated.runAt = undefined; }
+    if (fields.maxRuns !== undefined) updated.maxRuns = fields.maxRuns;
+    if (fields.timezone !== undefined) updated.timezone = fields.timezone;
+    updated.nextRunAt = computeNextRunFromConfig(updated);
+    await this.updateScheduleConfig(taskIdStr, updated);
+    return task;
+  }
+
+  /**
    * Advance the schedule config for a task run (increment currentRuns,
    * set lastRunAt, compute nextRunAt). Used by both ScheduledTaskRunner
    * and the run-now API endpoint to keep schedule state consistent.

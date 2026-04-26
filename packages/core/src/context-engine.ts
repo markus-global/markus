@@ -757,6 +757,14 @@ export class ContextEngine {
         }
       }
 
+      if (opts.identity.teamProjects && opts.identity.teamProjects.length > 0) {
+        lines.push(`\n### Team Projects`);
+        lines.push('These projects are assigned to your team. Prioritize work on these projects.');
+        for (const p of opts.identity.teamProjects) {
+          lines.push(`- **${p.name}** (${p.status}) — ${p.description}`);
+        }
+      }
+
       if (opts.identity.otherTeams && opts.identity.otherTeams.length > 0) {
         lines.push('\n### Other Teams (for cross-team coordination)');
         for (const t of opts.identity.otherTeams) {

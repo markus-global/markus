@@ -84,6 +84,17 @@ export interface ProjectServiceBridge {
     teamIds: string[];
     governancePolicy?: { enabled: boolean; defaultTier: string };
   } | undefined;
+  createProject?(opts: {
+    orgId: string;
+    name: string;
+    description: string;
+    createdBy?: string;
+  }): { id: string; name: string; status: string };
+  updateProject?(id: string, data: {
+    name?: string;
+    description?: string;
+    status?: string;
+  }): { id: string; name: string; status: string };
 }
 
 export interface ProjectToolsContext {
@@ -91,6 +102,7 @@ export interface ProjectToolsContext {
   orgId: string;
   webUiBaseUrl?: string;
   projectService?: ProjectServiceBridge;
+  requestApproval?: (request: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) => Promise<{ approved: boolean; comment?: string }>;
   getProjectInfo?: (projectId?: string) => Promise<{
     id: string;
     name: string;
@@ -176,6 +188,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                     name: p.name,
                     description: p.description,
                     status: p.status,
+                    teamIds: p.teamIds,
                   })),
                 });
               } catch (error) {
@@ -210,7 +223,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                     description: project.description,
                     status: project.status,
                     repoCount: project.repositories?.length ?? 0,
-                    teamCount: project.teamIds?.length ?? 0,
+                    teamIds: project.teamIds ?? [],
                     governance: project.governancePolicy?.enabled ? project.governancePolicy.defaultTier : 'none',
                   },
                 });
@@ -219,6 +232,86 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
               }
             },
           } as AgentToolHandler,
+          ...(ctx.projectService?.createProject
+            ? [
+                {
+                  name: 'create_project',
+                  description:
+                    'Create a new project in the organization. Requires user approval before execution.',
+                  inputSchema: {
+                    type: 'object',
+                    properties: {
+                      name: { type: 'string', description: 'Project name' },
+                      description: { type: 'string', description: 'What this project is about' },
+                    },
+                    required: ['name', 'description'],
+                  },
+                  async execute(args: Record<string, unknown>): Promise<string> {
+                    try {
+                      const name = args['name'] as string;
+                      const description = args['description'] as string;
+                      if (ctx.requestApproval) {
+                        const { approved, comment } = await ctx.requestApproval({
+                          toolName: 'create_project',
+                          toolArgs: { name, description },
+                          reason: `Agent wants to create project "${name}"`,
+                        });
+                        if (!approved) return JSON.stringify({ status: 'rejected', reason: comment || 'User denied project creation' });
+                      }
+                      const project = ctx.projectService!.createProject!({
+                        orgId: ctx.orgId,
+                        name,
+                        description,
+                        createdBy: ctx.agentId,
+                      });
+                      return JSON.stringify({ status: 'success', project: { id: project.id, name: project.name, status: project.status } });
+                    } catch (error) {
+                      return JSON.stringify({ status: 'error', error: String(error) });
+                    }
+                  },
+                } as AgentToolHandler,
+              ]
+            : []),
+          ...(ctx.projectService?.updateProject
+            ? [
+                {
+                  name: 'update_project',
+                  description:
+                    'Update an existing project (name, description, or status). Requires user approval before execution.',
+                  inputSchema: {
+                    type: 'object',
+                    properties: {
+                      project_id: { type: 'string', description: 'The project ID to update' },
+                      name: { type: 'string', description: 'New project name (optional)' },
+                      description: { type: 'string', description: 'New description (optional)' },
+                      status: { type: 'string', enum: ['active', 'paused', 'archived'], description: 'New status (optional)' },
+                    },
+                    required: ['project_id'],
+                  },
+                  async execute(args: Record<string, unknown>): Promise<string> {
+                    try {
+                      const projectId = args['project_id'] as string;
+                      const data: { name?: string; description?: string; status?: string } = {};
+                      if (args['name']) data.name = args['name'] as string;
+                      if (args['description']) data.description = args['description'] as string;
+                      if (args['status']) data.status = args['status'] as string;
+                      if (ctx.requestApproval) {
+                        const { approved, comment } = await ctx.requestApproval({
+                          toolName: 'update_project',
+                          toolArgs: { project_id: projectId, ...data },
+                          reason: `Agent wants to update project ${projectId}`,
+                        });
+                        if (!approved) return JSON.stringify({ status: 'rejected', reason: comment || 'User denied project update' });
+                      }
+                      const project = ctx.projectService!.updateProject!(projectId, data);
+                      return JSON.stringify({ status: 'success', project: { id: project.id, name: project.name, status: project.status } });
+                    } catch (error) {
+                      return JSON.stringify({ status: 'error', error: String(error) });
+                    }
+                  },
+                } as AgentToolHandler,
+              ]
+            : []),
         ]
       : []),
     ...(ctx.getProjectInfo

@@ -75,6 +75,8 @@ export interface AgentTaskContext {
   addTaskNote?: (taskId: string, note: string, author?: string) => Promise<void>;
   /** Update task fields (description, blockedBy, etc.) — works even for pending tasks */
   updateTaskFields?: (taskId: string, fields: { description?: string; blockedBy?: string[] }) => Promise<{ id: string; title: string; status: string }>;
+  /** Update the schedule config for a scheduled task */
+  updateScheduleConfig?: (taskId: string, config: { every?: string; cron?: string; maxRuns?: number; timezone?: string }) => Promise<{ id: string; title: string; status: string }>;
   /** Cancel a pending task (calls rejectTask under the hood) */
   cancelPendingTask?: (taskId: string) => Promise<{ id: string; title: string; status: string }>;
   /** Add a subtask to a task */
@@ -465,6 +467,16 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             items: { type: 'string' },
             description: 'Update the list of task IDs that block this task. Only the task creator can modify this field. Pass an empty array to clear all blockers.',
           },
+          schedule: {
+            type: 'object',
+            description: 'Update the schedule for a scheduled (recurring) task. Only works on tasks with taskType "scheduled". Set either "every" OR "cron", not both.',
+            properties: {
+              every: { type: 'string', description: 'Interval shorthand, e.g. "4h", "30m", "1d". Replaces any existing cron.' },
+              cron: { type: 'string', description: 'Cron expression, e.g. "0 9 * * 1-5". Replaces any existing interval.' },
+              max_runs: { type: 'number', description: 'Maximum number of runs (omit or 0 for unlimited).' },
+              timezone: { type: 'string', description: 'IANA timezone, e.g. "Asia/Shanghai". Default UTC.' },
+            },
+          },
         },
         required: ['task_id'],
       },
@@ -494,6 +506,21 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
               ...(description !== undefined ? { description } : {}),
               ...(blockedBy !== undefined ? { blockedBy } : {}),
             });
+          }
+
+          // Handle schedule updates for scheduled tasks
+          const schedule = args['schedule'] as Record<string, unknown> | undefined;
+          if (schedule && ctx.updateScheduleConfig) {
+            try {
+              await ctx.updateScheduleConfig(taskId, {
+                every: schedule['every'] as string | undefined,
+                cron: schedule['cron'] as string | undefined,
+                maxRuns: schedule['max_runs'] as number | undefined,
+                timezone: schedule['timezone'] as string | undefined,
+              });
+            } catch (err) {
+              return JSON.stringify({ status: 'error', error: `Failed to update schedule: ${err}` });
+            }
           }
 
           if (newStatus) {
@@ -591,12 +618,12 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             return JSON.stringify({
               status: 'success',
               task,
-              message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}`,
+              message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${schedule ? ' — schedule updated' : ''}`,
             });
           } else {
             // No status change — note, description, and/or blocked_by update
-            if (!note && description === undefined && blockedBy === undefined) {
-              return JSON.stringify({ status: 'error', error: 'Provide at least a status, a note, a description, or blocked_by.' });
+            if (!note && description === undefined && blockedBy === undefined && !schedule) {
+              return JSON.stringify({ status: 'error', error: 'Provide at least a status, a note, a description, blocked_by, or schedule.' });
             }
             if (note && ctx.addTaskNote) {
               await ctx.addTaskNote(taskId, note, ctx.agentName);
@@ -606,7 +633,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             return JSON.stringify({
               status: 'success',
               task,
-              message: `Task "${task?.title ?? taskId}" updated${note ? ' — note recorded' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}`,
+              message: `Task "${task?.title ?? taskId}" updated${note ? ' — note recorded' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${schedule ? ' — schedule updated' : ''}`,
             });
           }
         } catch (error) {

@@ -96,6 +96,8 @@ The legal transition set is defined as a declarative matrix `TASK_TRANSITIONS` i
 5. **Pause = blocked**: Pausing a running task sets it to `blocked` and cancels execution. Resume calls `runTask` with full previous context.
 6. **Rejected ≠ Cancelled**: `rejectTask()` sets `rejected` (proposal denied before work). `cancelTask()` sets `cancelled` (work stopped after starting). `rejected` is a terminal state — the proposal was not approved.
 7. **Preemption ≠ blocked**: When the attention controller **preempts** (pauses) a task for a higher-priority item, the task stays `in_progress` (not `blocked`). The mailbox item is deferred and automatically resurfaced when the agent is idle. The same execution round and session context are preserved. **Cancellation** is different: when the controller **cancels** a task (because the incoming message explicitly revokes the work), the mailbox item is permanently dropped and will NOT be resumed.
+8. **Irreversible actions require confirmation**: The UI requires explicit user confirmation (via modal dialogs) for Reject, Cancel (always, regardless of dependents), and Archive operations. This prevents accidental data loss.
+9. **Scheduled task button restrictions**: Completed scheduled tasks do not show "Reopen" (the schedule handles re-runs). Failed scheduled tasks show only "Run Now" (no "Retry"/"Continue" since the scheduler manages retries).
 
 ---
 
@@ -147,6 +149,14 @@ After `completed`, the `ScheduledTaskRunner` checks `nextRunAt`. When it's time,
 4. Tasks in `in_progress`, `review`, `blocked`, `pending` are **skipped** (a run is active).
 5. `config.paused = true` skips the task.
 6. `maxRuns` limit stops scheduling when `currentRuns >= maxRuns`.
+
+### Schedule Configuration Editing
+
+The schedule configuration (`every`, `cron`, `maxRuns`, `timezone`) can be modified while a scheduled task exists:
+
+- **Frontend**: "Edit" button appears on the schedule info banner (hidden when task is running or for one-shot `runAt` tasks). Opens an inline editor to switch between interval/cron mode and set max runs.
+- **API**: `PUT /api/tasks/:id/schedule` with body `{ every?, cron?, maxRuns?, timezone? }`. Setting `every` clears `cron`/`runAt`; setting `cron` clears `every`/`runAt`. Recalculates `nextRunAt`.
+- **Agent tool**: `task_update` accepts a `schedule` object `{ every?, cron?, maxRuns?, timezone? }` for scheduled tasks.
 
 ### Key Differences from Standard Tasks
 

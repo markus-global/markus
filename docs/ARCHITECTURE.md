@@ -329,6 +329,14 @@ LLMRouter
 | `agent.pause(reason)` | Pause a single agent. Same as stop but sets `paused` status (resumable). |
 | System announcements | Broadcast to all Agents and UI, injected into Agent system prompt |
 
+#### Pause State Persistence
+
+Agent paused state is persisted across process restarts at three levels:
+
+- **Individual agent**: `agent.pause()` sets status to `paused`, which is written to the `agents.status` DB column via the `stateChangeHandler`. On shutdown, `agent.stop()` preserves the `paused` status (does not overwrite with `offline`). On restart, `loadFromDB` reads each agent's DB status, and `startRestoredAgentsInBackground` starts paused agents with `startAsPaused: true`, which initializes the agent (session, environment) but skips heartbeat and attention controller startup.
+- **Team-level pause**: Team pause (`pauseTeamAgents`) pauses each member agent individually. Persistence is implicit — each member's paused status is stored in DB. On restart, paused team members are restored as paused. No separate team-level flag is needed.
+- **Global pause**: `pauseAllAgents()` pauses every agent individually. The in-memory `globalPaused` flag is restored on startup: if all restored agents were in `paused` state, `globalPaused` is set to `true`, which ensures the frontend correctly shows the "Resume" button instead of "Pause".
+
 ### 4.2 Workspace Isolation
 
 Each agent has a dedicated workspace (`~/.markus/agents/<agentId>/workspace/`). The only hard enforcement is that agents **cannot write to other agents' directories** — this prevents cross-agent interference. All other file access (read and write) is unrestricted, allowing agents to respond to any user request. Prompt-based guidance encourages agents to work within their own workspace and use worktrees for project code.

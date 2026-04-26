@@ -1029,6 +1029,8 @@ export const api = {
     pauseSchedule: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/schedule/pause`, { method: 'POST' }),
     resumeSchedule: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/schedule/resume`, { method: 'POST' }),
     runNow: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/schedule/run-now`, { method: 'POST' }),
+    updateSchedule: (id: string, config: { every?: string; cron?: string; maxRuns?: number; timezone?: string }) =>
+      request<{ task: TaskInfo }>(`/tasks/${id}/schedule`, { method: 'PUT', body: JSON.stringify(config) }),
     deliverables: (projectId?: string) => {
       const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
       return request<{ items: DeliverableItem[] }>(`/tasks/deliverables${qs}`);
