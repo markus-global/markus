@@ -32,6 +32,15 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileError, setProfileError] = useState('');
   const [profileSaved, setProfileSaved] = useState(false);
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.auth.me().then(({ user }) => {
+      if (user.name) setProfileName(user.name);
+      if (user.email) setProfileEmail(user.email);
+      if (user.avatarUrl) setProfileAvatarUrl(user.avatarUrl);
+    }).catch(() => {});
+  }, []);
 
   // LLM setup state
   const [envModels, setEnvModels] = useState<EnvModelsResponse | null>(null);
@@ -213,7 +222,7 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
       ) : (
         <div className="space-y-4">
           <div className="flex justify-center">
-            <AvatarUpload currentUrl={null} name={profileName} size={64} targetType="user" />
+            <AvatarUpload currentUrl={profileAvatarUrl} name={profileName} size={64} targetType="user" />
           </div>
           <div className="space-y-1">
             <label className="text-xs text-fg-tertiary font-medium">{t('profile.nameLabel')} <span className="text-red-500">*</span></label>

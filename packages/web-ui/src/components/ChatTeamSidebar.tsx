@@ -282,7 +282,7 @@ export function ChatTeamSidebar({
   const [editingTeam, setEditingTeam] = useState<string | null>(null);
   const [editTeamName, setEditTeamName] = useState('');
 
-  const clampMenuPos = useCallback((e: React.MouseEvent, menuW = 176, menuH = 320) => {
+  const clampMenuPos = useCallback((e: React.MouseEvent, menuW = 176, menuH = 480) => {
     const btn = e.currentTarget.getBoundingClientRect();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
@@ -290,7 +290,8 @@ export function ChatTeamSidebar({
     let x = btn.left;
     let y = btn.bottom + 4;
     if (x + menuW > vw - pad) x = Math.max(pad, vw - menuW - pad);
-    if (y + menuH > vh - pad) y = Math.max(pad, btn.top - menuH - 4);
+    if (y + menuH > vh - pad) y = btn.top - menuH - 4;
+    y = Math.max(pad, y);
     return { x, y };
   }, []);
 
@@ -1026,7 +1027,7 @@ export function ChatTeamSidebar({
         const hasActive = teamAgents.some(a => a.status !== 'offline');
         return (
           <div
-            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)]"
+            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)] max-h-[calc(100vh-1rem)] overflow-y-auto"
             style={{ left: teamMenu.x, top: teamMenu.y }}
             onClick={e => e.stopPropagation()}
           >
@@ -1102,7 +1103,7 @@ export function ChatTeamSidebar({
         const isSelf = a.id === authUser?.id;
         return (
           <div
-            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)]"
+            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)] max-h-[calc(100vh-1rem)] overflow-y-auto"
             style={{ left: agentMenu.x, top: agentMenu.y }}
             onClick={e => e.stopPropagation()}
           >
@@ -1175,7 +1176,7 @@ export function ChatTeamSidebar({
         if (!h || !isAdmin) return null;
         return (
           <div
-            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)]"
+            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)] max-h-[calc(100vh-1rem)] overflow-y-auto"
             style={{ left: humanMenu.x, top: humanMenu.y }}
             onClick={e => e.stopPropagation()}
           >
@@ -1212,15 +1213,11 @@ export function ChatTeamSidebar({
 
       {showAddHuman && (
         <AddHumanModal
-          onClose={() => setShowAddHuman(false)}
-          onAdd={async (name, role, email, password) => {
-            try {
-              await api.users.create(name, role, undefined, email, password);
-              setShowAddHuman(false);
-              onRefreshHumans?.();
-            } catch (e) {
-              alert(`Failed to create user: ${e instanceof Error ? e.message : String(e)}`);
-            }
+          onClose={() => { setShowAddHuman(false); onRefreshHumans?.(); }}
+          onAdd={async (name, role, email) => {
+            const { inviteToken } = await api.users.create(name, role, undefined, email);
+            onRefreshHumans?.();
+            return { inviteToken };
           }}
         />
       )}
@@ -1256,7 +1253,7 @@ export function ChatTeamSidebar({
         if (!gc) return null;
         return (
           <div
-            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)]"
+            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)] max-h-[calc(100vh-1rem)] overflow-y-auto"
             style={{ left: gcMenu.x, top: gcMenu.y }}
             onClick={e => e.stopPropagation()}
           >
