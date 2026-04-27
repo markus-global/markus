@@ -286,7 +286,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   taskService.setOrgService(orgService);
 
   const bootstrapOwnerId = generateId('user');
-  await orgService.createOrganization(config.org.name, 'default', bootstrapOwnerId);
+  await orgService.createOrganization(config.org.name, bootstrapOwnerId, 'default');
 
   orgService.addHumanUser('default', 'Owner', 'owner', { id: bootstrapOwnerId });
 
