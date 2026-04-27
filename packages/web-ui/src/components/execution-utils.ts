@@ -191,6 +191,7 @@ export function taskLogToEntry(entry: TaskLogEntry): ExecEntry | null {
   const meta = entry.metadata as Record<string, unknown> | undefined;
   switch (entry.type) {
     case 'text':
+      if (meta?.isThinking) return { type: 'thinking', content: entry.content, time, timestamp: ts };
       return { type: 'text', content: entry.content, time, timestamp: ts };
     case 'status':
       return { type: 'status', content: entry.content, time, timestamp: ts };

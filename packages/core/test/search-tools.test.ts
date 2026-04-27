@@ -37,11 +37,11 @@ describe('Search Tools', () => {
       expect(parsed.results).toBeTruthy();
     });
 
-    it('should enforce workspace isolation', async () => {
+    it('should allow reading outside workspace (read-only tools are unrestricted)', async () => {
       const tool = createGrepTool('/tmp/workspace');
       const result = await tool.execute({ pattern: 'test', path: '/etc' });
       const parsed = JSON.parse(result);
-      expect(parsed.status).toBe('denied');
+      expect(parsed.status).not.toBe('denied');
     });
   });
 
@@ -70,11 +70,11 @@ describe('Search Tools', () => {
       expect(parsed.fileCount).toBe(0);
     });
 
-    it('should enforce workspace isolation', async () => {
+    it('should allow reading outside workspace (read-only tools are unrestricted)', async () => {
       const tool = createGlobTool('/tmp/workspace');
       const result = await tool.execute({ pattern: '*.ts', path: '/etc' });
       const parsed = JSON.parse(result);
-      expect(parsed.status).toBe('denied');
+      expect(parsed.status).not.toBe('denied');
     });
   });
 
@@ -110,11 +110,11 @@ describe('Search Tools', () => {
       expect(parsed.status).toBe('error');
     });
 
-    it('should enforce workspace isolation', async () => {
+    it('should allow reading outside workspace (read-only tools are unrestricted)', async () => {
       const tool = createListDirectoryTool('/tmp/workspace');
       const result = await tool.execute({ path: '/etc' });
       const parsed = JSON.parse(result);
-      expect(parsed.status).toBe('denied');
+      expect(parsed.status).not.toBe('denied');
     });
   });
 });
