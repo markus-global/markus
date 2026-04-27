@@ -2044,6 +2044,22 @@ export class SqliteChatSessionRepo {
     return count;
   }
 
+  /**
+   * Migrate sessions with user_id = 'default' to the real owner userId.
+   * Called once at startup for legacy data from before auto-generated user IDs.
+   */
+  migrateDefaultUserSessions(realOwnerId: string): number {
+    if (realOwnerId === 'default') return 0;
+    const result = this.db.prepare(
+      "UPDATE chat_sessions SET user_id = ? WHERE user_id = 'default'"
+    ).run(realOwnerId);
+    const count = Number(result.changes);
+    if (count > 0) {
+      log.info(`Migrated ${count} chat sessions from user_id='default' to ${realOwnerId}`);
+    }
+    return count;
+  }
+
   private _parseContentToSegments(content: string, msgCreatedAt?: string): Array<Record<string, unknown>> {
     const segments: Array<Record<string, unknown>> = [];
     let remaining = content;
@@ -2340,6 +2356,28 @@ export class SqliteUserRepo {
   reactivate(id: string, data: { name: string; role: string }) {
     this.db.prepare('UPDATE users SET deleted_at = NULL, name = ?, role = ?, invite_token = NULL, invite_expires_at = NULL WHERE id = ?')
       .run(data.name, data.role, id);
+  }
+
+  /**
+   * Migrate the legacy 'default' user row to a real auto-generated ID.
+   * Returns the new ID if migration happened, or null if no legacy row existed.
+   */
+  migrateDefaultId(newId: string): string | null {
+    const existing = this.findById('default');
+    if (!existing) return null;
+
+    // Check if a row with the newId already exists (from a prior ensureAdminUser)
+    const alreadyMigrated = this.findById(newId);
+    if (alreadyMigrated) {
+      // Just delete the legacy 'default' row
+      this.db.prepare("DELETE FROM users WHERE id = 'default'").run();
+      return newId;
+    }
+
+    // Rename the row
+    this.db.prepare("UPDATE users SET id = ? WHERE id = 'default'").run(newId);
+    log.info(`Migrated user id='default' to '${newId}'`);
+    return newId;
   }
 
   private _map(r: Record<string, unknown>) {
@@ -3780,8 +3818,8 @@ export class SqliteNotificationRepo {
   }
 
   list(userId: string, opts?: { unreadOnly?: boolean; limit?: number; offset?: number; type?: string }): NotificationRow[] {
-    const conditions = ['(user_id = ? OR user_id = ? OR user_id = ?)'];
-    const params: SQLInputValue[] = [userId, 'all', 'default'];
+    const conditions = ['(user_id = ? OR user_id = ?)'];
+    const params: SQLInputValue[] = [userId, 'all'];
 
     if (opts?.unreadOnly) {
       conditions.push('read = 0');
@@ -3800,8 +3838,8 @@ export class SqliteNotificationRepo {
   }
 
   count(userId: string, unreadOnly = false): number {
-    const conditions = ['(user_id = ? OR user_id = ? OR user_id = ?)'];
-    const params: SQLInputValue[] = [userId, 'all', 'default'];
+    const conditions = ['(user_id = ? OR user_id = ?)'];
+    const params: SQLInputValue[] = [userId, 'all'];
     if (unreadOnly) conditions.push('read = 0');
 
     const row = this.db.prepare(
@@ -3817,9 +3855,24 @@ export class SqliteNotificationRepo {
 
   markAllRead(userId: string): number {
     const info = this.db.prepare(
-      'UPDATE user_notifications SET read = 1 WHERE (user_id = ? OR user_id = ? OR user_id = ?) AND read = 0'
-    ).run(userId, 'all', 'default');
+      'UPDATE user_notifications SET read = 1 WHERE (user_id = ? OR user_id = ?) AND read = 0'
+    ).run(userId, 'all');
     return Number(info.changes);
+  }
+
+  /**
+   * Migrate notifications with user_id = 'default' to the real owner userId.
+   */
+  migrateDefaultUserId(realOwnerId: string): number {
+    if (realOwnerId === 'default') return 0;
+    const result = this.db.prepare(
+      "UPDATE user_notifications SET user_id = ? WHERE user_id = 'default'"
+    ).run(realOwnerId);
+    const count = Number(result.changes);
+    if (count > 0) {
+      log.info(`Migrated ${count} notifications from user_id='default' to ${realOwnerId}`);
+    }
+    return count;
   }
 
   private mapRow(r: Record<string, unknown>): NotificationRow {
@@ -3935,6 +3988,21 @@ export class SqliteApprovalRepo {
       approverUserIds: fromJson<string[]>(r['approver_user_ids'] as string) ?? undefined,
       targetUserId: (r['target_user_id'] as string) ?? undefined,
     };
+  }
+
+  /**
+   * Migrate approvals with target_user_id = 'default' to real owner ID.
+   */
+  migrateDefaultTargetUserId(realOwnerId: string): number {
+    if (realOwnerId === 'default') return 0;
+    const result = this.db.prepare(
+      "UPDATE approvals SET target_user_id = ? WHERE target_user_id = 'default'"
+    ).run(realOwnerId);
+    const count = Number(result.changes);
+    if (count > 0) {
+      log.info(`Migrated ${count} approvals from target_user_id='default' to ${realOwnerId}`);
+    }
+    return count;
   }
 }
 

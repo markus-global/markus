@@ -1672,7 +1672,7 @@ export class TaskService {
       agentId: task.assignedAgentId,
       timestamp: task.createdAt,
     });
-    if (this.hitlService && request.createdBy && request.createdBy !== 'default' && request.creatorRole !== 'human') {
+    if (this.hitlService && request.createdBy && request.creatorRole !== 'human') {
       this.hitlService.notify({
         targetUserId: 'all',
         type: 'task_created',

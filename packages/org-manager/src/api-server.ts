@@ -643,28 +643,40 @@ export class APIServer {
     return this.teamTemplateRegistry;
   }
 
-  /** Ensure at least one admin user exists; called once after storage init */
-  async ensureAdminUser(orgId: string): Promise<void> {
-    if (!this.storage) return;
+  /** Ensure at least one admin/owner user exists; called once after storage init.
+   *  Migrates legacy 'default' user rows to a real auto-generated ID.
+   *  Returns the owner's user ID (existing/migrated or newly created). */
+  async ensureAdminUser(orgId: string): Promise<string> {
+    if (!this.storage) return generateId('user');
     const allUsers = await this.storage.userRepo.listByOrg(orgId);
-    if (allUsers.some((u: any) => u.passwordHash && u.id === 'default')) return;
 
-    // Remove any stale non-default admin users from old versions
-    for (const u of allUsers.filter((u: any) => u.passwordHash && u.id !== 'default')) {
-      await this.storage.userRepo.delete(u.id);
+    // Check for existing owner with a password
+    const existingOwner = allUsers.find((u: any) => u.role === 'owner' && u.passwordHash);
+    if (existingOwner) {
+      // Migrate legacy 'default' ID to a proper auto-generated ID
+      if (existingOwner.id === 'default') {
+        const newId = generateId('user');
+        this.storage.userRepo.migrateDefaultId(newId);
+        log.info("Migrated legacy owner id='default'", { newId });
+        return newId;
+      }
+      return existingOwner.id as string;
     }
 
+    // No owner found — create fresh
     const adminPassword = process.env['ADMIN_PASSWORD'] ?? 'markus123';
     const hash = await hashPassword(adminPassword);
+    const ownerId = generateId('user');
     await this.storage.userRepo.upsert({
-      id: 'default',
+      id: ownerId,
       orgId,
       name: 'Admin',
       email: 'admin@markus.local',
       role: 'owner',
       passwordHash: hash,
     });
-    log.info('Created default admin user (admin@markus.local)');
+    log.info('Created admin user (admin@markus.local)', { userId: ownerId });
+    return ownerId;
   }
 
   private get jwtSecret(): string {
@@ -3130,7 +3142,7 @@ export class APIServer {
       const body = await this.readBody(req);
       const org = await this.orgService.createOrganization(
         body['name'] as string,
-        (body['ownerId'] as string) ?? 'default'
+        (body['ownerId'] as string) ?? authUser.userId
       );
       this.json(res, 201, { org });
       return;
@@ -8241,7 +8253,7 @@ EXPLANATION_END`;
         const task = await this.taskService.updateScheduleFields(taskId, {
           every: body['every'] as string | undefined,
           cron: body['cron'] as string | undefined,
-          maxRuns: body['maxRuns'] != null ? Number(body['maxRuns']) : undefined,
+          maxRuns: body['maxRuns'] !== null && body['maxRuns'] !== undefined ? Number(body['maxRuns']) : undefined,
           timezone: body['timezone'] as string | undefined,
         });
         this.json(res, 200, { task });

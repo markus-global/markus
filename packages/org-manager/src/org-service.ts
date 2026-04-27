@@ -285,7 +285,8 @@ export class OrganizationService {
         try { await this.fireAgent(agentId, { purgeFiles: opts?.purgeFiles }); } catch { /* already gone */ }
       }
       for (const userId of [...(team.humanMemberIds ?? [])]) {
-        if (userId === 'default') continue; // never delete the default owner
+        const user = this.humans.get(userId);
+        if (user?.role === 'owner') continue; // never delete the org owner
         this.removeHumanUser(userId);
       }
     } else {

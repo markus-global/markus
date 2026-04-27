@@ -9,6 +9,7 @@ import {
   createLogger,
   closeRuntimeLogger,
   checkForUpdate,
+  generateId,
   TRIAGE_MAX_TOKENS,
   TRIAGE_TEMPERATURE,
   TRIAGE_ALLOWED_TOOLS,
@@ -284,9 +285,10 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   const orgService = new OrganizationService(agentManager, roleLoader, storage ?? undefined);
   taskService.setOrgService(orgService);
 
-  await orgService.createOrganization(config.org.name, 'default', 'default');
+  const bootstrapOwnerId = generateId('user');
+  await orgService.createOrganization(config.org.name, 'default', bootstrapOwnerId);
 
-  orgService.addHumanUser('default', 'Owner', 'owner', { id: 'default' });
+  orgService.addHumanUser('default', 'Owner', 'owner', { id: bootstrapOwnerId });
 
   const hitlService = new HITLService();
   hitlService.setOrgService(orgService);
@@ -309,6 +311,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     hitlService,
     billingService,
     auditService,
+    bootstrapOwnerId,
   };
 }
 
@@ -422,6 +425,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     hitlService,
     billingService,
     auditService,
+    bootstrapOwnerId,
   } = await createServices(config);
   progress.complete(3, 'SQLite storage initialised');
   progress.complete(4, `services ready: agent manager, task service, api server on :${apiPort}`);
@@ -500,16 +504,26 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
   // Wire storage for chat persistence and auth
   const firstOrgId = 'default';
+  let ownerUserId = bootstrapOwnerId;
   if (storage) {
     apiServer.setStorage(storage);
-    await apiServer.ensureAdminUser(firstOrgId);
+    ownerUserId = await apiServer.ensureAdminUser(firstOrgId);
 
     // Restore persisted teams, agents, and users from DB
     await orgService.loadFromDB(firstOrgId);
+
+    // Sync in-memory owner representation with DB owner
+    if (ownerUserId !== bootstrapOwnerId) {
+      orgService.removeHumanUser(bootstrapOwnerId);
+    }
+    const existingOwner = orgService.listHumanUsers(firstOrgId).find(u => u.id === ownerUserId);
+    if (!existingOwner) {
+      orgService.addHumanUser(firstOrgId, 'Owner', 'owner', { id: ownerUserId });
+    }
   }
 
   // Seed default team + Secretary agent (runs for both DB and in-memory mode)
-  await orgService.seedDefaultTeam(firstOrgId, 'default');
+  await orgService.seedDefaultTeam(firstOrgId, ownerUserId);
 
   // Register builder context providers on agents with building skills (e.g. Secretary)
   orgService.registerBuilderContextProviders(skillRegistry);
@@ -560,7 +574,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       type: 'custom',
       title: opts.title,
       description: opts.description,
-      targetUserId: 'default',
+      targetUserId: ownerUserId,
       options: opts.options,
       allowFreeform: opts.allowFreeform,
       details: { priority: opts.priority, taskId: opts.relatedTaskId },
@@ -591,15 +605,32 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     }
 
     // Resolve the owner/first user for session ownership
-    const orgUsers = storage.userRepo.listByOrg('default');
-    const ownerUser = orgUsers.find((u: any) => u.role === 'owner') ?? orgUsers[0];
-    const defaultSessionUserId: string = ownerUser?.id ?? 'default';
+    const defaultSessionUserId: string = ownerUserId;
 
     // Migrate legacy sessions with NULL user_id to the owner
     try {
       storage.chatSessionRepo.migrateNullUserSessions(defaultSessionUserId);
     } catch (e) {
       log.warn('NULL user_id session migration failed', { error: String(e) });
+    }
+
+    // Migrate legacy user_id='default' to real owner ID across tables
+    try {
+      storage.chatSessionRepo.migrateDefaultUserSessions(defaultSessionUserId);
+    } catch (e) {
+      log.warn("'default' user_id session migration failed", { error: String(e) });
+    }
+    try {
+      storage.notificationRepo.migrateDefaultUserId(defaultSessionUserId);
+    } catch (e) {
+      log.warn("'default' user_id notification migration failed", { error: String(e) });
+    }
+    if (storage.approvalRepo) {
+      try {
+        storage.approvalRepo.migrateDefaultTargetUserId(defaultSessionUserId);
+      } catch (e) {
+        log.warn("'default' target_user_id approval migration failed", { error: String(e) });
+      }
     }
 
     for (const info of agentManager.listAgents()) {
@@ -803,7 +834,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       title,
       description: request.reason,
       details: { ...request.toolArgs, toolName: request.toolName, agentId, taskId: request.taskId },
-      targetUserId: 'default',
+      targetUserId: ownerUserId,
     });
     auditService.record({
       orgId: 'default',

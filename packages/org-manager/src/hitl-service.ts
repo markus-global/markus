@@ -481,10 +481,10 @@ export class HITLService {
     return notification;
   }
 
-  /** Mark unread approval_request rows for this approval across per-user and legacy shared user_ids. */
+  /** Mark unread approval_request rows for this approval across per-user and broadcast user_ids. */
   private markApprovalNotificationsRead(approvalId: string): void {
     if (!this.notificationRepo) return;
-    const userIds = new Set<string>(['all', 'default']);
+    const userIds = new Set<string>(['all']);
     if (this.orgService) {
       for (const h of this.orgService.listHumanUsers('default')) {
         userIds.add(h.id);
