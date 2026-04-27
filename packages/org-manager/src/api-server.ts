@@ -8542,7 +8542,7 @@ EXPLANATION_END`;
   }
 
   /** Build path → allowed methods table (compiled once) */
-  private static buildRouteTable(): Array<{ test: (path: string) => boolean; methods: string[] }> {
+  static buildRouteTable(): Array<{ test: (path: string) => boolean; methods: string[] }> {
     // Helper: exact path match
     const exact = (p: string, ...methods: string[]) => ({
       test: (path: string) => path === p,
