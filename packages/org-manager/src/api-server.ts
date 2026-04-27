@@ -8527,7 +8527,329 @@ EXPLANATION_END`;
       }
     }
 
+    // ── 405 Method Not Allowed check ──────────────────────────────────────
+    // If the path matches a known API route pattern but with wrong method
+    if (path.startsWith('/api/') && req.method) {
+      const routeMatch = this.checkMethodAllowed(path, req.method);
+      if (routeMatch) {
+        res.setHeader('Allow', routeMatch.join(', '));
+        this.json(res, 405, { error: 'Method Not Allowed' });
+        return;
+      }
+    }
+
     this.json(res, 404, { error: 'Not found' });
+  }
+
+  /** Build path → allowed methods table (compiled once) */
+  private static buildRouteTable(): Array<{ test: (path: string) => boolean; methods: string[] }> {
+    // Helper: exact path match
+    const exact = (p: string, ...methods: string[]) => ({
+      test: (path: string) => path === p,
+      methods,
+    });
+    // Helper: regex path match (from raw regex string)
+    const regex = (pattern: RegExp, ...methods: string[]) => ({
+      test: (path: string) => pattern.test(path),
+      methods,
+    });
+    // Helper: startsWith path match
+    const startsWith = (prefix: string, ...methods: string[]) => ({
+      test: (path: string) => path.startsWith(prefix),
+      methods,
+    });
+
+    return [
+      // ── Auth ─────────────────────────────────────────────────────────────
+      exact('/api/auth/login', 'POST'),
+      exact('/api/auth/logout', 'POST'),
+      exact('/api/auth/me', 'GET'),
+      exact('/api/auth/change-password', 'POST'),
+      exact('/api/auth/setup', 'POST'),
+      exact('/api/auth/invite-info', 'GET'),
+      exact('/api/auth/profile', 'PUT'),
+
+      // ── Avatars ──────────────────────────────────────────────────────────
+      exact('/api/avatars/upload', 'POST'),
+      startsWith('/api/avatars/', 'GET'),
+
+      // ── Agents ───────────────────────────────────────────────────────────
+      exact('/api/agents', 'GET', 'POST'),
+      exact('/api/agents/role-updates', 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/sessions$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/(start|stop|daily-report|a2a|message)$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+$/, 'GET', 'DELETE'),
+      regex(/^\/api\/agents\/[^/]+\/mind$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/mailbox$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/decisions$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/metrics$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/config$/, 'PATCH'),
+      regex(/^\/api\/agents\/[^/]+\/memory$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/memory\/sessions\/[^/]+$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/memory\/daily$/, 'PUT'),
+      regex(/^\/api\/agents\/[^/]+\/memory\/longterm$/, 'PUT'),
+      regex(/^\/api\/agents\/[^/]+\/files$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/files\/[^/]+$/, 'PUT'),
+      regex(/^\/api\/agents\/[^/]+\/system-prompt$/, 'PUT'),
+      regex(/^\/api\/agents\/[^/]+\/role-status$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/role-diff$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/role-sync$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+\/role-smart-sync$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+\/skills$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+\/skills\/[^/]+$/, 'DELETE'),
+      regex(/^\/api\/agents\/[^/]+\/tools\/[^/]+\/toggle$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+\/activities$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/recent-activities$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/activity-logs$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/heartbeat$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/heartbeat\/trigger$/, 'POST'),
+
+      // ── Sessions / Channels ──────────────────────────────────────────────
+      regex(/^\/api\/sessions\/[^/]+\/messages$/, 'GET'),
+      regex(/^\/api\/sessions\/[^/]+$/, 'DELETE'),
+      regex(/^\/api\/channels\/[^/]+\/messages$/, 'GET', 'POST'),
+
+      // ── Group Chats ──────────────────────────────────────────────────────
+      exact('/api/group-chats', 'GET', 'POST'),
+      regex(/^\/api\/group-chats\/[^/]+$/, 'GET', 'PATCH', 'DELETE'),
+      regex(/^\/api\/group-chats\/[^/]+\/members$/, 'POST'),
+      regex(/^\/api\/group-chats\/[^/]+\/members\/[^/]+$/, 'DELETE'),
+
+      // ── Teams ────────────────────────────────────────────────────────────
+      exact('/api/teams', 'GET', 'POST'),
+      regex(/^\/api\/teams\/[^/]+$/, 'PATCH', 'DELETE'),
+      regex(/^\/api\/teams\/[^/]+\/members$/, 'POST'),
+      regex(/^\/api\/teams\/[^/]+\/members\/[^/]+$/, 'DELETE'),
+      regex(/^\/api\/teams\/[^/]+\/(start|stop|pause|resume)$/, 'POST'),
+      regex(/^\/api\/teams\/[^/]+\/status$/, 'GET'),
+      regex(/^\/api\/teams\/[^/]+\/files$/, 'GET'),
+      regex(/^\/api\/teams\/[^/]+\/files\/[^/]+$/, 'GET', 'PUT'),
+      regex(/^\/api\/teams\/[^/]+\/export$/, 'GET'),
+
+      // ── Roles ────────────────────────────────────────────────────────────
+      exact('/api/roles', 'GET'),
+      startsWith('/api/roles/', 'GET'),
+
+      // ── Tasks ───────────────────────────────────────────────────────────
+      exact('/api/tasks', 'GET', 'POST'),
+      exact('/api/tasks/scheduled', 'GET'),
+      exact('/api/tasks/deliverables', 'GET'),
+      exact('/api/tasks/dashboard', 'GET'),
+      exact('/api/taskboard', 'GET'),
+      exact('/api/ops/dashboard', 'GET'),
+      regex(/^\/api\/tasks\/[^/]+$/, 'GET'),
+      startsWith('/api/tasks/', 'PUT', 'DELETE'),
+      regex(/^\/api\/tasks\/[^/]+\/approve$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/reject$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/cancel$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/dependents$/, 'GET'),
+      regex(/^\/api\/tasks\/[^/]+\/run$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/subtasks$/, 'GET', 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/subtasks\/[^/]+$/, 'DELETE'),
+      regex(/^\/api\/tasks\/[^/]+\/subtasks\/[^/]+\/(complete|cancel)$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/comments$/, 'GET', 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/pause$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/resume$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/retry$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/revision$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/accept$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/archive$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/schedule$/, 'PUT'),
+      regex(/^\/api\/tasks\/[^/]+\/schedule\/pause$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/schedule\/resume$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/schedule\/run-now$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/logs$/, 'GET'),
+      regex(/^\/api\/tasks\/[^/]+\/logs\/summary$/, 'GET'),
+
+      // ── Execution ────────────────────────────────────────────────────────
+      exact('/api/execution-logs', 'GET'),
+
+      // ── Deliverables / Knowledge ─────────────────────────────────────────
+      exact('/api/deliverables', 'GET', 'POST'),
+      regex(/^\/api\/deliverables\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
+      exact('/api/knowledge', 'POST'),
+      exact('/api/knowledge/search', 'GET'),
+      regex(/^\/api\/knowledge\/[^/]+$/, 'DELETE'),
+      regex(/^\/api\/knowledge\/[^/]+\/flag-outdated$/, 'POST'),
+      regex(/^\/api\/knowledge\/[^/]+\/verify$/, 'POST'),
+
+      // ── Reviews ──────────────────────────────────────────────────────────
+      exact('/api/reviews', 'GET', 'POST'),
+      regex(/^\/api\/reviews\/[^/]+$/, 'GET'),
+
+      // ── Requirements ─────────────────────────────────────────────────────
+      exact('/api/requirements', 'GET', 'POST'),
+      regex(/^\/api\/requirements\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
+      regex(/^\/api\/requirements\/[^/]+\/status$/, 'POST'),
+      regex(/^\/api\/requirements\/[^/]+\/approve$/, 'POST'),
+      regex(/^\/api\/requirements\/[^/]+\/reject$/, 'POST'),
+      regex(/^\/api\/requirements\/[^/]+\/cancel$/, 'POST'),
+      regex(/^\/api\/requirements\/[^/]+\/comments$/, 'GET', 'POST'),
+
+      // ── Projects ─────────────────────────────────────────────────────────
+      exact('/api/projects', 'GET', 'POST'),
+      regex(/^\/api\/projects\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
+
+      // ── Notifications ────────────────────────────────────────────────────
+      exact('/api/notifications', 'GET'),
+      exact('/api/notifications/mark-all-read', 'POST'),
+      startsWith('/api/notifications/', 'POST'),
+
+      // ── Users ────────────────────────────────────────────────────────────
+      exact('/api/users', 'GET', 'POST'),
+      regex(/^\/api\/users\/[^/]+$/, 'PATCH'),
+      regex(/^\/api\/users\/[^/]+\/reset-password$/, 'POST'),
+      regex(/^\/api\/users\/[^/]+\/reinvite$/, 'POST'),
+      startsWith('/api/users/', 'DELETE'),
+
+      // ── API Keys ─────────────────────────────────────────────────────────
+      exact('/api/keys', 'GET', 'POST'),
+      startsWith('/api/keys/', 'DELETE'),
+
+      // ── Orgs ─────────────────────────────────────────────────────────────
+      exact('/api/orgs', 'GET', 'POST'),
+
+      // ── Message ──────────────────────────────────────────────────────────
+      exact('/api/message', 'POST'),
+
+      // ── Skills ──────────────────────────────────────────────────────────
+      exact('/api/skills', 'GET'),
+      exact('/api/skills/builtin', 'GET'),
+      exact('/api/skills/install', 'POST'),
+      exact('/api/skills/registry', 'GET'),
+      exact('/api/skills/registry/skillhub', 'GET'),
+      exact('/api/skills/registry/skillssh', 'GET'),
+      regex(/^\/api\/skills\/[^/]+$/, 'GET'),
+      regex(/^\/api\/skills\/[^/]+\/files$/, 'GET'),
+      startsWith('/api/skills/installed/', 'DELETE'),
+      // ── Settings ─────────────────────────────────────────────────────────
+      exact('/api/settings/hub', 'GET'),
+      exact('/api/settings/hub-token', 'POST'),
+      exact('/api/settings/llm', 'GET', 'POST'),
+      exact('/api/settings/llm/models', 'GET'),
+      exact('/api/settings/agent', 'GET', 'POST'),
+      exact('/api/settings/browser', 'GET', 'POST'),
+      exact('/api/settings/env-models', 'GET', 'POST'),
+      exact('/api/settings/detect-ollama', 'GET'),
+      exact('/api/settings/export', 'POST'),
+      exact('/api/settings/import', 'POST'),
+      exact('/api/settings/import/openclaw', 'POST'),
+      regex(/^\/api\/settings\/llm\/providers\/[^/]+$/, 'PATCH', 'PUT', 'DELETE'),
+      exact('/api/settings/llm/providers', 'POST'),
+      regex(/^\/api\/settings\/llm\/providers\/[^/]+\/models$/, 'POST'),
+      regex(/^\/api\/settings\/llm\/providers\/[^/]+\/models\/[^/]+$/, 'DELETE'),
+      regex(/^\/api\/settings\/llm\/providers\/[^/]+\/model$/, 'POST'),
+      regex(/^\/api\/settings\/llm\/providers\/[^/]+\/toggle$/, 'POST'),
+      regex(/^\/api\/settings\/llm\/providers\/[^/]+\/test$/, 'POST'),
+      exact('/api/settings/oauth/providers', 'GET'),
+      exact('/api/settings/oauth/profiles', 'GET'),
+      exact('/api/settings/oauth/login', 'POST'),
+      exact('/api/settings/oauth/callback', 'POST'),
+      exact('/api/settings/oauth/status', 'GET'),
+      regex(/^\/api\/settings\/oauth\/profiles\/[^/]+$/, 'DELETE'),
+      exact('/api/settings/oauth/setup-token', 'POST'),
+
+      // ── Approvals ────────────────────────────────────────────────────────
+      exact('/api/approvals', 'GET', 'POST'),
+      startsWith('/api/approvals/', 'POST'),
+
+      // ── Usage ────────────────────────────────────────────────────────────
+      exact('/api/usage', 'GET'),
+      exact('/api/usage/agents', 'GET'),
+
+      // ── Audit ────────────────────────────────────────────────────────────
+      exact('/api/audit', 'GET'),
+      exact('/api/audit/summary', 'GET'),
+      exact('/api/audit/tokens', 'GET'),
+
+      // ── Plan ─────────────────────────────────────────────────────────────
+      exact('/api/plan', 'GET', 'POST'),
+
+      // ── Reports ──────────────────────────────────────────────────────────
+      exact('/api/reports', 'GET'),
+      exact('/api/reports/generate', 'POST'),
+      regex(/^\/api\/reports\/[^/]+$/, 'GET'),
+      regex(/^\/api\/reports\/[^/]+\/plan\/approve$/, 'POST'),
+      regex(/^\/api\/reports\/[^/]+\/plan\/reject$/, 'POST'),
+      regex(/^\/api\/reports\/[^/]+\/feedback$/, 'GET', 'POST'),
+
+      // ── Gateway ──────────────────────────────────────────────────────────
+      exact('/api/gateway/info', 'GET'),
+      exact('/api/gateway/register', 'POST'),
+      exact('/api/gateway/auth', 'POST'),
+      exact('/api/gateway/message', 'POST'),
+      exact('/api/gateway/status', 'GET'),
+      exact('/api/gateway/manual', 'GET'),
+      exact('/api/gateway/team', 'GET'),
+      exact('/api/gateway/projects', 'GET'),
+      exact('/api/gateway/requirements', 'GET'),
+      exact('/api/gateway/deliverables', 'GET', 'POST'),
+      exact('/api/gateway/sync', 'POST'),
+      regex(/^\/api\/gateway\/deliverables\/[^/]+$/, 'PUT'),
+      regex(/^\/api\/gateway\/tasks\/([^/]+)\/(accept|progress|complete|fail|delegate|subtasks)$/, 'POST'),
+
+      // ── Builder ──────────────────────────────────────────────────────────
+      exact('/api/builder/artifacts', 'GET'),
+      exact('/api/builder/artifacts/installed', 'GET'),
+      exact('/api/builder/artifacts/save', 'POST'),
+      exact('/api/builder/artifacts/import', 'POST'),
+      regex(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)$/, 'GET', 'DELETE'),
+      regex(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/install$/, 'POST'),
+      regex(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/uninstall$/, 'POST'),
+
+      // ── Hub ──────────────────────────────────────────────────────────────
+      exact('/api/hub/publish', 'POST'),
+      startsWith('/api/hub/', 'GET', 'POST', 'PUT', 'PATCH'),
+
+      // ── Templates ────────────────────────────────────────────────────────
+      exact('/api/templates', 'GET'),
+      exact('/api/templates/instantiate', 'POST'),
+      exact('/api/templates/teams', 'GET'),
+      regex(/^\/api\/templates\/[^/]+$/, 'GET'),
+
+      // ── Team Templates ───────────────────────────────────────────────────
+      exact('/api/team-templates', 'GET', 'POST'),
+      startsWith('/api/team-templates/', 'GET', 'DELETE'),
+
+      // ── Governance / Workflows ───────────────────────────────────────────
+      exact('/api/governance/policy', 'GET', 'PUT'),
+      exact('/api/workflows', 'GET', 'POST'),
+      startsWith('/api/workflows/', 'GET', 'DELETE'),
+
+      // ── System ───────────────────────────────────────────────────────────
+      exact('/api/health', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'),
+      exact('/api/system/pause-all', 'POST'),
+      exact('/api/system/resume-all', 'POST'),
+      exact('/api/system/emergency-stop', 'POST'),
+      exact('/api/system/status', 'GET'),
+      exact('/api/system/storage', 'GET'),
+      exact('/api/system/storage/orphans', 'GET', 'DELETE'),
+      exact('/api/system/announcements', 'GET', 'POST'),
+      exact('/api/system/open-path', 'POST'),
+
+      // ── Files ────────────────────────────────────────────────────────────
+      exact('/api/files/check', 'POST'),
+      exact('/api/files/preview', 'GET'),
+      exact('/api/files/reveal', 'POST'),
+
+      // ── External Agents ──────────────────────────────────────────────────
+      exact('/api/external-agents', 'GET'),
+      exact('/api/external-agents/register', 'POST'),
+      regex(/^\/api\/external-agents\/[^/]+$/, 'DELETE'),
+    ];
+  }
+
+  /** Check if path matches a known route with wrong method; returns allowed methods if mismatch */
+  private checkMethodAllowed(path: string, method: string): string[] | null {
+    const table = APIServer.buildRouteTable();
+    for (const entry of table) {
+      if (entry.test(path)) {
+        if (!entry.methods.includes(method)) {
+          return entry.methods;
+        }
+      }
+    }
+    return null;
   }
 
   private serveStaticFile(res: ServerResponse, filePath: string): void {
