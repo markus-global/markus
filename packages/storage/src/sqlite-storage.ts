@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   execution_mode TEXT,
   assigned_agent_id TEXT NOT NULL REFERENCES agents(id),
   reviewer_agent_id TEXT NOT NULL,
+  reviewer_type TEXT DEFAULT 'agent',
   execution_round INTEGER NOT NULL DEFAULT 1,
   subtasks TEXT DEFAULT '[]',
   requirement_id TEXT,
@@ -604,6 +605,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'task_logs', column: 'execution_round', sql: "ALTER TABLE task_logs ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
     { table: 'tasks', column: 'execution_round', sql: "ALTER TABLE tasks ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
     { table: 'tasks', column: 'reviewer_agent_id', sql: "ALTER TABLE tasks ADD COLUMN reviewer_agent_id TEXT NOT NULL DEFAULT ''" },
+    { table: 'tasks', column: 'reviewer_type', sql: "ALTER TABLE tasks ADD COLUMN reviewer_type TEXT DEFAULT 'agent'" },
     { table: 'tasks', column: 'subtasks', sql: "ALTER TABLE tasks ADD COLUMN subtasks TEXT DEFAULT '[]'" },
     { table: 'deliverables', column: 'artifact_type', sql: "ALTER TABLE deliverables ADD COLUMN artifact_type TEXT" },
     { table: 'deliverables', column: 'artifact_data', sql: "ALTER TABLE deliverables ADD COLUMN artifact_data TEXT" },
@@ -884,7 +886,7 @@ export class SqliteTaskRepo {
     priority?: string;
     executionMode?: string;
     assignedAgentId: string;
-    reviewerAgentId: string;
+    reviewerId: string;
     executionRound?: number;
     requirementId?: string;
     blockedBy?: string[];
@@ -898,8 +900,8 @@ export class SqliteTaskRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, org_id, title, description, status, priority, execution_mode, assigned_agent_id, reviewer_agent_id, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO tasks (id, org_id, title, description, status, priority, execution_mode, assigned_agent_id, reviewer_agent_id, reviewer_type, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id,
@@ -910,7 +912,8 @@ export class SqliteTaskRepo {
         data.priority ?? 'medium',
         data.executionMode ?? null,
         data.assignedAgentId,
-        data.reviewerAgentId,
+        data.reviewerId,
+        (data as any).reviewerType ?? 'agent',
         data.executionRound ?? 1,
         toJson(data.subtasks ?? []),
         data.requirementId ?? null,
@@ -968,7 +971,7 @@ export class SqliteTaskRepo {
 
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: string; notes?: string[]; blockedBy?: string[]; projectId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null; reviewerAgentId?: string; updatedBy?: string }
+    data: { title?: string; description?: string; priority?: string; notes?: string[]; blockedBy?: string[]; projectId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null; reviewerId?: string; updatedBy?: string }
   ) {
     const sets: string[] = [];
     const vals: SqlParams = [];
@@ -1004,9 +1007,13 @@ export class SqliteTaskRepo {
       sets.push('schedule_config = ?');
       vals.push(data.scheduleConfig ? toJson(data.scheduleConfig) : null);
     }
-    if (data.reviewerAgentId !== undefined) {
+    if (data.reviewerId !== undefined) {
       sets.push('reviewer_agent_id = ?');
-      vals.push(data.reviewerAgentId);
+      vals.push(data.reviewerId);
+    }
+    if ((data as any).reviewerType !== undefined) {
+      sets.push('reviewer_type = ?');
+      vals.push((data as any).reviewerType);
     }
     if (data.updatedBy !== undefined) {
       sets.push('updated_by = ?');
@@ -1094,7 +1101,7 @@ export class SqliteTaskRepo {
     priority?: string;
     status?: string;
     assignedAgentId: string;
-    reviewerAgentId: string;
+    reviewerId: string;
     executionRound?: number;
     requirementId?: string;
     projectId?: string;
@@ -1108,8 +1115,8 @@ export class SqliteTaskRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, org_id, title, description, status, priority, assigned_agent_id, reviewer_agent_id, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO tasks (id, org_id, title, description, status, priority, assigned_agent_id, reviewer_agent_id, reviewer_type, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title = excluded.title,
          status = excluded.status,
@@ -1125,7 +1132,8 @@ export class SqliteTaskRepo {
         data.status ?? 'pending',
         data.priority ?? 'medium',
         data.assignedAgentId,
-        data.reviewerAgentId,
+        data.reviewerId,
+        (data as any).reviewerType ?? 'agent',
         data.executionRound ?? 1,
         toJson(data.subtasks ?? []),
         data.requirementId ?? null,
@@ -1154,7 +1162,8 @@ export class SqliteTaskRepo {
       priority: r['priority'],
       executionMode: r['execution_mode'],
       assignedAgentId: r['assigned_agent_id'],
-      reviewerAgentId: r['reviewer_agent_id'],
+      reviewerId: r['reviewer_agent_id'],
+      reviewerType: (r['reviewer_type'] as string) ?? 'agent',
       executionRound: r['execution_round'] ?? 1,
       subtasks: fromJson<unknown[]>(r['subtasks'] as string) ?? [],
       requirementId: r['requirement_id'] as string | null,

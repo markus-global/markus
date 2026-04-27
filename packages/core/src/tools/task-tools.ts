@@ -11,7 +11,8 @@ export interface AgentTaskContext {
     title: string;
     description: string;
     assignedAgentId: string;
-    reviewerAgentId: string;
+    reviewerId: string;
+    reviewerType?: 'agent' | 'human';
     priority?: string;
     requirementId?: string;
     projectId?: string;
@@ -179,7 +180,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
         'Create a new task in the team task board.',
         'Tasks MUST reference an approved requirement_id.',
         'If you want to propose new work, use requirement_propose instead.',
-        'IMPORTANT: assigned_agent_id and reviewer_agent_id are REQUIRED — every task must have an assignee and an independent reviewer. Call agent_list_colleagues or team_list first to pick both.',
+        'IMPORTANT: assigned_agent_id and reviewer_id are REQUIRED — every task must have an assignee and a reviewer (agent or human). Call agent_list_colleagues or team_list first to pick both.',
         'CRITICAL: When creating multiple tasks for a complex goal, you MUST use `blocked_by` to express ALL dependency relationships between them.',
         'Think carefully about the execution order — a task that needs output from another task MUST list that task ID in its `blocked_by` array.',
         'Tasks without dependencies will execute in parallel; tasks with `blocked_by` will wait for their prerequisites to complete first.',
@@ -206,10 +207,15 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             type: 'string',
             description: 'Agent ID to assign this task to. REQUIRED — every task must have a responsible person. Call agent_list_colleagues (or team_list for managers) to find the right agent.',
           },
-          reviewer_agent_id: {
+          reviewer_id: {
             type: 'string',
             description:
-              'Agent ID who will review deliverables when execution finishes (must differ from the assignee when both are agents). Call agent_list_colleagues (or team_list for managers) to choose a reviewer.',
+              'ID of the reviewer (agent or human user) who will review deliverables when execution finishes. Must differ from the assignee when both are agents.',
+          },
+          reviewer_type: {
+            type: 'string',
+            enum: ['agent', 'human'],
+            description: 'Whether the reviewer is an agent or a human user. Default: "agent". Set to "human" if reviewer_id is a human user ID.',
           },
           project_id: {
             type: 'string',
@@ -237,29 +243,30 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             },
           },
         },
-        required: ['title', 'description', 'assigned_agent_id', 'reviewer_agent_id'],
+        required: ['title', 'description', 'assigned_agent_id', 'reviewer_id'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         try {
           const assignedAgentId = args['assigned_agent_id'] as string | undefined;
-          const reviewerAgentId = args['reviewer_agent_id'] as string | undefined;
+          const reviewerId = args['reviewer_id'] as string | undefined;
+          const reviewerType = (args['reviewer_type'] as string | undefined) === 'human' ? 'human' as const : 'agent' as const;
 
           if (!assignedAgentId) {
             return JSON.stringify({
               status: 'error',
-              error: 'assigned_agent_id is required. Every task must have a responsible person. Call team_list first to find the right agent by role/skills, then set assigned_agent_id.',
+              error: 'assigned_agent_id is required. Every task must have a responsible agent. Call team_list first to find the right agent by role/skills.',
             });
           }
-          if (!reviewerAgentId?.trim()) {
+          if (!reviewerId?.trim()) {
             return JSON.stringify({
               status: 'error',
-              error: 'reviewer_agent_id is required. Every task must have a designated reviewer for when execution finishes. Call team_list to pick a reviewer (e.g. delegator or team manager).',
+              error: 'reviewer_id is required. Every task must have a designated reviewer (agent or human). Call team_list to pick a reviewer.',
             });
           }
-          if (reviewerAgentId === assignedAgentId) {
+          if (reviewerType !== 'human' && reviewerId === assignedAgentId) {
             return JSON.stringify({
               status: 'error',
-              error: 'reviewer_agent_id must differ from assigned_agent_id — choose an independent reviewer via team_list.',
+              error: 'reviewer_id must differ from assigned_agent_id when both are agents — choose an independent reviewer via team_list.',
             });
           }
 
@@ -285,7 +292,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             description: args['description'] as string,
             priority: args['priority'] as string | undefined,
             assignedAgentId,
-            reviewerAgentId,
+            reviewerId,
+            reviewerType,
             requirementId: args['requirement_id'] as string | undefined,
             projectId: args['project_id'] as string | undefined,
             blockedBy: args['blocked_by'] as string[] | undefined,

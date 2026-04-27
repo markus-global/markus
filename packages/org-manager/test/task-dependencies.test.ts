@@ -11,7 +11,7 @@ function createDefaults(overrides: Record<string, unknown> = {}) {
     title: 'Task',
     description: '',
     assignedAgentId: AGENT_A,
-    reviewerAgentId: REVIEWER,
+    reviewerId: REVIEWER,
     ...overrides,
   };
 }

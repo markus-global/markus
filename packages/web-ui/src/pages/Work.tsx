@@ -1567,9 +1567,18 @@ function TaskDetailPanel({
                   </div>
                   <div>
                     <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('work:task.reviewer')}</label>
-                    <select value={task.reviewerAgentId ?? ''} onChange={e => { if (e.target.value && e.target.value !== task.reviewerAgentId) void doUpdate(() => api.tasks.update(task.id, { reviewerAgentId: e.target.value })); }} disabled={actionInFlight}
+                    <select value={`${task.reviewerType ?? 'agent'}:${task.reviewerId ?? ''}`} onChange={e => {
+                      const val = e.target.value;
+                      if (!val) return;
+                      const isHuman = val.startsWith('human:');
+                      const id = val.replace(/^(human|agent):/, '');
+                      if (id !== task.reviewerId || (isHuman ? 'human' : 'agent') !== (task.reviewerType ?? 'agent')) {
+                        void doUpdate(() => api.tasks.update(task.id, { reviewerId: id, reviewerType: isHuman ? 'human' : 'agent' }));
+                      }
+                    }} disabled={actionInFlight}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
-                      {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                      {users.map(u => <option key={`human:${u.id}`} value={`human:${u.id}`}>{u.name}</option>)}
+                      {agents.map(a => <option key={`agent:${a.id}`} value={`agent:${a.id}`}>{a.name}</option>)}
                     </select>
                   </div>
                   <div>
@@ -3066,20 +3075,23 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
   const createTask = async () => {
     if (!taskTitle || !taskAssignTo || !taskReviewer) return;
-    if (taskAssignTo === taskReviewer) { msg(t('work:task.assignedReviewerDifferent')); return; }
+    const reviewerIsHuman = taskReviewer.startsWith('human:');
+    const reviewerId = taskReviewer.replace(/^(human|agent):/, '');
+    if (taskAssignTo === reviewerId && !reviewerIsHuman) { msg(t('work:task.assignedReviewerDifferent')); return; }
     const projId = taskProjectId || undefined;
     const reqId = taskRequirementId || undefined;
     try {
       const { task } = await api.tasks.create(
         taskTitle, taskDesc,
         taskAssignTo,
-        taskReviewer,
+        reviewerId,
         taskPriority,
         projId,
         taskBlockedBy.length > 0 ? taskBlockedBy : undefined,
         reqId,
         taskType !== 'standard' ? taskType : undefined,
         taskType === 'scheduled' ? { every: taskScheduleEvery } : undefined,
+        reviewerIsHuman ? 'human' : 'agent',
       );
       setTaskTitle(''); setTaskDesc(''); setTaskBlockedBy([]); setTaskRequirementId(''); setTaskType('standard'); setTaskScheduleEvery('4h'); setShowCreateTask(false);
       refreshBoard();
@@ -3798,7 +3810,10 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
               <div>
                 <label className="block text-sm text-fg-secondary mb-1.5">{t('work:task.reviewerRequired')} <span className="text-red-500">*</span></label>
                 <SearchableSelect
-                  options={agents.filter(a => a.id !== taskAssignTo).map(a => ({ value: a.id, label: `${a.name} (${a.status})` }))}
+                  options={[
+                    ...users.map(u => ({ value: `human:${u.id}`, label: u.name })),
+                    ...agents.filter(a => a.id !== taskAssignTo).map(a => ({ value: `agent:${a.id}`, label: `${a.name} (${a.status})` })),
+                  ]}
                   value={taskReviewer}
                   onChange={setTaskReviewer}
                   placeholder={t('work:task.selectReviewer')}

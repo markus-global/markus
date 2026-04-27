@@ -84,7 +84,7 @@ export interface TaskBridge {
     priority: string;
     orgId: string;
     assignedAgentId: string;
-    reviewerAgentId: string;
+    reviewerId: string;
     createdBy?: string;
   }): { id: string };
 }

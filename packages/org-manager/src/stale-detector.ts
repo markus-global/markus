@@ -73,7 +73,7 @@ export class StaleDetector {
           type: 'review_stale',
           taskId: task.id,
           ageMs: age,
-          agentId: task.reviewerAgentId ?? task.assignedAgentId,
+          agentId: task.reviewerId ?? task.assignedAgentId,
           message: `Task "${task.title}" has been in review for ${Math.round(age / 3600000)}h with no action`,
         });
       }

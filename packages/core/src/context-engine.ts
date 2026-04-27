@@ -438,7 +438,7 @@ export class ContextEngine {
       parts.push('- When governance requires it, every task MUST reference an approved `requirement_id`.');
       parts.push('');
       parts.push('**Task lifecycle** — Create → Execute → Review → Complete:');
-      parts.push('- **Create**: `task_create` (REQUIRED: `assigned_agent_id`, `reviewer_agent_id`). Check `task_list` first to avoid duplicates.');
+      parts.push('- **Create**: `task_create` (REQUIRED: `assigned_agent_id`, `reviewer_id`; optional `reviewer_type`: "agent"|"human"). Check `task_list` first to avoid duplicates.');
       parts.push('- **Execute**: Decompose with `subtask_create` → work through subtasks → `task_submit_review` with summary + deliverables (MANDATORY). System auto-fills `task_id` and `reviewer`.');
       parts.push('- **Review**: Reviewer approves with `task_update(status:"completed")` or rejects with `task_update(status:"in_progress", note:"what needs to change")` (auto-restarts execution). Workers MUST NOT set status=completed on their own tasks.');
       parts.push('- **Blockers**: Use `task_update(status:"blocked", note:"reason")` when unable to proceed.');
