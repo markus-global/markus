@@ -23,6 +23,10 @@ const STATUS_META: Record<string, { color: string }> = {
 
 const ALL_TYPES = ['file', 'directory'] as const;
 
+function isUrl(s: string): boolean {
+  return /^https?:\/\//i.test(s);
+}
+
 const ARTIFACT_META: Record<string, { icon: string; color: string }> = {
   agent: { icon: '\u2726', color: 'bg-brand-500/10 text-brand-500' },
   team:  { icon: '\u25C8', color: 'bg-blue-500/10 text-blue-600' },
@@ -268,6 +272,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
 
   const loadPreview = async (d: DeliverableInfo) => {
     if (!d.reference) return;
+    if (isUrl(d.reference)) return;
     if (d.type === 'directory') { setShowCopyPath(true); return; }
 
     setPreviewLoading(true);
@@ -529,7 +534,25 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
                   </span>
                 )}
               </div>
-              {selected.reference && (selected.type === 'file' || selected.type === 'directory') && (
+              {selected.reference && isUrl(selected.reference) && (
+                <div className="flex items-center gap-2 mt-2 bg-surface-secondary/60 border border-border-default rounded-lg px-3 py-2">
+                  <a
+                    href={selected.reference}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs font-mono text-brand-500 hover:text-brand-500 hover:underline truncate flex-1 text-left cursor-pointer"
+                  >{selected.reference}</a>
+                  <button
+                    onClick={() => window.open(selected.reference, '_blank', 'noopener,noreferrer')}
+                    className="px-2 py-1 text-[10px] rounded bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0"
+                  >{t('common:open')}</button>
+                  <button
+                    onClick={() => copyPath(selected.reference)}
+                    className={`px-2 py-1 text-[10px] rounded transition-colors shrink-0 ${copiedPath ? 'bg-green-500/20 text-green-600' : 'bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay'}`}
+                  >{copiedPath ? t('common:copied') : t('common:copy')}</button>
+                </div>
+              )}
+              {selected.reference && !isUrl(selected.reference) && (selected.type === 'file' || selected.type === 'directory') && (
                 <div className="flex items-center gap-2 mt-2 bg-surface-secondary/60 border border-border-default rounded-lg px-3 py-2">
                   <button
                     onClick={() => { api.files.reveal(selected.reference).catch(() => flashMsg('error', t('detail.failedToOpenBrowser'))); }}
@@ -548,7 +571,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
                   >{copiedPath ? t('common:copied') : t('common:copy')}</button>
                 </div>
               )}
-              {selected.reference && selected.type !== 'file' && selected.type !== 'directory' && (
+              {selected.reference && !isUrl(selected.reference) && selected.type !== 'file' && selected.type !== 'directory' && (
                 <div className="mt-2">
                   <span className="text-xs text-fg-tertiary font-mono break-all">{selected.reference}</span>
                 </div>
@@ -596,13 +619,28 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
                   <div className="space-y-3">
                     <p className="text-sm text-fg-secondary">{t('detail.cannotPreview', { type: selected.type })}</p>
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
-                        className="text-xs bg-surface-elevated px-3 py-2 rounded text-brand-500 hover:text-brand-500 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
-                        title={t('detail.openInFileBrowser')}
-                      >{selected.reference}</button>
-                      <button onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
-                        className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0">{t('common:open')}</button>
+                      {isUrl(selected.reference) ? (
+                        <>
+                          <a
+                            href={selected.reference}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs bg-surface-elevated px-3 py-2 rounded text-brand-500 hover:text-brand-500 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
+                          >{selected.reference}</a>
+                          <button onClick={() => window.open(selected!.reference, '_blank', 'noopener,noreferrer')}
+                            className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0">{t('common:open')}</button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
+                            className="text-xs bg-surface-elevated px-3 py-2 rounded text-brand-500 hover:text-brand-500 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
+                            title={t('detail.openInFileBrowser')}
+                          >{selected.reference}</button>
+                          <button onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
+                            className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0">{t('common:open')}</button>
+                        </>
+                      )}
                       <button onClick={() => copyPath(selected!.reference)}
                         className={`px-3 py-2 text-xs rounded-lg transition-colors shrink-0 ${copiedPath ? 'bg-green-500/20 text-green-600' : 'bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay'}`}>{copiedPath ? t('common:copied') : t('common:copy')}</button>
                     </div>
@@ -680,7 +718,6 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
               <div className="flex gap-6 flex-wrap">
                 <span>{t('metadata.created')} <span className="text-fg-secondary">{new Date(selected.createdAt).toLocaleString()}</span></span>
                 <span>{t('metadata.updated')} <span className="text-fg-secondary">{new Date(selected.updatedAt).toLocaleString()}</span></span>
-                <span>{t('metadata.accessed')} <span className="text-fg-secondary">{selected.accessCount}x</span></span>
               </div>
               <div className="text-fg-muted select-all">{t('metadata.id', { id: selected.id })}</div>
             </div>
