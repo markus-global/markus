@@ -214,6 +214,9 @@
       "starting": "Agent is preparing to execute",
       "startingHint": "Logs will appear shortly…"
     },
+    "relatedSessions": "{{agent}} processed this task in other sessions ({{count}} records)",
+    "sessionLive": "Live",
+    "agent": "Agent",
     "loadingExecutionLog": "Loading execution log...",
     "noExecutionLogAvailable": "No execution log available.",
     "roundHeader": "Round #{{n}}",
