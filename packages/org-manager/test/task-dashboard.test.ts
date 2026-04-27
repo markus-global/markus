@@ -31,9 +31,9 @@ describe('TaskService.getDashboard', () => {
   it('counts tasks by status correctly', () => {
     const svc = createService();
 
-    svc.createTask({ orgId: 'org1', title: 'Task A', description: 'a', assignedAgentId: 'agent-a', reviewerAgentId: 'agent-r' });
-    svc.createTask({ orgId: 'org1', title: 'Task B', description: 'b', assignedAgentId: 'agent-b', reviewerAgentId: 'agent-r' });
-    const task3 = svc.createTask({ orgId: 'org1', title: 'Task C', description: 'c', assignedAgentId: 'agent-a', reviewerAgentId: 'agent-r' });
+    svc.createTask({ orgId: 'org1', title: 'Task A', description: 'a', assignedAgentId: 'agent-a', reviewerId: 'agent-r' });
+    svc.createTask({ orgId: 'org1', title: 'Task B', description: 'b', assignedAgentId: 'agent-b', reviewerId: 'agent-r' });
+    const task3 = svc.createTask({ orgId: 'org1', title: 'Task C', description: 'c', assignedAgentId: 'agent-a', reviewerId: 'agent-r' });
     svc.updateTaskStatus(task3.id, 'in_progress');
 
     const dashboard = svc.getDashboard('org1');
@@ -46,14 +46,14 @@ describe('TaskService.getDashboard', () => {
   it('tracks agent workload across tasks', () => {
     const svc = createService();
 
-    const t1 = svc.createTask({ orgId: 'org1', title: 'T1', description: '', assignedAgentId: 'agent-a', reviewerAgentId: 'agent-r' });
+    const t1 = svc.createTask({ orgId: 'org1', title: 'T1', description: '', assignedAgentId: 'agent-a', reviewerId: 'agent-r' });
     svc.updateTaskStatus(t1.id, 'in_progress');
 
-    const t2 = svc.createTask({ orgId: 'org1', title: 'T2', description: '', assignedAgentId: 'agent-a', reviewerAgentId: 'agent-r' });
+    const t2 = svc.createTask({ orgId: 'org1', title: 'T2', description: '', assignedAgentId: 'agent-a', reviewerId: 'agent-r' });
     svc.updateTaskStatus(t2.id, 'review');
     svc.updateTaskStatus(t2.id, 'completed');
 
-    svc.createTask({ orgId: 'org1', title: 'T3', description: '', assignedAgentId: 'agent-b', reviewerAgentId: 'agent-r' });
+    svc.createTask({ orgId: 'org1', title: 'T3', description: '', assignedAgentId: 'agent-b', reviewerId: 'agent-r' });
 
     const dashboard = svc.getDashboard('org1');
 
@@ -73,8 +73,8 @@ describe('TaskService.getDashboard', () => {
   it('returns recent activity with all tasks represented', () => {
     const svc = createService();
 
-    svc.createTask({ orgId: 'org1', title: 'Task Alpha', description: '', assignedAgentId: 'agent-a', reviewerAgentId: 'agent-r' });
-    const t2 = svc.createTask({ orgId: 'org1', title: 'Task Beta', description: '', assignedAgentId: 'agent-b', reviewerAgentId: 'agent-r' });
+    svc.createTask({ orgId: 'org1', title: 'Task Alpha', description: '', assignedAgentId: 'agent-a', reviewerId: 'agent-r' });
+    const t2 = svc.createTask({ orgId: 'org1', title: 'Task Beta', description: '', assignedAgentId: 'agent-b', reviewerId: 'agent-r' });
     svc.updateTaskStatus(t2.id, 'in_progress');
 
     const dashboard = svc.getDashboard('org1');
@@ -88,8 +88,8 @@ describe('TaskService.getDashboard', () => {
   it('filters by orgId when provided', () => {
     const svc = createService();
 
-    svc.createTask({ orgId: 'org1', title: 'Org1 Task', description: '', assignedAgentId: 'agent-a', reviewerAgentId: 'agent-r' });
-    svc.createTask({ orgId: 'org2', title: 'Org2 Task', description: '', assignedAgentId: 'agent-b', reviewerAgentId: 'agent-r' });
+    svc.createTask({ orgId: 'org1', title: 'Org1 Task', description: '', assignedAgentId: 'agent-a', reviewerId: 'agent-r' });
+    svc.createTask({ orgId: 'org2', title: 'Org2 Task', description: '', assignedAgentId: 'agent-b', reviewerId: 'agent-r' });
 
     const dashboard1 = svc.getDashboard('org1');
     expect(dashboard1.totalTasks).toBe(1);
@@ -102,7 +102,7 @@ describe('TaskService.getDashboard', () => {
   it('calculates average completion time for completed tasks', () => {
     const svc = createService();
 
-    const task = svc.createTask({ orgId: 'org1', title: 'Fast Task', description: '', assignedAgentId: 'agent-a', reviewerAgentId: 'agent-r' });
+    const task = svc.createTask({ orgId: 'org1', title: 'Fast Task', description: '', assignedAgentId: 'agent-a', reviewerId: 'agent-r' });
     svc.updateTaskStatus(task.id, 'in_progress');
     svc.updateTaskStatus(task.id, 'review');
     svc.updateTaskStatus(task.id, 'completed');
@@ -117,7 +117,7 @@ describe('TaskService.getDashboard', () => {
     const svc = createService();
 
     for (let i = 0; i < 30; i++) {
-      svc.createTask({ orgId: 'org1', title: `Task ${i}`, description: '', assignedAgentId: 'agent-a', reviewerAgentId: 'agent-r' });
+      svc.createTask({ orgId: 'org1', title: `Task ${i}`, description: '', assignedAgentId: 'agent-a', reviewerId: 'agent-r' });
     }
 
     const dashboard = svc.getDashboard('org1');

@@ -97,9 +97,14 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const hasInviteHash = window.location.hash.startsWith('#invite?token=');
     api.auth.me()
       .then(({ user }) => {
         setAuthUser(user);
+        if (!hasInviteHash && !localStorage.getItem('markus_onboarded')) {
+          localStorage.setItem('markus_onboarded', '1');
+          setShowOnboarding(false);
+        }
         wsClient.connect(user.id);
         checkLlmConfig();
         api.health().then(h => {
@@ -170,6 +175,8 @@ export function App() {
   if (inviteMatch) {
     return <InviteSetup token={inviteMatch[1]!} onComplete={() => {
       window.location.hash = '';
+      localStorage.removeItem('markus_onboarded');
+      setShowOnboarding(true);
       setAuthUser('loading');
       api.auth.me().then(d => setAuthUser(d.user)).catch(() => setAuthUser(null));
     }} />;
@@ -179,6 +186,10 @@ export function App() {
     return <Login onLogin={(user, isDefaultPassword) => {
       setAuthUser(user);
       if (isDefaultPassword) setMustChangePassword(true);
+      else if (!localStorage.getItem('markus_onboarded')) {
+        localStorage.setItem('markus_onboarded', '1');
+        setShowOnboarding(false);
+      }
     }} />;
   }
 

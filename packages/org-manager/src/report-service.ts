@@ -123,7 +123,7 @@ export class ReportService {
         description: planned.description,
         priority: (planned.priority as any) ?? 'medium',
         assignedAgentId: planned.assignedAgent,
-        reviewerAgentId: planned.assignedAgent,
+        reviewerId: planned.assignedAgent,
         approvedVia: 'plan_approval',
         planReportId: reportId,
         projectId: report.scope === 'project' ? report.scopeId : undefined,
@@ -164,7 +164,7 @@ export class ReportService {
     saveToKnowledge?: boolean;
     projectId?: string;
     assignedAgentId?: string;
-    reviewerAgentId?: string;
+    reviewerId?: string;
   }): ReportFeedback {
     const actions: FeedbackAction[] = [];
 
@@ -187,14 +187,14 @@ export class ReportService {
       actions.push({ type: 'knowledge', knowledgeId: entry.id });
     }
 
-    if (opts.type === 'directive' && opts.assignedAgentId && opts.reviewerAgentId) {
+    if (opts.type === 'directive' && opts.assignedAgentId && opts.reviewerId) {
       const task = this.taskService.createTask({
         orgId: opts.reportId,
         title: `Directive: ${opts.content.slice(0, 100)}`,
         description: opts.content,
         priority: opts.priority === 'critical' ? 'urgent' : 'high',
         assignedAgentId: opts.assignedAgentId,
-        reviewerAgentId: opts.reviewerAgentId,
+        reviewerId: opts.reviewerId,
         approvedVia: 'plan_approval',
         projectId: opts.projectId,
       });

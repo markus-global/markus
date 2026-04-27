@@ -5,6 +5,7 @@ import {
   createLogger,
   orgId,
   generateId,
+  userId,
   HEARTBEAT_STARTUP_JITTER_MS,
   type Organization,
   type Team,
@@ -24,7 +25,7 @@ export class OrganizationService {
   private teams = new Map<string, Team>();
   private humans = new Map<string, HumanUser>();
   private agentManager: AgentManager;
-  private pendingAgentStartIds: string[] = [];
+  private pendingAgentStartIds: Array<{ id: string; dbStatus?: string }> = [];
   private roleLoader: RoleLoader;
   private storage?: StorageBridge;
 
@@ -46,7 +47,7 @@ export class OrganizationService {
     if (!org) throw new Error(`Organization not found: ${orgId}`);
 
     const user: HumanUser = {
-      id: opts?.id ?? generateId('user'),
+      id: opts?.id ?? userId(),
       name,
       email: opts?.email,
       role,
@@ -285,7 +286,8 @@ export class OrganizationService {
         try { await this.fireAgent(agentId, { purgeFiles: opts?.purgeFiles }); } catch { /* already gone */ }
       }
       for (const userId of [...(team.humanMemberIds ?? [])]) {
-        if (userId === 'default') continue; // never delete the default owner
+        const user = this.humans.get(userId);
+        if (user?.role === 'owner') continue; // never delete the org owner
         this.removeHumanUser(userId);
       }
     } else {
@@ -765,7 +767,9 @@ export class OrganizationService {
       const restorePromises = toRestore.map(async (row: typeof agentRows[number]) => {
           try {
             await this.agentManager.restoreAgent(row);
-            this.pendingAgentStartIds.push(row.id);
+            const dbStatus = row.status as string | undefined;
+            log.info(`Restored agent ${row.id} (${row.name}), DB status: ${dbStatus}`);
+            this.pendingAgentStartIds.push({ id: row.id, dbStatus });
 
             if (row.teamId) {
               const team = this.teams.get(row.teamId);
@@ -842,32 +846,40 @@ export class OrganizationService {
    * Returns immediately — agents start asynchronously.
    */
   startRestoredAgentsInBackground(): Promise<void> {
-    const ids = this.pendingAgentStartIds;
+    const entries = this.pendingAgentStartIds;
     this.pendingAgentStartIds = [];
-    if (ids.length === 0) return Promise.resolve();
+    if (entries.length === 0) return Promise.resolve();
 
     const STAGGER_MS = 1_000;
     const DEFAULT_HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000;
-    log.info(`Starting ${ids.length} restored agents in background (heartbeats will be staggered)...`);
+    log.info(`Starting ${entries.length} restored agents in background (heartbeats will be staggered)...`);
 
     const startAll = async () => {
       let started = 0;
-      for (let i = 0; i < ids.length; i++) {
-        const id = ids[i]!;
+      let pausedCount = 0;
+      for (let i = 0; i < entries.length; i++) {
+        const { id, dbStatus } = entries[i]!;
         try {
-          const initialHeartbeatDelayMs = ids.length > 1
-            ? Math.floor((i / ids.length) * DEFAULT_HEARTBEAT_INTERVAL_MS) + Math.floor(Math.random() * HEARTBEAT_STARTUP_JITTER_MS)
+          const startAsPaused = dbStatus === 'paused';
+          log.info(`Starting agent ${id}: dbStatus=${dbStatus}, startAsPaused=${startAsPaused}`);
+          const initialHeartbeatDelayMs = entries.length > 1
+            ? Math.floor((i / entries.length) * DEFAULT_HEARTBEAT_INTERVAL_MS) + Math.floor(Math.random() * HEARTBEAT_STARTUP_JITTER_MS)
             : undefined;
-          await this.agentManager.startAgent(id, { initialHeartbeatDelayMs });
+          await this.agentManager.startAgent(id, { initialHeartbeatDelayMs, startAsPaused });
           started++;
-          if (started < ids.length) {
+          if (startAsPaused) pausedCount++;
+          if (started < entries.length) {
             await new Promise(r => setTimeout(r, STAGGER_MS));
           }
         } catch (err) {
           log.warn(`Failed to auto-start restored agent ${id}`, { error: String(err) });
         }
       }
-      log.info(`Background agent startup complete: ${started}/${ids.length} agents started`);
+      log.info(`Background agent startup complete: ${started}/${entries.length} agents started${pausedCount > 0 ? ` (${pausedCount} restored as paused)` : ''}`);
+      if (pausedCount > 0 && pausedCount === started) {
+        this.agentManager.setGlobalPaused(true);
+        log.info('All restored agents were paused — restoring globalPaused state');
+      }
     };
 
     const p = startAll().catch(err => {

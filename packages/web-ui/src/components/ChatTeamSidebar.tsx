@@ -46,6 +46,8 @@ interface ChatTeamSidebarProps {
   width?: number;
   onResizeStart?: (e: React.MouseEvent) => void;
   hidden?: boolean;
+  /** True while the initial data load is in progress; sidebar shows skeleton placeholders */
+  initialLoading?: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -63,6 +65,7 @@ function CreateGroupChatModal({ agents, humans, authUser, onClose, onCreate }: {
   onClose: () => void;
   onCreate: (name: string, memberIds: string[], memberTypes: Record<string, string>, memberNames: Record<string, string>) => Promise<void>;
 }) {
+  const { t } = useTranslation(['team', 'common']);
   const [name, setName] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
@@ -112,14 +115,14 @@ function CreateGroupChatModal({ agents, humans, authUser, onClose, onCreate }: {
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
       <div className="bg-surface-elevated rounded-xl border border-border-default shadow-2xl w-[400px] max-w-[90vw] max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="px-5 py-4 border-b border-border-default">
-          <h3 className="text-sm font-semibold">Create Group Chat</h3>
-          <p className="text-[11px] text-fg-tertiary mt-0.5">Add agents and humans to chat together</p>
+          <h3 className="text-sm font-semibold">{t('modals.createGroupChat.title')}</h3>
+          <p className="text-[11px] text-fg-tertiary mt-0.5">{t('modals.createGroupChat.subtitle')}</p>
         </div>
         <div className="px-5 py-3 border-b border-border-default">
           <input
             value={name}
             onChange={e => setName(e.target.value)}
-            placeholder="Group name..."
+            placeholder={t('modals.createGroupChat.groupNamePlaceholder')}
             className="w-full bg-surface-primary border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary placeholder:text-fg-muted outline-none focus:ring-1 focus:ring-brand-500/50"
             autoFocus
           />
@@ -128,12 +131,12 @@ function CreateGroupChatModal({ agents, humans, authUser, onClose, onCreate }: {
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search members..."
+            placeholder={t('modals.createGroupChat.searchPlaceholder')}
             className="w-full bg-surface-primary border border-border-default rounded-lg px-3 py-1.5 text-xs text-fg-primary placeholder:text-fg-muted outline-none focus:ring-1 focus:ring-brand-500/50"
           />
         </div>
         <div className="flex-1 overflow-y-auto px-3 py-2 min-h-0 max-h-[300px]">
-          {filtered.length === 0 && <p className="text-xs text-fg-tertiary px-2 py-4 text-center">No members found</p>}
+          {filtered.length === 0 && <p className="text-xs text-fg-tertiary px-2 py-4 text-center">{t('modals.createGroupChat.noMembersFound')}</p>}
           {filtered.map(m => (
             <button
               key={m.id}
@@ -154,20 +157,20 @@ function CreateGroupChatModal({ agents, humans, authUser, onClose, onCreate }: {
               </div>
               <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-medium ${
                 m.type === 'agent' ? 'bg-brand-500/10 text-brand-500' : 'bg-green-500/10 text-green-600'
-              }`}>{m.type}</span>
+              }`}>{m.type === 'agent' ? t('modals.addExisting.typeAgent') : t('modals.addExisting.typeHuman')}</span>
             </button>
           ))}
         </div>
         <div className="px-5 py-3 border-t border-border-default flex items-center justify-between">
-          <span className="text-[10px] text-fg-tertiary">{selected.size} selected</span>
+          <span className="text-[10px] text-fg-tertiary">{t('modals.createGroupChat.selected', { count: selected.size })}</span>
           <div className="flex gap-2">
-            <button onClick={onClose} className="px-3 py-1.5 text-xs text-fg-secondary hover:text-fg-primary rounded-lg hover:bg-surface-overlay transition-colors">Cancel</button>
+            <button onClick={onClose} className="px-3 py-1.5 text-xs text-fg-secondary hover:text-fg-primary rounded-lg hover:bg-surface-overlay transition-colors">{t('common:cancel')}</button>
             <button
               onClick={handleCreate}
               disabled={!name.trim() || selected.size === 0 || creating}
               className="px-4 py-1.5 text-xs font-medium text-white bg-brand-600 hover:bg-brand-500 rounded-lg transition-colors disabled:opacity-50 disabled:pointer-events-none"
             >
-              {creating ? 'Creating...' : 'Create'}
+              {creating ? t('modals.createGroupChat.creating') : t('modals.createGroupChat.create')}
             </button>
           </div>
         </div>
@@ -185,6 +188,7 @@ export function ChatTeamSidebar({
   onRefreshTeams, onRefreshAgents, onRefreshHumans, onRefreshGroupChats, onViewProfile,
   onManageGroupMembers,
   width, onResizeStart, hidden,
+  initialLoading,
 }: ChatTeamSidebarProps) {
   const { t } = useTranslation(['team', 'common']);
   const isMobile = useIsMobile();
@@ -225,18 +229,24 @@ export function ChatTeamSidebar({
     setTimeout(() => setToast(null), 3000);
   };
 
-  // System pause/resume
-  const [globalPaused, setGlobalPaused] = useState(false);
+  // System pause/resume – default to null (unknown) until API responds.
+  // WS events are ignored until the initial HTTP fetch completes to prevent
+  // a race where system:resume-all arrives first and flashes "Pause" briefly.
+  const [globalPaused, setGlobalPaused] = useState<boolean | null>(null);
   const [pauseLoading, setPauseLoading] = useState(false);
+  const statusFetchedRef = useRef(false);
 
   useEffect(() => {
-    api.governance.getSystemStatus().then(s => setGlobalPaused(s.globalPaused)).catch(() => {});
-    const unsubPause = wsClient.on('system:pause-all', () => setGlobalPaused(true));
-    const unsubResume = wsClient.on('system:resume-all', () => setGlobalPaused(false));
+    api.governance.getSystemStatus()
+      .then(s => { statusFetchedRef.current = true; setGlobalPaused(s.globalPaused); })
+      .catch(() => { statusFetchedRef.current = true; setGlobalPaused(false); });
+    const unsubPause = wsClient.on('system:pause-all', () => { if (statusFetchedRef.current) setGlobalPaused(true); });
+    const unsubResume = wsClient.on('system:resume-all', () => { if (statusFetchedRef.current) setGlobalPaused(false); });
     return () => { unsubPause(); unsubResume(); };
   }, []);
 
   const handlePauseClick = useCallback(() => {
+    if (globalPaused === null) return;
     setPendingConfirm({
       title: globalPaused ? t('modals.resumeAll.title') : t('modals.pauseAll.title'),
       message: globalPaused
@@ -278,7 +288,7 @@ export function ChatTeamSidebar({
   const [editingTeam, setEditingTeam] = useState<string | null>(null);
   const [editTeamName, setEditTeamName] = useState('');
 
-  const clampMenuPos = useCallback((e: React.MouseEvent, menuW = 176, menuH = 320) => {
+  const clampMenuPos = useCallback((e: React.MouseEvent, menuW = 176, menuH = 480) => {
     const btn = e.currentTarget.getBoundingClientRect();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
@@ -286,7 +296,8 @@ export function ChatTeamSidebar({
     let x = btn.left;
     let y = btn.bottom + 4;
     if (x + menuW > vw - pad) x = Math.max(pad, vw - menuW - pad);
-    if (y + menuH > vh - pad) y = Math.max(pad, btn.top - menuH - 4);
+    if (y + menuH > vh - pad) y = btn.top - menuH - 4;
+    y = Math.max(pad, y);
     return { x, y };
   }, []);
 
@@ -392,12 +403,11 @@ export function ChatTeamSidebar({
       const result = await fn(teamId);
       const ok = result.success?.length ?? 0;
       const fail = result.failed?.length ?? 0;
-      const labels: Record<string, string> = { start: t('common:status.active'), stop: t('common:status.offline'), pause: t('common:status.paused'), resume: t('common:status.idle') };
-      if (fail > 0) showToast(`${action}: ${ok} succeeded, ${fail} failed`, 'error');
-      else if (ok > 0) showToast(`${ok} agent${ok > 1 ? 's' : ''} ${labels[action]}`, 'success');
+      if (fail > 0) showToast(t('batchAction.failed', { action: t(`batchAction.operation.${action}`), ok, fail }), 'error');
+      else if (ok > 0) showToast(t('batchAction.succeeded', { count: ok, action: t(`batchAction.past.${action}`) }), 'success');
       onRefreshAgents();
     } catch (err) {
-      showToast(`Failed to ${action}: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      showToast(t('batchAction.failedToRun', { action: t(`batchAction.operation.${action}`), error: err instanceof Error ? err.message : String(err) }), 'error');
     }
   };
 
@@ -449,6 +459,7 @@ export function ChatTeamSidebar({
         }
         onRefreshAgents();
         onRefreshTeams();
+        onRefreshHumans?.();
         refreshUngrouped();
         window.dispatchEvent(new CustomEvent('markus:data-changed'));
       },
@@ -501,7 +512,7 @@ export function ChatTeamSidebar({
         onRefreshAgents();
         refreshUngrouped();
       } catch (err) {
-        showToast(`Move failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+        showToast(t('batchAction.moveFailed', { error: err instanceof Error ? err.message : String(err) }), 'error');
       }
     }
     setDragAgent(null);
@@ -613,7 +624,7 @@ export function ChatTeamSidebar({
                   else { const pos = clampMenuPos(e as unknown as React.MouseEvent); setAgentMenu({ agentId: a.id, teamId, ...pos }); }
                 }}
                 className="w-5 h-5 flex items-center justify-center text-fg-tertiary hover:text-fg-secondary rounded transition-colors"
-                title="More options"
+                title={t('chat.moreOptions')}
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1" /><circle cx="12" cy="5" r="1" /><circle cx="12" cy="19" r="1" /></svg>
               </span>
@@ -679,7 +690,7 @@ export function ChatTeamSidebar({
               ) : (
                 <span className="truncate font-medium text-[11px] leading-tight block">{label}</span>
               )}
-              <div className="text-[10px] text-fg-tertiary leading-tight mt-0.5">{agentList.length} members</div>
+              <div className="text-[10px] text-fg-tertiary leading-tight mt-0.5">{t('chat.members_other', { count: agentList.length })}</div>
             </div>
           </button>
 
@@ -702,7 +713,7 @@ export function ChatTeamSidebar({
             <button
               onClick={e => { e.stopPropagation(); if (teamMenu?.teamId === tid) { setTeamMenu(null); } else { const pos = clampMenuPos(e); setTeamMenu({ teamId: tid, ...pos }); } }}
               className="w-7 h-7 flex items-center justify-center text-fg-secondary hover:text-fg-primary rounded-md hover:bg-surface-overlay transition-colors shrink-0"
-              title="More options"
+              title={t('chat.moreOptions')}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1" /><circle cx="12" cy="5" r="1" /><circle cx="12" cy="19" r="1" /></svg>
             </button>
@@ -756,22 +767,29 @@ export function ChatTeamSidebar({
         <div className="px-4 h-14 flex items-center border-b border-border-default shrink-0">
           <h2 className="text-lg font-semibold">{t('chat.title')}</h2>
           <div className="ml-auto">
-            <button
-              onClick={handlePauseClick}
-              disabled={pauseLoading}
-              title={globalPaused ? t('modals.resumeAll.title') : t('modals.pauseAll.title')}
-              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border transition-colors ${
-                globalPaused
-                  ? 'bg-green-500/10 border-green-500/30 text-green-500 hover:bg-green-500/20'
-                  : 'bg-amber-500/10 border-amber-500/30 text-amber-600 hover:bg-amber-500/20'
-              } disabled:opacity-50`}
-            >
-              {globalPaused ? (
-                <><svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg> {t('chat.resume')}</>
-              ) : (
-                <><svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg> {t('chat.pause')}</>
-              )}
-            </button>
+            {globalPaused === null ? (
+              <span className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border border-border-default text-fg-tertiary opacity-60">
+                <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" strokeDasharray="31.4 31.4" strokeLinecap="round" /></svg>
+                {t('common:status.loading', { defaultValue: '...' })}
+              </span>
+            ) : (
+              <button
+                onClick={handlePauseClick}
+                disabled={pauseLoading}
+                title={globalPaused ? t('modals.resumeAll.title') : t('modals.pauseAll.title')}
+                className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border transition-colors ${
+                  globalPaused
+                    ? 'bg-green-500/10 border-green-500/30 text-green-500 hover:bg-green-500/20'
+                    : 'bg-amber-500/10 border-amber-500/30 text-amber-600 hover:bg-amber-500/20'
+                } disabled:opacity-50`}
+              >
+                {globalPaused ? (
+                  <><svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg> {t('chat.resume')}</>
+                ) : (
+                  <><svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg> {t('chat.pause')}</>
+                )}
+              </button>
+            )}
           </div>
         </div>
         {/* Action bar */}
@@ -809,9 +827,9 @@ export function ChatTeamSidebar({
                     className="w-full text-left px-4 py-2.5 text-xs text-fg-secondary hover:bg-surface-elevated border-t border-border-default transition-colors">
                     <div className="font-medium flex items-center gap-1.5">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
-                      New Group Chat
+                      {t('chat.newGroupChat')}
                     </div>
-                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">Custom group with any members</div>
+                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.newGroupChatDesc')}</div>
                   </button>
                   <button onClick={() => { setActionMenu(false); navBus.navigate(PAGE.STORE); }}
                     className="w-full text-left px-4 py-2.5 text-xs text-fg-secondary hover:bg-surface-elevated border-t border-border-default transition-colors">
@@ -900,7 +918,7 @@ export function ChatTeamSidebar({
           {/* Custom group chats */}
           {groupChatsByTeam.custom.length > 0 && (
             <div className="mb-2">
-              <p className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 px-2">Groups</p>
+              <p className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 px-2">{t('chat.groups')}</p>
               {groupChatsByTeam.custom.map(gc => {
                 const isActive = chatMode === 'channel' && activeChannel === gc.channelKey;
                 return (
@@ -923,7 +941,7 @@ export function ChatTeamSidebar({
                     </div>
                     <div className="flex-1 min-w-0 text-left">
                       <span className="truncate font-medium text-[11px] leading-tight block">{gc.name}</span>
-                      <div className="text-[10px] text-fg-tertiary leading-tight mt-0.5">{gc.memberCount ?? 0} members</div>
+                      <div className="text-[10px] text-fg-tertiary leading-tight mt-0.5">{t('chat.members_other', { count: gc.memberCount ?? 0 })}</div>
                     </div>
                   </button>
                 );
@@ -932,9 +950,22 @@ export function ChatTeamSidebar({
           )}
 
           {/* Teams + Agents */}
-          {agents.length === 0 && teams.length === 0 && (
+          {initialLoading ? (
+            <div className="space-y-3 px-1 mb-2">
+              {[...Array(6)].map((_, i) => (
+                <div key={i} className="flex items-center gap-2.5 animate-pulse">
+                  <div className="w-6 h-6 rounded-lg bg-surface-overlay shrink-0" />
+                  <div className="flex-1 space-y-1.5">
+                    <div className="h-2.5 bg-surface-overlay rounded w-24" />
+                    <div className="h-2 bg-surface-overlay rounded w-36" />
+                  </div>
+                  <div className="w-2 h-2 rounded-full bg-surface-overlay shrink-0" />
+                </div>
+              ))}
+            </div>
+          ) : agents.length === 0 && teams.length === 0 ? (
             <p className="text-xs text-fg-tertiary px-1 mb-2">{t('chat.noAgentsYet')}</p>
-          )}
+          ) : null}
 
           {/* Unmatched group chats (no matching team) */}
           {groupChatsByTeam.unmatched.map(gc => (
@@ -1002,7 +1033,7 @@ export function ChatTeamSidebar({
         const hasActive = teamAgents.some(a => a.status !== 'offline');
         return (
           <div
-            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)]"
+            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)] max-h-[calc(100vh-1rem)] overflow-y-auto"
             style={{ left: teamMenu.x, top: teamMenu.y }}
             onClick={e => e.stopPropagation()}
           >
@@ -1078,7 +1109,7 @@ export function ChatTeamSidebar({
         const isSelf = a.id === authUser?.id;
         return (
           <div
-            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)]"
+            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)] max-h-[calc(100vh-1rem)] overflow-y-auto"
             style={{ left: agentMenu.x, top: agentMenu.y }}
             onClick={e => e.stopPropagation()}
           >
@@ -1151,7 +1182,7 @@ export function ChatTeamSidebar({
         if (!h || !isAdmin) return null;
         return (
           <div
-            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)]"
+            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)] max-h-[calc(100vh-1rem)] overflow-y-auto"
             style={{ left: humanMenu.x, top: humanMenu.y }}
             onClick={e => e.stopPropagation()}
           >
@@ -1180,7 +1211,7 @@ export function ChatTeamSidebar({
               }, 300);
               setTimeout(() => setHighlightTeamId(null), 3000);
             } catch (e) {
-              alert(`Failed to create team: ${e instanceof Error ? e.message : String(e)}`);
+              alert(t('chat.failedToCreateTeam', { message: e instanceof Error ? e.message : String(e) }));
             }
           }}
         />
@@ -1188,15 +1219,11 @@ export function ChatTeamSidebar({
 
       {showAddHuman && (
         <AddHumanModal
-          onClose={() => setShowAddHuman(false)}
-          onAdd={async (name, role, email, password) => {
-            try {
-              await api.users.create(name, role, undefined, email, password);
-              setShowAddHuman(false);
-              onRefreshHumans?.();
-            } catch (e) {
-              alert(`Failed to create user: ${e instanceof Error ? e.message : String(e)}`);
-            }
+          onClose={() => { setShowAddHuman(false); onRefreshHumans?.(); }}
+          onAdd={async (name, role, email) => {
+            const { inviteToken } = await api.users.create(name, role, undefined, email);
+            onRefreshHumans?.();
+            return { inviteToken };
           }}
         />
       )}
@@ -1232,7 +1259,7 @@ export function ChatTeamSidebar({
         if (!gc) return null;
         return (
           <div
-            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)]"
+            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)] max-h-[calc(100vh-1rem)] overflow-y-auto"
             style={{ left: gcMenu.x, top: gcMenu.y }}
             onClick={e => e.stopPropagation()}
           >
@@ -1248,13 +1275,13 @@ export function ChatTeamSidebar({
             )}
             <button onClick={async () => {
               setGcMenu(null);
-              askConfirm('Delete group chat?', `Delete "${gc.name}" and all its messages?`, async () => {
+              askConfirm(t('modals.deleteGroupChat.title'), t('modals.deleteGroupChat.message', { name: gc.name }), async () => {
                 await api.groupChats.delete(gc.id);
                 onRefreshGroupChats();
-              }, 'Delete');
+              }, t('modals.deleteGroupChat.confirm'));
             }} className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-500 flex items-center gap-2">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
-              Delete Group
+              {t('modals.deleteGroupChat.menuLabel')}
             </button>
           </div>
         );

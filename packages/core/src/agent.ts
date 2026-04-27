@@ -466,7 +466,9 @@ export class Agent {
     this.notifyStateChange();
   }
 
-  async start(options?: { initialHeartbeatDelayMs?: number }): Promise<void> {
+  async start(options?: { initialHeartbeatDelayMs?: number; startAsPaused?: boolean }): Promise<void> {
+    const shouldPause = options?.startAsPaused || this.state.status === 'paused';
+
     this.setStatus('idle');
 
     // Detect runtime environment (cached for 5 minutes)
@@ -493,6 +495,14 @@ export class Agent {
       log.info(`Created fallback session for activity injection: ${fallback.id}`);
     }
 
+    if (shouldPause) {
+      this.setStatus('paused');
+      this.pauseReason = this.pauseReason || 'Restored as paused from previous session';
+      this.eventBus.emit('agent:paused', { agentId: this.id, reason: this.pauseReason });
+      log.info(`Agent started as paused: ${this.config.name}`);
+      return;
+    }
+
     this.heartbeat.start(options?.initialHeartbeatDelayMs);
     this.attentionController.start();
 
@@ -517,9 +527,10 @@ export class Agent {
       this.memoryConsolidationTimer = undefined;
     }
     this.metricsCollector.flush();
-    this.setStatus('offline');
+    const wasPaused = this.state.status === 'paused';
+    this.setStatus(wasPaused ? 'paused' : 'offline');
     this.eventBus.emit('agent:stopped', { agentId: this.id });
-    log.info(`Agent stopped: ${this.config.name}`);
+    log.info(`Agent stopped: ${this.config.name}${wasPaused ? ' (preserving paused state)' : ''}`);
   }
 
   // ─── Mailbox & Attention ──────────────────────────────────────────────────
@@ -1212,14 +1223,15 @@ export class Agent {
   }
 
   pause(reason?: string): void {
-    if (this.state.status === 'offline') return;
     this.pauseReason = reason;
-    this.cancelActiveStream();
-    this.heartbeat.stop();
-    this.attentionController.stop();
-    if (this.memoryConsolidationTimer) {
-      clearInterval(this.memoryConsolidationTimer);
-      this.memoryConsolidationTimer = undefined;
+    if (this.state.status !== 'offline') {
+      this.cancelActiveStream();
+      this.heartbeat.stop();
+      this.attentionController.stop();
+      if (this.memoryConsolidationTimer) {
+        clearInterval(this.memoryConsolidationTimer);
+        this.memoryConsolidationTimer = undefined;
+      }
     }
     this.setStatus('paused');
     this.eventBus.emit('agent:paused', { agentId: this.id, reason });

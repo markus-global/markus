@@ -17,6 +17,11 @@
     "people": "人员",
     "myNotes": "我的笔记",
     "groupChat": "群聊",
+    "groups": "群组",
+    "newGroupChat": "新建群聊",
+    "newGroupChatDesc": "自定义群组，可添加任意成员",
+    "members_one": "{{count}} 位成员",
+    "members_other": "{{count}} 位成员",
     "dropHere": "拖放到此处",
     "expandTeam": "展开",
     "collapseTeam": "收起",
@@ -62,18 +67,17 @@
       "assignToTeam": "分配到团队",
       "noTeam": "无团队",
       "email": "邮箱",
-      "emailPlaceholder": "登录所需",
-      "passwordSection": "设置密码以允许此人登录。",
-      "password": "密码",
-      "passwordPlaceholder": "留空则无法登录",
-      "confirmPassword": "确认密码",
-      "confirmPasswordPlaceholder": "再次输入密码",
+      "emailPlaceholder": "用于接收邀请和登录",
       "addMember": "添加成员",
       "nameRequired": "姓名为必填项",
-      "emailRequired": "设置密码时必须填写邮箱",
+      "emailRequired": "邮箱 *",
       "invalidEmail": "请输入有效的邮箱地址",
-      "passwordMinLength": "密码至少 6 位",
-      "passwordsMismatch": "两次输入的密码不一致"
+      "inviteFlowHint": "创建后将生成邀请链接，新成员通过链接设置密码并完成入职引导。",
+      "memberCreated": "「{{name}}」已添加",
+      "inviteHint": "请将以下邀请链接发送给该成员，对方可通过链接设置密码并登录。",
+      "inviteLink": "邀请链接",
+      "copyInviteLink": "复制邀请链接",
+      "memberCreatedNoInvite": "成员已创建，但未生成邀请链接。请在设置中为该用户重新发送邀请。"
     },
     "addExisting": {
       "title": "将已有成员加入团队",
@@ -123,6 +127,22 @@
     "resumeAll": {
       "title": "恢复所有智能体",
       "message": "所有智能体将恢复处理邮箱中的事件。"
+    },
+    "createGroupChat": {
+      "title": "创建群聊",
+      "subtitle": "添加智能体和成员一起聊天",
+      "groupNamePlaceholder": "群组名称…",
+      "searchPlaceholder": "搜索成员…",
+      "noMembersFound": "未找到成员",
+      "selected": "已选 {{count}} 个",
+      "creating": "创建中…",
+      "create": "创建"
+    },
+    "deleteGroupChat": {
+      "title": "删除群聊？",
+      "message": "删除「{{name}}」及其所有消息？",
+      "confirm": "删除",
+      "menuLabel": "删除群聊"
     }
   },
   "notifications": {

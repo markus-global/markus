@@ -3,7 +3,7 @@ import { join, resolve, dirname } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, kebab, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, kebab, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -513,7 +513,7 @@ export class APIServer {
             priority: req.priority as TaskPriority,
             orgId: req.orgId,
             assignedAgentId: req.assignedAgentId,
-            reviewerAgentId: req.reviewerAgentId,
+            reviewerId: req.reviewerId,
             createdBy: req.createdBy,
           });
         },
@@ -643,28 +643,40 @@ export class APIServer {
     return this.teamTemplateRegistry;
   }
 
-  /** Ensure at least one admin user exists; called once after storage init */
-  async ensureAdminUser(orgId: string): Promise<void> {
-    if (!this.storage) return;
+  /** Ensure at least one admin/owner user exists; called once after storage init.
+   *  Migrates legacy 'default' user rows to a real auto-generated ID.
+   *  Returns the owner's user ID (existing/migrated or newly created). */
+  async ensureAdminUser(orgId: string): Promise<string> {
+    if (!this.storage) return genUserId();
     const allUsers = await this.storage.userRepo.listByOrg(orgId);
-    if (allUsers.some((u: any) => u.passwordHash && u.id === 'default')) return;
 
-    // Remove any stale non-default admin users from old versions
-    for (const u of allUsers.filter((u: any) => u.passwordHash && u.id !== 'default')) {
-      await this.storage.userRepo.delete(u.id);
+    // Check for existing owner with a password
+    const existingOwner = allUsers.find((u: any) => u.role === 'owner' && u.passwordHash);
+    if (existingOwner) {
+      // Migrate legacy 'default' ID to a proper auto-generated ID
+      if (existingOwner.id === 'default') {
+        const newId = genUserId();
+        this.storage.userRepo.migrateDefaultId(newId);
+        log.info("Migrated legacy owner id='default'", { newId });
+        return newId;
+      }
+      return existingOwner.id as string;
     }
 
+    // No owner found — create fresh
     const adminPassword = process.env['ADMIN_PASSWORD'] ?? 'markus123';
     const hash = await hashPassword(adminPassword);
+    const ownerId = genUserId();
     await this.storage.userRepo.upsert({
-      id: 'default',
+      id: ownerId,
       orgId,
       name: 'Admin',
       email: 'admin@markus.local',
       role: 'owner',
       passwordHash: hash,
     });
-    log.info('Created default admin user (admin@markus.local)');
+    log.info('Created admin user (admin@markus.local)', { userId: ownerId });
+    return ownerId;
   }
 
   private get jwtSecret(): string {
@@ -2698,9 +2710,10 @@ export class APIServer {
       if (!authUser) return;
       const body = await this.readBody(req);
       const assignedAgentId = (body['assignedAgentId'] as string | undefined)?.trim();
-      const reviewerAgentId = (body['reviewerAgentId'] as string | undefined)?.trim();
-      if (!assignedAgentId || !reviewerAgentId) {
-        this.json(res, 400, { error: 'assignedAgentId and reviewerAgentId are required' });
+      const reviewerId = (body['reviewerId'] as string | undefined)?.trim();
+      const reviewerType = (body['reviewerType'] as string | undefined) === 'human' ? 'human' as const : 'agent' as const;
+      if (!assignedAgentId || !reviewerId) {
+        this.json(res, 400, { error: 'assignedAgentId and reviewerId are required' });
         return;
       }
       const agentMgr = this.orgService.getAgentManager();
@@ -2708,8 +2721,8 @@ export class APIServer {
         this.json(res, 400, { error: `Assigned agent not found: ${assignedAgentId}` });
         return;
       }
-      if (!agentMgr.hasAgent(reviewerAgentId)) {
-        this.json(res, 400, { error: `Reviewer agent not found: ${reviewerAgentId}` });
+      if (reviewerType !== 'human' && !agentMgr.hasAgent(reviewerId)) {
+        this.json(res, 400, { error: `Reviewer agent not found: ${reviewerId}` });
         return;
       }
       const scheduleRaw = body['scheduleConfig'] as Record<string, unknown> | undefined;
@@ -2719,7 +2732,8 @@ export class APIServer {
         description: body['description'] as string,
         priority: body['priority'] as TaskPriority | undefined,
         assignedAgentId,
-        reviewerAgentId,
+        reviewerId,
+        reviewerType,
         projectId: body['projectId'] as string | undefined,
         blockedBy: Array.isArray(body['blockedBy']) ? body['blockedBy'] as string[] : undefined,
         requirementId: body['requirementId'] as string | undefined,
@@ -2744,7 +2758,7 @@ export class APIServer {
         taskId: task.id,
         projectId: task.projectId,
         success: true,
-        metadata: { reviewerAgentId: task.reviewerAgentId, requirementId: task.requirementId },
+        metadata: { reviewerId: task.reviewerId, requirementId: task.requirementId },
       });
       this.json(res, 201, { task });
       return;
@@ -2773,7 +2787,7 @@ export class APIServer {
         return;
       }
 
-      // General field update (title/description/priority/projectId/requirementId/blockedBy/reviewerAgentId)
+      // General field update (title/description/priority/projectId/requirementId/blockedBy/reviewerId/reviewerType)
       if (
         body['title'] !== undefined ||
         body['description'] !== undefined ||
@@ -2781,7 +2795,8 @@ export class APIServer {
         body['projectId'] !== undefined ||
         body['requirementId'] !== undefined ||
         body['blockedBy'] !== undefined ||
-        body['reviewerAgentId'] !== undefined
+        body['reviewerId'] !== undefined ||
+        body['reviewerType'] !== undefined
       ) {
         const task = this.taskService.updateTask(taskId, {
           title: body['title'] as string | undefined,
@@ -2790,7 +2805,8 @@ export class APIServer {
           projectId: body['projectId'] !== undefined ? (body['projectId'] as string | null) : undefined,
           requirementId: body['requirementId'] !== undefined ? (body['requirementId'] as string | null) : undefined,
           blockedBy: Array.isArray(body['blockedBy']) ? body['blockedBy'] as string[] : undefined,
-          reviewerAgentId: body['reviewerAgentId'] as string | undefined,
+          reviewerId: body['reviewerId'] as string | undefined,
+          reviewerType: body['reviewerType'] as 'agent' | 'human' | undefined,
         }, authUser?.userId);
         this.json(res, 200, { task });
         return;
@@ -3130,7 +3146,7 @@ export class APIServer {
       const body = await this.readBody(req);
       const org = await this.orgService.createOrganization(
         body['name'] as string,
-        (body['ownerId'] as string) ?? 'default'
+        (body['ownerId'] as string) ?? authUser.userId
       );
       this.json(res, 201, { org });
       return;
@@ -4428,39 +4444,56 @@ EXPLANATION_END`;
       const email = body['email'] as string | undefined;
       const password = body['password'] as string | undefined;
       const teamId = body['teamId'] as string | undefined;
-      const userId = (body['id'] as string | undefined) ?? generateId('usr');
+      const userId = (body['id'] as string | undefined) ?? genUserId();
 
       // Always persist to DB for durability (not just when email/password provided)
       let inviteToken: string | undefined;
+      let effectiveUserId = userId;
       if (this.storage) {
         if (password && !email) {
           this.json(res, 400, { error: 'Email is required when setting a password' });
           return;
         }
-        const passwordHash = password ? await hashPassword(password) : undefined;
-        await this.storage.userRepo.create({
-          id: userId,
-          orgId,
-          name,
-          email: email ?? undefined,
-          role,
-          passwordHash,
-        });
-        // Generate invite token for email-only users (no password set)
-        if (email && !password) {
-          inviteToken = generateInviteToken();
-          const expires = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
-          this.storage.userRepo.setInviteToken(userId, inviteToken, expires);
+
+        // Check if a soft-deleted user with this email exists — reactivate instead of creating new
+        const deletedUser = email ? this.storage.userRepo.findDeletedByEmail(email) : null;
+        if (deletedUser) {
+          effectiveUserId = deletedUser.id as string;
+          this.storage.userRepo.reactivate(effectiveUserId, { name, role });
+          if (password) {
+            const hash = await hashPassword(password);
+            await this.storage.userRepo.updatePassword(effectiveUserId, hash);
+          } else {
+            inviteToken = generateInviteToken();
+            const expires = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
+            this.storage.userRepo.setInviteToken(effectiveUserId, inviteToken, expires);
+          }
+        } else {
+          const passwordHash = password ? await hashPassword(password) : undefined;
+          await this.storage.userRepo.create({
+            id: effectiveUserId,
+            orgId,
+            name,
+            email: email ?? undefined,
+            role,
+            passwordHash,
+          });
+          // Generate invite token for email-only users (no password set)
+          if (email && !password) {
+            inviteToken = generateInviteToken();
+            const expires = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
+            this.storage.userRepo.setInviteToken(effectiveUserId, inviteToken, expires);
+          }
         }
       }
 
-      const user = this.orgService.addHumanUser(orgId, name, role, { id: userId, email });
+      const user = this.orgService.addHumanUser(orgId, name, role, { id: effectiveUserId, email });
 
       // Add to team if specified
       let teamError: string | undefined;
       if (teamId) {
         try {
-          this.orgService.addMemberToTeam(teamId, userId, 'human');
+          this.orgService.addMemberToTeam(teamId, effectiveUserId, 'human');
         } catch (err) {
           teamError = String(err);
         }
@@ -4473,7 +4506,7 @@ EXPLANATION_END`;
         detail: `User "${name}" created`,
         userId: authUser.userId,
         success: true,
-        metadata: { newUserId: userId, role },
+        metadata: { newUserId: effectiveUserId, role },
       });
       this.json(res, 201, { user, inviteToken, ...(teamError ? { teamError } : {}) });
       return;
@@ -5651,9 +5684,13 @@ EXPLANATION_END`;
       const isPrivileged = authUser.role === 'owner' || authUser.role === 'admin';
       if (!isPrivileged) {
         approvals = approvals.filter(a => {
-          const ids = a.approverUserIds;
-          if (!ids || ids.length === 0) return true;
-          return ids.includes(authUser.userId);
+          if (a.approverUserIds?.length) {
+            return a.approverUserIds.includes(authUser.userId);
+          }
+          if (a.targetUserId && a.targetUserId !== 'all') {
+            return a.targetUserId === authUser.userId;
+          }
+          return true;
         });
       }
       this.json(res, 200, { approvals });
@@ -8102,8 +8139,8 @@ EXPLANATION_END`;
       try {
         const authUser = await this.getAuthUser(req);
         const body = await this.readBody(req);
-        const reviewerAgentId = (body['reviewerAgentId'] as string | undefined) ?? authUser?.userId ?? 'human';
-        const task = this.taskService.acceptTask(taskId, reviewerAgentId);
+        const reviewerId = (body['reviewerId'] as string | undefined) ?? authUser?.userId ?? 'human';
+        const task = this.taskService.acceptTask(taskId, reviewerId);
         this.json(res, 200, { task });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -8205,6 +8242,25 @@ EXPLANATION_END`;
           await this.taskService.runTask(taskId);
         }
         this.json(res, 202, { status: 'running', taskId });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/tasks\/[^/]+\/schedule$/) && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const taskId = path.split('/')[3]!;
+      try {
+        const body = await this.readBody(req);
+        const task = await this.taskService.updateScheduleFields(taskId, {
+          every: body['every'] as string | undefined,
+          cron: body['cron'] as string | undefined,
+          maxRuns: body['maxRuns'] !== null && body['maxRuns'] !== undefined ? Number(body['maxRuns']) : undefined,
+          timezone: body['timezone'] as string | undefined,
+        });
+        this.json(res, 200, { task });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
       }

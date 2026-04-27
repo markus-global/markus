@@ -28,3 +28,7 @@ export function msgId(): string {
 export function requirementId(): string {
   return generateId('req');
 }
+
+export function userId(): string {
+  return generateId('usr');
+}

@@ -16,7 +16,7 @@ export interface TaskRow {
   priority: string;
   executionMode: string | null;
   assignedAgentId: string;
-  reviewerAgentId: string;
+  reviewerId: string;
   executionRound: number;
   subtasks: unknown[];
   requirementId: string | null;

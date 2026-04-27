@@ -166,7 +166,7 @@ Priorities can be overridden per-item when enqueuing.
 
 ### 3.6 Review Comment Cascade Suppression
 
-When a reviewer agent posts `task_comment` during an active review (`task.status === 'review'` and `authorId === task.reviewerAgentId`), the automatic `task_comment` notifications to the worker and creator agents are suppressed. Only explicit `@mention` notifications are delivered.
+When a reviewer (agent or human) posts `task_comment` during an active review (`task.status === 'review'` and `authorId === task.reviewerId`), the automatic `task_comment` notifications to the worker and creator agents are suppressed. Only explicit `@mention` notifications are delivered.
 
 **Rationale**: Without this guard, the reviewer's intermediate comments trigger a notification cascade:
 1. Reviewer posts comment → worker/creator receive `task_comment`
@@ -1079,7 +1079,7 @@ Deferred mailbox items are automatically resurfaced when the agent is idle:
 `task_status_update` items are **informational only** (`invokesLLM: false`). The side-effect system in `updateTaskStatus()` handles all real actions automatically:
 - **→ `in_progress`**: Auto-starts task execution
 - **Leaving `in_progress`**: Cancels running execution
-- **→ `review`**: Notifies reviewer agent
+- **→ `review`**: Notifies reviewer (agent via mailbox, or human via approval request)
 - **Terminal states**: Checks and unblocks dependent tasks
 
 Agents do NOT need to take action on these notifications — they serve as episodic memory and triage decision context. Agents should NOT send A2A messages to duplicate what the side-effect system already does.

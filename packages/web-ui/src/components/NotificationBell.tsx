@@ -354,7 +354,8 @@ export function NotificationBell({ collapsed, userId }: Props) {
 
   const handleMarkAllRead = async () => {
     try {
-      await api.notifications.markAllRead(userId ?? 'default');
+      if (!userId) return;
+      await api.notifications.markAllRead(userId);
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
       setUnreadCount(0);
     } catch {

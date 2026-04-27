@@ -53,6 +53,14 @@ All requests require authentication via one of:
 | POST | `/api/tasks` | Create task |
 | GET | `/api/taskboard` | Get Kanban board data |
 | PATCH | `/api/tasks/:id` | Update task (status, notes, etc.) |
+| POST | `/api/tasks/:id/approve` | Approve a pending task |
+| POST | `/api/tasks/:id/reject` | Reject a pending task |
+| POST | `/api/tasks/:id/cancel` | Cancel a task (body: `{ cascade?: boolean }`) |
+| POST | `/api/tasks/:id/schedule/pause` | Pause a scheduled task's recurring schedule |
+| POST | `/api/tasks/:id/schedule/resume` | Resume a paused scheduled task |
+| POST | `/api/tasks/:id/schedule/run-now` | Trigger an immediate run of a scheduled task |
+| PUT | `/api/tasks/:id/schedule` | Update schedule configuration `{ every?, cron?, maxRuns?, timezone? }` |
+| GET | `/api/tasks/:id/dependent-count` | Count tasks blocked by this task |
 
 ---
 

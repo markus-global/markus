@@ -275,11 +275,11 @@ rejected ── resubmit ──┘     any ──► cancelled
 
 | Approval tier | Trigger | Approver |
 |---------------|---------|----------|
-| `auto` | Low-priority tasks | No approval |
-| `manager` | Standard tasks | Team Manager Agent |
+| `auto` | Low-priority agent-created tasks | No approval (starts `in_progress`) |
+| `manager` | Standard agent-created tasks | Team Manager Agent |
 | `human` | High/urgent priority, shared-resource impact | Human (HITL) |
 
-Agent trust level dynamically adjusts effective approval tier (e.g. senior Agent's manager-level tasks may auto-approve).
+**Human-created tasks** always start as `pending` regardless of approval tier, with no HITL approval request or notification. The human user explicitly starts execution from the UI ("Start Execution" button). Agent trust level dynamically adjusts effective approval tier (e.g. senior Agent's manager-level tasks may auto-approve).
 
 ### 3.7 Context Engine (System Prompt Assembly)
 
@@ -328,6 +328,14 @@ LLMRouter
 | `agent.stop()` | Stop a single agent. Cancels active LLM stream, stops attention, requeues in-flight item. |
 | `agent.pause(reason)` | Pause a single agent. Same as stop but sets `paused` status (resumable). |
 | System announcements | Broadcast to all Agents and UI, injected into Agent system prompt |
+
+#### Pause State Persistence
+
+Agent paused state is persisted across process restarts at three levels:
+
+- **Individual agent**: `agent.pause()` sets status to `paused`, which is written to the `agents.status` DB column via the `stateChangeHandler`. On shutdown, `agent.stop()` preserves the `paused` status (does not overwrite with `offline`). On restart, `loadFromDB` reads each agent's DB status, and `startRestoredAgentsInBackground` starts paused agents with `startAsPaused: true`, which initializes the agent (session, environment) but skips heartbeat and attention controller startup.
+- **Team-level pause**: Team pause (`pauseTeamAgents`) pauses each member agent individually. Persistence is implicit — each member's paused status is stored in DB. On restart, paused team members are restored as paused. No separate team-level flag is needed.
+- **Global pause**: `pauseAllAgents()` pauses every agent individually. The in-memory `globalPaused` flag is restored on startup: if all restored agents were in `paused` state, `globalPaused` is set to `true`, which ensures the frontend correctly shows the "Resume" button instead of "Pause".
 
 ### 4.2 Workspace Isolation
 

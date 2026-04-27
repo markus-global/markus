@@ -17,6 +17,11 @@
     "people": "People",
     "myNotes": "My Notes",
     "groupChat": "Group Chat",
+    "groups": "Groups",
+    "newGroupChat": "New Group Chat",
+    "newGroupChatDesc": "Custom group with any members",
+    "members_one": "{{count}} member",
+    "members_other": "{{count}} members",
     "dropHere": "Drop here",
     "expandTeam": "Expand",
     "collapseTeam": "Collapse",
@@ -62,18 +67,17 @@
       "assignToTeam": "Assign to Team",
       "noTeam": "No team",
       "email": "Email",
-      "emailPlaceholder": "Required for login access",
-      "passwordSection": "Set a password to allow this person to log in.",
-      "password": "Password",
-      "passwordPlaceholder": "Leave blank for no login access",
-      "confirmPassword": "Confirm Password",
-      "confirmPasswordPlaceholder": "Repeat password",
+      "emailPlaceholder": "For receiving invite and login",
       "addMember": "Add Member",
       "nameRequired": "Name is required",
-      "emailRequired": "Email is required when setting a password",
+      "emailRequired": "Email *",
       "invalidEmail": "Please enter a valid email address",
-      "passwordMinLength": "Password must be at least 6 characters",
-      "passwordsMismatch": "Passwords do not match"
+      "inviteFlowHint": "An invite link will be generated after creation. The new member can set their password and complete onboarding via the link.",
+      "memberCreated": "\"{{name}}\" has been added",
+      "inviteHint": "Share the invite link below with the new member. They can set their password and log in through it.",
+      "inviteLink": "Invite Link",
+      "copyInviteLink": "Copy Invite Link",
+      "memberCreatedNoInvite": "Member created, but no invite link was generated. You can resend the invite from Settings."
     },
     "addExisting": {
       "title": "Add Existing Member to Team",
@@ -123,6 +127,22 @@
     "resumeAll": {
       "title": "Resume All Agents",
       "message": "All agents will resume processing events from their mailbox."
+    },
+    "createGroupChat": {
+      "title": "Create Group Chat",
+      "subtitle": "Add agents and humans to chat together",
+      "groupNamePlaceholder": "Group name...",
+      "searchPlaceholder": "Search members...",
+      "noMembersFound": "No members found",
+      "selected": "{{count}} selected",
+      "creating": "Creating...",
+      "create": "Create"
+    },
+    "deleteGroupChat": {
+      "title": "Delete group chat?",
+      "message": "Delete \"{{name}}\" and all its messages?",
+      "confirm": "Delete",
+      "menuLabel": "Delete Group"
     }
   },
   "notifications": {

@@ -25,6 +25,7 @@ Tasks and requirements share a **single status enum** (`ItemStatus`). Not every 
 - There is no `approved` status. Approval transitions directly to `in_progress` (for both tasks and requirements). The intermediate state added no user decision point.
 - There is no `draft` status. Items are created directly as `pending`. The distinction between "draft" and "submitted for review" added no practical value — agents create items programmatically and don't iterate on drafts.
 - `pending` replaces the old `pending_approval` (tasks), `pending_review` (requirements), and `draft` (requirements).
+- **All tasks start as `pending`** — both human-created and agent-created tasks begin in `pending` status. Human-created tasks require the user to explicitly click "Start Execution" to transition to `in_progress`. Agent-created tasks require human approval (HITL). This gives humans full control over when execution begins.
 
 ---
 
@@ -55,8 +56,8 @@ Tasks and requirements share a **single status enum** (`ItemStatus`). Not every 
 
 | From | To | Trigger | Method |
 |------|----|---------|--------|
-| `pending` | `in_progress` | Human approves (no blockers) | `approveTask()` |
-| `pending` | `blocked` | Human approves (has unmet blockers) | `approveTask()` |
+| `pending` | `in_progress` | Human approves or starts execution (no blockers) | `approveTask()` |
+| `pending` | `blocked` | Human approves or starts execution (has unmet blockers) | `approveTask()` |
 | `pending` | `rejected` | Human rejects | `rejectTask()` |
 | `in_progress` | `review` | Agent execution finishes | Auto (log handler in `runTask`) |
 | `in_progress` | `blocked` | User pauses task | API `POST /tasks/:id/pause` |
@@ -80,7 +81,7 @@ Tasks and requirements share a **single status enum** (`ItemStatus`). Not every 
 | → `in_progress` (from non-`in_progress`) | Auto-start: `runTask()` via `setImmediate` |
 | `in_progress` → anything else | Cancel running execution (cancel token) |
 | → `completed` / `failed` / `cancelled` / `rejected` / `archived` | Set `completedAt`; check dependent tasks for unblocking |
-| → `review` | Notify reviewer agent automatically |
+| → `review` | Notify reviewer (agent via mailbox, or human via approval request) |
 | **Most status changes** | Enqueue `task_status_update` to assigned agent's mailbox (see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md)). Skipped when: (a) auto-start triggers execution (the execution-mode item serves as both trigger and notification), or (b) `in_progress → review` (assignee self-initiated via `task_submit_review`) |
 
 ### FSM Enforcement
@@ -91,11 +92,14 @@ The legal transition set is defined as a declarative matrix `TASK_TRANSITIONS` i
 
 1. **Single entry point**: All status changes go through `updateTaskStatus()`. Methods like `approveTask`, `acceptTask`, `requestRevision` prepare the task then delegate to `updateTaskStatus`.
 2. **Workers cannot self-complete**: Execution finish → `review`, not `completed`. A reviewer must approve.
-3. **Reviewer ≠ Worker**: Self-review is blocked. `reviewerAgentId` is mandatory at task creation.
+3. **Reviewer ≠ Worker**: Self-review is blocked. `reviewerId` is mandatory at task creation.
 4. **Retry = fresh start**: Retry increments `executionRound`, creates a new LLM session, discards previous execution context. Only the task description and notes carry over.
 5. **Pause = blocked**: Pausing a running task sets it to `blocked` and cancels execution. Resume calls `runTask` with full previous context.
 6. **Rejected ≠ Cancelled**: `rejectTask()` sets `rejected` (proposal denied before work). `cancelTask()` sets `cancelled` (work stopped after starting). `rejected` is a terminal state — the proposal was not approved.
 7. **Preemption ≠ blocked**: When the attention controller **preempts** (pauses) a task for a higher-priority item, the task stays `in_progress` (not `blocked`). The mailbox item is deferred and automatically resurfaced when the agent is idle. The same execution round and session context are preserved. **Cancellation** is different: when the controller **cancels** a task (because the incoming message explicitly revokes the work), the mailbox item is permanently dropped and will NOT be resumed.
+8. **Irreversible actions require confirmation**: The UI requires explicit user confirmation (via modal dialogs) for Reject, Cancel (always, regardless of dependents), and Archive operations. This prevents accidental data loss.
+9. **Scheduled task button restrictions**: Completed scheduled tasks do not show "Reopen" (the schedule handles re-runs). Failed scheduled tasks show only "Run Now" (no "Retry"/"Continue" since the scheduler manages retries).
+10. **Human-created tasks**: Created as `pending` with no HITL approval request and no `task_created` notification (no self-notification). The UI shows "Start Execution" instead of "Approve" for human-created pending tasks. Agent-created tasks show "Approve" and trigger HITL approval flow.
 
 ---
 
@@ -148,6 +152,14 @@ After `completed`, the `ScheduledTaskRunner` checks `nextRunAt`. When it's time,
 5. `config.paused = true` skips the task.
 6. `maxRuns` limit stops scheduling when `currentRuns >= maxRuns`.
 
+### Schedule Configuration Editing
+
+The schedule configuration (`every`, `cron`, `maxRuns`, `timezone`) can be modified while a scheduled task exists:
+
+- **Frontend**: "Edit" button appears on the schedule info banner (hidden when task is running or for one-shot `runAt` tasks). Opens an inline editor to switch between interval/cron mode and set max runs.
+- **API**: `PUT /api/tasks/:id/schedule` with body `{ every?, cron?, maxRuns?, timezone? }`. Setting `every` clears `cron`/`runAt`; setting `cron` clears `every`/`runAt`. Recalculates `nextRunAt`.
+- **Agent tool**: `task_update` accepts a `schedule` object `{ every?, cron?, maxRuns?, timezone? }` for scheduled tasks.
+
 ### Key Differences from Standard Tasks
 
 | Aspect | Standard Task | Scheduled Task |
@@ -182,8 +194,8 @@ Agent (Worker)              System                     Reviewer Agent
 ### Reviewer Notification
 
 When a task enters `review` status (via `updateTaskStatus`), the system automatically:
-1. Looks up the `reviewerAgentId` on the task
-2. Sends a structured review request message to the reviewer agent via the mailbox (`sendMessage`)
+1. Looks up the `reviewerId` on the task
+2. Sends a structured review request to the reviewer — agent via mailbox, or human via HITL approval
 3. The message includes: task description, deliverables, subtask status, recent notes, and instructions
 
 ### Reviewer Actions
@@ -353,7 +365,7 @@ requirement status change → agent.enqueueToMailbox('requirement_update', {
 - **Side-effect system handles all actions**: The `updateTaskStatus()` method in `TaskService` automatically handles all real side effects triggered by status changes:
   - **→ `in_progress`**: Auto-starts task execution via `runTask()`
   - **Leaving `in_progress`**: Cancels any running execution
-  - **→ `review`**: Notifies the reviewer agent
+  - **→ `review`**: Notifies the reviewer (agent or human)
   - **Terminal states** (`completed`, `failed`, `cancelled`): Checks and unblocks dependent tasks
 - **Agents should NOT duplicate these actions**: Do not send A2A messages to notify about task status changes — the system handles everything. A2A should only be used for substantive coordination that goes beyond a status change.
 - **Episodic memory**: These notifications become part of the agent's mailbox timeline — the authoritative record of everything that happened. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md).

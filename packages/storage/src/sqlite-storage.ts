@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   execution_mode TEXT,
   assigned_agent_id TEXT NOT NULL REFERENCES agents(id),
   reviewer_agent_id TEXT NOT NULL,
+  reviewer_type TEXT DEFAULT 'agent',
   execution_round INTEGER NOT NULL DEFAULT 1,
   subtasks TEXT DEFAULT '[]',
   requirement_id TEXT,
@@ -532,7 +533,8 @@ CREATE TABLE IF NOT EXISTS approvals (
   options TEXT,
   allow_freeform INTEGER NOT NULL DEFAULT 0,
   selected_option TEXT,
-  approver_user_ids TEXT
+  approver_user_ids TEXT,
+  target_user_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at DESC);
 
@@ -603,6 +605,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'task_logs', column: 'execution_round', sql: "ALTER TABLE task_logs ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
     { table: 'tasks', column: 'execution_round', sql: "ALTER TABLE tasks ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
     { table: 'tasks', column: 'reviewer_agent_id', sql: "ALTER TABLE tasks ADD COLUMN reviewer_agent_id TEXT NOT NULL DEFAULT ''" },
+    { table: 'tasks', column: 'reviewer_type', sql: "ALTER TABLE tasks ADD COLUMN reviewer_type TEXT DEFAULT 'agent'" },
     { table: 'tasks', column: 'subtasks', sql: "ALTER TABLE tasks ADD COLUMN subtasks TEXT DEFAULT '[]'" },
     { table: 'deliverables', column: 'artifact_type', sql: "ALTER TABLE deliverables ADD COLUMN artifact_type TEXT" },
     { table: 'deliverables', column: 'artifact_data', sql: "ALTER TABLE deliverables ADD COLUMN artifact_data TEXT" },
@@ -623,6 +626,9 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'approvals', column: 'approver_user_ids', sql: "ALTER TABLE approvals ADD COLUMN approver_user_ids TEXT" },
     { table: 'requirements', column: 'rejected_by', sql: 'ALTER TABLE requirements ADD COLUMN rejected_by TEXT' },
     { table: 'projects', column: 'created_by', sql: 'ALTER TABLE projects ADD COLUMN created_by TEXT' },
+    { table: 'approvals', column: 'target_user_id', sql: 'ALTER TABLE approvals ADD COLUMN target_user_id TEXT' },
+    { table: 'users', column: 'deleted_at', sql: 'ALTER TABLE users ADD COLUMN deleted_at TEXT' },
+    { table: 'agents', column: 'deleted_at', sql: 'ALTER TABLE agents ADD COLUMN deleted_at TEXT' },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -779,7 +785,7 @@ export class SqliteAgentRepo {
   }
 
   findById(id: string) {
-    const r = this.db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as
+    const r = this.db.prepare('SELECT * FROM agents WHERE id = ? AND deleted_at IS NULL').get(id) as
       | Record<string, unknown>
       | undefined;
     return r ? this._map(r) : undefined;
@@ -787,7 +793,7 @@ export class SqliteAgentRepo {
 
   findByOrgId(orgId: string) {
     return (
-      this.db.prepare('SELECT * FROM agents WHERE org_id = ?').all(orgId) as Record<
+      this.db.prepare('SELECT * FROM agents WHERE org_id = ? AND deleted_at IS NULL').all(orgId) as Record<
         string,
         unknown
       >[]
@@ -795,7 +801,7 @@ export class SqliteAgentRepo {
   }
 
   listAll() {
-    return (this.db.prepare('SELECT * FROM agents').all() as Record<string, unknown>[]).map(r =>
+    return (this.db.prepare('SELECT * FROM agents WHERE deleted_at IS NULL').all() as Record<string, unknown>[]).map(r =>
       this._map(r)
     );
   }
@@ -821,11 +827,7 @@ export class SqliteAgentRepo {
   }
 
   delete(id: string) {
-    // Clear FK references from dependent tables before deleting the agent row
-    this.db.prepare('UPDATE tasks SET assigned_agent_id = NULL WHERE assigned_agent_id = ?').run(id);
-    this.db.prepare('UPDATE messages SET agent_id = NULL WHERE agent_id = ?').run(id);
-    this.db.prepare('DELETE FROM memories WHERE agent_id = ?').run(id);
-    this.db.prepare('DELETE FROM agents WHERE id = ?').run(id);
+    this.db.prepare("UPDATE agents SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(id);
   }
 
   updateAvatarUrl(id: string, avatarUrl: string | null) {
@@ -884,7 +886,7 @@ export class SqliteTaskRepo {
     priority?: string;
     executionMode?: string;
     assignedAgentId: string;
-    reviewerAgentId: string;
+    reviewerId: string;
     executionRound?: number;
     requirementId?: string;
     blockedBy?: string[];
@@ -898,8 +900,8 @@ export class SqliteTaskRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, org_id, title, description, status, priority, execution_mode, assigned_agent_id, reviewer_agent_id, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO tasks (id, org_id, title, description, status, priority, execution_mode, assigned_agent_id, reviewer_agent_id, reviewer_type, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id,
@@ -910,7 +912,8 @@ export class SqliteTaskRepo {
         data.priority ?? 'medium',
         data.executionMode ?? null,
         data.assignedAgentId,
-        data.reviewerAgentId,
+        data.reviewerId,
+        (data as any).reviewerType ?? 'agent',
         data.executionRound ?? 1,
         toJson(data.subtasks ?? []),
         data.requirementId ?? null,
@@ -968,7 +971,7 @@ export class SqliteTaskRepo {
 
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: string; notes?: string[]; blockedBy?: string[]; projectId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null; reviewerAgentId?: string; updatedBy?: string }
+    data: { title?: string; description?: string; priority?: string; notes?: string[]; blockedBy?: string[]; projectId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null; reviewerId?: string; updatedBy?: string }
   ) {
     const sets: string[] = [];
     const vals: SqlParams = [];
@@ -1004,9 +1007,13 @@ export class SqliteTaskRepo {
       sets.push('schedule_config = ?');
       vals.push(data.scheduleConfig ? toJson(data.scheduleConfig) : null);
     }
-    if (data.reviewerAgentId !== undefined) {
+    if (data.reviewerId !== undefined) {
       sets.push('reviewer_agent_id = ?');
-      vals.push(data.reviewerAgentId);
+      vals.push(data.reviewerId);
+    }
+    if ((data as any).reviewerType !== undefined) {
+      sets.push('reviewer_type = ?');
+      vals.push((data as any).reviewerType);
     }
     if (data.updatedBy !== undefined) {
       sets.push('updated_by = ?');
@@ -1094,7 +1101,7 @@ export class SqliteTaskRepo {
     priority?: string;
     status?: string;
     assignedAgentId: string;
-    reviewerAgentId: string;
+    reviewerId: string;
     executionRound?: number;
     requirementId?: string;
     projectId?: string;
@@ -1108,8 +1115,8 @@ export class SqliteTaskRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, org_id, title, description, status, priority, assigned_agent_id, reviewer_agent_id, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO tasks (id, org_id, title, description, status, priority, assigned_agent_id, reviewer_agent_id, reviewer_type, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title = excluded.title,
          status = excluded.status,
@@ -1125,7 +1132,8 @@ export class SqliteTaskRepo {
         data.status ?? 'pending',
         data.priority ?? 'medium',
         data.assignedAgentId,
-        data.reviewerAgentId,
+        data.reviewerId,
+        (data as any).reviewerType ?? 'agent',
         data.executionRound ?? 1,
         toJson(data.subtasks ?? []),
         data.requirementId ?? null,
@@ -1154,7 +1162,8 @@ export class SqliteTaskRepo {
       priority: r['priority'],
       executionMode: r['execution_mode'],
       assignedAgentId: r['assigned_agent_id'],
-      reviewerAgentId: r['reviewer_agent_id'],
+      reviewerId: r['reviewer_agent_id'],
+      reviewerType: (r['reviewer_type'] as string) ?? 'agent',
       executionRound: r['execution_round'] ?? 1,
       subtasks: fromJson<unknown[]>(r['subtasks'] as string) ?? [],
       requirementId: r['requirement_id'] as string | null,
@@ -2044,6 +2053,22 @@ export class SqliteChatSessionRepo {
     return count;
   }
 
+  /**
+   * Migrate sessions with user_id = 'default' to the real owner userId.
+   * Called once at startup for legacy data from before auto-generated user IDs.
+   */
+  migrateDefaultUserSessions(realOwnerId: string): number {
+    if (realOwnerId === 'default') return 0;
+    const result = this.db.prepare(
+      "UPDATE chat_sessions SET user_id = ? WHERE user_id = 'default'"
+    ).run(realOwnerId);
+    const count = Number(result.changes);
+    if (count > 0) {
+      log.info(`Migrated ${count} chat sessions from user_id='default' to ${realOwnerId}`);
+    }
+    return count;
+  }
+
   private _parseContentToSegments(content: string, msgCreatedAt?: string): Array<Record<string, unknown>> {
     const segments: Array<Record<string, unknown>> = [];
     let remaining = content;
@@ -2245,11 +2270,11 @@ export class SqliteUserRepo {
   }
 
   async delete(id: string) {
-    this.db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    this.db.prepare("UPDATE users SET deleted_at = datetime('now') WHERE id = ?").run(id);
   }
 
   findByEmail(email: string) {
-    const r = this.db.prepare('SELECT * FROM users WHERE email = ?').get(email) as
+    const r = this.db.prepare('SELECT * FROM users WHERE email = ? AND deleted_at IS NULL').get(email) as
       | Record<string, unknown>
       | undefined;
     return r ? this._map(r) : null;
@@ -2264,7 +2289,7 @@ export class SqliteUserRepo {
 
   listByOrg(orgId: string) {
     return (
-      this.db.prepare('SELECT * FROM users WHERE org_id = ?').all(orgId) as Record<
+      this.db.prepare('SELECT * FROM users WHERE org_id = ? AND deleted_at IS NULL').all(orgId) as Record<
         string,
         unknown
       >[]
@@ -2305,7 +2330,7 @@ export class SqliteUserRepo {
   }
 
   countByOrg(orgId: string): number {
-    const r = this.db.prepare('SELECT COUNT(*) as cnt FROM users WHERE org_id = ?').get(orgId) as {
+    const r = this.db.prepare('SELECT COUNT(*) as cnt FROM users WHERE org_id = ? AND deleted_at IS NULL').get(orgId) as {
       cnt: number;
     };
     return r.cnt;
@@ -2320,7 +2345,7 @@ export class SqliteUserRepo {
   }
 
   findByInviteToken(token: string) {
-    const r = this.db.prepare('SELECT * FROM users WHERE invite_token = ?').get(token) as
+    const r = this.db.prepare('SELECT * FROM users WHERE invite_token = ? AND deleted_at IS NULL').get(token) as
       | Record<string, unknown>
       | undefined;
     return r ? this._map(r) : null;
@@ -2328,6 +2353,40 @@ export class SqliteUserRepo {
 
   clearInviteToken(id: string) {
     this.db.prepare('UPDATE users SET invite_token = NULL, invite_expires_at = NULL WHERE id = ?').run(id);
+  }
+
+  findDeletedByEmail(email: string) {
+    const r = this.db.prepare('SELECT * FROM users WHERE email = ? AND deleted_at IS NOT NULL').get(email) as
+      | Record<string, unknown>
+      | undefined;
+    return r ? this._map(r) : null;
+  }
+
+  reactivate(id: string, data: { name: string; role: string }) {
+    this.db.prepare('UPDATE users SET deleted_at = NULL, name = ?, role = ?, invite_token = NULL, invite_expires_at = NULL WHERE id = ?')
+      .run(data.name, data.role, id);
+  }
+
+  /**
+   * Migrate the legacy 'default' user row to a real auto-generated ID.
+   * Returns the new ID if migration happened, or null if no legacy row existed.
+   */
+  migrateDefaultId(newId: string): string | null {
+    const existing = this.findById('default');
+    if (!existing) return null;
+
+    // Check if a row with the newId already exists (from a prior ensureAdminUser)
+    const alreadyMigrated = this.findById(newId);
+    if (alreadyMigrated) {
+      // Just delete the legacy 'default' row
+      this.db.prepare("DELETE FROM users WHERE id = 'default'").run();
+      return newId;
+    }
+
+    // Rename the row
+    this.db.prepare("UPDATE users SET id = ? WHERE id = 'default'").run(newId);
+    log.info(`Migrated user id='default' to '${newId}'`);
+    return newId;
   }
 
   private _map(r: Record<string, unknown>) {
@@ -3768,8 +3827,8 @@ export class SqliteNotificationRepo {
   }
 
   list(userId: string, opts?: { unreadOnly?: boolean; limit?: number; offset?: number; type?: string }): NotificationRow[] {
-    const conditions = ['(user_id = ? OR user_id = ? OR user_id = ?)'];
-    const params: SQLInputValue[] = [userId, 'all', 'default'];
+    const conditions = ['(user_id = ? OR user_id = ?)'];
+    const params: SQLInputValue[] = [userId, 'all'];
 
     if (opts?.unreadOnly) {
       conditions.push('read = 0');
@@ -3788,8 +3847,8 @@ export class SqliteNotificationRepo {
   }
 
   count(userId: string, unreadOnly = false): number {
-    const conditions = ['(user_id = ? OR user_id = ? OR user_id = ?)'];
-    const params: SQLInputValue[] = [userId, 'all', 'default'];
+    const conditions = ['(user_id = ? OR user_id = ?)'];
+    const params: SQLInputValue[] = [userId, 'all'];
     if (unreadOnly) conditions.push('read = 0');
 
     const row = this.db.prepare(
@@ -3805,9 +3864,24 @@ export class SqliteNotificationRepo {
 
   markAllRead(userId: string): number {
     const info = this.db.prepare(
-      'UPDATE user_notifications SET read = 1 WHERE (user_id = ? OR user_id = ? OR user_id = ?) AND read = 0'
-    ).run(userId, 'all', 'default');
+      'UPDATE user_notifications SET read = 1 WHERE (user_id = ? OR user_id = ?) AND read = 0'
+    ).run(userId, 'all');
     return Number(info.changes);
+  }
+
+  /**
+   * Migrate notifications with user_id = 'default' to the real owner userId.
+   */
+  migrateDefaultUserId(realOwnerId: string): number {
+    if (realOwnerId === 'default') return 0;
+    const result = this.db.prepare(
+      "UPDATE user_notifications SET user_id = ? WHERE user_id = 'default'"
+    ).run(realOwnerId);
+    const count = Number(result.changes);
+    if (count > 0) {
+      log.info(`Migrated ${count} notifications from user_id='default' to ${realOwnerId}`);
+    }
+    return count;
   }
 
   private mapRow(r: Record<string, unknown>): NotificationRow {
@@ -3847,6 +3921,7 @@ export interface ApprovalRow {
   allowFreeform?: boolean;
   selectedOption?: string;
   approverUserIds?: string[];
+  targetUserId?: string;
 }
 
 export class SqliteApprovalRepo {
@@ -3854,8 +3929,8 @@ export class SqliteApprovalRepo {
 
   upsert(a: ApprovalRow): void {
     this.db.prepare(
-      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option, approver_user_ids)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option, approver_user_ids, target_user_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          status = excluded.status,
          responded_at = excluded.responded_at,
@@ -3880,6 +3955,7 @@ export class SqliteApprovalRepo {
       a.allowFreeform ? 1 : 0,
       a.selectedOption ?? null,
       a.approverUserIds?.length ? JSON.stringify(a.approverUserIds) : null,
+      a.targetUserId ?? null,
     );
   }
 
@@ -3919,7 +3995,23 @@ export class SqliteApprovalRepo {
       allowFreeform: !!(r['allow_freeform'] as number),
       selectedOption: r['selected_option'] as string | undefined,
       approverUserIds: fromJson<string[]>(r['approver_user_ids'] as string) ?? undefined,
+      targetUserId: (r['target_user_id'] as string) ?? undefined,
     };
+  }
+
+  /**
+   * Migrate approvals with target_user_id = 'default' to real owner ID.
+   */
+  migrateDefaultTargetUserId(realOwnerId: string): number {
+    if (realOwnerId === 'default') return 0;
+    const result = this.db.prepare(
+      "UPDATE approvals SET target_user_id = ? WHERE target_user_id = 'default'"
+    ).run(realOwnerId);
+    const count = Number(result.changes);
+    if (count > 0) {
+      log.info(`Migrated ${count} approvals from target_user_id='default' to ${realOwnerId}`);
+    }
+    return count;
   }
 }
 

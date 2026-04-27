@@ -74,7 +74,8 @@ export interface CreateTaskRequest {
   description: string;
   priority?: TaskPriority;
   assignedAgentId: string;
-  reviewerAgentId: string;
+  reviewerId: string;
+  reviewerType?: 'agent' | 'human';
   dueAt?: string;
   blockedBy?: string[];
   timeoutMs?: number;
@@ -226,8 +227,8 @@ export class TaskService {
       // transition (completed / in_progress revision), not intermediate comments.
       // @mention notifications are still delivered.
       const isReviewerDuringReview = task?.status === 'review'
-        && !!task.reviewerAgentId
-        && authorId === task.reviewerAgentId;
+        && !!task.reviewerId
+        && authorId === task.reviewerId;
 
       const buildNotifContent = (reason: string) => [
         `${reason} on task "${taskTitle}" (ID: ${taskId}, status: ${taskStatus}).`,
@@ -434,7 +435,7 @@ export class TaskService {
     commentContent: string,
     context: { taskId?: string; taskTitle?: string; requirementId?: string; requirementTitle?: string },
   ): void {
-    if (!this.hitlService || userId === 'default') return;
+    if (!this.hitlService) return;
     const preview = commentContent.length > 80 ? commentContent.slice(0, 80) + '…' : commentContent;
     const itemTitle = context.taskTitle ?? context.requirementTitle ?? '';
     const isTask = !!context.taskId;
@@ -1134,7 +1135,7 @@ export class TaskService {
           priority: task.priority,
           status: task.status,
           assignedAgentId: task.assignedAgentId,
-          reviewerAgentId: task.reviewerAgentId,
+          reviewerId: task.reviewerId,
           executionRound: task.executionRound,
           requirementId: task.requirementId,
           projectId: task.projectId,
@@ -1471,7 +1472,8 @@ export class TaskService {
           priority: (row.priority ?? 'medium') as TaskPriority,
           executionMode: (row.executionMode as Task['executionMode']) ?? undefined,
           assignedAgentId: row.assignedAgentId ?? (row as any).assigned_agent_id ?? '',
-          reviewerAgentId: (row as any).reviewerAgentId ?? (row as any).reviewer_agent_id ?? '',
+          reviewerId: (row as any).reviewerId ?? (row as any).reviewer_agent_id ?? '',
+          reviewerType: ((row as any).reviewerType ?? (row as any).reviewer_type ?? 'agent') as 'agent' | 'human',
           executionRound: (row as any).executionRound ?? (row as any).execution_round ?? 1,
           requirementId: (row as any).requirementId ?? undefined,
           subtasks,
@@ -1542,19 +1544,20 @@ export class TaskService {
   }
 
   createTask(request: CreateTaskRequest): Task {
-    // ── Validate assignedAgentId / reviewerAgentId exist ──
+    // ── Validate assignedAgentId / reviewerId exist ──
     if (!request.assignedAgentId) {
       throw new Error('Task creation failed: assignedAgentId is required');
     }
-    if (!request.reviewerAgentId) {
-      throw new Error('Task creation failed: reviewerAgentId is required');
+    if (!request.reviewerId) {
+      throw new Error('Task creation failed: reviewerId is required');
     }
     if (this.agentManager) {
       if (!this.agentManager.hasAgent(request.assignedAgentId)) {
         throw new Error(`Task creation failed: assigned agent not found: ${request.assignedAgentId}`);
       }
-      if (!this.agentManager.hasAgent(request.reviewerAgentId)) {
-        throw new Error(`Task creation failed: reviewer agent not found: ${request.reviewerAgentId}`);
+      // Only validate reviewer as agent if reviewerType is not 'human'
+      if (request.reviewerType !== 'human' && !this.agentManager.hasAgent(request.reviewerId)) {
+        throw new Error(`Task creation failed: reviewer agent not found: ${request.reviewerId}`);
       }
     }
 
@@ -1593,22 +1596,30 @@ export class TaskService {
       (request.creatorRole as 'worker' | 'manager') ?? 'worker',
     );
 
+    const hasUnresolvedBlockers = request.blockedBy && request.blockedBy.length > 0 && !request.blockedBy.every(blockerId => {
+      const blocker = this.tasks.get(blockerId);
+      return blocker && blocker.status === 'completed';
+    });
+
+    // Human-created tasks start as 'pending' (human manually starts execution);
+    // auto-tier agent tasks start as 'in_progress' or 'blocked'.
+    const initialStatus: TaskStatus =
+      request.creatorRole === 'human'
+        ? (hasUnresolvedBlockers ? 'blocked' : 'pending')
+        : approvalTier === 'auto'
+          ? (hasUnresolvedBlockers ? 'blocked' : 'in_progress')
+          : 'pending';
+
     const task: Task = {
       id: taskId(),
       orgId: request.orgId,
       title: request.title,
       description: request.description,
-      status: approvalTier === 'auto'
-        ? (request.blockedBy && request.blockedBy.length > 0 && !request.blockedBy.every(blockerId => {
-            const blocker = this.tasks.get(blockerId);
-            return blocker && blocker.status === 'completed';
-          })
-          ? 'blocked'
-          : 'in_progress')
-        : 'pending',
+      status: initialStatus,
       priority: request.priority ?? 'medium',
       assignedAgentId: request.assignedAgentId,
-      reviewerAgentId: request.reviewerAgentId,
+      reviewerId: request.reviewerId,
+      reviewerType: request.reviewerType ?? 'agent',
       executionRound: 1,
       requirementId: request.requirementId,
       subtasks: [],
@@ -1637,7 +1648,7 @@ export class TaskService {
           priority: task.priority,
           status: task.status,
           assignedAgentId: task.assignedAgentId,
-          reviewerAgentId: task.reviewerAgentId,
+          reviewerId: task.reviewerId,
           executionRound: task.executionRound,
           requirementId: task.requirementId,
           projectId: task.projectId,
@@ -1665,7 +1676,7 @@ export class TaskService {
       agentId: task.assignedAgentId,
       timestamp: task.createdAt,
     });
-    if (this.hitlService && request.createdBy && request.createdBy !== 'default') {
+    if (this.hitlService && request.createdBy && request.creatorRole !== 'human') {
       this.hitlService.notify({
         targetUserId: 'all',
         type: 'task_created',
@@ -1680,11 +1691,11 @@ export class TaskService {
       id: task.id,
       status: task.status,
       assignedTo: task.assignedAgentId,
-      reviewer: task.reviewerAgentId,
+      reviewer: task.reviewerId,
     });
 
-    // Request HITL approval
-    if (this.hitlService) {
+    // Request HITL approval (only for agent-created tasks that need approval)
+    if (this.hitlService && request.creatorRole !== 'human' && task.status === 'pending') {
       const creatorName = request.createdBy ?? 'unknown agent';
       this.hitlService.requestApprovalAndWait({
         agentId: request.createdBy ?? 'system',
@@ -1924,9 +1935,55 @@ export class TaskService {
   // ─── Stage 4a: Reviewer notification ─────────────────────────────────────────
 
   private maybeNotifyReviewer(task: Task, from: TaskStatus, to: TaskStatus): void {
-    if (to === 'review' && from !== 'review' && task.reviewerAgentId) {
-      this.notifyReviewer(task, task.reviewerAgentId);
+    if (to === 'review' && from !== 'review' && task.reviewerId) {
+      if (task.reviewerType === 'human') {
+        this.notifyHumanReviewer(task);
+      } else {
+        this.notifyReviewer(task, task.reviewerId);
+      }
     }
+  }
+
+  /**
+   * When the reviewer is a human user, send a HITL approval request
+   * so the user can approve/reject via the notification bell.
+   */
+  private notifyHumanReviewer(task: Task): void {
+    if (!this.hitlService) return;
+    const deliverablesSummary = (task.deliverables ?? [])
+      .map(d => `- ${d.type}: ${d.summary ?? d.reference}`)
+      .join('\n');
+    const description = [
+      `Task "${task.title}" has been submitted for your review.`,
+      '',
+      task.description,
+      deliverablesSummary ? `\nDeliverables:\n${deliverablesSummary}` : '',
+    ].filter(Boolean).join('\n');
+
+    this.hitlService.requestApprovalAndWait({
+      agentId: task.assignedAgentId,
+      agentName: task.assignedAgentId,
+      type: 'custom',
+      title: `Review: ${task.title}`,
+      description,
+      targetUserId: task.reviewerId,
+      options: [
+        { id: 'approve', label: 'Approve' },
+        { id: 'reject', label: 'Request Changes' },
+      ],
+      allowFreeform: true,
+    }).then(result => {
+      if (result.approved) {
+        this.updateTaskStatus(task.id, 'completed', task.reviewerId);
+      } else {
+        const comment = result.comment ? ` — ${result.comment}` : '';
+        task.notes = task.notes ?? [];
+        task.notes.push(`[Review by human] Revision requested${comment}`);
+        this.updateTaskStatus(task.id, 'in_progress', task.reviewerId);
+      }
+    }).catch(err => {
+      log.warn('Human reviewer approval failed', { taskId: task.id, error: String(err) });
+    });
   }
 
   // ─── Stage 4b: Assignee mailbox notification ─────────────────────────────────
@@ -2306,7 +2363,7 @@ export class TaskService {
 
   updateTask(
     id: string,
-    data: { title?: string; description?: string; priority?: TaskPriority; projectId?: string | null; requirementId?: string | null; blockedBy?: string[]; reviewerAgentId?: string },
+    data: { title?: string; description?: string; priority?: TaskPriority; projectId?: string | null; requirementId?: string | null; blockedBy?: string[]; reviewerId?: string; reviewerType?: 'agent' | 'human' },
     updatedBy?: string
   ): Task {
     const task = this.tasks.get(id);
@@ -2316,7 +2373,8 @@ export class TaskService {
     if (data.priority !== undefined) task.priority = data.priority;
     if (data.projectId !== undefined) task.projectId = data.projectId ?? undefined;
     if (data.requirementId !== undefined) task.requirementId = data.requirementId ?? undefined;
-    if (data.reviewerAgentId !== undefined) task.reviewerAgentId = data.reviewerAgentId;
+    if (data.reviewerId !== undefined) task.reviewerId = data.reviewerId;
+    if (data.reviewerType !== undefined) task.reviewerType = data.reviewerType;
 
     if (data.blockedBy !== undefined) {
       task.blockedBy = data.blockedBy;
@@ -2603,7 +2661,7 @@ export class TaskService {
 
   // ─── Governance: Submit for Review ─────────────────────────────────────────
 
-  async submitForReview(taskId: string, deliverables: TaskDeliverable[], reviewerAgentId?: string): Promise<Task> {
+  async submitForReview(taskId: string, deliverables: TaskDeliverable[], reviewerId?: string): Promise<Task> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (task.status !== 'in_progress') {
@@ -2653,16 +2711,16 @@ export class TaskService {
     }
     task.updatedAt = new Date().toISOString();
 
-    if (reviewerAgentId) {
-      task.reviewerAgentId = reviewerAgentId;
+    if (reviewerId) {
+      task.reviewerId = reviewerId;
     }
 
-    // Persist deliverables (and reviewerAgentId if changed) to DB
+    // Persist deliverables (and reviewerId if changed) to DB
     if (this.taskRepo) {
       this.taskRepo.updateDeliverables(task.id, task.deliverables)
         .catch(err => log.warn('Failed to persist deliverables to DB', { taskId: task.id, error: String(err) }));
-      if (reviewerAgentId) {
-        this.taskRepo.update(task.id, { reviewerAgentId })
+      if (reviewerId) {
+        this.taskRepo.update(task.id, { reviewerId })
           .catch(err => log.warn('Failed to persist reviewer change to DB', { taskId: task.id, error: String(err) }));
       }
     }
@@ -2746,19 +2804,19 @@ export class TaskService {
   /**
    * Send a review notification to the specified reviewer agent with full task context.
    */
-  private notifyReviewer(task: Task, reviewerAgentId: string): void {
-    if (!this.agentManager || !this.agentManager.hasAgent(reviewerAgentId)) {
-      log.warn('Reviewer agent not found, cannot notify', { taskId: task.id, reviewerAgentId });
+  private notifyReviewer(task: Task, reviewerId: string): void {
+    if (!this.agentManager || !this.agentManager.hasAgent(reviewerId)) {
+      log.warn('Reviewer agent not found, cannot notify', { taskId: task.id, reviewerId });
       return;
     }
-    if (reviewerAgentId === task.assignedAgentId) {
-      log.warn('Reviewer is the same as assignee, skipping notification', { taskId: task.id, reviewerAgentId });
+    if (reviewerId === task.assignedAgentId) {
+      log.warn('Reviewer is the same as assignee, skipping notification', { taskId: task.id, reviewerId });
       return;
     }
 
     // Prevent duplicate review sessions for the same task
     if (this.activeReviews.has(task.id)) {
-      log.debug('Review notification already active for task, skipping duplicate', { taskId: task.id, reviewerAgentId });
+      log.debug('Review notification already active for task, skipping duplicate', { taskId: task.id, reviewerId });
       return;
     }
     this.activeReviews.add(task.id);
@@ -2836,7 +2894,7 @@ export class TaskService {
       parts.push(`CRITICAL: You MUST ONLY review this specific task (ID: ${task.id}). Do NOT change the status of any other task.`);
 
       const reviewMessage = parts.join('\n');
-      const reviewerAgent = this.agentManager.getAgent(reviewerAgentId);
+      const reviewerAgent = this.agentManager.getAgent(reviewerId);
       reviewerAgent.sendMessage(
         reviewMessage,
         task.assignedAgentId ?? 'system',
@@ -2846,12 +2904,12 @@ export class TaskService {
         this.activeReviews.delete(task.id);
       }).catch(err => {
         this.activeReviews.delete(task.id);
-        log.warn('Failed to notify reviewer about review', { taskId: task.id, reviewerAgentId, error: String(err) });
+        log.warn('Failed to notify reviewer about review', { taskId: task.id, reviewerId, error: String(err) });
       });
-      log.info('Notified reviewer about review', { taskId: task.id, reviewerAgentId });
+      log.info('Notified reviewer about review', { taskId: task.id, reviewerId });
     } catch (err) {
       this.activeReviews.delete(task.id);
-      log.warn('Failed to notify reviewer about review', { taskId: task.id, reviewerAgentId, error: String(err) });
+      log.warn('Failed to notify reviewer about review', { taskId: task.id, reviewerId, error: String(err) });
     }
   }
 
@@ -2964,26 +3022,26 @@ export class TaskService {
     }
   }
 
-  acceptTask(taskId: string, reviewerAgentId?: string): Task {
+  acceptTask(taskId: string, reviewerId?: string): Task {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (task.status !== 'review') {
       throw new Error(`Task ${taskId} is in ${task.status} status, cannot accept`);
     }
 
-    if (reviewerAgentId && task.assignedAgentId && reviewerAgentId === task.assignedAgentId) {
-      throw new Error(`Agent ${reviewerAgentId} cannot accept their own task.`);
+    if (reviewerId && task.assignedAgentId && reviewerId === task.assignedAgentId) {
+      throw new Error(`Agent ${reviewerId} cannot accept their own task.`);
     }
-    if (reviewerAgentId) {
-      this.assertReviewerAllowed(reviewerAgentId, task);
+    if (reviewerId) {
+      this.assertReviewerAllowed(reviewerId, task);
     }
 
     // Transition to completed — updateTaskStatus handles all side effects
-    this.updateTaskStatus(task.id, 'completed', reviewerAgentId);
+    this.updateTaskStatus(task.id, 'completed', reviewerId);
 
     this.auditService?.record({
       orgId: task.orgId,
-      agentId: reviewerAgentId,
+      agentId: reviewerId,
       type: 'task_review_accepted',
       action: 'accept_task',
       detail: `Task "${task.title}" accepted and completed`,
@@ -3143,7 +3201,7 @@ export class TaskService {
       }
     }
 
-    const reviewerActor = author ?? task.reviewerAgentId;
+    const reviewerActor = author ?? task.reviewerId;
     this.auditService?.record({
       orgId: task.orgId,
       agentId: reviewerActor ?? task.assignedAgentId,
@@ -3367,6 +3425,26 @@ export class TaskService {
   }
 
   /**
+   * Update user-editable schedule fields (every, cron, maxRuns, timezone)
+   * and recompute nextRunAt. Does NOT touch runtime fields like currentRuns/lastRunAt/paused.
+   */
+  async updateScheduleFields(taskIdStr: string, fields: { every?: string; cron?: string; maxRuns?: number; timezone?: string }): Promise<Task> {
+    const task = this.tasks.get(taskIdStr);
+    if (!task) throw new Error(`Task not found: ${taskIdStr}`);
+    if (task.taskType !== 'scheduled' || !task.scheduleConfig) {
+      throw new Error('Task is not a scheduled task');
+    }
+    const updated: ScheduleConfig = { ...task.scheduleConfig };
+    if (fields.every !== undefined) { updated.every = fields.every; updated.cron = undefined; updated.runAt = undefined; }
+    if (fields.cron !== undefined) { updated.cron = fields.cron; updated.every = undefined; updated.runAt = undefined; }
+    if (fields.maxRuns !== undefined) updated.maxRuns = fields.maxRuns;
+    if (fields.timezone !== undefined) updated.timezone = fields.timezone;
+    updated.nextRunAt = computeNextRunFromConfig(updated);
+    await this.updateScheduleConfig(taskIdStr, updated);
+    return task;
+  }
+
+  /**
    * Advance the schedule config for a task run (increment currentRuns,
    * set lastRunAt, compute nextRunAt). Used by both ScheduledTaskRunner
    * and the run-now API endpoint to keep schedule state consistent.
@@ -3566,7 +3644,7 @@ export class TaskService {
           priority: task.priority,
           status: task.status,
           assignedAgentId: task.assignedAgentId,
-          reviewerAgentId: task.reviewerAgentId,
+          reviewerId: task.reviewerId,
           executionRound: task.executionRound,
           requirementId: task.requirementId,
           projectId: task.projectId,

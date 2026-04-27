@@ -86,31 +86,29 @@ export function NewProjectModal({ orgId, onCreated, onClose }: Props) {
             />
           </div>
 
-          <div>
-            <label className="block text-xs text-fg-secondary mb-1.5 font-medium">{t('project.assignTeams')}</label>
-            {teams.length === 0 ? (
-              <div className="text-[11px] text-fg-tertiary py-2">{t('project.noTeamsAvailable')}</div>
-            ) : (
+          {teams.length > 0 && (
+            <div>
+              <label className="block text-xs text-fg-secondary mb-1.5 font-medium">{t('project.assignTeams')}</label>
               <div className="space-y-1 max-h-32 overflow-y-auto">
-                {teams.map(t => {
-                  const checked = teamIds.includes(t.id);
+                {teams.map(tm => {
+                  const checked = teamIds.includes(tm.id);
                   return (
-                    <label key={t.id} className="flex items-center gap-2 text-xs text-fg-secondary cursor-pointer hover:text-fg-primary py-0.5">
+                    <label key={tm.id} className="flex items-center gap-2 text-xs text-fg-secondary cursor-pointer hover:text-fg-primary py-0.5">
                       <input
                         type="checkbox"
                         checked={checked}
                         onChange={() => setTeamIds(prev =>
-                          checked ? prev.filter(id => id !== t.id) : [...prev, t.id]
+                          checked ? prev.filter(id => id !== tm.id) : [...prev, tm.id]
                         )}
                         className="accent-brand-500"
                       />
-                      <span className="truncate">{t.name}</span>
+                      <span className="truncate">{tm.name}</span>
                     </label>
                   );
                 })}
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-[1fr_auto] gap-3">
             <div>

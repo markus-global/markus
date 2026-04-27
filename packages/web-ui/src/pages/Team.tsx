@@ -678,6 +678,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const { t, i18n } = useTranslation(['team', 'common']);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [humans, setHumans] = useState<HumanUserInfo[]>([]);
+  const [initialLoading, setInitialLoading] = useState(true);
   const isMobile = useIsMobile();
 
   // Mobile: URL hash is the single source of truth (#chat = list, #chat/d = detail)
@@ -892,10 +893,12 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   }, [authUser?.orgId]);
 
   useEffect(() => {
-    refreshAgents();
+    Promise.all([
+      refreshAgents(),
+      refreshTeams(),
+    ]).finally(() => setInitialLoading(false));
     refreshHumans();
     api.tasks.list().then(d => setTasks(d.tasks)).catch(() => {});
-    refreshTeams();
     api.externalAgents.list().then(d => setExternalAgents(d.agents)).catch(() => {});
     refreshGroupChats();
 
@@ -906,7 +909,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     const unsubGroup = wsClient.on('chat:group_created', refreshGroupChats);
     const unsubGroupUpdate = wsClient.on('chat:group_updated', refreshGroupChats);
     const unsubGroupDelete = wsClient.on('chat:group_deleted', refreshGroupChats);
-    const onDataChanged = () => { refreshAgents(); refreshTeams(); };
+    const onDataChanged = () => { refreshAgents(); refreshTeams(); refreshHumans(); };
     window.addEventListener('markus:data-changed', onDataChanged);
     return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeam(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); window.removeEventListener('markus:data-changed', onDataChanged); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2244,6 +2247,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         width={isMobile ? undefined : chatSidebar.width}
         onResizeStart={isMobile ? undefined : chatSidebar.onResizeStart}
         hidden={isMobile && mobileShowChat}
+        initialLoading={initialLoading}
       />
 
       {/* ── Main area ── */}

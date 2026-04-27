@@ -117,8 +117,10 @@ export interface Task {
   approvedVia?: string;
   /** Report ID if created from an approved plan */
   planReportId?: string;
-  /** Agent assigned to review deliverables (required at creation) */
-  reviewerAgentId: string;
+  /** Agent or human assigned to review deliverables (required at creation) */
+  reviewerId: string;
+  /** Whether the reviewer is an agent or a human user (default: 'agent') */
+  reviewerType?: 'agent' | 'human';
   deliverables?: TaskDeliverable[];
 
   // ── Scheduling fields ──

@@ -40,6 +40,8 @@ export interface ApprovalRequest {
   selectedOption?: string;
   /** When set, only these users (plus admins/owners) see and may respond to the approval in the API. */
   approverUserIds?: string[];
+  /** The intended recipient; used for visibility filtering when approverUserIds is not set. */
+  targetUserId?: string;
 }
 
 
@@ -109,6 +111,7 @@ export interface ApprovalRepo {
     allowFreeform?: boolean;
     selectedOption?: string;
     approverUserIds?: string[];
+    targetUserId?: string;
   }): void;
   list(status?: string): Array<{
     id: string;
@@ -128,6 +131,7 @@ export interface ApprovalRepo {
     allowFreeform?: boolean;
     selectedOption?: string;
     approverUserIds?: string[];
+    targetUserId?: string;
   }>;
   get(id: string): {
     id: string;
@@ -147,6 +151,7 @@ export interface ApprovalRepo {
     allowFreeform?: boolean;
     selectedOption?: string;
     approverUserIds?: string[];
+    targetUserId?: string;
   } | undefined;
 }
 
@@ -201,6 +206,7 @@ export class HITLService {
             allowFreeform: row.allowFreeform,
             selectedOption: row.selectedOption,
             approverUserIds: row.approverUserIds,
+            targetUserId: row.targetUserId,
           });
         }
       }
@@ -253,6 +259,7 @@ export class HITLService {
       options: opts.options,
       allowFreeform: opts.allowFreeform,
       approverUserIds: opts.approverUserIds,
+      targetUserId: opts.targetUserId,
     };
     this.approvals.set(id, approval);
     this.persistApproval(approval);
@@ -342,6 +349,7 @@ export class HITLService {
         allowFreeform: approval.allowFreeform,
         selectedOption: approval.selectedOption,
         approverUserIds: approval.approverUserIds,
+        targetUserId: approval.targetUserId,
       });
     } catch (err) {
       log.warn('Failed to persist approval', { id: approval.id, error: String(err) });
@@ -473,10 +481,10 @@ export class HITLService {
     return notification;
   }
 
-  /** Mark unread approval_request rows for this approval across per-user and legacy shared user_ids. */
+  /** Mark unread approval_request rows for this approval across per-user and broadcast user_ids. */
   private markApprovalNotificationsRead(approvalId: string): void {
     if (!this.notificationRepo) return;
-    const userIds = new Set<string>(['all', 'default']);
+    const userIds = new Set<string>(['all']);
     if (this.orgService) {
       for (const h of this.orgService.listHumanUsers('default')) {
         userIds.add(h.id);

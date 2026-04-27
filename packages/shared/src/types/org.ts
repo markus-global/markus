@@ -100,6 +100,13 @@ export interface IdentityContext {
     id: string;
     name: string;
   };
+  /** Projects assigned to this agent's team */
+  teamProjects?: Array<{
+    id: string;
+    name: string;
+    description: string;
+    status: string;
+  }>;
 }
 
 export interface RoleTemplate {

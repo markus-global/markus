@@ -71,25 +71,74 @@ export function AddHumanModal({
   onClose, onAdd,
 }: {
   onClose: () => void;
-  onAdd: (name: string, role: string, email: string | undefined, password: string | undefined) => void;
+  onAdd: (name: string, role: string, email: string) => Promise<{ inviteToken?: string }>;
 }) {
   const { t } = useTranslation(['team', 'common']);
   const [name, setName] = useState('');
   const [role, setRole] = useState('member');
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [result, setResult] = useState<{ inviteToken?: string; userName: string } | null>(null);
+  const [copied, setCopied] = useState(false);
 
-  const submit = () => {
+  const inviteLink = result?.inviteToken
+    ? `${window.location.origin}/#invite?token=${result.inviteToken}`
+    : null;
+
+  const submit = async () => {
     setError('');
     if (!name.trim()) { setError(t('team:modals.addHuman.nameRequired')); return; }
-    if (password && !email.trim()) { setError(t('team:modals.addHuman.emailRequired')); return; }
-    if (email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { setError(t('team:modals.addHuman.invalidEmail')); return; }
-    if (password && password.length < 6) { setError(t('team:modals.addHuman.passwordMinLength')); return; }
-    if (password && password !== confirmPassword) { setError(t('team:modals.addHuman.passwordsMismatch')); return; }
-    onAdd(name.trim(), role, email.trim() || undefined, password || undefined);
+    if (!email.trim()) { setError(t('team:modals.addHuman.emailRequired')); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { setError(t('team:modals.addHuman.invalidEmail')); return; }
+    setSaving(true);
+    try {
+      const res = await onAdd(name.trim(), role, email.trim());
+      setResult({ ...res, userName: name.trim() });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
   };
+
+  const doCopy = () => {
+    if (inviteLink) {
+      navigator.clipboard.writeText(inviteLink);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  if (result) {
+    return (
+      <Modal onClose={onClose} title={t('team:modals.addHuman.title')} width="w-[460px]">
+        <div className="text-center py-4">
+          <div className="w-12 h-12 rounded-full bg-green-600/20 flex items-center justify-center mx-auto mb-3">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-green-500"><polyline points="20 6 9 17 4 12" /></svg>
+          </div>
+          <div className="text-base font-medium mb-1">{t('team:modals.addHuman.memberCreated', { name: result.userName })}</div>
+          {inviteLink ? (
+            <>
+              <div className="text-xs text-fg-secondary mt-1 mb-4">{t('team:modals.addHuman.inviteHint')}</div>
+              <div className="bg-surface-primary border border-border-default rounded-lg p-3 text-left mb-3">
+                <div className="text-[10px] text-fg-tertiary uppercase mb-1.5">{t('team:modals.addHuman.inviteLink')}</div>
+                <div className="text-xs text-fg-primary break-all font-mono select-all">{inviteLink}</div>
+              </div>
+              <button onClick={doCopy}
+                className={`w-full py-2.5 text-sm font-medium rounded-lg transition-colors ${copied ? 'bg-green-600 text-white' : 'bg-brand-700 hover:bg-brand-600 text-white'}`}
+              >{copied ? t('common:copied') : t('team:modals.addHuman.copyInviteLink')}</button>
+            </>
+          ) : (
+            <div className="text-xs text-fg-secondary mt-1">{t('team:modals.addHuman.memberCreatedNoInvite')}</div>
+          )}
+        </div>
+        <div className="flex justify-end pt-3">
+          <button onClick={onClose} className="px-5 py-2 text-sm bg-surface-elevated hover:bg-surface-overlay rounded-lg text-fg-secondary border border-border-default">{t('common:done')}</button>
+        </div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal onClose={onClose} title={t('team:modals.addHuman.title')} width="w-[460px]">
@@ -105,26 +154,18 @@ export function AddHumanModal({
             <option value="guest">{t('common:role.guest')}</option>
           </select>
         </Field>
-        <Field label={t('team:modals.addHuman.email')}>
+        <Field label={t('team:modals.addHuman.emailRequired')}>
           <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder={t('team:modals.addHuman.emailPlaceholder')} className="input" />
         </Field>
-        <div className="border-t border-border-default pt-3">
-          <div className="text-xs text-fg-tertiary mb-3">{t('team:modals.addHuman.passwordSection')}</div>
-          <Field label={t('team:modals.addHuman.password')}>
-            <input value={password} onChange={e => setPassword(e.target.value)} type="password" placeholder={t('team:modals.addHuman.passwordPlaceholder')} className="input" />
-          </Field>
-          {password && (
-            <div className="mt-3">
-              <Field label={t('team:modals.addHuman.confirmPassword')}>
-                <input value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} type="password" placeholder={t('team:modals.addHuman.confirmPasswordPlaceholder')} className="input" />
-              </Field>
-            </div>
-          )}
+        <div className="text-xs text-fg-tertiary bg-brand-500/5 border border-brand-500/20 rounded-lg px-3 py-2">
+          {t('team:modals.addHuman.inviteFlowHint')}
         </div>
         {error && <div className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
         <div className="flex justify-end gap-3 pt-2">
           <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">{t('common:cancel')}</button>
-          <button onClick={submit} className="px-4 py-2 text-sm bg-green-700 hover:bg-green-600 rounded-lg text-white">{t('team:modals.addHuman.addMember')}</button>
+          <button onClick={submit} disabled={saving} className="px-4 py-2 text-sm bg-green-700 hover:bg-green-600 disabled:opacity-50 rounded-lg text-white">
+            {saving ? t('common:saving') : t('team:modals.addHuman.addMember')}
+          </button>
         </div>
       </div>
     </Modal>

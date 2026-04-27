@@ -1653,7 +1653,8 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
       setConfirmDeleteId(null);
       return;
     }
-    if (userId === 'default') {
+    const targetUser = users.find(u => u.id === userId);
+    if (targetUser?.role === 'owner') {
       setMsg({ type: 'err', text: t('settings:userManagement.cannotDeleteOwner') });
       setConfirmDeleteId(null);
       return;
@@ -1705,7 +1706,7 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
               const isResetPwd = resetPwdId === u.id;
               const isConfirmDel = confirmDeleteId === u.id;
               const isSelf = u.id === authUser?.id;
-              const isPrimaryOwner = u.id === 'default';
+              const isPrimaryOwner = u.role === 'owner';
               return (
                 <tr key={u.id} className="border-b border-border-default/40 last:border-b-0 hover:bg-surface-elevated/40 transition-colors">
                   <td className="px-4 py-2.5">
