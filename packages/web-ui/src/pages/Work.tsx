@@ -3127,6 +3127,18 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     }
   };
 
+  const handleReqRefresh = () => {
+    refreshRequirements();
+    if (selectedReq) {
+      setTimeout(() => {
+        api.requirements.list({}).then(({ requirements: r }) => {
+          const updated = r.find(rq => rq.id === selectedReq.id);
+          if (updated) setSelectedReq(updated); else setSelectedReq(null);
+        }).catch(() => {});
+      }, 150);
+    }
+  };
+
   // ── Requirement actions ──
 
   const handleCreateReq = async () => {
@@ -3143,16 +3155,16 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   };
 
   const handleApproveReq = async (id: string) => {
-    try { await api.requirements.approve(id); msg('Requirement approved'); refreshRequirements(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
+    try { await api.requirements.approve(id); msg('Requirement approved'); handleReqRefresh(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
   };
 
   const handleRejectReq = async () => {
     if (!rejectReqId) return;
-    try { await api.requirements.reject(rejectReqId, rejectReason); msg('Requirement rejected'); setRejectReqId(null); setRejectReason(''); refreshRequirements(); } catch (e) { msg(`Error: ${e}`); }
+    try { await api.requirements.reject(rejectReqId, rejectReason); msg('Requirement rejected'); setRejectReqId(null); setRejectReason(''); handleReqRefresh(); } catch (e) { msg(`Error: ${e}`); }
   };
 
   const handleDeleteReq = async (id: string) => {
-    try { await api.requirements.cancel(id); msg('Requirement cancelled'); refreshRequirements(); } catch (e) { msg(`Error: ${e}`); }
+    try { await api.requirements.cancel(id); msg('Requirement cancelled'); handleReqRefresh(); } catch (e) { msg(`Error: ${e}`); }
   };
 
   // ── Drag handlers (tasks + requirements) ──
@@ -3737,15 +3749,15 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
               allTasks={Object.values(board).flat()}
               users={users}
               onClose={handleCloseDetail}
-              onApprove={id => { handleApproveReq(id); handleCloseDetail(); }}
-              onReject={id => { setRejectReqId(id); handleCloseDetail(); }}
+              onApprove={id => { handleApproveReq(id); }}
+              onReject={id => { setRejectReqId(id); }}
               onCancel={id => { handleDeleteReq(id); handleCloseDetail(); }}
               onStatusChange={async (id, status) => {
-                try { await api.requirements.updateStatus(id, status); msg(`Requirement status → ${status}`); refreshRequirements(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
+                try { await api.requirements.updateStatus(id, status); msg(`Requirement status → ${status}`); handleReqRefresh(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
               }}
               scrollToComments={scrollToComments}
               onScrollToCommentsDone={() => setScrollToComments(false)}
-              onRefresh={refreshRequirements}
+              onRefresh={handleReqRefresh}
               authUser={authUser}
               onTaskClick={task => handleSelectTask(task)}
               onCreateTask={(reqId, projectId) => {
