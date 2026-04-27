@@ -3,7 +3,7 @@ import { join, resolve, dirname } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, kebab, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, kebab, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -647,7 +647,7 @@ export class APIServer {
    *  Migrates legacy 'default' user rows to a real auto-generated ID.
    *  Returns the owner's user ID (existing/migrated or newly created). */
   async ensureAdminUser(orgId: string): Promise<string> {
-    if (!this.storage) return generateId('user');
+    if (!this.storage) return genUserId();
     const allUsers = await this.storage.userRepo.listByOrg(orgId);
 
     // Check for existing owner with a password
@@ -655,7 +655,7 @@ export class APIServer {
     if (existingOwner) {
       // Migrate legacy 'default' ID to a proper auto-generated ID
       if (existingOwner.id === 'default') {
-        const newId = generateId('user');
+        const newId = genUserId();
         this.storage.userRepo.migrateDefaultId(newId);
         log.info("Migrated legacy owner id='default'", { newId });
         return newId;
@@ -666,7 +666,7 @@ export class APIServer {
     // No owner found — create fresh
     const adminPassword = process.env['ADMIN_PASSWORD'] ?? 'markus123';
     const hash = await hashPassword(adminPassword);
-    const ownerId = generateId('user');
+    const ownerId = genUserId();
     await this.storage.userRepo.upsert({
       id: ownerId,
       orgId,
@@ -4444,7 +4444,7 @@ EXPLANATION_END`;
       const email = body['email'] as string | undefined;
       const password = body['password'] as string | undefined;
       const teamId = body['teamId'] as string | undefined;
-      const userId = (body['id'] as string | undefined) ?? generateId('usr');
+      const userId = (body['id'] as string | undefined) ?? genUserId();
 
       // Always persist to DB for durability (not just when email/password provided)
       let inviteToken: string | undefined;

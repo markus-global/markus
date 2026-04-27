@@ -5,6 +5,7 @@ import {
   createLogger,
   orgId,
   generateId,
+  userId,
   HEARTBEAT_STARTUP_JITTER_MS,
   type Organization,
   type Team,
@@ -46,7 +47,7 @@ export class OrganizationService {
     if (!org) throw new Error(`Organization not found: ${orgId}`);
 
     const user: HumanUser = {
-      id: opts?.id ?? generateId('user'),
+      id: opts?.id ?? userId(),
       name,
       email: opts?.email,
       role,

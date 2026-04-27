@@ -10,6 +10,7 @@ import {
   closeRuntimeLogger,
   checkForUpdate,
   generateId,
+  userId,
   TRIAGE_MAX_TOKENS,
   TRIAGE_TEMPERATURE,
   TRIAGE_ALLOWED_TOOLS,
@@ -285,7 +286,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   const orgService = new OrganizationService(agentManager, roleLoader, storage ?? undefined);
   taskService.setOrgService(orgService);
 
-  const bootstrapOwnerId = generateId('user');
+  const bootstrapOwnerId = userId();
   await orgService.createOrganization(config.org.name, bootstrapOwnerId, 'default');
 
   orgService.addHumanUser('default', 'Owner', 'owner', { id: bootstrapOwnerId });
