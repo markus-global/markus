@@ -3112,9 +3112,14 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     } catch (e) { msg(t('work:task.errorCreatingTask', { message: String(e) })); }
   };
 
+  const markNotifRead = (ref: { taskId?: string; requirementId?: string }) => {
+    window.dispatchEvent(new CustomEvent('markus:mark-read-by-ref', { detail: ref }));
+  };
+
   const handleTaskRefresh = () => {
     refreshBoard();
     if (selectedTask) {
+      markNotifRead({ taskId: selectedTask.id });
       setTimeout(() => {
         const filters: { projectId?: string } = {};
         if (viewMode === 'project' && selectedProjectId) filters.projectId = selectedProjectId;
@@ -3155,16 +3160,16 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   };
 
   const handleApproveReq = async (id: string) => {
-    try { await api.requirements.approve(id); msg('Requirement approved'); handleReqRefresh(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
+    try { await api.requirements.approve(id); msg('Requirement approved'); markNotifRead({ requirementId: id }); handleReqRefresh(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
   };
 
   const handleRejectReq = async () => {
     if (!rejectReqId) return;
-    try { await api.requirements.reject(rejectReqId, rejectReason); msg('Requirement rejected'); setRejectReqId(null); setRejectReason(''); handleReqRefresh(); } catch (e) { msg(`Error: ${e}`); }
+    try { await api.requirements.reject(rejectReqId, rejectReason); msg('Requirement rejected'); markNotifRead({ requirementId: rejectReqId }); setRejectReqId(null); setRejectReason(''); handleReqRefresh(); } catch (e) { msg(`Error: ${e}`); }
   };
 
   const handleDeleteReq = async (id: string) => {
-    try { await api.requirements.cancel(id); msg('Requirement cancelled'); handleReqRefresh(); } catch (e) { msg(`Error: ${e}`); }
+    try { await api.requirements.cancel(id); msg('Requirement cancelled'); markNotifRead({ requirementId: id }); handleReqRefresh(); } catch (e) { msg(`Error: ${e}`); }
   };
 
   // ── Drag handlers (tasks + requirements) ──
@@ -3753,7 +3758,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
               onReject={id => { setRejectReqId(id); }}
               onCancel={id => { handleDeleteReq(id); handleCloseDetail(); }}
               onStatusChange={async (id, status) => {
-                try { await api.requirements.updateStatus(id, status); msg(`Requirement status → ${status}`); handleReqRefresh(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
+                try { await api.requirements.updateStatus(id, status); msg(`Requirement status → ${status}`); markNotifRead({ requirementId: id }); handleReqRefresh(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
               }}
               scrollToComments={scrollToComments}
               onScrollToCommentsDone={() => setScrollToComments(false)}
