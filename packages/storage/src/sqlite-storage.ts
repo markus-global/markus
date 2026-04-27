@@ -785,7 +785,7 @@ export class SqliteAgentRepo {
   }
 
   findById(id: string) {
-    const r = this.db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as
+    const r = this.db.prepare('SELECT * FROM agents WHERE id = ? AND deleted_at IS NULL').get(id) as
       | Record<string, unknown>
       | undefined;
     return r ? this._map(r) : undefined;
