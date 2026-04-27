@@ -809,7 +809,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
 
 // ─── Execution Log Panel ────────────────────────────────────────────────────────
 
-function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: string; isRunning: boolean; authUser?: { id: string; name: string }; agents: AgentInfo[] }) {
+function TaskExecutionLogs({ taskId, task, isRunning, authUser, agents }: { taskId: string; task: TaskInfo; isRunning: boolean; authUser?: { id: string; name: string }; agents: AgentInfo[] }) {
   const { t } = useTranslation(['work', 'common']);
   const [roundsSummary, setRoundsSummary] = useState<RoundSummary[]>([]);
   const [roundLogs, setRoundLogs] = useState<Map<number, TaskLogEntry[]>>(new Map());
@@ -1001,12 +1001,40 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
 
   if (loading) return <div className="flex-1 flex items-center justify-center text-xs text-fg-tertiary">{t('work:task.loadingLogs')}</div>;
   if (roundsSummary.length === 0 && !streamingText) {
+    const agent = task.assignedAgentId ? agents.find(a => a.id === task.assignedAgentId) : null;
+    const agentBusy = agent && agent.currentTaskId && agent.currentTaskId !== task.id;
+    const isPending = task.status === 'pending';
+    const isInProgress = task.status === 'in_progress';
+    const noAgent = !task.assignedAgentId;
+
+    let emptyIcon = '📋';
+    let emptyMsg = t('work:task.emptyLogs.default');
+    let emptyHint = t('work:task.emptyLogs.defaultHint');
+
+    if (noAgent) {
+      emptyIcon = '👤';
+      emptyMsg = t('work:task.emptyLogs.noAgent');
+      emptyHint = t('work:task.emptyLogs.noAgentHint');
+    } else if (isPending) {
+      emptyIcon = '⏳';
+      emptyMsg = t('work:task.emptyLogs.pending');
+      emptyHint = t('work:task.emptyLogs.pendingHint');
+    } else if (isInProgress && agentBusy) {
+      emptyIcon = '🔄';
+      emptyMsg = t('work:task.emptyLogs.agentBusy', { agent: agent?.name ?? task.assignedAgentId });
+      emptyHint = t('work:task.emptyLogs.agentBusyHint');
+    } else if (isInProgress) {
+      emptyIcon = '⏳';
+      emptyMsg = t('work:task.emptyLogs.starting');
+      emptyHint = t('work:task.emptyLogs.startingHint');
+    }
+
     return (
       <div className="flex flex-col min-h-full">
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center text-fg-tertiary">
-            <div className="text-2xl mb-2">📋</div>
-            <div className="text-xs">{t('work:task.noExecutionLogs')}<br />{t('work:task.runWithAgentHint')}</div>
+            <div className="text-2xl mb-2">{emptyIcon}</div>
+            <div className="text-xs">{emptyMsg}<br /><span className="text-fg-muted">{emptyHint}</span></div>
           </div>
         </div>
         {commentInput}
@@ -1428,7 +1456,7 @@ function TaskDetailPanel({
                   <span className="font-medium">{t('work:task.failedToStart')}</span> {runError}
                 </div>
               )}
-              <TaskExecutionLogs taskId={task.id} isRunning={task.status === 'in_progress'} authUser={authUser} agents={agents} />
+              <TaskExecutionLogs taskId={task.id} task={task} isRunning={task.status === 'in_progress'} authUser={authUser} agents={agents} />
             </div>
           )}
 
