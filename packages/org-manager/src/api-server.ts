@@ -7676,6 +7676,8 @@ EXPLANATION_END`;
       try {
         const { resolve, extname } = await import('node:path');
         const { existsSync, statSync } = await import('node:fs');
+        const { homedir } = await import('node:os');
+        const home = homedir();
 
         const results: Record<string, { exists: boolean; isFile: boolean; type: string }> = {};
         const mdExts = ['.md', '.markdown'];
@@ -7683,7 +7685,8 @@ EXPLANATION_END`;
 
         for (const p of paths.slice(0, 50)) {
           try {
-            const resolved = resolve(p);
+            const expanded = p.startsWith('~/') ? resolve(home, p.slice(2)) : p === '~' ? home : p;
+            const resolved = resolve(expanded);
             if (!existsSync(resolved)) {
               results[p] = { exists: false, isFile: false, type: 'unknown' };
               continue;
@@ -7720,7 +7723,10 @@ EXPLANATION_END`;
       try {
         const { resolve, extname } = await import('node:path');
         const { readFileSync, existsSync, statSync } = await import('node:fs');
-        const resolved = resolve(filePath);
+        const { homedir } = await import('node:os');
+        const home = homedir();
+        const expanded = filePath.startsWith('~/') ? resolve(home, filePath.slice(2)) : filePath === '~' ? home : filePath;
+        const resolved = resolve(expanded);
 
         if (!existsSync(resolved)) {
           this.json(res, 404, { error: 'File not found' });
@@ -7777,7 +7783,10 @@ EXPLANATION_END`;
         const { resolve, dirname } = await import('node:path');
         const { existsSync, statSync } = await import('node:fs');
         const { exec } = await import('node:child_process');
-        const resolved = resolve(filePath);
+        const { homedir } = await import('node:os');
+        const home = homedir();
+        const expanded = filePath.startsWith('~/') ? resolve(home, filePath.slice(2)) : filePath === '~' ? home : filePath;
+        const resolved = resolve(expanded);
 
         if (!existsSync(resolved)) {
           this.json(res, 404, { error: 'Path not found' });

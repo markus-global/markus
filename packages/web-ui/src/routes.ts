@@ -86,6 +86,7 @@ export const SIDEBAR_SECTIONS = [
 export const SIDEBAR_NAV: Array<{ id: PageId; label: string; section: string }> = [
   { id: PAGE.HOME,         label: 'Home',         section: 'workspace' },
   { id: PAGE.TEAM,         label: 'Team',         section: 'workspace' },
+  { id: PAGE.WORK,         label: 'Work',         section: 'workspace' },
   { id: PAGE.DELIVERABLES, label: 'Deliverables', section: 'workspace' },
   { id: PAGE.BUILDER,      label: 'Builder',      section: 'build' },
   { id: PAGE.STORE,        label: 'Store',        section: 'build' },

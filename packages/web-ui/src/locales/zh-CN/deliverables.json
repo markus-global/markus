@@ -60,7 +60,7 @@
   "metadata": {
     "created": "创建时间：",
     "updated": "更新时间：",
-    "accessed": "访问次数：{{count}} 次",
+    "accessed": "访问次数：",
     "id": "ID：{{id}}"
   },
   "noProject": "无项目",

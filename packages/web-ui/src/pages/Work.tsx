@@ -3112,9 +3112,14 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     } catch (e) { msg(t('work:task.errorCreatingTask', { message: String(e) })); }
   };
 
+  const markNotifRead = (ref: { taskId?: string; requirementId?: string }) => {
+    window.dispatchEvent(new CustomEvent('markus:mark-read-by-ref', { detail: ref }));
+  };
+
   const handleTaskRefresh = () => {
     refreshBoard();
     if (selectedTask) {
+      markNotifRead({ taskId: selectedTask.id });
       setTimeout(() => {
         const filters: { projectId?: string } = {};
         if (viewMode === 'project' && selectedProjectId) filters.projectId = selectedProjectId;
@@ -3122,6 +3127,18 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
           const all = Object.values(d.board).flat();
           const updated = all.find(t => t.id === selectedTask.id);
           if (updated) setSelectedTask(updated); else setSelectedTask(null);
+        }).catch(() => {});
+      }, 150);
+    }
+  };
+
+  const handleReqRefresh = () => {
+    refreshRequirements();
+    if (selectedReq) {
+      setTimeout(() => {
+        api.requirements.list({}).then(({ requirements: r }) => {
+          const updated = r.find(rq => rq.id === selectedReq.id);
+          if (updated) setSelectedReq(updated); else setSelectedReq(null);
         }).catch(() => {});
       }, 150);
     }
@@ -3143,16 +3160,16 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   };
 
   const handleApproveReq = async (id: string) => {
-    try { await api.requirements.approve(id); msg('Requirement approved'); refreshRequirements(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
+    try { await api.requirements.approve(id); msg('Requirement approved'); markNotifRead({ requirementId: id }); handleReqRefresh(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
   };
 
   const handleRejectReq = async () => {
     if (!rejectReqId) return;
-    try { await api.requirements.reject(rejectReqId, rejectReason); msg('Requirement rejected'); setRejectReqId(null); setRejectReason(''); refreshRequirements(); } catch (e) { msg(`Error: ${e}`); }
+    try { await api.requirements.reject(rejectReqId, rejectReason); msg('Requirement rejected'); markNotifRead({ requirementId: rejectReqId }); setRejectReqId(null); setRejectReason(''); handleReqRefresh(); } catch (e) { msg(`Error: ${e}`); }
   };
 
   const handleDeleteReq = async (id: string) => {
-    try { await api.requirements.cancel(id); msg('Requirement cancelled'); refreshRequirements(); } catch (e) { msg(`Error: ${e}`); }
+    try { await api.requirements.cancel(id); msg('Requirement cancelled'); markNotifRead({ requirementId: id }); handleReqRefresh(); } catch (e) { msg(`Error: ${e}`); }
   };
 
   // ── Drag handlers (tasks + requirements) ──
@@ -3737,15 +3754,15 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
               allTasks={Object.values(board).flat()}
               users={users}
               onClose={handleCloseDetail}
-              onApprove={id => { handleApproveReq(id); handleCloseDetail(); }}
-              onReject={id => { setRejectReqId(id); handleCloseDetail(); }}
+              onApprove={id => { handleApproveReq(id); }}
+              onReject={id => { setRejectReqId(id); }}
               onCancel={id => { handleDeleteReq(id); handleCloseDetail(); }}
               onStatusChange={async (id, status) => {
-                try { await api.requirements.updateStatus(id, status); msg(`Requirement status → ${status}`); refreshRequirements(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
+                try { await api.requirements.updateStatus(id, status); msg(`Requirement status → ${status}`); markNotifRead({ requirementId: id }); handleReqRefresh(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
               }}
               scrollToComments={scrollToComments}
               onScrollToCommentsDone={() => setScrollToComments(false)}
-              onRefresh={refreshRequirements}
+              onRefresh={handleReqRefresh}
               authUser={authUser}
               onTaskClick={task => handleSelectTask(task)}
               onCreateTask={(reqId, projectId) => {

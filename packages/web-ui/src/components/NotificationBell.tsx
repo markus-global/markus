@@ -139,13 +139,32 @@ export function NotificationBell({ collapsed, userId }: Props) {
     } catch { /* */ }
   }, [userId]);
 
+  const markReadByRef = useCallback((e: Event) => {
+    const detail = (e as CustomEvent).detail as { taskId?: string; requirementId?: string } | undefined;
+    if (!detail) return;
+    const { taskId, requirementId } = detail;
+    if (!taskId && !requirementId) return;
+    setNotifications(prev => {
+      const toMark = prev.filter(n =>
+        !n.read &&
+        ((taskId && n.metadata?.taskId === taskId) ||
+         (requirementId && n.metadata?.requirementId === requirementId))
+      );
+      if (toMark.length === 0) return prev;
+      for (const n of toMark) api.notifications.markRead(n.id).catch(() => {});
+      setUnreadCount(c => Math.max(0, c - toMark.length));
+      return prev.map(n => toMark.some(m => m.id === n.id) ? { ...n, read: true } : n);
+    });
+  }, []);
+
   useEffect(() => {
     fetchData();
     const timer = setInterval(fetchData, 15000);
     const onChanged = () => fetchData();
     window.addEventListener('markus:notifications-changed', onChanged);
-    return () => { clearInterval(timer); window.removeEventListener('markus:notifications-changed', onChanged); };
-  }, [fetchData]);
+    window.addEventListener('markus:mark-read-by-ref', markReadByRef);
+    return () => { clearInterval(timer); window.removeEventListener('markus:notifications-changed', onChanged); window.removeEventListener('markus:mark-read-by-ref', markReadByRef); };
+  }, [fetchData, markReadByRef]);
 
   const reposition = useCallback(() => {
     if (!btnRef.current) return;

@@ -2425,6 +2425,13 @@ export class Agent {
           this.memory.appendMessage(sessionId, contMsg);
         } else {
           // Normal tool_use flow
+          const currentActId = this.state.currentActivity?.id;
+          if (currentActId && response.reasoningContent?.trim()) {
+            this.emitActivityLog(currentActId, 'text', response.reasoningContent, { isThinking: true });
+          }
+          if (currentActId && response.content?.trim()) {
+            this.emitActivityLog(currentActId, 'text', response.content);
+          }
           this.memory.appendMessage(sessionId, {
             role: 'assistant',
             content: response.content,
@@ -2433,7 +2440,6 @@ export class Agent {
           });
 
           // Execute all tool calls in parallel
-          const currentActId = this.state.currentActivity?.id;
           const toolResults = await Promise.all(
             response.toolCalls!.map(async tc => {
               const toolStart = Date.now();
@@ -2601,6 +2607,9 @@ export class Agent {
           this.id,
           `[Chat with ${senderInfo?.name ?? senderId}] Q: ${userMessage.slice(0, 150)}... A: ${displayReply.slice(0, 300)}`
         );
+      }
+      if (chatActivityId && response.reasoningContent?.trim()) {
+        this.emitActivityLog(chatActivityId, 'text', response.reasoningContent, { isThinking: true });
       }
       if (chatActivityId && displayReply.trim()) {
         this.emitActivityLog(chatActivityId, 'text', displayReply);
@@ -3281,13 +3290,30 @@ export class Agent {
     const llmTools = this.buildToolDefinitions({ userMessage: taskPrompt, isTaskExecution: true });
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
     let textBuffer = '';
+    let thinkingBuffer = '';
     let taskToolIterations = 0;
 
+    const flushThinking = () => {
+      if (thinkingBuffer.trim()) {
+        emit('text', thinkingBuffer, { isThinking: true });
+        thinkingBuffer = '';
+      }
+    };
     const flushText = () => {
       markerDelta.flush();
+      flushThinking();
       if (textBuffer.trim()) {
         emit('text', textBuffer);
         textBuffer = '';
+      }
+    };
+    const handleStreamEvent = (event: { type: string; text?: string; thinking?: string }) => {
+      if (event.type === 'thinking_delta' && event.thinking) {
+        thinkingBuffer += event.thinking;
+      }
+      if (event.type === 'text_delta' && event.text) {
+        textBuffer += event.text;
+        emitDelta(event.text);
       }
     };
 
@@ -3314,12 +3340,7 @@ export class Agent {
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chatStream(
           { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
-          event => {
-            if (event.type === 'text_delta' && event.text) {
-              textBuffer += event.text;
-              emitDelta(event.text);
-            }
-          },
+          handleStreamEvent,
           this.getEffectiveProvider(),
           abortController.signal,
         ),
@@ -3536,12 +3557,7 @@ export class Agent {
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
             },
-            event => {
-              if (event.type === 'text_delta' && event.text) {
-                textBuffer += event.text;
-                emitDelta(event.text);
-              }
-            },
+            handleStreamEvent,
             this.getEffectiveProvider(),
             abortController.signal,
           ),
@@ -3606,12 +3622,7 @@ export class Agent {
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
             },
-            event => {
-              if (event.type === 'text_delta' && event.text) {
-                textBuffer += event.text;
-                emitDelta(event.text);
-              }
-            },
+            handleStreamEvent,
             this.getEffectiveProvider(),
             abortController.signal,
           ),
@@ -3792,11 +3803,28 @@ export class Agent {
     const llmTools = this.buildToolDefinitions({ userMessage });
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
     let textBuffer = '';
+    let thinkingBuffer = '';
+    const flushThinking = () => {
+      if (thinkingBuffer.trim()) {
+        emit('text', thinkingBuffer, { isThinking: true });
+        thinkingBuffer = '';
+      }
+    };
     const flushText = () => {
       markerDeltaRIS.flush();
+      flushThinking();
       if (textBuffer.trim()) {
         emit('text', textBuffer);
         textBuffer = '';
+      }
+    };
+    const handleStreamEvent = (event: { type: string; text?: string; thinking?: string }) => {
+      if (event.type === 'thinking_delta' && event.thinking) {
+        thinkingBuffer += event.thinking;
+      }
+      if (event.type === 'text_delta' && event.text) {
+        textBuffer += event.text;
+        emitDelta(event.text);
       }
     };
 
@@ -3817,12 +3845,7 @@ export class Agent {
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chatStream(
           { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
-          event => {
-            if (event.type === 'text_delta' && event.text) {
-              textBuffer += event.text;
-              emitDelta(event.text);
-            }
-          },
+          handleStreamEvent,
           this.getEffectiveProvider(),
         ),
         'RespondInSession LLM call',
@@ -3896,12 +3919,7 @@ export class Agent {
         response = await this.withNetworkRetry(
           () => this.llmRouter.chatStream(
             { messages: preparedCont.messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
-            event => {
-              if (event.type === 'text_delta' && event.text) {
-                textBuffer += event.text;
-                emitDelta(event.text);
-              }
-            },
+            handleStreamEvent,
             this.getEffectiveProvider(),
           ),
           'RespondInSession LLM continuation',

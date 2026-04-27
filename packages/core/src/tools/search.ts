@@ -8,10 +8,8 @@ import type { AgentToolHandler } from '../agent.js';
 const execFileAsync = promisify(execFile);
 
 /** Read-only search tools can access any path — no restrictions on reads by design */
-function isPathAccessible(resolvedPath: string, workspacePath?: string, _policy?: PathAccessPolicy): boolean {
-  if (!workspacePath) return true;
-  const rel = relative(workspacePath, resolvedPath);
-  return !rel.startsWith('..') && !rel.startsWith('/');
+function isPathAccessible(_resolvedPath: string, _workspacePath?: string, _policy?: PathAccessPolicy): boolean {
+  return true;
 }
 
 /**
