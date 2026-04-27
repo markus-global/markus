@@ -227,7 +227,12 @@ function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo
               <div className="text-xs text-fg-primary font-medium truncate">{agent.name}</div>
               <div className="text-[10px] text-fg-tertiary">{agent.role} · {agent.agentRole ?? t('work:task.workerRole')}</div>
             </div>
-            <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-green-400'}`} />
+            <span className={`w-2 h-2 rounded-full shrink-0 ${
+              agent.status === 'working' ? 'bg-blue-400 animate-pulse'
+              : agent.status === 'error' ? 'bg-red-400'
+              : (agent.lastError && agent.lastErrorAt && (Date.now() - new Date(agent.lastErrorAt).getTime()) < 30 * 60 * 1000) ? 'bg-amber-400'
+              : 'bg-green-400'
+            }`} />
           </div>
           <button
             onClick={() => { setOpen(false); navBus.navigate(PAGE.TEAM, { selectAgent: agent.id }); }}
@@ -568,7 +573,13 @@ function MentionPopover({ agent, anchorRect, onClose }: {
     return () => document.removeEventListener('mousedown', handler);
   }, [onClose]);
 
-  const statusColor = agent.status === 'idle' ? 'bg-green-400' : agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-gray-500';
+  const hasRecentError = agent.status !== 'error' && !!agent.lastError && !!agent.lastErrorAt
+    && (Date.now() - new Date(agent.lastErrorAt).getTime()) < 30 * 60 * 1000;
+  const statusColor = agent.status === 'idle' && !hasRecentError ? 'bg-green-400'
+    : agent.status === 'working' && !hasRecentError ? 'bg-blue-400 animate-pulse'
+    : agent.status === 'error' ? 'bg-red-400'
+    : hasRecentError ? 'bg-amber-400'
+    : 'bg-gray-500';
   const statusLabel = agent.status === 'idle' ? t('work:task.online') : agent.status === 'working' ? t('work:task.working') : agent.status === 'error' ? t('work:task.error') : agent.status === 'paused' ? t('work:task.paused') : t('work:task.offline');
 
   return (

@@ -193,7 +193,12 @@ function ChatAgentLink({ name, agentId, agents, onViewProfile }: { name: string;
               <div className="text-xs text-fg-primary font-medium truncate">{agent.name}</div>
               <div className="text-[10px] text-fg-tertiary">{agent.role} · {agent.agentRole ?? t('page.workerRole')}</div>
             </div>
-            <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-green-400'}`} />
+            <span className={`w-2 h-2 rounded-full shrink-0 ${
+              agent.status === 'working' ? 'bg-blue-400 animate-pulse'
+              : agent.status === 'error' ? 'bg-red-400'
+              : (agent.lastError && agent.lastErrorAt && (Date.now() - new Date(agent.lastErrorAt).getTime()) < 30 * 60 * 1000) ? 'bg-amber-400'
+              : 'bg-green-400'
+            }`} />
           </div>
           <button
             onClick={() => { setOpen(false); onViewProfile?.(agent.id); }}
@@ -224,7 +229,13 @@ function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
     return () => document.removeEventListener('mousedown', handler);
   }, [onClose]);
 
-  const statusColor = agent.status === 'idle' ? 'bg-green-400' : agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-gray-500';
+  const hasRecentError = agent.status !== 'error' && !!agent.lastError && !!agent.lastErrorAt
+    && (Date.now() - new Date(agent.lastErrorAt).getTime()) < 30 * 60 * 1000;
+  const statusColor = agent.status === 'idle' && !hasRecentError ? 'bg-green-400'
+    : agent.status === 'working' && !hasRecentError ? 'bg-blue-400 animate-pulse'
+    : agent.status === 'error' ? 'bg-red-400'
+    : hasRecentError ? 'bg-amber-400'
+    : 'bg-gray-500';
   const statusLabel = agent.status === 'idle' ? t('common:status.online') : agent.status === 'working' ? t('common:status.working') : agent.status === 'error' ? t('common:status.error') : agent.status === 'paused' ? t('common:status.paused') : t('common:status.offline');
 
   const adjustRef = useCallback((el: HTMLDivElement | null) => {
@@ -2937,6 +2948,8 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
   const popoverRef = useRef<HTMLDivElement>(null);
   const isWorking = agent.status === 'working';
   const isError = agent.status === 'error';
+  const hasRecentError = !isError && !!agent.lastError && !!agent.lastErrorAt
+    && (Date.now() - new Date(agent.lastErrorAt).getTime()) < 30 * 60 * 1000;
   const currentTask = isWorking ? tasks.find(t => t.assignedAgentId === agent.id && t.status === 'in_progress') : null;
   const activity = agent.currentActivity;
 
@@ -2968,7 +2981,9 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
     }
   }, [open]);
 
-  const dotColor = isError ? 'bg-red-400 animate-pulse' : isWorking ? 'bg-blue-400 animate-pulse' : 'bg-green-400';
+  const dotColor = isError ? 'bg-red-400 animate-pulse'
+    : hasRecentError ? 'bg-amber-400'
+    : isWorking ? 'bg-blue-400 animate-pulse' : 'bg-green-400';
   const label = isError ? t('common:status.error') : isWorking ? t('common:status.working') : t('common:status.idle');
 
   const activityLabel = activity
@@ -2983,13 +2998,15 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
       <button
         onClick={() => setOpen(o => !o)}
         className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full transition-colors ${
-          isWorking ? 'bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20'
+          isWorking && !hasRecentError ? 'bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20'
           : isError ? 'bg-red-500/10 border border-red-500/20 hover:bg-red-500/20'
+          : hasRecentError ? 'bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20'
           : 'bg-green-500/10 border border-green-500/20 hover:bg-green-500/20'
         }`}
       >
         <span className={`w-2 h-2 rounded-full ${dotColor}`} />
-        <span className={`text-xs ${isError ? 'text-red-500' : isWorking ? 'text-blue-500' : 'text-green-600'}`}>{label}</span>
+        <span className={`text-xs ${isError ? 'text-red-500' : hasRecentError ? 'text-amber-600' : isWorking ? 'text-blue-500' : 'text-green-600'}`}>{label}</span>
+        {hasRecentError && <span className="text-[9px] text-amber-500">⚠</span>}
         {agent.mailboxDepth != null && agent.mailboxDepth > 0 && (
           <span className="text-[9px] bg-fg-tertiary/20 text-fg-tertiary rounded-full px-1.5">{agent.mailboxDepth}</span>
         )}
@@ -3010,6 +3027,19 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
           >
             {t('page.viewAgentProfileArrow')}
           </button>
+        </div>
+      )}
+
+      {open && hasRecentError && (
+        <div ref={popoverRef} className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-amber-500/30 rounded-xl shadow-2xl z-30 w-80 max-w-[calc(100vw-1rem)] p-3 space-y-2">
+          <p className="text-[10px] text-amber-600 uppercase font-semibold">{t('page.recentErrorDetails')}</p>
+          <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5">
+            <pre className="text-[10px] text-amber-600/80 leading-relaxed whitespace-pre-wrap break-all font-mono line-clamp-6">
+              {agent.lastError}
+            </pre>
+            {agent.lastErrorAt && <div className="text-[9px] text-amber-500/50 mt-1.5 border-t border-amber-500/10 pt-1">{new Date(agent.lastErrorAt).toLocaleString()}</div>}
+          </div>
+          <div className="text-[10px] text-fg-tertiary">{t('page.errorRecovered')}</div>
         </div>
       )}
 
