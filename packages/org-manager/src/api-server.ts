@@ -4432,35 +4432,52 @@ EXPLANATION_END`;
 
       // Always persist to DB for durability (not just when email/password provided)
       let inviteToken: string | undefined;
+      let effectiveUserId = userId;
       if (this.storage) {
         if (password && !email) {
           this.json(res, 400, { error: 'Email is required when setting a password' });
           return;
         }
-        const passwordHash = password ? await hashPassword(password) : undefined;
-        await this.storage.userRepo.create({
-          id: userId,
-          orgId,
-          name,
-          email: email ?? undefined,
-          role,
-          passwordHash,
-        });
-        // Generate invite token for email-only users (no password set)
-        if (email && !password) {
-          inviteToken = generateInviteToken();
-          const expires = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
-          this.storage.userRepo.setInviteToken(userId, inviteToken, expires);
+
+        // Check if a soft-deleted user with this email exists — reactivate instead of creating new
+        const deletedUser = email ? this.storage.userRepo.findDeletedByEmail(email) : null;
+        if (deletedUser) {
+          effectiveUserId = deletedUser.id as string;
+          this.storage.userRepo.reactivate(effectiveUserId, { name, role });
+          if (password) {
+            const hash = await hashPassword(password);
+            await this.storage.userRepo.updatePassword(effectiveUserId, hash);
+          } else {
+            inviteToken = generateInviteToken();
+            const expires = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
+            this.storage.userRepo.setInviteToken(effectiveUserId, inviteToken, expires);
+          }
+        } else {
+          const passwordHash = password ? await hashPassword(password) : undefined;
+          await this.storage.userRepo.create({
+            id: effectiveUserId,
+            orgId,
+            name,
+            email: email ?? undefined,
+            role,
+            passwordHash,
+          });
+          // Generate invite token for email-only users (no password set)
+          if (email && !password) {
+            inviteToken = generateInviteToken();
+            const expires = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
+            this.storage.userRepo.setInviteToken(effectiveUserId, inviteToken, expires);
+          }
         }
       }
 
-      const user = this.orgService.addHumanUser(orgId, name, role, { id: userId, email });
+      const user = this.orgService.addHumanUser(orgId, name, role, { id: effectiveUserId, email });
 
       // Add to team if specified
       let teamError: string | undefined;
       if (teamId) {
         try {
-          this.orgService.addMemberToTeam(teamId, userId, 'human');
+          this.orgService.addMemberToTeam(teamId, effectiveUserId, 'human');
         } catch (err) {
           teamError = String(err);
         }
@@ -4473,7 +4490,7 @@ EXPLANATION_END`;
         detail: `User "${name}" created`,
         userId: authUser.userId,
         success: true,
-        metadata: { newUserId: userId, role },
+        metadata: { newUserId: effectiveUserId, role },
       });
       this.json(res, 201, { user, inviteToken, ...(teamError ? { teamError } : {}) });
       return;

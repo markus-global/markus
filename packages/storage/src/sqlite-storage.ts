@@ -625,6 +625,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'requirements', column: 'rejected_by', sql: 'ALTER TABLE requirements ADD COLUMN rejected_by TEXT' },
     { table: 'projects', column: 'created_by', sql: 'ALTER TABLE projects ADD COLUMN created_by TEXT' },
     { table: 'approvals', column: 'target_user_id', sql: 'ALTER TABLE approvals ADD COLUMN target_user_id TEXT' },
+    { table: 'users', column: 'deleted_at', sql: 'ALTER TABLE users ADD COLUMN deleted_at TEXT' },
+    { table: 'agents', column: 'deleted_at', sql: 'ALTER TABLE agents ADD COLUMN deleted_at TEXT' },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -789,7 +791,7 @@ export class SqliteAgentRepo {
 
   findByOrgId(orgId: string) {
     return (
-      this.db.prepare('SELECT * FROM agents WHERE org_id = ?').all(orgId) as Record<
+      this.db.prepare('SELECT * FROM agents WHERE org_id = ? AND deleted_at IS NULL').all(orgId) as Record<
         string,
         unknown
       >[]
@@ -797,7 +799,7 @@ export class SqliteAgentRepo {
   }
 
   listAll() {
-    return (this.db.prepare('SELECT * FROM agents').all() as Record<string, unknown>[]).map(r =>
+    return (this.db.prepare('SELECT * FROM agents WHERE deleted_at IS NULL').all() as Record<string, unknown>[]).map(r =>
       this._map(r)
     );
   }
@@ -823,11 +825,7 @@ export class SqliteAgentRepo {
   }
 
   delete(id: string) {
-    // Clear FK references from dependent tables before deleting the agent row
-    this.db.prepare('UPDATE tasks SET assigned_agent_id = NULL WHERE assigned_agent_id = ?').run(id);
-    this.db.prepare('UPDATE messages SET agent_id = NULL WHERE agent_id = ?').run(id);
-    this.db.prepare('DELETE FROM memories WHERE agent_id = ?').run(id);
-    this.db.prepare('DELETE FROM agents WHERE id = ?').run(id);
+    this.db.prepare("UPDATE agents SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(id);
   }
 
   updateAvatarUrl(id: string, avatarUrl: string | null) {
@@ -2247,11 +2245,11 @@ export class SqliteUserRepo {
   }
 
   async delete(id: string) {
-    this.db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    this.db.prepare("UPDATE users SET deleted_at = datetime('now') WHERE id = ?").run(id);
   }
 
   findByEmail(email: string) {
-    const r = this.db.prepare('SELECT * FROM users WHERE email = ?').get(email) as
+    const r = this.db.prepare('SELECT * FROM users WHERE email = ? AND deleted_at IS NULL').get(email) as
       | Record<string, unknown>
       | undefined;
     return r ? this._map(r) : null;
@@ -2266,7 +2264,7 @@ export class SqliteUserRepo {
 
   listByOrg(orgId: string) {
     return (
-      this.db.prepare('SELECT * FROM users WHERE org_id = ?').all(orgId) as Record<
+      this.db.prepare('SELECT * FROM users WHERE org_id = ? AND deleted_at IS NULL').all(orgId) as Record<
         string,
         unknown
       >[]
@@ -2307,7 +2305,7 @@ export class SqliteUserRepo {
   }
 
   countByOrg(orgId: string): number {
-    const r = this.db.prepare('SELECT COUNT(*) as cnt FROM users WHERE org_id = ?').get(orgId) as {
+    const r = this.db.prepare('SELECT COUNT(*) as cnt FROM users WHERE org_id = ? AND deleted_at IS NULL').get(orgId) as {
       cnt: number;
     };
     return r.cnt;
@@ -2322,7 +2320,7 @@ export class SqliteUserRepo {
   }
 
   findByInviteToken(token: string) {
-    const r = this.db.prepare('SELECT * FROM users WHERE invite_token = ?').get(token) as
+    const r = this.db.prepare('SELECT * FROM users WHERE invite_token = ? AND deleted_at IS NULL').get(token) as
       | Record<string, unknown>
       | undefined;
     return r ? this._map(r) : null;
@@ -2330,6 +2328,18 @@ export class SqliteUserRepo {
 
   clearInviteToken(id: string) {
     this.db.prepare('UPDATE users SET invite_token = NULL, invite_expires_at = NULL WHERE id = ?').run(id);
+  }
+
+  findDeletedByEmail(email: string) {
+    const r = this.db.prepare('SELECT * FROM users WHERE email = ? AND deleted_at IS NOT NULL').get(email) as
+      | Record<string, unknown>
+      | undefined;
+    return r ? this._map(r) : null;
+  }
+
+  reactivate(id: string, data: { name: string; role: string }) {
+    this.db.prepare('UPDATE users SET deleted_at = NULL, name = ?, role = ?, invite_token = NULL, invite_expires_at = NULL WHERE id = ?')
+      .run(data.name, data.role, id);
   }
 
   private _map(r: Record<string, unknown>) {

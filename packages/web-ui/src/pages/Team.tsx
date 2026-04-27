@@ -909,7 +909,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     const unsubGroup = wsClient.on('chat:group_created', refreshGroupChats);
     const unsubGroupUpdate = wsClient.on('chat:group_updated', refreshGroupChats);
     const unsubGroupDelete = wsClient.on('chat:group_deleted', refreshGroupChats);
-    const onDataChanged = () => { refreshAgents(); refreshTeams(); };
+    const onDataChanged = () => { refreshAgents(); refreshTeams(); refreshHumans(); };
     window.addEventListener('markus:data-changed', onDataChanged);
     return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeam(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); window.removeEventListener('markus:data-changed', onDataChanged); };
   // eslint-disable-next-line react-hooks/exhaustive-deps

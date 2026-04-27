@@ -459,6 +459,7 @@ export function ChatTeamSidebar({
         }
         onRefreshAgents();
         onRefreshTeams();
+        onRefreshHumans?.();
         refreshUngrouped();
         window.dispatchEvent(new CustomEvent('markus:data-changed'));
       },
