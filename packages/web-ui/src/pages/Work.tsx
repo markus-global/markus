@@ -1927,7 +1927,7 @@ function TaskDetailPanel({
             {task.status === 'pending' && (
               <>
                 <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">
-                  {task.createdBy?.startsWith('usr_') ? t('work:task.startExecution') : t('work:task.approve')}
+                  {task.createdBy && !task.createdBy.startsWith('agt_') ? t('work:task.startExecution') : t('work:task.approve')}
                 </button>
                 <button onClick={() => setRejectConfirm(true)} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">{t('work:task.reject')}</button>
               </>
