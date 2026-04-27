@@ -104,6 +104,7 @@
     "scrollToTop": "滚动到顶部",
     "scrollToBottom": "滚动到底部",
     "approve": "批准",
+    "startExecution": "启动执行",
     "reject": "拒绝",
     "approveCheck": "✓ 批准",
     "requestRevision": "↻ 请求修改",

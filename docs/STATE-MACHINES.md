@@ -25,6 +25,7 @@ Tasks and requirements share a **single status enum** (`ItemStatus`). Not every 
 - There is no `approved` status. Approval transitions directly to `in_progress` (for both tasks and requirements). The intermediate state added no user decision point.
 - There is no `draft` status. Items are created directly as `pending`. The distinction between "draft" and "submitted for review" added no practical value — agents create items programmatically and don't iterate on drafts.
 - `pending` replaces the old `pending_approval` (tasks), `pending_review` (requirements), and `draft` (requirements).
+- **All tasks start as `pending`** — both human-created and agent-created tasks begin in `pending` status. Human-created tasks require the user to explicitly click "Start Execution" to transition to `in_progress`. Agent-created tasks require human approval (HITL). This gives humans full control over when execution begins.
 
 ---
 
@@ -55,8 +56,8 @@ Tasks and requirements share a **single status enum** (`ItemStatus`). Not every 
 
 | From | To | Trigger | Method |
 |------|----|---------|--------|
-| `pending` | `in_progress` | Human approves (no blockers) | `approveTask()` |
-| `pending` | `blocked` | Human approves (has unmet blockers) | `approveTask()` |
+| `pending` | `in_progress` | Human approves or starts execution (no blockers) | `approveTask()` |
+| `pending` | `blocked` | Human approves or starts execution (has unmet blockers) | `approveTask()` |
 | `pending` | `rejected` | Human rejects | `rejectTask()` |
 | `in_progress` | `review` | Agent execution finishes | Auto (log handler in `runTask`) |
 | `in_progress` | `blocked` | User pauses task | API `POST /tasks/:id/pause` |
@@ -98,6 +99,7 @@ The legal transition set is defined as a declarative matrix `TASK_TRANSITIONS` i
 7. **Preemption ≠ blocked**: When the attention controller **preempts** (pauses) a task for a higher-priority item, the task stays `in_progress` (not `blocked`). The mailbox item is deferred and automatically resurfaced when the agent is idle. The same execution round and session context are preserved. **Cancellation** is different: when the controller **cancels** a task (because the incoming message explicitly revokes the work), the mailbox item is permanently dropped and will NOT be resumed.
 8. **Irreversible actions require confirmation**: The UI requires explicit user confirmation (via modal dialogs) for Reject, Cancel (always, regardless of dependents), and Archive operations. This prevents accidental data loss.
 9. **Scheduled task button restrictions**: Completed scheduled tasks do not show "Reopen" (the schedule handles re-runs). Failed scheduled tasks show only "Run Now" (no "Retry"/"Continue" since the scheduler manages retries).
+10. **Human-created tasks**: Created as `pending` with no HITL approval request and no `task_created` notification (no self-notification). The UI shows "Start Execution" instead of "Approve" for human-created pending tasks. Agent-created tasks show "Approve" and trigger HITL approval flow.
 
 ---
 

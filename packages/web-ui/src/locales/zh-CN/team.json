@@ -17,6 +17,11 @@
     "people": "人员",
     "myNotes": "我的笔记",
     "groupChat": "群聊",
+    "groups": "群组",
+    "newGroupChat": "新建群聊",
+    "newGroupChatDesc": "自定义群组，可添加任意成员",
+    "members_one": "{{count}} 位成员",
+    "members_other": "{{count}} 位成员",
     "dropHere": "拖放到此处",
     "expandTeam": "展开",
     "collapseTeam": "收起",
@@ -122,6 +127,22 @@
     "resumeAll": {
       "title": "恢复所有智能体",
       "message": "所有智能体将恢复处理邮箱中的事件。"
+    },
+    "createGroupChat": {
+      "title": "创建群聊",
+      "subtitle": "添加智能体和成员一起聊天",
+      "groupNamePlaceholder": "群组名称…",
+      "searchPlaceholder": "搜索成员…",
+      "noMembersFound": "未找到成员",
+      "selected": "已选 {{count}} 个",
+      "creating": "创建中…",
+      "create": "创建"
+    },
+    "deleteGroupChat": {
+      "title": "删除群聊？",
+      "message": "删除「{{name}}」及其所有消息？",
+      "confirm": "删除",
+      "menuLabel": "删除群聊"
     }
   },
   "notifications": {

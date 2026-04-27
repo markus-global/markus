@@ -104,6 +104,7 @@
     "scrollToTop": "Scroll to top",
     "scrollToBottom": "Scroll to bottom",
     "approve": "Approve",
+    "startExecution": "Start Execution",
     "reject": "Reject",
     "approveCheck": "✓ Approve",
     "requestRevision": "↻ Request Revision",

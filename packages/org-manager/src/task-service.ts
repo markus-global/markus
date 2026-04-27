@@ -1593,19 +1593,26 @@ export class TaskService {
       (request.creatorRole as 'worker' | 'manager') ?? 'worker',
     );
 
+    const hasUnresolvedBlockers = request.blockedBy && request.blockedBy.length > 0 && !request.blockedBy.every(blockerId => {
+      const blocker = this.tasks.get(blockerId);
+      return blocker && blocker.status === 'completed';
+    });
+
+    // Human-created tasks start as 'pending' (human manually starts execution);
+    // auto-tier agent tasks start as 'in_progress' or 'blocked'.
+    const initialStatus: TaskStatus =
+      request.creatorRole === 'human'
+        ? (hasUnresolvedBlockers ? 'blocked' : 'pending')
+        : approvalTier === 'auto'
+          ? (hasUnresolvedBlockers ? 'blocked' : 'in_progress')
+          : 'pending';
+
     const task: Task = {
       id: taskId(),
       orgId: request.orgId,
       title: request.title,
       description: request.description,
-      status: approvalTier === 'auto'
-        ? (request.blockedBy && request.blockedBy.length > 0 && !request.blockedBy.every(blockerId => {
-            const blocker = this.tasks.get(blockerId);
-            return blocker && blocker.status === 'completed';
-          })
-          ? 'blocked'
-          : 'in_progress')
-        : 'pending',
+      status: initialStatus,
       priority: request.priority ?? 'medium',
       assignedAgentId: request.assignedAgentId,
       reviewerAgentId: request.reviewerAgentId,
@@ -1665,7 +1672,7 @@ export class TaskService {
       agentId: task.assignedAgentId,
       timestamp: task.createdAt,
     });
-    if (this.hitlService && request.createdBy && request.createdBy !== 'default') {
+    if (this.hitlService && request.createdBy && request.createdBy !== 'default' && request.creatorRole !== 'human') {
       this.hitlService.notify({
         targetUserId: 'all',
         type: 'task_created',
@@ -1683,8 +1690,8 @@ export class TaskService {
       reviewer: task.reviewerAgentId,
     });
 
-    // Request HITL approval
-    if (this.hitlService) {
+    // Request HITL approval (only for agent-created tasks that need approval)
+    if (this.hitlService && request.creatorRole !== 'human' && task.status === 'pending') {
       const creatorName = request.createdBy ?? 'unknown agent';
       this.hitlService.requestApprovalAndWait({
         agentId: request.createdBy ?? 'system',

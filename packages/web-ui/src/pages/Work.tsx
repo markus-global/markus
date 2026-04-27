@@ -1901,10 +1901,12 @@ function TaskDetailPanel({
         {/* Actions */}
         <div className="px-6 py-4 border-t border-border-default flex items-center justify-between gap-2">
           <div className="flex gap-2 flex-wrap">
-            {/* ── Approve / Reject (pending) ── */}
+            {/* ── Approve / Start Execution (pending) ── */}
             {task.status === 'pending' && (
               <>
-                <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">{t('work:task.approve')}</button>
+                <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">
+                  {task.createdBy?.startsWith('usr_') ? t('work:task.startExecution') : t('work:task.approve')}
+                </button>
                 <button onClick={() => setRejectConfirm(true)} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">{t('work:task.reject')}</button>
               </>
             )}

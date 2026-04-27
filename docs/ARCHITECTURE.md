@@ -275,11 +275,11 @@ rejected ── resubmit ──┘     any ──► cancelled
 
 | Approval tier | Trigger | Approver |
 |---------------|---------|----------|
-| `auto` | Low-priority tasks | No approval |
-| `manager` | Standard tasks | Team Manager Agent |
+| `auto` | Low-priority agent-created tasks | No approval (starts `in_progress`) |
+| `manager` | Standard agent-created tasks | Team Manager Agent |
 | `human` | High/urgent priority, shared-resource impact | Human (HITL) |
 
-Agent trust level dynamically adjusts effective approval tier (e.g. senior Agent's manager-level tasks may auto-approve).
+**Human-created tasks** always start as `pending` regardless of approval tier, with no HITL approval request or notification. The human user explicitly starts execution from the UI ("Start Execution" button). Agent trust level dynamically adjusts effective approval tier (e.g. senior Agent's manager-level tasks may auto-approve).
 
 ### 3.7 Context Engine (System Prompt Assembly)
 
