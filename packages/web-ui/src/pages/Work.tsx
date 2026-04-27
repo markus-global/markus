@@ -16,12 +16,21 @@ import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 
 /* ── useDropdownPosition: compute fixed position for dropdown escaping overflow containers ── */
 function useDropdownPosition(triggerRef: React.RefObject<HTMLDivElement | null>, open: boolean) {
-  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; width: number; flipUp?: boolean } | null>(null);
   useEffect(() => {
     if (!open || !triggerRef.current) { setPos(null); return; }
     const update = () => {
       const rect = triggerRef.current?.getBoundingClientRect();
-      if (rect) setPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+      if (!rect) return;
+      const maxH = 240; // max-h-60 = 15rem = 240px
+      const spaceBelow = window.innerHeight - rect.bottom - 8;
+      const spaceAbove = rect.top - 8;
+      const flipUp = spaceBelow < maxH && spaceAbove > spaceBelow;
+      if (flipUp) {
+        setPos({ top: rect.top - 4, left: rect.left, width: rect.width, flipUp: true });
+      } else {
+        setPos({ top: rect.bottom + 4, left: rect.left, width: rect.width, flipUp: false });
+      }
     };
     update();
     window.addEventListener('scroll', update, true);
@@ -88,7 +97,9 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchesText
       </div>
       {open && pos && (
         <div ref={dropdownRef} className="fixed z-[100] max-h-60 overflow-y-auto bg-surface-elevated border border-border-default rounded-lg shadow-lg"
-          style={{ top: pos.top, left: pos.left, width: pos.width }}>
+          style={pos.flipUp
+            ? { bottom: window.innerHeight - pos.top, left: pos.left, width: pos.width }
+            : { top: pos.top, left: pos.left, width: pos.width }}>
           {filtered.length === 0 ? (
             <div className="px-3 py-2 text-sm text-fg-tertiary">{noMatchesText ?? 'No matches'}</div>
           ) : filtered.map(o => (
@@ -159,7 +170,9 @@ function MultiSearchableSelect({ options, selected, onAdd, placeholder, noMatche
       </div>
       {open && pos && (
         <div ref={dropdownRef} className="fixed z-[100] max-h-60 overflow-y-auto bg-surface-elevated border border-border-default rounded-lg shadow-lg"
-          style={{ top: pos.top, left: pos.left, width: pos.width }}>
+          style={pos.flipUp
+            ? { bottom: window.innerHeight - pos.top, left: pos.left, width: pos.width }
+            : { top: pos.top, left: pos.left, width: pos.width }}>
           {filtered.length === 0 ? (
             <div className="px-3 py-2 text-sm text-fg-tertiary">{noMatchesText ?? 'No matches'}</div>
           ) : filtered.map(o => (

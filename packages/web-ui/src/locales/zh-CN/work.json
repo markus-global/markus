@@ -305,7 +305,7 @@
     "cancelConfirmTitle": "取消需求",
     "cancelConfirmMessage": "确定要取消此需求吗？此操作不可撤销。",
     "cancelConfirmLabel": "取消需求",
-    "createTask": "+ 任务",
+    "createTask": "任务",
     "noLinkedTasks": "暂无关联任务，创建一个来开始吧。"
   },
   "filters": {

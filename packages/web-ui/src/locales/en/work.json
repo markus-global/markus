@@ -305,7 +305,7 @@
     "cancelConfirmTitle": "Cancel Requirement",
     "cancelConfirmMessage": "Are you sure you want to cancel this requirement? This action cannot be undone.",
     "cancelConfirmLabel": "Cancel Requirement",
-    "createTask": "+ Task",
+    "createTask": "Task",
     "noLinkedTasks": "No tasks linked yet. Create one to get started."
   },
   "filters": {
