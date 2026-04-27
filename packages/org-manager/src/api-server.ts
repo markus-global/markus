@@ -5651,9 +5651,13 @@ EXPLANATION_END`;
       const isPrivileged = authUser.role === 'owner' || authUser.role === 'admin';
       if (!isPrivileged) {
         approvals = approvals.filter(a => {
-          const ids = a.approverUserIds;
-          if (!ids || ids.length === 0) return true;
-          return ids.includes(authUser.userId);
+          if (a.approverUserIds?.length) {
+            return a.approverUserIds.includes(authUser.userId);
+          }
+          if (a.targetUserId && a.targetUserId !== 'all') {
+            return a.targetUserId === authUser.userId;
+          }
+          return true;
         });
       }
       this.json(res, 200, { approvals });

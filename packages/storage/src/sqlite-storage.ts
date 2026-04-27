@@ -532,7 +532,8 @@ CREATE TABLE IF NOT EXISTS approvals (
   options TEXT,
   allow_freeform INTEGER NOT NULL DEFAULT 0,
   selected_option TEXT,
-  approver_user_ids TEXT
+  approver_user_ids TEXT,
+  target_user_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at DESC);
 
@@ -623,6 +624,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'approvals', column: 'approver_user_ids', sql: "ALTER TABLE approvals ADD COLUMN approver_user_ids TEXT" },
     { table: 'requirements', column: 'rejected_by', sql: 'ALTER TABLE requirements ADD COLUMN rejected_by TEXT' },
     { table: 'projects', column: 'created_by', sql: 'ALTER TABLE projects ADD COLUMN created_by TEXT' },
+    { table: 'approvals', column: 'target_user_id', sql: 'ALTER TABLE approvals ADD COLUMN target_user_id TEXT' },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -3847,6 +3849,7 @@ export interface ApprovalRow {
   allowFreeform?: boolean;
   selectedOption?: string;
   approverUserIds?: string[];
+  targetUserId?: string;
 }
 
 export class SqliteApprovalRepo {
@@ -3854,8 +3857,8 @@ export class SqliteApprovalRepo {
 
   upsert(a: ApprovalRow): void {
     this.db.prepare(
-      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option, approver_user_ids)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option, approver_user_ids, target_user_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          status = excluded.status,
          responded_at = excluded.responded_at,
@@ -3880,6 +3883,7 @@ export class SqliteApprovalRepo {
       a.allowFreeform ? 1 : 0,
       a.selectedOption ?? null,
       a.approverUserIds?.length ? JSON.stringify(a.approverUserIds) : null,
+      a.targetUserId ?? null,
     );
   }
 
@@ -3919,6 +3923,7 @@ export class SqliteApprovalRepo {
       allowFreeform: !!(r['allow_freeform'] as number),
       selectedOption: r['selected_option'] as string | undefined,
       approverUserIds: fromJson<string[]>(r['approver_user_ids'] as string) ?? undefined,
+      targetUserId: (r['target_user_id'] as string) ?? undefined,
     };
   }
 }
