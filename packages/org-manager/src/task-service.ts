@@ -434,7 +434,7 @@ export class TaskService {
     commentContent: string,
     context: { taskId?: string; taskTitle?: string; requirementId?: string; requirementTitle?: string },
   ): void {
-    if (!this.hitlService || userId === 'default') return;
+    if (!this.hitlService) return;
     const preview = commentContent.length > 80 ? commentContent.slice(0, 80) + '…' : commentContent;
     const itemTitle = context.taskTitle ?? context.requirementTitle ?? '';
     const isTask = !!context.taskId;
