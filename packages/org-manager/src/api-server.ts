@@ -1952,6 +1952,10 @@ export class APIServer {
         this.json(res, 400, { error: 'name is required' });
         return;
       }
+      if (agentName.length > 100) {
+        this.json(res, 400, { error: 'name must be 100 characters or fewer' });
+        return;
+      }
       const orgId = (body['orgId'] as string) ?? 'default';
 
       // Sanitize: strip HTML tags from name to prevent XSS
@@ -3372,7 +3376,14 @@ export class APIServer {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const body = await this.readBody(req);
         const cfg = agent.config as unknown as Record<string, unknown>;
-        if (body['name'] !== undefined) cfg.name = stripHtmlTags(body['name'] as string);
+        if (body['name'] !== undefined) {
+          const name = stripHtmlTags(body['name'] as string);
+          if (name.length > 100) {
+            this.json(res, 400, { error: 'name must be 100 characters or fewer' });
+            return;
+          }
+          cfg.name = name;
+        }
         if (body['agentRole'] !== undefined) cfg.agentRole = body['agentRole'];
         if (body['skills'] !== undefined) cfg.skills = body['skills'];
         if (body['llmConfig'] !== undefined) {
