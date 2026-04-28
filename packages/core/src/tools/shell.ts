@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { resolve } from 'node:path';
+import { resolve, normalize, sep } from 'node:path';
 import { SHELL_TIMEOUT_DEFAULT_MS, SHELL_TIMEOUT_MAX_MS, type PathAccessPolicy } from '@markus/shared';
 import type { AgentToolHandler, ToolOutputCallback } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
@@ -46,6 +46,17 @@ const GIT_NEEDS_APPROVAL: Array<{ pattern: RegExp; label: string }> = [
 ];
 
 export type CommandApprovalCallback = (command: string, reason: string) => Promise<{ approved: boolean; comment?: string }>;
+
+/**
+ * Check whether `dir` is equal to or a subdirectory of `workspace`.
+ * Both paths are normalised so trailing-slash differences are harmless.
+ */
+function isWithinAgentWorkspace(dir: string | undefined, workspace: string | undefined): boolean {
+  if (!dir || !workspace) return false;
+  const nd = normalize(resolve(dir)) + sep;
+  const nw = normalize(resolve(workspace)) + sep;
+  return nd === nw || nd.startsWith(nw);
+}
 
 function validateGitBranchSafety(command: string): { allowed: boolean; needsApproval?: boolean; reason?: string } {
   for (const { pattern, label } of GIT_ALWAYS_DENY) {
@@ -142,7 +153,8 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
       if (!gitCheck.allowed) {
         return JSON.stringify({ status: 'denied', error: gitCheck.reason });
       }
-      if (gitCheck.needsApproval) {
+      const inOwnWorkspace = isWithinAgentWorkspace(effectiveCwd, workspacePath);
+      if (gitCheck.needsApproval && !inOwnWorkspace) {
         if (onCommandApproval) {
           const result = await onCommandApproval(command, gitCheck.reason!);
           if (!result.approved) {

@@ -3771,9 +3771,10 @@ EXPLANATION_END`;
       const typeFilter = url.searchParams.get('type') ?? undefined;
       const limit = parseInt(url.searchParams.get('limit') ?? '30', 10);
       const before = url.searchParams.get('before') ?? undefined;
+      const taskIdFilter = url.searchParams.get('taskId') ?? undefined;
       try {
         if (this.storage?.activityRepo) {
-          const activities = this.storage.activityRepo.queryActivities(agentId, { type: typeFilter, limit, before });
+          const activities = this.storage.activityRepo.queryActivities(agentId, { type: typeFilter, limit, before, taskId: taskIdFilter });
           this.json(res, 200, { activities });
         } else {
           this.json(res, 200, { activities: [] });

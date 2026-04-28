@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser } from '../api.ts';
+import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, attachSubagentLogsToEntries, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
@@ -820,7 +820,8 @@ function TaskActivitySection({ task, agents, users, authUser }: {
 
 // ─── Execution Log Panel ────────────────────────────────────────────────────────
 
-function TaskExecutionLogs({ taskId, task, isRunning, authUser, agents }: { taskId: string; task: TaskInfo; isRunning: boolean; authUser?: { id: string; name: string }; agents: AgentInfo[] }) {
+function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskInfo; isRunning: boolean; authUser?: { id: string; name: string }; agents: AgentInfo[] }) {
+  const taskId = task.id;
   const { t } = useTranslation(['work', 'common']);
   const [roundsSummary, setRoundsSummary] = useState<RoundSummary[]>([]);
   const [roundLogs, setRoundLogs] = useState<Map<number, TaskLogEntry[]>>(new Map());
@@ -833,6 +834,8 @@ function TaskExecutionLogs({ taskId, task, isRunning, authUser, agents }: { task
   const [commentText, setCommentText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [imageAttachments, setImageAttachments] = useState<Array<{ type: string; url: string; name: string }>>([]);
+  const [relatedActivities, setRelatedActivities] = useState<ActivityRecord[]>([]);
+  const [loadingActivities, setLoadingActivities] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const topRef = useRef<HTMLDivElement>(null);
 
@@ -862,6 +865,17 @@ function TaskExecutionLogs({ taskId, task, isRunning, authUser, agents }: { task
         });
     });
   }, [taskId]);
+
+  // Fetch related activities from the assigned agent (shown when no direct execution logs)
+  useEffect(() => {
+    const agentId = task.assignedAgentId;
+    if (!agentId) return;
+    setLoadingActivities(true);
+    api.agents.getActivities(agentId, { taskId, limit: 20 })
+      .then(d => setRelatedActivities(d.activities))
+      .catch(() => setRelatedActivities([]))
+      .finally(() => setLoadingActivities(false));
+  }, [taskId, task.assignedAgentId]);
 
   // Load a specific round's logs on demand
   const loadRound = useCallback((round: number) => {
@@ -1012,7 +1026,8 @@ function TaskExecutionLogs({ taskId, task, isRunning, authUser, agents }: { task
 
   if (loading) return <div className="flex-1 flex items-center justify-center text-xs text-fg-tertiary">{t('work:task.loadingLogs')}</div>;
   if (roundsSummary.length === 0 && !streamingText) {
-    const agent = task.assignedAgentId ? agents.find(a => a.id === task.assignedAgentId) : null;
+    const agent = task.assignedAgentId ? agents.find(a => a.id === task.assignedAgentId) : undefined;
+    const hasRelated = relatedActivities.length > 0;
     const agentBusy = agent && agent.currentTaskId && agent.currentTaskId !== task.id;
     const isPending = task.status === 'pending';
     const isInProgress = task.status === 'in_progress';
@@ -1042,11 +1057,58 @@ function TaskExecutionLogs({ taskId, task, isRunning, authUser, agents }: { task
 
     return (
       <div className="flex flex-col min-h-full">
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center text-fg-tertiary">
-            <div className="text-2xl mb-2">{emptyIcon}</div>
-            <div className="text-xs">{emptyMsg}<br /><span className="text-fg-muted">{emptyHint}</span></div>
-          </div>
+        <div className="flex-1 overflow-y-auto">
+          {loadingActivities ? (
+            <div className="flex items-center justify-center py-8 text-xs text-fg-tertiary">{t('work:task.loadingLogs')}</div>
+          ) : hasRelated ? (
+            <div className="px-4 py-4">
+              <div className="text-xs text-fg-secondary mb-3 flex items-center gap-1.5">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" />
+                {t('work:task.relatedSessions', { agent: agent?.name ?? t('work:task.agent'), count: relatedActivities.length })}
+              </div>
+              <div className="space-y-1.5">
+                {relatedActivities.map(act => {
+                  const isLive = !act.endedAt;
+                  const typeIcon = act.type === 'task' ? '🔧' : act.type === 'chat' ? '💬' : act.type === 'respond_in_session' ? '💬' : act.type === 'heartbeat' ? '💓' : '📋';
+                  return (
+                    <button
+                      key={act.id}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-elevated hover:bg-surface-elevated/80 border border-border-default/50 text-left transition-colors group"
+                      onClick={() => navBus.navigate(PAGE.TEAM, { agentId: task.assignedAgentId })}
+                    >
+                      <span className="text-sm shrink-0">{typeIcon}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs text-fg-primary truncate">{act.label}</div>
+                        <div className="text-[10px] text-fg-tertiary">
+                          {new Date(act.startedAt).toLocaleString()}
+                          {act.endedAt ? ` — ${act.totalTools} tools, ${act.totalTokens.toLocaleString()} tokens` : ''}
+                        </div>
+                      </div>
+                      {isLive && (
+                        <span className="shrink-0 flex items-center gap-1 text-[10px] text-green-500 font-medium">
+                          <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                          {t('work:task.sessionLive')}
+                        </span>
+                      )}
+                      {!isLive && (
+                        <span className={`shrink-0 text-[10px] ${act.success ? 'text-fg-tertiary' : 'text-red-400'}`}>
+                          {act.success ? '✓' : '✗'}
+                        </span>
+                      )}
+                      <span className="shrink-0 text-fg-tertiary text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">→</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center py-8">
+              <div className="text-center text-fg-tertiary">
+                <div className="text-2xl mb-2">{emptyIcon}</div>
+                <div className="text-xs">{emptyMsg}<br /><span className="text-fg-muted">{emptyHint}</span></div>
+              </div>
+            </div>
+          )}
         </div>
         {commentInput}
       </div>
@@ -1467,7 +1529,7 @@ function TaskDetailPanel({
                   <span className="font-medium">{t('work:task.failedToStart')}</span> {runError}
                 </div>
               )}
-              <TaskExecutionLogs taskId={task.id} task={task} isRunning={task.status === 'in_progress'} authUser={authUser} agents={agents} />
+              <TaskExecutionLogs task={task} isRunning={task.status === 'in_progress'} authUser={authUser} agents={agents} />
             </div>
           )}
 

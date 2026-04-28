@@ -826,11 +826,12 @@ export const api = {
     getRecentActivities: (id: string) => request<{ activities: ActivitySummary[] }>(`/agents/${id}/recent-activities`),
     getActivityLogs: (id: string, activityId: string) =>
       request<{ logs: AgentActivityLogEntry[]; activity?: AgentActivityInfo }>(`/agents/${id}/activity-logs?activityId=${encodeURIComponent(activityId)}`),
-    getActivities: (id: string, opts?: { type?: string; limit?: number; before?: string }) => {
+    getActivities: (id: string, opts?: { type?: string; limit?: number; before?: string; taskId?: string }) => {
       const params = new URLSearchParams();
       if (opts?.type) params.set('type', opts.type);
       if (opts?.limit) params.set('limit', String(opts.limit));
       if (opts?.before) params.set('before', opts.before);
+      if (opts?.taskId) params.set('taskId', opts.taskId);
       const qs = params.toString();
       return request<{ activities: ActivityRecord[] }>(`/agents/${id}/activities${qs ? '?' + qs : ''}`);
     },

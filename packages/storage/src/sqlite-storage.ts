@@ -3435,7 +3435,7 @@ export class SqliteActivityRepo {
 
   queryActivities(
     agentId: string,
-    opts?: { type?: string; limit?: number; before?: string }
+    opts?: { type?: string; limit?: number; before?: string; taskId?: string }
   ): ActivityRecord[] {
     const conditions = ['agent_id = ?'];
     const params: SqlParams = [agentId];
@@ -3446,6 +3446,10 @@ export class SqliteActivityRepo {
         conditions.push(`type IN (${types.map(() => '?').join(',')})`);
         params.push(...types);
       }
+    }
+    if (opts?.taskId) {
+      conditions.push('task_id = ?');
+      params.push(opts.taskId);
     }
     if (opts?.before) {
       conditions.push('started_at < ?');

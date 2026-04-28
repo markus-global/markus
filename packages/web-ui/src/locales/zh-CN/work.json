@@ -214,6 +214,9 @@
       "starting": "智能体正在准备执行",
       "startingHint": "日志即将出现…"
     },
+    "relatedSessions": "{{agent}} 在其他会话中处理了此任务（{{count}} 条记录）",
+    "sessionLive": "进行中",
+    "agent": "智能体",
     "loadingExecutionLog": "正在加载执行日志…",
     "noExecutionLogAvailable": "暂无执行日志。",
     "roundHeader": "第 {{n}} 轮",
