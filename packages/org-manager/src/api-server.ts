@@ -2111,6 +2111,11 @@ export class APIServer {
         this.json(res, 403, { error: 'The Secretary agent is a protected system agent and cannot be deleted.' });
         return;
       }
+      const agentExists = this.orgService.getAgentManager().listAgents().some(a => a.id === agentId);
+      if (!agentExists) {
+        this.json(res, 404, { error: 'Agent not found' });
+        return;
+      }
       if (this.gateway) {
         const extReg = this.gateway.listRegistrations().find(r => r.markusAgentId === agentId);
         if (extReg) {
