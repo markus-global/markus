@@ -39,7 +39,7 @@ describe('Search Tools', () => {
 
     it('should allow reading outside workspace (read-only tools are unrestricted)', async () => {
       const tool = createGrepTool('/tmp/workspace');
-      const result = await tool.execute({ pattern: 'test', path: '/etc' });
+      const result = await tool.execute({ pattern: 'localhost', path: '/etc/hosts' });
       const parsed = JSON.parse(result);
       expect(parsed.status).not.toBe('denied');
     });
