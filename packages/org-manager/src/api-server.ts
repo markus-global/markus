@@ -5967,6 +5967,8 @@ EXPLANATION_END`;
 
     // Billing: API Keys
     if (path === '/api/keys' && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const orgId = url.searchParams.get('orgId') ?? 'default';
       this.json(res, 200, { keys: this.billingService?.listAPIKeys(orgId) ?? [] });
       return;
