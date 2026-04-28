@@ -1953,8 +1953,15 @@ export class APIServer {
         return;
       }
       const orgId = (body['orgId'] as string) ?? 'default';
+
+      // Sanitize: strip HTML tags from name to prevent XSS
+      const sanitizedName = stripHtmlTags(agentName);
+      if (sanitizedName !== agentName) {
+        log.warn('XSS sanitization applied to agent name', { original: agentName, sanitized: sanitizedName });
+      }
+
       const agent = await this.orgService.hireAgent({
-        name: agentName,
+        name: sanitizedName,
         roleName: roleName?.trim() || undefined,
         orgId,
         teamId: body['teamId'] as string | undefined,
@@ -3365,7 +3372,7 @@ export class APIServer {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const body = await this.readBody(req);
         const cfg = agent.config as unknown as Record<string, unknown>;
-        if (body['name'] !== undefined) cfg.name = body['name'];
+        if (body['name'] !== undefined) cfg.name = stripHtmlTags(body['name'] as string);
         if (body['agentRole'] !== undefined) cfg.agentRole = body['agentRole'];
         if (body['skills'] !== undefined) cfg.skills = body['skills'];
         if (body['llmConfig'] !== undefined) {
@@ -3379,7 +3386,7 @@ export class APIServer {
         if (this.storage) {
           try {
             await this.storage.agentRepo.updateConfig(agentId, {
-              name: body['name'] as string | undefined,
+              name: body['name'] !== undefined ? stripHtmlTags(body['name'] as string) : undefined,
               agentRole: body['agentRole'] as string | undefined,
               skills: body['skills'] as unknown,
               llmConfig: cfg.llmConfig,
@@ -9244,4 +9251,8 @@ EXPLANATION_END`;
       failures,
     };
   }
+}
+
+function stripHtmlTags(value: string): string {
+  return value.replace(/<[^>]*>/g, '');
 }
