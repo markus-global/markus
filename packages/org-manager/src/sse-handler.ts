@@ -76,9 +76,6 @@ export class SSEHandler {
           log.warn('SSE client disconnected — cancelling agent', {
             agentId: this.options.agentId,
           });
-          if (this.options.wsBroadcaster?.broadcastAgentUpdate) {
-            this.options.wsBroadcaster.broadcastAgentUpdate(this.options.agentId, 'idle');
-          }
         }
       });
 

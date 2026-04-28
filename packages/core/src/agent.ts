@@ -2737,11 +2737,15 @@ export class Agent {
     const abortController = new AbortController();
     let cancelPollTimer: ReturnType<typeof setInterval> | undefined;
     if (cancelToken) {
-      cancelPollTimer = setInterval(() => {
-        if (cancelToken.cancelled && !abortController.signal.aborted) {
-          abortController.abort();
-        }
-      }, 500);
+      if (cancelToken.cancelled) {
+        abortController.abort();
+      } else {
+        cancelPollTimer = setInterval(() => {
+          if (cancelToken.cancelled && !abortController.signal.aborted) {
+            abortController.abort();
+          }
+        }, 100);
+      }
     }
 
     let lastResponseContent = '';
@@ -2770,6 +2774,7 @@ export class Agent {
           abortController.signal,
         ),
         'Stream LLM call',
+        abortController.signal,
       );
       streamMarkerDelta.flush();
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
@@ -2942,6 +2947,7 @@ export class Agent {
             abortController.signal,
           ),
           'Stream LLM continuation',
+          abortController.signal,
         );
         streamMarkerDelta.flush();
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
@@ -3181,11 +3187,15 @@ export class Agent {
     const abortController = new AbortController();
     let cancelPollTimer: ReturnType<typeof setInterval> | undefined;
     if (cancelToken) {
-      cancelPollTimer = setInterval(() => {
-        if (cancelToken.cancelled && !abortController.signal.aborted) {
-          abortController.abort();
-        }
-      }, 500);
+      if (cancelToken.cancelled) {
+        abortController.abort();
+      } else {
+        cancelPollTimer = setInterval(() => {
+          if (cancelToken.cancelled && !abortController.signal.aborted) {
+            abortController.abort();
+          }
+        }, 100);
+      }
     }
 
     // Deterministic session ID per task+round. Retries within the same execution
@@ -3346,6 +3356,7 @@ export class Agent {
           abortController.signal,
         ),
         'Task execution LLM call',
+        abortController.signal,
       );
       let taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(taskLlmTokens);
@@ -3563,6 +3574,7 @@ export class Agent {
             abortController.signal,
           ),
           'Task execution LLM continuation',
+          abortController.signal,
         );
         taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(taskLlmTokens);
@@ -3628,6 +3640,7 @@ export class Agent {
             abortController.signal,
           ),
           'Task execution final submit reminder',
+          abortController.signal,
         );
         taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(taskLlmTokens);
@@ -4529,13 +4542,14 @@ export class Agent {
       msg.includes('aborterror');
   }
 
-  private async withNetworkRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  private async withNetworkRetry<T>(fn: () => Promise<T>, label: string, signal?: AbortSignal): Promise<T> {
     let lastError: unknown;
     for (let attempt = 0; attempt < Agent.NETWORK_RETRY_MAX; attempt++) {
       try {
         return await fn();
       } catch (error) {
         lastError = error;
+        if (signal?.aborted) throw error;
         if (!Agent.isNetworkError(error) || attempt >= Agent.NETWORK_RETRY_MAX - 1) {
           throw error;
         }
