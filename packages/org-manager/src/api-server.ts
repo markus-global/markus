@@ -1218,21 +1218,37 @@ export class APIServer {
       return;
     }
 
+    // BUG-005: Validate Content-Type for POST/PUT/PATCH before routing (before auth)
+    if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+      const contentType = req.headers['content-type'];
+      if (!contentType || !String(contentType).toLowerCase().includes('application/json')) {
+        this.json(res, 415, { error: 'Content-Type must be application/json' });
+        return;
+      }
+    }
+
     const url = new URL(req.url ?? '/', `http://localhost:${this.port}`);
     const path = url.pathname;
 
     this.route(req, res, path, url).catch(error => {
-      log.error('Request handler error', { error: String(error), path });
+      const msg = error instanceof Error ? error.message : String(error);
+      log.error('Request handler error', { error: msg, path });
       if (res.headersSent) {
         // SSE or chunked stream already started — send an error event and close gracefully
         try {
-          res.write(`data: ${JSON.stringify({ type: 'error', message: String(error) })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: 'error', message: msg })}\n\n`);
         } catch {
           /* ignore if write also fails */
         }
         res.end();
       } else {
-        this.json(res, 500, { error: 'Internal server error' });
+        if (msg.startsWith('CONTENT_TYPE_ERROR:')) {
+          this.json(res, 415, { error: 'Content-Type must be application/json' });
+        } else if (msg.startsWith('BODY_PARSE_ERROR:')) {
+          this.json(res, 400, { error: 'Invalid request body' });
+        } else {
+          this.json(res, 500, { error: 'Internal server error' });
+        }
       }
     });
   }
@@ -1243,6 +1259,13 @@ export class APIServer {
     path: string,
     url: URL
   ): Promise<void> {
+    // BUG-003: Pre-read and validate body for POST/PUT/PATCH at route level.
+    // This ensures body validation happens before any route-specific logic,
+    // so invalid bodies (null/array) are caught even for routes without readBody.
+    if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+      await this.readBody(req);
+    }
+
     // ── Auth endpoints (no auth required) ──────────────────────────────────
     if (path === '/api/auth/login' && req.method === 'POST') {
       const body = await this.readBody(req);
@@ -8648,13 +8671,44 @@ EXPLANATION_END`;
   }
 
   private readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+    // Return cached body if already pre-read at route level (BUG-003/005)
+    const cached: unknown = (req as any).__parsedBody__;
+    if (cached !== undefined) {
+      if (cached instanceof Error) return Promise.reject(cached);
+      return Promise.resolve(cached as Record<string, unknown>);
+    }
+
     return new Promise((resolve, reject) => {
+      // BUG-005: Validate Content-Type for POST/PUT/PATCH requests
+      const method = req.method ?? '';
+      if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+        const contentType = req.headers['content-type'];
+        if (!contentType || !contentType.toLowerCase().includes('application/json')) {
+          const err = new Error('CONTENT_TYPE_ERROR: Content-Type must be application/json');
+          (req as any).__parsedBody__ = err;
+          reject(err);
+          return;
+        }
+      }
+
       const chunks: Buffer[] = [];
       req.on('data', (chunk: Buffer) => chunks.push(chunk));
       req.on('end', () => {
         try {
-          resolve(JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>);
+          const raw = Buffer.concat(chunks).toString();
+          const parsed = JSON.parse(raw);
+          // BUG-003: JSON literal null or array is not a valid request body
+          if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            const err = new Error('BODY_PARSE_ERROR: Invalid request body');
+            (req as any).__parsedBody__ = err;
+            reject(err);
+            return;
+          }
+          (req as any).__parsedBody__ = parsed;
+          resolve(parsed as Record<string, unknown>);
         } catch {
+          // Malformed JSON → treat as empty object (not 400)
+          (req as any).__parsedBody__ = {};
           resolve({});
         }
       });
