@@ -191,6 +191,8 @@
       "noneDeclared": "未声明",
       "errorDetails": "错误详情",
       "errorFallback": "智能体遇到错误。请查看日志获取详情。",
+      "recentError": "近期错误（已恢复）",
+      "errorRecovered": "智能体已自动恢复，当前运行正常。",
       "currentlyWorking": "正在工作",
       "activeTasksCount_one": "{{count}} 个进行中任务",
       "activeTasksCount_other": "{{count}} 个进行中任务",

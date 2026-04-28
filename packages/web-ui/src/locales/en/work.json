@@ -202,6 +202,18 @@
     "loadingLogs": "Loading logs…",
     "noExecutionLogs": "No execution logs yet.",
     "runWithAgentHint": "Click \"Run with Agent\" to start.",
+    "emptyLogs": {
+      "default": "No execution logs yet",
+      "defaultHint": "Send instructions via the comment box below",
+      "noAgent": "No agent assigned",
+      "noAgentHint": "Assign an agent to start execution",
+      "pending": "Task is queued for execution",
+      "pendingHint": "The agent will process tasks by priority",
+      "agentBusy": "{{agent}} is working on another task",
+      "agentBusyHint": "This task is queued in the agent's mailbox",
+      "starting": "Agent is preparing to execute",
+      "startingHint": "Logs will appear shortly…"
+    },
     "loadingExecutionLog": "Loading execution log...",
     "noExecutionLogAvailable": "No execution log available.",
     "roundHeader": "Round #{{n}}",

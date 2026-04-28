@@ -202,6 +202,18 @@
     "loadingLogs": "正在加载日志…",
     "noExecutionLogs": "尚无执行日志。",
     "runWithAgentHint": "点击「使用智能体运行」以开始。",
+    "emptyLogs": {
+      "default": "暂无执行日志",
+      "defaultHint": "可通过评论框向智能体发送指令",
+      "noAgent": "尚未分配智能体",
+      "noAgentHint": "分配智能体后即可开始执行",
+      "pending": "任务在队列中等待执行",
+      "pendingHint": "智能体将按优先级依次处理",
+      "agentBusy": "{{agent}} 正在处理其他任务",
+      "agentBusyHint": "此任务已进入邮箱队列，将自动排队执行",
+      "starting": "智能体正在准备执行",
+      "startingHint": "日志即将出现…"
+    },
     "loadingExecutionLog": "正在加载执行日志…",
     "noExecutionLogAvailable": "暂无执行日志。",
     "roundHeader": "第 {{n}} 轮",

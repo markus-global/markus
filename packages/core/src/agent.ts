@@ -454,10 +454,11 @@ export class Agent {
     if (status === 'error') {
       this.state.lastError = errorMessage || this.state.lastError || 'Unknown error';
       this.state.lastErrorAt = new Date().toISOString();
-    } else {
-      this.state.lastError = undefined;
-      this.state.lastErrorAt = undefined;
     }
+    // Keep lastError/lastErrorAt when recovering from error — they serve as
+    // informational records of the most recent error.  The frontend uses
+    // `status` as the authoritative current-state indicator and shows
+    // lastError as a dismissible warning when the agent has recovered.
 
     if (this.stateManager) {
       this.stateManager.updateState({ status });

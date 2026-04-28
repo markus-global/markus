@@ -264,6 +264,8 @@
     "retryConfirmSingular": "将丢弃此点之后的一条消息并重新生成，是否继续？",
     "retryConfirmPlural": "将丢弃此点之后的 {{count}} 条消息并重新生成，是否继续？",
     "errorDetails": "错误详情",
+    "recentErrorDetails": "近期错误",
+    "errorRecovered": "智能体已恢复正常运行。",
     "currentActivity": "当前活动",
     "workingOnTaskHint": "正在处理任务 · 点击查看",
     "agentErrorFallback": "智能体遇到错误。请在资料页查看详情。",

@@ -380,6 +380,21 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
           </div>
         )}
 
+        {agent.state.status !== 'error' && agent.state.lastError && agent.state.lastErrorAt
+          && (Date.now() - new Date(agent.state.lastErrorAt).getTime()) < 30 * 60 * 1000 && (
+          <div className="mt-3 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="w-2 h-2 rounded-full bg-amber-400" />
+              <span className="text-xs font-medium text-amber-600">{t('agent:profilePage.overview.recentError')}</span>
+              <span className="text-[10px] text-amber-500/50 ml-auto">{new Date(agent.state.lastErrorAt).toLocaleString()}</span>
+            </div>
+            <pre className="text-[11px] text-amber-600/80 leading-relaxed whitespace-pre-wrap break-all font-mono bg-amber-500/5 rounded p-2">
+              {agent.state.lastError}
+            </pre>
+            <div className="text-[10px] text-fg-tertiary mt-1.5">{t('agent:profilePage.overview.errorRecovered')}</div>
+          </div>
+        )}
+
         {agent.state.status === 'working' && activeN > 0 && (
           <div className="mt-3 bg-brand-500/10 border border-brand-500/20 rounded-lg p-3">
             <div className="flex items-center gap-2 mb-1.5">

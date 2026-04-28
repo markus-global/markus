@@ -264,6 +264,8 @@
     "retryConfirmSingular": "This will discard one message after this point and re-generate. Continue?",
     "retryConfirmPlural": "This will discard {{count}} messages after this point and re-generate. Continue?",
     "errorDetails": "Error Details",
+    "recentErrorDetails": "Recent Error",
+    "errorRecovered": "Agent has recovered and is running normally.",
     "currentActivity": "Current Activity",
     "workingOnTaskHint": "Working on task · Click to view",
     "agentErrorFallback": "Agent encountered an error. Check profile for details.",

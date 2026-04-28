@@ -191,6 +191,8 @@
       "noneDeclared": "none declared",
       "errorDetails": "Error Details",
       "errorFallback": "Agent encountered an error. Check logs for more details.",
+      "recentError": "Recent Error (Recovered)",
+      "errorRecovered": "Agent has automatically recovered and is running normally.",
       "currentlyWorking": "Currently Working",
       "activeTasksCount_one": "{{count}} active task",
       "activeTasksCount_other": "{{count}} active tasks",
