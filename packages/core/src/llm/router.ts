@@ -7,6 +7,7 @@ import { GoogleProvider } from './google.js';
 import { OllamaProvider } from './ollama.js';
 import { AuthProfileStore } from './auth-profiles.js';
 import { OAuthManager } from './oauth-manager.js';
+import { CircuitBreaker, type CircuitBreakerOptions, CircuitState, CircuitOpenError } from './circuit-breaker.js';
 
 const log = createLogger('llm-router');
 
@@ -85,6 +86,11 @@ export class LLMRouter {
   /** Non-retryable failures (auth, billing, region) get a longer cooldown */
   private readonly CIRCUIT_RESET_FATAL_MS = 30 * 60 * 1000;
 
+  /** Per-provider circuit breakers for enhanced resilience */
+  private providerCircuitBreakers = new Map<string, CircuitBreaker>();
+  /** Configurable options for circuit breakers (set via configureCircuitBreakers) */
+  private circuitBreakerOptions: CircuitBreakerOptions = {};
+
   private logCallback?: (entry: {
     timestamp: string;
     agentId?: string;
@@ -156,6 +162,34 @@ export class LLMRouter {
 
   get defaultProviderName(): string {
     return this.defaultProvider;
+  }
+
+  /**
+   * Configure circuit breaker options for all providers.
+   * Call this after registering all providers.
+   */
+  configureCircuitBreakers(options: CircuitBreakerOptions = {}): void {
+    this.circuitBreakerOptions = options;
+    for (const name of this.providers.keys()) {
+      if (!this.providerCircuitBreakers.has(name)) {
+        this.providerCircuitBreakers.set(
+          name,
+          new CircuitBreaker({ ...options, name: `llm:${name}` }),
+        );
+      }
+    }
+  }
+
+  /**
+   * Get circuit breaker state for all providers.
+   * Useful for health dashboards and monitoring.
+   */
+  getCircuitBreakerStats(): Record<string, ReturnType<CircuitBreaker['getStats']>> {
+    const stats: Record<string, ReturnType<CircuitBreaker['getStats']>> = {};
+    for (const [name, cb] of this.providerCircuitBreakers) {
+      stats[name] = cb.getStats();
+    }
+    return stats;
   }
 
   /** Attach provider:model context to an error so upstream loggers can identify the source. */
@@ -577,12 +611,24 @@ export class LLMRouter {
     }
     const activeModel = provider.model;
     await this.applyJitter(providerName);
+
+    // Ensure circuit breaker exists
+    let cb = this.providerCircuitBreakers.get(providerName);
+    if (!cb) {
+      cb = new CircuitBreaker({ ...this.circuitBreakerOptions, name: `llm:${providerName}` });
+      this.providerCircuitBreakers.set(providerName, cb);
+    }
+
     try {
-      const response = await provider.chat(request);
+      const response = await cb.execute(async () => {
+        return provider.chat(request);
+      });
       this.recordSuccess(providerName, activeModel);
+      cb.recordSuccess();
       return { response, model: activeModel };
     } catch (error) {
       this.recordFailure(providerName, activeModel, error);
+      cb.recordFailure(error);
       if (altModel && altModel !== originalModel) {
         provider.configure({ provider: providerName as any, model: originalModel });
       }
@@ -616,6 +662,10 @@ export class LLMRouter {
     } catch (error) {
       lastError = error;
       log.error(`LLM request failed for ${primary}:${provider.model}`, { error: String(error) });
+
+      // Check if all circuits are open before trying fallbacks
+      const allCircuitsOpen = this.getCircuitBreakerStats()[primary]?.state === CircuitState.OPEN &&
+        [...this.getFallbacks(primary)].every(name => this.getCircuitBreakerStats()[name]?.state === CircuitState.OPEN);
 
       // Try alternate models on the same provider
       if (!LLMRouter.isNonRetryableError(error)) {
@@ -651,6 +701,19 @@ export class LLMRouter {
         }
       }
 
+      // All circuits open — return a structured degraded response
+      if (allCircuitsOpen) {
+        const cbStats = this.getCircuitBreakerStats();
+        log.error(`[LLMRouter] All circuit breakers are OPEN — returning degraded response`);
+        span.end();
+        return {
+          content: `**[Degraded Mode]** All LLM providers are currently unavailable due to repeated failures. Circuit breaker states: ${JSON.stringify(cbStats)}. Please retry later or contact your system administrator.`,
+          role: 'assistant',
+          usage: { inputTokens: 0, outputTokens: 0 },
+          finishReason: 'circuit_breaker_open',
+        } as unknown as LLMResponse;
+      }
+
       span.setError(lastError instanceof Error ? lastError : String(lastError));
       span.end();
       throw lastError;
@@ -671,19 +734,31 @@ export class LLMRouter {
     }
     const activeModel = provider.model;
     await this.applyJitter(providerName);
+
+    // Ensure circuit breaker exists
+    let cb = this.providerCircuitBreakers.get(providerName);
+    if (!cb) {
+      cb = new CircuitBreaker({ ...this.circuitBreakerOptions, name: `llm:${providerName}` });
+      this.providerCircuitBreakers.set(providerName, cb);
+    }
+
     try {
-      let response: LLMResponse;
-      if (provider.chatStream) {
-        response = await provider.chatStream(request, onEvent, signal);
-      } else {
-        response = await provider.chat(request);
-        if (response.content) onEvent({ type: 'text_delta', text: response.content });
-        onEvent({ type: 'message_end', usage: response.usage, finishReason: response.finishReason });
-      }
+      const response = await cb.execute(async () => {
+        if (provider.chatStream) {
+          return await provider.chatStream(request, onEvent, signal);
+        } else {
+          const r = await provider.chat(request);
+          if (r.content) onEvent({ type: 'text_delta', text: r.content });
+          onEvent({ type: 'message_end', usage: r.usage, finishReason: r.finishReason });
+          return r;
+        }
+      });
       this.recordSuccess(providerName, activeModel);
+      cb.recordSuccess();
       return { response, model: activeModel };
     } catch (error) {
       this.recordFailure(providerName, activeModel, error);
+      cb.recordFailure(error);
       if (altModel && altModel !== originalModel) {
         provider.configure({ provider: providerName as any, model: originalModel });
       }
@@ -720,6 +795,10 @@ export class LLMRouter {
         throw lastError;
       }
       log.error(`LLM stream request failed for ${primary}:${provider.model}`, { error: String(error) });
+
+      // Check if all circuits are open before trying fallbacks
+      const allCircuitsOpenStream = this.getCircuitBreakerStats()[primary]?.state === CircuitState.OPEN &&
+        [...this.getFallbacks(primary)].every(name => this.getCircuitBreakerStats()[name]?.state === CircuitState.OPEN);
 
       // Try alternate models on the same provider
       if (!LLMRouter.isNonRetryableError(error)) {
@@ -758,6 +837,15 @@ export class LLMRouter {
           if (signal?.aborted) break;
           log.error(`Stream fallback ${fallbackName} failed`, { error: String(fbError) });
         }
+      }
+
+      // All circuits open — emit a degraded end event for streaming
+      if (allCircuitsOpenStream) {
+        const cbStats = this.getCircuitBreakerStats();
+        log.error(`[LLMRouter] All circuit breakers OPEN in stream — emitting degraded end event`);
+        onEvent({ type: 'message_end', usage: { inputTokens: 0, outputTokens: 0 }, finishReason: undefined });
+        span.end();
+        throw lastError;
       }
 
       span.setError(lastError instanceof Error ? lastError : String(lastError));
@@ -1021,6 +1109,7 @@ export class LLMRouter {
       });
     } catch { /* logging should never crash the app */ }
   }
+
 }
 
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
