@@ -62,6 +62,18 @@ export class RequirementService {
         return this.userNameLookup(actorId) ?? actorId;
       } catch { /* ignore */ }
     }
+    if (this.userNameLookup) {
+      try {
+        const name = this.userNameLookup(actorId);
+        if (name) return name;
+      } catch { /* ignore */ }
+    }
+    if (this.agentManager) {
+      try {
+        const agent = this.agentManager.getAgent(actorId);
+        if (agent) return (agent as any).config?.name ?? (agent as any).name ?? null;
+      } catch { /* ignore */ }
+    }
     return actorId;
   }
 
@@ -89,7 +101,15 @@ export class RequirementService {
 
   getRequirementStatusHistory(reqId: string, limit = 50): unknown[] {
     if (!this.statusTransitionRepo) return [];
-    return this.statusTransitionRepo.getByEntity('requirement', reqId, limit);
+    const rows = this.statusTransitionRepo.getByEntity('requirement', reqId, limit);
+    for (const row of rows) {
+      const r = row as Record<string, unknown>;
+      if (r.changedById && (!r.changedByName || r.changedByName === r.changedById)) {
+        const resolved = this.resolveActorName(r.changedById as string, r.changedByType as string);
+        if (resolved && resolved !== r.changedById) r.changedByName = resolved;
+      }
+    }
+    return rows;
   }
 
   setWSBroadcaster(ws: WSBroadcaster): void {

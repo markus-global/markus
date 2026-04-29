@@ -754,6 +754,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
   const { t } = useTranslation(['work', 'common']);
   const [comments, setComments] = useState<TaskComment[]>([]);
   const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
+  const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     api.tasks.getComments(task.id).then(r => setComments(r.comments)).catch(() => {});
@@ -768,7 +769,14 @@ function TaskActivitySection({ task, agents, users, authUser }: {
           return [...prev, c];
         });
         if (c.authorType === 'agent' || c.authorId?.startsWith('agt_')) {
-          setThinkingAgents(prev => prev.filter(a => a.id !== c.authorId));
+          setThinkingAgents(prev => {
+            const next = prev.filter(a => a.id !== c.authorId);
+            if (next.length === 0 && thinkingTimeoutRef.current) {
+              clearTimeout(thinkingTimeoutRef.current);
+              thinkingTimeoutRef.current = null;
+            }
+            return next;
+          });
         }
       }
     });
@@ -814,8 +822,9 @@ function TaskActivitySection({ task, agents, users, authUser }: {
     if (task.assignedAgentId) tryAdd(task.assignedAgentId);
     if (task.createdBy?.startsWith('agt_') && task.status !== 'in_progress') tryAdd(task.createdBy);
     if (notified.length > 0) {
+      if (thinkingTimeoutRef.current) clearTimeout(thinkingTimeoutRef.current);
       setThinkingAgents(notified);
-      setTimeout(() => setThinkingAgents([]), 15000);
+      thinkingTimeoutRef.current = setTimeout(() => setThinkingAgents([]), 120_000);
     }
   };
 
@@ -882,6 +891,7 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
   const [commentText, setCommentText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
+  const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [imageAttachments, setImageAttachments] = useState<Array<{ type: string; url: string; name: string }>>([]);
   const [relatedActivities, setRelatedActivities] = useState<ActivityRecord[]>([]);
   const [loadingActivities, setLoadingActivities] = useState(false);
@@ -1001,7 +1011,14 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
       const c = p.comment as TaskComment;
       setComments(prev => prev.some(x => x.id === c.id) ? prev : [...prev, c]);
       if (c.authorType === 'agent' || c.authorId?.startsWith('agt_')) {
-        setThinkingAgents(prev => prev.filter(a => a.id !== c.authorId));
+        setThinkingAgents(prev => {
+          const next = prev.filter(a => a.id !== c.authorId);
+          if (next.length === 0 && thinkingTimeoutRef.current) {
+            clearTimeout(thinkingTimeoutRef.current);
+            thinkingTimeoutRef.current = null;
+          }
+          return next;
+        });
       }
     });
     return () => { unsubLog(); unsubDelta(); unsubComment(); };
@@ -1057,8 +1074,9 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
       if (task.assignedAgentId) tryAdd(task.assignedAgentId);
       if (task.createdBy?.startsWith('agt_') && task.status !== 'in_progress') tryAdd(task.createdBy);
       if (notified.length > 0) {
+        if (thinkingTimeoutRef.current) clearTimeout(thinkingTimeoutRef.current);
         setThinkingAgents(notified);
-        setTimeout(() => setThinkingAgents([]), 15000);
+        thinkingTimeoutRef.current = setTimeout(() => setThinkingAgents([]), 120_000);
       }
     } catch { /* ignore */ }
     setSubmitting(false);
@@ -4270,6 +4288,7 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
   const { t } = useTranslation(['work', 'common']);
   const [comments, setComments] = useState<RequirementComment[]>([]);
   const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
+  const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     api.requirements.getComments(requirementId).then(r => setComments(r.comments)).catch(() => {});
@@ -4284,7 +4303,14 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
           return [...prev, c];
         });
         if (c.authorType === 'agent' || c.authorId?.startsWith('agt_')) {
-          setThinkingAgents(prev => prev.filter(a => a.id !== c.authorId));
+          setThinkingAgents(prev => {
+            const next = prev.filter(a => a.id !== c.authorId);
+            if (next.length === 0 && thinkingTimeoutRef.current) {
+              clearTimeout(thinkingTimeoutRef.current);
+              thinkingTimeoutRef.current = null;
+            }
+            return next;
+          });
         }
       }
     });
@@ -4316,8 +4342,9 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
     }
     if (createdBy?.startsWith('agt_')) tryAdd(createdBy);
     if (notified.length > 0) {
+      if (thinkingTimeoutRef.current) clearTimeout(thinkingTimeoutRef.current);
       setThinkingAgents(notified);
-      setTimeout(() => setThinkingAgents([]), 15000);
+      thinkingTimeoutRef.current = setTimeout(() => setThinkingAgents([]), 120_000);
     }
   };
 

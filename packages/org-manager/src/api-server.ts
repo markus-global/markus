@@ -2912,7 +2912,7 @@ export class APIServer {
       const body = await this.readBody(req);
       const cascade = body['cascade'] === true;
       try {
-        const task = this.taskService.cancelTask(taskId, cascade, authUser?.userId);
+        const task = this.taskService.cancelTask(taskId, cascade, authUser?.userId, 'human');
         this.auditService?.record({
           orgId: task.orgId,
           type: 'task_cancelled',
@@ -3146,7 +3146,7 @@ export class APIServer {
       if (!authUser) return;
       const taskId = path.split('/')[3]!;
       try {
-        this.taskService.pauseTask(taskId, authUser.userId);
+        this.taskService.pauseTask(taskId, authUser.userId, 'human');
         this.json(res, 200, { status: 'blocked' as TaskStatus, taskId });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -3162,7 +3162,7 @@ export class APIServer {
       if (!authUser) return;
       const taskId = path.split('/')[3]!;
       try {
-        this.taskService.resumeTask(taskId, authUser.userId);
+        this.taskService.resumeTask(taskId, authUser.userId, 'human');
         this.json(res, 202, { status: 'running', taskId });
       } catch (err) {
         this.json(res, 400, { error: String(err) });

@@ -780,6 +780,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const [chatReplyTo, setChatReplyTo] = useState<{ id: string; sender: string; text: string } | null>(null);
   const [sending, setSending] = useState(false);
   const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
+  const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [streamingVisual, setStreamingVisual] = useState(false);
   const streamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const STREAMING_MIN_DISPLAY_MS = 1500;
@@ -1335,7 +1336,14 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       updateConvMsgs(key, prev => [...prev, newMsg]);
 
       if (senderType === 'agent' && key === `ch:${activeChannel}`) {
-        setThinkingAgents(prev => prev.filter(a => a.id !== wsSenderId));
+        setThinkingAgents(prev => {
+          const next = prev.filter(a => a.id !== wsSenderId);
+          if (next.length === 0 && thinkingTimeoutRef.current) {
+            clearTimeout(thinkingTimeoutRef.current);
+            thinkingTimeoutRef.current = null;
+          }
+          return next;
+        });
       }
     });
     return unsub;
@@ -1522,8 +1530,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           }
         }
         if (allGroupAgents.length > 0) {
+          if (thinkingTimeoutRef.current) clearTimeout(thinkingTimeoutRef.current);
           setThinkingAgents(allGroupAgents);
-          setTimeout(() => setThinkingAgents([]), 30000);
+          thinkingTimeoutRef.current = setTimeout(() => setThinkingAgents([]), 120_000);
         }
       }
 
@@ -1547,6 +1556,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           id: `err_${Date.now()}`, sender: 'agent', text: friendly,
           time: new Date().toLocaleTimeString(), agentName: t('page.systemName'), isError: true,
         }]);
+        if (thinkingTimeoutRef.current) { clearTimeout(thinkingTimeoutRef.current); thinkingTimeoutRef.current = null; }
         setThinkingAgents([]);
       }
       sendingConvs.current.delete(sendKey);

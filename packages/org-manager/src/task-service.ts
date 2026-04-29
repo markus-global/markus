@@ -1773,23 +1773,23 @@ export class TaskService {
   }
 
   /** Pause an in-progress task (transition to blocked). */
-  pauseTask(id: string, updatedBy?: string): Task {
+  pauseTask(id: string, updatedBy?: string, updatedByType?: 'human' | 'agent' | 'system'): Task {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
     if (task.status !== 'in_progress') {
       throw new Error(`Cannot pause task in ${task.status} status`);
     }
-    return this.updateTaskStatus(id, 'blocked', updatedBy);
+    return this.updateTaskStatus(id, 'blocked', updatedBy, false, false, updatedByType);
   }
 
   /** Resume a blocked task to in_progress (auto-start runs via side effects). */
-  resumeTask(id: string, updatedBy?: string): Task {
+  resumeTask(id: string, updatedBy?: string, updatedByType?: 'human' | 'agent' | 'system'): Task {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
     if (task.status !== 'blocked') {
       throw new Error(`Cannot resume task in ${task.status} status`);
     }
-    return this.updateTaskStatus(id, 'in_progress', updatedBy);
+    return this.updateTaskStatus(id, 'in_progress', updatedBy, false, false, updatedByType);
   }
 
   getTask(id: string): Task | undefined {
@@ -1847,6 +1847,19 @@ export class TaskService {
         return this.userNameLookup(actorId) ?? actorId;
       } catch { /* ignore */ }
     }
+    // Fallback: try both lookups when type-specific lookup didn't match
+    if (this.userNameLookup) {
+      try {
+        const name = this.userNameLookup(actorId);
+        if (name) return name;
+      } catch { /* ignore */ }
+    }
+    if (this.agentManager) {
+      try {
+        const agent = this.agentManager.getAgent(actorId);
+        if (agent) return (agent as any).config?.name ?? (agent as any).name ?? null;
+      } catch { /* ignore */ }
+    }
     return actorId;
   }
 
@@ -1874,7 +1887,15 @@ export class TaskService {
 
   getTaskStatusHistory(taskId: string, limit = 50): unknown[] {
     if (!this.statusTransitionRepo) return [];
-    return this.statusTransitionRepo.getByEntity('task', taskId, limit);
+    const rows = this.statusTransitionRepo.getByEntity('task', taskId, limit);
+    for (const row of rows) {
+      const r = row as Record<string, unknown>;
+      if (r.changedById && (!r.changedByName || r.changedByName === r.changedById)) {
+        const resolved = this.resolveActorName(r.changedById as string, r.changedByType as string);
+        if (resolved && resolved !== r.changedById) r.changedByName = resolved;
+      }
+    }
+    return rows;
   }
 
   // ─── Phase 1: Pure validation + state mutation ───────────────────────────────
@@ -2145,8 +2166,8 @@ export class TaskService {
     }
   }
 
-  cancelTask(id: string, cascade: boolean, updatedBy?: string): Task {
-    const task = this.updateTaskStatus(id, 'cancelled', updatedBy);
+  cancelTask(id: string, cascade: boolean, updatedBy?: string, updatedByType?: 'human' | 'agent' | 'system'): Task {
+    const task = this.updateTaskStatus(id, 'cancelled', updatedBy, false, false, updatedByType);
     if (cascade) {
       this.cascadeCancelDependents(task);
     }
