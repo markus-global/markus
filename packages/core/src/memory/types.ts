@@ -18,7 +18,7 @@ export interface ConversationSession {
 
 /**
  * Unified memory interface for Agent and ContextEngine.
- * Both MemoryStore (basic) and EnhancedMemorySystem implement this.
+ * MemoryStore is the primary implementation.
  */
 export interface IMemoryStore {
   addEntry(entry: MemoryEntry): void;
