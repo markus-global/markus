@@ -1990,6 +1990,7 @@ export class APIServer {
           role: agent.role.name,
           agentRole: agent.config.agentRole,
           status: agent.getState().status,
+          skills: agent.config.skills ?? [],
         },
       });
       return;
@@ -2141,6 +2142,15 @@ export class APIServer {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
       const agentId = path.split('/')[3]!;
+
+      // Validate agent exists before deletion
+      try {
+        this.orgService.getAgentManager().getAgent(agentId);
+      } catch {
+        this.json(res, 404, { error: 'Agent not found' });
+        return;
+      }
+
       if (this.orgService.isProtectedAgent(agentId)) {
         this.json(res, 403, { error: 'The Secretary agent is a protected system agent and cannot be deleted.' });
         return;
