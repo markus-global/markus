@@ -101,6 +101,9 @@ importers:
       '@markus/shared':
         specifier: workspace:*
         version: link:../shared
+      '@markus/storage':
+        specifier: workspace:*
+        version: link:../storage
       '@mozilla/readability':
         specifier: ^0.6.0
         version: 0.6.0
