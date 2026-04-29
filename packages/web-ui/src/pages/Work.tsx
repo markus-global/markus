@@ -5,6 +5,7 @@ import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, attachSubagentLogsToEntries, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { Avatar } from '../components/Avatar.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
 import { CommentInput } from '../components/CommentInput.tsx';
@@ -752,6 +753,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
 }) {
   const { t } = useTranslation(['work', 'common']);
   const [comments, setComments] = useState<TaskComment[]>([]);
+  const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
 
   useEffect(() => {
     api.tasks.getComments(task.id).then(r => setComments(r.comments)).catch(() => {});
@@ -760,10 +762,14 @@ function TaskActivitySection({ task, agents, users, authUser }: {
   useEffect(() => {
     const unsub = wsClient.on('task:comment', (msg: { payload?: { taskId?: string; comment?: TaskComment } }) => {
       if (msg.payload?.taskId === task.id && msg.payload.comment) {
+        const c = msg.payload.comment;
         setComments(prev => {
-          if (prev.some(c => c.id === msg.payload!.comment!.id)) return prev;
-          return [...prev, msg.payload!.comment!];
+          if (prev.some(x => x.id === c.id)) return prev;
+          return [...prev, c];
         });
+        if (c.authorType === 'agent' || c.authorId?.startsWith('agt_')) {
+          setThinkingAgents(prev => prev.filter(a => a.id !== c.authorId));
+        }
       }
     });
     return unsub;
@@ -793,6 +799,24 @@ function TaskActivitySection({ task, agents, users, authUser }: {
 
   const handleSubmit = async (content: string, mentions: string[], replyToId?: string) => {
     await api.tasks.addComment(task.id, content, authUser?.name, undefined, authUser?.id, mentions.length > 0 ? mentions : undefined, replyToId);
+    const notified: Array<{ id: string; name: string; avatarUrl?: string }> = [];
+    const seen = new Set<string>();
+    const tryAdd = (agentId: string) => {
+      if (seen.has(agentId) || agentId === authUser?.id) return;
+      seen.add(agentId);
+      const a = agents.find(ag => ag.id === agentId);
+      if (a) notified.push({ id: a.id, name: a.name, avatarUrl: a.avatarUrl });
+    };
+    for (const name of mentions) {
+      const a = agents.find(ag => ag.name.toLowerCase() === name.toLowerCase());
+      if (a) tryAdd(a.id);
+    }
+    if (task.assignedAgentId) tryAdd(task.assignedAgentId);
+    if (task.createdBy?.startsWith('agt_') && task.status !== 'in_progress') tryAdd(task.createdBy);
+    if (notified.length > 0) {
+      setThinkingAgents(notified);
+      setTimeout(() => setThinkingAgents([]), 15000);
+    }
   };
 
   const handleReply = useCallback((c: TaskComment | RequirementComment) => {
@@ -812,6 +836,30 @@ function TaskActivitySection({ task, agents, users, authUser }: {
           }
           return <CommentBubble key={`c-${item.comment.id}`} comment={item.comment} agents={agents} onReply={handleReply} />;
         })}
+        {thinkingAgents.length > 0 && (
+          <div className="flex flex-col gap-1 pt-1">
+            {thinkingAgents.map(ta => (
+              <div
+                key={ta.id}
+                className="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer hover:bg-surface-elevated/60 transition-colors"
+                onClick={() => navBus.navigate(PAGE.TEAM, { agentId: ta.id, profileTab: 'mind' })}
+              >
+                <div className="relative shrink-0">
+                  <Avatar name={ta.name} avatarUrl={ta.avatarUrl} size={22} bgClass="bg-brand-500/15 text-brand-600" />
+                  <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500 animate-pulse ring-2 ring-surface-primary" />
+                </div>
+                <span className="text-xs font-medium text-fg-secondary">{ta.name}</span>
+                <span className="flex items-center gap-0.5">
+                  <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" />
+                  <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.15s' }} />
+                  <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.3s' }} />
+                </span>
+                <span className="text-[10px] text-fg-tertiary">{t('work:task.agentProcessing')}</span>
+                <span className="ml-auto text-[10px] text-fg-tertiary">→</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       <CommentInput agents={agents} humans={users} onSubmit={handleSubmit} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} placeholder={t('work:task.commentPlaceholder')} />
     </div>
@@ -833,6 +881,7 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
   const [commentText, setCommentText] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
   const [imageAttachments, setImageAttachments] = useState<Array<{ type: string; url: string; name: string }>>([]);
   const [relatedActivities, setRelatedActivities] = useState<ActivityRecord[]>([]);
   const [loadingActivities, setLoadingActivities] = useState(false);
@@ -951,6 +1000,9 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
       if (p.taskId !== taskId) return;
       const c = p.comment as TaskComment;
       setComments(prev => prev.some(x => x.id === c.id) ? prev : [...prev, c]);
+      if (c.authorType === 'agent' || c.authorId?.startsWith('agt_')) {
+        setThinkingAgents(prev => prev.filter(a => a.id !== c.authorId));
+      }
     });
     return () => { unsubLog(); unsubDelta(); unsubComment(); };
   }, [taskId]);
@@ -994,6 +1046,20 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
       }
       setCommentText('');
       setImageAttachments([]);
+      const notified: Array<{ id: string; name: string; avatarUrl?: string }> = [];
+      const seen = new Set<string>();
+      const tryAdd = (agentId: string) => {
+        if (seen.has(agentId) || agentId === authUser?.id) return;
+        seen.add(agentId);
+        const a = agents.find(ag => ag.id === agentId);
+        if (a) notified.push({ id: a.id, name: a.name, avatarUrl: a.avatarUrl });
+      };
+      if (task.assignedAgentId) tryAdd(task.assignedAgentId);
+      if (task.createdBy?.startsWith('agt_') && task.status !== 'in_progress') tryAdd(task.createdBy);
+      if (notified.length > 0) {
+        setThinkingAgents(notified);
+        setTimeout(() => setThinkingAgents([]), 15000);
+      }
     } catch { /* ignore */ }
     setSubmitting(false);
   };
@@ -1237,6 +1303,32 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
             </div>
           );
         })}
+        {thinkingAgents.length > 0 && (
+          <div className="flex flex-col gap-1 mt-2">
+            {thinkingAgents.map(ta => (
+              <div
+                key={ta.id}
+                className="flex items-center gap-2.5 px-3 py-2 rounded-lg cursor-pointer hover:bg-surface-elevated/60 transition-colors"
+                onClick={() => navBus.navigate(PAGE.TEAM, { agentId: ta.id, profileTab: 'mind' })}
+              >
+                <div className="relative shrink-0">
+                  <Avatar name={ta.name} avatarUrl={ta.avatarUrl} size={24} bgClass="bg-brand-500/15 text-brand-600" />
+                  <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500 animate-pulse ring-2 ring-surface-primary" />
+                </div>
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="text-xs font-medium text-fg-secondary truncate">{ta.name}</span>
+                  <span className="flex items-center gap-0.5">
+                    <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" />
+                    <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.15s' }} />
+                    <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.3s' }} />
+                  </span>
+                  <span className="text-[10px] text-fg-tertiary">{t('work:task.agentProcessing')}</span>
+                </div>
+                <span className="ml-auto text-[10px] text-fg-tertiary">→</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       {commentInput}
     </div>
@@ -4161,14 +4253,16 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
 // ─── Requirement Comment Thread ─────────────────────────────────────────────────
 
-function RequirementCommentThread({ requirementId, agents, users, authUser }: {
+function RequirementCommentThread({ requirementId, createdBy, agents, users, authUser }: {
   requirementId: string;
+  createdBy?: string;
   agents: AgentInfo[];
   users?: HumanUserInfo[];
   authUser?: { id: string; name: string };
 }) {
   const { t } = useTranslation(['work', 'common']);
   const [comments, setComments] = useState<RequirementComment[]>([]);
+  const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
 
   useEffect(() => {
     api.requirements.getComments(requirementId).then(r => setComments(r.comments)).catch(() => {});
@@ -4177,10 +4271,14 @@ function RequirementCommentThread({ requirementId, agents, users, authUser }: {
   useEffect(() => {
     const unsub = wsClient.on('requirement:comment', (msg: { payload?: { requirementId?: string; comment?: RequirementComment } }) => {
       if (msg.payload?.requirementId === requirementId && msg.payload.comment) {
+        const c = msg.payload.comment;
         setComments(prev => {
-          if (prev.some(c => c.id === msg.payload!.comment!.id)) return prev;
-          return [...prev, msg.payload!.comment!];
+          if (prev.some(x => x.id === c.id)) return prev;
+          return [...prev, c];
         });
+        if (c.authorType === 'agent' || c.authorId?.startsWith('agt_')) {
+          setThinkingAgents(prev => prev.filter(a => a.id !== c.authorId));
+        }
       }
     });
     return unsub;
@@ -4197,6 +4295,23 @@ function RequirementCommentThread({ requirementId, agents, users, authUser }: {
       mentions.length > 0 ? mentions : undefined,
       replyToId,
     );
+    const notified: Array<{ id: string; name: string; avatarUrl?: string }> = [];
+    const seen = new Set<string>();
+    const tryAdd = (agentId: string) => {
+      if (seen.has(agentId) || agentId === authUser?.id) return;
+      seen.add(agentId);
+      const a = agents.find(ag => ag.id === agentId);
+      if (a) notified.push({ id: a.id, name: a.name, avatarUrl: a.avatarUrl });
+    };
+    for (const name of mentions) {
+      const a = agents.find(ag => ag.name.toLowerCase() === name.toLowerCase());
+      if (a) tryAdd(a.id);
+    }
+    if (createdBy?.startsWith('agt_')) tryAdd(createdBy);
+    if (notified.length > 0) {
+      setThinkingAgents(notified);
+      setTimeout(() => setThinkingAgents([]), 15000);
+    }
   };
 
   const handleReply = useCallback((c: TaskComment | RequirementComment) => {
@@ -4215,6 +4330,30 @@ function RequirementCommentThread({ requirementId, agents, users, authUser }: {
         {comments.map(c => (
           <CommentBubble key={c.id} comment={c} agents={agents} onReply={handleReply} />
         ))}
+        {thinkingAgents.length > 0 && (
+          <div className="flex flex-col gap-1 pt-1">
+            {thinkingAgents.map(a => (
+              <div
+                key={a.id}
+                className="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer hover:bg-surface-elevated/60 transition-colors"
+                onClick={() => navBus.navigate(PAGE.TEAM, { agentId: a.id, profileTab: 'mind' })}
+              >
+                <div className="relative shrink-0">
+                  <Avatar name={a.name} avatarUrl={a.avatarUrl} size={22} bgClass="bg-brand-500/15 text-brand-600" />
+                  <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500 animate-pulse ring-2 ring-surface-primary" />
+                </div>
+                <span className="text-xs font-medium text-fg-secondary">{a.name}</span>
+                <span className="flex items-center gap-0.5">
+                  <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" />
+                  <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.15s' }} />
+                  <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.3s' }} />
+                </span>
+                <span className="text-[10px] text-fg-tertiary">{t('work:task.agentProcessing')}</span>
+                <span className="ml-auto text-[10px] text-fg-tertiary">→</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       <CommentInput agents={agents} humans={users} onSubmit={handleSubmit} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} />
     </div>
@@ -4413,7 +4552,7 @@ function RequirementDetailPanel({
           </div>
 
           {/* Requirement Comments Thread */}
-          <RequirementCommentThread requirementId={req.id} agents={agents} users={users} authUser={authUser} />
+          <RequirementCommentThread requirementId={req.id} createdBy={req.createdBy} agents={agents} users={users} authUser={authUser} />
         </div>
 
         {/* Actions */}

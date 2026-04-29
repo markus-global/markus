@@ -198,6 +198,7 @@
     "deleteProjectConfirm": "删除此项目并解除所有任务关联？",
     "errorGeneric": "错误：{{message}}",
     "commentInstructionPlaceholder": "添加评论或指令…",
+    "agentProcessing": "处理中…",
     "attachImage": "附加图片",
     "loadingLogs": "正在加载日志…",
     "noExecutionLogs": "尚无执行日志。",

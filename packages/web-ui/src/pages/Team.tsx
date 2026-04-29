@@ -779,6 +779,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const [input, setInput] = useState('');
   const [chatReplyTo, setChatReplyTo] = useState<{ id: string; sender: string; text: string } | null>(null);
   const [sending, setSending] = useState(false);
+  const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
   const [streamingVisual, setStreamingVisual] = useState(false);
   const streamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const STREAMING_MIN_DISPLAY_MS = 1500;
@@ -1332,9 +1333,13 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         key = `ch:${msgChannel}`;
       }
       updateConvMsgs(key, prev => [...prev, newMsg]);
+
+      if (senderType === 'agent' && key === `ch:${activeChannel}`) {
+        setThinkingAgents(prev => prev.filter(a => a.id !== wsSenderId));
+      }
     });
     return unsub;
-  }, [updateConvMsgs, authUser?.id]);
+  }, [updateConvMsgs, authUser?.id, activeChannel]);
 
   // WS live updates for proactive agent messages (direct mode)
   useEffect(() => {
@@ -1501,8 +1506,28 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       const userMsgCh: ChatMsg = { id: optId, sender: 'user', text, time: new Date().toLocaleTimeString() };
       if (replyCtx) { userMsgCh.replyToId = replyCtx.id; userMsgCh.replyToSender = replyCtx.sender; userMsgCh.replyToText = replyCtx.text; }
       updateConvMsgs(sendKey, prev => [...prev, userMsgCh]);
+
+      // All agents in a group channel receive and process the message.
+      // Mentioned agents are instructed to respond; others may stay silent.
+      const mentions = parseMentions(text);
+      const gc = groupChats.find(g => g.channelKey === activeChannel);
+      if (activeChannel.startsWith('group:')) {
+        const allGroupAgents: Array<{ id: string; name: string; avatarUrl?: string }> = [];
+        if (gc?.members) {
+          for (const m of gc.members) {
+            if (m.type === 'agent') {
+              const a = agents.find(ag => ag.id === m.id);
+              if (a) allGroupAgents.push({ id: a.id, name: a.name, avatarUrl: a.avatarUrl });
+            }
+          }
+        }
+        if (allGroupAgents.length > 0) {
+          setThinkingAgents(allGroupAgents);
+          setTimeout(() => setThinkingAgents([]), 30000);
+        }
+      }
+
       try {
-        const mentions = parseMentions(text);
         const result = await api.channels.sendMessage(activeChannel, {
           text, senderName: authUser?.name ?? t('page.fallbackYou'), mentions,
           senderId: authUser?.id,
@@ -1522,6 +1547,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           id: `err_${Date.now()}`, sender: 'agent', text: friendly,
           time: new Date().toLocaleTimeString(), agentName: t('page.systemName'), isError: true,
         }]);
+        setThinkingAgents([]);
       }
       sendingConvs.current.delete(sendKey);
       if (currentConvKeyRef.current === sendKey) setSending(false);
@@ -2779,8 +2805,31 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                 );
               })
           }
-          {chatMode === 'channel' && sending && (
-            <div className="text-xs text-fg-tertiary animate-pulse ml-11">{t('page.agentThinking')}</div>
+          {chatMode === 'channel' && thinkingAgents.length > 0 && (
+            <div className="flex flex-col gap-1.5 py-2">
+              {thinkingAgents.map(ta => (
+                <div
+                  key={ta.id}
+                  className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg cursor-pointer hover:bg-surface-elevated/60 transition-colors group/think"
+                  onClick={() => handleViewProfile(ta.id, { tab: 'mind' })}
+                >
+                  <div className="relative shrink-0">
+                    <Avatar name={ta.name} avatarUrl={ta.avatarUrl} size={28} bgClass="bg-brand-500/15 text-brand-600" />
+                    <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse ring-2 ring-surface-primary" />
+                  </div>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-sm font-medium text-fg-secondary truncate">{ta.name}</span>
+                    <span className="flex items-center gap-0.5">
+                      <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" />
+                      <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.15s' }} />
+                      <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.3s' }} />
+                    </span>
+                    <span className="text-xs text-fg-tertiary">{t('page.agentThinking')}</span>
+                  </div>
+                  <span className="ml-auto text-[10px] text-fg-tertiary opacity-0 group-hover/think:opacity-100 transition-opacity">→</span>
+                </div>
+              ))}
+            </div>
           )}
           <div ref={messagesEnd} />
         </div>

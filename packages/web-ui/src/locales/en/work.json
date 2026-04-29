@@ -198,6 +198,7 @@
     "deleteProjectConfirm": "Delete this project and unlink all its tasks?",
     "errorGeneric": "Error: {{message}}",
     "commentInstructionPlaceholder": "Add a comment or instruction…",
+    "agentProcessing": "processing…",
     "attachImage": "Attach image",
     "loadingLogs": "Loading logs…",
     "noExecutionLogs": "No execution logs yet.",
