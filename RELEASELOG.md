@@ -1,5 +1,59 @@
 # Release Log
 
+## v0.4.25
+
+多用户系统全面上线（RBAC、邀请流程、会话隔离）；群聊成员管理与侧边栏重设计；人类用户可作为任务审阅者与 @mention 目标；Agent 思考指示器；任务/需求状态变更历史；Ollama 本地自动发现；API 安全加固；大量 UX 与稳定性修复。
+
+### New Features
+
+- **多用户系统（Phase 6-8）** — RBAC 权限 UI、邀请注册流程、用户软删除、会话隔离、DM 隐私、审批按用户过滤（targetUserId）；Onboarding 与 Login 页面重构
+- **群聊成员管理** — 群聊侧边栏重设计，支持添加/移除成员，创建者自动加入，用户名从 DB 恢复
+- **人类用户 @mention** — 任务/需求评论中支持 @提及人类用户，触发通知铃铛提醒
+- **人类用户作为任务审阅者** — 支持将人类用户指定为 task reviewer
+- **Agent 思考指示器** — Chat、任务、需求评论场景显示 Agent 思考动画，直到实际回复到达
+- **任务/需求状态变更历史** — 记录并展示 task 和 requirement 的每次状态转换历史
+- **任务关联活动会话** — 检测并展示与任务相关的 Agent 活动 session
+- **Ollama 本地自动发现** — Settings 页自动检测本地 Ollama 服务
+- **Git 审批智能跳过** — Agent 在自己的工作区内操作时跳过 git 命令审批
+- **CI 测试流水线** — CI pipeline 新增 `pnpm test` 步骤
+
+### Bug Fixes
+
+- **修复多用户认证与隔离** — 修复 auth、session 隔离、DM 隐私、null user_id 迁移等多用户系统 bug
+- **修复通知铃铛 DM/群聊消息** — 支持点击导航，Agent 通知目标精准化，邀请按钮清理
+- **修复停止流式时 6 秒延迟** — 用户在 team chat 中停止 Agent 流式输出时消除阻塞延迟
+- **修复 Agent 瞬态错误显示为持久错误** — 短暂错误以可恢复警告展示而非永久 error 状态
+- **修复通知声音重播** — 侧边栏折叠/展开不再重放通知音效
+- **修复人类创建任务初始状态** — 人类创建的任务正确以 pending 状态开始
+- **修复需求详情面板关闭** — approve/reject 操作后保持面板打开
+- **修复通知自动已读** — 对任务/需求执行操作时自动标记相关通知为已读
+- **修复 Deliverables URL 处理** — URL 类型交付物正确处理，侧边栏简化
+- **修复执行日志内容** — 正确发送 thinking 和 text 内容到执行日志，允许工作区外只读搜索
+- **修复下拉菜单溢出与重复图标** — 任务创建 UI 中下拉溢出和重复加号图标
+- **修复 Mailbox 抢占** — 所有非 human-chat 场景可被更高优先级 mailbox 项抢占
+- **修复 Windows PowerShell 安装** — Start-Process 运行 npm 失败
+
+### API Security & Hardening
+
+- **405 Method Not Allowed** — 不支持的 HTTP 方法返回 405 而非 404
+- **Agent 名称 XSS 防护** — 创建 Agent 时清理名称防止 XSS 注入
+- **POST null body → 400** — 空请求体返回 400 Bad Request
+- **缺少 Content-Type → 415** — 缺少 Content-Type 头返回 415
+- **GET /api/keys 认证** — 添加 requireAuth 中间件
+- **DELETE 不存在 Agent → 404** — 返回正确的 404 而非 200
+- **Agent 名称长度限制** — 100 字符上限校验
+
+### Refactoring
+
+- **统一用户 ID 生成** — `userId()` 工具函数替代硬编码 'default' user ID
+- **用户软删除** — 用户和 Agent 删除改为软删除，支持即时刷新
+
+### Stats
+
+- 97 files changed, +7,668 / −1,640 lines
+
+---
+
 ## v0.4.24
 
 新增 DeepSeek 一级模型支持；reasoning_content 全链路透传；中文文件名路径编码修复；LLM 路由禁用提供商感知与自动切换；通知铃铛 notify_user 修复；不可重试错误短路；测试补全。
