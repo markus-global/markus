@@ -1109,6 +1109,18 @@ export class AttentionController {
     return this.interruptSignal;
   }
 
+  /**
+   * Restore the interrupt signal after a yield point returned a decision
+   * that couldn't be acted upon (e.g. preempt in a non-preemptable context).
+   * This prevents the signal from being silently consumed and lost.
+   */
+  restoreInterruptSignal(item?: MailboxItem): void {
+    this.interruptSignal = true;
+    if (item) {
+      this.pendingInterruptItem = item;
+    }
+  }
+
   // ─── Internal Helpers ─────────────────────────────────────────────────────
 
   private setState(s: AttentionState): void {

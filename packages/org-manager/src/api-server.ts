@@ -2922,7 +2922,7 @@ export class APIServer {
       const body = await this.readBody(req);
       const cascade = body['cascade'] === true;
       try {
-        const task = this.taskService.cancelTask(taskId, cascade, authUser?.userId);
+        const task = this.taskService.cancelTask(taskId, cascade, authUser?.userId, 'human');
         this.auditService?.record({
           orgId: task.orgId,
           type: 'task_cancelled',
@@ -3138,13 +3138,25 @@ export class APIServer {
       return;
     }
 
+    // Task status history — list all status transitions for a task
+    if (path.match(/^\/api\/tasks\/[^/]+\/history$/) && req.method === 'GET') {
+      const taskId = path.split('/')[3]!;
+      try {
+        const history = this.taskService.getTaskStatusHistory(taskId);
+        this.json(res, 200, { history });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
     // Task pause — explicitly pause a running task
     if (path.match(/^\/api\/tasks\/[^/]+\/pause$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
       const taskId = path.split('/')[3]!;
       try {
-        this.taskService.pauseTask(taskId, authUser.userId);
+        this.taskService.pauseTask(taskId, authUser.userId, 'human');
         this.json(res, 200, { status: 'blocked' as TaskStatus, taskId });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -3160,7 +3172,7 @@ export class APIServer {
       if (!authUser) return;
       const taskId = path.split('/')[3]!;
       try {
-        this.taskService.resumeTask(taskId, authUser.userId);
+        this.taskService.resumeTask(taskId, authUser.userId, 'human');
         this.json(res, 202, { status: 'running', taskId });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -8125,6 +8137,18 @@ EXPLANATION_END`;
       return;
     }
 
+    // Requirement status history — list all status transitions for a requirement
+    if (path.match(/^\/api\/requirements\/[^/]+\/history$/) && req.method === 'GET') {
+      const reqId = path.split('/')[3]!;
+      try {
+        const history = this.requirementService?.getRequirementStatusHistory(reqId) ?? [];
+        this.json(res, 200, { history });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
     // ── Governance: Projects ──────────────────────────────────────────────
 
     if (path === '/api/projects' && req.method === 'GET') {
@@ -8676,6 +8700,7 @@ EXPLANATION_END`;
       regex(/^\/api\/tasks\/[^/]+\/subtasks\/[^/]+$/, 'DELETE'),
       regex(/^\/api\/tasks\/[^/]+\/subtasks\/[^/]+\/(complete|cancel)$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/comments$/, 'GET', 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/history$/, 'GET'),
       regex(/^\/api\/tasks\/[^/]+\/pause$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/resume$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/retry$/, 'POST'),
@@ -8713,6 +8738,7 @@ EXPLANATION_END`;
       regex(/^\/api\/requirements\/[^/]+\/reject$/, 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/cancel$/, 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/comments$/, 'GET', 'POST'),
+      regex(/^\/api\/requirements\/[^/]+\/history$/, 'GET'),
 
       // ── Projects ─────────────────────────────────────────────────────────
       exact('/api/projects', 'GET', 'POST'),

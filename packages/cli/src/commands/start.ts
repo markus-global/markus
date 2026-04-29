@@ -254,6 +254,15 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     if (storage.requirementCommentRepo) {
       taskService.setRequirementCommentRepo(storage.requirementCommentRepo);
     }
+    if (storage.statusTransitionRepo) {
+      taskService.setStatusTransitionRepo(storage.statusTransitionRepo);
+    }
+    taskService.setUserNameLookup((userId: string) => {
+      try {
+        const user = storage!.userRepo.findById(userId);
+        return user?.name ?? user?.email ?? null;
+      } catch { return null; }
+    });
     await taskService.loadFromDB('default');
     taskService.startTimeoutChecker();
   }
@@ -464,6 +473,17 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   const requirementService = new RequirementService();
   if (storage?.requirementRepo) {
     requirementService.setRequirementRepo(storage.requirementRepo);
+  }
+  if (storage?.statusTransitionRepo) {
+    requirementService.setStatusTransitionRepo(storage.statusTransitionRepo);
+  }
+  if (storage) {
+    requirementService.setUserNameLookup((userId: string) => {
+      try {
+        const user = storage!.userRepo.findById(userId);
+        return user?.name ?? user?.email ?? null;
+      } catch { return null; }
+    });
   }
   await requirementService.loadFromStorage('default');
   requirementService.rebuildTaskLinks(taskService.listTasks());

@@ -1,5 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
-import { createLogger, TASK_GET_NOTES_DEFAULT, TASK_GET_DELIVERABLES_DEFAULT } from '@markus/shared';
+import { createLogger, TASK_GET_NOTES_DEFAULT, TASK_GET_DELIVERABLES_DEFAULT, TASK_GET_STATUS_HISTORY_DEFAULT, REQUIREMENT_LIST_DEFAULT, ENTITY_COMMENTS_DEFAULT } from '@markus/shared';
 
 const log = createLogger('task-tools');
 
@@ -135,11 +135,12 @@ export interface AgentTaskContext {
       createdAt: string;
     }>;
   } | null>;
-  /** Submit completed work for review — system auto-fills task_id, reviewer, and branch */
+  /** Submit completed work for review — system auto-fills task_id, reviewer, and branch when task_id is omitted */
   submitForReview?: (
     summary: string,
     deliverables?: Array<{ type?: string; reference: string; summary: string }>,
-    knownIssues?: string
+    knownIssues?: string,
+    taskId?: string
   ) => Promise<{ id: string; status: string }>;
   /** Request revision on a task in review — increments execution round and restarts with fresh context */
   requestRevision?: (
@@ -170,6 +171,8 @@ export interface AgentTaskContext {
   postRequirementComment?: (requirementId: string, content: string, mentions?: string[], activityId?: string) => Promise<{ id: string }>;
   /** Returns the ID of the agent's currently executing activity (for traceability) */
   getCurrentActivityId?: () => string | undefined;
+  /** Get status transition history for a task or requirement */
+  getStatusHistory?: (entityType: 'task' | 'requirement', entityId: string) => Promise<Array<{ id: number; fromStatus: string; toStatus: string; changedById: string | null; changedByType: string; changedByName: string | null; reason: string | null; createdAt: string }>>;
 }
 
 export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] {
@@ -683,7 +686,26 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             }
           }
           if (ctx.getTaskComments) {
-            try { taskObj['comments'] = await ctx.getTaskComments(taskId); } catch { /* non-fatal */ }
+            try {
+              const comments = await ctx.getTaskComments(taskId);
+              if (!full && comments.length > ENTITY_COMMENTS_DEFAULT) {
+                taskObj['comments'] = comments.slice(-ENTITY_COMMENTS_DEFAULT);
+                taskObj['_commentsTruncated'] = { total: comments.length, showing: ENTITY_COMMENTS_DEFAULT, hint: 'Use full=true to see all' };
+              } else {
+                taskObj['comments'] = comments;
+              }
+            } catch { /* non-fatal */ }
+          }
+          if (ctx.getStatusHistory) {
+            try {
+              const history = await ctx.getStatusHistory('task', taskId);
+              if (!full && history.length > TASK_GET_STATUS_HISTORY_DEFAULT) {
+                taskObj['statusHistory'] = history.slice(-TASK_GET_STATUS_HISTORY_DEFAULT);
+                taskObj['_statusHistoryTruncated'] = { total: history.length, showing: TASK_GET_STATUS_HISTORY_DEFAULT, hint: 'Use full=true to see all' };
+              } else {
+                taskObj['statusHistory'] = history;
+              }
+            } catch { /* non-fatal */ }
           }
           return JSON.stringify({ status: 'success', task: taskObj });
         } catch (error) {
@@ -799,7 +821,21 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const result = await ctx.completeSubtask!(args['task_id'] as string, args['subtask_id'] as string);
+                const taskId = args['task_id'] as string | undefined;
+                const subtaskId = args['subtask_id'] as string | undefined;
+                if (!taskId?.trim()) {
+                  return JSON.stringify({
+                    status: 'error',
+                    error: 'task_id is required — provide the parent task ID (tsk_-prefixed). Use task_list to find your current task.',
+                  });
+                }
+                if (!subtaskId?.trim()) {
+                  return JSON.stringify({
+                    status: 'error',
+                    error: 'subtask_id is required — provide the subtask ID (sub_-prefixed). Call subtask_list with the parent task_id to get subtask IDs.',
+                  });
+                }
+                const result = await ctx.completeSubtask!(taskId, subtaskId);
                 return JSON.stringify({ status: 'success', subtask: result });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
@@ -845,6 +881,10 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             inputSchema: {
               type: 'object',
               properties: {
+                task_id: {
+                  type: 'string',
+                  description: 'The task ID to submit (tsk_-prefixed). Optional if you are executing within an active task context (system auto-fills). REQUIRED if you are working outside a task execution context (e.g. standalone session).',
+                },
                 summary: {
                   type: 'string',
                   description: 'What was accomplished and why (2-5 sentences). Include key decisions, results, and any test outcomes.',
@@ -904,10 +944,12 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                     }));
                 }
 
+                const explicitTaskId = args['task_id'] as string | undefined;
                 const result = await ctx.submitForReview!(
                   summary,
                   parsedDeliverables,
                   args['known_issues'] as string | undefined,
+                  explicitTaskId?.trim() || undefined,
                 );
                 return JSON.stringify({
                   status: 'success',
@@ -916,7 +958,14 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   message: `Work submitted for review. ${parsedDeliverables?.length ? `${parsedDeliverables.length} deliverable(s) recorded.` : 'No deliverables recorded — consider adding them next time.'}`,
                 });
               } catch (error) {
-                return JSON.stringify({ status: 'error', error: String(error) });
+                const msg = String(error);
+                if (msg.includes('No active task') || msg.includes('No in_progress task')) {
+                  return JSON.stringify({
+                    status: 'error',
+                    error: 'Cannot submit for review: no active task found in your execution context. Provide task_id explicitly if you are working outside a task execution session. Use task_list to find the task ID.',
+                  });
+                }
+                return JSON.stringify({ status: 'error', error: msg });
               }
             },
           } as AgentToolHandler,
@@ -1025,14 +1074,18 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const reqs = await ctx.listRequirements!({
+                const allReqs = await ctx.listRequirements!({
                   status: args['status'] as string | undefined,
                   projectId: args['project_id'] as string | undefined,
                   createdBy: args['mine_only'] ? ctx.agentId : undefined,
                 });
+                const truncated = allReqs.length > REQUIREMENT_LIST_DEFAULT;
+                const reqs = truncated ? allReqs.slice(0, REQUIREMENT_LIST_DEFAULT) : allReqs;
                 return JSON.stringify({
                   status: 'success',
+                  total: allReqs.length,
                   count: reqs.length,
+                  ...(truncated ? { _truncated: { total: allReqs.length, showing: REQUIREMENT_LIST_DEFAULT, hint: 'Use status filter to narrow results' } } : {}),
                   requirements: reqs.map(r => ({
                     id: r.id,
                     title: r.title,
@@ -1074,11 +1127,29 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const req = await ctx.getRequirement!(args['requirement_id'] as string);
+                const reqId = args['requirement_id'] as string;
+                const req = await ctx.getRequirement!(reqId);
                 if (!req) {
                   return JSON.stringify({ status: 'error', error: 'Requirement not found' });
                 }
-                return JSON.stringify({ status: 'success', requirement: req });
+                const result: Record<string, unknown> = { ...req };
+                const comments = result['comments'] as unknown[] | undefined;
+                if (comments && comments.length > ENTITY_COMMENTS_DEFAULT) {
+                  result['comments'] = comments.slice(-ENTITY_COMMENTS_DEFAULT);
+                  result['_commentsTruncated'] = { total: comments.length, showing: ENTITY_COMMENTS_DEFAULT, hint: 'Most recent shown' };
+                }
+                if (ctx.getStatusHistory) {
+                  try {
+                    const history = await ctx.getStatusHistory('requirement', reqId);
+                    if (history.length > TASK_GET_STATUS_HISTORY_DEFAULT) {
+                      result['statusHistory'] = history.slice(-TASK_GET_STATUS_HISTORY_DEFAULT);
+                      result['_statusHistoryTruncated'] = { total: history.length, showing: TASK_GET_STATUS_HISTORY_DEFAULT, hint: 'Use full=true to see all' };
+                    } else {
+                      result['statusHistory'] = history;
+                    }
+                  } catch { /* non-fatal */ }
+                }
+                return JSON.stringify({ status: 'success', requirement: result });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }

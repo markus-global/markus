@@ -26,6 +26,8 @@ export interface CreateRequirementRequest {
 export class RequirementService {
   private requirements = new Map<string, Requirement>();
   private requirementRepo?: any;
+  private statusTransitionRepo?: { record(data: { entityType: 'task' | 'requirement'; entityId: string; fromStatus: string; toStatus: string; changedById?: string | null; changedByType: 'human' | 'agent' | 'system'; changedByName?: string | null; reason?: string | null }): void; getByEntity(entityType: 'task' | 'requirement', entityId: string, limit?: number): unknown[] };
+  private userNameLookup?: (userId: string) => string | null;
   private ws?: WSBroadcaster;
   private agentManager?: AgentManager;
   private hitlService?: HITLService;
@@ -36,6 +38,78 @@ export class RequirementService {
 
   setRequirementRepo(repo: any): void {
     this.requirementRepo = repo;
+  }
+
+  setStatusTransitionRepo(repo: typeof this.statusTransitionRepo): void {
+    this.statusTransitionRepo = repo;
+  }
+
+  setUserNameLookup(fn: (userId: string) => string | null): void {
+    this.userNameLookup = fn;
+  }
+
+  private resolveActorName(actorId?: string | null, actorType?: string): string | null {
+    if (!actorId) return null;
+    if (actorType === 'system') return 'System';
+    if (actorType === 'agent' && this.agentManager) {
+      try {
+        const agent = this.agentManager.getAgent(actorId);
+        if (agent) return (agent as any).config?.name ?? (agent as any).name ?? actorId;
+      } catch { /* ignore */ }
+    }
+    if (actorType === 'human' && this.userNameLookup) {
+      try {
+        return this.userNameLookup(actorId) ?? actorId;
+      } catch { /* ignore */ }
+    }
+    if (this.userNameLookup) {
+      try {
+        const name = this.userNameLookup(actorId);
+        if (name) return name;
+      } catch { /* ignore */ }
+    }
+    if (this.agentManager) {
+      try {
+        const agent = this.agentManager.getAgent(actorId);
+        if (agent) return (agent as any).config?.name ?? (agent as any).name ?? null;
+      } catch { /* ignore */ }
+    }
+    return actorId;
+  }
+
+  private recordTransition(
+    reqId: string, from: string, to: string,
+    changedById?: string | null, changedByType: 'human' | 'agent' | 'system' = 'system',
+    reason?: string | null,
+  ): void {
+    if (!this.statusTransitionRepo) return;
+    try {
+      this.statusTransitionRepo.record({
+        entityType: 'requirement',
+        entityId: reqId,
+        fromStatus: from,
+        toStatus: to,
+        changedById: changedById ?? null,
+        changedByType,
+        changedByName: this.resolveActorName(changedById, changedByType),
+        reason: reason ?? null,
+      });
+    } catch (e) {
+      log.warn('Failed to record requirement status transition', { reqId, from, to, error: String(e) });
+    }
+  }
+
+  getRequirementStatusHistory(reqId: string, limit = 50): unknown[] {
+    if (!this.statusTransitionRepo) return [];
+    const rows = this.statusTransitionRepo.getByEntity('requirement', reqId, limit);
+    for (const row of rows) {
+      const r = row as Record<string, unknown>;
+      if (r.changedById && (!r.changedByName || r.changedByName === r.changedById)) {
+        const resolved = this.resolveActorName(r.changedById as string, r.changedByType as string);
+        if (resolved && resolved !== r.changedById) r.changedByName = resolved;
+      }
+    }
+    return rows;
   }
 
   setWSBroadcaster(ws: WSBroadcaster): void {
@@ -190,6 +264,7 @@ export class RequirementService {
     }
 
     const now = new Date().toISOString();
+    const oldStatus = req.status;
     req.status = 'in_progress';
     req.approvedBy = userId;
     req.approvedAt = now;
@@ -203,6 +278,7 @@ export class RequirementService {
         );
     }
 
+    this.recordTransition(id, oldStatus, 'in_progress', userId, 'human', 'Approved');
     this.broadcast('requirement:approved', req);
     log.info('Requirement approved', { id, approvedBy: userId });
 
@@ -228,6 +304,7 @@ export class RequirementService {
     }
 
     const now = new Date().toISOString();
+    const oldStatus = req.status;
     req.status = 'rejected';
     req.rejectedReason = reason;
     req.rejectedBy = userId;
@@ -241,6 +318,7 @@ export class RequirementService {
         );
     }
 
+    this.recordTransition(id, oldStatus, 'rejected', userId, 'human', reason);
     this.broadcast('requirement:rejected', req);
     log.info('Requirement rejected', { id, reason });
 
@@ -264,6 +342,7 @@ export class RequirementService {
     }
 
     const now = new Date().toISOString();
+    const oldStatus = req.status;
     if (updates?.title !== undefined) req.title = updates.title;
     if (updates?.description !== undefined) req.description = updates.description;
     if (updates?.priority !== undefined) req.priority = updates.priority;
@@ -275,6 +354,8 @@ export class RequirementService {
     req.approvedBy = undefined;
     req.approvedAt = undefined;
     req.updatedAt = now;
+
+    this.recordTransition(id, oldStatus, 'pending', req.createdBy, 'agent', 'Resubmitted');
 
     if (this.requirementRepo) {
       const persistErr = (e: unknown) =>
@@ -385,6 +466,7 @@ export class RequirementService {
       } catch { /* agent not found — skip */ }
     }
 
+    this.recordTransition(id, oldStatus, newStatus, userId, userId ? 'human' : 'system');
     this.broadcast('requirement:updated', req);
     log.info('Requirement status updated', { id, from: oldStatus, to: newStatus });
 
@@ -485,10 +567,11 @@ export class RequirementService {
   /**
    * Cancel a requirement and all its associations.
    */
-  cancelRequirement(id: string): Requirement {
+  cancelRequirement(id: string, cancelledBy?: string, cancelledByType?: 'human' | 'agent' | 'system'): Requirement {
     const req = this.requirements.get(id);
     if (!req) throw new Error(`Requirement ${id} not found`);
 
+    const oldStatus = req.status;
     req.status = 'cancelled';
     req.updatedAt = new Date().toISOString();
 
@@ -498,6 +581,7 @@ export class RequirementService {
       );
     }
 
+    this.recordTransition(id, oldStatus, 'cancelled', cancelledBy, cancelledByType ?? 'system', 'Cancelled');
     this.broadcast('requirement:cancelled', req);
     log.info('Requirement cancelled', { id });
 

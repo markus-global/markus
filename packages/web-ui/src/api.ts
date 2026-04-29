@@ -628,6 +628,17 @@ export interface RequirementComment {
   createdAt: string;
 }
 
+export interface StatusTransitionInfo {
+  id: number;
+  fromStatus: string;
+  toStatus: string;
+  changedById: string | null;
+  changedByType: 'human' | 'agent' | 'system';
+  changedByName: string | null;
+  reason: string | null;
+  createdAt: string;
+}
+
 export interface AgentToolInfo {
   name: string;
   description: string;
@@ -1026,6 +1037,7 @@ export const api = {
     resume: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/resume`, { method: 'POST' }),
     retry: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/retry`, { method: 'POST' }),
     getComments: (id: string) => request<{ comments: TaskComment[] }>(`/tasks/${id}/comments`),
+    getHistory: (id: string) => request<{ history: StatusTransitionInfo[] }>(`/tasks/${id}/history`),
     addComment: (id: string, content: string, authorName?: string, attachments?: Array<{ type: string; url: string; name: string }>, authorId?: string, mentions?: string[], replyTo?: string) =>
       request<{ comment: TaskComment }>(`/tasks/${id}/comments`, { method: 'POST', body: JSON.stringify({ content, authorId: authorId ?? 'human', authorName: authorName ?? 'User', authorType: 'human', attachments, mentions, replyTo }) }),
     pauseSchedule: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/schedule/pause`, { method: 'POST' }),
@@ -1070,6 +1082,7 @@ export const api = {
     cancel: (id: string) => request<{ requirement: RequirementInfo }>(`/requirements/${id}/cancel`, { method: 'POST' }),
     delete: (id: string) => request(`/requirements/${id}`, { method: 'DELETE' }),
     getComments: (id: string) => request<{ comments: RequirementComment[] }>(`/requirements/${id}/comments`),
+    getHistory: (id: string) => request<{ history: StatusTransitionInfo[] }>(`/requirements/${id}/history`),
     addComment: (id: string, content: string, authorName?: string, authorId?: string, mentions?: string[], replyTo?: string) =>
       request<{ comment: RequirementComment }>(`/requirements/${id}/comments`, { method: 'POST', body: JSON.stringify({ content, authorId: authorId ?? 'human', authorName: authorName ?? 'User', authorType: 'human', mentions, replyTo }) }),
   },

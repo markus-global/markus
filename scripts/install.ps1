@@ -75,7 +75,8 @@ function Install-MarkusCli {
     Write-Host "  ⠋  Installing $Package..." -ForegroundColor Cyan -NoNewline
     $logFile = [System.IO.Path]::GetTempFileName()
     try {
-        $process = Start-Process -FilePath 'npm' `
+        $npmCmd = (Get-Command npm -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+        $process = Start-Process -FilePath $npmCmd `
             -ArgumentList "install -g --no-audit --no-fund --ignore-optional --loglevel=error $Package" `
             -NoNewWindow -Wait -PassThru `
             -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err"

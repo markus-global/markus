@@ -571,6 +571,20 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_type ON audit_logs(event_type);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_agent ON audit_logs(agent_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
+
+CREATE TABLE IF NOT EXISTS status_transitions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  from_status TEXT NOT NULL,
+  to_status TEXT NOT NULL,
+  changed_by_id TEXT,
+  changed_by_type TEXT NOT NULL DEFAULT 'system',
+  changed_by_name TEXT,
+  reason TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_st_entity ON status_transitions(entity_type, entity_id, created_at);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -4139,6 +4153,69 @@ export class SqliteGroupChatRepo {
       creatorName: r['creator_name'] as string,
       createdAt: toDate(r['created_at'] as string)!,
     };
+  }
+}
+
+// ─── Status Transition Repo ──────────────────────────────────────────────────
+
+export interface StatusTransitionRow {
+  id: number;
+  entityType: string;
+  entityId: string;
+  fromStatus: string;
+  toStatus: string;
+  changedById: string | null;
+  changedByType: string;
+  changedByName: string | null;
+  reason: string | null;
+  createdAt: string;
+}
+
+export class SqliteStatusTransitionRepo {
+  constructor(private db: DatabaseSync) {}
+
+  record(data: {
+    entityType: 'task' | 'requirement';
+    entityId: string;
+    fromStatus: string;
+    toStatus: string;
+    changedById?: string | null;
+    changedByType: 'human' | 'agent' | 'system';
+    changedByName?: string | null;
+    reason?: string | null;
+  }): void {
+    this.db.prepare(
+      `INSERT INTO status_transitions (entity_type, entity_id, from_status, to_status, changed_by_id, changed_by_type, changed_by_name, reason, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      data.entityType,
+      data.entityId,
+      data.fromStatus,
+      data.toStatus,
+      data.changedById ?? null,
+      data.changedByType,
+      data.changedByName ?? null,
+      data.reason ?? null,
+      now(),
+    );
+  }
+
+  getByEntity(entityType: 'task' | 'requirement', entityId: string, limit = 50): StatusTransitionRow[] {
+    return this.db.prepare(
+      `SELECT id,
+              entity_type  AS entityType,
+              entity_id    AS entityId,
+              from_status  AS fromStatus,
+              to_status    AS toStatus,
+              changed_by_id   AS changedById,
+              changed_by_type AS changedByType,
+              changed_by_name AS changedByName,
+              reason,
+              created_at   AS createdAt
+       FROM status_transitions
+       WHERE entity_type = ? AND entity_id = ?
+       ORDER BY created_at ASC, id ASC LIMIT ?`
+    ).all(entityType, entityId, limit) as unknown as StatusTransitionRow[];
   }
 }
 
