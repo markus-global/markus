@@ -32,7 +32,7 @@ function makeMockRouter(chatFn: (...args: unknown[]) => Promise<unknown>) {
     chat: vi.fn(chatFn),
     chatStream: vi.fn(),
     getActiveModelContextWindow: () => 200000,
-    getActiveModelName: () => 'gpt-4',
+    getActiveModelName: () => 'test-model',
     getActiveModelMaxOutput: () => 8000,
     getModelContextWindow: (model: string) => 200000,
     getModelMaxOutput: (model: string) => 8000,
@@ -40,7 +40,6 @@ function makeMockRouter(chatFn: (...args: unknown[]) => Promise<unknown>) {
     listProviders: () => ['test'],
     getProvider: () => undefined,
     getDefaultProvider: () => 'test',
-    getActiveModelName: () => 'test-model',
   } as unknown;
 }
 
