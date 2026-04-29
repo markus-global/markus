@@ -1045,8 +1045,8 @@ export class AgentManager {
           const task = ts.getTask(taskId);
           return task?.subtasks ?? [];
         },
-        submitForReview: async (summary, inputDeliverables, knownIssues) => {
-          const taskId = resolveCurrentTaskId(this.agents.get(id), ts, id);
+        submitForReview: async (summary, inputDeliverables, knownIssues, explicitTaskId) => {
+          const taskId = explicitTaskId || resolveCurrentTaskId(this.agents.get(id), ts, id);
           const task = ts.getTask(taskId);
           if (!task) throw new Error(`Task not found: ${taskId}`);
           const reviewerId = (task as Record<string, unknown>).reviewerId as string | undefined;
@@ -1685,8 +1685,8 @@ export class AgentManager {
           const task = ts.getTask(taskId);
           return task?.subtasks ?? [];
         },
-        submitForReview: async (summary, inputDeliverables, knownIssues) => {
-          const taskId = resolveCurrentTaskId(this.agents.get(id), ts, id);
+        submitForReview: async (summary, inputDeliverables, knownIssues, explicitTaskId) => {
+          const taskId = explicitTaskId || resolveCurrentTaskId(this.agents.get(id), ts, id);
           const task = ts.getTask(taskId);
           if (!task) throw new Error(`Task not found: ${taskId}`);
           const reviewerId = (task as Record<string, unknown>).reviewerId as string | undefined;

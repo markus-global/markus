@@ -135,11 +135,12 @@ export interface AgentTaskContext {
       createdAt: string;
     }>;
   } | null>;
-  /** Submit completed work for review — system auto-fills task_id, reviewer, and branch */
+  /** Submit completed work for review — system auto-fills task_id, reviewer, and branch when task_id is omitted */
   submitForReview?: (
     summary: string,
     deliverables?: Array<{ type?: string; reference: string; summary: string }>,
-    knownIssues?: string
+    knownIssues?: string,
+    taskId?: string
   ) => Promise<{ id: string; status: string }>;
   /** Request revision on a task in review — increments execution round and restarts with fresh context */
   requestRevision?: (
@@ -799,7 +800,21 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const result = await ctx.completeSubtask!(args['task_id'] as string, args['subtask_id'] as string);
+                const taskId = args['task_id'] as string | undefined;
+                const subtaskId = args['subtask_id'] as string | undefined;
+                if (!taskId?.trim()) {
+                  return JSON.stringify({
+                    status: 'error',
+                    error: 'task_id is required — provide the parent task ID (tsk_-prefixed). Use task_list to find your current task.',
+                  });
+                }
+                if (!subtaskId?.trim()) {
+                  return JSON.stringify({
+                    status: 'error',
+                    error: 'subtask_id is required — provide the subtask ID (sub_-prefixed). Call subtask_list with the parent task_id to get subtask IDs.',
+                  });
+                }
+                const result = await ctx.completeSubtask!(taskId, subtaskId);
                 return JSON.stringify({ status: 'success', subtask: result });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
@@ -845,6 +860,10 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             inputSchema: {
               type: 'object',
               properties: {
+                task_id: {
+                  type: 'string',
+                  description: 'The task ID to submit (tsk_-prefixed). Optional if you are executing within an active task context (system auto-fills). REQUIRED if you are working outside a task execution context (e.g. standalone session).',
+                },
                 summary: {
                   type: 'string',
                   description: 'What was accomplished and why (2-5 sentences). Include key decisions, results, and any test outcomes.',
@@ -904,10 +923,12 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                     }));
                 }
 
+                const explicitTaskId = args['task_id'] as string | undefined;
                 const result = await ctx.submitForReview!(
                   summary,
                   parsedDeliverables,
                   args['known_issues'] as string | undefined,
+                  explicitTaskId?.trim() || undefined,
                 );
                 return JSON.stringify({
                   status: 'success',
@@ -916,7 +937,14 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   message: `Work submitted for review. ${parsedDeliverables?.length ? `${parsedDeliverables.length} deliverable(s) recorded.` : 'No deliverables recorded — consider adding them next time.'}`,
                 });
               } catch (error) {
-                return JSON.stringify({ status: 'error', error: String(error) });
+                const msg = String(error);
+                if (msg.includes('No active task') || msg.includes('No in_progress task')) {
+                  return JSON.stringify({
+                    status: 'error',
+                    error: 'Cannot submit for review: no active task found in your execution context. Provide task_id explicitly if you are working outside a task execution session. Use task_list to find the task ID.',
+                  });
+                }
+                return JSON.stringify({ status: 'error', error: msg });
               }
             },
           } as AgentToolHandler,
