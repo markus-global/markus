@@ -2226,8 +2226,7 @@ export class Agent {
 
     const scenario = options?.scenario ?? 'chat';
     const isLightweight = scenario !== 'chat' && scenario !== 'task_execution' && scenario !== 'review';
-    const PREEMPTABLE_SCENARIOS = new Set(['heartbeat', 'memory_consolidation']);
-    const isPreemptable = PREEMPTABLE_SCENARIOS.has(scenario);
+    const isPreemptable = scenario !== 'chat';
 
     // Track chat activity (only if not already in a heartbeat or other activity)
     let chatActivityId: string | undefined;
@@ -2541,17 +2540,22 @@ export class Agent {
           }
         }
 
-        // Attention yield point — preemptable scenarios (heartbeat, memory
-        // consolidation, etc.) allow full preemption; user-facing chat only
-        // allows merge since the caller is awaiting a response.
+        // Attention yield point — all scenarios except direct human chat allow
+        // full preemption; user-facing chat only allows merge since the human
+        // caller is awaiting a response.
         const chatYield = await this.checkAttentionYieldPoint();
-        if ((chatYield.decision === 'preempt' || chatYield.decision === 'cancel') && isPreemptable) {
-          const marker = chatYield.decision === 'cancel' ? '[cancelled]' : '[preempted]';
-          log.info(`handleMessage ${chatYield.decision} by higher-priority item`, {
-            agentId: this.id, scenario,
-            preemptedBy: chatYield.item?.sourceType,
-          });
-          return marker;
+        if (chatYield.decision === 'preempt' || chatYield.decision === 'cancel') {
+          if (isPreemptable) {
+            const marker = chatYield.decision === 'cancel' ? '[cancelled]' : '[preempted]';
+            log.info(`handleMessage ${chatYield.decision} by higher-priority item`, {
+              agentId: this.id, scenario,
+              preemptedBy: chatYield.item?.sourceType,
+            });
+            return marker;
+          }
+          // Non-preemptable (human chat): restore signal so it's not silently lost.
+          // The high-priority item will be processed immediately after this chat completes.
+          this.attentionController.restoreInterruptSignal(chatYield.item);
         }
         if (chatYield.decision === 'merge' && chatYield.item) {
           const mergeMsg = `[LIVE UPDATE] ${chatYield.item.payload.summary}\n\n${chatYield.item.payload.content}`;
@@ -2910,6 +2914,18 @@ export class Agent {
               break;
             }
           }
+        }
+
+        // Attention yield point — streaming chat is non-preemptable (human is
+        // waiting for the response), but merge is supported so related content
+        // (e.g. a comment on the current topic) can be injected into context.
+        const streamYield = await this.checkAttentionYieldPoint();
+        if (streamYield.decision === 'merge' && streamYield.item) {
+          const mergeMsg = `[LIVE UPDATE] ${streamYield.item.payload.summary}\n\n${streamYield.item.payload.content}`;
+          this.memory.appendMessage(this.currentSessionId!, { role: 'user', content: mergeMsg });
+        } else if (streamYield.decision === 'preempt' || streamYield.decision === 'cancel') {
+          // Can't preempt streaming chat — restore signal so it's not lost.
+          this.attentionController.restoreInterruptSignal(streamYield.item);
         }
 
         const updatedSessionMessages = this.memory.getRecentMessages(this.currentSessionId, 200);

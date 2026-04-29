@@ -239,8 +239,9 @@ Yield points are inserted at natural pauses in the agent's processing pipeline:
   - **Preempt** → task session state is saved, mailbox item deferred. When the agent is idle, the deferred item resurfaces and execution resumes with full session context.
   - **Cancel** → mailbox item is dropped permanently. The task may need separate status updates (e.g., `cancelTask`) depending on the cancelling message's intent.
 - **Chat/message handling** (`handleMessage`): After tool results are recorded. Interrupt behaviour depends on the **scenario**:
-  - **Preemptable scenarios** (`heartbeat`, `memory_consolidation`): Full preemption/cancellation is allowed. Since these are self-initiated periodic processes with no external caller waiting, interrupting them is safe.
-  - **Non-preemptable scenarios** (`chat`, `a2a`, `comment_response`): Only merge decisions are honoured (no preemption/cancellation), since an external caller is awaiting a response. The `system_event` and `daily_report` types use scenario `heartbeat` internally, so they are also preemptable.
+  - **Non-preemptable** (`chat` only): Only merge decisions are honoured (no preemption/cancellation), since a human user is awaiting a direct response. If a preempt/cancel decision is returned, the interrupt signal is **restored** (not consumed) so the high-priority item is processed immediately after the chat completes.
+  - **Preemptable** (all other scenarios: `a2a`, `comment_response`, `requirement_action`, `review`, `heartbeat`, `memory_consolidation`): Full preemption/cancellation is allowed. These either have no real-time human caller waiting, or the caller (another agent, a system process) can tolerate the interruption.
+- **Streaming chat** (`handleMessageStream`): After tool results are recorded. Only merge is honoured (same as non-preemptable `handleMessage`), since a human is receiving a streamed response. Preempt/cancel decisions restore the interrupt signal for immediate processing after the stream completes.
 
 ### Agent Stop/Pause Behaviour
 
