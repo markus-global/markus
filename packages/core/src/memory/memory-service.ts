@@ -13,6 +13,7 @@
  */
 
 import { createLogger, type LLMMessage } from '@markus/shared';
+import type { SqliteChatSessionRepo } from '@markus/storage';
 import { SemanticMemory } from './semantic-memory.js';
 import { EpisodicMemory } from './episodic-memory.js';
 import { loadProceduralMemory, refreshProceduralMemory } from './procedural-memory.js';
@@ -38,6 +39,8 @@ const log = createLogger('memory-service');
 export interface MemoryServiceConfig {
   /** Directory for semantic memory (observations.json, MEMORY.md) */
   dataDir: string;
+  /** Chat session repo for SQLite-backed episodic memory */
+  chatSessionRepo: SqliteChatSessionRepo;
   /** Optional procedural memory config — if omitted, procedural loading is a no-op */
   proceduralConfig?: ProceduralMemoryConfig;
 }
@@ -61,9 +64,12 @@ export class MemoryService {
 
   constructor(config: MemoryServiceConfig) {
     this.semantic = new SemanticMemory({ dataDir: config.dataDir });
-    this.episodic = new EpisodicMemory({ dataDir: config.dataDir });
+    this.episodic = new EpisodicMemory({ repo: config.chatSessionRepo });
     this.proceduralConfig = config.proceduralConfig;
-    log.info('MemoryService initialized', { dataDir: config.dataDir });
+    log.info('MemoryService initialized', {
+      dataDir: config.dataDir,
+      backend: 'sqlite',
+    });
   }
 
   // ---------------------------------------------------------------------------

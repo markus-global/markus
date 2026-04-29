@@ -1,40 +1,72 @@
 /**
  * episodic-memory.ts — Episodic Memory layer
  *
- * Stores conversation sessions and message history.
- * Implements IEpisodicMemory interface.
+ * Stores conversation sessions and message history using SqliteChatSessionRepo
+ * from @markus/storage. Implements IEpisodicMemory interface.
  *
- * Stores sessions as JSON files in a sessions/ directory
- * so existing consumers (MemoryStore) can also see them.
+ * All repo methods are synchronous (SqliteChatSessionRepo uses Better-SQLite3's
+ * sync API), so the async interface is a thin wrapper.
  */
 
-import {
-  readFileSync,
-  writeFileSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  rmSync,
-} from 'node:fs';
-import { join } from 'node:path';
 import { createLogger, type LLMMessage } from '@markus/shared';
+import type {
+  SqliteChatSessionRepo,
+  ChatSession,
+  ChatMessage,
+} from '@markus/storage';
 import type { IEpisodicMemory, ConversationSession } from './interfaces.js';
 
 const log = createLogger('episodic-memory');
+
+// =============================================================================
+// Mapping helpers — convert storage types to core types
+// =============================================================================
+
+/** Map a storage ChatSession to a core ConversationSession */
+function toConversationSession(cs: ChatSession): ConversationSession {
+  return {
+    id: cs.id,
+    agentId: cs.agentId,
+    createdAt: cs.createdAt instanceof Date
+      ? cs.createdAt.toISOString()
+      : String(cs.createdAt),
+    updatedAt: cs.lastMessageAt instanceof Date
+      ? cs.lastMessageAt.toISOString()
+      : String(cs.lastMessageAt),
+    messageCount: 0, // computed below
+    summary: cs.title ?? undefined,
+  };
+}
+
+/** Compute message count by querying the repo */
+function getMessageCount(
+  repo: SqliteChatSessionRepo,
+  sessionId: string,
+): number {
+  try {
+    return repo.getMessageCount(sessionId);
+  } catch {
+    return 0;
+  }
+}
+
+/** Map a storage ChatMessage role to an LLMMessage role */
+function toLLMMessage(m: ChatMessage): LLMMessage {
+  return {
+    role: m.role as 'system' | 'user' | 'assistant' | 'tool',
+    content: m.content as string,
+  };
+}
 
 // =============================================================================
 // EpisodicMemory
 // =============================================================================
 
 export class EpisodicMemory implements IEpisodicMemory {
-  private sessionsDir: string;
-  private sessions = new Map<string, ConversationSession>();
-  private messages = new Map<string, LLMMessage[]>();
+  private repo: SqliteChatSessionRepo;
 
-  constructor(config: { dataDir: string; agentId?: string }) {
-    this.sessionsDir = join(config.dataDir, 'sessions');
-    mkdirSync(this.sessionsDir, { recursive: true });
-    this.loadFromDisk();
+  constructor(config: { repo: SqliteChatSessionRepo }) {
+    this.repo = config.repo;
   }
 
   // ---------------------------------------------------------------------------
@@ -42,18 +74,11 @@ export class EpisodicMemory implements IEpisodicMemory {
   // ---------------------------------------------------------------------------
 
   async createSession(agentId: string): Promise<ConversationSession> {
-    const session: ConversationSession = {
-      id: `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      agentId,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      messageCount: 0,
-    };
-    this.sessions.set(session.id, session);
-    this.messages.set(session.id, []);
-    this.saveSessionToDisk(session);
+    const cs = this.repo.createSession(agentId) as ChatSession;
+    const session = toConversationSession(cs);
+    session.messageCount = 0;
     log.debug('Session created', { sessionId: session.id, agentId });
-    return { ...session };
+    return session;
   }
 
   async getOrCreateSession(
@@ -61,33 +86,39 @@ export class EpisodicMemory implements IEpisodicMemory {
     sessionId?: string,
   ): Promise<ConversationSession> {
     if (sessionId) {
-      const existing = this.sessions.get(sessionId);
-      if (existing) return { ...existing };
+      const existing = this.repo.getSession(sessionId) as ChatSession | null;
+      if (existing) {
+        const session = toConversationSession(existing);
+        session.messageCount = getMessageCount(this.repo, sessionId);
+        return session;
+      }
     }
-    const id = sessionId ?? `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const session: ConversationSession = {
-      id,
-      agentId,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      messageCount: 0,
-    };
-    this.sessions.set(session.id, session);
-    this.messages.set(session.id, []);
-    this.saveSessionToDisk(session);
-    return { ...session };
+    const cs = this.repo.createSession(agentId) as ChatSession;
+    const session = toConversationSession(cs);
+    session.messageCount = 0;
+    return session;
   }
 
-  async getSession(sessionId: string): Promise<ConversationSession | undefined> {
-    const s = this.sessions.get(sessionId);
-    return s ? { ...s } : undefined;
+  async getSession(
+    sessionId: string,
+  ): Promise<ConversationSession | undefined> {
+    const cs = this.repo.getSession(sessionId) as ChatSession | null;
+    if (!cs) return undefined;
+    const session = toConversationSession(cs);
+    session.messageCount = getMessageCount(this.repo, sessionId);
+    return session;
   }
 
   async listSessions(agentId?: string): Promise<ConversationSession[]> {
-    const all = [...this.sessions.values()]
-      .filter((s) => (agentId ? s.agentId === agentId : true))
-      .map((s) => ({ ...s }));
-    return all.sort(
+    const raw = agentId
+      ? (this.repo.getSessionsByAgent(agentId, 100) as ChatSession[])
+      : [];
+    const sessions = raw.map((cs) => {
+      const session = toConversationSession(cs);
+      session.messageCount = getMessageCount(this.repo, cs.id);
+      return session;
+    });
+    return sessions.sort(
       (a, b) =>
         new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
     );
@@ -96,13 +127,11 @@ export class EpisodicMemory implements IEpisodicMemory {
   async getLatestSession(
     agentId: string,
   ): Promise<ConversationSession | undefined> {
-    const all = [...this.sessions.values()]
-      .filter((s) => s.agentId === agentId)
-      .sort(
-        (a, b) =>
-          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-      );
-    return all.length > 0 ? { ...all[0] } : undefined;
+    const raw = this.repo.getSessionsByAgent(agentId, 1) as ChatSession[];
+    if (raw.length === 0) return undefined;
+    const session = toConversationSession(raw[0]);
+    session.messageCount = getMessageCount(this.repo, raw[0].id);
+    return session;
   }
 
   // ---------------------------------------------------------------------------
@@ -110,24 +139,24 @@ export class EpisodicMemory implements IEpisodicMemory {
   // ---------------------------------------------------------------------------
 
   async appendMessage(sessionId: string, msg: LLMMessage): Promise<void> {
-    const msgs = this.messages.get(sessionId);
-    if (!msgs) throw new Error(`Session ${sessionId} not found`);
-    msgs.push({ ...msg });
-    const s = this.sessions.get(sessionId);
-    if (s) {
-      s.messageCount = msgs.length;
-      s.updatedAt = new Date().toISOString();
-      this.saveSessionToDisk(s);
-    }
+    const content =
+      typeof msg.content === 'string'
+        ? msg.content
+        : JSON.stringify(msg.content);
+    const session = this.repo.getSession(sessionId) as ChatSession | null;
+    const agentId = session?.agentId ?? '';
+    this.repo.appendMessage(sessionId, agentId, msg.role, content);
+    this.repo.updateLastMessage(sessionId, undefined);
   }
 
   async getRecentMessages(
     sessionId: string,
     limit: number = 10,
   ): Promise<LLMMessage[]> {
-    const msgs = this.messages.get(sessionId);
-    if (!msgs) throw new Error(`Session ${sessionId} not found`);
-    return msgs.slice(-limit).map((m) => ({ ...m }));
+    const { messages } = this.repo.getMessages(sessionId, limit) as { messages: ChatMessage[]; hasMore: boolean };
+    return messages.map((m: ChatMessage) =>
+      toLLMMessage(m),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -138,14 +167,15 @@ export class EpisodicMemory implements IEpisodicMemory {
     sessionId: string,
     keepLast: number = 10,
   ): Promise<{ summary: string; flushedCount: number }> {
-    const msgs = this.messages.get(sessionId);
-    if (!msgs) throw new Error(`Session ${sessionId} not found`);
-    if (msgs.length <= keepLast) return { summary: '', flushedCount: 0 };
+    const { messages } = this.repo.getMessages(sessionId, keepLast + 1) as { messages: ChatMessage[]; hasMore: boolean };
+    const allMessages = this.repo.getMessages(sessionId, 10000) as { messages: ChatMessage[]; hasMore: boolean };
+    const totalCount = allMessages.messages.length;
+    if (totalCount <= keepLast) return { summary: '', flushedCount: 0 };
 
-    const flushedCount = msgs.length - keepLast;
-    const flushed = msgs.slice(0, flushedCount);
+    const flushedCount = totalCount - keepLast;
+    const flushed = messages.slice(0, flushedCount);
     const summary = `Compacted ${flushedCount} messages: ${flushed
-      .map((m) => {
+      .map((m: ChatMessage) => {
         const text =
           typeof m.content === 'string'
             ? m.content.slice(0, 100)
@@ -154,14 +184,6 @@ export class EpisodicMemory implements IEpisodicMemory {
       })
       .join('; ')}`;
 
-    this.messages.set(sessionId, msgs.slice(-keepLast));
-    const s = this.sessions.get(sessionId);
-    if (s) {
-      s.messageCount = msgs.slice(-keepLast).length;
-      s.summary = summary;
-      s.updatedAt = new Date().toISOString();
-      this.saveSessionToDisk(s);
-    }
     return { summary, flushedCount };
   }
 
@@ -169,86 +191,18 @@ export class EpisodicMemory implements IEpisodicMemory {
     sessionId: string,
     keepLast: number = 10,
   ): Promise<LLMMessage[]> {
-    const msgs = this.messages.get(sessionId);
-    if (!msgs) throw new Error(`Session ${sessionId} not found`);
-    if (msgs.length <= keepLast) return msgs.map((m) => ({ ...m }));
-
-    const kept = msgs.slice(-keepLast);
-    const summaryText = `[TRUNCATED] Summarized ${msgs.length - keepLast} earlier messages.`;
+    const { messages } = this.repo.getMessages(sessionId, keepLast) as { messages: ChatMessage[]; hasMore: boolean };
+    const kept = messages.map((m: ChatMessage) => toLLMMessage(m));
+    const summaryText = `[TRUNCATED] Summarized earlier messages.`;
     const summaryMsg: LLMMessage = {
       role: 'assistant',
       content: summaryText,
     };
-    const result = [summaryMsg, ...kept.map((m) => ({ ...m }))];
-    this.messages.set(sessionId, result);
-
-    const s = this.sessions.get(sessionId);
-    if (s) {
-      s.messageCount = result.length;
-      s.summary = typeof summaryMsg.content === 'string' ? summaryMsg.content : '[complex content]';
-      s.updatedAt = new Date().toISOString();
-      this.saveSessionToDisk(s);
-    }
-    return result;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Persistence
-  // ---------------------------------------------------------------------------
-
-  private saveSessionToDisk(session: ConversationSession): void {
-    try {
-      const filePath = join(this.sessionsDir, `${session.id}.json`);
-      const data = {
-        session,
-        messages: this.messages.get(session.id) ?? [],
-      };
-      writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
-    } catch (err) {
-      log.warn('Failed to save session to disk', {
-        sessionId: session.id,
-        error: String(err),
-      });
-    }
-  }
-
-  private loadFromDisk(): void {
-    try {
-      const files = readdirSync(this.sessionsDir).filter((f) =>
-        f.endsWith('.json'),
-      );
-      for (const f of files) {
-        try {
-          const raw = readFileSync(join(this.sessionsDir, f), 'utf-8');
-          const data = JSON.parse(raw) as {
-            session: ConversationSession;
-            messages?: LLMMessage[];
-          };
-          if (data.session && data.session.id) {
-            this.sessions.set(data.session.id, data.session);
-            this.messages.set(data.session.id, data.messages ?? []);
-          }
-        } catch {
-          log.warn(`Failed to load session file: ${f}`);
-        }
-      }
-      if (files.length > 0) {
-        log.debug(`Loaded ${files.length} sessions from disk`);
-      }
-    } catch {
-      // sessions dir may not exist yet
-    }
+    return [summaryMsg, ...kept];
   }
 
   /** Remove a session entirely (used for cleanup) */
   async deleteSession(sessionId: string): Promise<void> {
-    this.sessions.delete(sessionId);
-    this.messages.delete(sessionId);
-    try {
-      const filePath = join(this.sessionsDir, `${sessionId}.json`);
-      if (existsSync(filePath)) rmSync(filePath);
-    } catch {
-      // ignore
-    }
+    this.repo.deleteSession(sessionId);
   }
 }
