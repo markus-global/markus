@@ -1083,8 +1083,8 @@ export const api = {
     delete: (id: string) => request(`/requirements/${id}`, { method: 'DELETE' }),
     getComments: (id: string) => request<{ comments: RequirementComment[] }>(`/requirements/${id}/comments`),
     getHistory: (id: string) => request<{ history: StatusTransitionInfo[] }>(`/requirements/${id}/history`),
-    addComment: (id: string, content: string, authorName?: string, authorId?: string, mentions?: string[], replyTo?: string) =>
-      request<{ comment: RequirementComment }>(`/requirements/${id}/comments`, { method: 'POST', body: JSON.stringify({ content, authorId: authorId ?? 'human', authorName: authorName ?? 'User', authorType: 'human', mentions, replyTo }) }),
+    addComment: (id: string, content: string, authorName?: string, authorId?: string, attachments?: Array<{ type: string; url: string; name: string }>, mentions?: string[], replyTo?: string) =>
+      request<{ comment: RequirementComment }>(`/requirements/${id}/comments`, { method: 'POST', body: JSON.stringify({ content, authorId: authorId ?? 'human', authorName: authorName ?? 'User', authorType: 'human', attachments, mentions, replyTo }) }),
   },
   users: {
     list: (orgId?: string) => request<{ users: HumanUserInfo[] }>(`/users?orgId=${orgId ?? 'default'}`),

@@ -3,6 +3,47 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { AgentInfo, HumanUserInfo } from '../api.ts';
 
+// ── Image compression ─────────────────────────────────────────────────────────
+const MAX_IMAGE_DIM = 1920;
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_FILES = 5;
+const IMAGE_QUALITY = 0.8;
+
+function compressImage(dataUrl: string, maxDim: number, quality: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width <= maxDim && height <= maxDim) {
+        resolve(dataUrl);
+        return;
+      }
+      if (width > height) {
+        height = Math.round(height * (maxDim / width));
+        width = maxDim;
+      } else {
+        width = Math.round(width * (maxDim / height));
+        height = maxDim;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { reject(new Error('Failed to get canvas context')); return; }
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => reject(new Error('Failed to load image'));
+    img.src = dataUrl;
+  });
+}
+
+interface PendingImage {
+  id: string;
+  dataUrl: string;
+  name: string;
+}
+
 export interface MentionCandidate {
   id: string;
   name: string;
@@ -216,7 +257,7 @@ export interface ReplyQuote {
 export function CommentInput({ agents, humans, onSubmit, placeholder, replyTo, onCancelReply }: {
   agents: AgentInfo[];
   humans?: HumanUserInfo[];
-  onSubmit: (content: string, mentions: string[], replyToId?: string) => Promise<void>;
+  onSubmit: (content: string, mentions: string[], images: string[], replyToId?: string) => Promise<void>;
   placeholder?: string;
   replyTo?: ReplyQuote | null;
   onCancelReply?: () => void;
@@ -229,8 +270,11 @@ export function CommentInput({ agents, humans, onSubmit, placeholder, replyTo, o
   const [mentionFilter, setMentionFilter] = useState('');
   const [selectedMentions, setSelectedMentions] = useState<string[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const lastSubmitRef = useRef<{ content: string; mentions: string[] } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const lastSubmitRef = useRef<{ content: string; mentions: string[]; images: string[] } | null>(null);
 
   const candidates: MentionCandidate[] = useMemo(() => {
     const list: MentionCandidate[] = (humans ?? []).map(h => ({
@@ -247,15 +291,71 @@ export function CommentInput({ agents, humans, onSubmit, placeholder, replyTo, o
 
   const filteredCandidates = candidates.filter(c => c.name.toLowerCase().includes(mentionFilter));
 
+  // ── Image handling ───────────────────────────────────────────────────────────
+  const addFiles = useCallback((files: FileList | File[]) => {
+    const fileArr = Array.from(files).filter(f => f.type.startsWith('image/'));
+    if (fileArr.length === 0) return;
+    for (const file of fileArr) {
+      if (file.size > MAX_FILE_SIZE) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        compressImage(dataUrl, MAX_IMAGE_DIM, IMAGE_QUALITY).then(compressed => {
+          setPendingImages(p => {
+            if (p.length >= MAX_FILES) return p;
+            if (p.some(img => img.dataUrl === compressed)) return p;
+            return [...p, { id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, dataUrl: compressed, name: file.name }];
+          });
+        });
+      };
+      reader.readAsDataURL(file);
+    }
+  }, []);
+
+  const removeImage = useCallback((id: string) => {
+    setPendingImages(prev => prev.filter(img => img.id !== id));
+  }, []);
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const files = e.clipboardData?.files;
+    if (files && files.length > 0) {
+      const images = Array.from(files).filter(f => f.type.startsWith('image/'));
+      if (images.length > 0) {
+        e.preventDefault();
+        addFiles(images);
+      }
+    }
+  }, [addFiles]);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) {
+      addFiles(Array.from(files).filter(f => f.type.startsWith('image/')));
+    }
+  }, [addFiles]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+
   const handleSend = async () => {
-    if (!text.trim()) return;
+    if (!text.trim() && pendingImages.length === 0) return;
     setSending(true);
     setError(null);
-    lastSubmitRef.current = { content: text, mentions: [...selectedMentions] };
+    const imageDataUrls = pendingImages.map(img => img.dataUrl);
+    lastSubmitRef.current = { content: text, mentions: [...selectedMentions], images: imageDataUrls };
     try {
-      await onSubmit(text, selectedMentions, replyTo?.id);
+      await onSubmit(text, selectedMentions, imageDataUrls, replyTo?.id);
       setText('');
       setSelectedMentions([]);
+      setPendingImages([]);
       lastSubmitRef.current = null;
       onCancelReply?.();
     } catch (e) {
@@ -266,13 +366,14 @@ export function CommentInput({ agents, humans, onSubmit, placeholder, replyTo, o
 
   const handleRetry = async () => {
     if (!lastSubmitRef.current) return;
-    const { content, mentions } = lastSubmitRef.current;
+    const { content, mentions, images } = lastSubmitRef.current;
     setSending(true);
     setError(null);
     try {
-      await onSubmit(content, mentions);
+      await onSubmit(content, mentions, images);
       setText('');
       setSelectedMentions([]);
+      setPendingImages([]);
       lastSubmitRef.current = null;
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e) || t('commentInput.sendFailed'));
@@ -353,7 +454,18 @@ export function CommentInput({ agents, humans, onSubmit, placeholder, replyTo, o
   }, []);
 
   return (
-    <div className="relative">
+    <div
+      className="relative"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {/* Drag overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-brand-500/10 rounded-lg border-2 border-dashed border-brand-500">
+          <span className="text-sm text-brand-500 font-medium">{t('commentInput.dragDropHint')}</span>
+        </div>
+      )}
       {showMentions && (
         <MentionDropdown
           candidates={candidates}
@@ -398,10 +510,28 @@ export function CommentInput({ agents, humans, onSubmit, placeholder, replyTo, o
           onChange={e => handleInputChange(e.target.value)}
           onKeyDown={handleKeyDown}
           onBlur={handleBlur}
+          onPaste={handlePaste}
           placeholder={placeholder ?? t('commentInput.placeholder')}
           rows={2}
           className="w-full px-2.5 py-2 text-xs bg-transparent text-fg-primary placeholder-fg-tertiary outline-none resize-none"
         />
+        {/* Image preview strip */}
+        {pendingImages.length > 0 && (
+          <div className="flex items-center gap-1.5 px-2.5 pb-1.5 overflow-x-auto">
+            {pendingImages.map(img => (
+              <div key={img.id} className="relative group/img shrink-0">
+                <img src={img.dataUrl} alt={img.name} className="w-12 h-12 rounded-lg object-cover border border-border-default" />
+                <button
+                  onClick={() => removeImage(img.id)}
+                  className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-surface-secondary border border-gray-600 rounded-full flex items-center justify-center text-fg-secondary hover:text-red-500 hover:border-red-500 text-[10px] opacity-0 group-hover/img:opacity-100 transition-opacity"
+                  title={t('commentInput.removeImage')}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         {error && (
           <div className="flex items-center gap-2 px-2.5 pb-1.5">
             <span className="text-[11px] text-red-400 flex-1 truncate">{error}</span>
@@ -415,10 +545,31 @@ export function CommentInput({ agents, humans, onSubmit, placeholder, replyTo, o
             </button>
           </div>
         )}
-        <div className="flex justify-end px-2.5 pb-2">
+        <div className="flex items-center justify-between px-2.5 pb-2">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={sending || pendingImages.length >= MAX_FILES}
+            className="p-1 text-fg-tertiary hover:text-brand-500 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            title={t('commentInput.attachImage')}
+          >
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <polyline points="21 15 16 10 5 21" />
+            </svg>
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={e => { if (e.target.files) addFiles(e.target.files); e.target.value = ''; }}
+          />
           <button
             onClick={handleSend}
-            disabled={!text.trim() || sending}
+            disabled={(!text.trim() && pendingImages.length === 0) || sending}
             className="px-3 py-1 text-[11px] font-medium bg-brand-500 text-white rounded-md hover:bg-brand-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {sending ? t('commentInput.sending') : t('commentInput.submit')}

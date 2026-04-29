@@ -203,7 +203,11 @@
     "sendFailed": "Failed to send comment",
     "retry": "Retry",
     "sending": "Sending…",
-    "submit": "Comment"
+    "submit": "Comment",
+    "attachImage": "Attach image",
+    "removeImage": "Remove image",
+    "imageTooLarge": "Image too large, max {{size}}MB",
+    "dragDropHint": "Drop images here"
   },
   "markdown": {
     "copyContent": "Copy content",
