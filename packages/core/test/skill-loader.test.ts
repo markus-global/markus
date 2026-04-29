@@ -21,7 +21,10 @@ function createTestSkill(name: string, manifest: Partial<SkillManifest> = {}, sk
     ...manifest,
   };
 
-  writeFileSync(join(skillDir, 'skill.json'), JSON.stringify(fullManifest, null, 2));
+  writeFileSync(join(skillDir, 'skill.json'), JSON.stringify({
+    type: 'skill',
+    ...fullManifest,
+  }, null, 2));
   writeFileSync(join(skillDir, 'README.md'), `# ${name}\nTest skill readme`);
 
   if (skillMd) {
