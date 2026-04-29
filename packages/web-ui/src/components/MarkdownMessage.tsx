@@ -1,4 +1,5 @@
 import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -128,6 +129,9 @@ const mdComponents = {
   ),
   strong: ({ children }: { children?: React.ReactNode }) => <strong className="font-semibold text-fg-primary">{children}</strong>,
   em: ({ children }: { children?: React.ReactNode }) => <em className="italic text-fg-secondary">{children}</em>,
+  img: ({ src, alt }: { src?: string; alt?: string }) => (
+    <MarkdownImage src={src ?? ''} alt={alt} />
+  ),
   blockquote: ({ children }: { children?: React.ReactNode }) => (
     <blockquote className="border-l-2 border-brand-500 pl-3 my-2 text-fg-secondary italic">{children}</blockquote>
   ),
@@ -150,6 +154,77 @@ const mdComponents = {
     <td className="px-3 py-1.5 text-xs text-fg-secondary border border-border-default">{children}</td>
   ),
 };
+
+// ─── Image support ───────────────────────────────────────────────────────────
+
+function MarkdownImage({ src, alt, onPreview }: { src: string; alt?: string; onPreview?: (src: string) => void }) {
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState(false);
+
+  return (
+    <span className="inline-block align-middle max-w-full">
+      {!loaded && !error && (
+        <span className="block w-full min-h-[80px] max-w-[400px] bg-surface-elevated rounded-lg animate-pulse" />
+      )}
+      {error ? (
+        <span className="inline-flex items-center gap-1.5 px-3 py-2 text-xs text-fg-tertiary bg-surface-elevated rounded-lg border border-border-default">
+          <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+            <circle cx="8.5" cy="8.5" r="1.5" />
+            <polyline points="21 15 16 10 5 21" />
+          </svg>
+          Failed to load image
+        </span>
+      ) : (
+        <img
+          src={src}
+          alt={alt ?? ''}
+          loading="lazy"
+          onLoad={() => setLoaded(true)}
+          onError={() => setError(true)}
+          onClick={() => onPreview?.(src)}
+          className="max-w-full h-auto rounded-lg cursor-pointer hover:opacity-90 transition-opacity my-1"
+          style={{ maxHeight: '400px', objectFit: 'contain' }}
+        />
+      )}
+    </span>
+  );
+}
+
+// ─── Image Preview Modal ────────────────────────────────────────────────────
+
+function ImagePreviewModal({ src, onClose }: { src: string; onClose: () => void }) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors z-10"
+      >
+        <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
+      <img
+        src={src}
+        alt="Preview"
+        className="max-w-full max-h-[90vh] object-contain rounded-lg"
+        onClick={e => e.stopPropagation()}
+      />
+    </div>,
+    document.body,
+  );
+}
 
 // ─── Copy menu ───────────────────────────────────────────────────────────────
 
@@ -236,6 +311,7 @@ function CopyMenu({ content, contentRef }: { content: string; contentRef: React.
 export function MarkdownMessage({ content, className = '', onMentionClick, knownNames }: Props) {
   const { thinking, rest } = extractThinkBlocks(content);
   const contentRef = useRef<HTMLDivElement>(null);
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
 
   const processedRest = useMemo(() => {
     let t = normalizeMathDelimiters(rest);
@@ -244,9 +320,15 @@ export function MarkdownMessage({ content, className = '', onMentionClick, known
   }, [rest, onMentionClick, knownNames]);
 
   const components = useMemo(() => {
-    if (!onMentionClick) return mdComponents;
-    return {
+    const base: Record<string, React.ComponentType<any>> = {
       ...mdComponents,
+      img: ({ src, alt }: { src?: string; alt?: string }) => (
+        <MarkdownImage src={src ?? ''} alt={alt} onPreview={setPreviewSrc} />
+      ),
+    };
+    if (!onMentionClick) return base;
+    return {
+      ...base,
       a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
         if (href?.startsWith(MENTION_PREFIX)) {
           const name = decodeURIComponent(href.slice(MENTION_PREFIX.length));
@@ -300,6 +382,7 @@ export function MarkdownMessage({ content, className = '', onMentionClick, known
           </ReactMarkdown>
         </div>
       </div>
+      {previewSrc && <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />}
     </div>
   );
 }
