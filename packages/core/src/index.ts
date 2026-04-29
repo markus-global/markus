@@ -41,7 +41,34 @@ export { OllamaProvider } from './llm/ollama.js';
 export { AuthProfileStore } from './llm/auth-profiles.js';
 export { OAuthManager } from './llm/oauth-manager.js';
 export { MemoryStore } from './memory/store.js';
-export type { IMemoryStore, MemoryEntry, ConversationSession } from './memory/types.js';
+export type { IMemoryStore, MemoryEntry as OldMemoryEntry, ConversationSession as OldConversationSession } from './memory/types.js';
+
+// Three-layer memory system (new)
+export { SemanticMemory } from './memory/semantic-memory.js';
+export { EpisodicMemory } from './memory/episodic-memory.js';
+export { MemoryService } from './memory/memory-service.js';
+export type { MemoryServiceConfig, AgentContext } from './memory/memory-service.js';
+export {
+  loadProceduralMemory,
+  refreshProceduralMemory,
+  filterSkillsByTrigger,
+  getAllTriggers,
+} from './memory/procedural-memory.js';
+
+// New memory interfaces
+export type {
+  ISemanticMemory,
+  IEpisodicMemory,
+  MemoryEntry,
+  MemorySearchOptions,
+  ConsolidationResult,
+  MemoryStats,
+  ConversationSession,
+  ProceduralMemoryConfig,
+  ProceduralMemory,
+  SkillDef,
+} from './memory/interfaces.js';
+
 export {
   SemanticMemorySearch,
   OpenAIEmbeddingProvider,
