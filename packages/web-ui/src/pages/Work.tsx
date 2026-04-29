@@ -805,8 +805,9 @@ function TaskActivitySection({ task, agents, users, authUser }: {
 
   const [replyTo, setReplyTo] = useState<{ id: string; authorName: string; content: string } | null>(null);
 
-  const handleSubmit = async (content: string, mentions: string[], replyToId?: string) => {
-    await api.tasks.addComment(task.id, content, authUser?.name, undefined, authUser?.id, mentions.length > 0 ? mentions : undefined, replyToId);
+  const handleSubmit = async (content: string, mentions: string[], images: string[], replyToId?: string) => {
+    const attachments = images.length > 0 ? images.map(url => ({ type: 'image' as const, url, name: 'image.jpg' })) : undefined;
+    await api.tasks.addComment(task.id, content, authUser?.name, attachments, authUser?.id, mentions.length > 0 ? mentions : undefined, replyToId);
     const notified: Array<{ id: string; name: string; avatarUrl?: string }> = [];
     const seen = new Set<string>();
     const tryAdd = (agentId: string) => {
@@ -4319,12 +4320,14 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
 
   const [replyTo, setReplyTo] = useState<{ id: string; authorName: string; content: string } | null>(null);
 
-  const handleSubmit = async (content: string, mentions: string[], replyToId?: string) => {
+  const handleSubmit = async (content: string, mentions: string[], images: string[], replyToId?: string) => {
+    const attachments = images.length > 0 ? images.map(url => ({ type: 'image' as const, url, name: 'image.jpg' })) : undefined;
     await api.requirements.addComment(
       requirementId,
       content,
       authUser?.name,
       authUser?.id,
+      attachments,
       mentions.length > 0 ? mentions : undefined,
       replyToId,
     );

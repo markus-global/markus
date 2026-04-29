@@ -203,7 +203,11 @@
     "sendFailed": "发送评论失败",
     "retry": "重试",
     "sending": "发送中…",
-    "submit": "评论"
+    "submit": "评论",
+    "attachImage": "上传图片",
+    "removeImage": "删除图片",
+    "imageTooLarge": "图片过大，最大 {{size}}MB",
+    "dragDropHint": "拖拽图片到此处"
   },
   "markdown": {
     "copyContent": "复制内容",
