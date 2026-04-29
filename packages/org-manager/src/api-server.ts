@@ -3128,6 +3128,18 @@ export class APIServer {
       return;
     }
 
+    // Task status history — list all status transitions for a task
+    if (path.match(/^\/api\/tasks\/[^/]+\/history$/) && req.method === 'GET') {
+      const taskId = path.split('/')[3]!;
+      try {
+        const history = this.taskService.getTaskStatusHistory(taskId);
+        this.json(res, 200, { history });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
     // Task pause — explicitly pause a running task
     if (path.match(/^\/api\/tasks\/[^/]+\/pause$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
@@ -8115,6 +8127,18 @@ EXPLANATION_END`;
       return;
     }
 
+    // Requirement status history — list all status transitions for a requirement
+    if (path.match(/^\/api\/requirements\/[^/]+\/history$/) && req.method === 'GET') {
+      const reqId = path.split('/')[3]!;
+      try {
+        const history = this.requirementService?.getRequirementStatusHistory(reqId) ?? [];
+        this.json(res, 200, { history });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
     // ── Governance: Projects ──────────────────────────────────────────────
 
     if (path === '/api/projects' && req.method === 'GET') {
@@ -8666,6 +8690,7 @@ EXPLANATION_END`;
       regex(/^\/api\/tasks\/[^/]+\/subtasks\/[^/]+$/, 'DELETE'),
       regex(/^\/api\/tasks\/[^/]+\/subtasks\/[^/]+\/(complete|cancel)$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/comments$/, 'GET', 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/history$/, 'GET'),
       regex(/^\/api\/tasks\/[^/]+\/pause$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/resume$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/retry$/, 'POST'),
@@ -8703,6 +8728,7 @@ EXPLANATION_END`;
       regex(/^\/api\/requirements\/[^/]+\/reject$/, 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/cancel$/, 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/comments$/, 'GET', 'POST'),
+      regex(/^\/api\/requirements\/[^/]+\/history$/, 'GET'),
 
       // ── Projects ─────────────────────────────────────────────────────────
       exact('/api/projects', 'GET', 'POST'),

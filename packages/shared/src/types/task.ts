@@ -130,6 +130,23 @@ export interface Task {
   scheduleConfig?: ScheduleConfig;
 }
 
+// ─── Status Transition History ─────────────────────────────────────────────
+
+export type StatusActorType = 'human' | 'agent' | 'system';
+
+export interface StatusTransition {
+  id: number;
+  entityType: 'task' | 'requirement';
+  entityId: string;
+  fromStatus: string;
+  toStatus: string;
+  changedById: string | null;
+  changedByType: StatusActorType;
+  changedByName: string | null;
+  reason: string | null;
+  createdAt: string;
+}
+
 export type TaskSortField = 'createdAt' | 'updatedAt' | 'priority' | 'status' | 'title';
 export type SortOrder = 'asc' | 'desc';
 

@@ -136,6 +136,12 @@ export class TaskService {
   private deliverableService?: DeliverableService;
   private sharedDataDir?: string;
   private orgService?: OrganizationService;
+  private statusTransitionRepo?: { record(data: { entityType: 'task' | 'requirement'; entityId: string; fromStatus: string; toStatus: string; changedById?: string | null; changedByType: 'human' | 'agent' | 'system'; changedByName?: string | null; reason?: string | null }): void; getByEntity(entityType: 'task' | 'requirement', entityId: string, limit?: number): unknown[] };
+  private userNameLookup?: (userId: string) => string | null;
+
+  setUserNameLookup(fn: (userId: string) => string | null): void {
+    this.userNameLookup = fn;
+  }
 
   setAgentManager(am: AgentManager): void {
     this.agentManager = am;
@@ -421,6 +427,10 @@ export class TaskService {
 
   setOrgService(os: OrganizationService): void {
     this.orgService = os;
+  }
+
+  setStatusTransitionRepo(repo: typeof this.statusTransitionRepo): void {
+    this.statusTransitionRepo = repo;
   }
 
   private isHumanUser(userId: string): boolean {
@@ -1302,7 +1312,7 @@ export class TaskService {
                     'system'
                   );
                   this.taskRetryErrors.delete(taskId);
-                  this.updateTaskStatus(taskId, 'failed');
+                  this.updateTaskStatus(taskId, 'failed', undefined, false, false, 'system', 'No submit_review after max attempts');
                 }
               }
               const agentState = agent.getState();
@@ -1743,7 +1753,7 @@ export class TaskService {
     task.approvedVia = 'human';
     const hasBlockers = task.blockedBy && task.blockedBy.length > 0 && !this.areBlockersSatisfied(task);
     const targetStatus: TaskStatus = hasBlockers ? 'blocked' : 'in_progress';
-    return this.updateTaskStatus(taskIdStr, targetStatus, userId, true);
+    return this.updateTaskStatus(taskIdStr, targetStatus, userId, true, false, 'human', 'Approved');
   }
 
   rejectTask(taskIdStr: string, userId?: string): Task {
@@ -1759,7 +1769,7 @@ export class TaskService {
       if (hitl) this.hitlService.respondToApproval(hitl.id, false, userId ?? 'direct');
     }
 
-    return this.updateTaskStatus(taskIdStr, 'rejected', userId, true);
+    return this.updateTaskStatus(taskIdStr, 'rejected', userId, true, false, 'human', 'Rejected');
   }
 
   /** Pause an in-progress task (transition to blocked). */
@@ -1801,16 +1811,70 @@ export class TaskService {
     'pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived',
   ]);
 
-  updateTaskStatus(id: string, status: TaskStatus, updatedBy?: string, _internal = false, _skipAutoStart = false): Task {
+  updateTaskStatus(
+    id: string, status: TaskStatus, updatedBy?: string,
+    _internal = false, _skipAutoStart = false,
+    updatedByType?: 'human' | 'agent' | 'system',
+    reason?: string,
+  ): Task {
+    const byType = updatedByType ?? (updatedBy ? 'agent' : 'system');
+
     // Phase 1: Validate + Mutate
     const result = this.validateAndApplyTransition(id, status, updatedBy, _internal);
     if (!result) return this.tasks.get(id)!; // no-op (same status)
+
+    // Record transition history
+    this.recordTaskTransition(id, result.prevStatus, status, updatedBy, byType, reason);
 
     // Phase 2: Side effects
     this.handleTransitionSideEffects(result.task, result.prevStatus, status, updatedBy, _skipAutoStart);
 
     log.info(`Task status updated: ${result.task.title}`, { id, status, prevStatus: result.prevStatus });
     return result.task;
+  }
+
+  private resolveActorName(actorId?: string, actorType?: string): string | null {
+    if (!actorId) return null;
+    if (actorType === 'system') return 'System';
+    if (actorType === 'agent' && this.agentManager) {
+      try {
+        const agent = this.agentManager.getAgent(actorId);
+        if (agent) return (agent as any).config?.name ?? (agent as any).name ?? actorId;
+      } catch { /* ignore */ }
+    }
+    if (actorType === 'human' && this.userNameLookup) {
+      try {
+        return this.userNameLookup(actorId) ?? actorId;
+      } catch { /* ignore */ }
+    }
+    return actorId;
+  }
+
+  private recordTaskTransition(
+    taskId: string, from: string, to: string,
+    changedById?: string, changedByType: 'human' | 'agent' | 'system' = 'system',
+    reason?: string,
+  ): void {
+    if (!this.statusTransitionRepo) return;
+    try {
+      this.statusTransitionRepo.record({
+        entityType: 'task',
+        entityId: taskId,
+        fromStatus: from,
+        toStatus: to,
+        changedById: changedById ?? null,
+        changedByType,
+        changedByName: this.resolveActorName(changedById, changedByType),
+        reason: reason ?? null,
+      });
+    } catch (e) {
+      log.warn('Failed to record task status transition', { taskId, from, to, error: String(e) });
+    }
+  }
+
+  getTaskStatusHistory(taskId: string, limit = 50): unknown[] {
+    if (!this.statusTransitionRepo) return [];
+    return this.statusTransitionRepo.getByEntity('task', taskId, limit);
   }
 
   // ─── Phase 1: Pure validation + state mutation ───────────────────────────────
@@ -1974,12 +2038,12 @@ export class TaskService {
       allowFreeform: true,
     }).then(result => {
       if (result.approved) {
-        this.updateTaskStatus(task.id, 'completed', task.reviewerId);
+        this.updateTaskStatus(task.id, 'completed', task.reviewerId, false, false, 'human', 'Review approved');
       } else {
         const comment = result.comment ? ` — ${result.comment}` : '';
         task.notes = task.notes ?? [];
         task.notes.push(`[Review by human] Revision requested${comment}`);
-        this.updateTaskStatus(task.id, 'in_progress', task.reviewerId);
+        this.updateTaskStatus(task.id, 'in_progress', task.reviewerId, false, false, 'human', `Revision requested${comment}`);
       }
     }).catch(err => {
       log.warn('Human reviewer approval failed', { taskId: task.id, error: String(err) });
@@ -2795,7 +2859,7 @@ export class TaskService {
 
     // Transition to review — updateTaskStatus handles persistence, WS broadcast,
     // event emission, and reviewer notification
-    this.updateTaskStatus(task.id, 'review', task.assignedAgentId);
+    this.updateTaskStatus(task.id, 'review', task.assignedAgentId, false, false, 'agent', 'Submitted for review');
 
     log.info(`Task submitted for review: ${task.title}`, { id: task.id });
     return task;
@@ -3037,7 +3101,7 @@ export class TaskService {
     }
 
     // Transition to completed — updateTaskStatus handles all side effects
-    this.updateTaskStatus(task.id, 'completed', reviewerId);
+    this.updateTaskStatus(task.id, 'completed', reviewerId, false, false, 'agent', 'Review accepted');
 
     this.auditService?.record({
       orgId: task.orgId,
@@ -3215,13 +3279,13 @@ export class TaskService {
     });
 
     // Transition directly to in_progress (auto re-execute)
-    this.updateTaskStatus(task.id, 'in_progress', author);
+    this.updateTaskStatus(task.id, 'in_progress', author, false, false, 'agent', `Revision requested: ${reason.slice(0, 200)}`);
     log.info(`Revision requested, auto-restarting task: ${task.title}`, { id: task.id, reason, round: task.executionRound });
     return task;
   }
 
-  archiveTask(taskId: string): Task {
-    return this.updateTaskStatus(taskId, 'archived');
+  archiveTask(taskId: string, archivedBy?: string, archivedByType?: 'human' | 'agent' | 'system'): Task {
+    return this.updateTaskStatus(taskId, 'archived', archivedBy, false, false, archivedByType ?? 'system', 'Archived');
   }
 
   // ─── Duplicate Detection & Board Health ───────────────────────────────────
@@ -3501,7 +3565,7 @@ export class TaskService {
     }
 
     // Transition via updateTaskStatus (skip auto-start; we'll start runTaskFresh instead)
-    this.updateTaskStatus(taskIdStr, 'in_progress', undefined, true, true);
+    this.updateTaskStatus(taskIdStr, 'in_progress', undefined, true, true, 'system', 'Retry (fresh start)');
 
     // Start execution WITHOUT previous context
     if (this.agentManager) {
@@ -3943,7 +4007,7 @@ export class TaskService {
     }
 
     // Transition to in_progress — auto-start is handled by updateTaskStatus
-    this.updateTaskStatus(taskIdStr, 'in_progress', undefined, true);
+    this.updateTaskStatus(taskIdStr, 'in_progress', undefined, true, false, 'system', 'Scheduled rerun');
     log.info('Scheduled task reset for rerun', { taskId: task.id, title: task.title, round: task.executionRound });
   }
 }

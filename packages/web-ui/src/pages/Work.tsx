@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord } from '../api.ts';
+import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, attachSubagentLogsToEntries, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
@@ -1420,16 +1420,16 @@ function TaskDetailPanel({
   const [scheduleCronDraft, setScheduleCronDraft] = useState('');
   const [scheduleMaxRunsDraft, setScheduleMaxRunsDraft] = useState('');
   const [actionInFlight, setActionInFlight] = useState(false);
-  const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables' | 'history'>('details');
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
-  const switchTab = useCallback((tab: 'details' | 'logs' | 'deliverables') => {
+  const switchTab = useCallback((tab: 'details' | 'logs' | 'deliverables' | 'history') => {
     setActiveTab(tab);
     requestAnimationFrame(() => {
       scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'instant' });
     });
   }, []);
-  const detailTabs = useMemo(() => [{ id: 'details' as const }, { id: 'logs' as const }, { id: 'deliverables' as const }], []);
+  const detailTabs = useMemo(() => [{ id: 'details' as const }, { id: 'logs' as const }, { id: 'deliverables' as const }, { id: 'history' as const }], []);
   const detailSwipe = useSwipeTabs(detailTabs, activeTab, switchTab);
 
   useEffect(() => {
@@ -1607,6 +1607,9 @@ function TaskDetailPanel({
           </button>
           <button onClick={() => switchTab('deliverables')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'deliverables' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
             {(() => { const c = (task.deliverables ?? []).filter(d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0).length; return c > 0 ? t('work:task.deliverablesCount', { count: c }) : t('work:task.deliverables'); })()}
+          </button>
+          <button onClick={() => switchTab('history')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'history' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
+            {t('work:task.historyTab')}
           </button>
         </div>
 
@@ -1926,6 +1929,10 @@ function TaskDetailPanel({
           )}
 
           {/* Deliverables tab — full paginated list (newest first) */}
+          {activeTab === 'history' && (
+            <StatusHistoryTimeline entityType="task" entityId={task.id} />
+          )}
+
           {activeTab === 'deliverables' && (
             <div className="px-6 py-4">
               {(() => {
@@ -4553,6 +4560,9 @@ function RequirementDetailPanel({
 
           {/* Requirement Comments Thread */}
           <RequirementCommentThread requirementId={req.id} createdBy={req.createdBy} agents={agents} users={users} authUser={authUser} />
+
+          {/* Status History */}
+          <StatusHistoryTimeline entityType="requirement" entityId={req.id} />
         </div>
 
         {/* Actions */}
@@ -4598,6 +4608,62 @@ function RequirementDetailPanel({
 }
 
 // ─── Shared mini-components ─────────────────────────────────────────────────────
+
+function StatusHistoryTimeline({ entityType, entityId }: { entityType: 'task' | 'requirement'; entityId: string }) {
+  const { t } = useTranslation(['work']);
+  const [history, setHistory] = useState<StatusTransitionInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    const fetcher = entityType === 'task' ? api.tasks.getHistory : api.requirements.getHistory;
+    fetcher(entityId).then(r => setHistory(r.history)).catch(() => setHistory([])).finally(() => setLoading(false));
+  }, [entityType, entityId]);
+
+  if (loading) return <div className="px-6 py-4 text-xs text-fg-tertiary">{t('work:task.loadingHistory', 'Loading history...')}</div>;
+  if (history.length === 0) return <div className="px-6 py-4 text-xs text-fg-tertiary italic">{t('work:task.noHistory', 'No status change history.')}</div>;
+
+  const visible = expanded ? history : history.slice(-5);
+  const hasMore = history.length > 5 && !expanded;
+
+  const actorBadge = (h: StatusTransitionInfo) => {
+    const label = h.changedByName || h.changedById || (h.changedByType === 'human' ? 'User' : h.changedByType === 'agent' ? 'Agent' : 'System');
+    const cls = h.changedByType === 'human' ? 'bg-blue-500/20 text-blue-500' : h.changedByType === 'agent' ? 'bg-brand-500/20 text-brand-500' : 'bg-gray-500/20 text-fg-tertiary';
+    return <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${cls}`}>{label}</span>;
+  };
+
+  return (
+    <div className="px-6 py-4">
+      <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-3">{t('work:task.statusHistory', 'Status History')}</p>
+      {hasMore && (
+        <button onClick={() => setExpanded(true)} className="text-[11px] text-brand-500 hover:underline mb-2">
+          {t('work:task.showAllHistory', { count: history.length })}
+        </button>
+      )}
+      <div className="relative ml-2">
+        <div className="absolute left-[2.5px] top-1 bottom-1 w-px bg-border-default" />
+        <div className="space-y-3">
+          {visible.map((h) => (
+            <div key={h.id} className="flex items-start gap-3 relative">
+              <div className="w-1.5 h-1.5 rounded-full mt-[7px] shrink-0 relative z-10" style={{ background: h.changedByType === 'human' ? '#3b82f6' : h.changedByType === 'agent' ? 'var(--color-brand-500)' : '#6b7280' }} />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {actorBadge(h)}
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-elevated text-fg-tertiary line-through">{h.fromStatus}</span>
+                  <span className="text-[10px] text-fg-tertiary">→</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand-500/15 text-brand-500 font-medium">{h.toStatus}</span>
+                </div>
+                {h.reason && <p className="text-[10px] text-fg-secondary mt-0.5 leading-snug">{h.reason}</p>}
+                <p className="text-[9px] text-fg-tertiary mt-0.5">{new Date(h.createdAt).toLocaleString()}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function StatusPill({ status }: { status: string }) {
   const colors: Record<string, string> = {

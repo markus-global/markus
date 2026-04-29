@@ -135,6 +135,7 @@ export interface RequirementServiceBridge {
     approvedBy?: string; approvedAt?: string; rejectedReason?: string;
     taskIds: string[]; tags?: string[]; createdAt: string; updatedAt: string;
   } | undefined;
+  getRequirementStatusHistory?(requirementId: string, limit?: number): unknown[];
 }
 
 export interface TaskServiceBridge {
@@ -232,6 +233,7 @@ export interface TaskServiceBridge {
   postRequirementComment?(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string; comment?: Record<string, unknown> }>;
   getRequirementComments?(requirementId: string): Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }>;
   getTaskComments?(taskId: string): Promise<Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }>>;
+  getTaskStatusHistory?(taskId: string, limit?: number): unknown[];
   updateScheduleFields?(taskId: string, fields: { every?: string; cron?: string; maxRuns?: number; timezone?: string }): Promise<{ id: string; title: string; status: string }>;
 }
 
@@ -1130,6 +1132,13 @@ export class AgentManager {
           ? async (reqId, content, mentions, activityId) => ts.postRequirementComment!(reqId, id, config.name, content, mentions, activityId)
           : undefined,
         getCurrentActivityId: () => agent.getCurrentActivityId(),
+        getStatusHistory: ts.getTaskStatusHistory
+          ? async (entityType, entityId) => {
+              if (entityType === 'task') return ts.getTaskStatusHistory!(entityId) as any[];
+              if (entityType === 'requirement' && this.requirementService?.getRequirementStatusHistory) return this.requirementService.getRequirementStatusHistory(entityId) as any[];
+              return [];
+            }
+          : undefined,
       };
       for (const tool of createAgentTaskTools(taskCtx)) {
         agent.registerTool(tool);
@@ -1768,6 +1777,13 @@ export class AgentManager {
           : undefined,
         postRequirementComment: ts.postRequirementComment
           ? async (reqId, content, mentions) => ts.postRequirementComment!(reqId, id, config.name, content, mentions)
+          : undefined,
+        getStatusHistory: ts.getTaskStatusHistory
+          ? async (entityType, entityId) => {
+              if (entityType === 'task') return ts.getTaskStatusHistory!(entityId) as any[];
+              if (entityType === 'requirement' && this.requirementService?.getRequirementStatusHistory) return this.requirementService.getRequirementStatusHistory(entityId) as any[];
+              return [];
+            }
           : undefined,
       };
       for (const tool of createAgentTaskTools(taskCtx)) agent.registerTool(tool);

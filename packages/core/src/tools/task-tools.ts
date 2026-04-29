@@ -1,5 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
-import { createLogger, TASK_GET_NOTES_DEFAULT, TASK_GET_DELIVERABLES_DEFAULT } from '@markus/shared';
+import { createLogger, TASK_GET_NOTES_DEFAULT, TASK_GET_DELIVERABLES_DEFAULT, TASK_GET_STATUS_HISTORY_DEFAULT, REQUIREMENT_LIST_DEFAULT, ENTITY_COMMENTS_DEFAULT } from '@markus/shared';
 
 const log = createLogger('task-tools');
 
@@ -171,6 +171,8 @@ export interface AgentTaskContext {
   postRequirementComment?: (requirementId: string, content: string, mentions?: string[], activityId?: string) => Promise<{ id: string }>;
   /** Returns the ID of the agent's currently executing activity (for traceability) */
   getCurrentActivityId?: () => string | undefined;
+  /** Get status transition history for a task or requirement */
+  getStatusHistory?: (entityType: 'task' | 'requirement', entityId: string) => Promise<Array<{ id: number; fromStatus: string; toStatus: string; changedById: string | null; changedByType: string; changedByName: string | null; reason: string | null; createdAt: string }>>;
 }
 
 export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] {
@@ -684,7 +686,26 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             }
           }
           if (ctx.getTaskComments) {
-            try { taskObj['comments'] = await ctx.getTaskComments(taskId); } catch { /* non-fatal */ }
+            try {
+              const comments = await ctx.getTaskComments(taskId);
+              if (!full && comments.length > ENTITY_COMMENTS_DEFAULT) {
+                taskObj['comments'] = comments.slice(-ENTITY_COMMENTS_DEFAULT);
+                taskObj['_commentsTruncated'] = { total: comments.length, showing: ENTITY_COMMENTS_DEFAULT, hint: 'Use full=true to see all' };
+              } else {
+                taskObj['comments'] = comments;
+              }
+            } catch { /* non-fatal */ }
+          }
+          if (ctx.getStatusHistory) {
+            try {
+              const history = await ctx.getStatusHistory('task', taskId);
+              if (!full && history.length > TASK_GET_STATUS_HISTORY_DEFAULT) {
+                taskObj['statusHistory'] = history.slice(-TASK_GET_STATUS_HISTORY_DEFAULT);
+                taskObj['_statusHistoryTruncated'] = { total: history.length, showing: TASK_GET_STATUS_HISTORY_DEFAULT, hint: 'Use full=true to see all' };
+              } else {
+                taskObj['statusHistory'] = history;
+              }
+            } catch { /* non-fatal */ }
           }
           return JSON.stringify({ status: 'success', task: taskObj });
         } catch (error) {
@@ -1053,14 +1074,18 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const reqs = await ctx.listRequirements!({
+                const allReqs = await ctx.listRequirements!({
                   status: args['status'] as string | undefined,
                   projectId: args['project_id'] as string | undefined,
                   createdBy: args['mine_only'] ? ctx.agentId : undefined,
                 });
+                const truncated = allReqs.length > REQUIREMENT_LIST_DEFAULT;
+                const reqs = truncated ? allReqs.slice(0, REQUIREMENT_LIST_DEFAULT) : allReqs;
                 return JSON.stringify({
                   status: 'success',
+                  total: allReqs.length,
                   count: reqs.length,
+                  ...(truncated ? { _truncated: { total: allReqs.length, showing: REQUIREMENT_LIST_DEFAULT, hint: 'Use status filter to narrow results' } } : {}),
                   requirements: reqs.map(r => ({
                     id: r.id,
                     title: r.title,
@@ -1102,11 +1127,29 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const req = await ctx.getRequirement!(args['requirement_id'] as string);
+                const reqId = args['requirement_id'] as string;
+                const req = await ctx.getRequirement!(reqId);
                 if (!req) {
                   return JSON.stringify({ status: 'error', error: 'Requirement not found' });
                 }
-                return JSON.stringify({ status: 'success', requirement: req });
+                const result: Record<string, unknown> = { ...req };
+                const comments = result['comments'] as unknown[] | undefined;
+                if (comments && comments.length > ENTITY_COMMENTS_DEFAULT) {
+                  result['comments'] = comments.slice(-ENTITY_COMMENTS_DEFAULT);
+                  result['_commentsTruncated'] = { total: comments.length, showing: ENTITY_COMMENTS_DEFAULT, hint: 'Most recent shown' };
+                }
+                if (ctx.getStatusHistory) {
+                  try {
+                    const history = await ctx.getStatusHistory('requirement', reqId);
+                    if (history.length > TASK_GET_STATUS_HISTORY_DEFAULT) {
+                      result['statusHistory'] = history.slice(-TASK_GET_STATUS_HISTORY_DEFAULT);
+                      result['_statusHistoryTruncated'] = { total: history.length, showing: TASK_GET_STATUS_HISTORY_DEFAULT, hint: 'Use full=true to see all' };
+                    } else {
+                      result['statusHistory'] = history;
+                    }
+                  } catch { /* non-fatal */ }
+                }
+                return JSON.stringify({ status: 'success', requirement: result });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }

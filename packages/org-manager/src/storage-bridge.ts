@@ -36,6 +36,7 @@ export interface StorageBridge {
   approvalRepo?: any;
   groupChatRepo?: any;
   auditRepo?: any;
+  statusTransitionRepo?: any;
 }
 
 function resolveSqlitePath(url?: string): string {
@@ -84,6 +85,7 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       approvalRepo: new storage.SqliteApprovalRepo(db),
       groupChatRepo: new storage.SqliteGroupChatRepo(db),
       auditRepo: new storage.SqliteAuditRepo(db),
+      statusTransitionRepo: new storage.SqliteStatusTransitionRepo(db),
     };
     log.info('SQLite storage initialized', { path: dbPath });
     return bridge;

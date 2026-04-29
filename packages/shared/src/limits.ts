@@ -27,6 +27,18 @@ export const TASK_GET_NOTES_DEFAULT = 50;
  *  for long-running scheduled tasks that accumulate deliverables. */
 export const TASK_GET_DELIVERABLES_DEFAULT = 20;
 
+/** Max status transitions returned by `task_get`/`requirement_get` in default mode.
+ *  Shows the most recent transitions; older ones are omitted with a hint. */
+export const TASK_GET_STATUS_HISTORY_DEFAULT = 10;
+
+/** Max requirements returned by `requirement_list`.
+ *  Prevents token explosion when many requirements accumulate over time. */
+export const REQUIREMENT_LIST_DEFAULT = 50;
+
+/** Max comments returned in `task_get` / `requirement_get` default mode.
+ *  Most recent comments are shown; older ones are trimmed with a hint. */
+export const ENTITY_COMMENTS_DEFAULT = 20;
+
 // ─── Execution Prompt Limits ─────────────────────────────────────────────────
 // These control how much context the agent receives when resuming a task
 // (previous execution logs, notes, dependency context, comments).
