@@ -801,6 +801,19 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const adjustTextareaHeight = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const h = Math.min(el.scrollHeight, 120);
+    el.style.height = `${h}px`;
+    el.style.overflowY = h >= 120 ? 'auto' : 'hidden';
+  }, []);
+
+  useEffect(() => {
+    adjustTextareaHeight();
+  }, [input, adjustTextareaHeight]);
+
   // Session management (direct mode)
   const NEW_CHAT_PLACEHOLDER_ID = '__new_chat__';
   const [sessions, setSessions] = useState<ChatSessionInfo[]>([]);
@@ -1466,7 +1479,6 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
     if (!retryText) {
       setInput('');
-      if (textareaRef.current) textareaRef.current.style.height = 'auto';
     }
     setPendingImages([]);
     setMentionDropdown(false);
@@ -2948,10 +2960,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               value={input}
               onChange={e => {
                 handleInputChange(e.target.value);
-                e.target.style.height = 'auto';
-                const h = Math.min(e.target.scrollHeight, 120);
-                e.target.style.height = `${h}px`;
-                e.target.style.overflowY = h >= 120 ? 'auto' : 'hidden';
+                adjustTextareaHeight();
               }}
               onKeyDown={e => {
                 if (mentionDropdown && filteredAgents.length > 0) {
