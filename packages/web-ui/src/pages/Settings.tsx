@@ -414,6 +414,11 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
   const [editProviderSaving, setEditProviderSaving] = useState(false);
   const [deletingProvider, setDeletingProvider] = useState<string | null>(null);
 
+  // Quick setup state (for unconfigured known providers — just enter API key)
+  const [quickSetupKey, setQuickSetupKey] = useState('');
+  const [quickSetupSaving, setQuickSetupSaving] = useState(false);
+  const [quickSetupMsg, setQuickSetupMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
   // Add custom model state
   const [addingModelProvider, setAddingModelProvider] = useState<string | null>(null);
   const [addModelForm, setAddModelForm] = useState({ id: '', name: '', contextWindow: 128000, maxOutputTokens: 16384, costInput: 1, costOutput: 5, reasoning: false, vision: false });
@@ -448,6 +453,27 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
       }
     } catch { setAddProviderMsg({ type: 'err', text: t('common:networkError') }); }
     finally { setAddProviderSaving(false); }
+  };
+
+  const quickSetupProvider = async (providerName: string, info: ProviderInfo) => {
+    if (!quickSetupKey.trim()) return;
+    setQuickSetupSaving(true); setQuickSetupMsg(null);
+    const defaultModel = info.models?.[0]?.id ?? providerName;
+    try {
+      const res = await fetch('/api/settings/llm/providers', {
+        method: 'POST', headers: authHeaders(),
+        body: JSON.stringify({ name: providerName, apiKey: quickSetupKey.trim(), model: defaultModel }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setLlm(data as LLMSettings);
+        setQuickSetupKey('');
+        setQuickSetupMsg({ type: 'ok', text: t('modelProviders.quickSetupSuccess', { name: info.displayName ?? providerName }) });
+      } else {
+        setQuickSetupMsg({ type: 'err', text: (data as { error: string }).error ?? t('modelProviders.failedToAdd') });
+      }
+    } catch { setQuickSetupMsg({ type: 'err', text: t('common:networkError') }); }
+    finally { setQuickSetupSaving(false); }
   };
 
   const startEditProvider = (name: string, info: ProviderInfo) => {
@@ -817,8 +843,8 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
         <Section title={t('modelProviders.title')}>
           <div className="space-y-3">
             {llm && Object.entries(llm.providers).map(([name, info]) => (
-              <div key={name} className={`bg-surface-secondary border rounded-xl overflow-hidden transition-colors ${info.configured ? 'border-border-default hover:border-gray-600' : 'border-border-default/50 opacity-60'}`}>
-                <div className="flex items-center justify-between px-5 py-4 cursor-pointer" onClick={() => setExpandedProvider(expandedProvider === name ? null : name)}>
+              <div key={name} className={`bg-surface-secondary border rounded-xl overflow-hidden transition-colors ${info.configured ? 'border-border-default hover:border-gray-600' : 'border-border-default/50 hover:border-brand-500/30'}`}>
+                <div className="flex items-center justify-between px-5 py-4 cursor-pointer" onClick={() => { setExpandedProvider(expandedProvider === name ? null : name); setQuickSetupKey(''); setQuickSetupMsg(null); }}>
                   <div className="flex items-center gap-3">
                     <span className={`w-2 h-2 rounded-full ${info.configured && info.enabled ? 'bg-green-400' : info.configured ? 'bg-amber-400' : 'bg-gray-600'}`} />
                     <div>
@@ -1104,8 +1130,26 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
                     </div>
 
                     {!info.configured && (
-                      <div className="text-xs text-fg-tertiary">
-                        {t('modelProviders.notConfiguredHint')}
+                      <div className="space-y-3">
+                        <div className="text-xs text-fg-secondary">{t('modelProviders.quickSetupHint')}</div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="password"
+                            value={expandedProvider === name ? quickSetupKey : ''}
+                            onChange={e => setQuickSetupKey(e.target.value)}
+                            placeholder={t('modelProviders.quickSetupPlaceholder')}
+                            className="flex-1 px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none"
+                            onKeyDown={e => { if (e.key === 'Enter' && quickSetupKey.trim()) void quickSetupProvider(name, info); }}
+                          />
+                          <button
+                            onClick={() => void quickSetupProvider(name, info)}
+                            disabled={quickSetupSaving || !quickSetupKey.trim()}
+                            className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors whitespace-nowrap"
+                          >
+                            {quickSetupSaving ? t('modelProviders.quickSetupSaving') : t('modelProviders.quickSetupSubmit')}
+                          </button>
+                        </div>
+                        {quickSetupMsg && expandedProvider === name && <Msg type={quickSetupMsg.type} text={quickSetupMsg.text} />}
                       </div>
                     )}
                   </div>
