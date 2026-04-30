@@ -4059,8 +4059,7 @@ export class Agent {
   }
 
   private getDeliverableContext(_query?: string): string | undefined {
-    // EnhancedMemorySystem was removed — leaving as no-op for backward compatibility.
-    // TODO: Wire up MemoryService.getAgentContext() once agent.ts integrates with it.
+    // TODO: Wire up MemoryService.getAgentContext() here
     return undefined;
   }
 

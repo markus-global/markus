@@ -516,14 +516,15 @@ See [STATE-MACHINES.md](./STATE-MACHINES.md) for the full FSM specifications.
 
 ## 8. Relationship to Memory System
 
-The mailbox system feeds into the agent's memory at multiple layers:
+The mailbox system feeds into the agent's memory layers:
 
 | Layer | Source | Cadence |
 |-------|--------|---------|
-| **Working memory** | Current focus item + recent decisions injected into system prompt | Every LLM turn |
-| **Episodic memory** | Full mailbox timeline + decisions queryable from SQLite | Persistent |
-| **Daily logs** | Derived from mailbox items processed that day | End of day |
-| **Long-term memory** | Patterns extracted from decision history (e.g., "I tend to preempt for review requests") | Periodic consolidation |
+| **Episodic** | Conversation sessions triggered by mailbox items | Per interaction |
+| **Semantic** | Patterns extracted from decision history via consolidation | Periodic (Dream Cycle) |
+| **Procedural** | Recurring patterns may inform ROLE.md evolution | Rare |
+
+Activity tracking (`agent_activities`, `mailbox_items`, `agent_decisions`) provides operational observability but is not a memory layer used in prompt assembly.
 
 See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) for details.
 

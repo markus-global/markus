@@ -166,16 +166,15 @@ Organization (Org)
 
 ### 3.4 Memory and Knowledge System
 
-**Agent memory (four stores):**
+**Agent memory (three layers, based on Tulving's classification):**
 
-| Store | Storage | Role |
+| Layer | Storage | Role |
 |-------|---------|------|
-| **Identity** | `role/ROLE.md` | Who the agent is. Shapes all cognitive preparation. |
-| **Knowledge** | `MEMORY.md` + `memories.json` | What the agent knows. Agent-organized, no rigid taxonomy. |
-| **Experience** | SQLite `agent_activities` (indexed with summary + keywords) | What the agent did. Searchable episodic memory. |
-| **Working Context** | Current session | What the agent is doing now. Thin, auto-compacted. |
+| **Procedural** | `role/ROLE.md` + skills | How the agent operates. Identity, behavioral rules. |
+| **Semantic** | `MEMORY.md` + `memories.json` | What the agent knows. Agent-organized knowledge. |
+| **Episodic** | SQLite `chat_sessions` + `chat_messages` | What happened. Conversation history, auto-compacted. |
 
-Daily logs (`daily-logs/`) are a write-only audit trail, not injected into prompts. The Experience store replaces their former prompt role.
+Daily logs (`daily-logs/`) are a write-only audit trail, not injected into prompts. Activity tracking (`agent_activities`) is operational observability, not a memory layer.
 
 See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) for the complete architecture.
 

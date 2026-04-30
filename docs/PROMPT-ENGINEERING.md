@@ -516,7 +516,7 @@ For Claude Opus 4.x and Sonnet 4.x models, Anthropic's server-side `compact_2026
 | Document | Relationship |
 |----------|-------------|
 | [STATE-MACHINES.md](./STATE-MACHINES.md) | Task state transitions trigger different LLM call paths (§5.2 task execution, §5.3 heartbeat review) |
-| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Memory stores feed into system prompt (§14: Your Knowledge, §16a-c: CPP-directed context) and are maintained by lightweight internal LLM calls (§5.6-5.8) |
+| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Three memory layers (Semantic, Episodic, Procedural) feed into system prompt and are maintained by consolidation (§5.6-5.8) |
 | `packages/core/src/agent.ts` | Implementation of all 7 LLM call scenarios and 4 harness variants |
 | `packages/core/src/context-engine.ts` | `buildSystemPrompt()` and `prepareMessages()` implementation |
 | `packages/core/src/llm/router.ts` | Provider routing, circuit breaker, model catalog, output token resolution |
