@@ -43,6 +43,7 @@ import type { RequirementService } from './requirement-service.js';
 import { WSBroadcaster } from './ws-server.js';
 import { SSEHandler } from './sse-handler.js';
 import { installSkill } from './skill-service.js';
+import { LocalFileStorageProvider } from './file-storage-provider.js';
 
 const log = createLogger('api-server');
 
@@ -195,6 +196,7 @@ export class APIServer {
   private builderService?: BuilderService;
   private workflowEngine?: WorkflowEngine;
   private teamTemplateRegistry: TeamTemplateRegistry;
+  private fileStorage?: LocalFileStorageProvider;
   // Custom group chats are now persisted in SQLite via storage.groupChatRepo
   constructor(
     private orgService: OrganizationService,
@@ -601,6 +603,10 @@ export class APIServer {
 
   setWebUiDir(dir: string): void {
     this.webUiDir = dir;
+  }
+
+  setFileStorage(provider: LocalFileStorageProvider): void {
+    this.fileStorage = provider;
   }
 
   initWorkflowEngine(): WorkflowEngine {
@@ -1562,6 +1568,63 @@ export class APIServer {
         this.serveStaticFile(res, filePath);
       } else {
         this.json(res, 404, { error: 'Avatar not found' });
+      }
+      return;
+    }
+
+    // ── File uploads (generic storage) ────────────────────────────────────
+    if (path === '/api/uploads' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.fileStorage) {
+        this.json(res, 503, { error: 'File storage not configured' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const files = body['files'] as Array<{ dataUrl: string; name: string }> | undefined;
+      if (!Array.isArray(files) || files.length === 0) {
+        this.json(res, 400, { error: 'files[] is required (array of { dataUrl, name })' });
+        return;
+      }
+      if (files.length > 10) {
+        this.json(res, 400, { error: 'Too many files (max 10 per request)' });
+        return;
+      }
+      const prefix = typeof body['prefix'] === 'string' ? body['prefix'] : undefined;
+      const results: Array<{ url: string; key: string; name: string }> = [];
+      for (const file of files) {
+        if (!file.dataUrl || typeof file.dataUrl !== 'string') continue;
+        const m = file.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+        if (!m) continue;
+        const contentType = m[1]!;
+        const buf = Buffer.from(m[2]!, 'base64');
+        if (buf.length > 10 * 1024 * 1024) continue;
+        const result = await this.fileStorage.upload(buf, {
+          name: file.name || 'file',
+          contentType,
+          prefix,
+        });
+        results.push({ ...result, name: file.name });
+      }
+      this.json(res, 200, { files: results });
+      return;
+    }
+
+    if (path.startsWith('/api/uploads/') && req.method === 'GET') {
+      if (!this.fileStorage) {
+        this.json(res, 404, { error: 'File storage not configured' });
+        return;
+      }
+      const key = decodeURIComponent(path.slice('/api/uploads/'.length));
+      if (!key || key.includes('..')) {
+        this.json(res, 400, { error: 'Invalid key' });
+        return;
+      }
+      const filePath = this.fileStorage.resolve(key);
+      if (existsSync(filePath) && statSync(filePath).isFile()) {
+        this.serveStaticFile(res, filePath);
+      } else {
+        this.json(res, 404, { error: 'File not found' });
       }
       return;
     }
@@ -8624,6 +8687,10 @@ EXPLANATION_END`;
       // ── Avatars ──────────────────────────────────────────────────────────
       exact('/api/avatars/upload', 'POST'),
       startsWith('/api/avatars/', 'GET'),
+
+      // ── Uploads ───────────────────────────────────────────────────────────
+      exact('/api/uploads', 'POST'),
+      startsWith('/api/uploads/', 'GET'),
 
       // ── Agents ───────────────────────────────────────────────────────────
       exact('/api/agents', 'GET', 'POST'),

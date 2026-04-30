@@ -38,7 +38,7 @@ function compressImage(dataUrl: string, maxDim: number, quality: number): Promis
   });
 }
 
-interface PendingImage {
+export interface PendingImage {
   id: string;
   dataUrl: string;
   name: string;
@@ -257,7 +257,7 @@ export interface ReplyQuote {
 export function CommentInput({ agents, humans, onSubmit, placeholder, replyTo, onCancelReply }: {
   agents: AgentInfo[];
   humans?: HumanUserInfo[];
-  onSubmit: (content: string, mentions: string[], images: string[], replyToId?: string) => Promise<void>;
+  onSubmit: (content: string, mentions: string[], images: PendingImage[], replyToId?: string) => Promise<void>;
   placeholder?: string;
   replyTo?: ReplyQuote | null;
   onCancelReply?: () => void;
@@ -274,7 +274,7 @@ export function CommentInput({ agents, humans, onSubmit, placeholder, replyTo, o
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const lastSubmitRef = useRef<{ content: string; mentions: string[]; images: string[] } | null>(null);
+  const lastSubmitRef = useRef<{ content: string; mentions: string[]; images: PendingImage[] } | null>(null);
 
   const candidates: MentionCandidate[] = useMemo(() => {
     const list: MentionCandidate[] = (humans ?? []).map(h => ({
@@ -303,7 +303,6 @@ export function CommentInput({ agents, humans, onSubmit, placeholder, replyTo, o
         compressImage(dataUrl, MAX_IMAGE_DIM, IMAGE_QUALITY).then(compressed => {
           setPendingImages(p => {
             if (p.length >= MAX_FILES) return p;
-            if (p.some(img => img.dataUrl === compressed)) return p;
             return [...p, { id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, dataUrl: compressed, name: file.name }];
           });
         });
@@ -349,10 +348,9 @@ export function CommentInput({ agents, humans, onSubmit, placeholder, replyTo, o
     if (!text.trim() && pendingImages.length === 0) return;
     setSending(true);
     setError(null);
-    const imageDataUrls = pendingImages.map(img => img.dataUrl);
-    lastSubmitRef.current = { content: text, mentions: [...selectedMentions], images: imageDataUrls };
+    lastSubmitRef.current = { content: text, mentions: [...selectedMentions], images: [...pendingImages] };
     try {
-      await onSubmit(text, selectedMentions, imageDataUrls, replyTo?.id);
+      await onSubmit(text, selectedMentions, [...pendingImages], replyTo?.id);
       setText('');
       setSelectedMentions([]);
       setPendingImages([]);

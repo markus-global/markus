@@ -129,9 +129,6 @@ const mdComponents = {
   ),
   strong: ({ children }: { children?: React.ReactNode }) => <strong className="font-semibold text-fg-primary">{children}</strong>,
   em: ({ children }: { children?: React.ReactNode }) => <em className="italic text-fg-secondary">{children}</em>,
-  img: ({ src, alt }: { src?: string; alt?: string }) => (
-    <MarkdownImage src={src ?? ''} alt={alt} />
-  ),
   blockquote: ({ children }: { children?: React.ReactNode }) => (
     <blockquote className="border-l-2 border-brand-500 pl-3 my-2 text-fg-secondary italic">{children}</blockquote>
   ),

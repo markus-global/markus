@@ -8,7 +8,7 @@ import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { Avatar } from '../components/Avatar.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
-import { CommentInput } from '../components/CommentInput.tsx';
+import { CommentInput, type PendingImage } from '../components/CommentInput.tsx';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
@@ -805,8 +805,12 @@ function TaskActivitySection({ task, agents, users, authUser }: {
 
   const [replyTo, setReplyTo] = useState<{ id: string; authorName: string; content: string } | null>(null);
 
-  const handleSubmit = async (content: string, mentions: string[], images: string[], replyToId?: string) => {
-    const attachments = images.length > 0 ? images.map(url => ({ type: 'image' as const, url, name: 'image.jpg' })) : undefined;
+  const handleSubmit = async (content: string, mentions: string[], images: PendingImage[], replyToId?: string) => {
+    let attachments: Array<{ type: string; url: string; name: string }> | undefined;
+    if (images.length > 0) {
+      const uploaded = await api.uploads.upload(images.map(img => ({ dataUrl: img.dataUrl, name: img.name })), 'comments');
+      attachments = uploaded.files.map(f => ({ type: 'image', url: f.url, name: f.name }));
+    }
     await api.tasks.addComment(task.id, content, authUser?.name, attachments, authUser?.id, mentions.length > 0 ? mentions : undefined, replyToId);
     const notified: Array<{ id: string; name: string; avatarUrl?: string }> = [];
     const seen = new Set<string>();
@@ -1058,7 +1062,12 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
     if (!commentText.trim() && imageAttachments.length === 0) return;
     setSubmitting(true);
     try {
-      const result = await api.tasks.addComment(taskId, commentText, authUser?.name, imageAttachments.length > 0 ? imageAttachments : undefined, authUser?.id);
+      let attachments: Array<{ type: string; url: string; name: string }> | undefined;
+      if (imageAttachments.length > 0) {
+        const uploaded = await api.uploads.upload(imageAttachments.map(a => ({ dataUrl: a.url, name: a.name })), 'comments');
+        attachments = uploaded.files.map(f => ({ type: 'image', url: f.url, name: f.name }));
+      }
+      const result = await api.tasks.addComment(taskId, commentText, authUser?.name, attachments, authUser?.id);
       if (result.comment) {
         setComments(prev => prev.some(x => x.id === result.comment.id) ? prev : [...prev, result.comment]);
       }
@@ -4320,14 +4329,18 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
 
   const [replyTo, setReplyTo] = useState<{ id: string; authorName: string; content: string } | null>(null);
 
-  const handleSubmit = async (content: string, mentions: string[], images: string[], replyToId?: string) => {
-    const attachments = images.length > 0 ? images.map(url => ({ type: 'image' as const, url, name: 'image.jpg' })) : undefined;
+  const handleSubmit = async (content: string, mentions: string[], images: PendingImage[], replyToId?: string) => {
+    let attachments: Array<{ type: string; url: string; name: string }> | undefined;
+    if (images.length > 0) {
+      const uploaded = await api.uploads.upload(images.map(img => ({ dataUrl: img.dataUrl, name: img.name })), 'comments');
+      attachments = uploaded.files.map(f => ({ type: 'image', url: f.url, name: f.name }));
+    }
     await api.requirements.addComment(
       requirementId,
       content,
       authUser?.name,
-      authUser?.id,
       attachments,
+      authUser?.id,
       mentions.length > 0 ? mentions : undefined,
       replyToId,
     );

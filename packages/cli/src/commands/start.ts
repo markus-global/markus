@@ -523,6 +523,15 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     log.info('Web UI static files enabled', { dir: webUiDir });
   }
 
+  // File storage for uploads (images, attachments)
+  {
+    const { LocalFileStorageProvider } = await import('@markus/org-manager');
+    const localDir = config.fileStorage?.local?.dir;
+    const fileStorage = new LocalFileStorageProvider(localDir ?? undefined);
+    apiServer.setFileStorage(fileStorage);
+    log.info('File storage initialized', { provider: 'local', dir: localDir ?? '~/.markus/uploads' });
+  }
+
   // Wire storage for chat persistence and auth
   const firstOrgId = 'default';
   let ownerUserId = bootstrapOwnerId;

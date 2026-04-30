@@ -1083,7 +1083,7 @@ export const api = {
     delete: (id: string) => request(`/requirements/${id}`, { method: 'DELETE' }),
     getComments: (id: string) => request<{ comments: RequirementComment[] }>(`/requirements/${id}/comments`),
     getHistory: (id: string) => request<{ history: StatusTransitionInfo[] }>(`/requirements/${id}/history`),
-    addComment: (id: string, content: string, authorName?: string, authorId?: string, attachments?: Array<{ type: string; url: string; name: string }>, mentions?: string[], replyTo?: string) =>
+    addComment: (id: string, content: string, authorName?: string, attachments?: Array<{ type: string; url: string; name: string }>, authorId?: string, mentions?: string[], replyTo?: string) =>
       request<{ comment: RequirementComment }>(`/requirements/${id}/comments`, { method: 'POST', body: JSON.stringify({ content, authorId: authorId ?? 'human', authorName: authorName ?? 'User', authorType: 'human', attachments, mentions, replyTo }) }),
   },
   users: {
@@ -1374,6 +1374,17 @@ export const api = {
       request<{ ok: boolean }>(`/group-chats/${id}/members`, { method: 'POST', body: JSON.stringify({ memberId, memberType, memberName }) }),
     removeMember: (id: string, memberId: string) =>
       request<{ ok: boolean }>(`/group-chats/${id}/members/${memberId}`, { method: 'DELETE' }),
+  },
+  uploads: {
+    /**
+     * Upload files (base64 data URLs) to the server.
+     * Returns server-managed URLs that can be used as attachment references.
+     */
+    upload: (files: Array<{ dataUrl: string; name: string }>, prefix?: string) =>
+      request<{ files: Array<{ url: string; key: string; name: string }> }>('/uploads', {
+        method: 'POST',
+        body: JSON.stringify({ files, prefix }),
+      }),
   },
 };
 
