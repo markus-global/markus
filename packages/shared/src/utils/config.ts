@@ -77,7 +77,7 @@ const DEFAULT_CONFIG: MarkusConfig = {
   },
   server: { apiPort: 8056, webPort: 8057 },
   security: { adminPassword: 'markus123', gatewaySecret: 'markus-gateway-default-secret-change-me' },
-  hub: { url: 'http://localhost:8059' },
+  hub: { url: 'https://markus.global' },
 };
 
 export function getDefaultConfigPath(): string {
