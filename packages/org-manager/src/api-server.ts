@@ -43,7 +43,7 @@ import type { RequirementService } from './requirement-service.js';
 import { WSBroadcaster } from './ws-server.js';
 import { SSEHandler } from './sse-handler.js';
 import { installSkill } from './skill-service.js';
-import { LocalFileStorageProvider } from './file-storage-provider.js';
+import type { LocalFileStorageProvider } from './file-storage-provider.js';
 
 const log = createLogger('api-server');
 
