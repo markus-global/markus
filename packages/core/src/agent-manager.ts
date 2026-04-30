@@ -31,6 +31,7 @@ import { createProjectTools, type ProjectServiceBridge, type KnowledgeServiceBri
 import { createMemoryTools } from './tools/memory.js';
 import { createSettingsTools } from './tools/settings.js';
 import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
+import { createAnalyzeImageTool } from './tools/analyze-image.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
@@ -775,6 +776,9 @@ export class AgentManager {
     };
     const tools = request.tools ?? createBuiltinTools({ agentId: id, agentMeta, security, workspacePath, pathPolicy });
 
+    // Register analyze_image tool for vision-capable models
+    tools.push(createAnalyzeImageTool(this.llmRouter));
+
     const agentOpts: AgentOptions = {
       config,
       role,
@@ -1445,6 +1449,7 @@ export class AgentManager {
       orgId: (row.orgId as string) ?? 'default',
     };
     const tools = createBuiltinTools({ agentId: id, agentMeta, security, workspacePath, pathPolicy });
+    tools.push(createAnalyzeImageTool(this.llmRouter));
 
     const agent = new Agent({
       config,
