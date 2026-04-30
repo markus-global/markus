@@ -42,6 +42,7 @@ export { AuthProfileStore } from './llm/auth-profiles.js';
 export { OAuthManager } from './llm/oauth-manager.js';
 export { MemoryStore } from './memory/store.js';
 export type { IMemoryStore, MemoryEntry, ConversationSession } from './memory/types.js';
+
 export {
   SemanticMemorySearch,
   OpenAIEmbeddingProvider,
@@ -52,8 +53,6 @@ export {
 } from './memory/semantic-search.js';
 export { AgentMetricsCollector } from './agent-metrics.js';
 export type { AgentMetricsSnapshot, TokenUsage, TaskMetrics } from './agent-metrics.js';
-export { EnhancedMemorySystem } from './enhanced-memory-system.js';
-export type { KnowledgeEntry, MemoryQuery, MemorySummary } from './enhanced-memory-system.js';
 export { OpenClawConfigParser } from './openclaw-config-parser.js';
 export type { OpenClawRoleConfig } from './openclaw-config-parser.js';
 export { EnhancedRoleLoader } from './enhanced-role-loader.js';

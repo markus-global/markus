@@ -50,7 +50,7 @@
 
 Markus is an **open-source platform that runs complete AI teams** — not a wrapper around someone else's agents. You define roles (developer, reviewer, researcher, writer, analyst, ops), assign work, and Markus handles the rest: task breakdown, delegation, parallel execution, quality review, and delivery.
 
-Unlike agent orchestrators that dispatch tasks to external CLI tools, **Markus includes the full agent runtime**. Each agent talks directly to LLM APIs, uses built-in tools (shell, files, git, web search, code analysis, MCP), maintains five layers of persistent memory, and operates proactively through heartbeats — even when you're not watching.
+Unlike agent orchestrators that dispatch tasks to external CLI tools, **Markus includes the full agent runtime**. Each agent talks directly to LLM APIs, uses built-in tools (shell, files, git, web search, code analysis, MCP), maintains persistent memory across sessions, and operates proactively through heartbeats — even when you're not watching.
 
 **Deploy it on a cloud server and manage your entire AI company from your phone.** The responsive web UI works on desktop and mobile — check progress, review deliverables, and chat with agents from anywhere.
 
@@ -100,8 +100,8 @@ You review the final deliverables — not the process. Every output passes throu
 ### Autonomous Agent Runtime
 Each agent is a full LLM-powered worker with built-in tools — shell, file I/O, git, web search, code analysis, and any MCP server. Agents execute work directly; they don't proxy to external CLI tools. Works with **any LLM provider**: Anthropic, OpenAI, Google, DeepSeek, MiniMax, Ollama, and more, with automatic failover.
 
-### Five-Layer Memory
-Session context, structured memories, daily logs, long-term knowledge (`MEMORY.md`), and agent identity (`ROLE.md`). Context stays structured and useful across restarts, not just within a single conversation.
+### Three-Layer Memory (Tulving)
+Procedural (ROLE.md + skills), Semantic (MEMORY.md + observations), and Episodic (conversation history). Agents accumulate knowledge over time and consolidate it automatically — context persists across restarts, not just within a single conversation.
 
 ### Proactive Heartbeat
 Agents don't just wait for instructions. The heartbeat scheduler drives periodic check-ins — patrol open tasks, process background completions, surface blockers. Your team works while you sleep.
@@ -182,7 +182,7 @@ TypeScript monorepo with modular packages:
 |-------|-------------|
 | [User Guide](docs/GUIDE.md) | Setup, configuration, Web UI walkthrough |
 | [Architecture](docs/ARCHITECTURE.md) | System design, agent runtime, memory, governance |
-| [Memory System](docs/MEMORY-SYSTEM.md) | Five-layer memory deep dive |
+| [Memory System](docs/MEMORY-SYSTEM.md) | Three-layer memory architecture (Tulving) |
 | [API Reference](docs/API.md) | REST API endpoints |
 | [Contributing](CONTRIBUTING.md) | Development setup, PR process |
 

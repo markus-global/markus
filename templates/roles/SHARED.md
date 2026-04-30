@@ -51,7 +51,7 @@ Markus maintains detailed documentation about its architecture and subsystems. W
 | Document | Contents |
 |----------|----------|
 | `docs/ARCHITECTURE.md` | System architecture, component relationships, data model |
-| `docs/MEMORY-SYSTEM.md` | Five-layer memory model, consolidation lifecycle, storage backends |
+| `docs/MEMORY-SYSTEM.md` | Three-layer memory (Semantic/Episodic/Procedural), consolidation lifecycle |
 | `docs/STATE-MACHINES.md` | Task lifecycle state transitions and triggers |
 | `docs/PROMPT-ENGINEERING.md` | How your system prompt is assembled, context compression, tool loop |
 | `docs/API.md` | REST API endpoints and data contracts |

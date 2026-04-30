@@ -38,7 +38,6 @@ import type { LLMRouter } from './llm/router.js';
 import { MemoryStore } from './memory/store.js';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
-import { EnhancedMemorySystem } from './enhanced-memory-system.js';
 import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metrics.js';
 import { ContextEngine, type OrgContext, type LLMSummarizer } from './context-engine.js';
 import { detectEnvironment, type EnvironmentProfile } from './environment-profile.js';
@@ -4059,10 +4058,7 @@ export class Agent {
     this.semanticSearch = ss;
   }
 
-  private getDeliverableContext(query?: string): string | undefined {
-    if (this.memory instanceof EnhancedMemorySystem) {
-      return this.memory.getAgentContext(this.id, query) || undefined;
-    }
+  private getDeliverableContext(_query?: string): string | undefined {
     return undefined;
   }
 
