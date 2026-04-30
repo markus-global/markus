@@ -123,32 +123,85 @@ export function renderMentionText(
   onMentionClick?: (agent: AgentInfo) => void,
 ): React.ReactNode[] {
   const parts: React.ReactNode[] = [];
-  const re = new RegExp(MENTION_RE.source, MENTION_RE.flags);
-  let lastIndex = 0;
-  let m: RegExpExecArray | null;
   let key = 0;
 
-  while ((m = re.exec(text)) !== null) {
-    if (m.index > lastIndex) {
-      parts.push(<span key={key++}>{text.slice(lastIndex, m.index)}</span>);
-    }
-    const name = m[1] ?? m[2]!;
-    const agent = agents.find(a => a.name.toLowerCase() === name.toLowerCase());
-    parts.push(
-      <span
-        key={key++}
-        className={`text-brand-500 font-medium ${onMentionClick && agent ? 'cursor-pointer hover:underline' : ''}`}
-        onClick={onMentionClick && agent ? () => onMentionClick(agent) : undefined}
-        title={agent ? `${agent.name} (${agent.role})` : undefined}
-      >
-        @{name}
-      </span>,
-    );
-    lastIndex = m.index + m[0].length;
-  }
+  const sortedNames = agents.map(a => a.name).sort((a, b) => b.length - a.length);
 
-  if (lastIndex < text.length) {
-    parts.push(<span key={key++}>{text.slice(lastIndex)}</span>);
+  let idx = 0;
+  while (idx < text.length) {
+    const atPos = text.indexOf('@', idx);
+    if (atPos < 0) {
+      parts.push(<span key={key++}>{text.slice(idx)}</span>);
+      break;
+    }
+
+    if (atPos > idx) {
+      parts.push(<span key={key++}>{text.slice(idx, atPos)}</span>);
+    }
+
+    // Try bracketed syntax: @[Name With Spaces]
+    if (text[atPos + 1] === '[') {
+      const close = text.indexOf(']', atPos + 2);
+      if (close > atPos + 2) {
+        const bracketed = text.slice(atPos + 2, close);
+        const agent = agents.find(a => a.name.toLowerCase() === bracketed.toLowerCase());
+        parts.push(
+          <span
+            key={key++}
+            className={`text-brand-500 font-medium ${onMentionClick && agent ? 'cursor-pointer hover:underline' : ''}`}
+            onClick={onMentionClick && agent ? () => onMentionClick(agent) : undefined}
+            title={agent ? `${agent.name} (${agent.role})` : undefined}
+          >
+            @{bracketed}
+          </span>,
+        );
+        idx = close + 1;
+        continue;
+      }
+    }
+
+    // Try full name prefix match (handles multi-word names like "Markus Platform Dev Manager")
+    const after = text.slice(atPos + 1);
+    const afterLower = after.toLowerCase();
+    const fullMatch = sortedNames.find(n => afterLower.startsWith(n.toLowerCase()));
+    if (fullMatch) {
+      const agent = agents.find(a => a.name.toLowerCase() === fullMatch.toLowerCase());
+      parts.push(
+        <span
+          key={key++}
+          className={`text-brand-500 font-medium ${onMentionClick && agent ? 'cursor-pointer hover:underline' : ''}`}
+          onClick={onMentionClick && agent ? () => onMentionClick(agent) : undefined}
+          title={agent ? `${agent.name} (${agent.role})` : undefined}
+        >
+          @{fullMatch}
+        </span>,
+      );
+      idx = atPos + 1 + fullMatch.length;
+      continue;
+    }
+
+    // Fallback: single-token match via regex
+    const tokenRe = /^([\w\p{L}\p{N}]+)/u;
+    const tokenMatch = after.match(tokenRe);
+    if (tokenMatch) {
+      const name = tokenMatch[1]!;
+      const agent = agents.find(a => a.name.toLowerCase() === name.toLowerCase());
+      parts.push(
+        <span
+          key={key++}
+          className={`text-brand-500 font-medium ${onMentionClick && agent ? 'cursor-pointer hover:underline' : ''}`}
+          onClick={onMentionClick && agent ? () => onMentionClick(agent) : undefined}
+          title={agent ? `${agent.name} (${agent.role})` : undefined}
+        >
+          @{name}
+        </span>,
+      );
+      idx = atPos + 1 + name.length;
+      continue;
+    }
+
+    parts.push(<span key={key++}>@</span>);
+    idx = atPos + 1;
   }
 
   return parts.length > 0 ? parts : [<span key={0}>{text}</span>];

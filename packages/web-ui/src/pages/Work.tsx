@@ -714,7 +714,7 @@ function CommentBubble({ comment, agents, onReply }: {
             <span className="truncate max-w-[200px]">{comment.replyToContent ?? '...'}</span>
           </button>
         )}
-        <MarkdownMessage content={comment.content} className="text-xs text-fg-primary" onMentionClick={handleMentionClick} />
+        <MarkdownMessage content={comment.content} className="text-xs text-fg-primary" onMentionClick={handleMentionClick} knownNames={agents.map(a => a.name)} />
         {comment.attachments?.map((att, i) => (
           att.type === 'image' ? <img key={i} src={att.url} alt={att.name} className="mt-1 max-w-[200px] rounded" /> : null
         ))}

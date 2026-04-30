@@ -13,6 +13,8 @@ interface Props {
   className?: string;
   /** When provided, @mentions in the text become clickable and invoke this callback with the mentioned name and click event */
   onMentionClick?: (name: string, event: React.MouseEvent) => void;
+  /** Known agent/user names for multi-word mention matching (e.g. "Markus Platform Dev Manager") */
+  knownNames?: string[];
 }
 
 const thinkRegex = /<think>([\s\S]*?)(<\/think>|$)/g;
@@ -43,12 +45,62 @@ function normalizeMathDelimiters(text: string): string {
 const MENTION_PREFIX = '#mention:';
 
 /** Convert @mentions in raw text to markdown links before ReactMarkdown processes it.
- *  Uses `#mention:` (hash prefix) so ReactMarkdown's URL sanitiser doesn't strip them. */
-function preprocessMentions(text: string): string {
-  return text.replace(/@\[([^\]]+)\]|@([\w\p{L}\p{N}]+)/gu, (_full, bracketName: string | undefined, wordName: string | undefined) => {
-    const name = bracketName ?? wordName!;
-    return `[@${name}](${MENTION_PREFIX}${encodeURIComponent(name)})`;
-  });
+ *  Uses `#mention:` (hash prefix) so ReactMarkdown's URL sanitiser doesn't strip them.
+ *  When knownNames is provided, also matches multi-word names (e.g. "@Markus Platform Dev Manager"). */
+function preprocessMentions(text: string, knownNames?: string[]): string {
+  if (!knownNames || knownNames.length === 0) {
+    return text.replace(/@\[([^\]]+)\]|@([\w\p{L}\p{N}]+)/gu, (_full, bracketName: string | undefined, wordName: string | undefined) => {
+      const name = bracketName ?? wordName!;
+      return `[@${name}](${MENTION_PREFIX}${encodeURIComponent(name)})`;
+    });
+  }
+
+  const sorted = [...knownNames].sort((a, b) => b.length - a.length);
+  let result = '';
+  let idx = 0;
+  while (idx < text.length) {
+    const atPos = text.indexOf('@', idx);
+    if (atPos < 0) {
+      result += text.slice(idx);
+      break;
+    }
+    result += text.slice(idx, atPos);
+
+    // Bracketed: @[Name With Spaces]
+    if (text[atPos + 1] === '[') {
+      const close = text.indexOf(']', atPos + 2);
+      if (close > atPos + 2) {
+        const name = text.slice(atPos + 2, close);
+        result += `[@${name}](${MENTION_PREFIX}${encodeURIComponent(name)})`;
+        idx = close + 1;
+        continue;
+      }
+    }
+
+    // Full name prefix match
+    const after = text.slice(atPos + 1);
+    const afterLower = after.toLowerCase();
+    const fullMatch = sorted.find(n => afterLower.startsWith(n.toLowerCase()));
+    if (fullMatch) {
+      const actual = after.slice(0, fullMatch.length);
+      result += `[@${actual}](${MENTION_PREFIX}${encodeURIComponent(actual)})`;
+      idx = atPos + 1 + fullMatch.length;
+      continue;
+    }
+
+    // Single-word fallback
+    const tokenMatch = after.match(/^([\w\p{L}\p{N}]+)/u);
+    if (tokenMatch) {
+      const name = tokenMatch[1]!;
+      result += `[@${name}](${MENTION_PREFIX}${encodeURIComponent(name)})`;
+      idx = atPos + 1 + name.length;
+      continue;
+    }
+
+    result += '@';
+    idx = atPos + 1;
+  }
+  return result;
 }
 
 const mdComponents = {
@@ -181,15 +233,15 @@ function CopyMenu({ content, contentRef }: { content: string; contentRef: React.
 
 // ─── MarkdownMessage ─────────────────────────────────────────────────────────
 
-export function MarkdownMessage({ content, className = '', onMentionClick }: Props) {
+export function MarkdownMessage({ content, className = '', onMentionClick, knownNames }: Props) {
   const { thinking, rest } = extractThinkBlocks(content);
   const contentRef = useRef<HTMLDivElement>(null);
 
   const processedRest = useMemo(() => {
     let t = normalizeMathDelimiters(rest);
-    if (onMentionClick) t = preprocessMentions(t);
+    if (onMentionClick) t = preprocessMentions(t, knownNames);
     return t;
-  }, [rest, onMentionClick]);
+  }, [rest, onMentionClick, knownNames]);
 
   const components = useMemo(() => {
     if (!onMentionClick) return mdComponents;

@@ -113,14 +113,15 @@ export interface RequirementServiceBridge {
   updateRequirementStatus(
     id: string,
     status: string,
-    userId?: string
+    userId?: string,
+    actorType?: 'human' | 'agent' | 'system',
   ): { id: string; title: string; status: string };
   rejectRequirement(
     id: string,
     userId: string,
     reason: string
   ): { id: string; title: string; status: string };
-  cancelRequirement(id: string): { id: string; title: string; status: string };
+  cancelRequirement(id: string, cancelledBy?: string, cancelledByType?: 'human' | 'agent' | 'system'): { id: string; title: string; status: string };
   updateRequirement(
     id: string,
     data: { title?: string; description?: string; priority?: string; tags?: string[] }
@@ -1107,9 +1108,9 @@ export class AgentManager {
                 return this.requirementService!.rejectRequirement(reqId, id, reason ?? '');
               }
               if (status === 'cancelled') {
-                return this.requirementService!.cancelRequirement(reqId);
+                return this.requirementService!.cancelRequirement(reqId, id, 'agent');
               }
-              return this.requirementService!.updateRequirementStatus(reqId, status, id);
+              return this.requirementService!.updateRequirementStatus(reqId, status, id, 'agent');
             }
           : undefined,
         updateRequirement: this.requirementService
@@ -1754,9 +1755,9 @@ export class AgentManager {
                 return this.requirementService!.rejectRequirement(reqId, id, reason ?? '');
               }
               if (status === 'cancelled') {
-                return this.requirementService!.cancelRequirement(reqId);
+                return this.requirementService!.cancelRequirement(reqId, id, 'agent');
               }
-              return this.requirementService!.updateRequirementStatus(reqId, status, id);
+              return this.requirementService!.updateRequirementStatus(reqId, status, id, 'agent');
             }
           : undefined,
         updateRequirement: this.requirementService
