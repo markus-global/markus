@@ -406,7 +406,8 @@ export class RequirementService {
   updateRequirementStatus(
     id: string,
     newStatus: RequirementStatus,
-    userId?: string
+    userId?: string,
+    actorType?: 'human' | 'agent' | 'system',
   ): Requirement {
     if (!RequirementService.VALID_STATUSES.has(newStatus)) {
       throw new Error(`Invalid requirement status "${newStatus}". Valid values: ${[...RequirementService.VALID_STATUSES].join(', ')}`);
@@ -466,7 +467,8 @@ export class RequirementService {
       } catch { /* agent not found — skip */ }
     }
 
-    this.recordTransition(id, oldStatus, newStatus, userId, userId ? 'human' : 'system');
+    const resolvedActorType = actorType ?? (userId ? 'human' : 'system');
+    this.recordTransition(id, oldStatus, newStatus, userId, resolvedActorType);
     this.broadcast('requirement:updated', req);
     log.info('Requirement status updated', { id, from: oldStatus, to: newStatus });
 
