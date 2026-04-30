@@ -1,0 +1,20 @@
+{
+  "type": "agent",
+  "name": "data-engineer",
+  "displayName": "Data Engineer",
+  "version": "1.0.0",
+  "description": "数据工程师 — 专注于数据管道建设、ETL 流程、SQL 优化、数据质量监控和数据仓库管理。",
+  "author": "Markus Platform Development Squad",
+  "category": "engineering",
+  "tags": ["data", "etl", "sql", "pipeline", "engineering", "analytics"],
+  "dependencies": {
+    "skills": ["self-evolution"],
+    "env": ["python3", "sqlite3"]
+  },
+  "agent": {
+    "agentRole": "worker",
+    "llmProvider": "",
+    "llmModel": "",
+    "temperature": 0.3
+  }
+}

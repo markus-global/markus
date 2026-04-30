@@ -1,0 +1,20 @@
+{
+  "type": "agent",
+  "name": "architect",
+  "displayName": "Architect Agent",
+  "version": "1.0.0",
+  "description": "系统架构设计师Agent — 负责系统架构设计、ADR管理、依赖审计、技术选型评估，确保AI数字员工平台的技术架构稳健、可扩展、可持续演进。",
+  "author": "",
+  "category": "engineering",
+  "tags": ["architecture", "design", "system-design", "adr", "engineering"],
+  "dependencies": {
+    "skills": [],
+    "env": []
+  },
+  "agent": {
+    "agentRole": "manager",
+    "llmProvider": "",
+    "llmModel": "",
+    "temperature": 0.3
+  }
+}

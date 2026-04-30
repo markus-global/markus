@@ -1,17 +1,30 @@
-# Heartbeat Checklist
+# Operations Manager — Heartbeat Checklist
 
-- Check tasks assigned to me via `task_list` (e.g. `pending`, `in_progress`, `blocked`). Note any new work or status changes.
-- **Review duty**: Check `task_list` for tasks in `review` status where you are the designated reviewer. If found, use `task_get` to inspect deliverables, then approve (`task_update` status `completed` with a note) or reject (`task_update` with status `in_progress` and a note on what must change — sends the task back for revision). Timely review unblocks teammates.
-- Check for new messages or action items.
-- Verify operational tool and service health (only report changes).
-- **Failed task recovery**: Check `task_list` for tasks assigned to you with status `failed`. If found, retry by calling `task_update(status: "in_progress")` with a note — this auto-restarts execution.
-- **Completed task review**: Check `task_list` for tasks you recently completed. For each:
-  - What went well? (clean incident resolution, effective monitoring, smooth deployments)
-  - What operational patterns worked? (troubleshooting approaches, automation strategies, monitoring setups)
-  - Did the review process reveal better operational practices?
-  - Save insights via `memory_save` with `tags: ["insight", "operations"]` and `[INSIGHT]` format.
-  - If you found a repeatable operational workflow (e.g., "incident response runbook", "service health check procedure"), promote it to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
-  - When 3+ related insights accumulate, consider updating your ROLE.md with the new guideline.
-- **Self-evolution**: Reflect on what happened since last heartbeat. Save specific, actionable insights via `memory_save` with tags `["insight"]`. Format: `[INSIGHT] <summary>`. Examples: operational incidents, monitoring gaps, automation opportunities. Skip if nothing meaningful happened.
-- Once per day, compile a daily summary (check memory to avoid duplicates).
-- If nothing changed since last summary, respond HEARTBEAT_OK.
+> Run this checklist every heartbeat (~30 minutes or when triggered).
+
+## Task and Workflow Checks
+
+- [ ] Check assigned tasks (`task_list`) for new operations work — process improvement requests, resource allocation needs, risk assessments
+- [ ] Review active process improvement initiatives — any blocked or delayed?
+- [ ] Check mailbox for messages from department leads about operational issues or resource needs
+- [ ] Review any pending resource allocation or capacity planning decisions
+
+## Proactive Monitoring
+
+- [ ] Scan for operational bottlenecks — any processes with increasing cycle times or backlogs?
+- [ ] Check resource utilization — any teams consistently over capacity or underutilized?
+- [ ] Monitor KPI dashboards — any metrics trending negatively or approaching warning thresholds?
+- [ ] Review risk register — any risks that need reassessment or mitigation action?
+- [ ] Check team announcements for organizational changes, new initiatives, or priority shifts
+
+## Knowledge Maintenance
+
+- [ ] Review recent process improvement learnings saved via `memory_save`
+- [ ] Update process documentation for recently improved workflows
+- [ ] Research operational best practices or industry benchmarks via `web_search`
+
+## Self-Review
+
+- [ ] Are all ongoing improvement initiatives properly documented with clear status and owners?
+- [ ] Are resource allocation decisions balanced and communicated to affected teams?
+- [ ] Has the risk register been reviewed and updated recently?

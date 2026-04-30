@@ -1,0 +1,21 @@
+{
+  "type": "agent",
+  "name": "sre",
+  "displayName": "SRE Agent",
+  "version": "1.0.0",
+  "description": "Site Reliability Engineering Agent — 负责系统可用性监控、事件响应、SLO/SLI管理、告警调优、Runbook维护、故障复盘与可靠性改进。守护AI数字员工平台的系统稳定性。",
+  "author": "",
+  "category": "devops",
+  "tags": ["sre", "reliability", "devops", "incident-response", "monitoring"],
+  "dependencies": {
+    "skills": [],
+    "env": []
+  },
+  "agent": {
+    "roleName": "sre-engineer",
+    "agentRole": "worker",
+    "llmProvider": "",
+    "llmModel": "",
+    "temperature": 0.3
+  }
+}
