@@ -207,6 +207,7 @@ export function ChatTeamSidebar({
   const [showAddExisting, setShowAddExisting] = useState<string | null>(null);
   const [showOpenClaw, setShowOpenClaw] = useState(false);
   const [showCreateGroupChat, setShowCreateGroupChat] = useState(false);
+  const [showMethodChoice, setShowMethodChoice] = useState<'agent' | 'team' | null>(null);
 
   // Context menus
   const [teamMenu, setTeamMenu] = useState<{ teamId: string; x: number; y: number } | null>(null);
@@ -821,13 +822,29 @@ export function ChatTeamSidebar({
                   if (rect.right > vw - pad) el.style.right = '0';
                   if (rect.left < pad) { el.style.left = '0'; el.style.right = 'auto'; }
                 }} className="absolute left-0 top-full mt-1 w-48 max-w-[calc(100vw-1rem)] bg-surface-secondary border border-border-default rounded-lg shadow-xl z-30 overflow-hidden">
-                  <button onClick={() => { setActionMenu(false); setShowNewTeam(true); }}
+                  <button onClick={() => { setActionMenu(false); setShowMethodChoice('agent'); }}
                     className="w-full text-left px-4 py-2.5 text-xs text-fg-secondary hover:bg-surface-elevated transition-colors">
+                    <div className="font-medium flex items-center gap-1.5">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>
+                      {t('chat.addAgent')}
+                    </div>
+                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.addAgentDesc')}</div>
+                  </button>
+                  <button onClick={() => { setActionMenu(false); setShowMethodChoice('team'); }}
+                    className="w-full text-left px-4 py-2.5 text-xs text-fg-secondary hover:bg-surface-elevated border-t border-border-default transition-colors">
                     <div className="font-medium flex items-center gap-1.5">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
                       {t('chat.newTeam')}
                     </div>
                     <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.newTeamDesc')}</div>
+                  </button>
+                  <button onClick={() => { setActionMenu(false); setShowAddHuman(true); }}
+                    className="w-full text-left px-4 py-2.5 text-xs text-green-600 hover:bg-surface-elevated border-t border-border-default transition-colors">
+                    <div className="font-medium flex items-center gap-1.5">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="8.5" cy="7" r="4" /><line x1="20" y1="8" x2="20" y2="14" /><line x1="23" y1="11" x2="17" y2="11" /></svg>
+                      {t('chat.addHuman')}
+                    </div>
+                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.addHumanDesc')}</div>
                   </button>
                   <button onClick={() => { setActionMenu(false); setShowCreateGroupChat(true); }}
                     className="w-full text-left px-4 py-2.5 text-xs text-fg-secondary hover:bg-surface-elevated border-t border-border-default transition-colors">
@@ -836,23 +853,6 @@ export function ChatTeamSidebar({
                       {t('chat.newGroupChat')}
                     </div>
                     <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.newGroupChatDesc')}</div>
-                  </button>
-                  <button onClick={() => { setActionMenu(false); navBus.navigate(PAGE.STORE); }}
-                    className="w-full text-left px-4 py-2.5 text-xs text-fg-secondary hover:bg-surface-elevated border-t border-border-default transition-colors">
-                    <div className="font-medium flex items-center gap-1.5">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>
-                      {t('chat.addAgent')}
-                    </div>
-                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.addAgentDesc')}</div>
-                  </button>
-                  {/* OpenClaw import — hidden until feature is ready */}
-                  <button onClick={() => { setActionMenu(false); setShowAddHuman(true); }}
-                    className="w-full text-left px-4 py-2.5 text-xs text-green-600 hover:bg-surface-elevated border-t border-border-default transition-colors">
-                    <div className="font-medium flex items-center gap-1.5">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="8.5" cy="7" r="4" /><line x1="20" y1="8" x2="20" y2="14" /><line x1="23" y1="11" x2="17" y2="11" /></svg>
-                      {t('chat.addHuman')}
-                    </div>
-                    <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.addHumanDesc')}</div>
                   </button>
                 </div>
               )}
@@ -1313,6 +1313,72 @@ export function ChatTeamSidebar({
             onRefreshGroupChats();
           }}
         />
+      )}
+
+      {showMethodChoice && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowMethodChoice(null)}>
+          <div className="bg-surface-elevated rounded-xl border border-border-default shadow-2xl w-[340px] max-w-[90vw] overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-border-default">
+              <h3 className="text-sm font-semibold">
+                {showMethodChoice === 'agent' ? t('chat.addAgent') : t('chat.newTeam')}
+              </h3>
+              <p className="text-[11px] text-fg-tertiary mt-0.5">
+                {t('chat.methodChoiceSubtitle')}
+              </p>
+            </div>
+            <div className="p-3 space-y-2">
+              <button
+                onClick={() => {
+                  const kind = showMethodChoice;
+                  setShowMethodChoice(null);
+                  const secretary = agents.find(a => a.role === 'secretary') ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));
+                  if (secretary) {
+                    onSelectAgent(secretary.id);
+                    navBus.navigate(PAGE.TEAM, {
+                      agentId: secretary.id,
+                      prefillMessage: kind === 'agent' ? t('chat.addAgentPrefill') : t('chat.newTeamPrefill'),
+                    });
+                  } else {
+                    if (kind === 'agent') navBus.navigate(PAGE.STORE);
+                    else setShowNewTeam(true);
+                  }
+                }}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-lg border border-brand-500/30 bg-brand-500/5 hover:bg-brand-500/10 transition-colors text-left"
+              >
+                <div className="w-8 h-8 rounded-full bg-brand-500/15 flex items-center justify-center shrink-0">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" className="text-brand-500" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-medium text-brand-500">{t('chat.methodSecretary')}</div>
+                  <div className="text-[10px] text-fg-tertiary mt-0.5">{t('chat.methodSecretaryDesc')}</div>
+                </div>
+                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-brand-500/10 text-brand-500 font-medium shrink-0">{t('chat.recommended')}</span>
+              </button>
+              <button
+                onClick={() => {
+                  const kind = showMethodChoice;
+                  setShowMethodChoice(null);
+                  if (kind === 'agent') navBus.navigate(PAGE.STORE);
+                  else setShowNewTeam(true);
+                }}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-lg border border-border-default hover:bg-surface-overlay transition-colors text-left"
+              >
+                <div className="w-8 h-8 rounded-full bg-surface-overlay flex items-center justify-center shrink-0">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" className="text-fg-secondary" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-medium text-fg-secondary">{t('chat.methodManual')}</div>
+                  <div className="text-[10px] text-fg-tertiary mt-0.5">
+                    {showMethodChoice === 'agent' ? t('chat.methodManualAgentDesc') : t('chat.methodManualTeamDesc')}
+                  </div>
+                </div>
+              </button>
+            </div>
+            <div className="px-5 py-3 border-t border-border-default flex justify-end">
+              <button onClick={() => setShowMethodChoice(null)} className="px-3 py-1.5 text-xs text-fg-secondary hover:text-fg-primary rounded-lg hover:bg-surface-overlay transition-colors">{t('common:cancel')}</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {pendingConfirm && (
