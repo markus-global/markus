@@ -1,0 +1,20 @@
+{
+  "type": "agent",
+  "name": "hr",
+  "displayName": "HR Specialist",
+  "version": "1.0.0",
+  "description": "专业人力资源Agent — 招聘流程管理、绩效评估、员工关系、入职离职管理、组织发展",
+  "author": "",
+  "category": "management",
+  "tags": ["hr", "recruitment", "performance-management", "employee-relations", "onboarding", "offboarding", "talent-management"],
+  "dependencies": {
+    "skills": ["self-evolution"],
+    "env": []
+  },
+  "agent": {
+    "agentRole": "worker",
+    "llmProvider": "",
+    "llmModel": "",
+    "temperature": 0.5
+  }
+}

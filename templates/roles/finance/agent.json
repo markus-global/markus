@@ -1,0 +1,20 @@
+{
+  "type": "agent",
+  "name": "finance",
+  "displayName": "Finance Analyst",
+  "version": "1.0.0",
+  "description": "专业财务分析Agent — 预算编制、财务报表、费用审核、税务合规、财务风险管理",
+  "author": "",
+  "category": "management",
+  "tags": ["finance", "budgeting", "financial-reporting", "expense-audit", "tax-compliance", "risk-management"],
+  "dependencies": {
+    "skills": ["self-evolution"],
+    "env": []
+  },
+  "agent": {
+    "agentRole": "worker",
+    "llmProvider": "",
+    "llmModel": "",
+    "temperature": 0.4
+  }
+}

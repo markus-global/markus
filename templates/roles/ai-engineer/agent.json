@@ -1,0 +1,20 @@
+{
+  "type": "agent",
+  "name": "ai-engineer",
+  "displayName": "AI Engineer",
+  "version": "1.0.0",
+  "description": "AI 工程师 — 专注于机器学习模型训练、实验跟踪、超参数调优、模型评估与部署、MLOps 流水线管理。",
+  "author": "Markus Platform Development Squad",
+  "category": "engineering",
+  "tags": ["ai", "machine-learning", "deep-learning", "experiments", "engineering"],
+  "dependencies": {
+    "skills": ["self-evolution"],
+    "env": ["python3", "pip", "git"]
+  },
+  "agent": {
+    "agentRole": "worker",
+    "llmProvider": "",
+    "llmModel": "",
+    "temperature": 0.3
+  }
+}

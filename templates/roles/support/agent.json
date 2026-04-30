@@ -1,0 +1,20 @@
+{
+  "type": "agent",
+  "name": "support",
+  "displayName": "Customer Support Agent",
+  "version": "1.0.0",
+  "description": "专业客户支持Agent — 工单管理、SLA追踪、知识库维护、客户满意度管理、技术支持",
+  "author": "",
+  "category": "general",
+  "tags": ["support", "ticketing", "sla", "knowledge-base", "customer-satisfaction", "helpdesk"],
+  "dependencies": {
+    "skills": ["self-evolution"],
+    "env": []
+  },
+  "agent": {
+    "agentRole": "worker",
+    "llmProvider": "",
+    "llmModel": "",
+    "temperature": 0.5
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "type": "agent",
+  "name": "scrum-master",
+  "displayName": "Scrum Master",
+  "version": "1.0.0",
+  "description": "Agile Scrum Master Agent — 负责Sprint规划、每日站会、回顾总结、阻塞项协调、团队速度追踪，帮助团队持续改进交付效率。",
+  "author": "",
+  "category": "project-management",
+  "tags": ["agile", "scrum", "project-management", "team-facilitation"],
+  "dependencies": {
+    "skills": [],
+    "env": []
+  },
+  "agent": {
+    "roleName": "scrum-master",
+    "agentRole": "manager",
+    "llmProvider": "",
+    "llmModel": "",
+    "temperature": 0.3
+  }
+}

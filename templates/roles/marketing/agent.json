@@ -1,0 +1,20 @@
+{
+  "type": "agent",
+  "name": "marketing",
+  "displayName": "Marketing Strategist",
+  "version": "1.0.0",
+  "description": "专业营销策略Agent — 营销策略制定、渠道分析、Campaign管理、用户增长、数据分析",
+  "author": "",
+  "category": "marketing",
+  "tags": ["marketing", "strategy", "campaign-management", "channel-analysis", "user-growth", "analytics"],
+  "dependencies": {
+    "skills": ["self-evolution", "humanizer"],
+    "env": []
+  },
+  "agent": {
+    "agentRole": "worker",
+    "llmProvider": "",
+    "llmModel": "",
+    "temperature": 0.6
+  }
+}
