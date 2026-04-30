@@ -520,11 +520,11 @@ The mailbox system feeds into the agent's memory layers:
 
 | Layer | Source | Cadence |
 |-------|--------|---------|
-| **Episodic** | Conversation sessions triggered by mailbox items | Per interaction |
-| **Semantic** | Patterns extracted from decision history via consolidation | Periodic (Dream Cycle) |
+| **Episodic** | Every mailbox item processed becomes an activity in `agent_activities` — searchable via `recall_activity` | Per interaction |
+| **Semantic** | Patterns extracted from decision history via consolidation → MEMORY.md | Periodic (Dream Cycle) |
 | **Procedural** | Recurring patterns may inform ROLE.md evolution | Rare |
 
-Activity tracking (`agent_activities`, `mailbox_items`, `agent_decisions`) provides operational observability but is not a memory layer used in prompt assembly.
+The full stimulus/response record (`mailbox_items` + `agent_decisions`) and the action/outcome record (`agent_activities` + `agent_activity_logs`) together form the agent's **episodic memory** — retrievable via the `recall_activity` tool.
 
 See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) for details.
 

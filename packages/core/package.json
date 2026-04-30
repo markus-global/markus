@@ -14,7 +14,6 @@
     "@markus/a2a": "workspace:*",
     "@markus/comms": "workspace:*",
     "@markus/gui": "workspace:*",
-    "@markus/storage": "workspace:*",
     "@markus/shared": "workspace:*",
     "@mozilla/readability": "^0.6.0",
     "js-tiktoken": "^1.0.21",

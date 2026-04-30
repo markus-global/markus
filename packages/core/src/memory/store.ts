@@ -1,3 +1,12 @@
+/**
+ * MemoryStore — the agent's file-system-based memory.
+ *
+ * Covers two of Tulving's three memory systems:
+ * - Semantic Memory: observation buffer (memories.json) + curated knowledge (MEMORY.md)
+ * - Episodic Memory: conversation sessions (sessions/*.json)
+ *
+ * Procedural Memory (ROLE.md + skills) is managed by RoleLoader and the skill system.
+ */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createLogger, getTextContent, type LLMMessage, MEMORY_MD_SECTION_MAX_CHARS, MEMORY_MD_TOTAL_MAX_CHARS } from '@markus/shared';

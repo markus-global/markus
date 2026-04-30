@@ -172,9 +172,9 @@ Organization (Org)
 |-------|---------|------|
 | **Procedural** | `role/ROLE.md` + skills | How the agent operates. Identity, behavioral rules. |
 | **Semantic** | `MEMORY.md` + `memories.json` | What the agent knows. Agent-organized knowledge. |
-| **Episodic** | SQLite `chat_sessions` + `chat_messages` | What happened. Conversation history, auto-compacted. |
+| **Episodic** | `sessions/*.json` (current) + SQLite `agent_activities` (past) | What happened. Current conversation + searchable activity history. |
 
-Daily logs (`daily-logs/`) are a write-only audit trail, not injected into prompts. Activity tracking (`agent_activities`) is operational observability, not a memory layer.
+The agent retrieves past episodes via the `recall_activity` tool (keyword search on summary/keywords). Daily logs (`daily-logs/`) are a write-only audit trail for humans — never read back into prompts.
 
 See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) for the complete architecture.
 

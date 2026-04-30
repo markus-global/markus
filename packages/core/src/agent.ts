@@ -4059,7 +4059,6 @@ export class Agent {
   }
 
   private getDeliverableContext(_query?: string): string | undefined {
-    // TODO: Wire up MemoryService.getAgentContext() here
     return undefined;
   }
 
