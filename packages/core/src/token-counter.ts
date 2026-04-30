@@ -1,4 +1,4 @@
-import { createLogger } from '@markus/shared';
+import { createLogger, type LLMContentPart } from '@markus/shared';
 
 const log = createLogger('token-counter');
 
@@ -207,6 +207,61 @@ export class SmartTokenCounter implements TokenCounter {
 
   getActiveModel(): string {
     return this.activeModel;
+  }
+
+  /**
+   * Estimate token cost for an image in an LLM request.
+   * Based on OpenAI's known pricing model:
+   * - Low detail: 85 tokens fixed
+   * - High detail: 170 tokens per 512px tile, full image cost = 85 + 170 * numTiles
+   * For non-OpenAI models, uses a heuristic based on data URL size.
+   */
+  static estimateImageTokens(dataUrl: string, detail?: 'low' | 'high' | 'auto'): number {
+    // Extract base64 data
+    const base64Data = dataUrl.split(',')[1] ?? '';
+    const byteLength = Math.floor((base64Data.length * 3) / 4);
+
+    if (detail === 'low') return 85;
+
+    // For high/auto detail: estimate dimensions from size
+    // Rough: 3 bytes per pixel (RGB) → estimate pixel count
+    const estimatedPixels = byteLength / 3;
+    const estimatedWidth = Math.round(Math.sqrt(estimatedPixels));
+    const estimatedHeight = estimatedWidth;
+
+    // OpenAI tile-based pricing: 170 tokens per 512px tile
+    const tilesX = Math.ceil(estimatedWidth / 512);
+    const tilesY = Math.ceil(estimatedHeight / 512);
+    const numTiles = tilesX * tilesY;
+
+    // Minimum 85 tokens for base image
+    const openAITokens = 85 + 170 * numTiles;
+
+    // For non-OpenAI models (Anthropic, etc.): ~4-6 tokens per byte equivalent
+    // Use the average of the two common heuristics
+    const byteBasedTokens = Math.ceil(byteLength / 6);
+
+    return Math.max(85, Math.min(openAITokens, byteBasedTokens));
+  }
+
+  /**
+   * Count tokens for an LLM content part array (text + images).
+   * Useful for pre-flight token estimation before making an API call.
+   */
+  countContentTokens(parts: LLMContentPart[]): number {
+    let total = 0;
+    for (const part of parts) {
+      if (part.type === 'text') {
+        total += this.countTokens(part.text);
+      } else if (part.type === 'image_url') {
+        const detail = (part.image_url as { url: string; detail?: string }).detail;
+        total += SmartTokenCounter.estimateImageTokens(
+          part.image_url.url,
+          detail as 'low' | 'high' | 'auto' | undefined,
+        );
+      }
+    }
+    return total;
   }
 }
 

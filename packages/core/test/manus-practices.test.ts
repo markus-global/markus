@@ -135,7 +135,7 @@ describe('Manus Best Practices Integration', () => {
           };
         }),
         chatStream: vi.fn(),
-        getActiveModelName: () => 'gpt-4',
+        getActiveModelName: () => 'test-model',
         getActiveModelContextWindow: () => 200000,
         getActiveModelMaxOutput: () => 8000,
         getModelContextWindow: (model: string) => 200000,
@@ -143,13 +143,13 @@ describe('Manus Best Practices Integration', () => {
         listProviders: () => ['test'],
         getProvider: () => undefined,
         getDefaultProvider: () => 'test',
-        getActiveModelName: () => 'test-model',
         isCompactionSupported: () => false,
       };
 
       const agent = new Agent({
         config: {
           id: 'test-offload',
+
           name: 'Offload Test',
           role: 'worker',
           llmConfig: { provider: 'test', model: 'test', apiKey: 'test' },
@@ -217,7 +217,7 @@ describe('Manus Best Practices Integration', () => {
           };
         }),
         chatStream: vi.fn(),
-        getActiveModelName: () => 'gpt-4',
+        getActiveModelName: () => 'test-model',
         getActiveModelContextWindow: () => 200000,
         getActiveModelMaxOutput: () => 8000,
         getModelContextWindow: (model: string) => 200000,
@@ -225,13 +225,13 @@ describe('Manus Best Practices Integration', () => {
         listProviders: () => ['test'],
         getProvider: () => undefined,
         getDefaultProvider: () => 'test',
-        getActiveModelName: () => 'test-model',
         isCompactionSupported: () => false,
       };
 
       const agent = new Agent({
         config: {
           id: 'test-no-offload',
+
           name: 'No Offload Test',
           role: 'worker',
           llmConfig: { provider: 'test', model: 'test', apiKey: 'test' },
