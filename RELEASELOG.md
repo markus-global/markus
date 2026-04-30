@@ -1,5 +1,32 @@
 # Release Log
 
+## v0.5.0
+
+记忆系统重构（Tulving 三层认知分类）；评论多模态图片支持（上传/拖拽/粘贴/预览）；内置 Agent 模板大规模升级（重写 5 + 新建 5）；弹窗错误 UX 优化；Hub 地址修正；文档全面对齐。
+
+### New Features
+
+- **评论图片上传与渲染** — CommentInput 支持图片上传、拖拽、粘贴；MarkdownMessage 支持图片懒加载、加载骨架屏、错误占位、点击全屏预览（ImagePreviewModal）；新增通用 FileStorageProvider 抽象（本地存储默认，可切换 S3/GCS），POST /api/uploads 端点
+- **内置 Agent 模板升级** — 重写 5 个低质量模板（hr/finance/support/marketing/operations），从仅 ROLE.md 升级为完整套件（ROLE.md + HEARTBEAT.md + POLICIES.md + agent.json）；新建 5 个实用角色模板（data-engineer、ai-engineer、architect、scrum-master、sre）
+
+### Bug Fixes
+
+- **修复需求状态历史 Agent 名字缺失** — updateRequirementStatus 新增 actorType 参数，修复 agent 更新状态时 changedByType 被错误记录为 'human'
+- **修复含空格名字 @mention 渲染** — 重写 @mention 渲染逻辑为全名前缀匹配策略，正确处理多词 Agent 名字
+- **修复弹窗错误 UX** — 错误信息移入弹窗内联展示（非页面级 flash），服务端返回结构化错误码（task_limit_reached 等），人类创建的 pending 任务显示"取消"而非"拒绝"
+- **修复 Hub 地址指向本地开发服务器** — 默认 Hub URL 从 localhost:8059 改为 markus.global 生产地址
+
+### Refactoring
+
+- **记忆系统 Tulving 三层分类重构** — 基于 Tulving 认知分类重新设计记忆架构（Semantic/Episodic/Procedural），在现有 MemoryStore 上标注分类层级；新增 memory-store.test.ts（32 tests）；清理废弃的 EnhancedMemorySystem + 双重存储代码
+- **文档全面对齐** — MEMORY-SYSTEM.md 全面重写（553→235 行，四层→三层）；ARCHITECTURE.md / MAILBOX-SYSTEM.md / PROMPT-ENGINEERING.md / README 同步更新术语
+
+### Stats
+
+- 75 files changed, +4,457 / −1,456 lines
+
+---
+
 ## v0.4.26
 
 模型提供商设置极简化（点击+粘贴 API Key 即用）；添加智能体/新建团队弹窗支持秘书协助模式；聊天输入框自动伸缩修复；侧边栏下拉图标优化。
