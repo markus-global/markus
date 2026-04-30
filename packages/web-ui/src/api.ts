@@ -296,6 +296,14 @@ export interface ReportFeedbackInfo {
   createdAt: string;
 }
 
+export class ApiError extends Error {
+  code?: string;
+  constructor(message: string, code?: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json' },
@@ -305,11 +313,13 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     let detail = '';
+    let code: string | undefined;
     try {
-      const body = await res.json() as { error?: string; message?: string };
+      const body = await res.json() as { error?: string; message?: string; code?: string };
       detail = body.error ?? body.message ?? '';
+      code = body.code;
     } catch { /* ignore parse failures */ }
-    throw new Error(detail || `API error: ${res.status}`);
+    throw new ApiError(detail || `API error: ${res.status}`, code);
   }
   return res.json() as Promise<T>;
 }

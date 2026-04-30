@@ -2838,28 +2838,39 @@ export class APIServer {
         return;
       }
       const scheduleRaw = body['scheduleConfig'] as Record<string, unknown> | undefined;
-      const task = this.taskService.createTask({
-        orgId: (body['orgId'] as string) ?? 'default',
-        title: body['title'] as string,
-        description: body['description'] as string,
-        priority: body['priority'] as TaskPriority | undefined,
-        assignedAgentId,
-        reviewerId,
-        reviewerType,
-        projectId: body['projectId'] as string | undefined,
-        blockedBy: Array.isArray(body['blockedBy']) ? body['blockedBy'] as string[] : undefined,
-        requirementId: body['requirementId'] as string | undefined,
-        createdBy: authUser?.userId ?? 'unknown',
-        creatorRole: 'human',
-        taskType: ((body['taskType'] as string | undefined) ?? 'standard') as 'standard' | 'scheduled',
-        scheduleConfig: scheduleRaw ? {
-          cron: scheduleRaw['cron'] as string | undefined,
-          every: scheduleRaw['every'] as string | undefined,
-          runAt: scheduleRaw['runAt'] as string | undefined,
-          timezone: scheduleRaw['timezone'] as string | undefined,
-          maxRuns: scheduleRaw['maxRuns'] as number | undefined,
-        } : undefined,
-      });
+      let task: ReturnType<typeof this.taskService.createTask>;
+      try {
+        task = this.taskService.createTask({
+          orgId: (body['orgId'] as string) ?? 'default',
+          title: body['title'] as string,
+          description: body['description'] as string,
+          priority: body['priority'] as TaskPriority | undefined,
+          assignedAgentId,
+          reviewerId,
+          reviewerType,
+          projectId: body['projectId'] as string | undefined,
+          blockedBy: Array.isArray(body['blockedBy']) ? body['blockedBy'] as string[] : undefined,
+          requirementId: body['requirementId'] as string | undefined,
+          createdBy: authUser?.userId ?? 'unknown',
+          creatorRole: 'human',
+          taskType: ((body['taskType'] as string | undefined) ?? 'standard') as 'standard' | 'scheduled',
+          scheduleConfig: scheduleRaw ? {
+            cron: scheduleRaw['cron'] as string | undefined,
+            every: scheduleRaw['every'] as string | undefined,
+            runAt: scheduleRaw['runAt'] as string | undefined,
+            timezone: scheduleRaw['timezone'] as string | undefined,
+            maxRuns: scheduleRaw['maxRuns'] as number | undefined,
+          } : undefined,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        let code = 'unknown';
+        if (msg.includes('task cap reached') || msg.includes('active task cap')) code = 'task_limit_reached';
+        else if (msg.includes('must reference an approved requirement')) code = 'requirement_required';
+        else if (msg.includes('agent not found')) code = 'agent_not_found';
+        this.json(res, 400, { error: msg, code });
+        return;
+      }
       this.auditService?.record({
         orgId: task.orgId,
         type: 'task_created',
