@@ -66,6 +66,17 @@ export interface MarkusConfig {
   database?: {
     url: string;
   };
+  /** File / blob storage for uploads (images, attachments, etc.).
+   *  Default: local filesystem at ~/.markus/uploads/ */
+  fileStorage?: {
+    provider: 'local';
+    local?: {
+      /** Override the upload directory (default: ~/.markus/uploads/) */
+      dir?: string;
+    };
+    // Future cloud providers:
+    // s3?: { bucket: string; region: string; endpoint?: string; accessKeyId?: string; secretAccessKey?: string };
+  };
 }
 
 const DEFAULT_CONFIG: MarkusConfig = {

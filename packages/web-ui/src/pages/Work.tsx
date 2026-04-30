@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo } from '../api.ts';
+import { api, wsClient, ApiError, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, attachSubagentLogsToEntries, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
@@ -8,7 +8,7 @@ import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { Avatar } from '../components/Avatar.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
-import { CommentInput } from '../components/CommentInput.tsx';
+import { CommentInput, type PendingImage } from '../components/CommentInput.tsx';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
@@ -805,8 +805,13 @@ function TaskActivitySection({ task, agents, users, authUser }: {
 
   const [replyTo, setReplyTo] = useState<{ id: string; authorName: string; content: string } | null>(null);
 
-  const handleSubmit = async (content: string, mentions: string[], replyToId?: string) => {
-    await api.tasks.addComment(task.id, content, authUser?.name, undefined, authUser?.id, mentions.length > 0 ? mentions : undefined, replyToId);
+  const handleSubmit = async (content: string, mentions: string[], images: PendingImage[], replyToId?: string) => {
+    let attachments: Array<{ type: string; url: string; name: string }> | undefined;
+    if (images.length > 0) {
+      const uploaded = await api.uploads.upload(images.map(img => ({ dataUrl: img.dataUrl, name: img.name })), 'comments');
+      attachments = uploaded.files.map(f => ({ type: 'image', url: f.url, name: f.name }));
+    }
+    await api.tasks.addComment(task.id, content, authUser?.name, attachments, authUser?.id, mentions.length > 0 ? mentions : undefined, replyToId);
     const notified: Array<{ id: string; name: string; avatarUrl?: string }> = [];
     const seen = new Set<string>();
     const tryAdd = (agentId: string) => {
@@ -1057,7 +1062,12 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
     if (!commentText.trim() && imageAttachments.length === 0) return;
     setSubmitting(true);
     try {
-      const result = await api.tasks.addComment(taskId, commentText, authUser?.name, imageAttachments.length > 0 ? imageAttachments : undefined, authUser?.id);
+      let attachments: Array<{ type: string; url: string; name: string }> | undefined;
+      if (imageAttachments.length > 0) {
+        const uploaded = await api.uploads.upload(imageAttachments.map(a => ({ dataUrl: a.url, name: a.name })), 'comments');
+        attachments = uploaded.files.map(f => ({ type: 'image', url: f.url, name: f.name }));
+      }
+      const result = await api.tasks.addComment(taskId, commentText, authUser?.name, attachments, authUser?.id);
       if (result.comment) {
         setComments(prev => prev.some(x => x.id === result.comment.id) ? prev : [...prev, result.comment]);
       }
@@ -2147,7 +2157,11 @@ function TaskDetailPanel({
                 <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">
                   {task.createdBy && !task.createdBy.startsWith('agt_') ? t('work:task.startExecution') : t('work:task.approve')}
                 </button>
-                <button onClick={() => setRejectConfirm(true)} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">{t('work:task.reject')}</button>
+                {task.createdBy && !task.createdBy.startsWith('agt_') ? (
+                  <button onClick={() => void doUpdate(() => api.tasks.cancel(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">{t('work:task.cancelTask')}</button>
+                ) : (
+                  <button onClick={() => setRejectConfirm(true)} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">{t('work:task.reject')}</button>
+                )}
               </>
             )}
             {/* ── Review actions ── */}
@@ -2991,6 +3005,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   const [taskBlockedBy, setTaskBlockedBy] = useState<string[]>([]);
   const [taskType, setTaskType] = useState<'standard' | 'scheduled'>('standard');
   const [taskScheduleEvery, setTaskScheduleEvery] = useState('4h');
+  const [taskCreateError, setTaskCreateError] = useState('');
 
   const [selectedTask, setSelectedTask] = useState<TaskInfo | null>(null);
   const [selectedReq, setSelectedReq] = useState<RequirementInfo | null>(null);
@@ -3019,6 +3034,8 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   const [reqProjectId, setReqProjectId] = useState('');
   const [rejectReqId, setRejectReqId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [reqCreateError, setReqCreateError] = useState('');
+  const [rejectReqError, setRejectReqError] = useState('');
   const [pendingDeleteProjectId, setPendingDeleteProjectId] = useState<string | null>(null);
 
   const msg = (m: string) => { setFlash(m); setTimeout(() => setFlash(''), 3000); };
@@ -3306,6 +3323,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
   const createTask = async () => {
     if (!taskTitle || !taskAssignTo || !taskReviewer) return;
+    setTaskCreateError('');
     const reviewerIsHuman = taskReviewer.startsWith('human:');
     const reviewerId = taskReviewer.replace(/^(human|agent):/, '');
     if (taskAssignTo === reviewerId && !reviewerIsHuman) { msg(t('work:task.assignedReviewerDifferent')); return; }
@@ -3327,7 +3345,12 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
       setTaskTitle(''); setTaskDesc(''); setTaskBlockedBy([]); setTaskRequirementId(''); setTaskType('standard'); setTaskScheduleEvery('4h'); setShowCreateTask(false);
       refreshBoard();
       if (task) forceOpenTask(task);
-    } catch (e) { msg(t('work:task.errorCreatingTask', { message: String(e) })); }
+    } catch (e) {
+      const code = e instanceof ApiError ? e.code : undefined;
+      const key = `work:task.errorCode_${code || 'unknown'}`;
+      const localized = t(key, { defaultValue: '' });
+      setTaskCreateError(localized || t('work:task.errorCreatingTask', { message: e instanceof Error ? e.message : String(e) }));
+    }
   };
 
   const markNotifRead = (ref: { taskId?: string; requirementId?: string }) => {
@@ -3365,16 +3388,17 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   // ── Requirement actions ──
 
   const handleCreateReq = async () => {
-    if (!reqTitle.trim()) { msg(t('work:task.pleaseReqTitle')); return; }
-    if (!reqDesc.trim()) { msg(t('work:task.pleaseReqDesc')); return; }
-    if (!reqProjectId) { msg(t('work:task.pleaseReqProject')); return; }
+    if (!reqTitle.trim()) { setReqCreateError(t('work:task.pleaseReqTitle')); return; }
+    if (!reqDesc.trim()) { setReqCreateError(t('work:task.pleaseReqDesc')); return; }
+    if (!reqProjectId) { setReqCreateError(t('work:task.pleaseReqProject')); return; }
+    setReqCreateError('');
     try {
       const { requirement } = await api.requirements.create({ title: reqTitle.trim(), description: reqDesc.trim(), priority: reqPriority, projectId: reqProjectId });
       msg(t('work:task.requirementCreated'));
       setReqTitle(''); setReqDesc(''); setShowCreateReq(false);
       refreshRequirements();
       if (requirement) forceOpenReq(requirement);
-    } catch (e) { msg(`Error: ${e}`); }
+    } catch (e) { setReqCreateError(e instanceof Error ? e.message : String(e)); }
   };
 
   const handleApproveReq = async (id: string) => {
@@ -3383,7 +3407,8 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
   const handleRejectReq = async () => {
     if (!rejectReqId) return;
-    try { await api.requirements.reject(rejectReqId, rejectReason); msg('Requirement rejected'); markNotifRead({ requirementId: rejectReqId }); setRejectReqId(null); setRejectReason(''); handleReqRefresh(); } catch (e) { msg(`Error: ${e}`); }
+    setRejectReqError('');
+    try { await api.requirements.reject(rejectReqId, rejectReason); msg('Requirement rejected'); markNotifRead({ requirementId: rejectReqId }); setRejectReqId(null); setRejectReason(''); setRejectReqError(''); handleReqRefresh(); } catch (e) { setRejectReqError(e instanceof Error ? e.message : String(e)); }
   };
 
   const handleDeleteReq = async (id: string) => {
@@ -4003,7 +4028,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
       {/* ── Create Task Modal ── */}
       {showCreateTask && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3" onClick={() => setShowCreateTask(false)}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3" onClick={() => { setShowCreateTask(false); setTaskCreateError(''); }}>
           <div className={`bg-surface-secondary border border-border-default rounded-xl p-6 space-y-4 max-h-[90dvh] overflow-y-auto ${isMobile ? 'w-full' : 'w-[28rem]'}`} onClick={e => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-fg-primary">{t('work:task.newTask')}</h3>
             <div>
@@ -4127,8 +4152,9 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
                 </div>
               )}
             </div>
+            {taskCreateError && <div className="px-3 py-2 bg-red-500/15 text-red-500 text-xs rounded-lg">{taskCreateError}</div>}
             <div className="flex justify-end gap-3 pt-1">
-              <button onClick={() => setShowCreateTask(false)} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">{t('common:cancel')}</button>
+              <button onClick={() => { setShowCreateTask(false); setTaskCreateError(''); }} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">{t('common:cancel')}</button>
               <button onClick={() => void createTask()} disabled={!taskTitle.trim() || !taskAssignTo || !taskReviewer} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50">{t('common:create')}</button>
             </div>
           </div>
@@ -4137,7 +4163,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
       {/* ── Create Requirement Modal ── */}
       {showCreateReq && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3" onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); }}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3" onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); setReqCreateError(''); }}>
           <div className={`bg-surface-secondary border border-border-default rounded-xl p-6 space-y-4 max-h-[90dvh] overflow-y-auto ${isMobile ? 'w-full' : 'w-[28rem]'}`} onClick={e => e.stopPropagation()}>
             <div>
               <h3 className="text-base font-semibold text-fg-primary">{t('work:task.newRequirementModalTitle')}</h3>
@@ -4171,8 +4197,9 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
                 <option value="low">{t('work:priority.low')}</option><option value="medium">{t('work:priority.medium')}</option><option value="high">{t('work:priority.high')}</option><option value="urgent">{t('work:priority.urgent')}</option>
               </select>
             </div>
+            {reqCreateError && <div className="px-3 py-2 bg-red-500/15 text-red-500 text-xs rounded-lg">{reqCreateError}</div>}
             <div className="flex justify-end gap-3 pt-1">
-              <button onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); }} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">{t('common:cancel')}</button>
+              <button onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); setReqCreateError(''); }} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">{t('common:cancel')}</button>
               <button onClick={() => void handleCreateReq()} disabled={!reqTitle.trim() || !reqDesc.trim() || !reqProjectId} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-40 disabled:cursor-not-allowed">{t('common:create')}</button>
             </div>
           </div>
@@ -4181,7 +4208,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
       {/* ── Reject Requirement Modal ── */}
       {rejectReqId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3" onClick={() => setRejectReqId(null)}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3" onClick={() => { setRejectReqId(null); setRejectReqError(''); }}>
           <div className={`bg-surface-secondary border border-border-default rounded-xl p-6 space-y-4 ${isMobile ? 'w-full' : 'w-96'}`} onClick={e => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-fg-primary">{t('work:task.rejectRequirementTitle')}</h3>
             <div>
@@ -4189,8 +4216,9 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
               <textarea value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder={t('work:task.rejectReasonPlaceholder')}
                 rows={3} className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-red-500 outline-none resize-none" autoFocus={!isMobile} />
             </div>
+            {rejectReqError && <div className="px-3 py-2 bg-red-500/15 text-red-500 text-xs rounded-lg">{rejectReqError}</div>}
             <div className="flex justify-end gap-3">
-              <button onClick={() => setRejectReqId(null)} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">{t('common:cancel')}</button>
+              <button onClick={() => { setRejectReqId(null); setRejectReqError(''); }} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">{t('common:cancel')}</button>
               <button onClick={() => void handleRejectReq()} className="px-4 py-2 text-sm bg-red-600 hover:bg-red-500 rounded-lg text-white">{t('work:task.reject')}</button>
             </div>
           </div>
@@ -4319,11 +4347,17 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
 
   const [replyTo, setReplyTo] = useState<{ id: string; authorName: string; content: string } | null>(null);
 
-  const handleSubmit = async (content: string, mentions: string[], replyToId?: string) => {
+  const handleSubmit = async (content: string, mentions: string[], images: PendingImage[], replyToId?: string) => {
+    let attachments: Array<{ type: string; url: string; name: string }> | undefined;
+    if (images.length > 0) {
+      const uploaded = await api.uploads.upload(images.map(img => ({ dataUrl: img.dataUrl, name: img.name })), 'comments');
+      attachments = uploaded.files.map(f => ({ type: 'image', url: f.url, name: f.name }));
+    }
     await api.requirements.addComment(
       requirementId,
       content,
       authUser?.name,
+      attachments,
       authUser?.id,
       mentions.length > 0 ? mentions : undefined,
       replyToId,
