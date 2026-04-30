@@ -57,6 +57,12 @@ const TOOL_GROUPS: ToolGroup[] = [
       '产出物', '产出', '交付物', '知识', '知识库', '贡献', '约定', '架构决策', '最佳实践', '经验'],
     toolNames: ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'],
   },
+  {
+    name: 'vision',
+    keywords: ['image', 'picture', 'photo', 'vision', 'screenshot', 'analyze image', 'see', 'look at',
+      '图片', '照片', '截图', '图像', '视觉', '看', '识别'],
+    toolNames: ['analyze_image'],
+  },
 ];
 
 /**
