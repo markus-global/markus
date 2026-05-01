@@ -44,6 +44,7 @@
   <img src="docs/images/dashboard.gif" alt="Markus Dashboard — desktop and mobile, manage your AI workforce from anywhere" width="800" />
 </p>
 
+
 ---
 
 ## What is Markus?
@@ -168,7 +169,7 @@ TypeScript monorepo with modular packages:
 | **core** | Agent runtime — LLM routing, tools, memory, heartbeat, workspace isolation |
 | **org-manager** | REST API, WebSocket, governance, task lifecycle |
 | **web-ui** | React + Vite + Tailwind dashboard |
-| **storage** | SQLite (default) / PostgreSQL persistence via Drizzle |
+| **storage** | SQLite persistence (zero-dependency) |
 | **cli** | `@markus-global/cli` — one-command install and launch |
 | **a2a** | Agent-to-Agent communication protocol |
 | **comms** | External platform bridges |
@@ -182,8 +183,13 @@ TypeScript monorepo with modular packages:
 |-------|-------------|
 | [User Guide](docs/GUIDE.md) | Setup, configuration, Web UI walkthrough |
 | [Architecture](docs/ARCHITECTURE.md) | System design, agent runtime, memory, governance |
+| [API Reference](docs/API.md) | REST API endpoints and WebSocket events |
+| [State Machines](docs/STATE-MACHINES.md) | Task & requirement FSM specification |
+| [Mailbox System](docs/MAILBOX-SYSTEM.md) | Agent attention model, priority queue, triage |
 | [Memory System](docs/MEMORY-SYSTEM.md) | Three-layer memory architecture (Tulving) |
-| [API Reference](docs/API.md) | REST API endpoints |
+| [Cognitive Architecture](docs/COGNITIVE-ARCHITECTURE.md) | Cognitive Preparation Pipeline (CPP) design |
+| [Prompt Engineering](docs/PROMPT-ENGINEERING.md) | System prompt assembly, tool loop, compression |
+| [Remote Access](docs/REMOTE-ACCESS.md) | Cloudflare Tunnel, Tailscale, FRP, ngrok setup |
 | [Contributing](CONTRIBUTING.md) | Development setup, PR process |
 
 ---

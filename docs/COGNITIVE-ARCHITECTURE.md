@@ -1,6 +1,8 @@
 # Cognitive Architecture: Multi-Layer Context Preparation
 
-This document defines the cognitive architecture that governs how agents prepare context before acting. It replaces the previous "mechanical assembly" model (system prompt + raw session + compression) with a **cognitive preparation pipeline** where multiple LLM calls, each with persona-aware prompts, prepare context before the main reasoning call.
+This document defines the cognitive architecture that governs how agents prepare context before acting. It replaced the previous "mechanical assembly" model (system prompt + raw session + compression) with a **cognitive preparation pipeline** where multiple LLM calls, each with persona-aware prompts, prepare context before the main reasoning call.
+
+> **Implementation status**: The core CPP (Phases 1-4, depth levels D0-D2) is implemented in `packages/core/src/cognitive.ts` with types in `packages/shared/src/types/cognitive.ts`. D3 (post-response evaluation) remains a future enhancement.
 
 ---
 
@@ -12,23 +14,23 @@ This document defines the cognitive architecture that governs how agents prepare
 
 The cognitive architecture introduces System 2 via the **Cognitive Preparation Pipeline**: before the main LLM call, the agent deliberately assesses what context it needs, retrieves it, and reflects on it.
 
-**Working Memory Model (Baddeley, 2000)**. Baddeley's model includes a Central Executive that controls attention and coordinates subsidiary systems, plus an Episodic Buffer that integrates information from different sources into a coherent representation. In the current system, `ContextEngine.buildSystemPrompt()` acts as a passive buffer -- it dumps everything mechanically. The redesign introduces an active Central Executive (the Appraisal phase) that decides what to load, and the Assembly phase acts as the Episodic Buffer.
+**Working Memory Model (Baddeley, 2000)**. Baddeley's model includes a Central Executive that controls attention and coordinates subsidiary systems, plus an Episodic Buffer that integrates information from different sources into a coherent representation. Without CPP, `ContextEngine.buildSystemPrompt()` acts as a passive buffer -- it dumps everything mechanically. CPP introduces an active Central Executive (the Appraisal phase) that decides what to load, and the Assembly phase acts as the Episodic Buffer.
 
-**Metacognition (Flavell, 1979)**. Metacognition is "thinking about thinking" -- the ability to assess one's own knowledge state and regulate cognitive processes accordingly. Current agents have no metacognitive capability: they cannot assess "do I know enough to answer this?" before responding. The Appraisal phase introduces metacognition: the agent evaluates its own readiness and plans what additional context it needs.
+**Metacognition (Flavell, 1979)**. Metacognition is "thinking about thinking" -- the ability to assess one's own knowledge state and regulate cognitive processes accordingly. Without CPP, agents have no metacognitive capability: they cannot assess "do I know enough to answer this?" before responding. The Appraisal phase adds metacognition: the agent evaluates its own readiness and plans what additional context it needs.
 
-**Levels of Processing (Craik & Lockhart, 1972)**. Deep processing (meaning, connections, implications) produces better memory and understanding than shallow processing (surface features). Current memory retrieval is shallow: keyword matching, substring search, or raw recency. The Reflection phase introduces deep processing: the agent considers patterns, implications, and connections between retrieved information.
+**Levels of Processing (Craik & Lockhart, 1972)**. Deep processing (meaning, connections, implications) produces better memory and understanding than shallow processing (surface features). Basic memory retrieval is shallow: keyword matching, substring search, or raw recency. The Reflection phase adds deep processing: the agent considers patterns, implications, and connections between retrieved information.
 
 **Spreading Activation (Collins & Loftus, 1975)**. In semantic networks, activating one concept activates related concepts. The Association mechanism works like spreading activation: starting from the current stimulus, the agent identifies related concepts, which activate further related concepts, producing a rich context network rather than isolated keyword hits.
 
 **Tulving's Memory Systems (1972, 1985)**. Three distinct memory systems serve different functions:
 
-| Memory System | Maps to Agent Store | Current State | Problem | Proposed |
+| Memory System | Maps to Agent Store | Before CPP | Problem | After CPP (Current) |
 |---------------|--------------------|--------------------|---------|----------|
 | **Episodic** (personal experiences) | Experience (SQLite activity index) | `recall_activity` (list/get by ID) | No semantic search | Persona-directed: "As a backend dev, what's my experience with auth?" |
 | **Semantic** (general knowledge) | Knowledge (MEMORY.md + memories.json) | 5 overlapping prompt sections (SOPs, lessons, best practices, long-term knowledge, applicable lessons) | Redundant taxonomy | Single `## Your Knowledge` section; agent-organized, not system-categorized |
 | **Procedural** (how to do things) | Identity (ROLE.md) + Skills | Static injection; skills on-demand | Skills and SOPs overlap | ROLE.md defines core behaviors; Skills are external capability packages; SOPs merge into MEMORY.md knowledge |
 
-The current system's treatment of semantic memory is especially problematic: it splits "what the agent knows" across 5 separate prompt sections with a rigid lesson → best-practice → SOP promotion pipeline. In human cognition, there is no such taxonomy -- knowledge is knowledge, organized by the knower into whatever structure makes sense for their work. The redesign lets agents organize MEMORY.md freely.
+The previous treatment of semantic memory was problematic: it split "what the agent knows" across 5 separate prompt sections with a rigid lesson → best-practice → SOP promotion pipeline. In human cognition, there is no such taxonomy -- knowledge is knowledge, organized by the knower into whatever structure makes sense for their work. CPP lets agents organize MEMORY.md freely.
 
 ### 1.2 From Philosophy of Mind
 
@@ -63,10 +65,10 @@ The current system's treatment of semantic memory is especially problematic: it 
 The Cognitive Preparation Pipeline (CPP) runs between triage and main processing. It replaces the current model (mechanical context assembly) with a cognitive model (agent-driven context preparation).
 
 ```
-Current model:
+Without CPP:
   Stimulus -> Triage -> buildSystemPrompt() [mechanical] -> LLM call
 
-Proposed model:
+With CPP (current):
   Stimulus -> Triage -> Cognitive Preparation Pipeline -> LLM call
                               |
                               +-- Phase 1: Appraisal (lightweight LLM)
@@ -320,8 +322,8 @@ CPP changes both HOW memories are accessed and HOW knowledge is organized.
 
 **Retrieval model change:**
 
-| Current | Proposed |
-|---------|----------|
+| Without CPP | With CPP (current) |
+|-------------|-------------------|
 | `buildSystemPrompt()` always loads 5 knowledge sections (SOPs, lessons, best practices, long-term, applicable lessons) | `buildSystemPrompt()` loads one `## Your Knowledge` section from MEMORY.md |
 | `retrieveRelevantMemories()` does bulk semantic search on every call | Phase 2 does targeted retrieval based on Phase 1's plan |
 | Memory retrieval is the same regardless of agent role | Memory retrieval is shaped by persona (via Appraisal queries) |
@@ -332,7 +334,7 @@ CPP changes both HOW memories are accessed and HOW knowledge is organized.
 
 The current system forces a rigid taxonomy on agent knowledge: `lesson` → `best-practice` → `SOP` with separate prompt sections for each. This creates five overlapping prompt sections that waste context window space repeating the same kind of information.
 
-The redesign follows cognitive science: knowledge is knowledge, organized by the knower. MEMORY.md becomes a free-form agent-organized knowledge base with a single `## Your Knowledge` section in the prompt. Skills remain separate -- they are externalized, installable capability packages, architecturally distinct from personal knowledge.
+Following cognitive science, knowledge is knowledge, organized by the knower. MEMORY.md is now a free-form agent-organized knowledge base with a single `## Your Knowledge` section in the prompt. Skills remain separate -- they are externalized, installable capability packages, architecturally distinct from personal knowledge.
 
 | Old Mechanism | Disposition |
 |--------------|-------------|
@@ -361,7 +363,7 @@ CPP reduces compression pressure by producing thinner, more relevant context:
 
 ### 4.4 Relationship to Store-Index-Assemble Model
 
-CPP is the "Assemble" part of the Store-Index-Assemble model proposed in the fix plan:
+CPP is the "Assemble" part of the Store-Index-Assemble model:
 
 | Principle | Implementation |
 |-----------|---------------|
@@ -483,25 +485,26 @@ interface CognitiveConfig {
 
 ---
 
-## 9. Migration Strategy
+## 9. Implementation Status
 
-### Phase A: Foundation (prerequisite)
-1. Add `summary` + `keywords` columns to `agent_activities` (Tier 0A from fix plan)
-2. Make `prepareMessages` pure -- remove `writeDailyLog` (Tier 0C from fix plan)
-3. Reduce activity injection volume (Tier 0B from fix plan)
+### Completed
+- **Phase A**: `summary` + `keywords` columns on `agent_activities`; `prepareMessages` side-effects cleaned up; activity injection volume reduced
+- **Phase B (partial)**: `CognitivePreparation` class with all 4 phases implemented in `packages/core/src/cognitive.ts`; types defined in `packages/shared/src/types/cognitive.ts`; `buildSystemPrompt` in `context-engine.ts` accepts optional `cognitiveContext` and renders Cognitive Context / Retrieved Context / Reflection sections (skipping legacy `## Relevant Memories` when active)
 
-### Phase B: Core Pipeline
-1. Implement `CognitivePreparation` with all 4 phases
-2. Wire into `handleMessage` and `_executeTaskInternal` behind feature flag
-3. Add `PreparedContext` sections to `buildSystemPrompt`
+### Not Yet Wired
+- `Agent.handleMessage()` and `Agent._executeTaskInternal()` do **not** call `CognitivePreparation.prepare()` — the pipeline is never invoked at runtime
+- No `RetrievalBackend` implementation exists — the interface is defined but no adapter wraps `IMemoryStore` / activity store / task store
+- `CognitiveConfig` is minimal (`enabled` + optional `defaultDepth`); the expanded config from §7.3 (model tiers, token budgets, confidence threshold) is not implemented
+- Scenario strings in `SCENARIO_DEPTH_MAP` (`human_chat`) do not match the strings used by `Agent` (`chat`) — will cause incorrect depth selection when wired
+- No tests for any CPP component
 
-### Phase C: Refinement
-1. Tune depth-level selection heuristics based on production data
-2. Optimize preparation prompts based on observed quality
-3. Add post-response evaluation (D3)
-4. Integrate with dream cycle
-
-### Phase D: Full Rollout
-1. Enable by default
-2. Remove legacy bulk memory retrieval from `buildSystemPrompt` (when CPP handles it)
-3. Simplify compression pipeline (most stages become unnecessary with thinner sessions)
+### Future Work
+- Wire CPP into `Agent` (Phase C below)
+- Build `RetrievalBackend` adapter over existing stores
+- Align scenario strings between Agent and CPP
+- Expand `CognitiveConfig` (per-scenario overrides, model selection, token budgets)
+- Add post-response evaluation (D3)
+- Integrate with dream cycle
+- Remove legacy bulk memory retrieval from `buildSystemPrompt` (when CPP handles it for all scenarios)
+- Simplify compression pipeline (most stages become unnecessary with thinner sessions)
+- Add unit and integration tests
