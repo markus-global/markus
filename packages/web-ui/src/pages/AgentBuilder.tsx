@@ -476,7 +476,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
                   {isShared && hasNewVersion ? (
                     <button onClick={() => setShareModeTarget(art)} disabled={!!busyAction}
                       className="text-xs px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/50 transition-colors disabled:opacity-50">
-                      {busyAction === 'share' ? t('common:sharing') : `Update v${localVersion}`}
+                      {busyAction === 'share' ? t('common:sharing') : t('share.updateVersion', { version: localVersion })}
                     </button>
                   ) : isShared ? (
                     <div className="flex items-center gap-1">
@@ -575,17 +575,17 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setSharePrompt(null)}>
             <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-sm w-full mx-4 p-6" onClick={e => e.stopPropagation()}>
               <h3 className="text-base font-semibold text-fg-primary mb-2">{t('common:share')}</h3>
-              <p className="text-sm text-fg-secondary mb-5">{t('shareImagePrompt', { defaultValue: 'Would you like to add images before sharing? Images help attract more users on the Hub.' })}</p>
+              <p className="text-sm text-fg-secondary mb-5">{t('share.imagePrompt')}</p>
               <div className="flex gap-3">
                 <button
                   onClick={() => { const art = sharePrompt; setSharePrompt(null); setShareModeTarget(art); }}
                   className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-gray-600 transition-colors">
-                  {t('shareDirectly', { defaultValue: 'Share Directly' })}
+                  {t('share.directly')}
                 </button>
                 <button
                   onClick={() => { const art = sharePrompt; setSharePrompt(null); navigateToDetail(art); }}
                   className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">
-                  {t('addImagesThenShare', { defaultValue: 'Add Images First' })}
+                  {t('share.addImagesFirst')}
                 </button>
               </div>
             </div>
@@ -619,55 +619,56 @@ function ShareModeSelect({ isUpdate, onCancel, onConfirm }: {
   onCancel: () => void;
   onConfirm: (mode: 'free' | 'donation' | 'paid', priceCents: number) => void;
 }) {
+  const { t } = useTranslation(['builder', 'common']);
   const [mode, setMode] = useState<'free' | 'donation' | 'paid'>('free');
   const [price, setPrice] = useState('');
 
   return (
     <>
       <h3 className="text-base font-semibold text-fg-primary mb-4">
-        {isUpdate ? 'Update Share Settings' : 'Choose Share Mode'}
+        {isUpdate ? t('shareMode.titleUpdate') : t('shareMode.title')}
       </h3>
       <div className="space-y-2 mb-5">
         <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === 'free' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
           <input type="radio" name="shareMode" checked={mode === 'free'} onChange={() => setMode('free')} className="accent-brand-500" />
           <div>
-            <div className="text-sm font-medium text-fg-primary">Free</div>
-            <div className="text-[11px] text-fg-tertiary">Anyone can download for free</div>
+            <div className="text-sm font-medium text-fg-primary">{t('shareMode.free')}</div>
+            <div className="text-[11px] text-fg-tertiary">{t('shareMode.freeDesc')}</div>
           </div>
         </label>
         <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === 'donation' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
           <input type="radio" name="shareMode" checked={mode === 'donation'} onChange={() => setMode('donation')} className="accent-brand-500" />
           <div>
-            <div className="text-sm font-medium text-fg-primary">Accept Donations</div>
-            <div className="text-[11px] text-fg-tertiary">Free download, users can optionally tip</div>
+            <div className="text-sm font-medium text-fg-primary">{t('shareMode.donation')}</div>
+            <div className="text-[11px] text-fg-tertiary">{t('shareMode.donationDesc')}</div>
           </div>
         </label>
         <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === 'paid' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
           <input type="radio" name="shareMode" checked={mode === 'paid'} onChange={() => setMode('paid')} className="accent-brand-500" />
           <div>
-            <div className="text-sm font-medium text-fg-primary">Paid Download</div>
-            <div className="text-[11px] text-fg-tertiary">Users must pay to download</div>
+            <div className="text-sm font-medium text-fg-primary">{t('shareMode.paid')}</div>
+            <div className="text-[11px] text-fg-tertiary">{t('shareMode.paidDesc')}</div>
           </div>
         </label>
       </div>
       {mode === 'paid' && (
         <div className="mb-5">
-          <label className="text-xs text-fg-secondary block mb-1.5">Price (USD)</label>
+          <label className="text-xs text-fg-secondary block mb-1.5">{t('shareMode.priceLabel')}</label>
           <div className="flex items-center gap-2">
             <span className="text-sm text-fg-tertiary">$</span>
-            <input type="number" min="0.5" step="0.5" value={price} onChange={e => setPrice(e.target.value)} placeholder="e.g. 4.99"
+            <input type="number" min="0.5" step="0.5" value={price} onChange={e => setPrice(e.target.value)} placeholder={t('shareMode.pricePlaceholder')}
               className="flex-1 text-sm px-3 py-2 rounded-lg bg-surface-elevated border border-border-default text-fg-primary placeholder:text-fg-muted" />
           </div>
         </div>
       )}
       <div className="flex gap-3">
         <button onClick={onCancel} className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-gray-600 transition-colors">
-          Cancel
+          {t('common:cancel')}
         </button>
         <button onClick={() => onConfirm(mode, mode === 'paid' ? Math.round(Number(price) * 100) : 0)}
           disabled={mode === 'paid' && (!price || Number(price) <= 0)}
           className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-          {isUpdate ? 'Update' : 'Share'}
+          {isUpdate ? t('shareMode.update') : t('shareMode.share')}
         </button>
       </div>
     </>

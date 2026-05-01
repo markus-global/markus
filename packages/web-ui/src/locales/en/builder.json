@@ -51,5 +51,37 @@
     "skills": "Skills",
     "files": "Files ({{count}})",
     "members": "Members ({{count}})"
+  },
+  "share": {
+    "imagePrompt": "Would you like to add images before sharing? Images help attract more users on the Hub.",
+    "directly": "Share Directly",
+    "addImagesFirst": "Add Images First",
+    "toHub": "Share to Hub",
+    "sharing": "Sharing...",
+    "updating": "Updating...",
+    "updateVersion": "Update v{{version}}",
+    "viewOnHub": "View on Hub"
+  },
+  "shareMode": {
+    "title": "Choose Share Mode",
+    "titleUpdate": "Update Share Settings",
+    "free": "Free",
+    "freeDesc": "Anyone can download for free",
+    "donation": "Accept Donations",
+    "donationDesc": "Free download, users can optionally tip",
+    "paid": "Paid Download",
+    "paidDesc": "Users must pay to download",
+    "priceLabel": "Price (USD)",
+    "pricePlaceholder": "e.g. 4.99",
+    "update": "Update",
+    "share": "Share"
+  },
+  "versionBump": {
+    "contentModified": "Content has been modified. Consider updating the version number.",
+    "bumpVersion": "Bump Version",
+    "newVersion": "New version:"
+  },
+  "images": {
+    "dropOrClick": "Drop images or click to upload"
   }
 }

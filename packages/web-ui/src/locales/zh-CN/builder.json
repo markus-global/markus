@@ -51,5 +51,37 @@
     "skills": "技能",
     "files": "文件（{{count}}）",
     "members": "成员（{{count}}）"
+  },
+  "share": {
+    "imagePrompt": "分享前是否要添加一些图片？图片能帮助你的作品在 Hub 上吸引更多用户。",
+    "directly": "直接分享",
+    "addImagesFirst": "先添加图片",
+    "toHub": "分享到 Hub",
+    "sharing": "正在分享...",
+    "updating": "正在更新...",
+    "updateVersion": "更新 v{{version}}",
+    "viewOnHub": "在 Hub 查看"
+  },
+  "shareMode": {
+    "title": "选择分享模式",
+    "titleUpdate": "更新分享设置",
+    "free": "免费",
+    "freeDesc": "所有人均可免费下载",
+    "donation": "接受打赏",
+    "donationDesc": "免费下载，用户可自愿打赏",
+    "paid": "付费下载",
+    "paidDesc": "用户需付费才能下载",
+    "priceLabel": "价格（美元）",
+    "pricePlaceholder": "例如 4.99",
+    "update": "更新",
+    "share": "分享"
+  },
+  "versionBump": {
+    "contentModified": "内容已修改，建议更新版本号。",
+    "bumpVersion": "更新版本",
+    "newVersion": "新版本："
+  },
+  "images": {
+    "dropOrClick": "拖拽图片或点击上传"
   }
 }

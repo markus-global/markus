@@ -335,6 +335,7 @@ function ImageGallery({ images, artifactType, artifactName, onUpload, onRemove }
   images: string[]; artifactType: string; artifactName: string;
   onUpload: (file: File) => void; onRemove: (filename: string) => void;
 }) {
+  const { t } = useTranslation(['builder']);
   const fileInputRef = useRef<HTMLInputElement>(null);
   if (images.length === 0) {
     return (
@@ -343,7 +344,7 @@ function ImageGallery({ images, artifactType, artifactName, onUpload, onRemove }
         onDragOver={e => e.preventDefault()}
         onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f?.type.startsWith('image/')) onUpload(f); }}>
         <svg className="w-8 h-8 mx-auto mb-2 text-fg-muted/50" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>
-        Drop images or click to upload
+        {t('images.dropOrClick')}
         <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) onUpload(f); e.target.value = ''; }} />
       </div>
     );
@@ -816,13 +817,13 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
                     <a href={link} target="_blank" rel="noopener noreferrer"
                       className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:text-green-500 hover:border-green-500/50 transition-colors inline-flex items-center gap-1.5">
                       <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                      View on Hub
+                      {t('share.viewOnHub')}
                     </a>
                   )}
                   {hasNewVersion && (
                     <button onClick={() => setShowShareMode(true)} disabled={shareInProgress}
                       className="text-xs px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/50 transition-colors disabled:opacity-50">
-                      {shareInProgress ? 'Updating...' : `Update v${localVersion}`}
+                      {shareInProgress ? t('share.updating') : t('share.updateVersion', { version: localVersion })}
                     </button>
                   )}
                 </>
@@ -831,7 +832,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
             {!hubStatus.shared && (
               <button onClick={() => setShowShareMode(true)} disabled={shareInProgress}
                 className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50">
-                {shareInProgress ? 'Sharing...' : 'Share to Hub'}
+                {shareInProgress ? t('share.sharing') : t('share.toHub')}
               </button>
             )}
           </div>
@@ -840,16 +841,16 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
         {/* Version bump notification */}
         {contentDirty && !showVersionBump && (
           <div className="mb-4 px-4 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-between">
-            <span className="text-xs text-amber-300">Content has been modified. Consider updating the version number.</span>
+            <span className="text-xs text-amber-300">{t('versionBump.contentModified')}</span>
             <button onClick={() => setShowVersionBump(true)} className="text-xs px-3 py-1 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition-colors">
-              Bump Version
+              {t('versionBump.bumpVersion')}
             </button>
           </div>
         )}
         {showVersionBump && (
           <div className="mb-4 px-4 py-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
             <div className="flex items-center gap-3">
-              <span className="text-xs text-amber-300">New version:</span>
+              <span className="text-xs text-amber-300">{t('versionBump.newVersion')}</span>
               <input
                 type="text"
                 defaultValue={(() => {
@@ -1166,6 +1167,7 @@ function ShareModeDialog({ onClose, onConfirm, isUpdate }: {
   onConfirm: (mode: 'free' | 'donation' | 'paid', priceCents: number) => void;
   isUpdate: boolean;
 }) {
+  const { t } = useTranslation(['builder', 'common']);
   const [mode, setMode] = useState<'free' | 'donation' | 'paid'>('free');
   const [price, setPrice] = useState('');
 
@@ -1173,42 +1175,42 @@ function ShareModeDialog({ onClose, onConfirm, isUpdate }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-sm w-full mx-4 p-6" onClick={e => e.stopPropagation()}>
         <h3 className="text-base font-semibold text-fg-primary mb-4">
-          {isUpdate ? 'Update Share Settings' : 'Share to Hub'}
+          {isUpdate ? t('shareMode.titleUpdate') : t('share.toHub')}
         </h3>
 
         <div className="space-y-2 mb-5">
           <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === 'free' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
             <input type="radio" name="shareMode" checked={mode === 'free'} onChange={() => setMode('free')} className="accent-brand-500" />
             <div>
-              <div className="text-sm font-medium text-fg-primary">Free</div>
-              <div className="text-[11px] text-fg-tertiary">Anyone can download for free</div>
+              <div className="text-sm font-medium text-fg-primary">{t('shareMode.free')}</div>
+              <div className="text-[11px] text-fg-tertiary">{t('shareMode.freeDesc')}</div>
             </div>
           </label>
           <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === 'donation' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
             <input type="radio" name="shareMode" checked={mode === 'donation'} onChange={() => setMode('donation')} className="accent-brand-500" />
             <div>
-              <div className="text-sm font-medium text-fg-primary">Accept Donations</div>
-              <div className="text-[11px] text-fg-tertiary">Free download, users can optionally tip</div>
+              <div className="text-sm font-medium text-fg-primary">{t('shareMode.donation')}</div>
+              <div className="text-[11px] text-fg-tertiary">{t('shareMode.donationDesc')}</div>
             </div>
           </label>
           <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === 'paid' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
             <input type="radio" name="shareMode" checked={mode === 'paid'} onChange={() => setMode('paid')} className="accent-brand-500" />
             <div>
-              <div className="text-sm font-medium text-fg-primary">Paid Download</div>
-              <div className="text-[11px] text-fg-tertiary">Users must pay to download</div>
+              <div className="text-sm font-medium text-fg-primary">{t('shareMode.paid')}</div>
+              <div className="text-[11px] text-fg-tertiary">{t('shareMode.paidDesc')}</div>
             </div>
           </label>
         </div>
 
         {mode === 'paid' && (
           <div className="mb-5">
-            <label className="text-xs text-fg-secondary block mb-1.5">Price (USD)</label>
+            <label className="text-xs text-fg-secondary block mb-1.5">{t('shareMode.priceLabel')}</label>
             <div className="flex items-center gap-2">
               <span className="text-sm text-fg-tertiary">$</span>
               <input
                 type="number" min="0.5" step="0.5" value={price}
                 onChange={e => setPrice(e.target.value)}
-                placeholder="e.g. 4.99"
+                placeholder={t('shareMode.pricePlaceholder')}
                 className="flex-1 text-sm px-3 py-2 rounded-lg bg-surface-elevated border border-border-default text-fg-primary placeholder:text-fg-muted"
               />
             </div>
@@ -1218,13 +1220,13 @@ function ShareModeDialog({ onClose, onConfirm, isUpdate }: {
         <div className="flex gap-3">
           <button onClick={onClose}
             className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-gray-600 transition-colors">
-            Cancel
+            {t('common:cancel')}
           </button>
           <button
             onClick={() => onConfirm(mode, mode === 'paid' ? Math.round(Number(price) * 100) : 0)}
             disabled={mode === 'paid' && (!price || Number(price) <= 0)}
             className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-            {isUpdate ? 'Update' : 'Share'}
+            {isUpdate ? t('shareMode.update') : t('shareMode.share')}
           </button>
         </div>
       </div>
