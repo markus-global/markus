@@ -6350,10 +6350,13 @@ EXPLANATION_END`;
       return;
     }
 
-    // Settings — Agent configuration (maxToolIterations etc.)
+    // Settings — Agent configuration (maxToolIterations, cognitive etc.)
     if (path === '/api/settings/agent' && req.method === 'GET') {
       const am = this.orgService.getAgentManager();
-      this.json(res, 200, { maxToolIterations: am.maxToolIterations });
+      this.json(res, 200, {
+        maxToolIterations: am.maxToolIterations,
+        cognitive: am.cognitiveConfig ?? { enabled: false },
+      });
       return;
     }
 
@@ -6365,6 +6368,16 @@ EXPLANATION_END`;
       let changed = false;
       if (typeof body['maxToolIterations'] === 'number') {
         am.maxToolIterations = body['maxToolIterations'];
+        changed = true;
+      }
+      if (body['cognitive'] && typeof body['cognitive'] === 'object') {
+        const cc = body['cognitive'] as Record<string, unknown>;
+        am.cognitiveConfig = {
+          enabled: cc['enabled'] === true,
+          maxDepth: typeof cc['maxDepth'] === 'number' ? cc['maxDepth'] : undefined,
+          appraisalModel: typeof cc['appraisalModel'] === 'string' ? cc['appraisalModel'] : undefined,
+          timeoutMs: typeof cc['timeoutMs'] === 'number' ? cc['timeoutMs'] : undefined,
+        };
         changed = true;
       }
       if (changed) {
@@ -6386,7 +6399,10 @@ EXPLANATION_END`;
           success: true,
         });
       }
-      this.json(res, 200, { maxToolIterations: am.maxToolIterations });
+      this.json(res, 200, {
+        maxToolIterations: am.maxToolIterations,
+        cognitive: am.cognitiveConfig ?? { enabled: false },
+      });
       return;
     }
 

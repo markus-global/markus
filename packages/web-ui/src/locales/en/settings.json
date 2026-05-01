@@ -196,6 +196,19 @@
     "saved": "Saved",
     "failedToSave": "Failed to save"
   },
+  "cognitive": {
+    "title": "Cognitive Preparation Pipeline",
+    "description": "Before each main LLM call, the agent runs a lightweight appraisal to assess the stimulus and prepare persona-aware context. This can improve response relevance at the cost of a small extra LLM call (~500ms).",
+    "enabled": "Enable CPP",
+    "enabledDesc": "When enabled, agents run a cognitive appraisal before responding",
+    "maxDepth": "Max Cognitive Depth",
+    "maxDepthDesc": "Controls how much preparation is done before each response",
+    "depthD1": "Appraisal only",
+    "depthD2": "Appraisal + Retrieval + Reflection",
+    "depthD3": "Full pipeline + post-evaluation",
+    "saved": "Saved",
+    "failedToSave": "Failed to save"
+  },
   "browserAutomation": {
     "title": "Browser Automation",
     "description": "Settings for the Chrome DevTools browser skill. Agents use Chrome to browse, test web apps, and inspect pages.",

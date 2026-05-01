@@ -196,6 +196,19 @@
     "saved": "已保存",
     "failedToSave": "保存失败"
   },
+  "cognitive": {
+    "title": "认知准备管线",
+    "description": "每次主 LLM 调用之前，智能体会运行一次轻量的认知评估，分析刺激并准备角色感知上下文。这可以提升响应相关性，代价是增加一次小型 LLM 调用（约 500ms）。",
+    "enabled": "启用 CPP",
+    "enabledDesc": "启用后，智能体在响应前会运行认知评估",
+    "maxDepth": "最大认知深度",
+    "maxDepthDesc": "控制每次响应前的准备工作深度",
+    "depthD1": "仅评估",
+    "depthD2": "评估 + 检索 + 反思",
+    "depthD3": "完整管线 + 事后评估",
+    "saved": "已保存",
+    "failedToSave": "保存失败"
+  },
   "browserAutomation": {
     "title": "浏览器自动化",
     "description": "Chrome DevTools 浏览器技能相关设置。智能体使用 Chrome 浏览网页、测试 Web 应用并检查页面。",

@@ -2,7 +2,7 @@
 
 This document defines the cognitive architecture that governs how agents prepare context before acting. It replaced the previous "mechanical assembly" model (system prompt + raw session + compression) with a **cognitive preparation pipeline** where multiple LLM calls, each with persona-aware prompts, prepare context before the main reasoning call.
 
-> **Implementation status**: The core CPP (Phases 1-4, depth levels D0-D2) is implemented in `packages/core/src/cognitive.ts` with types in `packages/shared/src/types/cognitive.ts`. D3 (post-response evaluation) remains a future enhancement.
+> **Implementation status**: The core CPP (Phases 1-4, depth levels D0-D2) is implemented in `packages/core/src/cognitive.ts` with types in `packages/shared/src/types/cognitive.ts`. D1 (appraisal) is wired into the Agent runtime behind a feature flag (`agent.cognitive.enabled` in `markus.json`, default `false`). D2+ requires a `RetrievalBackend` adapter (not yet built). D3 post-response evaluation remains a future enhancement.
 
 ---
 
@@ -489,22 +489,18 @@ interface CognitiveConfig {
 
 ### Completed
 - **Phase A**: `summary` + `keywords` columns on `agent_activities`; `prepareMessages` side-effects cleaned up; activity injection volume reduced
-- **Phase B (partial)**: `CognitivePreparation` class with all 4 phases implemented in `packages/core/src/cognitive.ts`; types defined in `packages/shared/src/types/cognitive.ts`; `buildSystemPrompt` in `context-engine.ts` accepts optional `cognitiveContext` and renders Cognitive Context / Retrieved Context / Reflection sections (skipping legacy `## Relevant Memories` when active)
+- **Phase B**: `CognitivePreparation` class with all 4 phases implemented in `packages/core/src/cognitive.ts`; types defined in `packages/shared/src/types/cognitive.ts`; `buildSystemPrompt` in `context-engine.ts` accepts optional `cognitiveContext` and renders Cognitive Context / Retrieved Context / Reflection sections (skipping legacy `## Relevant Memories` when active)
+- **Phase C (D1 only)**: CPP wired into `Agent` runtime behind feature flag (`enabled: false` by default). `Agent.handleMessage()`, `handleMessageStream()`, `_executeTaskInternal()`, and `respondInSession()` all call `prepareCognitiveContext()` before `buildSystemPrompt()`. Scenario strings aligned with Agent's actual scenario union. `CognitiveConfig` expanded with `maxDepth`, `appraisalModel`, `timeoutMs`. Config threaded through `AgentManager` from `markus.json` and REST API (`/api/settings/agent`). 25 unit tests covering depth selection, appraisal, fallback, maxDepth clamping, and `ContextEngine` CPP section rendering.
 
-### Not Yet Wired
-- `Agent.handleMessage()` and `Agent._executeTaskInternal()` do **not** call `CognitivePreparation.prepare()` — the pipeline is never invoked at runtime
-- No `RetrievalBackend` implementation exists — the interface is defined but no adapter wraps `IMemoryStore` / activity store / task store
-- `CognitiveConfig` is minimal (`enabled` + optional `defaultDepth`); the expanded config from §7.3 (model tiers, token budgets, confidence threshold) is not implemented
-- Scenario strings in `SCENARIO_DEPTH_MAP` (`human_chat`) do not match the strings used by `Agent` (`chat`) — will cause incorrect depth selection when wired
-- No tests for any CPP component
+### Not Yet Implemented
+- No `RetrievalBackend` implementation — the interface is defined but no adapter wraps `IMemoryStore` / activity store / task store (not needed for D1; required for D2+)
+- D2/D3 depth is available in code but blocked by `maxDepth` config (default D1) until `RetrievalBackend` is built
+- `CognitiveConfig` does not yet include per-scenario overrides or confidence threshold from §7.3
 
 ### Future Work
-- Wire CPP into `Agent` (Phase C below)
-- Build `RetrievalBackend` adapter over existing stores
-- Align scenario strings between Agent and CPP
-- Expand `CognitiveConfig` (per-scenario overrides, model selection, token budgets)
+- Build `RetrievalBackend` adapter over existing stores (enables D2)
 - Add post-response evaluation (D3)
 - Integrate with dream cycle
-- Remove legacy bulk memory retrieval from `buildSystemPrompt` (when CPP handles it for all scenarios)
+- Tune depth selection heuristics and appraisal prompts based on production data
+- Remove legacy bulk memory retrieval from `buildSystemPrompt` (when CPP handles all scenarios)
 - Simplify compression pipeline (most stages become unnecessary with thinner sessions)
-- Add unit and integration tests

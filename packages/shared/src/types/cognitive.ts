@@ -28,6 +28,7 @@ export interface CognitiveStimulus {
 
 /** Agent context available to cognitive phases */
 export interface CognitiveAgentContext {
+  id: string;
   name: string;
   roleDescription: string;
   status: string;
@@ -78,4 +79,10 @@ export interface PreparedCognitiveContext {
 export interface CognitiveConfig {
   enabled: boolean;
   defaultDepth?: CognitiveDepth;
+  /** Cap the maximum depth level (e.g. D1 for appraisal-only rollout) */
+  maxDepth?: CognitiveDepth;
+  /** Override model for appraisal/reflection calls (defaults to cheapest available) */
+  appraisalModel?: string;
+  /** Timeout in ms for CPP LLM calls (default: 15000) */
+  timeoutMs?: number;
 }
