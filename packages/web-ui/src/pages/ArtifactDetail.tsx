@@ -39,6 +39,15 @@ const TYPE_STYLES: Record<string, { icon: string; label: string; color: string; 
 
 const CATEGORIES: string[] = ['development', 'devops', 'management', 'productivity', 'browser', 'custom', 'general'];
 
+const EMOJI_GROUPS: { label: string; emojis: string[] }[] = [
+  { label: 'Tech', emojis: ['✦', '◈', '⬡', '⚡', '🤖', '🧠', '💡', '🎯', '🔧', '📦', '🚀', '💻', '🛠️', '⭐', '🔥', '💎', '⚙️', '🧩', '🔌', '💾', '🖥️', '📡', '🔬', '🧪', '🏗️', '📱', '🎮', '🕹️', '📟', '💽', '🖨️', '⌨️'] },
+  { label: 'People', emojis: ['👤', '👥', '🧑‍💻', '👨‍💼', '👩‍🔬', '🧙', '🦸', '🤝', '💪', '🎓', '👷', '🕵️', '🧑‍🎨', '🧑‍🏫', '👨‍🚀', '🥷', '🧑‍🏭', '🧑‍⚕️', '🧑‍🔧', '🧑‍🍳', '👨‍🎤', '🦹', '🧝', '🧞', '🧑‍✈️', '💂', '🤴', '👸', '🧛', '🧟', '🧜', '🧚'] },
+  { label: 'Objects', emojis: ['📝', '📊', '🗂️', '📁', '🔍', '🔑', '🌐', '💬', '🔒', '🎨', '📐', '🗃️', '📋', '✏️', '🖊️', '📌', '📎', '🧲', '🪝', '🧰', '🪜', '🧬', '🔭', '💊', '🩺', '📕', '📗', '📘', '📙', '📓', '🗒️', '📰'] },
+  { label: 'Symbols', emojis: ['❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '♠️', '♥️', '♦️', '♣️', '🎵', '🎶', '💯', '✅', '❌', '⭕', '🔴', '🟠', '🟡', '🟢', '🔵', '🟣', '⚫', '⚪', '🟤', '🔶', '🔷', '▶️', '⏸️', '⏹️'] },
+  { label: 'Nature', emojis: ['🌟', '🌈', '🌊', '🌿', '🍀', '🔮', '💫', '✨', '🌙', '☀️', '🦋', '🐉', '🦊', '🐺', '🦅', '🐙', '🦁', '🐯', '🦄', '🐲', '🌸', '🌺', '🍄', '🌵', '🎄', '🌴', '🍁', '🌻', '🐝', '🦎', '🐍', '🦈'] },
+  { label: 'Activity', emojis: ['🎯', '🏆', '🥇', '🎖️', '🏅', '🎪', '🎭', '🎬', '🎤', '🎧', '🎼', '🎹', '🥁', '🎸', '🎺', '🎻', '⚽', '🏀', '🎾', '🏐', '🎲', '🧸', '🪁', '🎰', '🎳', '🏹', '🥊', '🤺', '⛷️', '🏄', '🚴', '🧗'] },
+];
+
 const PERMISSION_ICONS: Record<string, { icon: string; color: string }> = {
   shell:   { icon: '>', color: 'bg-amber-500/15 text-amber-400 border-amber-500/30' },
   file:    { icon: '◫', color: 'bg-blue-500/15 text-blue-400 border-blue-500/30' },
@@ -531,6 +540,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
   const [contentDirty, setContentDirty] = useState(false);
   const [showVersionBump, setShowVersionBump] = useState(false);
   const [showShareMode, setShowShareMode] = useState(false);
+  const [showIconPicker, setShowIconPicker] = useState(false);
 
   const [editName, setEditName] = useState('');
   const [editDesc, setEditDesc] = useState('');
@@ -639,8 +649,22 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
       const category = manifest.category || 'general';
       const tags = manifest.tags ?? [];
       const slug = name;
-      const icon = manifest.icon || undefined;
+      let icon: string | undefined = manifest.icon || undefined;
       const version = manifest.version || '1.0.0';
+
+      // If icon is a local image path, upload it to Hub
+      if (icon && !icon.startsWith('http') && /\.(png|jpe?g|gif|webp|svg)$/i.test(icon)) {
+        const iconFilename = icon.split('/').pop() ?? icon;
+        try {
+          const iconResp = await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(name)}/images/${encodeURIComponent(iconFilename)}`);
+          if (iconResp.ok) {
+            const blob = await iconResp.blob();
+            const file = new File([blob], iconFilename, { type: blob.type });
+            const uploaded = await hubApi.uploadImage(file);
+            if (uploaded?.url) icon = uploaded.url;
+          }
+        } catch { /* keep original icon */ }
+      }
 
       let thumbnailUrl: string | undefined;
       const hubImages: Array<{ url: string; alt: string; order: number }> = [];
@@ -696,6 +720,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
     try {
       await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(name)}/images`, { method: 'POST', body: formData, credentials: 'include' });
       await load();
+      setContentDirty(true);
     } catch (err) { console.error('Image upload failed:', err); }
   };
 
@@ -703,6 +728,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
     try {
       await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(name)}/images/${encodeURIComponent(filename)}`, { method: 'DELETE', credentials: 'include' });
       await load();
+      setContentDirty(true);
     } catch (err) { console.error('Image remove failed:', err); }
   };
 
@@ -858,9 +884,76 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
           <div className={`${isMobile ? 'w-full' : 'flex-1 min-w-0'}`}>
             {/* Hero: icon + title + desc (all inline editable) */}
             <div className="flex items-start gap-4 mb-6">
-              <div onClick={() => handleFieldChange('icon', prompt('Enter icon emoji:', editIcon) ?? editIcon)}
-                className={`w-16 h-16 rounded-xl ${style.bg} flex items-center justify-center text-3xl shrink-0 cursor-pointer hover:ring-2 ${style.ring} transition-all`}>
-                {editIcon || style.icon}
+              <div className="relative">
+                <div onClick={() => setShowIconPicker(!showIconPicker)}
+                  className={`w-16 h-16 rounded-xl ${style.bg} flex items-center justify-center text-3xl shrink-0 cursor-pointer hover:ring-2 ${style.ring} transition-all overflow-hidden`}>
+                  {editIcon && editIcon.startsWith('images/')
+                    ? <img src={`/api/builder/artifacts/${type}s/${encodeURIComponent(name)}/images/${encodeURIComponent(editIcon.replace('images/', ''))}`} alt="" className="w-full h-full object-cover" />
+                    : editIcon && (editIcon.startsWith('http') || editIcon.startsWith('/'))
+                      ? <img src={editIcon} alt="" className="w-full h-full object-cover" />
+                      : (editIcon || style.icon)}
+                </div>
+                {showIconPicker && (
+                  <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowIconPicker(false)} />
+                  <div className="absolute top-full left-0 mt-2 z-50 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-80">
+                    <div className="flex items-center gap-2 mb-3">
+                      <input
+                        type="text" placeholder="Paste emoji or image URL..."
+                        className="flex-1 text-sm px-2 py-1.5 rounded-lg bg-surface-elevated border border-border-default text-fg-primary placeholder:text-fg-muted"
+                        defaultValue={editIcon}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') {
+                            handleFieldChange('icon', (e.target as HTMLInputElement).value);
+                            setShowIconPicker(false);
+                          }
+                        }}
+                      />
+                      <label className="text-[10px] text-brand-400 hover:text-brand-300 cursor-pointer px-1.5 py-1 border border-brand-500/30 rounded-lg">
+                        Upload
+                        <input type="file" accept="image/*" className="hidden" onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const formData = new FormData();
+                          formData.append('image', file);
+                          try {
+                            const resp = await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(name)}/images`, { method: 'POST', body: formData, credentials: 'include' });
+                            if (resp.ok) {
+                              const data = await resp.json() as { filename: string; path: string };
+                              const iconPath = data.path;
+                              setEditIcon(iconPath);
+                              setShowIconPicker(false);
+                              if (manifest) {
+                                const updated = { ...manifest, icon: iconPath };
+                                setManifest(updated);
+                                await api.builder.artifacts.save(type as 'agent' | 'team' | 'skill', updated);
+                              }
+                              setContentDirty(true);
+                            }
+                          } catch { /* skip */ }
+                        }} />
+                      </label>
+                      {editIcon && <button onClick={() => { handleFieldChange('icon', ''); setShowIconPicker(false); }}
+                        className="text-[10px] text-fg-tertiary hover:text-red-400 px-1">✕</button>}
+                    </div>
+                    <div className="max-h-64 overflow-y-auto">
+                      {EMOJI_GROUPS.map(g => (
+                        <div key={g.label} className="mb-2.5">
+                          <div className="text-[10px] text-fg-tertiary mb-1 sticky top-0 bg-gray-900 py-0.5">{g.label}</div>
+                          <div className="flex flex-wrap gap-0.5">
+                            {g.emojis.map(e => (
+                              <button key={e} onClick={() => { handleFieldChange('icon', e); setShowIconPicker(false); }}
+                                className={`w-7 h-7 rounded flex items-center justify-center text-base hover:bg-surface-elevated transition-colors ${editIcon === e ? 'ring-1.5 ring-brand-500 bg-brand-500/10' : ''}`}>
+                                {e}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  </>
+                )}
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
@@ -880,11 +973,9 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
             </div>
 
             {/* Image gallery */}
-            {imageFiles.length > 0 && (
-              <div className="mb-8">
-                <ImageGallery images={imageFiles} artifactType={type} artifactName={name} onUpload={handleImageUpload} onRemove={handleImageRemove} />
-              </div>
-            )}
+            <div className="mb-8">
+              <ImageGallery images={imageFiles} artifactType={type} artifactName={name} onUpload={handleImageUpload} onRemove={handleImageRemove} />
+            </div>
 
             {/* Type-specific sections */}
             {type === 'team' && manifest.team && (
@@ -1038,12 +1129,6 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
                 </div>
               ) : null}
 
-              {/* Add screenshots (when no images shown in main area) */}
-              {imageFiles.length === 0 && (
-                <div className="rounded-xl border border-dashed border-border-default bg-surface-secondary/30 p-3">
-                  <ImageGallery images={[]} artifactType={type} artifactName={name} onUpload={handleImageUpload} onRemove={handleImageRemove} />
-                </div>
-              )}
 
               {/* Path */}
               {artPath && (

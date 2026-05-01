@@ -124,6 +124,8 @@ export function buildManifest(
     category: ((raw.category as string) ?? 'general') as PackageCategory,
     tags: toArr(raw.tags),
     icon: (raw.icon as string) || undefined,
+    thumbnail: (raw.thumbnail as string) || undefined,
+    screenshots: Array.isArray(raw.screenshots) ? (raw.screenshots as string[]) : undefined,
     source: raw.source as PackageSource | undefined,
     dependencies: undefined,
   };

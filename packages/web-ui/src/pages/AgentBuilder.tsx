@@ -224,8 +224,22 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
       const category = (art.meta.category as string) || 'general';
       const tags = Array.isArray(art.meta.tags) ? (art.meta.tags as string[]) : [];
       const slug = art.name;
-      const icon = (art.meta.icon as string) || undefined;
+      let icon: string | undefined = (art.meta.icon as string) || undefined;
       const version = (art.meta.version as string) || '1.0.0';
+
+      // If icon is a local image path, upload it to Hub
+      if (icon && !icon.startsWith('http') && /\.(png|jpe?g|gif|webp|svg)$/i.test(icon)) {
+        const iconFilename = icon.split('/').pop() ?? icon;
+        try {
+          const iconResp = await fetch(`/api/builder/artifacts/${art.type}s/${encodeURIComponent(art.name)}/images/${encodeURIComponent(iconFilename)}`);
+          if (iconResp.ok) {
+            const blob = await iconResp.blob();
+            const file = new File([blob], iconFilename, { type: blob.type });
+            const uploaded = await hubApi.uploadImage(file);
+            if (uploaded?.url) icon = uploaded.url;
+          }
+        } catch { /* keep original icon */ }
+      }
 
       let thumbnailUrl: string | undefined;
       const hubImages: Array<{ url: string; alt: string; order: number }> = [];
@@ -477,7 +491,11 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
                       </button>
                     </div>
                   ) : (
-                    <button onClick={async () => { await hubApi.ensureAuth(); setSharePrompt(art); }} disabled={!!busyAction}
+                    <button onClick={async () => {
+                      await hubApi.ensureAuth();
+                      const hasImages = Array.isArray(art.meta.screenshots) && art.meta.screenshots.length > 0;
+                      if (hasImages) { setShareModeTarget(art); } else { setSharePrompt(art); }
+                    }} disabled={!!busyAction}
                       className="text-xs px-3 py-1.5 rounded-lg border border-border-default text-fg-secondary hover:text-green-600 hover:border-green-500/30 transition-colors disabled:opacity-50">
                       {busyAction === 'share' ? t('common:sharing') : t('common:share')}
                     </button>
@@ -493,9 +511,22 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
                 <div key={key} onClick={() => navigateToDetail(art)}
                   className="group rounded-lg border border-border-default bg-surface-secondary/60 p-4 hover:border-gray-600 transition-all overflow-hidden cursor-pointer">
                   <div className="flex items-start gap-3 min-w-0">
-                    <div className={`w-9 h-9 rounded-lg ${style.bg} flex items-center justify-center text-lg shrink-0`}>
-                      {style.icon}
-                    </div>
+                    {(() => {
+                      const artIcon = art.meta.icon as string | undefined;
+                      const isImgIcon = artIcon && (artIcon.startsWith('http') || artIcon.startsWith('/') || /\.(png|jpe?g|gif|webp|svg)$/i.test(artIcon));
+                      const imgSrc = isImgIcon
+                        ? (artIcon.startsWith('http') || artIcon.startsWith('/'))
+                          ? artIcon
+                          : `/api/builder/artifacts/${art.type}s/${encodeURIComponent(art.name)}/images/${encodeURIComponent(artIcon.split('/').pop() ?? '')}`
+                        : null;
+                      return (
+                        <div className={`w-9 h-9 rounded-lg ${style.bg} flex items-center justify-center text-lg shrink-0 overflow-hidden`}>
+                          {imgSrc ? <img src={imgSrc} alt="" className="w-full h-full object-cover" />
+                            : artIcon ? <span>{artIcon}</span>
+                            : style.icon}
+                        </div>
+                      );
+                    })()}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-0.5">
                         <span className="text-sm font-medium text-fg-primary truncate">{displayName}</span>
