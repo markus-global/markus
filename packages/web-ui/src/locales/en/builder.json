@@ -82,7 +82,8 @@
     "newVersion": "New version:"
   },
   "images": {
-    "dropOrClick": "Drop images or click to upload"
+    "dropOrClick": "Drop images or click to upload",
+    "hint": "Screenshots, demos, or previews showing your artifact in action"
   },
   "detail": {
     "backToBuilder": "Back to Builder",

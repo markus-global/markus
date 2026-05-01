@@ -382,7 +382,8 @@ function ImageGallery({ images, artifactType, artifactName, onUpload, onRemove }
         onDragOver={e => e.preventDefault()}
         onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f?.type.startsWith('image/')) onUpload(f); }}>
         <svg className="w-8 h-8 mx-auto mb-2 text-fg-muted/50" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>
-        {t('images.dropOrClick')}
+        <span className="block">{t('images.dropOrClick')}</span>
+        <span className="block text-xs text-fg-muted/60 mt-1">{t('images.hint')}</span>
         <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) onUpload(f); e.target.value = ''; }} />
       </div>
     );

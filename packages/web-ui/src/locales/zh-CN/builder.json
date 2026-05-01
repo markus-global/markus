@@ -1,5 +1,5 @@
 {
-  "title": "构建器",
+  "title": "创建",
   "subtitle": "招聘智能体、组建团队并创建技能。秘书会全程处理 — 从寻源到入职。",
   "prompts": {
     "hireAgent": "招聘智能体",
@@ -82,7 +82,8 @@
     "newVersion": "新版本："
   },
   "images": {
-    "dropOrClick": "拖拽图片或点击上传"
+    "dropOrClick": "拖拽图片或点击上传",
+    "hint": "上传效果图、截图或演示图片，展示你的作品"
   },
   "detail": {
     "backToBuilder": "返回构建器",
