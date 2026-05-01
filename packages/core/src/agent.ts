@@ -589,6 +589,7 @@ export class Agent {
       }>;
       taskId?: string;
       requirementId?: string;
+      waitForReply?: boolean;
     },
   ): Promise<string> {
     const sourceType = options?.sourceType
@@ -609,6 +610,7 @@ export class Agent {
           : undefined,
         scenario: options?.scenario,
         toolEventCollector: options?.toolEventCollector,
+        waitForReply: options?.waitForReply,
       },
     };
 
@@ -869,6 +871,7 @@ export class Agent {
       if (extra.fileNames !== undefined) opts.fileNames = extra.fileNames;
       if (extra.scenario !== undefined) opts.scenario = extra.scenario;
       if (extra.toolEventCollector !== undefined) opts.toolEventCollector = extra.toolEventCollector;
+      if (extra.waitForReply !== undefined) opts.waitForReply = extra.waitForReply;
       if (extra.allowedTools !== undefined) {
         opts.allowedTools = new Set(extra.allowedTools as string[]);
       }
@@ -2275,6 +2278,7 @@ export class Agent {
         result?: string;
         durationMs?: number;
       }>;
+      waitForReply?: boolean;
     }
   ): Promise<string> {
     if (this.activeTasks.size === 0) {
@@ -2398,6 +2402,7 @@ export class Agent {
       deliverableContext: isLightweight ? undefined : this.getDeliverableContext(effectiveMessage),
       environment: this.environmentProfile,
       scenario,
+      a2aWaitForReply: scenario === 'a2a' ? options?.waitForReply : undefined,
       agentWorkspace: this.pathPolicy ? {
         primaryWorkspace: this.pathPolicy.primaryWorkspace,
         sharedWorkspace: this.pathPolicy.sharedWorkspace,

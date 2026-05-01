@@ -307,7 +307,7 @@ export class APIServer {
                 agentManager.getAgent(peerId).enqueueToMailbox('a2a_message', {
                   summary: `Group chat message from ${senderName}`,
                   content: `[Group chat message from ${senderName}]:\n${cleanText}`,
-                  extra: { senderId, senderName, channelKey },
+                  extra: { senderId, senderName, channelKey, waitForReply: false },
                 }, {
                   metadata: { senderId, senderName, senderRole: 'agent' },
                 });
@@ -953,6 +953,7 @@ export class APIServer {
           scenario: isA2A ? 'a2a' : undefined,
           channelContext,
           toolEventCollector: toolEvents,
+          waitForReply: isA2A ? true : undefined,
         }
       );
 
@@ -2093,7 +2094,7 @@ export class APIServer {
         const reply = await targetAgent.sendMessage(messageText, fromAgentId, {
           name: fromAgent.config.name,
           role: fromAgent.config.agentRole ?? 'worker',
-        }, { sourceType: 'a2a_message' });
+        }, { sourceType: 'a2a_message', waitForReply: true });
         this.json(res, 200, { from: fromAgentId, to: agentId, reply });
         return;
       }

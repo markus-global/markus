@@ -8,7 +8,7 @@ export interface A2AContext {
   selfId: string;
   selfName: string;
   listColleagues: () => Array<{ id: string; name: string; role: string; status: string; skills?: string[] }>;
-  sendMessage: (targetId: string, message: string, fromId: string, fromName: string, priority?: number) => Promise<string>;
+  sendMessage: (targetId: string, message: string, fromId: string, fromName: string, priority?: number, waitForReply?: boolean) => Promise<string>;
   delegateTask?: (targetId: string, delegation: TaskDelegation) => Promise<DelegationResult>;
   sendGroupMessage?: (channelKey: string, message: string, senderId: string, senderName: string) => Promise<string>;
   createGroupChat?: (name: string, memberIds: string[]) => Promise<{ id: string; name: string }>;
@@ -55,7 +55,7 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
         if (waitForReply) {
           log.info(`A2A request (sync): ${ctx.selfName} → ${targetId}`, { messageLen: message.length });
           try {
-            const reply = await ctx.sendMessage(targetId, message, ctx.selfId, ctx.selfName, 0);
+            const reply = await ctx.sendMessage(targetId, message, ctx.selfId, ctx.selfName, 0, true);
             log.info(`A2A reply received: ${targetId} → ${ctx.selfName}`, { replyLen: reply.length });
             return JSON.stringify({ status: 'replied', from: targetId, reply });
           } catch (err: unknown) {
@@ -65,7 +65,7 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
         }
 
         log.info(`A2A notify (async): ${ctx.selfName} → ${targetId}`, { messageLen: message.length });
-        ctx.sendMessage(targetId, message, ctx.selfId, ctx.selfName).catch((err: unknown) => {
+        ctx.sendMessage(targetId, message, ctx.selfId, ctx.selfName, undefined, false).catch((err: unknown) => {
           log.warn(`A2A async message to ${targetId} failed in background`, { error: String(err) });
         });
         return JSON.stringify({ status: 'dispatched', message: 'Notification sent. The agent will process it independently.' });

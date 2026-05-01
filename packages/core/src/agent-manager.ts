@@ -546,7 +546,7 @@ export class AgentManager {
           `[Delegated Task from ${envelope.from}]\nTitle: ${delegation.title}\nDescription: ${delegation.description}\nPriority: ${delegation.priority}`,
           envelope.from,
           { name: envelope.from, role: 'manager' },
-          { sourceType: 'a2a_message', sessionId: `sys_${envelope.from}_${Date.now()}` }
+          { sourceType: 'a2a_message', sessionId: `sys_${envelope.from}_${Date.now()}`, waitForReply: false }
         );
       }
     });
@@ -907,7 +907,7 @@ export class AgentManager {
             return { ...a, skills: [] };
           }
         }),
-      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string, priority?: number) => {
+      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string, priority?: number, waitForReply?: boolean) => {
         // Lightweight path: informational broadcasts are stored directly,
         // skipping the expensive LLM call that would cause cascade amplification.
         try {
@@ -934,6 +934,7 @@ export class AgentManager {
             sessionId: `a2a_${targetId}_${Date.now()}`,
             scenario: 'a2a',
             priority: priority as 0 | 1 | 2 | 3 | 4 | undefined,
+            waitForReply,
           }
         );
         return stripInternalBlocks(reply);
@@ -1211,7 +1212,7 @@ export class AgentManager {
           }),
         delegateMessage: async (targetId, message, _from) => {
           const target = this.getAgent(targetId);
-          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message' });
+          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message', waitForReply: false });
           return stripInternalBlocks(reply);
         },
         getTeamStatus: () =>
@@ -1586,7 +1587,7 @@ export class AgentManager {
             return { ...a, skills: [] };
           }
         }),
-      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string, priority?: number) => {
+      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string, priority?: number, waitForReply?: boolean) => {
         // Lightweight path: informational broadcasts are stored directly,
         // skipping the expensive LLM call that would cause cascade amplification.
         try {
@@ -1613,6 +1614,7 @@ export class AgentManager {
             sessionId: `a2a_${targetId}_${Date.now()}`,
             scenario: 'a2a',
             priority: priority as 0 | 1 | 2 | 3 | 4 | undefined,
+            waitForReply,
           }
         );
       },
@@ -1850,7 +1852,7 @@ export class AgentManager {
           }),
         delegateMessage: async (targetId, message) => {
           const target = this.getAgent(targetId);
-          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message' });
+          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message', waitForReply: false });
           return stripInternalBlocks(reply);
         },
         getTeamStatus: () =>
