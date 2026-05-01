@@ -14,6 +14,7 @@ This skill teaches you how to create Markus agent packages — self-contained di
 ```
 ~/.markus/builder-artifacts/agents/{agent-name}/
 ├── agent.json       # Manifest (auto-created from your JSON output)
+├── README.md        # Public-facing overview for Hub/Builder (REQUIRED)
 ├── ROLE.md          # Identity and system prompt (REQUIRED)
 ├── HEARTBEAT.md     # Periodic self-check checklist (RECOMMENDED)
 ├── POLICIES.md      # Constraints & guardrails (optional)
@@ -72,7 +73,13 @@ After the JSON is saved, write each file individually using `file_write`. The ba
 
 **Write files in this order:**
 
-1. **ROLE.md** (REQUIRED) — The agent's primary identity document. **Before writing, read the existing base role template** via `file_read` (path shown in dynamic context) to understand expected depth and conventions. At least 5 substantive paragraphs covering:
+1. **README.md** (REQUIRED) — The public-facing overview displayed on Markus Hub and the Builder detail page. This is what users see first when browsing artifacts. Write 2-4 paragraphs covering:
+   - What this agent does and what problem it solves
+   - Key capabilities and features
+   - Example use cases or when to use this agent
+   - Any requirements or setup notes
+
+2. **ROLE.md** (REQUIRED) — The agent's primary identity document. **Before writing, read the existing base role template** via `file_read` (path shown in dynamic context) to understand expected depth and conventions. At least 5 substantive paragraphs covering:
    - Who this agent is (identity, personality, expertise)
    - Core responsibilities and capabilities
    - **Workflow with platform capabilities** — when and how to use `spawn_subagent` (focused subtasks), `background_exec` (long-running commands with auto-notifications), `shell_execute` (git/gh operations), `web_search`/`web_fetch` (research), `deliverable_create` (artifacts), `memory_save` (persistent knowledge)
@@ -81,23 +88,24 @@ After the JSON is saved, write each file individually using `file_write`. The ba
    - Output standards and quality criteria
    - Domain-specific knowledge and context
 
-2. **HEARTBEAT.md** (RECOMMENDED) — Defines what the agent proactively checks every ~30 minutes via `HeartbeatScheduler`. **Without this file, the agent is purely reactive** — it will only respond to direct messages and task assignments, never proactively monitor its environment. Write a role-specific checklist:
+3. **HEARTBEAT.md** (RECOMMENDED) — Defines what the agent proactively checks every ~30 minutes via `HeartbeatScheduler`. **Without this file, the agent is purely reactive** — it will only respond to direct messages and task assignments, never proactively monitor its environment. Write a role-specific checklist:
    - Check mailbox for new messages and respond to urgent items
    - Review assigned tasks — update progress, unblock if possible
    - Check team announcements for new information
    - Role-specific patrol items (e.g., code agents: check build/CI status; review agents: check tasks awaiting review; managers: check team task board and unblock members)
    - Scan recent channel messages for anything requiring attention
 
-3. **POLICIES.md** (recommended) — Safety constraints and guardrails:
+4. **POLICIES.md** (recommended) — Safety constraints and guardrails:
    - What the agent should NOT do
    - Tool usage guidelines
    - Quality gates and review requirements
 
-4. **CONTEXT.md** (optional) — Additional domain context, references, or knowledge.
+5. **CONTEXT.md** (optional) — Additional domain context, references, or knowledge.
 
 **Example file_write calls:**
 
 ```
+file_write("~/.markus/builder-artifacts/agents/code-reviewer/README.md", "# Code Reviewer\n\nA meticulous code review agent that ensures code quality...\n\n## Features\n- Automated PR review...\n- Security vulnerability detection...\n\n## Use Cases\n- Add to any development team for automated code review")
 file_write("~/.markus/builder-artifacts/agents/code-reviewer/ROLE.md", "# Code Reviewer\n\nYou are **Code Reviewer** — an expert...\n\n## Responsibilities\n...\n\n## Workflow\n...\n\n## Output Standards\n...")
 file_write("~/.markus/builder-artifacts/agents/code-reviewer/HEARTBEAT.md", "# Heartbeat Checklist\n\n- [ ] Check mailbox for new messages\n- [ ] Check tasks awaiting review — prioritize by deadline\n- [ ] Review assigned tasks and update progress\n- [ ] Scan team channels for review requests")
 file_write("~/.markus/builder-artifacts/agents/code-reviewer/POLICIES.md", "# Policies\n\n- Only use shell_execute for read-only commands...\n- Always show file contents before overwriting...")

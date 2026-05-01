@@ -1714,7 +1714,22 @@ export const hubApi = {
       throw e;
     }
   },
-  publishViaProxy: async (payload: { itemType: string; name: string; slug?: string; description: string; category?: string; tags?: string[]; config?: unknown; files?: Record<string, string>; readme?: string }) => {
+  uploadImage: async (file: File): Promise<{ url: string; thumbnailUrl: string } | null> => {
+    await ensureHubAuth();
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch(`/api/hub/upload`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Authorization': `Bearer ${getHubToken()}` },
+        body: formData,
+      });
+      if (!res.ok) return null;
+      return await res.json() as { url: string; thumbnailUrl: string };
+    } catch { return null; }
+  },
+  publishViaProxy: async (payload: { itemType: string; name: string; slug?: string; description: string; category?: string; tags?: string[]; icon?: string; version?: string; config?: unknown; files?: Record<string, string>; readme?: string; thumbnailUrl?: string; images?: Array<{ url: string; alt: string; order: number }> }) => {
     await ensureHubAuth();
     try {
       return await hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean }>('/items', { method: 'POST', body: JSON.stringify(payload) });

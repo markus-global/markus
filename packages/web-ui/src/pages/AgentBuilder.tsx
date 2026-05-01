@@ -5,6 +5,7 @@ import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { ArtifactDetail } from './ArtifactDetail.tsx';
 
 function shortenPath(p: string): string {
   const home = '~/.markus/builder-artifacts/';
@@ -80,9 +81,30 @@ function ConfirmDialog({ title, message, cancelLabel, confirmLabel, onConfirm, o
   );
 }
 
-export function AgentBuilder({ authUser: _authUser }: { authUser?: AuthUser } = {}) {
+function useBuilderSubRoute(): { type: string; name: string } | null {
+  const [sub, setSub] = useState<{ type: string; name: string } | null>(() => {
+    const hash = window.location.hash.slice(1);
+    const parts = hash.split('/');
+    if (parts[0] === 'builder' && parts[1] && parts[2]) return { type: parts[1], name: decodeURIComponent(parts[2]) };
+    return null;
+  });
+  useEffect(() => {
+    const onHash = () => {
+      const hash = window.location.hash.slice(1);
+      const parts = hash.split('/');
+      if (parts[0] === 'builder' && parts[1] && parts[2]) setSub({ type: parts[1], name: decodeURIComponent(parts[2]) });
+      else setSub(null);
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  return sub;
+}
+
+export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
   const { t } = useTranslation(['builder', 'common']);
   const isMobile = useIsMobile();
+  const subRoute = useBuilderSubRoute();
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [artifacts, setArtifacts] = useState<BuilderArtifact[]>([]);
   const [loading, setLoading] = useState(false);
@@ -90,16 +112,16 @@ export function AgentBuilder({ authUser: _authUser }: { authUser?: AuthUser } = 
   const [actionInProgress, setActionInProgress] = useState<{ key: string; action: string } | null>(null);
   const [installedMap, setInstalledMap] = useState<Map<string, InstalledInfo>>(new Map());
   const [deleteTarget, setDeleteTarget] = useState<BuilderArtifact | null>(null);
-  const [sharedMap, setSharedMap] = useState<Map<string, { id: string; name: string; slug: string }>>(new Map());
+  const [sharedMap, setSharedMap] = useState<Map<string, { id: string; name: string; slug: string; version: string }>>(new Map());
   const [hubDeleteTarget, setHubDeleteTarget] = useState<{ key: string; name: string } | null>(null);
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [sharePrompt, setSharePrompt] = useState<BuilderArtifact | null>(null);
 
   const loadAll = useCallback(() => {
     setLoading(true);
     Promise.all([
       (consume<{ artifacts: BuilderArtifact[] }>(PREFETCH_KEYS.builderArtifacts) ?? api.builder.artifacts.list()).then(d => d?.artifacts ?? []).catch(() => [] as BuilderArtifact[]),
       (consume<{ agents: AgentInfo[] }>(PREFETCH_KEYS.builderAgents) ?? api.agents.list()).then(d => d?.agents ?? []).catch(() => [] as AgentInfo[]),
-      (consume<{ items: Array<{ id: string; itemType: string; name: string; slug: string }> }>(PREFETCH_KEYS.builderHubMyItems) ?? hubApi.myItems()).then(d => d?.items ?? []).catch(() => [] as Array<{ id: string; itemType: string; name: string; slug: string }>),
+      (consume<{ items: Array<{ id: string; itemType: string; name: string; slug: string; version: string }> }>(PREFETCH_KEYS.builderHubMyItems) ?? hubApi.myItems()).then(d => d?.items ?? []).catch(() => [] as Array<{ id: string; itemType: string; name: string; slug: string; version: string }>),
       (consume<{ installed: Record<string, { agentId?: string; agentIds?: string[]; teamId?: string }> }>(PREFETCH_KEYS.builderInstalled) ?? api.builder.artifacts.installed()).then(d => d?.installed ?? {}).catch(() => ({} as Record<string, { agentId?: string; agentIds?: string[]; teamId?: string }>)),
     ]).then(([arts, agentList, hubItems, installedData]) => {
       setArtifacts(arts);
@@ -107,12 +129,12 @@ export function AgentBuilder({ authUser: _authUser }: { authUser?: AuthUser } = 
 
       // Populate shared status from Hub published items (key → { id, name, slug })
       if (hubItems.length > 0) {
-        const shared = new Map<string, { id: string; name: string; slug: string }>();
+        const shared = new Map<string, { id: string; name: string; slug: string; version: string }>();
         for (const hi of hubItems) {
           const typeDir = hi.itemType === 'agent' ? 'agent' : hi.itemType === 'team' ? 'team' : 'skill';
           for (const art of arts) {
             if (art.type === typeDir && (hi.slug === art.name || hi.name === ((art.meta.displayName as string) || (art.meta.name as string) || art.name))) {
-              shared.set(`${art.type}/${art.name}`, { id: hi.id, name: hi.name, slug: hi.slug || art.name });
+              shared.set(`${art.type}/${art.name}`, { id: hi.id, name: hi.name, slug: hi.slug || art.name, version: (hi as Record<string, string>).version || '1.0.0' });
             }
           }
         }
@@ -193,7 +215,6 @@ export function AgentBuilder({ authUser: _authUser }: { authUser?: AuthUser } = 
 
   const handleShare = async (art: BuilderArtifact) => {
     const key = `${art.type}/${art.name}`;
-    if (sharedMap.has(key)) return;
     setActionInProgress({ key, action: 'share' });
     try {
       const detail = await api.builder.artifacts.get(art.type, art.name);
@@ -202,6 +223,30 @@ export function AgentBuilder({ authUser: _authUser }: { authUser?: AuthUser } = 
       const category = (art.meta.category as string) || 'general';
       const tags = Array.isArray(art.meta.tags) ? (art.meta.tags as string[]) : [];
       const slug = art.name;
+      const icon = (art.meta.icon as string) || undefined;
+      const version = (art.meta.version as string) || '1.0.0';
+
+      // Upload local images to Hub if available
+      let thumbnailUrl: string | undefined;
+      const hubImages: Array<{ url: string; alt: string; order: number }> = [];
+      const screenshots = Array.isArray(art.meta.screenshots) ? (art.meta.screenshots as string[]) : [];
+      for (let i = 0; i < screenshots.length; i++) {
+        const imgPath = screenshots[i]!;
+        const filename = imgPath.split('/').pop() ?? imgPath;
+        try {
+          const imgResp = await fetch(`/api/builder/artifacts/${art.type}s/${encodeURIComponent(art.name)}/images/${encodeURIComponent(filename)}`);
+          if (imgResp.ok) {
+            const blob = await imgResp.blob();
+            const file = new File([blob], filename, { type: blob.type });
+            const uploaded = await hubApi.uploadImage(file);
+            if (uploaded?.url) {
+              hubImages.push({ url: uploaded.url, alt: filename, order: i });
+              if (i === 0 || (art.meta.thumbnail as string) === imgPath) thumbnailUrl = uploaded.url;
+            }
+          }
+        } catch { /* skip failed image uploads */ }
+      }
+
       const result = await hubApi.publishViaProxy({
         itemType: art.type === 'team' ? 'team' : art.type === 'skill' ? 'skill' : 'agent',
         name,
@@ -209,10 +254,14 @@ export function AgentBuilder({ authUser: _authUser }: { authUser?: AuthUser } = 
         description,
         category,
         tags,
+        icon,
+        version,
         config: art.meta,
         files: detail.files && Object.keys(detail.files).length > 0 ? detail.files : undefined,
+        thumbnailUrl,
+        images: hubImages.length > 0 ? hubImages : undefined,
       });
-      if (result.id) setSharedMap(prev => { const m = new Map(prev); m.set(key, { id: result.id!, name, slug: result.slug ?? slug }); return m; });
+      if (result.id) setSharedMap(prev => { const m = new Map(prev); m.set(key, { id: result.id!, name, slug: result.slug ?? slug, version }); return m; });
     } catch (err) {
       console.error('Share failed:', err);
       alert(t('shareFailed', { error: String(err) }));
@@ -259,6 +308,25 @@ export function AgentBuilder({ authUser: _authUser }: { authUser?: AuthUser } = 
   };
 
   const filtered = filterType === 'all' ? artifacts : artifacts.filter(a => a.type === filterType);
+
+  const navigateToDetail = (art: BuilderArtifact) => {
+    history.pushState(null, '', `#builder/${art.type}/${encodeURIComponent(art.name)}`);
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+  };
+
+  if (subRoute) {
+    return (
+      <ArtifactDetail
+        type={subRoute.type}
+        name={subRoute.name}
+        authUser={authUser}
+        onBack={() => {
+          history.pushState(null, '', '#builder');
+          window.dispatchEvent(new HashChangeEvent('hashchange'));
+        }}
+      />
+    );
+  }
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -365,8 +433,19 @@ export function AgentBuilder({ authUser: _authUser }: { authUser?: AuthUser } = 
               const key = `${art.type}/${art.name}`;
               const busyAction = actionInProgress?.key === key ? actionInProgress.action : null;
 
+              const hubItem = sharedMap.get(key);
+              const localVersion = (art.meta.version as string) || '1.0.0';
+              const isShared = !!hubItem;
+              const hasNewVersion = isShared && hubItem.version !== localVersion;
+
+              const getHubLink = () => {
+                const hubUser = hubApi.getUser();
+                if (!hubItem || !hubUser) return null;
+                return `${hubApi.getUrl()}/${encodeURIComponent(hubUser.username)}/${encodeURIComponent(hubItem.slug)}`;
+              };
+
               const actionButtons = (
-                <div className={`flex items-center gap-1.5 ${isMobile ? 'flex-wrap' : 'shrink-0'}`}>
+                <div className={`flex items-center gap-1.5 ${isMobile ? 'flex-wrap' : 'shrink-0'}`} onClick={e => e.stopPropagation()}>
                   {installedMap.has(key) ? (
                     <button onClick={() => handleUninstall(art)} disabled={!!busyAction}
                       className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:bg-red-500/10 hover:text-red-500 hover:border-red-500/30 transition-colors disabled:opacity-50">
@@ -378,27 +457,25 @@ export function AgentBuilder({ authUser: _authUser }: { authUser?: AuthUser } = 
                       {busyAction === 'install' ? t('common:installing') : t('common:install')}
                     </button>
                   )}
-                  {sharedMap.has(key) ? (
+                  {isShared && hasNewVersion ? (
+                    <button onClick={() => handleShare(art)} disabled={!!busyAction}
+                      className="text-xs px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/50 transition-colors disabled:opacity-50">
+                      {busyAction === 'share' ? t('common:sharing') : `Update v${localVersion}`}
+                    </button>
+                  ) : isShared ? (
                     <div className="flex items-center gap-1">
-                      <button onClick={() => setHubDeleteTarget({ key, name: (art.meta.displayName as string) || (art.meta.name as string) || art.name })} disabled={!!busyAction}
-                        className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:text-red-500 hover:border-red-500/30 hover:bg-red-500/10 transition-colors disabled:opacity-50" title={t('removeFromHubTooltip')}>
+                      <a href={getHubLink() ?? '#'} target="_blank" rel="noopener noreferrer"
+                        className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:text-green-500 hover:border-green-500/40 transition-colors inline-flex items-center gap-1">
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
                         {t('common:shared')}
-                      </button>
-                      <button onClick={() => {
-                        const hubItem = sharedMap.get(key); const hubUser = hubApi.getUser();
-                        if (!hubItem || !hubUser) return;
-                        const link = `${hubApi.getUrl()}/${encodeURIComponent(hubUser.username)}/${encodeURIComponent(hubItem.slug)}`;
-                        navigator.clipboard.writeText(link).then(() => { setCopiedKey(key); setTimeout(() => setCopiedKey(prev => prev === key ? null : prev), 2000); }).catch(() => {});
-                      }} className="text-xs px-2 py-1.5 rounded-lg border border-green-600/20 text-green-500 hover:text-green-600 hover:border-green-500/40 transition-colors" title={t('copyHubLinkTooltip')}>
-                        {copiedKey === key ? (
-                          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
-                        ) : (
-                          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg>
-                        )}
+                      </a>
+                      <button onClick={() => setHubDeleteTarget({ key, name: displayName })} disabled={!!busyAction}
+                        className="text-xs px-1.5 py-1.5 rounded-lg text-fg-tertiary hover:text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-50" title={t('removeFromHubTooltip')}>
+                        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                       </button>
                     </div>
                   ) : (
-                    <button onClick={() => handleShare(art)} disabled={!!busyAction}
+                    <button onClick={async () => { await hubApi.ensureAuth(); setSharePrompt(art); }} disabled={!!busyAction}
                       className="text-xs px-3 py-1.5 rounded-lg border border-border-default text-fg-secondary hover:text-green-600 hover:border-green-500/30 transition-colors disabled:opacity-50">
                       {busyAction === 'share' ? t('common:sharing') : t('common:share')}
                     </button>
@@ -411,8 +488,8 @@ export function AgentBuilder({ authUser: _authUser }: { authUser?: AuthUser } = 
               );
 
               return (
-                <div key={key}
-                  className="group rounded-lg border border-border-default bg-surface-secondary/60 p-4 hover:border-gray-600 transition-all overflow-hidden">
+                <div key={key} onClick={() => navigateToDetail(art)}
+                  className="group rounded-lg border border-border-default bg-surface-secondary/60 p-4 hover:border-gray-600 transition-all overflow-hidden cursor-pointer">
                   <div className="flex items-start gap-3 min-w-0">
                     <div className={`w-9 h-9 rounded-lg ${style.bg} flex items-center justify-center text-lg shrink-0`}>
                       {style.icon}
@@ -460,6 +537,26 @@ export function AgentBuilder({ authUser: _authUser }: { authUser?: AuthUser } = 
             onConfirm={() => void confirmHubDelete()}
             onCancel={() => setHubDeleteTarget(null)}
           />
+        )}
+        {sharePrompt && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setSharePrompt(null)}>
+            <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-sm w-full mx-4 p-6" onClick={e => e.stopPropagation()}>
+              <h3 className="text-base font-semibold text-fg-primary mb-2">{t('common:share')}</h3>
+              <p className="text-sm text-fg-secondary mb-5">{t('shareImagePrompt', { defaultValue: 'Would you like to add images before sharing? Images help attract more users on the Hub.' })}</p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => { const art = sharePrompt; setSharePrompt(null); void handleShare(art); }}
+                  className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-gray-600 transition-colors">
+                  {t('shareDirectly', { defaultValue: 'Share Directly' })}
+                </button>
+                <button
+                  onClick={() => { const art = sharePrompt; setSharePrompt(null); navigateToDetail(art); }}
+                  className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">
+                  {t('addImagesThenShare', { defaultValue: 'Add Images First' })}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>

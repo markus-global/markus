@@ -18,6 +18,7 @@ This skill teaches you how to create Markus team packages — self-contained dir
 ```
 ~/.markus/builder-artifacts/teams/{team-name}/
 ├── team.json                    # Manifest (auto-created from your JSON output)
+├── README.md                    # Public-facing team overview for Hub/Builder (REQUIRED)
 ├── ANNOUNCEMENT.md              # Team announcement (you write via file_write)
 ├── NORMS.md                     # Working norms (you write via file_write)
 └── members/
@@ -106,16 +107,22 @@ After the JSON is saved, write each file individually using `file_write`. The ba
 
 **Write files in this order:**
 
-1. **ANNOUNCEMENT.md** — Team mission, member introduction, how the team works, key capabilities. At least 3 paragraphs.
+1. **README.md** (REQUIRED) — The public-facing overview displayed on Markus Hub and the Builder detail page. This is what users see first when browsing the team. Write 2-4 paragraphs covering:
+   - What this team does and what problem it solves
+   - Team composition overview (who the key members are)
+   - Key capabilities and workflow highlights
+   - Example use cases or when to deploy this team
 
-2. **NORMS.md** — Phase-based workflow documentation aligned with `team.workflow.phases`. This is critical for team effectiveness. Structure it as:
+2. **ANNOUNCEMENT.md** — Team mission, member introduction, how the team works, key capabilities. At least 3 paragraphs.
+
+3. **NORMS.md** — Phase-based workflow documentation aligned with `team.workflow.phases`. This is critical for team effectiveness. Structure it as:
    - A section for each workflow phase (e.g., "### 1. Plan", "### 2. Implement", "### 3. Review & Merge")
    - Each phase explains what happens, who is responsible, and which platform capabilities to use
    - Include file/module ownership rules if the team does parallel development
    - Include communication protocols (when to use `agent_send_message`, `agent_broadcast_status`)
    - Reference platform capabilities: `spawn_subagent`, `background_exec`, `shell_execute` (git/gh), worktree isolation, `deliverable_create`, etc.
 
-3. **Each member's ROLE.md** — Write one at a time. **Before writing, read the existing base role template** via `file_read` to understand the expected depth and conventions. Each ROLE.md should be at least 5 paragraphs, covering:
+4. **Each member's ROLE.md** — Write one at a time. **Before writing, read the existing base role template** via `file_read` to understand the expected depth and conventions. Each ROLE.md should be at least 5 paragraphs, covering:
    - Who this agent is (identity, personality)
    - Core expertise and responsibilities
    - **Workflow with platform capabilities** — when to use `spawn_subagent`, `background_exec`, `shell_execute`, etc.
@@ -125,20 +132,21 @@ After the JSON is saved, write each file individually using `file_write`. The ba
    - For reviewers: review-then-merge workflow (git merge or gh pr)
    - For managers: file ownership planning, dependency graphs, `spawn_subagent` for analysis
 
-4. **Each member's HEARTBEAT.md** (RECOMMENDED) — Defines what the agent proactively checks every ~30 minutes. Without this file, the agent is purely reactive and will only respond to direct messages. Write a role-specific checklist covering:
+5. **Each member's HEARTBEAT.md** (RECOMMENDED) — Defines what the agent proactively checks every ~30 minutes. Without this file, the agent is purely reactive and will only respond to direct messages. Write a role-specific checklist covering:
    - Check mailbox for new messages and respond to urgent items
    - Review assigned tasks — update progress, unblock if possible
    - Check team announcements and norms for updates
    - Role-specific patrol items (e.g., managers: check team task board and unblock members; developers: check build status and PR reviews; reviewers: check tasks awaiting review)
    - Scan recent channel messages for anything requiring attention
 
-5. **POLICIES.md** (optional) — For members that need specific constraints.
+6. **POLICIES.md** (optional) — For members that need specific constraints.
 
-6. **CONTEXT.md** (optional) — Additional domain context, references, or knowledge specific to a member.
+7. **CONTEXT.md** (optional) — Additional domain context, references, or knowledge specific to a member.
 
 **Example file_write calls:**
 
 ```
+file_write("~/.markus/builder-artifacts/teams/research-team/README.md", "# Research Team\n\nA collaborative AI research team that...\n\n## Team Composition\n- Research Director (manager)...\n- Senior Researcher (worker)...\n\n## Use Cases\n- Academic literature review and synthesis...")
 file_write("~/.markus/builder-artifacts/teams/research-team/ANNOUNCEMENT.md", "# Research Team — Team Announcement\n\n...")
 file_write("~/.markus/builder-artifacts/teams/research-team/NORMS.md", "# Research Team — Working Norms\n\n...")
 file_write("~/.markus/builder-artifacts/teams/research-team/members/research-director/ROLE.md", "# Research Director\n\nYou are **Research Director** — ...\n\n...")

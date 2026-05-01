@@ -70,6 +70,8 @@ export interface MarkusPackageManifest {
   category: PackageCategory;
   tags: string[];
   icon?: string;
+  thumbnail?: string;
+  screenshots?: string[];
   source?: PackageSource;
   dependencies?: PackageDependencies;
 

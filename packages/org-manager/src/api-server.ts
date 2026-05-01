@@ -1227,9 +1227,11 @@ export class APIServer {
 
     // BUG-005: Validate Content-Type for POST/PUT/PATCH before routing (before auth)
     if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
-      const contentType = req.headers['content-type'];
-      if (!contentType || !String(contentType).toLowerCase().includes('application/json')) {
-        this.json(res, 415, { error: 'Content-Type must be application/json' });
+      const contentType = String(req.headers['content-type'] ?? '').toLowerCase();
+      const isJson = contentType.includes('application/json');
+      const isMultipart = contentType.includes('multipart/form-data');
+      if (!isJson && !isMultipart) {
+        this.json(res, 415, { error: 'Content-Type must be application/json or multipart/form-data' });
         return;
       }
     }
@@ -1269,8 +1271,12 @@ export class APIServer {
     // BUG-003: Pre-read and validate body for POST/PUT/PATCH at route level.
     // This ensures body validation happens before any route-specific logic,
     // so invalid bodies (null/array) are caught even for routes without readBody.
+    // Skip for multipart/form-data (image uploads handle body parsing themselves).
     if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
-      await this.readBody(req);
+      const ct = String(req.headers['content-type'] ?? '').toLowerCase();
+      if (!ct.includes('multipart/form-data')) {
+        await this.readBody(req);
+      }
     }
 
     // ── Auth endpoints (no auth required) ──────────────────────────────────
@@ -5459,6 +5465,127 @@ EXPLANATION_END`;
       }
     }
 
+    // POST /api/builder/artifacts/:type/:name/images — upload image
+    {
+      const imgPostMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/images$/);
+      if (imgPostMatch && req.method === 'POST') {
+        const rawType = imgPostMatch[1]!;
+        const name = decodeURIComponent(imgPostMatch[2]!);
+        const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
+        const type = typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill' as const;
+        const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, name);
+        if (!existsSync(artDir)) { this.json(res, 404, { error: 'Artifact not found' }); return; }
+
+        try {
+          const imagesDir = join(artDir, 'images');
+          if (!existsSync(imagesDir)) mkdirSync(imagesDir, { recursive: true });
+
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+          const body = Buffer.concat(chunks);
+
+          const contentType = req.headers['content-type'] ?? '';
+          if (contentType.includes('multipart/form-data')) {
+            const boundary = contentType.split('boundary=')[1]?.split(';')[0];
+            if (!boundary) { this.json(res, 400, { error: 'Missing boundary' }); return; }
+
+            const bodyStr = body.toString('latin1');
+            const parts = bodyStr.split('--' + boundary).filter(p => p.includes('Content-Disposition'));
+            for (const part of parts) {
+              const nameMatch = part.match(/filename="([^"]+)"/);
+              if (!nameMatch) continue;
+              const filename = nameMatch[1]!.replace(/[^a-zA-Z0-9._-]/g, '_');
+              const headerEnd = part.indexOf('\r\n\r\n');
+              if (headerEnd < 0) continue;
+              const fileContent = part.slice(headerEnd + 4).replace(/\r\n$/, '').replace(/\r\n--$/, '');
+              const filePath = join(imagesDir, filename);
+              writeFileSync(filePath, Buffer.from(fileContent, 'latin1'));
+
+              const manifestFile = join(artDir, `${type}.json`);
+              if (existsSync(manifestFile)) {
+                try {
+                  const manifest = JSON.parse(readFileSync(manifestFile, 'utf-8'));
+                  const screenshots: string[] = manifest.screenshots ?? [];
+                  const relPath = `images/${filename}`;
+                  if (!screenshots.includes(relPath)) {
+                    screenshots.push(relPath);
+                    manifest.screenshots = screenshots;
+                    if (!manifest.thumbnail) manifest.thumbnail = relPath;
+                    writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+                  }
+                } catch { /* skip manifest update */ }
+              }
+
+              this.json(res, 200, { filename, path: `images/${filename}` });
+              return;
+            }
+            this.json(res, 400, { error: 'No image file found in upload' });
+          } else {
+            this.json(res, 400, { error: 'Expected multipart/form-data' });
+          }
+        } catch (err) {
+          this.json(res, 500, { error: `Upload failed: ${String(err)}` });
+        }
+        return;
+      }
+    }
+
+    // GET /api/builder/artifacts/:type/:name/images/:filename — serve image
+    {
+      const imgGetMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/images\/([^/]+)$/);
+      if (imgGetMatch && req.method === 'GET') {
+        const rawType = imgGetMatch[1]!;
+        const name = decodeURIComponent(imgGetMatch[2]!);
+        const filename = decodeURIComponent(imgGetMatch[3]!);
+        const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
+        const filePath = join(homedir(), '.markus', 'builder-artifacts', typeDir, name, 'images', filename);
+        if (!existsSync(filePath)) { this.json(res, 404, { error: 'Image not found' }); return; }
+
+        const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+        const mimeTypes: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' };
+        res.writeHead(200, { 'Content-Type': mimeTypes[ext] ?? 'application/octet-stream', 'Cache-Control': 'public, max-age=3600' });
+        res.end(readFileSync(filePath));
+        return;
+      }
+    }
+
+    // DELETE /api/builder/artifacts/:type/:name/images/:filename — remove image
+    {
+      const imgDelMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/images\/([^/]+)$/);
+      if (imgDelMatch && req.method === 'DELETE') {
+        const rawType = imgDelMatch[1]!;
+        const name = decodeURIComponent(imgDelMatch[2]!);
+        const filename = decodeURIComponent(imgDelMatch[3]!);
+        const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
+        const type = typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill' as const;
+        const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, name);
+        const filePath = join(artDir, 'images', filename);
+        if (!existsSync(filePath)) { this.json(res, 404, { error: 'Image not found' }); return; }
+
+        try {
+          rmSync(filePath);
+          const manifestFile = join(artDir, `${type}.json`);
+          if (existsSync(manifestFile)) {
+            try {
+              const manifest = JSON.parse(readFileSync(manifestFile, 'utf-8'));
+              const relPath = `images/${filename}`;
+              if (Array.isArray(manifest.screenshots)) {
+                manifest.screenshots = manifest.screenshots.filter((s: string) => s !== relPath);
+              }
+              if (manifest.thumbnail === relPath) {
+                manifest.thumbnail = manifest.screenshots?.[0] ?? undefined;
+              }
+              writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+            } catch { /* skip */ }
+          }
+          this.json(res, 200, { deleted: true, filename });
+        } catch (err) {
+          this.json(res, 500, { error: `Delete failed: ${String(err)}` });
+        }
+        return;
+      }
+    }
+
     // Skills registry: SkillHub (skillhub.tencent.com) — static JSON from Tencent CDN
     if (path === '/api/skills/registry/skillhub' && req.method === 'GET') {
       const q = url.searchParams.get('q') ?? '';
@@ -8945,6 +9072,8 @@ EXPLANATION_END`;
       regex(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)$/, 'GET', 'DELETE'),
       regex(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/install$/, 'POST'),
       regex(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/uninstall$/, 'POST'),
+      regex(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/images$/, 'POST'),
+      regex(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/images\/([^/]+)$/, 'GET', 'DELETE'),
 
       // ── Hub ──────────────────────────────────────────────────────────────
       exact('/api/hub/publish', 'POST'),
