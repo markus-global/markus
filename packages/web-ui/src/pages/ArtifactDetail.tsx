@@ -103,18 +103,45 @@ function InlineEditable({ value, onChange, renderAs = 'span', className, editCla
 }
 
 // ---------------------------------------------------------------------------
-// InlineSelect
+// InlineSelect – combobox that allows both selecting from options and typing custom values
 // ---------------------------------------------------------------------------
 function InlineSelect({ value, options, onChange, className }: {
   value: string; options: string[]; onChange: (v: string) => void; className?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [input, setInput] = useState(value);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { if (open) { setInput(value); setTimeout(() => inputRef.current?.focus(), 0); } }, [open, value]);
+
+  const filtered = options.filter(o => o.toLowerCase().includes(input.toLowerCase()));
+
+  const commit = (v: string) => {
+    const trimmed = v.trim();
+    if (trimmed && trimmed !== value) onChange(trimmed);
+    setOpen(false);
+  };
+
   if (open) {
     return (
-      <select autoFocus value={value} onChange={e => { onChange(e.target.value); setOpen(false); }} onBlur={() => setOpen(false)}
-        className={`${className ?? ''} bg-transparent outline-none ring-1 ring-brand-500/50 rounded cursor-pointer`}>
-        {options.map(o => <option key={o} value={o}>{o}</option>)}
-      </select>
+      <div ref={containerRef} className="relative inline-block">
+        <input ref={inputRef} value={input} onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commit(input); } else if (e.key === 'Escape') setOpen(false); }}
+          onBlur={e => { if (!containerRef.current?.contains(e.relatedTarget as Node)) commit(input); }}
+          className={`${className ?? ''} bg-transparent outline-none ring-1 ring-brand-500/50 rounded w-28`}
+        />
+        {filtered.length > 0 && (
+          <div className="absolute top-full left-0 mt-1 z-50 bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 min-w-[120px] max-h-40 overflow-y-auto">
+            {filtered.map(o => (
+              <button key={o} onMouseDown={e => { e.preventDefault(); commit(o); }}
+                className={`block w-full text-left px-3 py-1.5 text-xs hover:bg-surface-secondary/80 transition-colors ${o === value ? 'text-brand-400 font-medium' : 'text-fg-secondary'}`}>
+                {o}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
     );
   }
   return <span onClick={() => setOpen(true)} className={`${className ?? ''} cursor-pointer hover:ring-1 hover:ring-border-default rounded px-1 -mx-1 transition-all`}>{value}</span>;
@@ -203,8 +230,17 @@ function FileSection({ filename, content, onSave, embedded }: {
   const [draft, setDraft] = useState(content);
   const [saving, setSaving] = useState(false);
   const isMd = /\.(md|mdx|markdown)$/i.test(filename);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => { setDraft(content); }, [content]);
+
+  useEffect(() => {
+    if (editing && textareaRef.current) {
+      const el = textareaRef.current;
+      el.style.height = 'auto';
+      el.style.height = Math.max(200, el.scrollHeight) + 'px';
+    }
+  }, [editing, draft]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -236,7 +272,7 @@ function FileSection({ filename, content, onSave, embedded }: {
           {editButtons}
         </div>
         {editing ? (
-          <textarea value={draft} onChange={e => setDraft(e.target.value)}
+          <textarea ref={textareaRef} value={draft} onChange={e => setDraft(e.target.value)}
             className="w-full bg-surface-elevated/20 text-sm text-fg-primary font-mono p-4 focus:outline-none resize-y min-h-[200px] leading-relaxed"
             spellCheck={false}
           />
@@ -258,7 +294,7 @@ function FileSection({ filename, content, onSave, embedded }: {
         {editButtons}
       </div>
       {editing ? (
-        <textarea value={draft} onChange={e => setDraft(e.target.value)}
+        <textarea ref={textareaRef} value={draft} onChange={e => setDraft(e.target.value)}
           className="w-full bg-surface-elevated/20 text-sm text-fg-primary font-mono p-4 focus:outline-none resize-y min-h-[200px] leading-relaxed"
           spellCheck={false}
         />
