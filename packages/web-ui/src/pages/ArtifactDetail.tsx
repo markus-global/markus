@@ -528,6 +528,9 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [hubStatus, setHubStatus] = useState<{ shared: boolean; id?: string; slug?: string; version?: string }>({ shared: false });
   const [shareInProgress, setShareInProgress] = useState(false);
+  const [contentDirty, setContentDirty] = useState(false);
+  const [showVersionBump, setShowVersionBump] = useState(false);
+  const [showShareMode, setShowShareMode] = useState(false);
 
   const [editName, setEditName] = useState('');
   const [editDesc, setEditDesc] = useState('');
@@ -599,12 +602,16 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
 
   const handleFieldChange = useCallback((field: string, value: string | string[] | undefined) => {
     const updates: Partial<ManifestData> = {};
-    if (field === 'displayName') { setEditName(value as string); updates.displayName = value as string; }
-    else if (field === 'description') { setEditDesc(value as string); updates.description = value as string; }
-    else if (field === 'version') { setEditVersion(value as string); updates.version = value as string; }
-    else if (field === 'category') { setEditCategory(value as string); updates.category = value as string; }
-    else if (field === 'tags') { setEditTags(value as string[]); updates.tags = value as string[]; }
-    else if (field === 'icon') { setEditIcon(value as string); updates.icon = (value as string) || undefined; }
+    if (field === 'displayName') { setEditName(value as string); updates.displayName = value as string; setContentDirty(true); }
+    else if (field === 'description') { setEditDesc(value as string); updates.description = value as string; setContentDirty(true); }
+    else if (field === 'version') {
+      setEditVersion(value as string); updates.version = value as string;
+      setContentDirty(false);
+      setShowVersionBump(false);
+    }
+    else if (field === 'category') { setEditCategory(value as string); updates.category = value as string; setContentDirty(true); }
+    else if (field === 'tags') { setEditTags(value as string[]); updates.tags = value as string[]; setContentDirty(true); }
+    else if (field === 'icon') { setEditIcon(value as string); updates.icon = (value as string) || undefined; setContentDirty(true); }
     scheduleSave({ ...manifest, ...updates });
   }, [manifest, scheduleSave]);
 
@@ -615,13 +622,14 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
       const artifactWithFiles = { ...manifest!, files: updatedFiles };
       await api.builder.artifacts.save(type as 'agent' | 'team' | 'skill', artifactWithFiles);
       setSaveStatus('saved');
+      setContentDirty(true);
       setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 2000);
     } catch {
       setSaveStatus('error');
     }
   }, [files, type, manifest]);
 
-  const handleShareToHub = useCallback(async () => {
+  const handleShareToHub = useCallback(async (opts?: { priceCents?: number; donationsEnabled?: boolean }) => {
     if (!manifest) return;
     setShareInProgress(true);
     try {
@@ -667,9 +675,12 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
         files: Object.keys(files).length > 0 ? files : undefined,
         thumbnailUrl,
         images: hubImages.length > 0 ? hubImages : undefined,
+        priceCents: opts?.priceCents,
+        donationsEnabled: opts?.donationsEnabled,
       });
       if (result.id) {
         setHubStatus({ shared: true, id: result.id, slug: result.slug ?? slug, version });
+        setContentDirty(false);
       }
     } catch (err) {
       console.error('Share to Hub failed:', err);
@@ -783,7 +794,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
                     </a>
                   )}
                   {hasNewVersion && (
-                    <button onClick={handleShareToHub} disabled={shareInProgress}
+                    <button onClick={() => setShowShareMode(true)} disabled={shareInProgress}
                       className="text-xs px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/50 transition-colors disabled:opacity-50">
                       {shareInProgress ? 'Updating...' : `Update v${localVersion}`}
                     </button>
@@ -792,13 +803,54 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
               );
             })()}
             {!hubStatus.shared && (
-              <button onClick={handleShareToHub} disabled={shareInProgress}
+              <button onClick={() => setShowShareMode(true)} disabled={shareInProgress}
                 className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50">
                 {shareInProgress ? 'Sharing...' : 'Share to Hub'}
               </button>
             )}
           </div>
         </div>
+
+        {/* Version bump notification */}
+        {contentDirty && !showVersionBump && (
+          <div className="mb-4 px-4 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-between">
+            <span className="text-xs text-amber-300">Content has been modified. Consider updating the version number.</span>
+            <button onClick={() => setShowVersionBump(true)} className="text-xs px-3 py-1 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition-colors">
+              Bump Version
+            </button>
+          </div>
+        )}
+        {showVersionBump && (
+          <div className="mb-4 px-4 py-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-amber-300">New version:</span>
+              <input
+                type="text"
+                defaultValue={(() => {
+                  const parts = (editVersion || '1.0.0').split('.');
+                  parts[2] = String(Number(parts[2] ?? 0) + 1);
+                  return parts.join('.');
+                })()}
+                className="text-xs px-2 py-1 rounded bg-surface-elevated border border-border-default text-fg-primary w-24 font-mono"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleFieldChange('version', (e.target as HTMLInputElement).value);
+                  }
+                }}
+              />
+              <button onClick={(e) => {
+                const input = (e.target as HTMLElement).parentElement?.querySelector('input');
+                if (input) handleFieldChange('version', input.value);
+              }} className="text-xs px-3 py-1 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition-colors">
+                Confirm
+              </button>
+              <button onClick={() => setShowVersionBump(false)} className="text-xs text-fg-tertiary hover:text-fg-secondary">
+                Cancel
+              </button>
+            </div>
+            {hubStatus.shared && <p className="text-[10px] text-fg-tertiary mt-2">After bumping the version, you can share the new version to Hub.</p>}
+          </div>
+        )}
 
         {/* Two-column layout */}
         <div className={`flex gap-8 ${isMobile ? 'flex-col' : ''}`}>
@@ -1007,6 +1059,90 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
         </div>
       </div>
 
+      {showShareMode && (
+        <ShareModeDialog
+          onClose={() => setShowShareMode(false)}
+          onConfirm={(mode, price) => {
+            setShowShareMode(false);
+            void handleShareToHub({
+              donationsEnabled: mode === 'donation',
+              priceCents: mode === 'paid' ? price : undefined,
+            });
+          }}
+          isUpdate={hubStatus.shared}
+        />
+      )}
+    </div>
+  );
+}
+
+function ShareModeDialog({ onClose, onConfirm, isUpdate }: {
+  onClose: () => void;
+  onConfirm: (mode: 'free' | 'donation' | 'paid', priceCents: number) => void;
+  isUpdate: boolean;
+}) {
+  const [mode, setMode] = useState<'free' | 'donation' | 'paid'>('free');
+  const [price, setPrice] = useState('');
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-sm w-full mx-4 p-6" onClick={e => e.stopPropagation()}>
+        <h3 className="text-base font-semibold text-fg-primary mb-4">
+          {isUpdate ? 'Update Share Settings' : 'Share to Hub'}
+        </h3>
+
+        <div className="space-y-2 mb-5">
+          <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === 'free' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
+            <input type="radio" name="shareMode" checked={mode === 'free'} onChange={() => setMode('free')} className="accent-brand-500" />
+            <div>
+              <div className="text-sm font-medium text-fg-primary">Free</div>
+              <div className="text-[11px] text-fg-tertiary">Anyone can download for free</div>
+            </div>
+          </label>
+          <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === 'donation' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
+            <input type="radio" name="shareMode" checked={mode === 'donation'} onChange={() => setMode('donation')} className="accent-brand-500" />
+            <div>
+              <div className="text-sm font-medium text-fg-primary">Accept Donations</div>
+              <div className="text-[11px] text-fg-tertiary">Free download, users can optionally tip</div>
+            </div>
+          </label>
+          <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === 'paid' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
+            <input type="radio" name="shareMode" checked={mode === 'paid'} onChange={() => setMode('paid')} className="accent-brand-500" />
+            <div>
+              <div className="text-sm font-medium text-fg-primary">Paid Download</div>
+              <div className="text-[11px] text-fg-tertiary">Users must pay to download</div>
+            </div>
+          </label>
+        </div>
+
+        {mode === 'paid' && (
+          <div className="mb-5">
+            <label className="text-xs text-fg-secondary block mb-1.5">Price (USD)</label>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-fg-tertiary">$</span>
+              <input
+                type="number" min="0.5" step="0.5" value={price}
+                onChange={e => setPrice(e.target.value)}
+                placeholder="e.g. 4.99"
+                className="flex-1 text-sm px-3 py-2 rounded-lg bg-surface-elevated border border-border-default text-fg-primary placeholder:text-fg-muted"
+              />
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-3">
+          <button onClick={onClose}
+            className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-gray-600 transition-colors">
+            Cancel
+          </button>
+          <button
+            onClick={() => onConfirm(mode, mode === 'paid' ? Math.round(Number(price) * 100) : 0)}
+            disabled={mode === 'paid' && (!price || Number(price) <= 0)}
+            className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            {isUpdate ? 'Update' : 'Share'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

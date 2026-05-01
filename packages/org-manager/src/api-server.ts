@@ -6362,17 +6362,26 @@ EXPLANATION_END`;
       const reqUrl = new URL(req.url!, `http://${req.headers.host}`);
       const hubTargetUrl = `${this.hubUrl}/api${hubPath}${reqUrl.search}`;
 
-      const proxyHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      const ct = String(req.headers['content-type'] ?? '').toLowerCase();
+      const isMultipart = ct.includes('multipart/form-data');
+
+      const proxyHeaders: Record<string, string> = {};
+      if (!isMultipart) proxyHeaders['Content-Type'] = 'application/json';
+      else proxyHeaders['Content-Type'] = req.headers['content-type']!;
       const authHeader = req.headers['authorization'];
       if (authHeader) proxyHeaders['Authorization'] = authHeader;
 
       try {
-        let body: string | undefined;
+        let body: string | Buffer | undefined;
         if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
-          body = JSON.stringify(await this.readBody(req));
+          if (isMultipart) {
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+            body = Buffer.concat(chunks);
+          } else {
+            body = JSON.stringify(await this.readBody(req));
+          }
         }
-        // Use redirect: 'manual' to prevent fetch from stripping the
-        // Authorization header when Vercel issues a cross-origin 307 redirect.
         let hubRes = await fetch(hubTargetUrl, {
           method: req.method,
           headers: proxyHeaders,
