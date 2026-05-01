@@ -83,5 +83,45 @@
   },
   "images": {
     "dropOrClick": "Drop images or click to upload"
+  },
+  "detail": {
+    "backToBuilder": "Back to Builder",
+    "notFound": "Artifact not found",
+    "saving": "Saving...",
+    "saved": "Saved",
+    "saveFailed": "Save failed",
+    "edit": "Edit",
+    "overview": "Overview",
+    "untitled": "Untitled",
+    "addDescription": "Click to add a description...",
+    "typeTagAndEnter": "Type and press Enter",
+    "pasteEmojiOrUrl": "Paste emoji or image URL...",
+    "upload": "Upload"
+  },
+  "sidebar": {
+    "info": "Info",
+    "type": "Type",
+    "category": "Category",
+    "version": "Version",
+    "author": "Author",
+    "agentSpecs": "Agent Specs",
+    "role": "Role",
+    "provider": "Provider",
+    "model": "Model",
+    "temperature": "Temperature",
+    "composition": "Composition",
+    "totalMembers": "Total members",
+    "managers": "Managers",
+    "workers": "Workers",
+    "skillInfo": "Skill Info",
+    "alwaysOn": "Always On",
+    "skillFile": "Skill File",
+    "permissions": "Permissions",
+    "yes": "Yes",
+    "no": "No",
+    "dependencies": "Dependencies",
+    "skills": "Skills",
+    "environment": "Environment",
+    "openInFinder": "Open in Finder"
   }
 }

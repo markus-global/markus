@@ -83,5 +83,45 @@
   },
   "images": {
     "dropOrClick": "拖拽图片或点击上传"
+  },
+  "detail": {
+    "backToBuilder": "返回构建器",
+    "notFound": "未找到该产物",
+    "saving": "正在保存...",
+    "saved": "已保存",
+    "saveFailed": "保存失败",
+    "edit": "编辑",
+    "overview": "概览",
+    "untitled": "未命名",
+    "addDescription": "点击添加描述...",
+    "typeTagAndEnter": "输入后按回车",
+    "pasteEmojiOrUrl": "粘贴 emoji 或图片链接...",
+    "upload": "上传"
+  },
+  "sidebar": {
+    "info": "基本信息",
+    "type": "类型",
+    "category": "分类",
+    "version": "版本",
+    "author": "作者",
+    "agentSpecs": "智能体规格",
+    "role": "角色",
+    "provider": "服务商",
+    "model": "模型",
+    "temperature": "温度",
+    "composition": "团队构成",
+    "totalMembers": "总人数",
+    "managers": "管理者",
+    "workers": "工作者",
+    "skillInfo": "技能信息",
+    "alwaysOn": "始终启用",
+    "skillFile": "技能文件",
+    "permissions": "权限",
+    "yes": "是",
+    "no": "否",
+    "dependencies": "依赖",
+    "skills": "技能",
+    "environment": "环境变量",
+    "openInFinder": "在 Finder 中打开"
   }
 }

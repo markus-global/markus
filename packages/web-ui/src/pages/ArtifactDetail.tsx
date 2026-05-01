@@ -124,6 +124,7 @@ function InlineSelect({ value, options, onChange, className }: {
 // InlineTags
 // ---------------------------------------------------------------------------
 function InlineTags({ tags, onChange }: { tags: string[]; onChange: (tags: string[]) => void }) {
+  const { t } = useTranslation(['builder']);
   const [editing, setEditing] = useState(false);
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -149,7 +150,7 @@ function InlineTags({ tags, onChange }: { tags: string[]; onChange: (tags: strin
       <div onClick={() => setEditing(true)} className="flex flex-wrap items-center gap-1.5 cursor-text hover:ring-1 hover:ring-border-default rounded px-1 -mx-1 py-0.5 transition-all min-h-[24px]">
         {tags.length > 0 ? tags.map(tag => (
           <span key={tag} className="text-[10px] px-2 py-0.5 bg-surface-elevated text-fg-muted rounded-full border border-border-default">{tag}</span>
-        )) : <span className="text-[10px] text-fg-muted italic">Add tags...</span>}
+        )) : <span className="text-[10px] text-fg-muted italic">{t('detail.typeTagAndEnter')}</span>}
       </div>
     );
   }
@@ -165,7 +166,7 @@ function InlineTags({ tags, onChange }: { tags: string[]; onChange: (tags: strin
       <input ref={inputRef} value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown}
         onBlur={() => { if (!input) setEditing(false); }}
         className="flex-1 min-w-[80px] bg-transparent text-xs text-fg-primary placeholder:text-fg-muted focus:outline-none"
-        placeholder="Type and press Enter"
+        placeholder={t('detail.typeTagAndEnter')}
       />
     </div>
   );
@@ -197,6 +198,7 @@ function RenderedMarkdown({ content }: { content: string }) {
 function FileSection({ filename, content, onSave, embedded }: {
   filename: string; content: string; onSave: (content: string) => void; embedded?: boolean;
 }) {
+  const { t } = useTranslation(['builder', 'common']);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(content);
   const [saving, setSaving] = useState(false);
@@ -215,13 +217,13 @@ function FileSection({ filename, content, onSave, embedded }: {
     <div className="flex items-center gap-2">
       {editing ? (
         <>
-          <button onClick={() => { setDraft(content); setEditing(false); }} className="text-[10px] px-2.5 py-1 rounded-md text-fg-tertiary hover:text-fg-secondary border border-border-default transition-colors">Cancel</button>
-          <button onClick={handleSave} disabled={saving} className="text-[10px] px-2.5 py-1 rounded-md bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50">{saving ? 'Saving...' : 'Save'}</button>
+          <button onClick={() => { setDraft(content); setEditing(false); }} className="text-[10px] px-2.5 py-1 rounded-md text-fg-tertiary hover:text-fg-secondary border border-border-default transition-colors">{t('common:cancel')}</button>
+          <button onClick={handleSave} disabled={saving} className="text-[10px] px-2.5 py-1 rounded-md bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50">{saving ? t('common:saving') : t('common:save')}</button>
         </>
       ) : (
         <button onClick={() => setEditing(true)} className="text-[10px] px-2.5 py-1 rounded-md text-fg-tertiary hover:text-fg-secondary border border-border-default transition-colors inline-flex items-center gap-1">
           <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
-          Edit
+          {t('detail.edit')}
         </button>
       )}
     </div>
@@ -379,6 +381,7 @@ function TeamTabs({ members, teamTopFiles, files, onFileSave }: {
   files: Record<string, string>;
   onFileSave: (filename: string, content: string) => void;
 }) {
+  const { t } = useTranslation(['builder']);
   const [activeTab, setActiveTab] = useState(0);
 
   const memberDirs = useMemo(() => {
@@ -404,10 +407,10 @@ function TeamTabs({ members, teamTopFiles, files, onFileSave }: {
   }, [files, memberDirs]);
 
   const tabs = useMemo(() => {
-    const t: { label: string; role?: string }[] = [{ label: 'Overview' }];
-    for (const m of members) t.push({ label: m.name, role: m.role });
-    return t;
-  }, [members]);
+    const list: { label: string; role?: string }[] = [{ label: t('detail.overview') }];
+    for (const m of members) list.push({ label: m.name, role: m.role });
+    return list;
+  }, [members, t]);
 
   const activeMember = activeTab > 0 ? members[activeTab - 1] : null;
   const activeMemberIdx = activeTab - 1;
@@ -448,7 +451,7 @@ function TeamTabs({ members, teamTopFiles, files, onFileSave }: {
               <TabbedFiles noHeader files={teamTopFiles} onSave={handleOverviewFileSave} />
             )}
             <div>
-              <div className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-3">Team Composition</div>
+              <div className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-3">{t('sidebar.composition')}</div>
               <div className="grid gap-2 sm:grid-cols-2">
                 {members.map((m, i) => {
                   const isManager = m.role === 'manager';
@@ -771,7 +774,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
         <div className="px-6 py-8">
           <button onClick={onBack} className="text-xs text-brand-400 hover:text-brand-300 mb-4 inline-flex items-center gap-1">
             <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
-            Back to Builder
+            {t('detail.backToBuilder')}
           </button>
           <div className="text-fg-tertiary text-sm animate-pulse py-20 text-center">{t('common:loading')}</div>
         </div>
@@ -785,9 +788,9 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
         <div className="px-6 py-8">
           <button onClick={onBack} className="text-xs text-brand-400 hover:text-brand-300 mb-4 inline-flex items-center gap-1">
             <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
-            Back to Builder
+            {t('detail.backToBuilder')}
           </button>
-          <div className="text-fg-tertiary text-sm py-20 text-center">Artifact not found</div>
+          <div className="text-fg-tertiary text-sm py-20 text-center">{t('detail.notFound')}</div>
         </div>
       </div>
     );
@@ -800,12 +803,12 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
         <div className="flex items-center justify-between mb-6">
           <button onClick={onBack} className="text-xs text-brand-400 hover:text-brand-300 inline-flex items-center gap-1">
             <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
-            Back to Builder
+            {t('detail.backToBuilder')}
           </button>
           <div className="flex items-center gap-2">
-            {saveStatus === 'saving' && <span className="text-[10px] text-fg-muted animate-pulse">Saving...</span>}
-            {saveStatus === 'saved' && <span className="text-[10px] text-green-500 inline-flex items-center gap-1"><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>Saved</span>}
-            {saveStatus === 'error' && <span className="text-[10px] text-red-500">Save failed</span>}
+            {saveStatus === 'saving' && <span className="text-[10px] text-fg-muted animate-pulse">{t('detail.saving')}</span>}
+            {saveStatus === 'saved' && <span className="text-[10px] text-green-500 inline-flex items-center gap-1"><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>{t('detail.saved')}</span>}
+            {saveStatus === 'error' && <span className="text-[10px] text-red-500">{t('detail.saveFailed')}</span>}
             {hubStatus.shared && (() => {
               const hubUser = hubApi.getUser();
               const link = hubUser && hubStatus.slug ? `${hubApi.getUrl()}/${encodeURIComponent(hubUser.username)}/${encodeURIComponent(hubStatus.slug)}` : null;
@@ -869,10 +872,10 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
                 const input = (e.target as HTMLElement).parentElement?.querySelector('input');
                 if (input) handleFieldChange('version', input.value);
               }} className="text-xs px-3 py-1 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition-colors">
-                Confirm
+                {t('common:confirm')}
               </button>
               <button onClick={() => setShowVersionBump(false)} className="text-xs text-fg-tertiary hover:text-fg-secondary">
-                Cancel
+                {t('common:cancel')}
               </button>
             </div>
             {hubStatus.shared && <p className="text-[10px] text-fg-tertiary mt-2">After bumping the version, you can share the new version to Hub.</p>}
@@ -900,7 +903,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
                   <div className="absolute top-full left-0 mt-2 z-50 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-80">
                     <div className="flex items-center gap-2 mb-3">
                       <input
-                        type="text" placeholder="Paste emoji or image URL..."
+                        type="text" placeholder={t('detail.pasteEmojiOrUrl')}
                         className="flex-1 text-sm px-2 py-1.5 rounded-lg bg-surface-elevated border border-border-default text-fg-primary placeholder:text-fg-muted"
                         defaultValue={editIcon}
                         onKeyDown={e => {
@@ -911,7 +914,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
                         }}
                       />
                       <label className="text-[10px] text-brand-400 hover:text-brand-300 cursor-pointer px-1.5 py-1 border border-brand-500/30 rounded-lg">
-                        Upload
+                        {t('detail.upload')}
                         <input type="file" accept="image/*" className="hidden" onChange={async (e) => {
                           const file = e.target.files?.[0];
                           if (!file) return;
@@ -958,13 +961,13 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <InlineEditable value={editName} onChange={v => handleFieldChange('displayName', v)} renderAs="h1" className="text-xl font-bold text-fg-primary" placeholder="Untitled" />
+                  <InlineEditable value={editName} onChange={v => handleFieldChange('displayName', v)} renderAs="h1" className="text-xl font-bold text-fg-primary" placeholder={t('detail.untitled')} />
                   <span className={`text-[10px] font-medium uppercase tracking-wider px-2 py-0.5 rounded-full ${style.bg} ${style.color}`}>{style.label}</span>
                   <InlineEditable value={editVersion} onChange={v => handleFieldChange('version', v)} renderAs="badge"
                     className="text-[10px] px-2 py-0.5 rounded-full bg-surface-elevated text-fg-tertiary border border-border-default font-mono" placeholder="1.0.0" />
                 </div>
                 <InlineEditable value={editDesc} onChange={v => handleFieldChange('description', v)} renderAs="p"
-                  className="text-sm text-fg-secondary mt-1.5 leading-relaxed" placeholder="Click to add a description..." multiline />
+                  className="text-sm text-fg-secondary mt-1.5 leading-relaxed" placeholder={t('detail.addDescription')} multiline />
                 <div className="flex items-center gap-2 mt-2 flex-wrap">
                   <InlineSelect value={editCategory} options={CATEGORIES} onChange={v => handleFieldChange('category', v)}
                     className="text-xs px-2 py-0.5 rounded bg-surface-elevated text-fg-tertiary" />
@@ -996,7 +999,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
               <div className="mb-8">
                 {manifest.skill?.requiredPermissions && manifest.skill.requiredPermissions.length > 0 && (
                   <div className="mb-6">
-                    <h2 className="text-sm font-semibold text-fg-primary mb-3 uppercase tracking-wider">Permissions</h2>
+                    <h2 className="text-sm font-semibold text-fg-primary mb-3 uppercase tracking-wider">{t('sidebar.permissions')}</h2>
                     <div className="flex flex-wrap gap-2">
                       {manifest.skill.requiredPermissions.map(p => {
                         const pi = PERMISSION_ICONS[p];
@@ -1049,24 +1052,24 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
             <div className={`${isMobile ? '' : 'sticky top-6'} space-y-4`}>
               {/* Quick info card */}
               <div className="rounded-xl border border-border-default bg-surface-secondary/60 p-4 space-y-3">
-                <div className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">Info</div>
+                <div className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">{t('sidebar.info')}</div>
                 <div className="space-y-2 text-xs">
-                  <div className="flex justify-between"><span className="text-fg-muted">Type</span><span className={`font-medium ${style.color}`}>{style.label}</span></div>
-                  <div className="flex justify-between"><span className="text-fg-muted">Category</span><span className="text-fg-secondary">{editCategory}</span></div>
-                  <div className="flex justify-between"><span className="text-fg-muted">Version</span><span className="text-fg-secondary font-mono">{editVersion}</span></div>
-                  {manifest.author && <div className="flex justify-between"><span className="text-fg-muted">Author</span><span className="text-fg-secondary">{manifest.author}</span></div>}
+                  <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.type')}</span><span className={`font-medium ${style.color}`}>{style.label}</span></div>
+                  <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.category')}</span><span className="text-fg-secondary">{editCategory}</span></div>
+                  <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.version')}</span><span className="text-fg-secondary font-mono">{editVersion}</span></div>
+                  {manifest.author && <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.author')}</span><span className="text-fg-secondary">{manifest.author}</span></div>}
                 </div>
               </div>
 
               {/* Agent specs */}
               {type === 'agent' && manifest.agent && (
                 <div className="rounded-xl border border-border-default bg-surface-secondary/60 p-4 space-y-3">
-                  <div className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">Agent Specs</div>
+                  <div className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">{t('sidebar.agentSpecs')}</div>
                   <div className="space-y-2 text-xs">
-                    {manifest.agent.roleName && <div className="flex justify-between"><span className="text-fg-muted">Role</span><span className="text-fg-secondary">{manifest.agent.roleName}</span></div>}
-                    {manifest.agent.llmProvider && <div className="flex justify-between"><span className="text-fg-muted">Provider</span><span className="text-fg-secondary">{manifest.agent.llmProvider}</span></div>}
-                    {manifest.agent.llmModel && <div className="flex justify-between"><span className="text-fg-muted">Model</span><span className="text-fg-secondary font-mono">{manifest.agent.llmModel}</span></div>}
-                    {manifest.agent.temperature !== undefined && <div className="flex justify-between"><span className="text-fg-muted">Temperature</span><span className="text-fg-secondary">{manifest.agent.temperature}</span></div>}
+                    {manifest.agent.roleName && <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.role')}</span><span className="text-fg-secondary">{manifest.agent.roleName}</span></div>}
+                    {manifest.agent.llmProvider && <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.provider')}</span><span className="text-fg-secondary">{manifest.agent.llmProvider}</span></div>}
+                    {manifest.agent.llmModel && <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.model')}</span><span className="text-fg-secondary font-mono">{manifest.agent.llmModel}</span></div>}
+                    {manifest.agent.temperature !== undefined && <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.temperature')}</span><span className="text-fg-secondary">{manifest.agent.temperature}</span></div>}
                   </div>
                 </div>
               )}
@@ -1074,11 +1077,11 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
               {/* Team composition */}
               {type === 'team' && manifest.team && (
                 <div className="rounded-xl border border-border-default bg-surface-secondary/60 p-4 space-y-3">
-                  <div className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">Composition</div>
+                  <div className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">{t('sidebar.composition')}</div>
                   <div className="space-y-2 text-xs">
-                    <div className="flex justify-between"><span className="text-fg-muted">Total members</span><span className="text-fg-secondary">{manifest.team.members.reduce((s, m) => s + m.count, 0)}</span></div>
-                    <div className="flex justify-between"><span className="text-fg-muted">Managers</span><span className="text-amber-400">{manifest.team.members.filter(m => m.role === 'manager').reduce((s, m) => s + m.count, 0)}</span></div>
-                    <div className="flex justify-between"><span className="text-fg-muted">Workers</span><span className="text-blue-400">{manifest.team.members.filter(m => m.role !== 'manager').reduce((s, m) => s + m.count, 0)}</span></div>
+                    <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.totalMembers')}</span><span className="text-fg-secondary">{manifest.team.members.reduce((s, m) => s + m.count, 0)}</span></div>
+                    <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.managers')}</span><span className="text-amber-400">{manifest.team.members.filter(m => m.role === 'manager').reduce((s, m) => s + m.count, 0)}</span></div>
+                    <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.workers')}</span><span className="text-blue-400">{manifest.team.members.filter(m => m.role !== 'manager').reduce((s, m) => s + m.count, 0)}</span></div>
                   </div>
                 </div>
               )}
@@ -1086,16 +1089,16 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
               {/* Skill info */}
               {type === 'skill' && manifest.skill && (
                 <div className="rounded-xl border border-border-default bg-surface-secondary/60 p-4 space-y-3">
-                  <div className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">Skill Info</div>
+                  <div className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">{t('sidebar.skillInfo')}</div>
                   <div className="space-y-2 text-xs">
                     {manifest.skill.alwaysOn !== undefined && (
-                      <div className="flex justify-between"><span className="text-fg-muted">Always On</span>
-                        <span className={manifest.skill.alwaysOn ? 'text-green-400' : 'text-fg-secondary'}>{manifest.skill.alwaysOn ? 'Yes' : 'No'}</span>
+                      <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.alwaysOn')}</span>
+                        <span className={manifest.skill.alwaysOn ? 'text-green-400' : 'text-fg-secondary'}>{manifest.skill.alwaysOn ? t('sidebar.yes') : t('sidebar.no')}</span>
                       </div>
                     )}
-                    <div className="flex justify-between"><span className="text-fg-muted">Skill File</span><span className="text-fg-secondary font-mono truncate ml-2">{manifest.skill.skillFile}</span></div>
+                    <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.skillFile')}</span><span className="text-fg-secondary font-mono truncate ml-2">{manifest.skill.skillFile}</span></div>
                     {manifest.skill.requiredPermissions && manifest.skill.requiredPermissions.length > 0 && (
-                      <div><span className="text-fg-muted">Permissions</span>
+                      <div><span className="text-fg-muted">{t('sidebar.permissions')}</span>
                         <div className="flex flex-wrap gap-1 mt-1">
                           {manifest.skill.requiredPermissions.map(p => (
                             <span key={p} className="text-[10px] px-1.5 py-0.5 bg-surface-elevated text-fg-muted rounded border border-border-default">{p}</span>
@@ -1110,10 +1113,10 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
               {/* Dependencies */}
               {manifest.dependencies && (manifest.dependencies.skills?.length || manifest.dependencies.env?.length) ? (
                 <div className="rounded-xl border border-border-default bg-surface-secondary/60 p-4 space-y-3">
-                  <div className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">Dependencies</div>
+                  <div className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">{t('sidebar.dependencies')}</div>
                   {manifest.dependencies.skills?.length ? (
                     <div>
-                      <div className="text-[10px] text-fg-muted mb-1">Skills</div>
+                      <div className="text-[10px] text-fg-muted mb-1">{t('sidebar.skills')}</div>
                       <div className="flex flex-wrap gap-1">
                         {manifest.dependencies.skills.map(s => <span key={s} className="text-[10px] px-2 py-0.5 bg-surface-elevated text-fg-secondary rounded border border-border-default">{s}</span>)}
                       </div>
@@ -1121,7 +1124,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
                   ) : null}
                   {manifest.dependencies.env?.length ? (
                     <div>
-                      <div className="text-[10px] text-fg-muted mb-1">Environment</div>
+                      <div className="text-[10px] text-fg-muted mb-1">{t('sidebar.environment')}</div>
                       <div className="flex flex-wrap gap-1">
                         {manifest.dependencies.env.map(e => <span key={e} className="text-[10px] px-2 py-0.5 bg-surface-elevated text-fg-secondary rounded font-mono border border-border-default">{e}</span>)}
                       </div>
@@ -1136,7 +1139,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
                 <button onClick={() => api.system.openPath(artPath).catch(() => {})}
                   className="w-full text-left rounded-xl border border-border-default bg-surface-secondary/60 px-4 py-3 text-[10px] text-fg-muted hover:text-fg-secondary hover:border-gray-600 transition-colors truncate"
                   title={artPath}>
-                  <span className="text-fg-tertiary block mb-0.5">Open in Finder</span>
+                  <span className="text-fg-tertiary block mb-0.5">{t('sidebar.openInFinder')}</span>
                   {artPath.replace(/.*\.markus\//, '~/.markus/')}
                 </button>
               )}
