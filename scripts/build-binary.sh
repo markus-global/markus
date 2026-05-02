@@ -103,6 +103,16 @@ ok "Node.js binary extracted"
 
 cp "$CLI_BUNDLE" "$STAGE_DIR/bin/markus.mjs"
 
+# Install native/external dependencies that esbuild cannot bundle
+info "Installing native dependencies into staging dir..."
+cat > "$STAGE_DIR/bin/package.json" << 'PKGJSON'
+{ "private": true, "type": "module" }
+PKGJSON
+(cd "$STAGE_DIR/bin" && npm install --no-save ws sharp rfb2 2>&1) \
+  || die "Failed to install native dependencies"
+rm -f "$STAGE_DIR/bin/package.json" "$STAGE_DIR/bin/package-lock.json"
+ok "Native dependencies installed"
+
 WEB_UI_DIR="$ROOT_DIR/packages/cli/dist/web-ui"
 [[ -d "$WEB_UI_DIR" ]] && cp -r "$WEB_UI_DIR" "$STAGE_DIR/web-ui" && ok "Web UI copied"
 
@@ -171,8 +181,14 @@ if [[ "$PLATFORM" == "darwin" ]]; then
 INSTALL_DIR="/usr/local/lib/markus"
 ln -sf "$INSTALL_DIR/markus" /usr/local/bin/markus
 
+# Detect the real console user (postinstall runs as root, so $USER == root)
+CONSOLE_USER=$(/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ { print $3 }')
+if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "loginwindow" ]; then
+  CONSOLE_USER=$(stat -f "%Su" /dev/console 2>/dev/null)
+fi
+REAL_HOME=$(eval echo ~"$CONSOLE_USER")
+
 # Desktop shortcut (Markus.app bundle with icon)
-REAL_HOME=$(eval echo ~"$USER")
 if [ -d "$REAL_HOME/Desktop" ]; then
   APP_DIR="$REAL_HOME/Desktop/Markus.app"
   rm -rf "$APP_DIR"
@@ -207,17 +223,33 @@ PLIST_APP
 
   cat > "$APP_DIR/Contents/MacOS/launch" << 'LAUNCH_SCRIPT'
 #!/bin/bash
-exec /usr/local/bin/markus start
+MARKUS_DIR="/usr/local/lib/markus"
+LOG_DIR="$HOME/.markus/logs"
+mkdir -p "$LOG_DIR"
+
+"$MARKUS_DIR/bin/node" "$MARKUS_DIR/bin/markus.mjs" start \
+  >> "$LOG_DIR/stdout.log" 2>> "$LOG_DIR/stderr.log" &
+SERVER_PID=$!
+
+sleep 3
+if kill -0 "$SERVER_PID" 2>/dev/null; then
+  open "http://localhost:8056"
+else
+  osascript -e 'display dialog "Markus failed to start.\nCheck logs at ~/.markus/logs/" with title "Markus" buttons {"OK"} default button "OK" with icon stop'
+  exit 1
+fi
+
+wait "$SERVER_PID"
 LAUNCH_SCRIPT
   chmod +x "$APP_DIR/Contents/MacOS/launch"
 
   if [ -f "$INSTALL_DIR/markus.icns" ]; then
     cp "$INSTALL_DIR/markus.icns" "$APP_DIR/Contents/Resources/markus.icns"
   fi
-  chown -R "$USER" "$APP_DIR"
+  chown -R "$CONSOLE_USER" "$APP_DIR"
 fi
 
-# Auto-start on login (launchd)
+# Auto-start on login (launchd) — use direct paths, not symlinks
 PLIST_DIR="$REAL_HOME/Library/LaunchAgents"
 mkdir -p "$PLIST_DIR"
 cat > "$PLIST_DIR/global.markus.plist" << PLIST
@@ -230,7 +262,8 @@ cat > "$PLIST_DIR/global.markus.plist" << PLIST
   <string>global.markus</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/markus</string>
+    <string>/usr/local/lib/markus/bin/node</string>
+    <string>/usr/local/lib/markus/bin/markus.mjs</string>
     <string>start</string>
   </array>
   <key>RunAtLoad</key>
@@ -244,9 +277,9 @@ cat > "$PLIST_DIR/global.markus.plist" << PLIST
 </dict>
 </plist>
 PLIST
-chown "$USER" "$PLIST_DIR/global.markus.plist"
+chown "$CONSOLE_USER" "$PLIST_DIR/global.markus.plist"
 mkdir -p "$REAL_HOME/.markus/logs"
-chown -R "$USER" "$REAL_HOME/.markus"
+chown -R "$CONSOLE_USER" "$REAL_HOME/.markus"
 
 exit 0
 POSTINSTALL
