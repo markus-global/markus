@@ -8,6 +8,19 @@
   "category": "development",
   "tags": ["development", "agile", "sprint", "feature", "software", "tdd", "code-review"],
   "icon": "users",
+  "i18n": {
+    "zh-CN": {
+      "displayName": "开发小队",
+      "description": "高效能开发团队，遵循计划 → 实现 → 审查 → 验证的工作流。支持并行实现、两阶段审查（代码 + QA）、依赖感知的任务调度。适用于功能冲刺、重构和生产级软件交付。",
+      "members": {
+        "Tech Lead": "技术负责人",
+        "Backend Developer": "后端开发",
+        "Frontend Developer": "前端开发",
+        "Code Reviewer": "代码审查员",
+        "QA Engineer": "QA 工程师"
+      }
+    }
+  },
   "team": {
     "members": [
       {

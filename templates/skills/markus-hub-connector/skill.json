@@ -7,6 +7,12 @@
   "author": "markus",
   "category": "productivity",
   "tags": ["hub", "marketplace", "community", "share"],
+  "i18n": {
+    "zh-CN": {
+      "displayName": "Markus Hub 连接器",
+      "description": "在 Markus Hub 社区市场上搜索、下载和发布智能体/团队/技能"
+    }
+  },
   "skill": {
     "skillFile": "SKILL.md",
     "requiredPermissions": ["network"],

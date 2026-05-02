@@ -741,6 +741,9 @@ export interface TeamTemplateInfo {
   members: Array<{ templateId?: string; roleName?: string; name?: string; count?: number; role?: 'manager' | 'worker'; skills?: string[] }>;
   tags?: string[];
   category?: string;
+  announcements?: string;
+  norms?: string;
+  i18n?: Record<string, { displayName?: string; name?: string; description?: string; members?: Record<string, string> }>;
 }
 
 export interface OpsDashboard {

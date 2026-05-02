@@ -122,6 +122,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       tags: ['development', 'coding', 'fullstack', 'backend', 'frontend'],
       category: 'development',
       icon: 'code',
+      i18n: { 'zh-CN': { name: '全栈开发者', description: '全栈开发智能体，擅长代码编写、审查和调试，精通多种编程语言和框架。' } },
     },
     {
       id: 'tpl-reviewer',
@@ -136,6 +137,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       tags: ['review', 'quality', 'best-practices'],
       category: 'development',
       icon: 'search',
+      i18n: { 'zh-CN': { name: '代码审查员', description: '专注于代码审查、质量保证和最佳实践执行，审查 PR 并提出改进建议。' } },
     },
     {
       id: 'tpl-project-manager',
@@ -151,6 +153,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       category: 'management',
       heartbeatIntervalMs: 15 * 60 * 1000,
       icon: 'clipboard',
+      i18n: { 'zh-CN': { name: '项目经理', description: '管理任务、协调团队成员、跟踪进度，确保项目里程碑按时完成。' } },
     },
     {
       id: 'tpl-qa-engineer',
@@ -165,6 +168,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       tags: ['testing', 'qa', 'automation', 'quality'],
       category: 'development',
       icon: 'check-circle',
+      i18n: { 'zh-CN': { name: '质量工程师', description: '自动化测试专家，编写测试用例、执行集成测试，确保软件质量。' } },
     },
     {
       id: 'tpl-devops',
@@ -179,6 +183,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       tags: ['devops', 'ci-cd', 'infrastructure', 'deployment', 'monitoring'],
       category: 'devops',
       icon: 'server',
+      i18n: { 'zh-CN': { name: 'DevOps 工程师', description: '基础设施、CI/CD、部署和监控专家，管理构建流水线和运行环境。' } },
     },
     {
       id: 'tpl-tech-writer',
@@ -193,6 +198,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       tags: ['documentation', 'writing', 'api-docs'],
       category: 'productivity',
       icon: 'file-text',
+      i18n: { 'zh-CN': { name: '技术文档工程师', description: '文档专家，创建和维护技术文档、API 参考和用户指南。' } },
     },
     {
       id: 'tpl-research-assistant',
@@ -207,6 +213,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       tags: ['research', 'analysis', 'information-gathering'],
       category: 'general',
       icon: 'book-open',
+      i18n: { 'zh-CN': { name: '研究助理', description: '收集信息、分析数据、总结发现，以循证研究支持决策制定。' } },
     },
     {
       id: 'tpl-hr-specialist',
@@ -221,6 +228,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       tags: ['hr', 'recruitment', 'onboarding', 'people', 'culture'],
       category: 'management',
       icon: 'users',
+      i18n: { 'zh-CN': { name: '人力资源专员', description: '人力资源专家，负责招聘、入职、制度管理、员工关系和组织发展。' } },
     },
     {
       id: 'tpl-finance-analyst',
@@ -235,6 +243,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       tags: ['finance', 'budget', 'accounting', 'forecasting', 'reporting'],
       category: 'management',
       icon: 'dollar-sign',
+      i18n: { 'zh-CN': { name: '财务分析师', description: '财务分析、预算编制、财务预测、费用追踪和财务报告专家。' } },
     },
     {
       id: 'tpl-marketing-specialist',
@@ -249,6 +258,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       tags: ['marketing', 'content', 'seo', 'social-media', 'campaigns'],
       category: 'productivity',
       icon: 'megaphone',
+      i18n: { 'zh-CN': { name: '市场营销专员', description: '市场营销策略、内容创作、活动管理、SEO/SEM、社交媒体和市场分析。' } },
     },
     {
       id: 'tpl-content-writer',
@@ -263,6 +273,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       tags: ['writing', 'content', 'blog', 'copywriting', 'seo'],
       category: 'productivity',
       icon: 'edit',
+      i18n: { 'zh-CN': { name: '内容创作者', description: '创作博客文章、社交媒体内容、新闻通讯和营销文案，具备 SEO 意识。' } },
     },
     {
       id: 'tpl-customer-support',
@@ -277,6 +288,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       tags: ['support', 'customer-service', 'helpdesk', 'tickets'],
       category: 'general',
       icon: 'headphones',
+      i18n: { 'zh-CN': { name: '客户支持', description: '处理客户咨询、故障排除、工单管理和交付物管理。' } },
     },
     {
       id: 'tpl-operations-manager',
@@ -292,6 +304,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       category: 'management',
       heartbeatIntervalMs: 15 * 60 * 1000,
       icon: 'settings',
+      i18n: { 'zh-CN': { name: '运营经理', description: '监督日常运营、流程优化、资源调配和跨部门协调。' } },
     },
     {
       id: 'tpl-product-manager',
@@ -307,6 +320,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       category: 'management',
       heartbeatIntervalMs: 15 * 60 * 1000,
       icon: 'target',
+      i18n: { 'zh-CN': { name: '产品经理', description: '产品策略、路线图规划、用户研究、功能优先级排序和利益相关者沟通。' } },
     },
   ];
 

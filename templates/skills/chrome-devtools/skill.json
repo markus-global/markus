@@ -7,6 +7,12 @@
   "author": "markus",
   "category": "browser",
   "tags": ["browser", "chrome", "devtools", "automation", "testing", "mcp"],
+  "i18n": {
+    "zh-CN": {
+      "displayName": "Chrome 开发者工具",
+      "description": "Chrome DevTools 浏览器自动化 - 控制实时 Chrome 浏览器（导航、点击、输入、截图、执行 JS、检查网络、性能分析）"
+    }
+  },
   "skill": {
     "skillFile": "SKILL.md",
     "requiredPermissions": ["browser", "network"],

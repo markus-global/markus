@@ -7,6 +7,13 @@
   "author": "markus",
   "category": "platform",
   "tags": ["cli", "skills", "registry"],
+  "hidden": true,
+  "i18n": {
+    "zh-CN": {
+      "displayName": "Markus 技能命令行",
+      "description": "通过 markus CLI 管理技能 — 列出、安装、卸载、搜索、脚手架。"
+    }
+  },
   "skill": {
     "skillFile": "SKILL.md",
     "alwaysOn": false

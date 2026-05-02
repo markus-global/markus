@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api, hubApi, type AuthUser, type HubItem } from '../api.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
+import { ArtifactDetail } from './ArtifactDetail.tsx';
 
 type FilterId = 'all' | 'hub';
 
@@ -40,6 +42,16 @@ interface TemplateInfo {
   category: string;
   icon?: string;
   starterTasks?: Array<{ title: string; description: string; priority: string }>;
+  i18n?: Record<string, { displayName?: string; name?: string; description?: string }>;
+}
+
+function localizedName(tpl: TemplateInfo, lang: string): string {
+  const loc = tpl.i18n?.[lang];
+  return loc?.displayName || loc?.name || tpl.name;
+}
+
+function localizedDesc(tpl: TemplateInfo, lang: string): string {
+  return tpl.i18n?.[lang]?.description || tpl.description;
 }
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -64,14 +76,18 @@ const ROLE_COLORS: Record<string, string> = {
 };
 
 export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHighlightDone }: { authUser?: AuthUser; highlightItemId?: string | null; onHighlightDone?: () => void } = {}) {
+  const { t, i18n } = useTranslation(['store', 'common']);
+  const lang = i18n.language;
   const [filter, setFilter] = useState<FilterId>(highlightItemId ? 'hub' : 'all');
   const [search, setSearch] = useState('');
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [hubItems, setHubItems] = useState<HubItem[]>([]);
   const [selected, setSelected] = useState<TemplateInfo | null>(null);
+  const [roleFiles, setRoleFiles] = useState<Record<string, string>>({});
   const [showHireModal, setShowHireModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [localArtifacts, setLocalArtifacts] = useState<Map<string, LocalArtifactInfo>>(new Map());
+  const [detailItem, setDetailItem] = useState<{ type: string; name: string } | null>(null);
 
   useEffect(() => {
     if (highlightItemId) setFilter('hub');
@@ -127,6 +143,14 @@ export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHi
 
   useEffect(() => { load(); }, [load]);
 
+  useEffect(() => {
+    if (!selected || filter !== 'all') { setRoleFiles({}); return; }
+    fetch(`/api/templates/${encodeURIComponent(selected.id)}/files`, { credentials: 'include' })
+      .then(r => r.json())
+      .then((data: { files?: Record<string, string> }) => setRoleFiles(data.files ?? {}))
+      .catch(() => setRoleFiles({}));
+  }, [selected, filter]);
+
   const handleInstantiate = async (templateId: string, name: string, teamId?: string) => {
     try {
       const res = await fetch('/api/templates/instantiate', {
@@ -143,18 +167,120 @@ export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHi
     }
   };
 
+  if (detailItem) {
+    return (
+      <ArtifactDetail
+        type={detailItem.type}
+        name={detailItem.name}
+        onBack={() => setDetailItem(null)}
+      />
+    );
+  }
+
+  if (selected && filter === 'all') {
+    const manifestData = {
+      type: 'agent',
+      name: selected.id,
+      displayName: localizedName(selected, lang),
+      version: selected.version,
+      description: localizedDesc(selected, lang),
+      author: selected.author,
+      category: selected.category,
+      tags: selected.tags,
+      icon: selected.icon,
+      files: roleFiles,
+      agent: { roleName: selected.roleId, agentRole: selected.agentRole === 'manager' ? 'manager' : 'worker' },
+      dependencies: { skills: selected.skills },
+    };
+
+    const agentContentSlot = (
+      <div className="space-y-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="rounded-xl border border-border-default bg-surface-secondary/40 p-5">
+            <h3 className="text-xs text-fg-tertiary uppercase tracking-wider mb-3">{t('agentStore.roleConfig')}</h3>
+            <div className="space-y-2.5 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="text-fg-tertiary w-20">{t('agentStore.role')}</span>
+                <span className="text-fg-secondary font-mono text-xs bg-surface-elevated px-2 py-0.5 rounded">{selected.roleId}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-fg-tertiary w-20">{t('agentStore.position')}</span>
+                <span className={`px-2 py-0.5 rounded text-xs capitalize ${ROLE_COLORS[selected.agentRole] ?? ''}`}>{selected.agentRole}</span>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-xl border border-border-default bg-surface-secondary/40 p-5">
+            <h3 className="text-xs text-fg-tertiary uppercase tracking-wider mb-3">{t('agentStore.skills')}</h3>
+            <div className="flex flex-wrap gap-1.5">
+              {selected.skills.map(s => (
+                <span key={s} className="px-2.5 py-1 text-xs bg-brand-500/10 text-brand-500 rounded-lg border border-brand-500/20">{s}</span>
+              ))}
+              {selected.skills.length === 0 && <span className="text-xs text-fg-tertiary italic">{t('agentStore.noSkills')}</span>}
+            </div>
+          </div>
+        </div>
+        {selected.starterTasks && selected.starterTasks.length > 0 && (
+          <div className="rounded-xl border border-border-default bg-surface-secondary/40 p-5">
+            <h3 className="text-xs text-fg-tertiary uppercase tracking-wider mb-3">{t('agentStore.starterTasks')}</h3>
+            <div className="space-y-2">
+              {selected.starterTasks.map((task, i) => (
+                <div key={i} className="flex items-start gap-3 bg-surface-elevated/50 rounded-lg p-3">
+                  <span className={`inline-block w-2 h-2 rounded-full shrink-0 mt-1 ${
+                    task.priority === 'high' ? 'bg-red-400' : task.priority === 'medium' ? 'bg-amber-400' : 'bg-green-400'
+                  }`} />
+                  <div>
+                    <div className="text-sm text-fg-primary">{task.title}</div>
+                    {task.description && <div className="text-xs text-fg-tertiary mt-0.5">{task.description}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+
+    return (
+      <>
+        <ArtifactDetail
+          type="agent"
+          name={selected.id}
+          onBack={() => setSelected(null)}
+          readOnly
+          initialManifest={manifestData}
+          actionSlot={
+            <button
+              onClick={() => setShowHireModal(true)}
+              className="px-4 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors font-medium"
+            >
+              {t('agentStore.hireAgent')}
+            </button>
+          }
+          contentSlot={agentContentSlot}
+        />
+        {showHireModal && (
+          <HireFromTemplateModal
+            template={selected}
+            lang={lang}
+            onClose={() => setShowHireModal(false)}
+            onHire={handleInstantiate}
+          />
+        )}
+      </>
+    );
+  }
+
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
       <div className="px-6 h-14 flex items-center border-b border-border-default bg-surface-secondary shrink-0">
-        <h2 className="text-lg font-semibold">Agent Store</h2>
+        <h2 className="text-lg font-semibold">{t('agentStore.title')}</h2>
       </div>
 
-      {/* Filter Bar */}
       <div className="flex flex-wrap items-center gap-2 px-6 py-2 border-b border-border-default/50 bg-surface-secondary/50 shrink-0">
         <div className="flex gap-1">
           {([
-            { id: 'all' as const, label: 'Built-in' },
-            { id: 'hub' as const, label: 'Markus Hub' },
+            { id: 'all' as const, labelKey: 'agentStore.builtin' },
+            { id: 'hub' as const, labelKey: 'agentStore.markusHub' },
           ]).map(f => (
             <button
               key={f.id}
@@ -163,19 +289,19 @@ export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHi
                 filter === f.id ? 'bg-brand-600 text-white' : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
               }`}
             >
-              {f.label}
+              {t(f.labelKey)}
             </button>
           ))}
         </div>
         {filter === 'all' && (
           <div className="text-xs text-fg-tertiary">
-            {templates.length} agent{templates.length !== 1 ? 's' : ''} available
+            {t('agentStore.available', { count: templates.length })}
           </div>
         )}
         <div className="flex-1 min-w-[120px]">
           <input
             type="text"
-            placeholder="Search agents..."
+            placeholder={t('agentStore.searchPlaceholder')}
             value={search}
             onChange={e => setSearch(e.target.value)}
             className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm w-full focus:border-brand-500 focus:outline-none"
@@ -183,21 +309,20 @@ export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHi
         </div>
       </div>
 
-      {/* Grid */}
       <div className="flex-1 overflow-y-auto p-7">
         {loading ? (
-          <div className="text-center text-fg-tertiary py-20 animate-pulse">Loading agents...</div>
+          <div className="text-center text-fg-tertiary py-20 animate-pulse">{t('agentStore.loading')}</div>
         ) : filter === 'hub' ? (
           hubItems.length === 0 ? (
             <div className="text-center py-16">
               <div className="text-fg-tertiary text-3xl mb-3">🏪</div>
-              <p className="text-sm text-fg-tertiary">No agents found on Markus Hub</p>
-              <p className="text-xs text-fg-tertiary mt-1">Hub may be offline or empty. Check your network connection or hub URL configuration.</p>
+              <p className="text-sm text-fg-tertiary">{t('agentStore.noHub')}</p>
+              <p className="text-xs text-fg-tertiary mt-1">{t('agentStore.noHubHint')}</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {hubItems.map(item => (
-                <HubAgentCard key={item.id} item={item} localInfo={localArtifacts.get(toSlug(item.name))} onStatusChange={loadLocalStatus} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} />
+                <HubAgentCard key={item.id} item={item} localInfo={localArtifacts.get(toSlug(item.name))} onStatusChange={loadLocalStatus} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} onViewDetail={(name) => setDetailItem({ type: 'agent', name })} />
               ))}
             </div>
           )
@@ -205,10 +330,10 @@ export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHi
           <div className="text-center py-20">
             <div className="text-4xl mb-4 opacity-30">&#x29C9;</div>
             <div className="text-fg-secondary font-medium mb-1">
-              {search ? `No agents match "${search}"` : 'No agents found'}
+              {search ? t('agentStore.noResults', { search }) : t('agentStore.noAgents')}
             </div>
             <div className="text-fg-tertiary text-sm">
-              {search ? 'Try different search terms.' : 'Agents come from the built-in registry.'}
+              {search ? t('agentStore.noResultsHint') : t('agentStore.noAgentsHint')}
             </div>
           </div>
         ) : (
@@ -217,82 +342,19 @@ export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHi
               <TemplateCard
                 key={tpl.id}
                 template={tpl}
-                isSelected={selected?.id === tpl.id}
-                onSelect={() => setSelected(selected?.id === tpl.id ? null : tpl)}
+                lang={lang}
+                isSelected={false}
+                onSelect={() => setSelected(tpl)}
               />
             ))}
           </div>
         )}
       </div>
 
-      {/* Detail Panel */}
-      {selected && filter === 'all' && (
-        <div className="border-t border-border-default bg-surface-secondary shrink-0 max-h-72 overflow-y-auto">
-          <div className="p-5">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <div>
-                  <h3 className="font-semibold text-fg-primary">{selected.name}</h3>
-                  <p className="text-xs text-fg-tertiary mt-0.5">{selected.description}</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setShowHireModal(true)}
-                  className="px-5 py-2 bg-brand-600 text-white text-sm rounded-lg hover:bg-brand-500 transition-colors font-medium"
-                >
-                  Hire Agent
-                </button>
-                <button onClick={() => setSelected(null)} className="text-fg-tertiary hover:text-fg-secondary text-lg px-2">&times;</button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-              <div>
-                <div className="text-xs text-fg-tertiary uppercase tracking-wider mb-2">Skills</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {selected.skills.map(s => (
-                    <span key={s} className="px-2.5 py-1 text-xs bg-brand-500/10 text-brand-500 rounded-lg border border-brand-500/20">{s}</span>
-                  ))}
-                  {selected.skills.length === 0 && <span className="text-xs text-fg-tertiary italic">No required skills</span>}
-                </div>
-              </div>
-              <div>
-                <div className="text-xs text-fg-tertiary uppercase tracking-wider mb-2">Role Configuration</div>
-                <div className="space-y-1.5 text-sm">
-                  <div className="flex items-center gap-2">
-                    <span className="text-fg-tertiary w-16">Role:</span>
-                    <span className="text-fg-secondary font-mono text-xs bg-surface-elevated px-2 py-0.5 rounded">{selected.roleId}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-fg-tertiary w-16">Position:</span>
-                    <span className={`px-2 py-0.5 rounded text-xs capitalize ${ROLE_COLORS[selected.agentRole] ?? ''}`}>{selected.agentRole}</span>
-                  </div>
-                </div>
-              </div>
-              {selected.starterTasks && selected.starterTasks.length > 0 && (
-                <div>
-                  <div className="text-xs text-fg-tertiary uppercase tracking-wider mb-2">Starter Tasks</div>
-                  <div className="space-y-1.5">
-                    {selected.starterTasks.map((task, i) => (
-                      <div key={i} className="flex items-center gap-2 text-xs text-fg-secondary">
-                        <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
-                          task.priority === 'high' ? 'bg-red-400' : task.priority === 'medium' ? 'bg-amber-400' : 'bg-green-400'
-                        }`} />
-                        {task.title}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
       {showHireModal && selected && (
         <HireFromTemplateModal
           template={selected}
+          lang={lang}
           onClose={() => setShowHireModal(false)}
           onHire={handleInstantiate}
         />
@@ -320,7 +382,8 @@ export function installHubItem(item: HubItem): Promise<string> {
   })();
 }
 
-function HubAgentCard({ item, localInfo, onStatusChange, highlight, onHighlightDone }: { item: HubItem; localInfo?: LocalArtifactInfo; onStatusChange: () => void; highlight?: boolean; onHighlightDone?: () => void }) {
+function HubAgentCard({ item, localInfo, onStatusChange, highlight, onHighlightDone, onViewDetail }: { item: HubItem; localInfo?: LocalArtifactInfo; onStatusChange: () => void; highlight?: boolean; onHighlightDone?: () => void; onViewDetail?: (name: string) => void }) {
+  const { t } = useTranslation(['store']);
   const [installing, setInstalling] = useState(false);
   const [status, setStatus] = useState('');
   const cardRef = useRef<HTMLDivElement>(null);
@@ -346,14 +409,14 @@ function HubAgentCard({ item, localInfo, onStatusChange, highlight, onHighlightD
     setStatus('');
     try {
       await installHubItem(item);
-      setStatus(canUpgrade ? 'Upgraded!' : 'Installed!');
+      setStatus(canUpgrade ? t('card.upgraded') : t('card.installed') + '!');
       onStatusChange();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '';
       if (msg.includes('402') || msg.includes('Purchase required')) {
-        setStatus('Purchase required');
+        setStatus(t('card.purchaseRequired'));
       } else {
-        setStatus('Failed');
+        setStatus(t('card.failed'));
       }
     } finally {
       setInstalling(false);
@@ -372,7 +435,11 @@ function HubAgentCard({ item, localInfo, onStatusChange, highlight, onHighlightD
     : null;
 
   const handleCardClick = () => {
-    if (hubDetailUrl) window.open(hubDetailUrl, '_blank', 'noopener,noreferrer');
+    if (isInstalled && onViewDetail) {
+      onViewDetail(toSlug(item.name));
+    } else if (hubDetailUrl) {
+      window.open(hubDetailUrl, '_blank', 'noopener,noreferrer');
+    }
   };
 
   return (
@@ -421,33 +488,33 @@ function HubAgentCard({ item, localInfo, onStatusChange, highlight, onHighlightD
           {canUpgrade ? (
             <button onClick={e => void handleInstall(e)} disabled={installing}
               className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50">
-              {installing ? 'Upgrading...' : `Upgrade → v${item.version}`}
+              {installing ? t('card.upgrading') : t('card.upgrade', { version: item.version })}
             </button>
           ) : isInstalled ? (
             <span className="px-3 py-1.5 text-xs bg-green-500/10 text-green-500 rounded-lg border border-green-500/20 inline-flex items-center gap-1">
               <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              Installed{localInfo?.localVersion ? ` v${localInfo.localVersion}` : ''}
+              {t('card.installed')}{localInfo?.localVersion ? ` v${localInfo.localVersion}` : ''}
             </span>
           ) : isPaid ? (
             <a href={`${hubApi.getUrl()}/${encodeURIComponent(item.author?.username ?? '')}/${encodeURIComponent(item.slug ?? item.id)}`}
               target="_blank" rel="noopener noreferrer"
               className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors inline-flex items-center gap-1">
-              Buy {priceLabel}
+              {t('card.buy', { price: priceLabel })}
             </a>
           ) : (
             <button onClick={e => void handleInstall(e)} disabled={installing}
               className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50">
-              {installing ? 'Installing...' : 'Install'}
+              {installing ? t('card.installing') : t('card.install')}
             </button>
           )}
-          {status && <span className={`text-[10px] ${status === 'Failed' || status === 'Purchase required' ? 'text-red-500' : 'text-green-600'}`}>{status}</span>}
+          {status && <span className={`text-[10px] ${status === t('card.failed') || status === t('card.purchaseRequired') ? 'text-red-500' : 'text-green-600'}`}>{status}</span>}
         </div>
       </div>
     </div>
   );
 }
 
-function TemplateCard({ template: tpl, isSelected, onSelect }: { template: TemplateInfo; isSelected: boolean; onSelect: () => void }) {
+function TemplateCard({ template: tpl, lang, isSelected, onSelect }: { template: TemplateInfo; lang: string; isSelected: boolean; onSelect: () => void }) {
   return (
     <div
       onClick={onSelect}
@@ -466,14 +533,14 @@ function TemplateCard({ template: tpl, isSelected, onSelect }: { template: Templ
 
       <div className="relative p-5">
         <div className="flex items-center gap-2">
-          <div className="font-semibold text-fg-primary truncate group-hover:text-brand-400 transition-colors">{tpl.name}</div>
+          <div className="font-semibold text-fg-primary truncate group-hover:text-brand-400 transition-colors">{localizedName(tpl, lang)}</div>
           <span className="px-2 py-0.5 rounded-md text-[10px] font-medium shrink-0 bg-brand-500/15 text-brand-400 border border-brand-500/10">
             v{tpl.version}
           </span>
         </div>
         <div className="text-[11px] text-fg-tertiary mt-0.5">by {tpl.author}</div>
 
-        <p className="text-sm text-fg-secondary mt-3 line-clamp-2 leading-relaxed">{tpl.description}</p>
+        <p className="text-sm text-fg-secondary mt-3 line-clamp-2 leading-relaxed">{localizedDesc(tpl, lang)}</p>
 
         <div className="flex flex-wrap gap-1.5 mt-3">
           {tpl.skills.slice(0, 4).map(s => (
@@ -501,14 +568,17 @@ function TemplateCard({ template: tpl, isSelected, onSelect }: { template: Templ
 
 function HireFromTemplateModal({
   template,
+  lang,
   onClose,
   onHire,
 }: {
   template: TemplateInfo;
+  lang: string;
   onClose: () => void;
   onHire: (templateId: string, name: string, teamId?: string) => Promise<void>;
 }) {
-  const [name, setName] = useState(`${template.name} Agent`);
+  const { t } = useTranslation(['store']);
+  const [name, setName] = useState(`${localizedName(template, lang)} Agent`);
   const [teamId, setTeamId] = useState('');
   const [teams, setTeams] = useState<Array<{ id: string; name: string }>>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -535,14 +605,14 @@ function HireFromTemplateModal({
       <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[440px] shadow-2xl" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-3 mb-5">
           <div>
-            <h3 className="text-base font-semibold">Hire Agent</h3>
-            <p className="text-xs text-fg-tertiary">Creating agent from "{template.name}"</p>
+            <h3 className="text-base font-semibold">{t('hireModal.title')}</h3>
+            <p className="text-xs text-fg-tertiary">{t('hireModal.creating', { name: localizedName(template, lang) })}</p>
           </div>
         </div>
 
         <div className="space-y-4">
           <div>
-            <label className="block text-xs text-fg-tertiary mb-1.5">Agent Name</label>
+            <label className="block text-xs text-fg-tertiary mb-1.5">{t('hireModal.agentName')}</label>
             <input
               type="text"
               value={name}
@@ -554,37 +624,37 @@ function HireFromTemplateModal({
 
           {teams.length > 0 && (
             <div>
-              <label className="block text-xs text-fg-tertiary mb-1.5">Assign to Team (optional)</label>
+              <label className="block text-xs text-fg-tertiary mb-1.5">{t('hireModal.assignTeam')}</label>
               <select value={teamId} onChange={e => setTeamId(e.target.value)} className="input-field">
-                <option value="">No team</option>
-                {teams.map(t => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
+                <option value="">{t('hireModal.noTeam')}</option>
+                {teams.map(tm => (
+                  <option key={tm.id} value={tm.id}>{tm.name}</option>
                 ))}
               </select>
             </div>
           )}
 
           <div className="bg-surface-elevated/50 rounded-lg p-3">
-            <div className="text-xs text-fg-tertiary mb-2 font-medium">Agent Configuration</div>
+            <div className="text-xs text-fg-tertiary mb-2 font-medium">{t('hireModal.agentConfig')}</div>
             <div className="grid grid-cols-2 gap-y-1.5 gap-x-4 text-xs">
-              <div className="text-fg-tertiary">Role:</div>
+              <div className="text-fg-tertiary">{t('hireModal.role')}</div>
               <div className="text-fg-secondary font-mono">{template.roleId}</div>
-              <div className="text-fg-tertiary">Position:</div>
+              <div className="text-fg-tertiary">{t('hireModal.position')}</div>
               <div className="text-fg-secondary capitalize">{template.agentRole}</div>
-              <div className="text-fg-tertiary">Skills:</div>
-              <div className="text-fg-secondary">{template.skills.join(', ') || 'None'}</div>
+              <div className="text-fg-tertiary">{t('hireModal.skills')}</div>
+              <div className="text-fg-secondary">{template.skills.join(', ') || t('hireModal.none')}</div>
             </div>
           </div>
         </div>
 
         <div className="flex justify-end gap-3 mt-6">
-          <button onClick={onClose} className="btn-secondary">Cancel</button>
+          <button onClick={onClose} className="btn-secondary">{t('hireModal.cancel')}</button>
           <button
             onClick={handleSubmit}
             disabled={!name.trim() || submitting}
             className="btn-primary"
           >
-            {submitting ? 'Creating...' : 'Create Agent'}
+            {submitting ? t('hireModal.creating_progress') : t('hireModal.create')}
           </button>
         </div>
       </div>

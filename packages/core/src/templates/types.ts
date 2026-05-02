@@ -2,6 +2,12 @@ import type { SkillCategory } from '../skills/types.js';
 
 export type TemplateSource = 'official' | 'community' | 'custom';
 
+export interface I18nStrings {
+  displayName?: string;
+  name?: string;
+  description?: string;
+}
+
 export interface AgentTemplate {
   id: string;
   name: string;
@@ -38,6 +44,9 @@ export interface AgentTemplate {
 
   /** Icon identifier for UI */
   icon?: string;
+
+  /** Localized name/description keyed by locale (e.g. 'zh-CN') */
+  i18n?: Record<string, I18nStrings>;
 }
 
 export interface TemplateSearchQuery {
