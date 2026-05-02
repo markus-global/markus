@@ -5,15 +5,15 @@
     "hireAgent": "招聘智能体",
     "hireAgentDesc": "从模板招聘、创建自定义智能体，或在 Markus Hub 上寻找专家",
     "hireAgentExamples": ["招聘一名高级 React 开发者", "创建自定义代码审查智能体", "在 Hub 上寻找 DevOps 专家"],
-    "hireAgentPrompt": "我需要招聘一名智能体： ",
+    "hireAgentPrompt": "我需要你帮我创建或者招聘一名智能体： ",
     "buildTeam": "组建团队",
     "buildTeamDesc": "为项目组建最佳团队，或部署团队模板",
     "buildTeamExamples": ["包含 PM、开发与 QA 的 Web 开发团队", "数据工程小组", "内容创作团队"],
-    "buildTeamPrompt": "我需要为以下目标组建团队： ",
+    "buildTeamPrompt": "我需要你帮我创建或者为以下目标组建团队： ",
     "createSkill": "创建技能",
     "createSkillDesc": "设计智能体可学习并使用的新能力",
     "createSkillExamples": ["Git 变更日志生成器", "网页抓取技能", "数据库迁移工具"],
-    "createSkillPrompt": "我需要一个能够： "
+    "createSkillPrompt": "我需要一个你帮我创建一个skill： "
   },
   "myCreations": {
     "title": "我的创作",
