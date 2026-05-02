@@ -115,6 +115,67 @@ jobs:
       - name: Build binary archive
         run: bash scripts/build-binary.sh ${{ matrix.platform }} ${{ matrix.arch }}
 
+      - name: Sign and notarize macOS .pkg
+        if: matrix.platform == 'darwin'
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE_P12" ]; then
+            echo "⚠ Apple signing secrets not configured — skipping"
+            exit 0
+          fi
+
+          VERSION=$(node -p "require('./package.json').version")
+          PKG="dist-binary/markus-v${VERSION}-darwin-${{ matrix.arch }}.pkg"
+          PKG_SIGNED="dist-binary/markus-v${VERSION}-darwin-${{ matrix.arch }}-signed.pkg"
+          FIXED="dist-binary/markus-setup-darwin-${{ matrix.arch }}.pkg"
+
+          # Import certificate into a temporary keychain
+          KEYCHAIN="build-$$.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 12)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 900 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > /tmp/cert.p12
+          security import /tmp/cert.p12 -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/productsign
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          rm /tmp/cert.p12
+
+          # Find the installer signing identity
+          IDENTITY=$(security find-identity -v -p basic "$KEYCHAIN" | grep "Developer ID Installer" | head -1 | sed 's/.*"\(.*\)"/\1/')
+          if [ -z "$IDENTITY" ]; then
+            echo "⚠ No Developer ID Installer certificate found — skipping"
+            security delete-keychain "$KEYCHAIN"
+            exit 0
+          fi
+          echo "Signing with: $IDENTITY"
+
+          # Sign the .pkg
+          productsign --sign "$IDENTITY" --keychain "$KEYCHAIN" "$PKG" "$PKG_SIGNED"
+          mv "$PKG_SIGNED" "$PKG"
+          cp "$PKG" "$FIXED"
+
+          # Notarize
+          xcrun notarytool submit "$PKG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 600
+
+          # Staple the notarization ticket
+          xcrun stapler staple "$PKG"
+          cp "$PKG" "$FIXED"
+
+          # Cleanup
+          security delete-keychain "$KEYCHAIN"
+          echo "✓ Signed and notarized: $PKG"
+
       - name: Upload versioned installer
         uses: actions/upload-artifact@v4
         with:

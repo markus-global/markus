@@ -118,7 +118,14 @@ LAUNCHER
 else
   cat > "$STAGE_DIR/markus" << 'LAUNCHER'
 #!/usr/bin/env bash
-DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve symlinks to find the real install directory
+SOURCE="$0"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 exec "$DIR/bin/node" "$DIR/bin/markus.mjs" "$@"
 LAUNCHER
   chmod +x "$STAGE_DIR/markus"
