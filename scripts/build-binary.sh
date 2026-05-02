@@ -292,6 +292,10 @@ elif [[ "$PLATFORM" == "win" ]]; then
   EXE_VERSIONED="${ARCHIVE_NAME}-setup.exe"
   EXE_FIXED="markus-setup-win-${ARCH}.exe"
 
+  # Convert Unix paths to Windows paths for Inno Setup
+  WIN_OUT_DIR="$(cygpath -w "$OUT_DIR" 2>/dev/null || echo "$OUT_DIR")"
+  WIN_STAGE_DIR="$(cygpath -w "$STAGE_DIR" 2>/dev/null || echo "$STAGE_DIR")"
+
   ISS_FILE="$OUT_DIR/_markus_setup_$$.iss"
   cat > "$ISS_FILE" << ISS
 [Setup]
@@ -301,7 +305,7 @@ AppPublisher=Markus Global
 AppPublisherURL=https://markus.global
 DefaultDirName={localappdata}\\markus
 DefaultGroupName=Markus
-OutputDir=${OUT_DIR}
+OutputDir=${WIN_OUT_DIR}
 OutputBaseFilename=${EXE_VERSIONED%.exe}
 Compression=lzma2
 SolidCompression=yes
@@ -310,7 +314,7 @@ ChangesEnvironment=yes
 SetupIconFile=compiler:SetupClassicIcon.ico
 
 [Files]
-Source: "${STAGE_DIR}\\*"; DestDir: "{app}"; Flags: recursesubdirs
+Source: "${WIN_STAGE_DIR}\\*"; DestDir: "{app}"; Flags: recursesubdirs
 
 [Icons]
 Name: "{userdesktop}\\Markus"; Filename: "{app}\\markus.cmd"; Parameters: "start"; WorkingDir: "{userdocs}"; Comment: "Markus - AI Digital Workforce Platform"
@@ -350,7 +354,8 @@ ISS
   fi
 
   if [[ -n "$ISCC" ]]; then
-    "$ISCC" "$ISS_FILE"
+    WIN_ISS_FILE="$(cygpath -w "$ISS_FILE" 2>/dev/null || echo "$ISS_FILE")"
+    "$ISCC" "$WIN_ISS_FILE"
     cp "$OUT_DIR/$EXE_VERSIONED" "$OUT_DIR/$EXE_FIXED" 2>/dev/null || true
     ok "Windows installer: $EXE_VERSIONED"
   else
