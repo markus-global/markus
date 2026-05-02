@@ -151,4 +151,30 @@ describe('SemanticMemorySearch', () => {
     }, 'agent-1');
     expect(vectorStore.upsert).not.toHaveBeenCalled();
   });
+
+  it('should throw when embedding fails (regression: was silently returning [])', async () => {
+    await search.initialize();
+    const errorEmbedding: EmbeddingProvider = {
+      dimensions: 8,
+      embed: vi.fn().mockRejectedValue(new Error('API key invalid')),
+      embedBatch: vi.fn().mockRejectedValue(new Error('API key invalid')),
+    };
+    const errorSearch = new SemanticMemorySearch(errorEmbedding, vectorStore);
+    await errorSearch.initialize();
+    await expect(errorSearch.search('anything')).rejects.toThrow('API key invalid');
+  });
+
+  it('indexMemory should silently handle embedding errors (best-effort)', async () => {
+    await search.initialize();
+    const errorEmbedding: EmbeddingProvider = {
+      dimensions: 8,
+      embed: vi.fn().mockRejectedValue(new Error('embedding failed')),
+      embedBatch: vi.fn().mockRejectedValue(new Error('embedding failed')),
+    };
+    const errorSearch = new SemanticMemorySearch(errorEmbedding, vectorStore);
+    await errorSearch.initialize();
+    await expect(errorSearch.indexMemory({
+      id: 'mem-bad', timestamp: '', type: 'fact', content: 'test',
+    }, 'agent-1')).resolves.not.toThrow();
+  });
 });

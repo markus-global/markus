@@ -15,6 +15,9 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
     devDependencies:
+      '@rollup/rollup-darwin-arm64':
+        specifier: ^4.60.2
+        version: 4.60.2
       '@types/node-cron':
         specifier: ^3.0.11
         version: 3.0.11
@@ -901,6 +904,11 @@ packages:
 
   '@rollup/rollup-darwin-arm64@4.59.0':
     resolution: {integrity: sha512-W2Psnbh1J8ZJw0xKAd8zdNgF9HRLkdWwwdWqubSVk0pUuQkoHnv7rx4GiF9rT4t5DIZGAsConRE3AxCdJ4m8rg==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@rollup/rollup-darwin-arm64@4.60.2':
+    resolution: {integrity: sha512-UwRE7CGpvSVEQS8gUMBe1uADWjNnVgP3Iusyda1nSRwNDCsRjnGc7w6El6WLQsXmZTbLZx9cecegumcitNfpmA==}
     cpu: [arm64]
     os: [darwin]
 
@@ -3165,6 +3173,8 @@ snapshots:
 
   '@rollup/rollup-darwin-arm64@4.59.0':
     optional: true
+
+  '@rollup/rollup-darwin-arm64@4.60.2': {}
 
   '@rollup/rollup-darwin-x64@4.59.0':
     optional: true
