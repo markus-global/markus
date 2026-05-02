@@ -170,18 +170,29 @@ jobs:
           mv "$PKG_SIGNED" "$PKG"
           cp "$PKG" "$FIXED"
 
-          # Notarize
-          xcrun notarytool submit "$PKG" \
+          # Notarize (non-fatal: .pkg is still usable without notarization)
+          SUBMISSION_OUT=$(xcrun notarytool submit "$PKG" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_ID_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 600
+            --wait --timeout 600 2>&1) || true
+          echo "$SUBMISSION_OUT"
 
-          # Staple the notarization ticket
-          xcrun stapler staple "$PKG"
-          cp "$PKG" "$FIXED"
-
-          echo "✓ Signed and notarized: $PKG"
+          SUBMISSION_ID=$(echo "$SUBMISSION_OUT" | grep "id:" | head -1 | awk '{print $2}')
+          if echo "$SUBMISSION_OUT" | grep -q "status: Invalid"; then
+            echo "⚠ Notarization failed — fetching log for details:"
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_ID_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" 2>&1 || true
+            echo "⚠ .pkg is signed but NOT notarized. Users will see a Gatekeeper warning."
+            echo "  To fix: add a 'Developer ID Application' cert to APPLE_CERTIFICATE_P12."
+          else
+            # Staple the notarization ticket
+            xcrun stapler staple "$PKG"
+            cp "$PKG" "$FIXED"
+            echo "✓ Signed and notarized: $PKG"
+          fi
 
       - name: Cleanup Apple keychain
         if: always() && matrix.platform == 'darwin' && env.APPLE_KEYCHAIN != ''
