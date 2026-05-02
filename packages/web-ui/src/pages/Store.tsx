@@ -3,28 +3,31 @@ import { useTranslation } from 'react-i18next';
 import { TemplateMarketplace } from './TemplateMarketplace.tsx';
 import { TeamsStore } from './TeamsStore.tsx';
 import { SkillStore } from './SkillStore.tsx';
+import { InstalledStore } from './InstalledStore.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import type { AuthUser } from '../api.ts';
 
-const tabs = [{ id: 'agents' }, { id: 'teams' }, { id: 'skills' }] as const;
+const tabs = [{ id: 'agents' }, { id: 'teams' }, { id: 'skills' }, { id: 'installed' }] as const;
 
 type TabId = (typeof tabs)[number]['id'];
 
 const TYPE_TO_TAB: Record<string, TabId> = { agent: 'agents', team: 'teams', skill: 'skills' };
 
+function isValidTab(v: string | null): v is TabId {
+  return v === 'agents' || v === 'teams' || v === 'skills' || v === 'installed';
+}
+
 function readInitialState(): { tab: TabId; installId: string | null } {
-  // 1. Check localStorage (set by navBus.navigate)
   const lsItem = localStorage.getItem('markus_nav_installItem');
   const lsTab = localStorage.getItem('markus_nav_storeTab');
   if (lsItem) localStorage.removeItem('markus_nav_installItem');
   if (lsTab) localStorage.removeItem('markus_nav_storeTab');
   if (lsItem) {
-    const tab: TabId = (lsTab && (lsTab === 'agents' || lsTab === 'teams' || lsTab === 'skills')) ? lsTab : 'agents';
+    const tab: TabId = isValidTab(lsTab) ? lsTab : 'agents';
     return { tab, installId: lsItem };
   }
 
-  // 2. Check URL query params (direct deep link)
   const params = new URLSearchParams(window.location.search);
   const id = params.get('install');
   if (id) {
@@ -37,8 +40,7 @@ function readInitialState(): { tab: TabId; installId: string | null } {
     return { tab, installId: id };
   }
 
-  // 3. Normal tab from localStorage
-  const tab: TabId = (lsTab && (lsTab === 'agents' || lsTab === 'teams' || lsTab === 'skills')) ? lsTab : 'agents';
+  const tab: TabId = isValidTab(lsTab) ? lsTab : 'agents';
   return { tab, installId: null };
 }
 
@@ -57,7 +59,7 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
         const tab = localStorage.getItem('markus_nav_storeTab');
         if (tab) {
           localStorage.removeItem('markus_nav_storeTab');
-          if (tab === 'agents' || tab === 'teams' || tab === 'skills') setActiveTab(tab);
+          if (isValidTab(tab)) setActiveTab(tab);
         }
         const installId = localStorage.getItem('markus_nav_installItem');
         if (installId) {
@@ -69,6 +71,15 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
     window.addEventListener('markus:navigate', handler);
     return () => window.removeEventListener('markus:navigate', handler);
   }, []);
+
+  const renderContent = () => (
+    <>
+      {activeTab === 'agents' && <TemplateMarketplace authUser={authUser} highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
+      {activeTab === 'teams' && <TeamsStore highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
+      {activeTab === 'skills' && <SkillStore highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
+      {activeTab === 'installed' && <InstalledStore />}
+    </>
+  );
 
   if (isMobile) {
     return (
@@ -89,9 +100,7 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
           ))}
         </div>
         <div className="flex-1 overflow-hidden flex flex-col">
-          {activeTab === 'agents' && <TemplateMarketplace authUser={authUser} highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
-          {activeTab === 'teams' && <TeamsStore highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
-          {activeTab === 'skills' && <SkillStore highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
+          {renderContent()}
         </div>
       </div>
     );
@@ -118,9 +127,7 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
         ))}
       </nav>
       <div className="flex-1 overflow-hidden flex flex-col">
-        {activeTab === 'agents' && <TemplateMarketplace authUser={authUser} highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
-        {activeTab === 'teams' && <TeamsStore highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
-        {activeTab === 'skills' && <SkillStore highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
+        {renderContent()}
       </div>
     </div>
   );

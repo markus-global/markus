@@ -8,6 +8,18 @@
   "category": "research",
   "tags": ["research", "investigation", "debugging", "analysis", "competing-hypotheses", "audit"],
   "icon": "search",
+  "i18n": {
+    "zh-CN": {
+      "displayName": "研究实验室",
+      "description": "结构化研究团队，用于调查复杂问题：通过竞争性假设进行调试、技术评估、安全审计和深度分析。多位研究员并行探索不同角度，相互质疑发现，由综合分析师产出高质量交付物。",
+      "members": {
+        "Research Lead": "研究负责人",
+        "Researcher Alpha": "研究员 Alpha",
+        "Researcher Beta": "研究员 Beta",
+        "Synthesizer": "综合分析师"
+      }
+    }
+  },
   "team": {
     "members": [
       {

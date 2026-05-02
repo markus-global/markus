@@ -7,6 +7,12 @@
   "author": "markus",
   "category": "platform",
   "tags": ["cli", "admin", "governance", "audit", "settings"],
+  "i18n": {
+    "zh-CN": {
+      "displayName": "Markus 管理员命令行",
+      "description": "通过 markus CLI 进行系统管理 — 系统控制、审计、用户管理、设置、网关。"
+    }
+  },
   "skill": {
     "skillFile": "SKILL.md",
     "alwaysOn": false

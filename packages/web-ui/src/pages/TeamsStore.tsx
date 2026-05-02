@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api, hubApi, type TeamTemplateInfo, type HubItem } from '../api.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 import { installHubItem } from './TemplateMarketplace.tsx';
+import { ArtifactDetail } from './ArtifactDetail.tsx';
 
 type FilterId = 'all' | 'hub';
 
@@ -25,6 +27,19 @@ interface LocalArtifactInfo {
   localUpdatedAt?: string;
 }
 
+function localizedTeamName(tpl: TeamTemplateInfo, lang: string): string {
+  const loc = tpl.i18n?.[lang];
+  return loc?.displayName || loc?.name || tpl.name;
+}
+
+function localizedTeamDesc(tpl: TeamTemplateInfo, lang: string): string {
+  return tpl.i18n?.[lang]?.description || tpl.description;
+}
+
+function localizedMemberName(tpl: TeamTemplateInfo, memberName: string, lang: string): string {
+  return tpl.i18n?.[lang]?.members?.[memberName] || memberName;
+}
+
 function toSlug(name: string): string {
   return name.toLowerCase().trim().replace(/\s+/g, '-').replace(/[\/\\:*?"<>|]+/g, '').replace(/-{2,}/g, '-').replace(/^-|-$/g, '') || 'unnamed';
 }
@@ -42,15 +57,19 @@ function isNewerVersion(latest: string, current: string): boolean {
 }
 
 export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItemId?: string | null; onHighlightDone?: () => void } = {}) {
+  const { t, i18n } = useTranslation(['store', 'common']);
+  const lang = i18n.language;
   const [filter, setFilter] = useState<FilterId>(highlightItemId ? 'hub' : 'all');
   const [search, setSearch] = useState('');
   const [templates, setTemplates] = useState<TeamTemplateInfo[]>([]);
   const [hubItems, setHubItems] = useState<HubItem[]>([]);
   const [selected, setSelected] = useState<TeamTemplateInfo | null>(null);
+  const [memberFiles, setMemberFiles] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [deploying, setDeploying] = useState(false);
   const [deployResult, setDeployResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [localArtifacts, setLocalArtifacts] = useState<Map<string, LocalArtifactInfo>>(new Map());
+  const [detailItem, setDetailItem] = useState<{ type: string; name: string } | null>(null);
 
   const loadLocalStatus = useCallback(async () => {
     try {
@@ -99,6 +118,14 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
   }, [filter, search, loadLocalStatus]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (!selected || filter !== 'all') { setMemberFiles({}); return; }
+    fetch(`/api/team-templates/${encodeURIComponent(selected.id)}/files`, { credentials: 'include' })
+      .then(r => r.json())
+      .then((data: { files?: Record<string, string> }) => setMemberFiles(data.files ?? {}))
+      .catch(() => setMemberFiles({}));
+  }, [selected, filter]);
 
   const handleDeploy = async (tpl: TeamTemplateInfo) => {
     setDeploying(true);
@@ -149,7 +176,7 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
       }
 
       const errMsg = errors.length > 0 ? ` (${errors.length} failed: ${errors[0]})` : '';
-      setDeployResult({ ok: deployed > 0, message: `Team "${tpl.name}" deployed with ${deployed} agent(s)${errMsg}` });
+      setDeployResult({ ok: deployed > 0, message: `Team "${localizedTeamName(tpl, lang)}" deployed with ${deployed} agent(s)${errMsg}` });
     } catch (err) {
       setDeployResult({ ok: false, message: `Failed: ${err}` });
     } finally {
@@ -157,18 +184,119 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
     }
   };
 
+  if (detailItem) {
+    return (
+      <ArtifactDetail
+        type={detailItem.type}
+        name={detailItem.name}
+        onBack={() => setDetailItem(null)}
+      />
+    );
+  }
+
+  if (selected && filter === 'all') {
+    const allFiles: Record<string, string> = { ...memberFiles };
+    if (selected.announcements) allFiles['ANNOUNCEMENT.md'] = selected.announcements;
+    if (selected.norms) allFiles['NORMS.md'] = selected.norms;
+
+    const manifestData = {
+      type: 'team',
+      name: selected.id,
+      displayName: localizedTeamName(selected, lang),
+      version: selected.version,
+      description: localizedTeamDesc(selected, lang),
+      author: selected.author,
+      category: selected.category ?? 'general',
+      tags: selected.tags ?? [],
+      files: allFiles,
+      team: {
+        members: selected.members.map(m => ({
+          name: localizedMemberName(selected, m.name ?? m.roleName ?? m.templateId ?? 'Agent', lang),
+          role: m.role ?? 'worker',
+          roleName: m.roleName ?? m.templateId,
+          count: m.count ?? 1,
+          skills: m.skills ?? [],
+        })),
+      },
+    };
+
+    const teamContentSlot = (
+      <div className="rounded-xl border border-border-default bg-surface-secondary/40 overflow-hidden">
+        <div className="px-5 py-3 border-b border-border-default bg-surface-elevated/30">
+          <h3 className="text-xs text-fg-tertiary uppercase tracking-wider">{t('teamStore.teamComposition')}</h3>
+        </div>
+        <div className="p-5 space-y-2">
+          {selected.members.map((m, i) => {
+            const displayName = localizedMemberName(selected, m.name ?? m.roleName ?? m.templateId ?? 'Agent', lang);
+            return (
+            <div key={i} className="flex items-center gap-3 bg-surface-elevated/50 rounded-lg p-3">
+              <div className={`w-9 h-9 rounded-lg flex items-center justify-center text-sm font-bold shrink-0 ${
+                m.role === 'manager' ? 'bg-amber-500/15 text-amber-400 ring-1 ring-amber-500/30' : 'bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/30'
+              }`}>
+                {(displayName[0] ?? '?').toUpperCase()}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-fg-primary font-medium">{displayName}</span>
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] capitalize font-medium ${
+                    m.role === 'manager' ? 'bg-amber-500/15 text-amber-400' : 'bg-blue-500/15 text-blue-400'
+                  }`}>{m.role ?? 'worker'}</span>
+                  {(m.count ?? 1) > 1 && <span className="text-[10px] text-fg-muted">&times;{m.count}</span>}
+                </div>
+                {(m.roleName || m.templateId) && <div className="text-[10px] text-fg-tertiary font-mono mt-0.5">{m.roleName ?? m.templateId}</div>}
+              </div>
+              {m.skills && m.skills.length > 0 && (
+                <div className="flex flex-wrap gap-1 shrink-0">
+                  {m.skills.slice(0, 3).map(s => <span key={s} className="px-1.5 py-0.5 text-[9px] bg-surface-elevated text-fg-muted rounded border border-border-default">{s}</span>)}
+                  {m.skills.length > 3 && <span className="text-[9px] text-fg-muted">+{m.skills.length - 3}</span>}
+                </div>
+              )}
+            </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+
+    return (
+      <>
+        <ArtifactDetail
+          type="team"
+          name={selected.id}
+          onBack={() => { setSelected(null); setDeployResult(null); }}
+          readOnly
+          initialManifest={manifestData}
+          contentSlot={teamContentSlot}
+          actionSlot={
+            <>
+              {deployResult && (
+                <span className={`text-xs ${deployResult.ok ? 'text-green-500' : 'text-red-500'}`}>{deployResult.message}</span>
+              )}
+              <button
+                onClick={() => void handleDeploy(selected)}
+                disabled={deploying}
+                className="px-4 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors font-medium disabled:opacity-50"
+              >
+                {deploying ? t('teamStore.deploying') : t('teamStore.deployTeam')}
+              </button>
+            </>
+          }
+        />
+      </>
+    );
+  }
+
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
       <div className="px-6 h-14 flex items-center border-b border-border-default bg-surface-secondary shrink-0">
-        <h2 className="text-lg font-semibold">Team Store</h2>
+        <h2 className="text-lg font-semibold">{t('teamStore.title')}</h2>
       </div>
 
-      {/* Filter Bar */}
       <div className="flex flex-wrap items-center gap-2 px-6 py-2 border-b border-border-default/50 bg-surface-secondary/50 shrink-0">
         <div className="flex gap-1">
           {([
-            { id: 'all' as const, label: 'Built-in' },
-            { id: 'hub' as const, label: 'Markus Hub' },
+            { id: 'all' as const, labelKey: 'teamStore.builtin' },
+            { id: 'hub' as const, labelKey: 'teamStore.markusHub' },
           ]).map(f => (
             <button
               key={f.id}
@@ -177,19 +305,19 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
                 filter === f.id ? 'bg-brand-600 text-white' : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
               }`}
             >
-              {f.label}
+              {t(f.labelKey)}
             </button>
           ))}
         </div>
         {filter === 'all' && (
           <div className="text-xs text-fg-tertiary">
-            {templates.length} team{templates.length !== 1 ? 's' : ''} available
+            {t('teamStore.available', { count: templates.length })}
           </div>
         )}
         <div className="flex-1 min-w-[120px]">
           <input
             type="text"
-            placeholder="Search teams..."
+            placeholder={t('teamStore.searchPlaceholder')}
             value={search}
             onChange={e => setSearch(e.target.value)}
             className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm w-full focus:border-brand-500 focus:outline-none"
@@ -197,21 +325,20 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
         </div>
       </div>
 
-      {/* Content */}
       <div className="flex-1 overflow-y-auto p-7">
         {loading ? (
-          <div className="text-center text-fg-tertiary py-20 animate-pulse">Loading teams...</div>
+          <div className="text-center text-fg-tertiary py-20 animate-pulse">{t('teamStore.loading')}</div>
         ) : filter === 'hub' ? (
           hubItems.length === 0 ? (
             <div className="text-center py-16">
               <div className="text-fg-tertiary text-3xl mb-3">🏪</div>
-              <p className="text-sm text-fg-tertiary">No teams found on Markus Hub</p>
-              <p className="text-xs text-fg-tertiary mt-1">Hub may be offline or empty. Check your network connection or hub URL configuration.</p>
+              <p className="text-sm text-fg-tertiary">{t('teamStore.noHub')}</p>
+              <p className="text-xs text-fg-tertiary mt-1">{t('teamStore.noHubHint')}</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {hubItems.map(item => (
-                <HubTeamCard key={item.id} item={item} localInfo={localArtifacts.get(toSlug(item.name))} onStatusChange={loadLocalStatus} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} />
+                <HubTeamCard key={item.id} item={item} localInfo={localArtifacts.get(toSlug(item.name))} onStatusChange={loadLocalStatus} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} onViewDetail={(name) => setDetailItem({ type: 'team', name })} />
               ))}
             </div>
           )
@@ -219,10 +346,10 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
           <div className="text-center py-20">
             <div className="text-4xl mb-4 opacity-30">&#9673;</div>
             <div className="text-fg-secondary font-medium mb-1">
-              {search ? `No teams match "${search}"` : 'No teams available'}
+              {search ? t('teamStore.noResults', { search }) : t('teamStore.noTeams')}
             </div>
             <div className="text-fg-tertiary text-sm">
-              {search ? 'Try different search terms.' : 'Go to the Builder page to create a team.'}
+              {search ? t('teamStore.noResultsHint') : t('teamStore.noTeamsHint')}
             </div>
           </div>
         ) : (
@@ -231,110 +358,20 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
               <TeamTemplateCard
                 key={tpl.id}
                 template={tpl}
-                isSelected={selected?.id === tpl.id}
-                onSelect={() => setSelected(selected?.id === tpl.id ? null : tpl)}
+                lang={lang}
+                isSelected={false}
+                onSelect={() => setSelected(tpl)}
               />
             ))}
           </div>
         )}
       </div>
-
-      {/* Detail Panel */}
-      {selected && filter === 'all' && (
-        <div className="border-t border-border-default bg-surface-secondary shrink-0 max-h-80 overflow-y-auto">
-          <div className="p-5">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <div>
-                  <h3 className="font-semibold text-fg-primary">{selected.name}</h3>
-                  <p className="text-xs text-fg-tertiary mt-0.5">{selected.description}</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => handleDeploy(selected)}
-                  disabled={deploying}
-                  className="px-5 py-2 bg-brand-600 text-white text-sm rounded-lg hover:bg-brand-500 transition-colors font-medium disabled:opacity-50"
-                >
-                  {deploying ? 'Deploying...' : 'Deploy Team'}
-                </button>
-                <button onClick={() => { setSelected(null); setDeployResult(null); }} className="text-fg-tertiary hover:text-fg-secondary text-lg px-2">&times;</button>
-              </div>
-            </div>
-
-            {deployResult && (
-              <div className={`mb-4 px-4 py-2.5 rounded-lg text-sm ${
-                deployResult.ok ? 'bg-green-500/10 text-green-600 border border-green-500/20' : 'bg-red-500/10 text-red-500 border border-red-500/20'
-              }`}>
-                {deployResult.message}
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              <div>
-                <div className="text-xs text-fg-tertiary uppercase tracking-wider mb-3">Team Composition</div>
-                <div className="space-y-2">
-                  {selected.members.map((m, i) => (
-                    <div key={i} className="flex items-center gap-3 bg-surface-elevated/50 rounded-lg p-3">
-                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 ${
-                        m.role === 'manager' ? 'bg-brand-500/20 text-brand-500' : 'bg-blue-500/20 text-blue-600'
-                      }`}>
-                        {m.role === 'manager' ? '★' : (i + 1)}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm text-fg-primary">{m.name ?? m.roleName ?? m.templateId ?? 'Agent'}</div>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          {(m.roleName || m.templateId) && <span className="text-[10px] text-fg-tertiary font-mono">{m.roleName ?? m.templateId}</span>}
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] capitalize ${
-                            m.role === 'manager' ? 'bg-brand-500/15 text-brand-500' : 'bg-blue-500/15 text-blue-600'
-                          }`}>
-                            {m.role ?? 'worker'}
-                          </span>
-                          {(m.count ?? 1) > 1 && (
-                            <span className="text-[10px] text-fg-tertiary">x{m.count}</span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <div className="text-xs text-fg-tertiary uppercase tracking-wider mb-3">Details</div>
-                <div className="space-y-2 text-sm">
-                  <div className="flex items-center gap-2">
-                    <span className="text-fg-tertiary w-20">Version:</span>
-                    <span className="text-fg-secondary font-mono text-xs">{selected.version}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-fg-tertiary w-20">Author:</span>
-                    <span className="text-fg-secondary">{selected.author}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-fg-tertiary w-20">Members:</span>
-                    <span className="text-fg-secondary">{selected.members.reduce((s, m) => s + (m.count ?? 1), 0)} agents</span>
-                  </div>
-                  {selected.tags && selected.tags.length > 0 && (
-                    <div className="flex items-start gap-2">
-                      <span className="text-fg-tertiary w-20 pt-0.5">Tags:</span>
-                      <div className="flex flex-wrap gap-1.5">
-                        {selected.tags.map(t => (
-                          <span key={t} className="px-2 py-0.5 text-[10px] bg-surface-elevated text-fg-secondary rounded-full border border-border-default">{t}</span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
-function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDone }: { item: HubItem; localInfo?: LocalArtifactInfo; onStatusChange: () => void; highlight?: boolean; onHighlightDone?: () => void }) {
+function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDone, onViewDetail }: { item: HubItem; localInfo?: LocalArtifactInfo; onStatusChange: () => void; highlight?: boolean; onHighlightDone?: () => void; onViewDetail?: (name: string) => void }) {
+  const { t } = useTranslation(['store']);
   const [installing, setInstalling] = useState(false);
   const [status, setStatus] = useState('');
   const cardRef = useRef<HTMLDivElement>(null);
@@ -361,14 +398,14 @@ function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDo
     setStatus('');
     try {
       await installHubItem(item);
-      setStatus(canUpgrade ? 'Upgraded!' : 'Installed!');
+      setStatus(canUpgrade ? t('card.upgraded') : t('card.installed') + '!');
       onStatusChange();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '';
       if (msg.includes('402') || msg.includes('Purchase required')) {
-        setStatus('Purchase required');
+        setStatus(t('card.purchaseRequired'));
       } else {
-        setStatus('Failed');
+        setStatus(t('card.failed'));
       }
     } finally {
       setInstalling(false);
@@ -384,7 +421,11 @@ function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDo
     : null;
 
   const handleCardClick = () => {
-    if (hubDetailUrl) window.open(hubDetailUrl, '_blank', 'noopener,noreferrer');
+    if (isInstalled && onViewDetail) {
+      onViewDetail(toSlug(item.name));
+    } else if (hubDetailUrl) {
+      window.open(hubDetailUrl, '_blank', 'noopener,noreferrer');
+    }
   };
 
   return (
@@ -428,40 +469,41 @@ function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDo
           {canUpgrade ? (
             <button onClick={e => void handleInstall(e)} disabled={installing}
               className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50">
-              {installing ? 'Upgrading...' : `Upgrade → v${item.version}`}
+              {installing ? t('card.upgrading') : t('card.upgrade', { version: item.version })}
             </button>
           ) : isInstalled ? (
             <span className="px-3 py-1.5 text-xs bg-green-500/10 text-green-500 rounded-lg border border-green-500/20 inline-flex items-center gap-1">
               <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              Installed{localInfo?.localVersion ? ` v${localInfo.localVersion}` : ''}
+              {t('card.installed')}{localInfo?.localVersion ? ` v${localInfo.localVersion}` : ''}
             </span>
           ) : isPaid ? (
             <a href={`${hubApi.getUrl()}/${encodeURIComponent(item.author?.username ?? '')}/${encodeURIComponent(item.slug ?? item.id)}`}
               target="_blank" rel="noopener noreferrer"
               className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors inline-flex items-center gap-1">
-              Buy {priceLabel}
+              {t('card.buy', { price: priceLabel })}
             </a>
           ) : (
             <button onClick={e => void handleInstall(e)} disabled={installing}
               className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50">
-              {installing ? 'Installing...' : 'Install'}
+              {installing ? t('card.installing') : t('card.install')}
             </button>
           )}
-          {status && <span className={`text-[10px] ${status === 'Failed' || status === 'Purchase required' ? 'text-red-500' : 'text-green-600'}`}>{status}</span>}
+          {status && <span className={`text-[10px] ${status === t('card.failed') || status === t('card.purchaseRequired') ? 'text-red-500' : 'text-green-600'}`}>{status}</span>}
         </div>
       </div>
     </div>
   );
 }
 
-function TeamTemplateCard({ template: tpl, isSelected, onSelect }: {
+function TeamTemplateCard({ template: tpl, lang, isSelected, onSelect }: {
   template: TeamTemplateInfo;
+  lang: string;
   isSelected: boolean;
   onSelect: () => void;
 }) {
+  const { t } = useTranslation(['store']);
   const totalAgents = tpl.members.reduce((s, m) => s + (m.count ?? 1), 0);
   const hasManager = tpl.members.some(m => m.role === 'manager');
-  const cat = tpl.category ?? 'general';
 
   return (
     <div
@@ -481,29 +523,29 @@ function TeamTemplateCard({ template: tpl, isSelected, onSelect }: {
 
       <div className="relative p-5">
         <div className="flex items-center gap-2">
-          <div className="font-semibold text-fg-primary truncate group-hover:text-brand-400 transition-colors">{tpl.name}</div>
+          <div className="font-semibold text-fg-primary truncate group-hover:text-brand-400 transition-colors">{localizedTeamName(tpl, lang)}</div>
           <span className="px-2 py-0.5 rounded-md text-[10px] font-medium shrink-0 bg-brand-500/15 text-brand-400 border border-brand-500/10">
             v{tpl.version}
           </span>
         </div>
         <div className="text-[11px] text-fg-tertiary mt-0.5">by {tpl.author}</div>
 
-        <p className="text-sm text-fg-secondary mt-3 line-clamp-2 leading-relaxed">{tpl.description}</p>
+        <p className="text-sm text-fg-secondary mt-3 line-clamp-2 leading-relaxed">{localizedTeamDesc(tpl, lang)}</p>
 
         <div className="flex flex-wrap gap-1.5 mt-3">
           {tpl.members.map((m, i) => (
             <span key={i} className={`px-2 py-0.5 text-[10px] rounded-md border ${
               m.role === 'manager' ? 'bg-brand-500/10 text-brand-400 border-brand-500/15' : 'bg-blue-500/10 text-blue-400 border-blue-500/15'
             }`}>
-              {m.name ?? m.roleName ?? m.templateId ?? 'Agent'}
+              {localizedMemberName(tpl, m.name ?? m.roleName ?? m.templateId ?? 'Agent', lang)}
               {(m.count ?? 1) > 1 ? ` x${m.count}` : ''}
             </span>
           ))}
         </div>
 
         <div className="mt-3 pt-3 border-t border-border-default/50 flex items-center gap-3 text-xs">
-          <span className="text-fg-muted">{totalAgents} agent{totalAgents !== 1 ? 's' : ''}</span>
-          {hasManager && <span className="text-brand-400/60">has manager</span>}
+          <span className="text-fg-muted">{t('teamStore.agents', { count: totalAgents })}</span>
+          {hasManager && <span className="text-brand-400/60">{t('teamStore.hasManager')}</span>}
           {tpl.tags && tpl.tags.length > 0 && (
             <span className="text-fg-muted text-[10px]">{tpl.tags.slice(0, 3).join(' · ')}</span>
           )}

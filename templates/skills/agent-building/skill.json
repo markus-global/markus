@@ -7,6 +7,12 @@
   "author": "markus",
   "category": "development",
   "tags": ["builder", "agent", "design", "manifest"],
+  "i18n": {
+    "zh-CN": {
+      "displayName": "智能体构建",
+      "description": "设计和创建 AI 智能体包 — 清单格式、目录结构、文件编写流程和 Markus 智能体工件字段参考"
+    }
+  },
   "skill": {
     "skillFile": "SKILL.md"
   }

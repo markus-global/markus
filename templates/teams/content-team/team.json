@@ -8,6 +8,18 @@
   "category": "productivity",
   "tags": ["content", "writing", "marketing", "documentation", "creative", "editorial"],
   "icon": "edit",
+  "i18n": {
+    "zh-CN": {
+      "displayName": "内容创作团队",
+      "description": "以研究驱动的内容团队，具有结构化的流水线：调研 → 简报 → 草稿 → 编辑 → 发布。支持并行写作、事实核查和编辑审核。适用于文档项目、营销活动、技术写作和内容运营。",
+      "members": {
+        "Editor-in-Chief": "主编",
+        "Senior Writer": "高级作者",
+        "Technical Writer": "技术文档工程师",
+        "Research Analyst": "研究分析师"
+      }
+    }
+  },
   "team": {
     "members": [
       {

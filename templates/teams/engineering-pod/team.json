@@ -8,6 +8,19 @@
   "category": "development",
   "tags": ["engineering", "full-stack", "architecture", "devops", "deployment", "multi-layer"],
   "icon": "server",
+  "i18n": {
+    "zh-CN": {
+      "displayName": "工程小组",
+      "description": "全功能工程团队，由架构师设计、多位开发者跨层并行实现（后端、前端、基础设施），配备专职审查员和 DevOps 工程师。适用于需要跨层协调、API 契约和生产部署的复杂多层项目。",
+      "members": {
+        "Architect": "架构师",
+        "Backend Engineer": "后端工程师",
+        "Frontend Engineer": "前端工程师",
+        "Infra Engineer": "基础设施工程师",
+        "Senior Reviewer": "高级审查员"
+      }
+    }
+  },
   "team": {
     "members": [
       {

@@ -7,6 +7,13 @@
   "author": "markus",
   "category": "platform",
   "tags": ["cli", "projects", "requirements", "deliverables", "reports"],
+  "hidden": true,
+  "i18n": {
+    "zh-CN": {
+      "displayName": "Markus 项目命令行",
+      "description": "通过 markus CLI 管理项目、需求、交付物、报告和代码审查。"
+    }
+  },
   "skill": {
     "skillFile": "SKILL.md",
     "alwaysOn": false

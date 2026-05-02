@@ -7,6 +7,13 @@
   "author": "markus",
   "category": "platform",
   "tags": ["cli", "teams", "management"],
+  "hidden": true,
+  "i18n": {
+    "zh-CN": {
+      "displayName": "Markus 团队命令行",
+      "description": "通过 markus CLI 管理团队 — 创建、成员管理、生命周期、导出。"
+    }
+  },
   "skill": {
     "skillFile": "SKILL.md",
     "alwaysOn": false

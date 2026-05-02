@@ -29,6 +29,8 @@ export interface TeamTemplate {
   icon?: string;
   announcements?: string;
   norms?: string;
+  /** Localized name/description keyed by locale (e.g. 'zh-CN') */
+  i18n?: Record<string, { displayName?: string; name?: string; description?: string; members?: Record<string, string> }>;
 }
 
 export interface TeamInstantiateRequest {
@@ -105,6 +107,7 @@ function loadTeamTemplateFromDir(dirPath: string): TeamTemplate | null {
       icon: manifest.icon,
       announcements: existsSync(annPath) ? readFileSync(annPath, 'utf-8') : undefined,
       norms: existsSync(normsPath) ? readFileSync(normsPath, 'utf-8') : undefined,
+      i18n: manifest.i18n,
     };
   } catch (err) {
     log.warn(`Failed to load team template from ${dirPath}`, { error: String(err) });

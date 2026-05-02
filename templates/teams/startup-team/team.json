@@ -8,6 +8,17 @@
   "category": "startup",
   "tags": ["startup", "lean", "mvp", "product", "growth", "iteration", "agile"],
   "icon": "zap",
+  "i18n": {
+    "zh-CN": {
+      "displayName": "创业全能团队",
+      "description": "精益创业团队，注重速度。产品经理驱动策略，全栈开发快速交付功能，增长负责人处理营销和数据分析。适用于 MVP 开发、快速迭代和增长实验。",
+      "members": {
+        "Product Manager": "产品经理",
+        "Full-Stack Developer": "全栈开发",
+        "Growth Lead": "增长负责人"
+      }
+    }
+  },
   "team": {
     "members": [
       {

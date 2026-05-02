@@ -11,6 +11,14 @@ interface ArtifactDetailProps {
   name: string;
   onBack: () => void;
   authUser?: AuthUser;
+  /** When true, disable all editing and hide share/save/upload controls */
+  readOnly?: boolean;
+  /** Pre-loaded manifest data; skips the API fetch when provided */
+  initialManifest?: ManifestData;
+  /** Custom action buttons rendered in the top bar (e.g. Hire Agent, Deploy Team) */
+  actionSlot?: React.ReactNode;
+  /** Extra content rendered in the main content area below the hero (for readOnly templates without files) */
+  contentSlot?: React.ReactNode;
 }
 
 interface ManifestData {
@@ -30,6 +38,7 @@ interface ManifestData {
   skill?: { skillFile: string; requiredPermissions?: string[]; mcpServers?: Record<string, unknown>; alwaysOn?: boolean };
   dependencies?: { skills?: string[]; env?: string[] };
   source?: { type: string; url?: string; hubItemId?: string };
+  files?: Record<string, string>;
 }
 
 const TYPE_STYLES: Record<string, { icon: string; label: string; color: string; gradient: string; bg: string; ring: string }> = {
@@ -59,7 +68,7 @@ const PERMISSION_ICONS: Record<string, { icon: string; color: string }> = {
 // ---------------------------------------------------------------------------
 // InlineEditable: Notion-style click-to-edit
 // ---------------------------------------------------------------------------
-function InlineEditable({ value, onChange, renderAs = 'span', className, editClassName, placeholder, multiline }: {
+function InlineEditable({ value, onChange, renderAs = 'span', className, editClassName, placeholder, multiline, readOnly }: {
   value: string;
   onChange: (v: string) => void;
   renderAs?: 'h1' | 'p' | 'span' | 'badge';
@@ -67,7 +76,16 @@ function InlineEditable({ value, onChange, renderAs = 'span', className, editCla
   editClassName?: string;
   placeholder?: string;
   multiline?: boolean;
+  readOnly?: boolean;
 }) {
+  if (readOnly) {
+    const display = value || placeholder;
+    const isEmpty = !value;
+    const cls = `${className ?? ''} ${isEmpty ? 'text-fg-muted italic' : ''}`;
+    if (renderAs === 'h1') return <h1 className={cls}>{display}</h1>;
+    if (renderAs === 'p') return <p className={cls}>{display}</p>;
+    return <span className={cls}>{display}</span>;
+  }
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
@@ -106,9 +124,10 @@ function InlineEditable({ value, onChange, renderAs = 'span', className, editCla
 // ---------------------------------------------------------------------------
 // InlineSelect – combobox that allows both selecting from options and typing custom values
 // ---------------------------------------------------------------------------
-function InlineSelect({ value, options, onChange, className }: {
-  value: string; options: string[]; onChange: (v: string) => void; className?: string;
+function InlineSelect({ value, options, onChange, className, readOnly }: {
+  value: string; options: string[]; onChange: (v: string) => void; className?: string; readOnly?: boolean;
 }) {
+  if (readOnly) return <span className={className}>{value}</span>;
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState(value);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -151,7 +170,16 @@ function InlineSelect({ value, options, onChange, className }: {
 // ---------------------------------------------------------------------------
 // InlineTags
 // ---------------------------------------------------------------------------
-function InlineTags({ tags, onChange }: { tags: string[]; onChange: (tags: string[]) => void }) {
+function InlineTags({ tags, onChange, readOnly }: { tags: string[]; onChange: (tags: string[]) => void; readOnly?: boolean }) {
+  if (readOnly) {
+    return (
+      <div className="flex flex-wrap items-center gap-1.5 min-h-[24px]">
+        {tags.map(tag => (
+          <span key={tag} className="text-[10px] px-2 py-0.5 bg-surface-elevated text-fg-muted rounded-full border border-border-default">{tag}</span>
+        ))}
+      </div>
+    );
+  }
   const { t } = useTranslation(['builder']);
   const [editing, setEditing] = useState(false);
   const [input, setInput] = useState('');
@@ -223,8 +251,8 @@ function RenderedMarkdown({ content }: { content: string }) {
 // ---------------------------------------------------------------------------
 // FileSection: renders file content with toggle-to-edit
 // ---------------------------------------------------------------------------
-function FileSection({ filename, content, onSave, embedded }: {
-  filename: string; content: string; onSave: (content: string) => void; embedded?: boolean;
+function FileSection({ filename, content, onSave, embedded, readOnly }: {
+  filename: string; content: string; onSave: (content: string) => void; embedded?: boolean; readOnly?: boolean;
 }) {
   const { t } = useTranslation(['builder', 'common']);
   const [editing, setEditing] = useState(false);
@@ -250,7 +278,7 @@ function FileSection({ filename, content, onSave, embedded }: {
     setEditing(false);
   };
 
-  const editButtons = (
+  const editButtons = readOnly ? null : (
     <div className="flex items-center gap-2">
       {editing ? (
         <>
@@ -329,16 +357,16 @@ function sortFiles(files: [string, string][]): [string, string][] {
 // ---------------------------------------------------------------------------
 // TabbedFiles: show multiple files via tab switching
 // ---------------------------------------------------------------------------
-function TabbedFiles({ files: rawFiles, onSave, noHeader }: { files: [string, string][]; onSave: (filename: string, content: string) => void; noHeader?: boolean }) {
+function TabbedFiles({ files: rawFiles, onSave, noHeader, readOnly }: { files: [string, string][]; onSave: (filename: string, content: string) => void; noHeader?: boolean; readOnly?: boolean }) {
   const files = useMemo(() => sortFiles(rawFiles), [rawFiles]);
   const [activeTab, setActiveTab] = useState(0);
 
   if (files.length === 1) {
-    if (noHeader) return <FileSection filename={files[0]![0]} content={files[0]![1]} onSave={c => onSave(files[0]![0], c)} />;
+    if (noHeader) return <FileSection filename={files[0]![0]} content={files[0]![1]} onSave={c => onSave(files[0]![0], c)} readOnly={readOnly} />;
     return (
       <div className="mb-8">
         <h2 className="text-sm font-semibold text-fg-primary mb-4 uppercase tracking-wider">Files</h2>
-        <FileSection filename={files[0]![0]} content={files[0]![1]} onSave={c => onSave(files[0]![0], c)} />
+        <FileSection filename={files[0]![0]} content={files[0]![1]} onSave={c => onSave(files[0]![0], c)} readOnly={readOnly} />
       </div>
     );
   }
@@ -354,7 +382,7 @@ function TabbedFiles({ files: rawFiles, onSave, noHeader }: { files: [string, st
           </button>
         ))}
       </div>
-      <FileSection key={currentFile} filename={currentFile} content={currentContent} onSave={c => onSave(currentFile, c)} embedded />
+      <FileSection key={currentFile} filename={currentFile} content={currentContent} onSave={c => onSave(currentFile, c)} embedded readOnly={readOnly} />
     </div>
   );
 
@@ -370,13 +398,15 @@ function TabbedFiles({ files: rawFiles, onSave, noHeader }: { files: [string, st
 // ---------------------------------------------------------------------------
 // ImageGallery: inline image management
 // ---------------------------------------------------------------------------
-function ImageGallery({ images, artifactType, artifactName, onUpload, onRemove }: {
+function ImageGallery({ images, artifactType, artifactName, onUpload, onRemove, readOnly }: {
   images: string[]; artifactType: string; artifactName: string;
   onUpload: (file: File) => void; onRemove: (filename: string) => void;
+  readOnly?: boolean;
 }) {
   const { t } = useTranslation(['builder']);
   const fileInputRef = useRef<HTMLInputElement>(null);
   if (images.length === 0) {
+    if (readOnly) return null;
     return (
       <div className="border-2 border-dashed border-border-default rounded-xl p-6 text-center text-fg-muted text-sm cursor-pointer hover:border-brand-500/30 transition-colors"
         onClick={() => fileInputRef.current?.click()}
@@ -397,15 +427,17 @@ function ImageGallery({ images, artifactType, artifactName, onUpload, onRemove }
           return (
             <div key={img} className="relative group shrink-0 rounded-lg border border-border-default overflow-hidden bg-surface-elevated">
               <img src={`/api/builder/artifacts/${artifactType}s/${encodeURIComponent(artifactName)}/images/${encodeURIComponent(filename)}`} alt={filename} className="h-32 w-auto object-cover" />
-              <button onClick={() => onRemove(filename)} className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-red-600/80 text-white flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">&times;</button>
+              {!readOnly && <button onClick={() => onRemove(filename)} className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-red-600/80 text-white flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">&times;</button>}
             </div>
           );
         })}
-        <button onClick={() => fileInputRef.current?.click()} className="shrink-0 h-32 w-24 rounded-lg border-2 border-dashed border-border-default flex items-center justify-center text-fg-muted hover:border-brand-500/30 hover:text-brand-400 transition-colors">
-          <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-        </button>
+        {!readOnly && (
+          <button onClick={() => fileInputRef.current?.click()} className="shrink-0 h-32 w-24 rounded-lg border-2 border-dashed border-border-default flex items-center justify-center text-fg-muted hover:border-brand-500/30 hover:text-brand-400 transition-colors">
+            <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+          </button>
+        )}
       </div>
-      <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) onUpload(f); e.target.value = ''; }} />
+      {!readOnly && <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) onUpload(f); e.target.value = ''; }} />}
     </div>
   );
 }
@@ -413,11 +445,12 @@ function ImageGallery({ images, artifactType, artifactName, onUpload, onRemove }
 // ---------------------------------------------------------------------------
 // TeamTabs: Overview tab + one tab per member, each with nested file tabs
 // ---------------------------------------------------------------------------
-function TeamTabs({ members, teamTopFiles, files, onFileSave }: {
+function TeamTabs({ members, teamTopFiles, files, onFileSave, readOnly }: {
   members: Array<{ name: string; role: string; roleName?: string; count: number; skills?: string[] }>;
   teamTopFiles: [string, string][];
   files: Record<string, string>;
   onFileSave: (filename: string, content: string) => void;
+  readOnly?: boolean;
 }) {
   const { t } = useTranslation(['builder']);
   const [activeTab, setActiveTab] = useState(0);
@@ -486,7 +519,7 @@ function TeamTabs({ members, teamTopFiles, files, onFileSave }: {
           /* Overview: team-level docs + member summary */
           <div className="space-y-6">
             {teamTopFiles.length > 0 && (
-              <TabbedFiles noHeader files={teamTopFiles} onSave={handleOverviewFileSave} />
+              <TabbedFiles noHeader files={teamTopFiles} onSave={handleOverviewFileSave} readOnly={readOnly} />
             )}
             <div>
               <div className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-3">{t('sidebar.composition')}</div>
@@ -546,6 +579,7 @@ function TeamTabs({ members, teamTopFiles, files, onFileSave }: {
               return (
                 <TabbedFiles
                   noHeader
+                  readOnly={readOnly}
                   files={mf.map(([fname, content]) => [fname.replace(/^members\/[^/]+\//, ''), content] as [string, string])}
                   onSave={(shortName, content) => {
                     const original = mf.find(([f]) => f.endsWith(`/${shortName}`));
@@ -569,7 +603,7 @@ function TeamTabs({ members, teamTopFiles, files, onFileSave }: {
 // ===========================================================================
 // Main Component
 // ===========================================================================
-export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: ArtifactDetailProps) {
+export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOnly, initialManifest, actionSlot, contentSlot }: ArtifactDetailProps) {
   const { t } = useTranslation(['builder', 'common']);
   const isMobile = useIsMobile();
   const [loading, setLoading] = useState(true);
@@ -593,7 +627,23 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const initialManifestRef = useRef(initialManifest);
+  initialManifestRef.current = initialManifest;
+
   const load = useCallback(async () => {
+    const im = initialManifestRef.current;
+    if (im) {
+      setManifest(im);
+      setEditName(im.displayName || im.name || name);
+      setEditDesc(im.description || '');
+      setEditVersion(im.version || '1.0.0');
+      setEditCategory(im.category || 'general');
+      setEditTags(im.tags || []);
+      setEditIcon(im.icon || '');
+      setFiles(im.files ?? {});
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const data = await api.builder.artifacts.get(type, name);
@@ -620,6 +670,13 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
   useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
+    if (initialManifest?.files) {
+      setFiles(initialManifest.files);
+    }
+  }, [initialManifest?.files]);
+
+  useEffect(() => {
+    if (readOnly) return;
     hubApi.myItems().then(data => {
       const items = data?.items ?? [];
       const typeDir = type === 'agent' ? 'agent' : type === 'team' ? 'team' : 'skill';
@@ -630,10 +687,10 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
         }
       }
     }).catch(() => {});
-  }, [type, name]);
+  }, [type, name, readOnly]);
 
   const doSave = useCallback(async (updates: Partial<ManifestData>) => {
-    if (!manifest) return;
+    if (!manifest || readOnly) return;
     setSaveStatus('saving');
     try {
       const updated = { ...manifest, ...updates };
@@ -841,13 +898,14 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
         <div className="flex items-center justify-between mb-6">
           <button onClick={onBack} className="text-xs text-brand-400 hover:text-brand-300 inline-flex items-center gap-1">
             <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
-            {t('detail.backToBuilder')}
+            {readOnly ? t('common:back') : t('detail.backToBuilder')}
           </button>
           <div className="flex items-center gap-2">
-            {saveStatus === 'saving' && <span className="text-[10px] text-fg-muted animate-pulse">{t('detail.saving')}</span>}
-            {saveStatus === 'saved' && <span className="text-[10px] text-green-500 inline-flex items-center gap-1"><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>{t('detail.saved')}</span>}
-            {saveStatus === 'error' && <span className="text-[10px] text-red-500">{t('detail.saveFailed')}</span>}
-            {hubStatus.shared && (() => {
+            {!readOnly && saveStatus === 'saving' && <span className="text-[10px] text-fg-muted animate-pulse">{t('detail.saving')}</span>}
+            {!readOnly && saveStatus === 'saved' && <span className="text-[10px] text-green-500 inline-flex items-center gap-1"><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>{t('detail.saved')}</span>}
+            {!readOnly && saveStatus === 'error' && <span className="text-[10px] text-red-500">{t('detail.saveFailed')}</span>}
+            {actionSlot}
+            {!readOnly && hubStatus.shared && (() => {
               const hubUser = hubApi.getUser();
               const link = hubUser && hubStatus.slug ? `${hubApi.getUrl()}/${encodeURIComponent(hubUser.username)}/${encodeURIComponent(hubStatus.slug)}` : null;
               const localVersion = editVersion || manifest?.version || '1.0.0';
@@ -870,7 +928,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
                 </>
               );
             })()}
-            {!hubStatus.shared && (
+            {!readOnly && !hubStatus.shared && (
               <button onClick={() => PAYMENTS_ENABLED ? setShowShareMode(true) : void handleShareToHub()} disabled={shareInProgress}
                 className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50">
                 {shareInProgress ? t('share.sharing') : t('share.toHub')}
@@ -880,7 +938,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
         </div>
 
         {/* Version bump notification */}
-        {contentDirty && !showVersionBump && (
+        {!readOnly && contentDirty && !showVersionBump && (
           <div className="mb-4 px-4 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-between">
             <span className="text-xs text-amber-300">{t('versionBump.contentModified')}</span>
             <button onClick={() => setShowVersionBump(true)} className="text-xs px-3 py-1 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition-colors">
@@ -888,7 +946,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
             </button>
           </div>
         )}
-        {showVersionBump && (
+        {!readOnly && showVersionBump && (
           <div className="mb-4 px-4 py-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
             <div className="flex items-center gap-3">
               <span className="text-xs text-amber-300">{t('versionBump.newVersion')}</span>
@@ -927,15 +985,20 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
             {/* Hero: icon + title + desc (all inline editable) */}
             <div className="flex items-start gap-4 mb-6">
               <div className="relative">
-                <div onClick={() => setShowIconPicker(!showIconPicker)}
-                  className={`w-16 h-16 rounded-xl ${style.bg} flex items-center justify-center text-3xl shrink-0 cursor-pointer hover:ring-2 ${style.ring} transition-all overflow-hidden`}>
+                <div onClick={() => !readOnly && setShowIconPicker(!showIconPicker)}
+                  className={`w-16 h-16 rounded-xl ${style.bg} flex items-center justify-center text-3xl shrink-0 ${readOnly ? '' : 'cursor-pointer hover:ring-2'} ${style.ring} transition-all overflow-hidden`}>
                   {editIcon && editIcon.startsWith('images/')
                     ? <img src={`/api/builder/artifacts/${type}s/${encodeURIComponent(name)}/images/${encodeURIComponent(editIcon.replace('images/', ''))}`} alt="" className="w-full h-full object-cover" />
                     : editIcon && (editIcon.startsWith('http') || editIcon.startsWith('/'))
                       ? <img src={editIcon} alt="" className="w-full h-full object-cover" />
-                      : (editIcon || style.icon)}
+                      : (() => {
+                          const icon = editIcon || '';
+                          const isEmoji = icon && [...icon].length <= 2 && /\p{Emoji}/u.test(icon);
+                          if (isEmoji) return icon;
+                          return <span className="text-2xl font-bold opacity-60">{(editName || name || style.icon)[0]?.toUpperCase()}</span>;
+                        })()}
                 </div>
-                {showIconPicker && (
+                {!readOnly && showIconPicker && (
                   <>
                   <div className="fixed inset-0 z-40" onClick={() => setShowIconPicker(false)} />
                   <div className="absolute top-full left-0 mt-2 z-50 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-80">
@@ -999,37 +1062,40 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <InlineEditable value={editName} onChange={v => handleFieldChange('displayName', v)} renderAs="h1" className="text-xl font-bold text-fg-primary" placeholder={t('detail.untitled')} />
+                  <InlineEditable value={editName} onChange={v => handleFieldChange('displayName', v)} renderAs="h1" className="text-xl font-bold text-fg-primary" placeholder={t('detail.untitled')} readOnly={readOnly} />
                   <span className={`text-[10px] font-medium uppercase tracking-wider px-2 py-0.5 rounded-full ${style.bg} ${style.color}`}>{style.label}</span>
                   <InlineEditable value={editVersion} onChange={v => handleFieldChange('version', v)} renderAs="badge"
-                    className="text-[10px] px-2 py-0.5 rounded-full bg-surface-elevated text-fg-tertiary border border-border-default font-mono" placeholder="1.0.0" />
+                    className="text-[10px] px-2 py-0.5 rounded-full bg-surface-elevated text-fg-tertiary border border-border-default font-mono" placeholder="1.0.0" readOnly={readOnly} />
                 </div>
                 <InlineEditable value={editDesc} onChange={v => handleFieldChange('description', v)} renderAs="p"
-                  className="text-sm text-fg-secondary mt-1.5 leading-relaxed" placeholder={t('detail.addDescription')} multiline />
+                  className="text-sm text-fg-secondary mt-1.5 leading-relaxed" placeholder={t('detail.addDescription')} multiline readOnly={readOnly} />
                 <div className="flex items-center gap-2 mt-2 flex-wrap">
                   <InlineSelect value={editCategory} options={CATEGORIES} onChange={v => handleFieldChange('category', v)}
-                    className="text-xs px-2 py-0.5 rounded bg-surface-elevated text-fg-tertiary" />
-                  <InlineTags tags={editTags} onChange={v => handleFieldChange('tags', v)} />
+                    className="text-xs px-2 py-0.5 rounded bg-surface-elevated text-fg-tertiary" readOnly={readOnly} />
+                  <InlineTags tags={editTags} onChange={v => handleFieldChange('tags', v)} readOnly={readOnly} />
                 </div>
               </div>
             </div>
 
             {/* Image gallery */}
             <div className="mb-8">
-              <ImageGallery images={imageFiles} artifactType={type} artifactName={name} onUpload={handleImageUpload} onRemove={handleImageRemove} />
+              <ImageGallery images={imageFiles} artifactType={type} artifactName={name} onUpload={handleImageUpload} onRemove={handleImageRemove} readOnly={readOnly} />
             </div>
+
+            {/* Extra content slot (for readOnly built-in template details) */}
+            {contentSlot && <div className="mb-8">{contentSlot}</div>}
 
             {/* Type-specific sections */}
             {type === 'team' && manifest.team && (
               <div className="mb-8">
-                <TeamTabs members={manifest.team.members} teamTopFiles={teamTopFiles} files={files} onFileSave={handleFileSave} />
+                <TeamTabs members={manifest.team.members} teamTopFiles={teamTopFiles} files={files} onFileSave={handleFileSave} readOnly={readOnly} />
               </div>
             )}
 
             {type === 'agent' && agentFiles.length > 0 && (
               <div className="mb-8">
                 <h2 className="text-sm font-semibold text-fg-primary mb-4 uppercase tracking-wider">About This Agent</h2>
-                <TabbedFiles noHeader files={agentFiles} onSave={handleFileSave} />
+                <TabbedFiles noHeader files={agentFiles} onSave={handleFileSave} readOnly={readOnly} />
               </div>
             )}
 
@@ -1081,7 +1147,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
 
             {/* Files section (tabbed) */}
             {nonManifestFiles.length > 0 && (
-              <TabbedFiles files={nonManifestFiles} onSave={handleFileSave} />
+              <TabbedFiles files={nonManifestFiles} onSave={handleFileSave} readOnly={readOnly} />
             )}
           </div>
 
@@ -1173,7 +1239,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
 
 
               {/* Path */}
-              {artPath && (
+              {!readOnly && artPath && (
                 <button onClick={() => api.system.openPath(artPath).catch(() => {})}
                   className="w-full text-left rounded-xl border border-border-default bg-surface-secondary/60 px-4 py-3 text-[10px] text-fg-muted hover:text-fg-secondary hover:border-gray-600 transition-colors truncate"
                   title={artPath}>
@@ -1186,7 +1252,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
         </div>
       </div>
 
-      {showShareMode && (
+      {!readOnly && showShareMode && (
         <ShareModeDialog
           onClose={() => setShowShareMode(false)}
           onConfirm={(mode, price) => {

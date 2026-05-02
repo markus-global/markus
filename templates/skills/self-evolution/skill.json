@@ -7,6 +7,12 @@
   "author": "markus",
   "category": "productivity",
   "tags": ["learning", "reflection", "memory", "self-improvement", "evolution"],
+  "i18n": {
+    "zh-CN": {
+      "displayName": "自我进化",
+      "description": "从经验中学习 — 捕获教训、演进 SOP、分享最佳实践技能，并逐步优化自身角色"
+    }
+  },
   "skill": {
     "skillFile": "SKILL.md",
     "alwaysOn": true

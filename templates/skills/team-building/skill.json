@@ -7,6 +7,12 @@
   "author": "markus",
   "category": "development",
   "tags": ["builder", "team", "design", "manifest"],
+  "i18n": {
+    "zh-CN": {
+      "displayName": "团队构建",
+      "description": "设计和创建 AI 团队包 — 清单格式、成员结构、目录布局和 Markus 团队工件部署"
+    }
+  },
   "skill": {
     "skillFile": "SKILL.md"
   }

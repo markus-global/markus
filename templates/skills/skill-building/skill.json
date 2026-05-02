@@ -7,6 +7,12 @@
   "author": "markus",
   "category": "development",
   "tags": ["builder", "skill", "design", "manifest", "mcp"],
+  "i18n": {
+    "zh-CN": {
+      "displayName": "技能构建",
+      "description": "设计和创建智能体技能包 — 基于指令和基于 MCP 的技能、清单格式和 Markus 技能工件目录结构"
+    }
+  },
   "skill": {
     "skillFile": "SKILL.md"
   }

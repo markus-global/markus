@@ -7,6 +7,12 @@
   "author": "markus",
   "category": "data",
   "tags": ["ocr", "pdf", "document", "conversion", "multimodal"],
+  "i18n": {
+    "zh-CN": {
+      "displayName": "MarkItDown 文件转换器",
+      "description": "将文档（PDF、Word、Excel、PowerPoint、图片）转换为 Markdown 文本，供 LLM 处理"
+    }
+  },
   "skill": {
     "skillFile": "SKILL.md",
     "requiredPermissions": ["file"],

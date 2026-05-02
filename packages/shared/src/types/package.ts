@@ -75,6 +75,11 @@ export interface MarkusPackageManifest {
   source?: PackageSource;
   dependencies?: PackageDependencies;
 
+  /** Localized strings keyed by locale (e.g. 'zh-CN') */
+  i18n?: Record<string, { displayName?: string; name?: string; description?: string }>;
+  /** If true, hide from store/marketplace listing (still usable programmatically) */
+  hidden?: boolean;
+
   agent?: AgentSection;
   team?: TeamSection;
   skill?: SkillSection;

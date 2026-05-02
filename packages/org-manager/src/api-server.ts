@@ -4889,23 +4889,43 @@ EXPLANATION_END`;
       const installedSkills = new Map(
         (this.skillRegistry?.list() ?? []).map(s => [s.name, s])
       );
-      const skills = found.map(({ manifest, path: p }) => {
-        const inst = installedSkills.get(manifest.name);
-        return {
-          name: manifest.name,
-          version: manifest.version,
-          description: manifest.description,
-          author: manifest.author,
-          category: manifest.category,
-          tags: manifest.tags ?? [],
-          hasMcpServers: !!manifest.mcpServers && Object.keys(manifest.mcpServers).length > 0,
-          hasInstructions: !!manifest.instructions,
-          requiredPermissions: manifest.requiredPermissions ?? [],
-          sourcePath: p,
-          installed: !!inst,
-          installedVersion: inst?.version ?? null,
-        };
-      });
+      // Read raw manifests to get i18n/hidden fields
+      const rawManifests = new Map<string, Record<string, unknown>>();
+      try {
+        const { readdirSync, readFileSync, existsSync } = await import('node:fs');
+        for (const entry of readdirSync(builtinDir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const sjPath = resolve(builtinDir, entry.name, 'skill.json');
+          if (existsSync(sjPath)) {
+            try { rawManifests.set(entry.name, JSON.parse(readFileSync(sjPath, 'utf-8'))); } catch { /* skip */ }
+          }
+        }
+      } catch { /* skip */ }
+      const skills = found
+        .filter(({ manifest }) => {
+          const raw = rawManifests.get(manifest.name);
+          return !(raw as Record<string, unknown>)?.hidden;
+        })
+        .map(({ manifest, path: p }) => {
+          const inst = installedSkills.get(manifest.name);
+          const raw = rawManifests.get(manifest.name);
+          return {
+            name: manifest.name,
+            version: manifest.version,
+            description: manifest.description,
+            author: manifest.author,
+            category: manifest.category,
+            tags: manifest.tags ?? [],
+            hasMcpServers: !!manifest.mcpServers && Object.keys(manifest.mcpServers).length > 0,
+            hasInstructions: !!manifest.instructions,
+            instructions: manifest.instructions ?? undefined,
+            requiredPermissions: manifest.requiredPermissions ?? [],
+            sourcePath: p,
+            installed: !!inst,
+            installedVersion: inst?.version ?? null,
+            i18n: (raw as Record<string, unknown>)?.i18n ?? undefined,
+          };
+        });
       this.json(res, 200, { skills });
       return;
     }
@@ -5803,6 +5823,43 @@ EXPLANATION_END`;
         return;
       }
       this.json(res, 200, { template });
+      return;
+    }
+
+    if (path.match(/^\/api\/templates\/[^/]+\/files$/) && req.method === 'GET') {
+      if (!this.templateRegistry) {
+        this.json(res, 404, { error: 'Template registry not configured' });
+        return;
+      }
+      const templateId = path.split('/')[3]!;
+      const template = this.templateRegistry.get(templateId);
+      if (!template) {
+        this.json(res, 404, { error: `Template not found: ${templateId}` });
+        return;
+      }
+      const { existsSync: ex, readFileSync: rf, readdirSync: rd } = await import('node:fs');
+      const roleId = template.roleId;
+      const candidates = [
+        resolve(process.cwd(), 'templates', 'roles', roleId),
+      ];
+      try {
+        const thisFile = (await import('node:url')).fileURLToPath(import.meta.url);
+        const thisDir = (await import('node:path')).dirname(thisFile);
+        candidates.unshift(resolve(thisDir, '..', 'templates', 'roles', roleId));
+        candidates.push(resolve(thisDir, '..', '..', '..', '..', 'templates', 'roles', roleId));
+      } catch { /* skip */ }
+      const roleDir = candidates.find(d => ex(d));
+      const files: Record<string, string> = {};
+      if (roleDir) {
+        try {
+          for (const entry of rd(roleDir, { withFileTypes: true })) {
+            if (entry.isFile() && !entry.name.endsWith('.json')) {
+              try { files[entry.name] = rf(resolve(roleDir, entry.name), 'utf-8'); } catch { /* skip */ }
+            }
+          }
+        } catch { /* skip */ }
+      }
+      this.json(res, 200, { files });
       return;
     }
 
@@ -7772,6 +7829,42 @@ EXPLANATION_END`;
       tpl.author = tpl.author || 'user';
       this.teamTemplateRegistry.register(tpl);
       this.json(res, 201, { template: tpl });
+      return;
+    }
+
+    if (path.match(/^\/api\/team-templates\/[^/]+\/files$/) && req.method === 'GET') {
+      const id = path.split('/')[3]!;
+      const tpl = this.teamTemplateRegistry.get(id);
+      if (!tpl) {
+        this.json(res, 404, { error: 'Team template not found' });
+        return;
+      }
+      const { existsSync: ex, readFileSync: rf, readdirSync: rd } = await import('node:fs');
+      const rolesDir = resolve(process.cwd(), 'templates', 'roles');
+      const rolesCandidates = [rolesDir];
+      try {
+        const thisFile = (await import('node:url')).fileURLToPath(import.meta.url);
+        const thisDir = (await import('node:path')).dirname(thisFile);
+        rolesCandidates.unshift(resolve(thisDir, '..', 'templates', 'roles'));
+        rolesCandidates.push(resolve(thisDir, '..', '..', '..', '..', 'templates', 'roles'));
+      } catch { /* skip */ }
+      const rolesRoot = rolesCandidates.find(d => ex(d)) ?? rolesDir;
+      const files: Record<string, string> = {};
+      for (const member of tpl.members) {
+        const roleName = member.roleName;
+        if (!roleName) continue;
+        const memberSlug = (member.name ?? roleName).toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/-{2,}/g, '-').replace(/^-|-$/g, '');
+        const roleDir = resolve(rolesRoot, roleName);
+        if (!ex(roleDir)) continue;
+        try {
+          for (const entry of rd(roleDir, { withFileTypes: true })) {
+            if (entry.isFile() && !entry.name.endsWith('.json')) {
+              try { files[`members/${memberSlug}/${entry.name}`] = rf(resolve(roleDir, entry.name), 'utf-8'); } catch { /* skip */ }
+            }
+          }
+        } catch { /* skip */ }
+      }
+      this.json(res, 200, { files });
       return;
     }
 
