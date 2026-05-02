@@ -109,6 +109,9 @@ WEB_UI_DIR="$ROOT_DIR/packages/cli/dist/web-ui"
 TEMPLATES_DIR="$ROOT_DIR/packages/cli/templates"
 [[ -d "$TEMPLATES_DIR" ]] && cp -r "$TEMPLATES_DIR" "$STAGE_DIR/templates" && ok "Templates copied"
 
+LOGO_PNG="$ROOT_DIR/packages/web-ui/public/logo.png"
+[[ -f "$LOGO_PNG" ]] && cp "$LOGO_PNG" "$STAGE_DIR/logo.png" && ok "Logo copied"
+
 # Create launcher wrappers
 if [[ "$PLATFORM" == "win" ]]; then
   cat > "$STAGE_DIR/markus.cmd" << 'LAUNCHER'
@@ -141,6 +144,25 @@ if [[ "$PLATFORM" == "darwin" ]]; then
   PKG_VERSIONED="${ARCHIVE_NAME}.pkg"
   PKG_FIXED="markus-setup-darwin-${ARCH}.pkg"
 
+  # Generate .icns from logo.png (Apple iconset spec: 16/32/128/256/512 + @2x variants)
+  if [[ -f "$STAGE_DIR/logo.png" ]]; then
+    ICONSET_DIR="$OUT_DIR/_markus_iconset_$$.iconset"
+    mkdir -p "$ICONSET_DIR"
+    # 1x sizes
+    for size in 16 32 128 256 512; do
+      sips -z $size $size "$STAGE_DIR/logo.png" --out "$ICONSET_DIR/icon_${size}x${size}.png" >/dev/null 2>&1
+    done
+    # @2x sizes (32, 64, 256, 512, 1024)
+    sips -z 32   32   "$STAGE_DIR/logo.png" --out "$ICONSET_DIR/icon_16x16@2x.png"   >/dev/null 2>&1
+    sips -z 64   64   "$STAGE_DIR/logo.png" --out "$ICONSET_DIR/icon_32x32@2x.png"   >/dev/null 2>&1
+    sips -z 256  256  "$STAGE_DIR/logo.png" --out "$ICONSET_DIR/icon_128x128@2x.png" >/dev/null 2>&1
+    sips -z 512  512  "$STAGE_DIR/logo.png" --out "$ICONSET_DIR/icon_256x256@2x.png" >/dev/null 2>&1
+    sips -z 1024 1024 "$STAGE_DIR/logo.png" --out "$ICONSET_DIR/icon_512x512@2x.png" >/dev/null 2>&1
+    iconutil -c icns "$ICONSET_DIR" -o "$STAGE_DIR/markus.icns"
+    rm -rf "$ICONSET_DIR"
+    ok "Generated markus.icns"
+  fi
+
   # Post-install script: create symlink + desktop shortcut + launchd
   SCRIPTS_DIR="$OUT_DIR/_pkg_scripts_$$"
   mkdir -p "$SCRIPTS_DIR"
@@ -149,15 +171,50 @@ if [[ "$PLATFORM" == "darwin" ]]; then
 INSTALL_DIR="/usr/local/lib/markus"
 ln -sf "$INSTALL_DIR/markus" /usr/local/bin/markus
 
-# Desktop shortcut (Markus.command)
+# Desktop shortcut (Markus.app bundle with icon)
 REAL_HOME=$(eval echo ~"$USER")
 if [ -d "$REAL_HOME/Desktop" ]; then
-  cat > "$REAL_HOME/Desktop/Markus.command" << SCRIPT
+  APP_DIR="$REAL_HOME/Desktop/Markus.app"
+  rm -rf "$APP_DIR"
+  mkdir -p "$APP_DIR/Contents/MacOS"
+  mkdir -p "$APP_DIR/Contents/Resources"
+
+  cat > "$APP_DIR/Contents/Info.plist" << PLIST_APP
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Markus</string>
+  <key>CFBundleDisplayName</key>
+  <string>Markus</string>
+  <key>CFBundleIdentifier</key>
+  <string>global.markus.desktop</string>
+  <key>CFBundleVersion</key>
+  <string>1.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleExecutable</key>
+  <string>launch</string>
+  <key>CFBundleIconFile</key>
+  <string>markus</string>
+  <key>LSUIElement</key>
+  <false/>
+</dict>
+</plist>
+PLIST_APP
+
+  cat > "$APP_DIR/Contents/MacOS/launch" << 'LAUNCH_SCRIPT'
 #!/bin/bash
-/usr/local/bin/markus start
-SCRIPT
-  chmod +x "$REAL_HOME/Desktop/Markus.command"
-  chown "$USER" "$REAL_HOME/Desktop/Markus.command"
+exec /usr/local/bin/markus start
+LAUNCH_SCRIPT
+  chmod +x "$APP_DIR/Contents/MacOS/launch"
+
+  if [ -f "$INSTALL_DIR/markus.icns" ]; then
+    cp "$INSTALL_DIR/markus.icns" "$APP_DIR/Contents/Resources/markus.icns"
+  fi
+  chown -R "$USER" "$APP_DIR"
 fi
 
 # Auto-start on login (launchd)
@@ -250,6 +307,7 @@ Type=Application
 Name=Markus
 Comment=AI Digital Workforce Platform
 Exec=/usr/local/bin/markus start
+Icon=/usr/local/lib/markus/logo.png
 Terminal=true
 Categories=Development;
 StartupNotify=true
@@ -266,6 +324,7 @@ cat > "$AUTOSTART_DIR/markus.desktop" << EOF
 Type=Application
 Name=Markus
 Exec=/usr/local/bin/markus start
+Icon=/usr/local/lib/markus/logo.png
 Terminal=false
 X-GNOME-Autostart-enabled=true
 EOF
@@ -299,6 +358,17 @@ elif [[ "$PLATFORM" == "win" ]]; then
   EXE_VERSIONED="${ARCHIVE_NAME}-setup.exe"
   EXE_FIXED="markus-setup-win-${ARCH}.exe"
 
+  # Generate .ico from logo.png using ImageMagick (pre-installed on GH Actions Windows runners)
+  WIN_ICON_LINE="SetupIconFile=compiler:SetupClassicIcon.ico"
+  WIN_ICON_REF=""
+  if [[ -f "$STAGE_DIR/logo.png" ]] && command -v magick &>/dev/null; then
+    magick "$STAGE_DIR/logo.png" -define icon:auto-resize=256,128,64,48,32,16 "$STAGE_DIR/markus.ico"
+    WIN_ICON_ICO="$(cygpath -w "$STAGE_DIR/markus.ico" 2>/dev/null || echo "$STAGE_DIR/markus.ico")"
+    WIN_ICON_LINE="SetupIconFile=${WIN_ICON_ICO}"
+    WIN_ICON_REF="; IconFilename: \"{app}\\markus.ico\""
+    ok "Generated markus.ico"
+  fi
+
   # Convert Unix paths to Windows paths for Inno Setup
   WIN_OUT_DIR="$(cygpath -w "$OUT_DIR" 2>/dev/null || echo "$OUT_DIR")"
   WIN_STAGE_DIR="$(cygpath -w "$STAGE_DIR" 2>/dev/null || echo "$STAGE_DIR")"
@@ -318,15 +388,15 @@ Compression=lzma2
 SolidCompression=yes
 PrivilegesRequired=lowest
 ChangesEnvironment=yes
-SetupIconFile=compiler:SetupClassicIcon.ico
+${WIN_ICON_LINE}
 
 [Files]
 Source: "${WIN_STAGE_DIR}\\*"; DestDir: "{app}"; Flags: recursesubdirs
 
 [Icons]
-Name: "{userdesktop}\\Markus"; Filename: "{app}\\markus.cmd"; Parameters: "start"; WorkingDir: "{userdocs}"; Comment: "Markus - AI Digital Workforce Platform"
-Name: "{userstartup}\\Markus"; Filename: "{app}\\markus.cmd"; Parameters: "start"; WorkingDir: "{userdocs}"; Comment: "Markus auto-start"
-Name: "{group}\\Markus"; Filename: "{app}\\markus.cmd"; Parameters: "start"
+Name: "{userdesktop}\\Markus"; Filename: "{app}\\markus.cmd"; Parameters: "start"; WorkingDir: "{userdocs}"; Comment: "Markus - AI Digital Workforce Platform"${WIN_ICON_REF}
+Name: "{userstartup}\\Markus"; Filename: "{app}\\markus.cmd"; Parameters: "start"; WorkingDir: "{userdocs}"; Comment: "Markus auto-start"${WIN_ICON_REF}
+Name: "{group}\\Markus"; Filename: "{app}\\markus.cmd"; Parameters: "start"${WIN_ICON_REF}
 Name: "{group}\\Uninstall Markus"; Filename: "{uninstallexe}"
 
 [Registry]
