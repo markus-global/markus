@@ -1552,6 +1552,7 @@ export interface HubItem {
   category: string;
   tags: string[];
   icon?: string;
+  priceCents?: number;
   downloadCount: number;
   avgRating: string;
   ratingCount: number;

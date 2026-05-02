@@ -1,8 +1,9 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { api, hubApi, type HubItem } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { installHubItem } from './TemplateMarketplace.tsx';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -111,27 +112,22 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
   const matchedSkill = installedSkills.find(s => s.name === item.name || s.name === slug);
   const isInstalled = !!matchedSkill;
   const canUpgrade = isInstalled && item.version && matchedSkill?.version && isNewerVersion(item.version, matchedSkill.version);
+  const isPaid = (item.priceCents ?? 0) > 0;
 
   const handleInstall = async () => {
     if (installing) return;
     setInstalling(true);
     try {
-      const data = await hubApi.download(item.id);
-      const name = data.name || item.name;
-      const s = name.toLowerCase().trim().replace(/\s+/g, '-').replace(/[\/\\:*?"<>|]+/g, '').replace(/-{2,}/g, '-').replace(/^-|-$/g, '') || 'unnamed';
-      const hubSource = { type: 'hub', hubItemId: item.id };
-      if (data.files && Object.keys(data.files).length > 0) {
-        await api.builder.artifacts.import('skill', s, data.files, hubSource);
-      } else {
-        const artifact = { ...(data.config as Record<string, unknown>), name, description: item.description, source: hubSource };
-        await api.builder.artifacts.save('skill', artifact);
-      }
-      await api.builder.artifacts.install('skill', s);
+      await installHubItem(item);
       onMsg(canUpgrade ? `Upgraded ${item.name}` : `Installed ${item.name}`, 'success');
       onRefresh();
-      window.dispatchEvent(new CustomEvent('markus:data-changed'));
-    } catch {
-      onMsg('Install failed', 'error');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('402') || msg.includes('Purchase required')) {
+        onMsg('Purchase required — buy on Hub first', 'error');
+      } else {
+        onMsg('Install failed', 'error');
+      }
     } finally {
       setInstalling(false);
     }
@@ -157,6 +153,15 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
     );
   }
 
+  if (isPaid) {
+    return (
+      <a href={`${hubApi.getUrl()}/${encodeURIComponent(item.author?.username ?? '')}/${encodeURIComponent(item.slug ?? item.id)}`}
+        target="_blank" rel="noopener noreferrer"
+        className="px-2.5 py-1 text-[10px] bg-amber-600 hover:bg-amber-500 text-white rounded-lg inline-flex items-center gap-1"
+      >Buy ${((item.priceCents ?? 0) / 100).toFixed(2)}</a>
+    );
+  }
+
   return (
     <button
       onClick={() => void handleInstall()}
@@ -168,11 +173,63 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
   );
 }
 
+function HubSkillCard({ item, installedSkills, onMsg, onRefresh, highlight, onHighlightDone }: {
+  item: HubItem;
+  installedSkills: InstalledSkill[];
+  onMsg: (text: string, type: 'success' | 'error') => void;
+  onRefresh: () => void;
+  highlight?: boolean;
+  onHighlightDone?: () => void;
+}) {
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [glowing, setGlowing] = useState(false);
+
+  useEffect(() => {
+    if (highlight && cardRef.current) {
+      cardRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setGlowing(true);
+      const timer = setTimeout(() => { setGlowing(false); onHighlightDone?.(); }, 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [highlight, onHighlightDone]);
+
+  const detailUrl = item.slug && item.author?.username
+    ? `${hubApi.getUrl()}/${encodeURIComponent(item.author.username)}/${encodeURIComponent(item.slug)}`
+    : null;
+
+  return (
+    <div ref={cardRef} className={`bg-surface-secondary rounded-xl p-5 border transition-all ${glowing ? 'border-brand-500/60 ring-2 ring-brand-500 shadow-lg shadow-brand-500/20 animate-pulse' : 'border-border-default hover:border-gray-600'}`}>
+      <div className="flex items-start justify-between">
+        <div className="flex-1 min-w-0">
+          {detailUrl ? (
+            <a href={detailUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-sm truncate block hover:text-brand-400 transition-colors">{item.name}</a>
+          ) : (
+            <div className="font-semibold text-sm truncate">{item.name}</div>
+          )}
+          <div className="text-xs text-fg-tertiary mt-0.5">by {item.author?.displayName ?? item.author?.username}</div>
+        </div>
+        <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-500/15 text-green-600 shrink-0 ml-2">Hub</span>
+      </div>
+      <p className="text-sm text-fg-secondary mt-2 line-clamp-2">{item.description}</p>
+      <div className="mt-2 text-xs text-amber-600">
+        {'\u2605'.repeat(Math.round(parseFloat(item.avgRating)))}{'\u2606'.repeat(5 - Math.round(parseFloat(item.avgRating)))}
+        <span className="text-fg-tertiary ml-1">({item.ratingCount}) · \u2193 {item.downloadCount}</span>
+      </div>
+      <div className="mt-2 pt-2 border-t border-border-default flex items-center justify-between gap-2">
+        {detailUrl ? (
+          <a href={detailUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-brand-500 hover:text-brand-400">View on Hub \u2192</a>
+        ) : <span />}
+        <HubSkillInstallButton item={item} installedSkills={installedSkills} onMsg={onMsg} onRefresh={onRefresh} />
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Page ──────────────────────────────────────────────────────────────────
 
-export function SkillStore() {
+export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItemId?: string | null; onHighlightDone?: () => void } = {}) {
   const isMobile = useIsMobile();
-  const [tab, setTab] = useState<TabId>('installed');
+  const [tab, setTab] = useState<TabId>(highlightItemId ? 'markus-hub' : 'installed');
   const [flash, setFlash] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [installing, setInstalling] = useState<Set<string>>(new Set());
 
@@ -751,37 +808,9 @@ export function SkillStore() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {hubSkills.map(item => {
-                const detailUrl = item.slug && item.author?.username
-                  ? `${hubApi.getUrl()}/${encodeURIComponent(item.author.username)}/${encodeURIComponent(item.slug)}`
-                  : null;
-                return (
-                <div key={item.id} className="bg-surface-secondary border border-border-default rounded-xl p-5 hover:border-gray-600 transition-colors">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1 min-w-0">
-                      {detailUrl ? (
-                        <a href={detailUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-sm truncate block hover:text-brand-400 transition-colors">{item.name}</a>
-                      ) : (
-                        <div className="font-semibold text-sm truncate">{item.name}</div>
-                      )}
-                      <div className="text-xs text-fg-tertiary mt-0.5">by {item.author?.displayName ?? item.author?.username}</div>
-                    </div>
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-500/15 text-green-600 shrink-0 ml-2">Hub</span>
-                  </div>
-                  <p className="text-sm text-fg-secondary mt-2 line-clamp-2">{item.description}</p>
-                  <div className="mt-2 text-xs text-amber-600">
-                    {'★'.repeat(Math.round(parseFloat(item.avgRating)))}{'☆'.repeat(5 - Math.round(parseFloat(item.avgRating)))}
-                    <span className="text-fg-tertiary ml-1">({item.ratingCount}) · ↓ {item.downloadCount}</span>
-                  </div>
-                  <div className="mt-2 pt-2 border-t border-border-default flex items-center justify-between gap-2">
-                    {detailUrl ? (
-                      <a href={detailUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-brand-500 hover:text-brand-400">View on Hub →</a>
-                    ) : <span />}
-                    <HubSkillInstallButton item={item} installedSkills={installed} onMsg={msg} onRefresh={() => void loadInstalled()} />
-                  </div>
-                </div>
-                );
-              })}
+              {hubSkills.map(item => (
+                <HubSkillCard key={item.id} item={item} installedSkills={installed} onMsg={msg} onRefresh={() => void loadInstalled()} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} />
+              ))}
             </div>
           )}
         </div>

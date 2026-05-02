@@ -28,5 +28,19 @@
     "members": "成员",
     "requirements": "要求",
     "configuration": "配置"
+  },
+  "installDialog": {
+    "successTitle": "安装成功！",
+    "successDesc": "{{name}} 已安装完毕，可以使用了。",
+    "done": "完成",
+    "errorTitle": "安装失败",
+    "errorDesc": "出了点问题，请重试。",
+    "close": "关闭",
+    "retry": "重试",
+    "paidNote": "这是付费内容，请先在 Hub 上购买后再安装。",
+    "cancel": "取消",
+    "buyOnHub": "去 Hub 购买",
+    "installing": "安装中…",
+    "install": "安装"
   }
 }

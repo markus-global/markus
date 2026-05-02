@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { api, hubApi, type AuthUser, type HubItem } from '../api.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 
@@ -63,8 +63,8 @@ const ROLE_COLORS: Record<string, string> = {
   worker: 'bg-blue-500/15 text-blue-600',
 };
 
-export function TemplateMarketplace({ authUser: _authUser }: { authUser?: AuthUser } = {}) {
-  const [filter, setFilter] = useState<FilterId>('all');
+export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHighlightDone }: { authUser?: AuthUser; highlightItemId?: string | null; onHighlightDone?: () => void } = {}) {
+  const [filter, setFilter] = useState<FilterId>(highlightItemId ? 'hub' : 'all');
   const [search, setSearch] = useState('');
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [hubItems, setHubItems] = useState<HubItem[]>([]);
@@ -72,6 +72,10 @@ export function TemplateMarketplace({ authUser: _authUser }: { authUser?: AuthUs
   const [showHireModal, setShowHireModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [localArtifacts, setLocalArtifacts] = useState<Map<string, LocalArtifactInfo>>(new Map());
+
+  useEffect(() => {
+    if (highlightItemId) setFilter('hub');
+  }, [highlightItemId]);
 
   const loadLocalStatus = useCallback(async () => {
     try {
@@ -193,7 +197,7 @@ export function TemplateMarketplace({ authUser: _authUser }: { authUser?: AuthUs
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {hubItems.map(item => (
-                <HubAgentCard key={item.id} item={item} localInfo={localArtifacts.get(toSlug(item.name))} onStatusChange={loadLocalStatus} />
+                <HubAgentCard key={item.id} item={item} localInfo={localArtifacts.get(toSlug(item.name))} onStatusChange={loadLocalStatus} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} />
               ))}
             </div>
           )
@@ -297,12 +301,43 @@ export function TemplateMarketplace({ authUser: _authUser }: { authUser?: AuthUs
   );
 }
 
-function HubAgentCard({ item, localInfo, onStatusChange }: { item: HubItem; localInfo?: LocalArtifactInfo; onStatusChange: () => void }) {
+export function installHubItem(item: HubItem): Promise<string> {
+  return (async () => {
+    const data = await hubApi.download(item.id);
+    const name = data.name || item.name;
+    const slug = toSlug(name);
+    const mode = (data.itemType === 'team' ? 'team' : data.itemType === 'skill' ? 'skill' : 'agent') as 'agent' | 'team' | 'skill';
+    const hubSource = { type: 'hub', hubItemId: item.id };
+    if (data.files && Object.keys(data.files).length > 0) {
+      await api.builder.artifacts.import(mode, slug, data.files, hubSource);
+    } else {
+      const artifact = { ...(data.config as Record<string, unknown>), name, description: item.description, source: hubSource };
+      await api.builder.artifacts.save(mode, artifact);
+    }
+    await api.builder.artifacts.install(mode, slug);
+    window.dispatchEvent(new CustomEvent('markus:data-changed'));
+    return name;
+  })();
+}
+
+function HubAgentCard({ item, localInfo, onStatusChange, highlight, onHighlightDone }: { item: HubItem; localInfo?: LocalArtifactInfo; onStatusChange: () => void; highlight?: boolean; onHighlightDone?: () => void }) {
   const [installing, setInstalling] = useState(false);
   const [status, setStatus] = useState('');
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [glowing, setGlowing] = useState(false);
+
+  useEffect(() => {
+    if (highlight && cardRef.current) {
+      cardRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setGlowing(true);
+      const timer = setTimeout(() => { setGlowing(false); onHighlightDone?.(); }, 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [highlight, onHighlightDone]);
 
   const isInstalled = localInfo?.installed ?? false;
   const canUpgrade = isInstalled && item.version && localInfo?.localVersion && isNewerVersion(item.version, localInfo.localVersion);
+  const isPaid = (item.priceCents ?? 0) > 0;
 
   const handleInstall = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -310,36 +345,32 @@ function HubAgentCard({ item, localInfo, onStatusChange }: { item: HubItem; loca
     setInstalling(true);
     setStatus('');
     try {
-      const data = await hubApi.download(item.id);
-      const name = data.name || item.name;
-      const slug = toSlug(name);
-      const mode = (data.itemType === 'team' ? 'team' : data.itemType === 'skill' ? 'skill' : 'agent') as 'agent' | 'team' | 'skill';
-      const hubSource = { type: 'hub', hubItemId: item.id };
-      if (data.files && Object.keys(data.files).length > 0) {
-        await api.builder.artifacts.import(mode, slug, data.files, hubSource);
-      } else {
-        const artifact = { ...(data.config as Record<string, unknown>), name, description: item.description, source: hubSource };
-        await api.builder.artifacts.save(mode, artifact);
-      }
-      await api.builder.artifacts.install(mode, slug);
+      await installHubItem(item);
       setStatus(canUpgrade ? 'Upgraded!' : 'Installed!');
       onStatusChange();
-      window.dispatchEvent(new CustomEvent('markus:data-changed'));
-    } catch {
-      setStatus('Failed');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('402') || msg.includes('Purchase required')) {
+        setStatus('Purchase required');
+      } else {
+        setStatus('Failed');
+      }
     } finally {
       setInstalling(false);
     }
   };
 
+  const priceLabel = isPaid ? `$${((item.priceCents ?? 0) / 100).toFixed(2)}` : null;
+
   return (
-    <div className="group relative bg-surface-secondary rounded-xl cursor-pointer transition-all duration-300 overflow-hidden hover:shadow-xl hover:shadow-brand-500/5 hover:-translate-y-0.5">
-      <div className="absolute inset-0 rounded-xl border border-border-default group-hover:border-brand-500/30 transition-colors duration-300" />
-      <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-green-500/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+    <div ref={cardRef} className={`group relative bg-surface-secondary rounded-xl cursor-pointer transition-all duration-300 overflow-hidden hover:shadow-xl hover:shadow-brand-500/5 hover:-translate-y-0.5 ${glowing ? 'ring-2 ring-brand-500 shadow-lg shadow-brand-500/20 animate-pulse' : ''}`}>
+      <div className={`absolute inset-0 rounded-xl border transition-colors duration-300 ${glowing ? 'border-brand-500/60' : 'border-border-default group-hover:border-brand-500/30'}`} />
+      <div className={`absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-green-500/40 to-transparent transition-opacity duration-300 ${glowing ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} />
       <div className="relative p-5">
         <div className="flex items-center gap-2.5 mb-2.5">
           <h3 className="text-sm font-semibold truncate flex-1 group-hover:text-brand-400 transition-colors">{item.name}</h3>
           {item.version && <span className="text-[10px] px-1.5 py-0.5 bg-brand-500/15 text-brand-400 rounded-md border border-brand-500/10">v{item.version}</span>}
+          {isPaid && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/15 text-amber-400 rounded-md border border-amber-500/10">{priceLabel}</span>}
           <span className="text-[10px] px-1.5 py-0.5 bg-green-500/15 text-green-500 rounded-md border border-green-500/10">Hub</span>
         </div>
         <p className="text-xs text-fg-tertiary line-clamp-2 mb-3">{item.description}</p>
@@ -364,6 +395,11 @@ function HubAgentCard({ item, localInfo, onStatusChange }: { item: HubItem; loca
             </button>
           ) : isInstalled ? (
             <span className="px-3 py-1.5 text-xs bg-surface-overlay text-fg-secondary rounded-lg">Installed{localInfo?.localVersion ? ` (v${localInfo.localVersion})` : ''}</span>
+          ) : isPaid ? (
+            <a href={`${hubApi.getUrl()}/${encodeURIComponent(item.author?.username ?? '')}/${encodeURIComponent(item.slug ?? item.id)}`}
+              target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+              className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors inline-flex items-center gap-1"
+            >Buy {priceLabel}</a>
           ) : (
             <button
               onClick={e => void handleInstall(e)}
@@ -373,7 +409,7 @@ function HubAgentCard({ item, localInfo, onStatusChange }: { item: HubItem; loca
               {installing ? 'Installing...' : 'Install'}
             </button>
           )}
-          {status && <span className={`text-[10px] ${status === 'Failed' ? 'text-red-500' : 'text-green-600'}`}>{status}</span>}
+          {status && <span className={`text-[10px] ${status === 'Failed' || status === 'Purchase required' ? 'text-red-500' : 'text-green-600'}`}>{status}</span>}
         </div>
       </div>
     </div>

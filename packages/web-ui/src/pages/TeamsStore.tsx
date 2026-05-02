@@ -1,6 +1,7 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { api, hubApi, type TeamTemplateInfo, type HubItem } from '../api.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
+import { installHubItem } from './TemplateMarketplace.tsx';
 
 type FilterId = 'all' | 'hub';
 
@@ -40,8 +41,8 @@ function isNewerVersion(latest: string, current: string): boolean {
   return false;
 }
 
-export function TeamsStore() {
-  const [filter, setFilter] = useState<FilterId>('all');
+export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItemId?: string | null; onHighlightDone?: () => void } = {}) {
+  const [filter, setFilter] = useState<FilterId>(highlightItemId ? 'hub' : 'all');
   const [search, setSearch] = useState('');
   const [templates, setTemplates] = useState<TeamTemplateInfo[]>([]);
   const [hubItems, setHubItems] = useState<HubItem[]>([]);
@@ -210,7 +211,7 @@ export function TeamsStore() {
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {hubItems.map(item => (
-                <HubTeamCard key={item.id} item={item} localInfo={localArtifacts.get(toSlug(item.name))} onStatusChange={loadLocalStatus} />
+                <HubTeamCard key={item.id} item={item} localInfo={localArtifacts.get(toSlug(item.name))} onStatusChange={loadLocalStatus} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} />
               ))}
             </div>
           )
@@ -333,12 +334,25 @@ export function TeamsStore() {
   );
 }
 
-function HubTeamCard({ item, localInfo, onStatusChange }: { item: HubItem; localInfo?: LocalArtifactInfo; onStatusChange: () => void }) {
+function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDone }: { item: HubItem; localInfo?: LocalArtifactInfo; onStatusChange: () => void; highlight?: boolean; onHighlightDone?: () => void }) {
   const [installing, setInstalling] = useState(false);
   const [status, setStatus] = useState('');
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [glowing, setGlowing] = useState(false);
+
+  useEffect(() => {
+    if (highlight && cardRef.current) {
+      cardRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setGlowing(true);
+      const timer = setTimeout(() => { setGlowing(false); onHighlightDone?.(); }, 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [highlight, onHighlightDone]);
 
   const isInstalled = localInfo?.installed ?? false;
   const canUpgrade = isInstalled && item.version && localInfo?.localVersion && isNewerVersion(item.version, localInfo.localVersion);
+  const isPaid = (item.priceCents ?? 0) > 0;
+  const priceLabel = isPaid ? `$${((item.priceCents ?? 0) / 100).toFixed(2)}` : null;
 
   const handleInstall = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -346,32 +360,27 @@ function HubTeamCard({ item, localInfo, onStatusChange }: { item: HubItem; local
     setInstalling(true);
     setStatus('');
     try {
-      const data = await hubApi.download(item.id);
-      const name = data.name || item.name;
-      const slug = toSlug(name);
-      const hubSource = { type: 'hub', hubItemId: item.id };
-      if (data.files && Object.keys(data.files).length > 0) {
-        await api.builder.artifacts.import('team', slug, data.files, hubSource);
-      } else {
-        const artifact = { ...(data.config as Record<string, unknown>), name, description: item.description, source: hubSource };
-        await api.builder.artifacts.save('team', artifact);
-      }
-      await api.builder.artifacts.install('team', slug);
+      await installHubItem(item);
       setStatus(canUpgrade ? 'Upgraded!' : 'Installed!');
       onStatusChange();
-      window.dispatchEvent(new CustomEvent('markus:data-changed'));
-    } catch {
-      setStatus('Failed');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('402') || msg.includes('Purchase required')) {
+        setStatus('Purchase required');
+      } else {
+        setStatus('Failed');
+      }
     } finally {
       setInstalling(false);
     }
   };
 
   return (
-    <div className="p-4 bg-surface-secondary rounded-xl border border-border-default hover:border-brand-600/50 cursor-pointer transition-all">
+    <div ref={cardRef} className={`p-4 bg-surface-secondary rounded-xl border cursor-pointer transition-all ${glowing ? 'border-brand-500/60 ring-2 ring-brand-500 shadow-lg shadow-brand-500/20 animate-pulse' : 'border-border-default hover:border-brand-600/50'}`}>
       <div className="flex items-center gap-2 mb-2">
         <h3 className="text-sm font-semibold truncate flex-1">{item.name}</h3>
         {item.version && <span className="text-[10px] px-1.5 py-0.5 bg-brand-500/15 text-brand-500 rounded">v{item.version}</span>}
+        {isPaid && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/15 text-amber-500 rounded">{priceLabel}</span>}
         <span className="text-[10px] px-1.5 py-0.5 bg-green-500/15 text-green-600 rounded">Hub</span>
       </div>
       <p className="text-xs text-fg-tertiary line-clamp-2 mb-2">{item.description}</p>
@@ -396,6 +405,11 @@ function HubTeamCard({ item, localInfo, onStatusChange }: { item: HubItem; local
           </button>
         ) : isInstalled ? (
           <span className="px-3 py-1 text-xs bg-surface-overlay text-fg-secondary rounded-lg">Installed{localInfo?.localVersion ? ` (v${localInfo.localVersion})` : ''}</span>
+        ) : isPaid ? (
+          <a href={`${hubApi.getUrl()}/${encodeURIComponent(item.author?.username ?? '')}/${encodeURIComponent(item.slug ?? item.id)}`}
+            target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+            className="px-3 py-1 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors inline-flex items-center gap-1"
+          >Buy {priceLabel}</a>
         ) : (
           <button
             onClick={e => void handleInstall(e)}
@@ -405,7 +419,7 @@ function HubTeamCard({ item, localInfo, onStatusChange }: { item: HubItem; local
             {installing ? 'Installing...' : 'Install'}
           </button>
         )}
-        {status && <span className={`text-[10px] ${status === 'Failed' ? 'text-red-500' : 'text-green-600'}`}>{status}</span>}
+        {status && <span className={`text-[10px] ${status === 'Failed' || status === 'Purchase required' ? 'text-red-500' : 'text-green-600'}`}>{status}</span>}
       </div>
     </div>
   );
