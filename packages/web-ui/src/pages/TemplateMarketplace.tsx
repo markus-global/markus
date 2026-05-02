@@ -361,51 +361,84 @@ function HubAgentCard({ item, localInfo, onStatusChange, highlight, onHighlightD
   };
 
   const priceLabel = isPaid ? `$${((item.priceCents ?? 0) / 100).toFixed(2)}` : null;
+  const iconIsEmoji = item.icon && !item.icon.startsWith('/') && !item.icon.startsWith('http');
+  const iconSrc = item.icon && (item.icon.startsWith('http') ? item.icon : item.icon.startsWith('/') ? `${hubApi.getUrl()}${item.icon}` : null);
+  const catColor = CATEGORY_COLORS[item.category] ?? CATEGORY_COLORS.general ?? 'bg-gray-500/15 text-fg-secondary border-gray-500/20';
+  const catIcon = CATEGORY_ICONS[item.category] ?? CATEGORY_ICONS.general ?? '\u25C6';
+  const rating = Math.round(parseFloat(item.avgRating));
 
   return (
     <div ref={cardRef} className={`group relative bg-surface-secondary rounded-xl cursor-pointer transition-all duration-300 overflow-hidden hover:shadow-xl hover:shadow-brand-500/5 hover:-translate-y-0.5 ${glowing ? 'ring-2 ring-brand-500 shadow-lg shadow-brand-500/20 animate-pulse' : ''}`}>
       <div className={`absolute inset-0 rounded-xl border transition-colors duration-300 ${glowing ? 'border-brand-500/60' : 'border-border-default group-hover:border-brand-500/30'}`} />
       <div className={`absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-green-500/40 to-transparent transition-opacity duration-300 ${glowing ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} />
+
       <div className="relative p-5">
-        <div className="flex items-center gap-2.5 mb-2.5">
-          <h3 className="text-sm font-semibold truncate flex-1 group-hover:text-brand-400 transition-colors">{item.name}</h3>
-          {item.version && <span className="text-[10px] px-1.5 py-0.5 bg-brand-500/15 text-brand-400 rounded-md border border-brand-500/10">v{item.version}</span>}
-          {isPaid && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/15 text-amber-400 rounded-md border border-amber-500/10">{priceLabel}</span>}
-          <span className="text-[10px] px-1.5 py-0.5 bg-green-500/15 text-green-500 rounded-md border border-green-500/10">Hub</span>
+        {/* Header: icon + name + badges */}
+        <div className="flex items-start gap-3 mb-3">
+          <div className="w-10 h-10 rounded-lg bg-surface-elevated/80 border border-border-default/50 flex items-center justify-center shrink-0 text-lg">
+            {iconSrc ? <img src={iconSrc} alt="" className="w-8 h-8 rounded object-cover" /> : iconIsEmoji ? item.icon : '\u{1F916}'}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold truncate group-hover:text-brand-400 transition-colors">{item.name}</h3>
+              {isPaid && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/15 text-amber-400 rounded-md border border-amber-500/10 shrink-0">{priceLabel}</span>}
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-[11px] text-fg-tertiary truncate">by {item.author?.displayName ?? item.author?.username}</span>
+              {item.version && <span className="text-[10px] px-1.5 py-0.5 bg-brand-500/15 text-brand-400 rounded-md border border-brand-500/10 shrink-0">v{item.version}</span>}
+            </div>
+          </div>
         </div>
-        <p className="text-xs text-fg-tertiary line-clamp-2 mb-3">{item.description}</p>
-        <div className="flex items-center gap-3 text-xs text-fg-tertiary">
-          <span className="text-amber-500">{'\u2605'.repeat(Math.round(parseFloat(item.avgRating)))}{'\u2606'.repeat(5 - Math.round(parseFloat(item.avgRating)))}</span>
+
+        {/* Description */}
+        <p className="text-sm text-fg-secondary line-clamp-2 leading-relaxed mb-3">{item.description}</p>
+
+        {/* Category + tags */}
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {item.category && (
+            <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border capitalize ${catColor}`}>
+              {catIcon} {item.category}
+            </span>
+          )}
+          {item.tags?.slice(0, 3).map(tag => (
+            <span key={tag} className="px-2 py-0.5 text-[10px] bg-surface-elevated/80 text-fg-secondary rounded-md border border-border-default/50">{tag}</span>
+          ))}
+          {(item.tags?.length ?? 0) > 3 && <span className="px-1 text-[10px] text-fg-muted">+{item.tags.length - 3}</span>}
+        </div>
+
+        {/* Stats row */}
+        <div className="flex items-center gap-3 text-xs text-fg-tertiary mb-3">
+          <span className="text-amber-500 tracking-tight">{'\u2605'.repeat(rating)}{'\u2606'.repeat(5 - rating)}</span>
+          <span className="text-fg-muted">({item.ratingCount})</span>
           <span>{'\u2193'} {item.downloadCount}</span>
-          <span>{item.author?.displayName ?? item.author?.username}</span>
         </div>
-        <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border-default/50">
+
+        {/* Actions */}
+        <div className="flex items-center gap-2 pt-3 border-t border-border-default/50">
           {item.slug && item.author?.username && (
             <a href={`${hubApi.getUrl()}/${encodeURIComponent(item.author.username)}/${encodeURIComponent(item.slug)}`}
               target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
-              className="text-[10px] text-brand-500 hover:text-brand-400 mr-auto">View on Hub →</a>
+              className="text-[10px] text-brand-500 hover:text-brand-400 mr-auto transition-colors">View on Hub \u2192</a>
           )}
           {canUpgrade ? (
-            <button
-              onClick={e => void handleInstall(e)}
-              disabled={installing}
-              className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50"
-            >
-              {installing ? 'Upgrading...' : `Upgrade → v${item.version}`}
+            <button onClick={e => void handleInstall(e)} disabled={installing}
+              className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50">
+              {installing ? 'Upgrading...' : `Upgrade \u2192 v${item.version}`}
             </button>
           ) : isInstalled ? (
-            <span className="px-3 py-1.5 text-xs bg-surface-overlay text-fg-secondary rounded-lg">Installed{localInfo?.localVersion ? ` (v${localInfo.localVersion})` : ''}</span>
+            <span className="px-3 py-1.5 text-xs bg-green-500/10 text-green-500 rounded-lg border border-green-500/20 inline-flex items-center gap-1">
+              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              Installed{localInfo?.localVersion ? ` v${localInfo.localVersion}` : ''}
+            </span>
           ) : isPaid ? (
             <a href={`${hubApi.getUrl()}/${encodeURIComponent(item.author?.username ?? '')}/${encodeURIComponent(item.slug ?? item.id)}`}
               target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
-              className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors inline-flex items-center gap-1"
-            >Buy {priceLabel}</a>
+              className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors inline-flex items-center gap-1">
+              Buy {priceLabel}
+            </a>
           ) : (
-            <button
-              onClick={e => void handleInstall(e)}
-              disabled={installing}
-              className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50"
-            >
+            <button onClick={e => void handleInstall(e)} disabled={installing}
+              className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50">
               {installing ? 'Installing...' : 'Install'}
             </button>
           )}
