@@ -61,5 +61,9 @@ export function resolveWebUiDir(): string | undefined {
   const pkgDir = resolve(__dirname, 'web-ui');
   if (existsSync(pkgDir)) return pkgDir;
 
+  // Binary distribution: web-ui/ sits next to bin/ (bin/markus.mjs → ../web-ui/)
+  const binDir = resolve(__dirname, '..', 'web-ui');
+  if (existsSync(binDir)) return binDir;
+
   return undefined;
 }

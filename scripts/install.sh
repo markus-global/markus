@@ -3,10 +3,17 @@
 # Markus — AI Digital Workforce Platform
 # One-line installer: curl -fsSL https://markus.global/install.sh | bash
 #
+# If Node.js 22+ is present  → lightweight npm install (~5 MB)
+# If Node.js is missing       → downloads standalone binary with bundled runtime (~45 MB)
+#
+# Post-install: PATH registration, desktop shortcut, auto-start on login.
+#
 set -euo pipefail
 
 VERSION="latest"
 NPM_PACKAGE="@markus-global/cli"
+GITHUB_REPO="markus-global/markus"
+INSTALL_DIR="$HOME/.markus/app"
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 
@@ -16,7 +23,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 DIM='\033[2m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 BOLD='\033[1m'
 
 info()  { printf "${BLUE}  [info]${NC}  %s\n" "$*"; }
@@ -74,9 +81,9 @@ banner() {
 
 detect_os() {
   case "$(uname -s)" in
-    Darwin)          echo "macos"   ;;
-    Linux)           echo "linux"   ;;
-    MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
+    Darwin)          echo "darwin" ;;
+    Linux)           echo "linux"  ;;
+    MINGW*|MSYS*|CYGWIN*) echo "win" ;;
     *)               echo "unknown" ;;
   esac
 }
@@ -103,59 +110,20 @@ check_node() {
   return 0
 }
 
-install_node_guidance() {
-  local os="$1"
-  error "Node.js 22+ is required but not found."
-  printf "\n"
-  info "Install Node.js using one of these methods:"
-  printf "\n"
-  if [ "$os" = "macos" ]; then
-    printf "    ${BOLD}Option 1: nvm (recommended)${NC}\n"
-    printf "      curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n"
-    printf "      nvm install 22\n"
-    printf "\n"
-    printf "    ${BOLD}Option 2: Homebrew${NC}\n"
-    printf "      brew install node@22\n"
-    printf "\n"
-    printf "    ${BOLD}Option 3: Official installer${NC}\n"
-    printf "      https://nodejs.org/en/download\n"
-  elif [ "$os" = "windows" ]; then
-    printf "    ${BOLD}Option 1: nvm-windows (recommended)${NC}\n"
-    printf "      https://github.com/coreybutler/nvm-windows/releases\n"
-    printf "      nvm install 22\n"
-    printf "      nvm use 22\n"
-    printf "\n"
-    printf "    ${BOLD}Option 2: Official installer${NC}\n"
-    printf "      https://nodejs.org/en/download\n"
-    printf "\n"
-    printf "    ${BOLD}Option 3: winget${NC}\n"
-    printf "      winget install OpenJS.NodeJS.LTS\n"
-  else
-    printf "    ${BOLD}Option 1: nvm (recommended)${NC}\n"
-    printf "      curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n"
-    printf "      nvm install 22\n"
-    printf "\n"
-    printf "    ${BOLD}Option 2: Package manager${NC}\n"
-    printf "      # Ubuntu/Debian\n"
-    printf "      curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -\n"
-    printf "      sudo apt-get install -y nodejs\n"
-    printf "\n"
-    printf "    ${BOLD}Option 3: Official binary${NC}\n"
-    printf "      https://nodejs.org/en/download\n"
-  fi
-  printf "\n"
-  info "After installing Node.js, re-run this installer."
-}
-
 check_npm() {
-  if ! command -v npm &>/dev/null; then
-    error "npm is required but not found (should come with Node.js)."
-    return 1
-  fi
-  return 0
+  command -v npm &>/dev/null
 }
 
-# ─── npm install with spinner ───────────────────────────────────────────────
+# ─── Resolve latest version tag from GitHub ──────────────────────────────────
+
+resolve_latest_version() {
+  local api_url="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
+  local tag
+  tag="$(curl -fsSL "$api_url" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/')"
+  echo "$tag"
+}
+
+# ─── npm install path ───────────────────────────────────────────────────────
 
 npm_install_global() {
   local pkg="$1"
@@ -163,30 +131,197 @@ npm_install_global() {
   logfile="$(mktemp /tmp/markus-install-XXXXXX)"
   local install_cmd="npm install -g --no-audit --no-fund --ignore-optional --loglevel=error $pkg"
 
-  spinner_start "Installing ${pkg}..."
+  spinner_start "Installing ${pkg} via npm..."
 
   if $install_cmd >"$logfile" 2>&1; then
     spinner_stop
-    ok "Installed @markus-global/cli"
+    ok "Installed @markus-global/cli via npm"
     rm -f "$logfile"
     return 0
   fi
 
   spinner_stop
-
-  error "Installation failed. Output:"
+  error "npm installation failed. Output:"
   printf "\n"
   cat "$logfile"
-  printf "\n"
   printf "\n"
   info "If you see permission errors, fix npm prefix instead of using sudo:"
   printf "    ${BOLD}mkdir -p ~/.npm-global${NC}\n"
   printf "    ${BOLD}npm config set prefix ~/.npm-global${NC}\n"
   printf "    ${BOLD}export PATH=~/.npm-global/bin:\$PATH${NC}  (add to ~/.zshrc or ~/.bashrc)\n"
   printf "\n"
-  error "Then retry: $install_cmd"
   rm -f "$logfile"
   return 1
+}
+
+# ─── Binary install path ────────────────────────────────────────────────────
+
+binary_install() {
+  local os="$1" arch="$2"
+
+  info "Node.js not found — downloading standalone binary (includes runtime)..."
+
+  local ver
+  ver="$(resolve_latest_version)"
+  if [ -z "$ver" ]; then
+    error "Could not determine latest release version from GitHub."
+    error "Check your network connection and try again."
+    return 1
+  fi
+  info "Latest version: v${ver}"
+
+  local archive_name="markus-v${ver}-${os}-${arch}"
+  local ext="tar.gz"
+  local url="https://github.com/${GITHUB_REPO}/releases/download/v${ver}/${archive_name}.${ext}"
+
+  local tmpdir
+  tmpdir="$(mktemp -d /tmp/markus-download-XXXXXX)"
+
+  spinner_start "Downloading ${archive_name}.${ext}..."
+  if ! curl -fSL --progress-bar -o "$tmpdir/${archive_name}.${ext}" "$url" 2>/dev/null; then
+    spinner_stop
+    error "Download failed: $url"
+    error "Binary for ${os}-${arch} may not be available yet for v${ver}."
+    rm -rf "$tmpdir"
+    return 1
+  fi
+  spinner_stop
+  ok "Downloaded ${archive_name}.${ext}"
+
+  # Extract
+  info "Extracting to ${INSTALL_DIR}..."
+  rm -rf "$INSTALL_DIR"
+  mkdir -p "$INSTALL_DIR"
+  tar -xzf "$tmpdir/${archive_name}.${ext}" -C "$INSTALL_DIR" --strip-components=1
+  chmod +x "$INSTALL_DIR/markus" "$INSTALL_DIR/bin/node" 2>/dev/null || true
+  ok "Extracted to ${INSTALL_DIR}"
+
+  rm -rf "$tmpdir"
+  return 0
+}
+
+# ─── Post-install: PATH registration ────────────────────────────────────────
+
+setup_path() {
+  local install_mode="$1"
+
+  if [ "$install_mode" = "binary" ]; then
+    local target_dir="$INSTALL_DIR"
+    local shell_name rc_file line
+
+    shell_name="$(basename "${SHELL:-/bin/bash}")"
+    case "$shell_name" in
+      zsh)  rc_file="$HOME/.zshrc" ;;
+      bash) rc_file="$HOME/.bashrc" ;;
+      fish) rc_file="$HOME/.config/fish/config.fish" ;;
+      *)    rc_file="$HOME/.profile" ;;
+    esac
+
+    if [ "$shell_name" = "fish" ]; then
+      line="set -gx PATH $target_dir \$PATH"
+    else
+      line="export PATH=\"$target_dir:\$PATH\""
+    fi
+
+    if [ -f "$rc_file" ] && grep -qF "$target_dir" "$rc_file" 2>/dev/null; then
+      ok "PATH already configured in $rc_file"
+    else
+      printf "\n# Markus — AI Digital Workforce Platform\n%s\n" "$line" >> "$rc_file"
+      ok "Added to PATH via $rc_file"
+    fi
+
+    export PATH="$target_dir:$PATH"
+  fi
+}
+
+# ─── Post-install: Desktop shortcut ─────────────────────────────────────────
+
+create_desktop_shortcut() {
+  local os="$1" markus_cmd="$2"
+
+  if [ "$os" = "darwin" ]; then
+    local shortcut="$HOME/Desktop/Markus.command"
+    cat > "$shortcut" << SCRIPT
+#!/bin/bash
+# Markus — AI Digital Workforce Platform
+${markus_cmd} start
+SCRIPT
+    chmod +x "$shortcut"
+    ok "Desktop shortcut created: Markus.command"
+
+  elif [ "$os" = "linux" ]; then
+    local desktop_dir="${XDG_DESKTOP_DIR:-$HOME/Desktop}"
+    if [ -d "$desktop_dir" ]; then
+      local shortcut="$desktop_dir/markus.desktop"
+      cat > "$shortcut" << EOF
+[Desktop Entry]
+Type=Application
+Name=Markus
+Comment=AI Digital Workforce Platform
+Exec=${markus_cmd} start
+Terminal=true
+Categories=Development;
+StartupNotify=true
+EOF
+      chmod +x "$shortcut"
+      ok "Desktop shortcut created: markus.desktop"
+    else
+      warn "Desktop directory not found — skipping shortcut"
+    fi
+  fi
+}
+
+# ─── Post-install: Auto-start on login ──────────────────────────────────────
+
+setup_autostart() {
+  local os="$1" markus_cmd="$2"
+
+  if [ "$os" = "darwin" ]; then
+    local plist_dir="$HOME/Library/LaunchAgents"
+    local plist="$plist_dir/global.markus.plist"
+    mkdir -p "$plist_dir"
+    mkdir -p "$HOME/.markus/logs"
+    cat > "$plist" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>global.markus</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${markus_cmd}</string>
+    <string>start</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>${HOME}/.markus/logs/stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>${HOME}/.markus/logs/stderr.log</string>
+</dict>
+</plist>
+EOF
+    launchctl unload "$plist" 2>/dev/null || true
+    launchctl load "$plist" 2>/dev/null || true
+    ok "Auto-start on login: enabled (launchd)"
+
+  elif [ "$os" = "linux" ]; then
+    local autostart_dir="$HOME/.config/autostart"
+    mkdir -p "$autostart_dir"
+    cat > "$autostart_dir/markus.desktop" << EOF
+[Desktop Entry]
+Type=Application
+Name=Markus
+Exec=${markus_cmd} start
+Terminal=false
+X-GNOME-Autostart-enabled=true
+EOF
+    ok "Auto-start on login: enabled (XDG autostart)"
+  fi
 }
 
 # ─── Main ────────────────────────────────────────────────────────────────────
@@ -202,74 +337,106 @@ main() {
 
   if [ "$os" = "unknown" ]; then
     error "Unsupported operating system: $(uname -s)"
-    error "Markus currently supports macOS, Linux, and Windows (Git Bash / MSYS2)."
+    error "Markus supports macOS, Linux, and Windows (PowerShell installer)."
+    exit 1
+  fi
+  if [ "$arch" = "unknown" ]; then
+    error "Unsupported architecture: $(uname -m)"
     exit 1
   fi
 
-  # Step 1: Check Node.js
+  # ── Choose install path: npm (lightweight) or binary (standalone) ──────
+  local install_mode="npm"
+  local markus_cmd="markus"
+
   info "Checking Node.js..."
-  if ! check_node; then
-    local exit_code=$?
-    if [ "$exit_code" -eq 2 ]; then
-      local current_ver
-      current_ver="$(node -v)"
-      error "Node.js $current_ver is too old. Version 22+ is required."
+  if check_node; then
+    ok "Node.js $(node -v)"
+    if check_npm; then
+      ok "npm $(npm -v)"
       printf "\n"
-    fi
-    install_node_guidance "$os"
-    exit 1
-  fi
-  ok "Node.js $(node -v)"
-
-  # Step 2: Check npm
-  if ! check_npm; then
-    exit 1
-  fi
-  ok "npm $(npm -v)"
-
-  # Step 3: Install @markus-global/cli
-  printf "\n"
-  if ! npm_install_global "${NPM_PACKAGE}@${VERSION}"; then
-    exit 1
-  fi
-
-  printf "\n"
-
-  # Step 4: Verify installation
-  if ! command -v markus &>/dev/null; then
-    warn "markus command not found in PATH."
-    if [ "$os" = "windows" ]; then
-      info "On Windows, npm global bin may not be in PATH. Use npx instead:"
-      printf "\n"
-      printf "    ${BOLD}npx @markus-global/cli start${NC}\n"
-      printf "\n"
+      if ! npm_install_global "${NPM_PACKAGE}@${VERSION}"; then
+        exit 1
+      fi
     else
-      warn "You may need to add npm global bin to your PATH:"
-      printf "    export PATH=\"\$(npm prefix -g)/bin:\$PATH\"\n"
-      printf "\n"
+      error "npm not found — falling back to binary install"
+      install_mode="binary"
     fi
   else
-    ok "markus $(markus --version 2>/dev/null || echo 'installed')"
+    if command -v node &>/dev/null; then
+      warn "Node.js $(node -v) is too old (22+ required) — using standalone binary"
+    else
+      info "Node.js not found — using standalone binary (includes runtime)"
+    fi
+    install_mode="binary"
   fi
 
-  # Step 5: Run init
-  local markus_cmd="markus"
-  if ! command -v markus &>/dev/null; then
-    markus_cmd="npx @markus-global/cli"
+  if [ "$install_mode" = "binary" ]; then
+    printf "\n"
+    if ! binary_install "$os" "$arch"; then
+      exit 1
+    fi
+    markus_cmd="$INSTALL_DIR/markus"
   fi
+
+  printf "\n"
+
+  # ── PATH registration ─────────────────────────────────────────────────
+  setup_path "$install_mode"
+
+  # ── Verify installation ───────────────────────────────────────────────
+  if [ "$install_mode" = "npm" ]; then
+    if ! command -v markus &>/dev/null; then
+      warn "markus command not found in PATH."
+      warn "You may need to add npm global bin to your PATH:"
+      printf "    export PATH=\"\$(npm prefix -g)/bin:\$PATH\"\n\n"
+      markus_cmd="npx @markus-global/cli"
+    else
+      ok "markus $(markus --version 2>/dev/null || echo 'installed')"
+    fi
+  else
+    ok "markus installed at $INSTALL_DIR"
+  fi
+
+  # ── Desktop shortcut ──────────────────────────────────────────────────
+  create_desktop_shortcut "$os" "$markus_cmd"
+
+  # ── Auto-start on login ───────────────────────────────────────────────
+  printf "\n"
+  local enable_autostart="y"
+  if [ -t 0 ]; then
+    printf "  ${BOLD}Enable auto-start on login? [Y/n]${NC} "
+    read -r enable_autostart < /dev/tty 2>/dev/null || enable_autostart="y"
+    enable_autostart="${enable_autostart:-y}"
+  fi
+
+  case "$enable_autostart" in
+    [nN]*) info "Auto-start skipped" ;;
+    *)     setup_autostart "$os" "$markus_cmd" ;;
+  esac
+
+  # ── Run init wizard ───────────────────────────────────────────────────
+  printf "\n"
   info "Running setup wizard..."
   printf "\n"
   $markus_cmd init 2>/dev/null || true
 
+  # ── Success banner ────────────────────────────────────────────────────
   printf "\n"
   printf "${GREEN}${BOLD}"
   printf "  ┌─────────────────────────────────────┐\n"
   printf "  │     Installation Complete!          │\n"
   printf "  └─────────────────────────────────────┘\n"
   printf "${NC}\n"
-  printf "  Quick start:\n"
-  printf "\n"
-  if command -v markus &>/dev/null; then
+  printf "  Quick start:\n\n"
+
+  if [ "$install_mode" = "binary" ]; then
+    printf "    ${BOLD}markus start${NC}          Launch the platform\n"
+    printf "    ${BOLD}markus agent list${NC}     List your agents\n"
+    printf "    ${BOLD}markus --help${NC}         Show all commands\n"
+    printf "\n"
+    printf "  ${DIM}(restart your terminal for PATH changes to take effect)${NC}\n"
+  elif command -v markus &>/dev/null; then
     printf "    ${BOLD}markus start${NC}          Launch the platform\n"
     printf "    ${BOLD}markus agent list${NC}     List your agents\n"
     printf "    ${BOLD}markus --help${NC}         Show all commands\n"
@@ -278,9 +445,10 @@ main() {
     printf "    ${BOLD}npx @markus-global/cli agent list${NC}     List your agents\n"
     printf "    ${BOLD}npx @markus-global/cli --help${NC}         Show all commands\n"
   fi
+
   printf "\n"
-  printf "  ${DIM}Upgrade or run without global install:${NC}\n"
-  printf "    ${BOLD}npx @markus-global/cli@latest start${NC}\n"
+  printf "  ${DIM}Upgrade:${NC}  curl -fsSL https://markus.global/install.sh | bash\n"
+  printf "  ${DIM}Uninstall:${NC} markus uninstall\n"
   printf "\n"
   printf "  Documentation:  https://github.com/markus-global/markus\n"
   printf "\n"

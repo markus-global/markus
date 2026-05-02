@@ -3,11 +3,18 @@
 .SYNOPSIS
     Markus — AI Digital Workforce Platform
     One-line installer: irm https://markus.global/install.ps1 | iex
+
+    If Node.js 22+ is present  → lightweight npm install (~5 MB)
+    If Node.js is missing       → downloads standalone binary with bundled runtime (~45 MB)
+
+    Post-install: PATH registration, desktop shortcut, auto-start on login.
 #>
 
 $ErrorActionPreference = 'Stop'
 $VERSION = 'latest'
 $NPM_PACKAGE = '@markus-global/cli'
+$GITHUB_REPO = 'markus-global/markus'
+$INSTALL_DIR = "$env:LOCALAPPDATA\markus"
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 
@@ -40,25 +47,6 @@ function Test-NodeInstalled {
     }
 }
 
-function Show-NodeGuidance {
-    Write-Err 'Node.js 22+ is required but not found.'
-    Write-Host ''
-    Write-Info 'Install Node.js using one of these methods:'
-    Write-Host ''
-    Write-Host '    Option 1: winget (recommended)' -ForegroundColor White
-    Write-Host '      winget install OpenJS.NodeJS.LTS'
-    Write-Host ''
-    Write-Host '    Option 2: nvm-windows' -ForegroundColor White
-    Write-Host '      https://github.com/coreybutler/nvm-windows/releases'
-    Write-Host '      nvm install 22'
-    Write-Host '      nvm use 22'
-    Write-Host ''
-    Write-Host '    Option 3: Official installer' -ForegroundColor White
-    Write-Host '      https://nodejs.org/en/download'
-    Write-Host ''
-    Write-Info 'After installing Node.js, re-run this installer.'
-}
-
 function Test-NpmInstalled {
     try {
         $npmVer = & npm -v 2>$null
@@ -68,11 +56,22 @@ function Test-NpmInstalled {
     }
 }
 
-# ─── npm install ─────────────────────────────────────────────────────────────
+# ─── Resolve latest version from GitHub ──────────────────────────────────────
 
-function Install-MarkusCli {
+function Get-LatestVersion {
+    try {
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$GITHUB_REPO/releases/latest" -UseBasicParsing
+        return $release.tag_name -replace '^v', ''
+    } catch {
+        return $null
+    }
+}
+
+# ─── npm install path ───────────────────────────────────────────────────────
+
+function Install-ViaNpm {
     param([string]$Package)
-    Write-Host "  ⠋  Installing $Package..." -ForegroundColor Cyan -NoNewline
+    Write-Host "  ⠋  Installing $Package via npm..." -ForegroundColor Cyan -NoNewline
     $logFile = [System.IO.Path]::GetTempFileName()
     try {
         $npmCmd = (Get-Command npm -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
@@ -80,28 +79,154 @@ function Install-MarkusCli {
             -ArgumentList "install -g --no-audit --no-fund --ignore-optional --loglevel=error $Package" `
             -NoNewWindow -Wait -PassThru `
             -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err"
-        Write-Host "`r" -NoNewline
-        Write-Host '                                                        ' -NoNewline
-        Write-Host "`r" -NoNewline
+        Write-Host "`r                                                        `r" -NoNewline
         if ($process.ExitCode -ne 0) {
-            Write-Err "Installation failed. Output:"
+            Write-Err "npm installation failed. Output:"
             Write-Host ''
             if (Test-Path $logFile) { Get-Content $logFile | Write-Host }
             if (Test-Path "$logFile.err") { Get-Content "$logFile.err" | Write-Host }
             Write-Host ''
             Write-Info 'If you see permission errors, try running PowerShell as Administrator.'
-            Write-Host ''
             return $false
         }
-        Write-Ok "Installed @markus-global/cli"
+        Write-Ok "Installed @markus-global/cli via npm"
         return $true
     } catch {
         Write-Host "`r" -NoNewline
-        Write-Err "Installation failed: $_"
+        Write-Err "npm installation failed: $_"
         return $false
     } finally {
         Remove-Item $logFile -ErrorAction SilentlyContinue
         Remove-Item "$logFile.err" -ErrorAction SilentlyContinue
+    }
+}
+
+# ─── Binary install path ────────────────────────────────────────────────────
+
+function Install-ViaBinary {
+    Write-Info 'Node.js not found — downloading standalone binary (includes runtime)...'
+
+    $ver = Get-LatestVersion
+    if (-not $ver) {
+        Write-Err 'Could not determine latest release version from GitHub.'
+        Write-Err 'Check your network connection and try again.'
+        return $false
+    }
+    Write-Info "Latest version: v$ver"
+
+    $arch = if ([Environment]::Is64BitOperatingSystem) { 'x64' } else { 'x64' }
+    $archiveName = "markus-v${ver}-win-${arch}"
+    $url = "https://github.com/$GITHUB_REPO/releases/download/v${ver}/${archiveName}.zip"
+
+    $tmpDir = Join-Path $env:TEMP "markus-download-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+    $zipPath = Join-Path $tmpDir "${archiveName}.zip"
+
+    Write-Info "Downloading ${archiveName}.zip..."
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
+    } catch {
+        Write-Err "Download failed: $url"
+        Write-Err "Binary for win-${arch} may not be available yet for v${ver}."
+        Remove-Item $tmpDir -Recurse -ErrorAction SilentlyContinue
+        return $false
+    }
+    Write-Ok "Downloaded ${archiveName}.zip"
+
+    Write-Info "Extracting to $INSTALL_DIR..."
+    if (Test-Path $INSTALL_DIR) {
+        Remove-Item $INSTALL_DIR -Recurse -Force
+    }
+    Expand-Archive -Path $zipPath -DestinationPath $env:TEMP -Force
+    Move-Item -Path (Join-Path $env:TEMP $archiveName) -Destination $INSTALL_DIR -Force
+    Write-Ok "Extracted to $INSTALL_DIR"
+
+    Remove-Item $tmpDir -Recurse -ErrorAction SilentlyContinue
+    return $true
+}
+
+# ─── Post-install: PATH registration ────────────────────────────────────────
+
+function Set-UserPath {
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($userPath -and $userPath.Contains($INSTALL_DIR)) {
+        Write-Ok "PATH already contains $INSTALL_DIR"
+        return
+    }
+    $newPath = if ($userPath) { "$INSTALL_DIR;$userPath" } else { $INSTALL_DIR }
+    [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+    $env:Path = "$INSTALL_DIR;$env:Path"
+    Write-Ok "Added to PATH (takes effect in new terminal sessions)"
+}
+
+# ─── Post-install: Desktop shortcut ─────────────────────────────────────────
+
+function New-DesktopShortcut {
+    param([string]$MarkusCmd, [string]$InstallMode)
+    try {
+        $WshShell = New-Object -ComObject WScript.Shell
+        $desktopPath = [Environment]::GetFolderPath('Desktop')
+        $lnkPath = Join-Path $desktopPath 'Markus.lnk'
+        $shortcut = $WshShell.CreateShortcut($lnkPath)
+
+        if ($InstallMode -eq 'binary') {
+            $shortcut.TargetPath = Join-Path $INSTALL_DIR 'markus.cmd'
+            $shortcut.Arguments = 'start'
+            $shortcut.WorkingDirectory = $env:USERPROFILE
+        } else {
+            $shortcut.TargetPath = $MarkusCmd
+            $shortcut.Arguments = 'start'
+            $shortcut.WorkingDirectory = $env:USERPROFILE
+        }
+        $shortcut.Description = 'Markus - AI Digital Workforce Platform'
+
+        $icoPath = Join-Path $INSTALL_DIR 'markus.ico'
+        if (Test-Path $icoPath) {
+            $shortcut.IconLocation = "$icoPath,0"
+        }
+
+        $shortcut.Save()
+        Write-Ok 'Desktop shortcut created: Markus'
+    } catch {
+        Write-Warn "Could not create desktop shortcut: $_"
+    }
+}
+
+# ─── Post-install: Auto-start on login ──────────────────────────────────────
+
+function Set-AutoStart {
+    param([string]$InstallMode)
+    try {
+        $WshShell = New-Object -ComObject WScript.Shell
+        $startupPath = [Environment]::GetFolderPath('Startup')
+        $lnkPath = Join-Path $startupPath 'Markus.lnk'
+        $shortcut = $WshShell.CreateShortcut($lnkPath)
+
+        if ($InstallMode -eq 'binary') {
+            $shortcut.TargetPath = Join-Path $INSTALL_DIR 'markus.cmd'
+        } else {
+            $npmGlobalBin = & npm prefix -g 2>$null
+            $markusPath = Join-Path $npmGlobalBin 'markus.cmd'
+            if (Test-Path $markusPath) {
+                $shortcut.TargetPath = $markusPath
+            } else {
+                $shortcut.TargetPath = 'npx'
+                $shortcut.Arguments = '@markus-global/cli start'
+                $shortcut.Save()
+                Write-Ok 'Auto-start on login: enabled'
+                return
+            }
+        }
+        $shortcut.Arguments = 'start'
+        $shortcut.WorkingDirectory = $env:USERPROFILE
+        $shortcut.WindowStyle = 7  # minimized
+        $shortcut.Description = 'Markus - AI Digital Workforce Platform (auto-start)'
+        $shortcut.Save()
+        Write-Ok 'Auto-start on login: enabled'
+    } catch {
+        Write-Warn "Could not set up auto-start: $_"
     }
 }
 
@@ -113,76 +238,98 @@ function Main {
     $arch = if ([Environment]::Is64BitOperatingSystem) { 'x64' } else { 'x86' }
     Write-Info "Detected: windows / $arch"
 
-    # Step 1: Check Node.js
+    # ── Choose install path ──────────────────────────────────────────────
+    $installMode = 'npm'
+    $markusCmd = 'markus'
+
     Write-Info 'Checking Node.js...'
     $node = Test-NodeInstalled
-    if (-not $node.Installed) {
-        Show-NodeGuidance
-        return
-    }
-    if ($node.Major -lt 22) {
-        Write-Err "Node.js $($node.Version) is too old. Version 22+ is required."
-        Write-Host ''
-        Show-NodeGuidance
-        return
-    }
-    Write-Ok "Node.js $($node.Version)"
-
-    # Step 2: Check npm
-    if (-not (Test-NpmInstalled)) {
-        Write-Err 'npm is required but not found (should come with Node.js).'
-        return
-    }
-    $npmVer = & npm -v 2>$null
-    Write-Ok "npm $npmVer"
-
-    # Step 3: Install @markus-global/cli
-    Write-Host ''
-    $pkg = "$NPM_PACKAGE@$VERSION"
-    if (-not (Install-MarkusCli -Package $pkg)) {
-        return
-    }
-
-    Write-Host ''
-
-    # Step 4: Verify installation
-    $markusCmd = 'markus'
-    $markusFound = $false
-    try {
-        $null = & markus --version 2>$null
-        $markusFound = $true
-    } catch {}
-
-    if (-not $markusFound) {
-        try {
-            $null = Get-Command markus -ErrorAction Stop
-            $markusFound = $true
-        } catch {}
-    }
-
-    if ($markusFound) {
-        $ver = try { & markus --version 2>$null } catch { 'installed' }
-        Write-Ok "markus $ver"
+    if ($node.Installed -and $node.Major -ge 22) {
+        Write-Ok "Node.js $($node.Version)"
+        if (Test-NpmInstalled) {
+            $npmVer = & npm -v 2>$null
+            Write-Ok "npm $npmVer"
+            Write-Host ''
+            $pkg = "$NPM_PACKAGE@$VERSION"
+            if (-not (Install-ViaNpm -Package $pkg)) {
+                return
+            }
+        } else {
+            Write-Warn 'npm not found — falling back to binary install'
+            $installMode = 'binary'
+        }
     } else {
-        Write-Warn 'markus command not found in PATH.'
-        Write-Info 'npm global bin may not be in PATH. Use npx instead:'
-        Write-Host ''
-        Write-Host '    npx @markus-global/cli start' -ForegroundColor White
-        Write-Host ''
-        $markusCmd = 'npx @markus-global/cli'
+        if ($node.Installed) {
+            Write-Warn "Node.js $($node.Version) is too old (22+ required) — using standalone binary"
+        } else {
+            Write-Info 'Node.js not found — using standalone binary (includes runtime)'
+        }
+        $installMode = 'binary'
     }
 
-    # Step 5: Run init
+    if ($installMode -eq 'binary') {
+        Write-Host ''
+        if (-not (Install-ViaBinary)) {
+            return
+        }
+        Set-UserPath
+        $markusCmd = Join-Path $INSTALL_DIR 'markus.cmd'
+    }
+
+    Write-Host ''
+
+    # ── Verify installation ──────────────────────────────────────────────
+    if ($installMode -eq 'npm') {
+        $markusFound = $false
+        try { $null = Get-Command markus -ErrorAction Stop; $markusFound = $true } catch {}
+        if ($markusFound) {
+            $ver = try { & markus --version 2>$null } catch { 'installed' }
+            Write-Ok "markus $ver"
+        } else {
+            Write-Warn 'markus command not found in PATH. Use npx instead:'
+            Write-Host '    npx @markus-global/cli start' -ForegroundColor White
+            $markusCmd = 'npx @markus-global/cli'
+        }
+    } else {
+        Write-Ok "markus installed at $INSTALL_DIR"
+    }
+
+    # ── Desktop shortcut ─────────────────────────────────────────────────
+    New-DesktopShortcut -MarkusCmd $markusCmd -InstallMode $installMode
+
+    # ── Auto-start on login ──────────────────────────────────────────────
+    Write-Host ''
+    $enableAutostart = 'Y'
+    if ([Environment]::UserInteractive) {
+        try {
+            $enableAutostart = Read-Host '  Enable auto-start on login? [Y/n]'
+            if ([string]::IsNullOrWhiteSpace($enableAutostart)) { $enableAutostart = 'Y' }
+        } catch {
+            $enableAutostart = 'Y'
+        }
+    }
+
+    if ($enableAutostart -notmatch '^[nN]') {
+        Set-AutoStart -InstallMode $installMode
+    } else {
+        Write-Info 'Auto-start skipped'
+    }
+
+    # ── Run init wizard ──────────────────────────────────────────────────
+    Write-Host ''
     Write-Info 'Running setup wizard...'
     Write-Host ''
     try {
-        if ($markusFound) {
+        if ($installMode -eq 'binary') {
+            & $markusCmd init 2>$null
+        } elseif ($markusCmd -eq 'markus') {
             & markus init 2>$null
         } else {
             & npx @markus-global/cli init 2>$null
         }
     } catch {}
 
+    # ── Success banner ───────────────────────────────────────────────────
     Write-Host ''
     Write-Host '  ┌─────────────────────────────────────┐' -ForegroundColor Green
     Write-Host '  │     Installation Complete!          │' -ForegroundColor Green
@@ -190,18 +337,30 @@ function Main {
     Write-Host ''
     Write-Host '  Quick start:'
     Write-Host ''
-    if ($markusFound) {
+
+    if ($installMode -eq 'binary') {
         Write-Host '    markus start          ' -ForegroundColor White -NoNewline; Write-Host 'Launch the platform'
         Write-Host '    markus agent list     ' -ForegroundColor White -NoNewline; Write-Host 'List your agents'
         Write-Host '    markus --help         ' -ForegroundColor White -NoNewline; Write-Host 'Show all commands'
+        Write-Host ''
+        Write-Host '  (restart your terminal for PATH changes to take effect)' -ForegroundColor DarkGray
     } else {
-        Write-Host '    npx @markus-global/cli start          ' -ForegroundColor White -NoNewline; Write-Host 'Launch the platform'
-        Write-Host '    npx @markus-global/cli agent list     ' -ForegroundColor White -NoNewline; Write-Host 'List your agents'
-        Write-Host '    npx @markus-global/cli --help         ' -ForegroundColor White -NoNewline; Write-Host 'Show all commands'
+        $found = $false
+        try { $null = Get-Command markus -ErrorAction Stop; $found = $true } catch {}
+        if ($found) {
+            Write-Host '    markus start          ' -ForegroundColor White -NoNewline; Write-Host 'Launch the platform'
+            Write-Host '    markus agent list     ' -ForegroundColor White -NoNewline; Write-Host 'List your agents'
+            Write-Host '    markus --help         ' -ForegroundColor White -NoNewline; Write-Host 'Show all commands'
+        } else {
+            Write-Host '    npx @markus-global/cli start          ' -ForegroundColor White -NoNewline; Write-Host 'Launch the platform'
+            Write-Host '    npx @markus-global/cli agent list     ' -ForegroundColor White -NoNewline; Write-Host 'List your agents'
+            Write-Host '    npx @markus-global/cli --help         ' -ForegroundColor White -NoNewline; Write-Host 'Show all commands'
+        }
     }
+
     Write-Host ''
-    Write-Host '  Upgrade or run without global install:' -ForegroundColor DarkGray
-    Write-Host '    npx @markus-global/cli@latest start' -ForegroundColor White
+    Write-Host '  Upgrade:    irm https://markus.global/install.ps1 | iex' -ForegroundColor DarkGray
+    Write-Host '  Uninstall:  markus uninstall' -ForegroundColor DarkGray
     Write-Host ''
     Write-Host '  Documentation:  https://github.com/markus-global/markus'
     Write-Host ''
