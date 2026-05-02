@@ -16,6 +16,7 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; NC='\033[0m'; BOLD='\033[1m'
 
 die()  { printf "${RED}✗${NC} %s\n" "$*" >&2; exit 1; }
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*"; }
 info() { printf "${BLUE}→${NC} %s\n" "$*"; }
 ok()   { printf "${GREEN}✓${NC} %s\n" "$*"; }
 
@@ -103,6 +104,29 @@ ok "Node.js binary extracted"
 
 cp "$CLI_BUNDLE" "$STAGE_DIR/bin/markus.mjs"
 
+# Copy tray controller
+TRAY_BUNDLE="$ROOT_DIR/packages/cli/dist/tray.mjs"
+if [[ -f "$TRAY_BUNDLE" ]]; then
+  cp "$TRAY_BUNDLE" "$STAGE_DIR/bin/tray.mjs"
+  ok "Tray controller copied"
+else
+  warn "tray.mjs not found — desktop tray will not be available"
+fi
+
+# Install native/external dependencies that esbuild cannot bundle
+info "Installing native dependencies into staging dir..."
+cat > "$STAGE_DIR/bin/package.json" << 'PKGJSON'
+{ "private": true, "type": "module" }
+PKGJSON
+(cd "$STAGE_DIR/bin" && npm install --no-save ws sharp rfb2 systray2 2>&1) \
+  || die "Failed to install native dependencies"
+rm -f "$STAGE_DIR/bin/package.json" "$STAGE_DIR/bin/package-lock.json"
+ok "Native dependencies installed"
+
+# Version marker so the bundled CLI can detect its own version
+# (version.ts looks for ../package.json relative to bin/markus.mjs)
+printf '{"name":"markus","version":"%s"}\n' "$VERSION" > "$STAGE_DIR/package.json"
+
 WEB_UI_DIR="$ROOT_DIR/packages/cli/dist/web-ui"
 [[ -d "$WEB_UI_DIR" ]] && cp -r "$WEB_UI_DIR" "$STAGE_DIR/web-ui" && ok "Web UI copied"
 
@@ -171,8 +195,14 @@ if [[ "$PLATFORM" == "darwin" ]]; then
 INSTALL_DIR="/usr/local/lib/markus"
 ln -sf "$INSTALL_DIR/markus" /usr/local/bin/markus
 
+# Detect the real console user (postinstall runs as root, so $USER == root)
+CONSOLE_USER=$(/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ { print $3 }')
+if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "loginwindow" ]; then
+  CONSOLE_USER=$(stat -f "%Su" /dev/console 2>/dev/null)
+fi
+REAL_HOME=$(eval echo ~"$CONSOLE_USER")
+
 # Desktop shortcut (Markus.app bundle with icon)
-REAL_HOME=$(eval echo ~"$USER")
 if [ -d "$REAL_HOME/Desktop" ]; then
   APP_DIR="$REAL_HOME/Desktop/Markus.app"
   rm -rf "$APP_DIR"
@@ -207,17 +237,44 @@ PLIST_APP
 
   cat > "$APP_DIR/Contents/MacOS/launch" << 'LAUNCH_SCRIPT'
 #!/bin/bash
-exec /usr/local/bin/markus start
+MARKUS_DIR="/usr/local/lib/markus"
+NODE="$MARKUS_DIR/bin/node"
+LOG_DIR="$HOME/.markus/logs"
+mkdir -p "$LOG_DIR"
+
+# Try tray controller first; fall back to direct server start
+if [ -f "$MARKUS_DIR/bin/tray.mjs" ]; then
+  "$NODE" "$MARKUS_DIR/bin/tray.mjs" 2>"$LOG_DIR/tray-stderr.log"
+  EXIT_CODE=$?
+  if [ $EXIT_CODE -ne 0 ]; then
+    echo "Tray exited with code $EXIT_CODE, falling back to direct start" >> "$LOG_DIR/tray-stderr.log"
+  else
+    exit 0
+  fi
+fi
+
+# Fallback: start server directly + open browser
+"$NODE" "$MARKUS_DIR/bin/markus.mjs" start \
+  >> "$LOG_DIR/stdout.log" 2>> "$LOG_DIR/stderr.log" &
+SERVER_PID=$!
+sleep 3
+if kill -0 "$SERVER_PID" 2>/dev/null; then
+  open "http://localhost:8056"
+else
+  osascript -e 'display dialog "Markus failed to start.\nCheck logs at ~/.markus/logs/" with title "Markus" buttons {"OK"} default button "OK" with icon stop'
+  exit 1
+fi
+wait "$SERVER_PID"
 LAUNCH_SCRIPT
   chmod +x "$APP_DIR/Contents/MacOS/launch"
 
   if [ -f "$INSTALL_DIR/markus.icns" ]; then
     cp "$INSTALL_DIR/markus.icns" "$APP_DIR/Contents/Resources/markus.icns"
   fi
-  chown -R "$USER" "$APP_DIR"
+  chown -R "$CONSOLE_USER" "$APP_DIR"
 fi
 
-# Auto-start on login (launchd)
+# Auto-start on login (launchd) — use direct paths, not symlinks
 PLIST_DIR="$REAL_HOME/Library/LaunchAgents"
 mkdir -p "$PLIST_DIR"
 cat > "$PLIST_DIR/global.markus.plist" << PLIST
@@ -230,7 +287,8 @@ cat > "$PLIST_DIR/global.markus.plist" << PLIST
   <string>global.markus</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/markus</string>
+    <string>/usr/local/lib/markus/bin/node</string>
+    <string>/usr/local/lib/markus/bin/markus.mjs</string>
     <string>start</string>
   </array>
   <key>RunAtLoad</key>
@@ -244,13 +302,50 @@ cat > "$PLIST_DIR/global.markus.plist" << PLIST
 </dict>
 </plist>
 PLIST
-chown "$USER" "$PLIST_DIR/global.markus.plist"
+chown "$CONSOLE_USER" "$PLIST_DIR/global.markus.plist"
 mkdir -p "$REAL_HOME/.markus/logs"
-chown -R "$USER" "$REAL_HOME/.markus"
+chown -R "$CONSOLE_USER" "$REAL_HOME/.markus"
 
 exit 0
 POSTINSTALL
   chmod +x "$SCRIPTS_DIR/postinstall"
+
+  # Entitlements required for Node.js V8 JIT engine on macOS
+  ENTITLEMENTS="$OUT_DIR/_entitlements_$$.plist"
+  cat > "$ENTITLEMENTS" << 'ENTPLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>
+ENTPLIST
+
+  # Codesign all Mach-O binaries/dylibs (required for notarization + JIT on macOS)
+  SIGN_ID="${MACOS_CODESIGN_IDENTITY:--}"
+  if [[ "$SIGN_ID" == "-" ]]; then
+    info "Ad-hoc codesigning binaries (JIT entitlements)..."
+  else
+    info "Codesigning binaries with: $SIGN_ID"
+  fi
+  find "$STAGE_DIR" -type f | while read -r f; do
+    if file "$f" | grep -qE "Mach-O|bundle"; then
+      SIGN_ARGS=(--force --options runtime --entitlements "$ENTITLEMENTS" --sign "$SIGN_ID")
+      [[ "$SIGN_ID" != "-" ]] && SIGN_ARGS+=(--timestamp)
+      codesign "${SIGN_ARGS[@]}" "$f" && \
+        printf "  signed: %s\n" "$(basename "$f")" || \
+        printf "  WARN: failed to sign %s\n" "$f" >&2
+    fi
+  done
+  rm -f "$ENTITLEMENTS"
+  ok "Codesigning complete"
 
   info "Building macOS .pkg installer..."
   pkgbuild \
@@ -306,9 +401,9 @@ if [ -d "$DESKTOP_DIR" ]; then
 Type=Application
 Name=Markus
 Comment=AI Digital Workforce Platform
-Exec=/usr/local/bin/markus start
+Exec=/usr/local/lib/markus/bin/node /usr/local/lib/markus/bin/tray.mjs
 Icon=/usr/local/lib/markus/logo.png
-Terminal=true
+Terminal=false
 Categories=Development;
 StartupNotify=true
 EOF
@@ -323,7 +418,7 @@ cat > "$AUTOSTART_DIR/markus.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=Markus
-Exec=/usr/local/bin/markus start
+Exec=/usr/local/lib/markus/bin/node /usr/local/lib/markus/bin/tray.mjs
 Icon=/usr/local/lib/markus/logo.png
 Terminal=false
 X-GNOME-Autostart-enabled=true
@@ -394,9 +489,9 @@ ${WIN_ICON_LINE}
 Source: "${WIN_STAGE_DIR}\\*"; DestDir: "{app}"; Flags: recursesubdirs
 
 [Icons]
-Name: "{userdesktop}\\Markus"; Filename: "{app}\\markus.cmd"; Parameters: "start"; WorkingDir: "{userdocs}"; Comment: "Markus - AI Digital Workforce Platform"${WIN_ICON_REF}
-Name: "{userstartup}\\Markus"; Filename: "{app}\\markus.cmd"; Parameters: "start"; WorkingDir: "{userdocs}"; Comment: "Markus auto-start"${WIN_ICON_REF}
-Name: "{group}\\Markus"; Filename: "{app}\\markus.cmd"; Parameters: "start"${WIN_ICON_REF}
+Name: "{userdesktop}\\Markus"; Filename: "{app}\\bin\\node.exe"; Parameters: """{app}\\bin\\tray.mjs"""; WorkingDir: "{app}"; Comment: "Markus - AI Digital Workforce Platform"${WIN_ICON_REF}
+Name: "{userstartup}\\Markus"; Filename: "{app}\\bin\\node.exe"; Parameters: """{app}\\bin\\tray.mjs"""; WorkingDir: "{app}"; Comment: "Markus auto-start"${WIN_ICON_REF}
+Name: "{group}\\Markus"; Filename: "{app}\\bin\\node.exe"; Parameters: """{app}\\bin\\tray.mjs"""; WorkingDir: "{app}"${WIN_ICON_REF}
 Name: "{group}\\Uninstall Markus"; Filename: "{uninstallexe}"
 
 [Registry]
