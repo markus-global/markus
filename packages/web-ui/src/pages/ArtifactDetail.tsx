@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api, hubApi, type AuthUser } from '../api.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { PAYMENTS_ENABLED } from './AgentBuilder.tsx';
 
 interface ArtifactDetailProps {
   type: string;
@@ -861,7 +862,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
                     </a>
                   )}
                   {hasNewVersion && (
-                    <button onClick={() => setShowShareMode(true)} disabled={shareInProgress}
+                    <button onClick={() => PAYMENTS_ENABLED ? setShowShareMode(true) : void handleShareToHub()} disabled={shareInProgress}
                       className="text-xs px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/50 transition-colors disabled:opacity-50">
                       {shareInProgress ? t('share.updating') : t('share.updateVersion', { version: localVersion })}
                     </button>
@@ -870,7 +871,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser }: Arti
               );
             })()}
             {!hubStatus.shared && (
-              <button onClick={() => setShowShareMode(true)} disabled={shareInProgress}
+              <button onClick={() => PAYMENTS_ENABLED ? setShowShareMode(true) : void handleShareToHub()} disabled={shareInProgress}
                 className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50">
                 {shareInProgress ? t('share.sharing') : t('share.toHub')}
               </button>

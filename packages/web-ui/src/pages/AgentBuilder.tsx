@@ -7,6 +7,9 @@ import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { ArtifactDetail } from './ArtifactDetail.tsx';
 
+// Feature flag: set to true once LemonSqueezy payment account is approved
+export const PAYMENTS_ENABLED = false;
+
 function shortenPath(p: string): string {
   const home = '~/.markus/builder-artifacts/';
   const idx = p.indexOf('.markus/builder-artifacts/');
@@ -494,7 +497,8 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
                     <button onClick={async () => {
                       await hubApi.ensureAuth();
                       const hasImages = Array.isArray(art.meta.screenshots) && art.meta.screenshots.length > 0;
-                      if (hasImages) { setShareModeTarget(art); } else { setSharePrompt(art); }
+                      if (!PAYMENTS_ENABLED) { if (hasImages) { void handleShare(art); } else { setSharePrompt(art); } }
+                      else { if (hasImages) { setShareModeTarget(art); } else { setSharePrompt(art); } }
                     }} disabled={!!busyAction}
                       className="text-xs px-3 py-1.5 rounded-lg border border-border-default text-fg-secondary hover:text-green-600 hover:border-green-500/30 transition-colors disabled:opacity-50">
                       {busyAction === 'share' ? t('common:sharing') : t('common:share')}
@@ -578,7 +582,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
               <p className="text-sm text-fg-secondary mb-5">{t('share.imagePrompt')}</p>
               <div className="flex gap-3">
                 <button
-                  onClick={() => { const art = sharePrompt; setSharePrompt(null); setShareModeTarget(art); }}
+                  onClick={() => { const art = sharePrompt; setSharePrompt(null); PAYMENTS_ENABLED ? setShareModeTarget(art) : void handleShare(art); }}
                   className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-gray-600 transition-colors">
                   {t('share.directly')}
                 </button>
