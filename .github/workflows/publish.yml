@@ -112,29 +112,17 @@ jobs:
       - name: Bundle CLI for publishing
         run: pnpm --filter @markus-global/cli build:bundle
 
-      - name: Build binary archive
-        run: bash scripts/build-binary.sh ${{ matrix.platform }} ${{ matrix.arch }}
-
-      - name: Sign and notarize macOS .pkg
+      - name: Import Apple certificates
         if: matrix.platform == 'darwin'
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           if [ -z "$APPLE_CERTIFICATE_P12" ]; then
             echo "⚠ Apple signing secrets not configured — skipping"
             exit 0
           fi
 
-          VERSION=$(node -p "require('./package.json').version")
-          PKG="dist-binary/markus-v${VERSION}-darwin-${{ matrix.arch }}.pkg"
-          PKG_SIGNED="dist-binary/markus-v${VERSION}-darwin-${{ matrix.arch }}-signed.pkg"
-          FIXED="dist-binary/markus-setup-darwin-${{ matrix.arch }}.pkg"
-
-          # Import certificate into a temporary keychain
           KEYCHAIN="build-$$.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 12)"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
@@ -142,22 +130,43 @@ jobs:
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
           echo "$APPLE_CERTIFICATE_P12" | base64 --decode > /tmp/cert.p12
-          security import /tmp/cert.p12 -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/productsign
+          security import /tmp/cert.p12 -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/productsign -T /usr/bin/codesign
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           rm /tmp/cert.p12
 
-          # Find the installer signing identity
-          IDENTITY=$(security find-identity -v -p basic "$KEYCHAIN" | grep "Developer ID Installer" | head -1 | sed 's/.*"\(.*\)"/\1/')
-          if [ -z "$IDENTITY" ]; then
-            echo "⚠ No Developer ID Installer certificate found — skipping"
-            security delete-keychain "$KEYCHAIN"
-            exit 0
-          fi
-          echo "Signing with: $IDENTITY"
+          # Export identities for later steps
+          APP_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/' || true)
+          INST_IDENTITY=$(security find-identity -v -p basic "$KEYCHAIN" | grep "Developer ID Installer" | head -1 | sed 's/.*"\(.*\)"/\1/' || true)
 
-          # Sign the .pkg
-          productsign --sign "$IDENTITY" --keychain "$KEYCHAIN" "$PKG" "$PKG_SIGNED"
+          echo "APPLE_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          echo "APPLE_KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+          [ -n "$APP_IDENTITY" ]  && echo "MACOS_CODESIGN_IDENTITY=$APP_IDENTITY" >> "$GITHUB_ENV" && echo "✓ Found Application identity: $APP_IDENTITY"
+          [ -n "$INST_IDENTITY" ] && echo "MACOS_INSTALLER_IDENTITY=$INST_IDENTITY" >> "$GITHUB_ENV" && echo "✓ Found Installer identity: $INST_IDENTITY"
+
+          if [ -z "$APP_IDENTITY" ]; then
+            echo "⚠ No 'Developer ID Application' certificate found — binaries will NOT be codesigned"
+            echo "  Notarization will likely fail. Add a Developer ID Application cert to the P12."
+          fi
+
+      - name: Build binary archive
+        run: bash scripts/build-binary.sh ${{ matrix.platform }} ${{ matrix.arch }}
+
+      - name: Sign and notarize macOS .pkg
+        if: matrix.platform == 'darwin' && env.MACOS_INSTALLER_IDENTITY != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          PKG="dist-binary/markus-v${VERSION}-darwin-${{ matrix.arch }}.pkg"
+          PKG_SIGNED="dist-binary/markus-v${VERSION}-darwin-${{ matrix.arch }}-signed.pkg"
+          FIXED="dist-binary/markus-setup-darwin-${{ matrix.arch }}.pkg"
+
+          echo "Signing .pkg with: $MACOS_INSTALLER_IDENTITY"
+          productsign --sign "$MACOS_INSTALLER_IDENTITY" --keychain "$APPLE_KEYCHAIN" "$PKG" "$PKG_SIGNED"
           mv "$PKG_SIGNED" "$PKG"
           cp "$PKG" "$FIXED"
 
@@ -172,9 +181,11 @@ jobs:
           xcrun stapler staple "$PKG"
           cp "$PKG" "$FIXED"
 
-          # Cleanup
-          security delete-keychain "$KEYCHAIN"
           echo "✓ Signed and notarized: $PKG"
+
+      - name: Cleanup Apple keychain
+        if: always() && matrix.platform == 'darwin' && env.APPLE_KEYCHAIN != ''
+        run: security delete-keychain "$APPLE_KEYCHAIN" 2>/dev/null || true
 
       - name: Upload versioned installer
         uses: actions/upload-artifact@v4

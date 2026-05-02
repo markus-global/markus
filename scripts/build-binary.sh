@@ -285,6 +285,19 @@ exit 0
 POSTINSTALL
   chmod +x "$SCRIPTS_DIR/postinstall"
 
+  # Codesign all Mach-O binaries/dylibs before packaging (required for notarization)
+  if [[ -n "${MACOS_CODESIGN_IDENTITY:-}" ]]; then
+    info "Codesigning binaries with: $MACOS_CODESIGN_IDENTITY"
+    find "$STAGE_DIR" -type f \( -perm +111 -o -name "*.dylib" -o -name "*.node" -o -name "*.so" \) | while read -r f; do
+      if file "$f" | grep -qE "Mach-O|bundle"; then
+        codesign --force --options runtime --timestamp --sign "$MACOS_CODESIGN_IDENTITY" "$f" && \
+          printf "  signed: %s\n" "$(basename "$f")" || \
+          printf "  WARN: failed to sign %s\n" "$f" >&2
+      fi
+    done
+    ok "Codesigning complete"
+  fi
+
   info "Building macOS .pkg installer..."
   pkgbuild \
     --root "$STAGE_DIR" \
