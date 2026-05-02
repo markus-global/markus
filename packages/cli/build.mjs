@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const outfile = resolve(__dirname, 'dist', 'markus.mjs');
+const trayOutfile = resolve(__dirname, 'dist', 'tray.mjs');
 
 // Modules that cannot be bundled: native addons and Node.js built-ins
 const external = [
@@ -15,6 +16,10 @@ const external = [
   'sharp',
   'rfb2',
   'ws',
+];
+
+const trayExternal = [
+  'systray2',
 ];
 
 async function main() {
@@ -43,6 +48,29 @@ async function main() {
     minify: false,
     treeShaking: true,
     // Resolve workspace:* packages from the monorepo
+    conditions: ['node', 'import'],
+    resolveExtensions: ['.ts', '.js', '.mjs', '.json'],
+  });
+
+  // Step 2b: Bundle tray controller (standalone entry point for desktop shortcut)
+  console.log('  Bundling tray controller...');
+  await build({
+    entryPoints: [resolve(__dirname, 'src/tray.ts')],
+    outfile: trayOutfile,
+    bundle: true,
+    platform: 'node',
+    target: 'node22',
+    format: 'esm',
+    external: trayExternal,
+    banner: {
+      js: [
+        "import { createRequire } from 'module';",
+        'const require = createRequire(import.meta.url);',
+      ].join('\n'),
+    },
+    sourcemap: false,
+    minify: false,
+    treeShaking: true,
     conditions: ['node', 'import'],
     resolveExtensions: ['.ts', '.js', '.mjs', '.json'],
   });

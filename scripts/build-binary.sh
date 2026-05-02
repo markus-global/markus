@@ -16,6 +16,7 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; NC='\033[0m'; BOLD='\033[1m'
 
 die()  { printf "${RED}✗${NC} %s\n" "$*" >&2; exit 1; }
+warn() { printf "${YELLOW}⚠${NC} %s\n" "$*"; }
 info() { printf "${BLUE}→${NC} %s\n" "$*"; }
 ok()   { printf "${GREEN}✓${NC} %s\n" "$*"; }
 
@@ -103,12 +104,21 @@ ok "Node.js binary extracted"
 
 cp "$CLI_BUNDLE" "$STAGE_DIR/bin/markus.mjs"
 
+# Copy tray controller
+TRAY_BUNDLE="$ROOT_DIR/packages/cli/dist/tray.mjs"
+if [[ -f "$TRAY_BUNDLE" ]]; then
+  cp "$TRAY_BUNDLE" "$STAGE_DIR/bin/tray.mjs"
+  ok "Tray controller copied"
+else
+  warn "tray.mjs not found — desktop tray will not be available"
+fi
+
 # Install native/external dependencies that esbuild cannot bundle
 info "Installing native dependencies into staging dir..."
 cat > "$STAGE_DIR/bin/package.json" << 'PKGJSON'
 { "private": true, "type": "module" }
 PKGJSON
-(cd "$STAGE_DIR/bin" && npm install --no-save ws sharp rfb2 2>&1) \
+(cd "$STAGE_DIR/bin" && npm install --no-save ws sharp rfb2 systray2 2>&1) \
   || die "Failed to install native dependencies"
 rm -f "$STAGE_DIR/bin/package.json" "$STAGE_DIR/bin/package-lock.json"
 ok "Native dependencies installed"
@@ -220,7 +230,7 @@ if [ -d "$REAL_HOME/Desktop" ]; then
   <key>CFBundleIconFile</key>
   <string>markus</string>
   <key>LSUIElement</key>
-  <false/>
+  <true/>
 </dict>
 </plist>
 PLIST_APP
@@ -228,22 +238,7 @@ PLIST_APP
   cat > "$APP_DIR/Contents/MacOS/launch" << 'LAUNCH_SCRIPT'
 #!/bin/bash
 MARKUS_DIR="/usr/local/lib/markus"
-LOG_DIR="$HOME/.markus/logs"
-mkdir -p "$LOG_DIR"
-
-"$MARKUS_DIR/bin/node" "$MARKUS_DIR/bin/markus.mjs" start \
-  >> "$LOG_DIR/stdout.log" 2>> "$LOG_DIR/stderr.log" &
-SERVER_PID=$!
-
-sleep 3
-if kill -0 "$SERVER_PID" 2>/dev/null; then
-  open "http://localhost:8056"
-else
-  osascript -e 'display dialog "Markus failed to start.\nCheck logs at ~/.markus/logs/" with title "Markus" buttons {"OK"} default button "OK" with icon stop'
-  exit 1
-fi
-
-wait "$SERVER_PID"
+exec "$MARKUS_DIR/bin/node" "$MARKUS_DIR/bin/tray.mjs"
 LAUNCH_SCRIPT
   chmod +x "$APP_DIR/Contents/MacOS/launch"
 
@@ -380,9 +375,9 @@ if [ -d "$DESKTOP_DIR" ]; then
 Type=Application
 Name=Markus
 Comment=AI Digital Workforce Platform
-Exec=/usr/local/bin/markus start
+Exec=/usr/local/lib/markus/bin/node /usr/local/lib/markus/bin/tray.mjs
 Icon=/usr/local/lib/markus/logo.png
-Terminal=true
+Terminal=false
 Categories=Development;
 StartupNotify=true
 EOF
@@ -397,7 +392,7 @@ cat > "$AUTOSTART_DIR/markus.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=Markus
-Exec=/usr/local/bin/markus start
+Exec=/usr/local/lib/markus/bin/node /usr/local/lib/markus/bin/tray.mjs
 Icon=/usr/local/lib/markus/logo.png
 Terminal=false
 X-GNOME-Autostart-enabled=true
@@ -468,9 +463,9 @@ ${WIN_ICON_LINE}
 Source: "${WIN_STAGE_DIR}\\*"; DestDir: "{app}"; Flags: recursesubdirs
 
 [Icons]
-Name: "{userdesktop}\\Markus"; Filename: "{app}\\markus.cmd"; Parameters: "start"; WorkingDir: "{userdocs}"; Comment: "Markus - AI Digital Workforce Platform"${WIN_ICON_REF}
-Name: "{userstartup}\\Markus"; Filename: "{app}\\markus.cmd"; Parameters: "start"; WorkingDir: "{userdocs}"; Comment: "Markus auto-start"${WIN_ICON_REF}
-Name: "{group}\\Markus"; Filename: "{app}\\markus.cmd"; Parameters: "start"${WIN_ICON_REF}
+Name: "{userdesktop}\\Markus"; Filename: "{app}\\bin\\node.exe"; Parameters: """{app}\\bin\\tray.mjs"""; WorkingDir: "{app}"; Comment: "Markus - AI Digital Workforce Platform"${WIN_ICON_REF}
+Name: "{userstartup}\\Markus"; Filename: "{app}\\bin\\node.exe"; Parameters: """{app}\\bin\\tray.mjs"""; WorkingDir: "{app}"; Comment: "Markus auto-start"${WIN_ICON_REF}
+Name: "{group}\\Markus"; Filename: "{app}\\bin\\node.exe"; Parameters: """{app}\\bin\\tray.mjs"""; WorkingDir: "{app}"${WIN_ICON_REF}
 Name: "{group}\\Uninstall Markus"; Filename: "{uninstallexe}"
 
 [Registry]
