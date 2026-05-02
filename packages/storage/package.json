@@ -1,6 +1,6 @@
 {
   "name": "@markus/storage",
-  "version": "0.5.2",
+  "version": "0.5.4",
   "private": true,
   "type": "module",
   "main": "dist/index.js",

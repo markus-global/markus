@@ -115,11 +115,20 @@ jobs:
       - name: Build binary archive
         run: bash scripts/build-binary.sh ${{ matrix.platform }} ${{ matrix.arch }}
 
-      - name: Upload binary artifact
+      - name: Upload versioned installer
         uses: actions/upload-artifact@v4
         with:
           name: markus-${{ matrix.platform }}-${{ matrix.arch }}
-          path: dist-binary/markus-v*.*
+          path: |
+            dist-binary/markus-v*-${{ matrix.platform }}-${{ matrix.arch }}.*
+            !dist-binary/markus-v*-${{ matrix.platform }}-${{ matrix.arch }}/
+          retention-days: 5
+
+      - name: Upload fixed-name installer (for /releases/latest/download/)
+        uses: actions/upload-artifact@v4
+        with:
+          name: markus-setup-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist-binary/markus-setup-${{ matrix.platform }}-${{ matrix.arch }}.*
           retention-days: 5
 
   github-release:
@@ -150,25 +159,23 @@ jobs:
           body: |
             ## Install
 
-            **Zero prerequisites** (downloads include Node.js runtime):
+            **Download & double-click** (no prerequisites, includes Node.js runtime):
+
+            | Platform | Installer |
+            |----------|-----------|
+            | Windows x64 | [markus-setup-win-x64.exe](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-win-x64.exe) |
+            | macOS Apple Silicon | [markus-setup-darwin-arm64.pkg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-darwin-arm64.pkg) |
+            | macOS Intel | [markus-setup-darwin-x64.pkg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-darwin-x64.pkg) |
+            | Linux x64 (.deb) | [markus-setup-linux-x64.deb](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-linux-x64.deb) |
+
+            **Or via terminal:**
             ```bash
             # macOS / Linux
             curl -fsSL https://markus.global/install.sh | bash
 
             # Windows (PowerShell)
             irm https://markus.global/install.ps1 | iex
-            ```
 
-            **Or via npm** (if you already have Node.js 22+):
-            ```bash
+            # npm (if you already have Node.js 22+)
             npm install -g @markus-global/cli@${{ steps.version.outputs.VERSION }}
             ```
-
-            ## Direct Downloads
-
-            | Platform | Download |
-            |----------|----------|
-            | Windows x64 | [markus-v${{ steps.version.outputs.VERSION }}-win-x64.zip](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-v${{ steps.version.outputs.VERSION }}-win-x64.zip) |
-            | macOS Apple Silicon | [markus-v${{ steps.version.outputs.VERSION }}-darwin-arm64.tar.gz](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-v${{ steps.version.outputs.VERSION }}-darwin-arm64.tar.gz) |
-            | macOS Intel | [markus-v${{ steps.version.outputs.VERSION }}-darwin-x64.tar.gz](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-v${{ steps.version.outputs.VERSION }}-darwin-x64.tar.gz) |
-            | Linux x64 | [markus-v${{ steps.version.outputs.VERSION }}-linux-x64.tar.gz](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-v${{ steps.version.outputs.VERSION }}-linux-x64.tar.gz) |
