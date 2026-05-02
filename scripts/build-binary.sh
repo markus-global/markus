@@ -285,18 +285,42 @@ exit 0
 POSTINSTALL
   chmod +x "$SCRIPTS_DIR/postinstall"
 
-  # Codesign all Mach-O binaries/dylibs before packaging (required for notarization)
-  if [[ -n "${MACOS_CODESIGN_IDENTITY:-}" ]]; then
-    info "Codesigning binaries with: $MACOS_CODESIGN_IDENTITY"
-    find "$STAGE_DIR" -type f \( -perm +111 -o -name "*.dylib" -o -name "*.node" -o -name "*.so" \) | while read -r f; do
-      if file "$f" | grep -qE "Mach-O|bundle"; then
-        codesign --force --options runtime --timestamp --sign "$MACOS_CODESIGN_IDENTITY" "$f" && \
-          printf "  signed: %s\n" "$(basename "$f")" || \
-          printf "  WARN: failed to sign %s\n" "$f" >&2
-      fi
-    done
-    ok "Codesigning complete"
+  # Entitlements required for Node.js V8 JIT engine on macOS
+  ENTITLEMENTS="$OUT_DIR/_entitlements_$$.plist"
+  cat > "$ENTITLEMENTS" << 'ENTPLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>
+ENTPLIST
+
+  # Codesign all Mach-O binaries/dylibs (required for notarization + JIT on macOS)
+  SIGN_ID="${MACOS_CODESIGN_IDENTITY:--}"
+  if [[ "$SIGN_ID" == "-" ]]; then
+    info "Ad-hoc codesigning binaries (JIT entitlements)..."
+  else
+    info "Codesigning binaries with: $SIGN_ID"
   fi
+  find "$STAGE_DIR" -type f \( -perm +111 -o -name "*.dylib" -o -name "*.node" -o -name "*.so" \) | while read -r f; do
+    if file "$f" | grep -qE "Mach-O|bundle"; then
+      SIGN_ARGS=(--force --options runtime --entitlements "$ENTITLEMENTS" --sign "$SIGN_ID")
+      [[ "$SIGN_ID" != "-" ]] && SIGN_ARGS+=(--timestamp)
+      codesign "${SIGN_ARGS[@]}" "$f" && \
+        printf "  signed: %s\n" "$(basename "$f")" || \
+        printf "  WARN: failed to sign %s\n" "$f" >&2
+    fi
+  done
+  rm -f "$ENTITLEMENTS"
+  ok "Codesigning complete"
 
   info "Building macOS .pkg installer..."
   pkgbuild \
