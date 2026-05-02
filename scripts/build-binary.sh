@@ -113,6 +113,10 @@ PKGJSON
 rm -f "$STAGE_DIR/bin/package.json" "$STAGE_DIR/bin/package-lock.json"
 ok "Native dependencies installed"
 
+# Version marker so the bundled CLI can detect its own version
+# (version.ts looks for ../package.json relative to bin/markus.mjs)
+printf '{"name":"markus","version":"%s"}\n' "$VERSION" > "$STAGE_DIR/package.json"
+
 WEB_UI_DIR="$ROOT_DIR/packages/cli/dist/web-ui"
 [[ -d "$WEB_UI_DIR" ]] && cp -r "$WEB_UI_DIR" "$STAGE_DIR/web-ui" && ok "Web UI copied"
 
