@@ -230,7 +230,7 @@ if [ -d "$REAL_HOME/Desktop" ]; then
   <key>CFBundleIconFile</key>
   <string>markus</string>
   <key>LSUIElement</key>
-  <true/>
+  <false/>
 </dict>
 </plist>
 PLIST_APP
@@ -238,7 +238,33 @@ PLIST_APP
   cat > "$APP_DIR/Contents/MacOS/launch" << 'LAUNCH_SCRIPT'
 #!/bin/bash
 MARKUS_DIR="/usr/local/lib/markus"
-exec "$MARKUS_DIR/bin/node" "$MARKUS_DIR/bin/tray.mjs"
+NODE="$MARKUS_DIR/bin/node"
+LOG_DIR="$HOME/.markus/logs"
+mkdir -p "$LOG_DIR"
+
+# Try tray controller first; fall back to direct server start
+if [ -f "$MARKUS_DIR/bin/tray.mjs" ]; then
+  "$NODE" "$MARKUS_DIR/bin/tray.mjs" 2>"$LOG_DIR/tray-stderr.log"
+  EXIT_CODE=$?
+  if [ $EXIT_CODE -ne 0 ]; then
+    echo "Tray exited with code $EXIT_CODE, falling back to direct start" >> "$LOG_DIR/tray-stderr.log"
+  else
+    exit 0
+  fi
+fi
+
+# Fallback: start server directly + open browser
+"$NODE" "$MARKUS_DIR/bin/markus.mjs" start \
+  >> "$LOG_DIR/stdout.log" 2>> "$LOG_DIR/stderr.log" &
+SERVER_PID=$!
+sleep 3
+if kill -0 "$SERVER_PID" 2>/dev/null; then
+  open "http://localhost:8056"
+else
+  osascript -e 'display dialog "Markus failed to start.\nCheck logs at ~/.markus/logs/" with title "Markus" buttons {"OK"} default button "OK" with icon stop'
+  exit 1
+fi
+wait "$SERVER_PID"
 LAUNCH_SCRIPT
   chmod +x "$APP_DIR/Contents/MacOS/launch"
 
@@ -309,7 +335,7 @@ ENTPLIST
   else
     info "Codesigning binaries with: $SIGN_ID"
   fi
-  find "$STAGE_DIR" -type f \( -perm +111 -o -name "*.dylib" -o -name "*.node" -o -name "*.so" \) | while read -r f; do
+  find "$STAGE_DIR" -type f | while read -r f; do
     if file "$f" | grep -qE "Mach-O|bundle"; then
       SIGN_ARGS=(--force --options runtime --entitlements "$ENTITLEMENTS" --sign "$SIGN_ID")
       [[ "$SIGN_ID" != "-" ]] && SIGN_ARGS+=(--timestamp)
