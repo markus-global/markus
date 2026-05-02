@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { api, hubApi, type AuthUser } from '../api.ts';
+import { api, hubApi, kebab, type AuthUser } from '../api.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { PAYMENTS_ENABLED } from './AgentBuilder.tsx';
 
@@ -465,7 +465,7 @@ function TeamTabs({ members, teamTopFiles, files, onFileSave, readOnly }: {
   }, [files]);
 
   const getMemberFiles = useCallback((name: string, idx: number): [string, string][] => {
-    const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '');
+    const slug = kebab(name);
     if (slug) {
       const matched = Object.entries(files).filter(([k]) => k.startsWith(`members/${slug}/`));
       if (matched.length > 0) return matched;
