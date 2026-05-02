@@ -201,8 +201,12 @@ function HubSkillCard({ item, installedSkills, onMsg, onRefresh, highlight, onHi
   const iconSrc = item.icon && (item.icon.startsWith('http') ? item.icon : item.icon.startsWith('/') ? `${hubApi.getUrl()}${item.icon}` : null);
   const rating = Math.round(parseFloat(item.avgRating));
 
+  const handleCardClick = () => {
+    if (detailUrl) window.open(detailUrl, '_blank', 'noopener,noreferrer');
+  };
+
   return (
-    <div ref={cardRef} className={`group relative bg-surface-secondary rounded-xl overflow-hidden cursor-pointer transition-all duration-300 hover:shadow-xl hover:shadow-brand-500/5 hover:-translate-y-0.5 ${glowing ? 'ring-2 ring-brand-500 shadow-lg shadow-brand-500/20 animate-pulse' : ''}`}>
+    <div ref={cardRef} onClick={handleCardClick} className={`group relative bg-surface-secondary rounded-xl overflow-hidden cursor-pointer transition-all duration-300 hover:shadow-xl hover:shadow-brand-500/5 hover:-translate-y-0.5 ${glowing ? 'ring-2 ring-brand-500 shadow-lg shadow-brand-500/20 animate-pulse' : ''}`}>
       <div className={`absolute inset-0 rounded-xl border transition-colors duration-300 ${glowing ? 'border-brand-500/60' : 'border-border-default group-hover:border-brand-500/30'}`} />
       <div className="relative p-5">
         <div className="flex items-start gap-3 mb-3">
@@ -211,11 +215,7 @@ function HubSkillCard({ item, installedSkills, onMsg, onRefresh, highlight, onHi
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              {detailUrl ? (
-                <a href={detailUrl} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold truncate group-hover:text-brand-400 transition-colors">{item.name}</a>
-              ) : (
-                <h3 className="text-sm font-semibold truncate group-hover:text-brand-400 transition-colors">{item.name}</h3>
-              )}
+              <h3 className="text-sm font-semibold truncate group-hover:text-brand-400 transition-colors">{item.name}</h3>
             </div>
             <div className="flex items-center gap-2 mt-0.5">
               <span className="text-[11px] text-fg-tertiary truncate">by {item.author?.displayName ?? item.author?.username}</span>
@@ -241,10 +241,7 @@ function HubSkillCard({ item, installedSkills, onMsg, onRefresh, highlight, onHi
           <span>{'\u2193'} {item.downloadCount}</span>
         </div>
 
-        <div className="flex items-center gap-2 pt-3 border-t border-border-default/50">
-          {detailUrl ? (
-            <a href={detailUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-brand-500 hover:text-brand-400 mr-auto transition-colors">View on Hub \u2192</a>
-          ) : <span className="mr-auto" />}
+        <div className="flex items-center justify-end gap-2 pt-3 border-t border-border-default/50" onClick={e => e.stopPropagation()}>
           <HubSkillInstallButton item={item} installedSkills={installedSkills} onMsg={onMsg} onRefresh={onRefresh} />
         </div>
       </div>
