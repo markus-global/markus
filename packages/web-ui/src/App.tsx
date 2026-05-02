@@ -98,6 +98,22 @@ export function App() {
 
   useEffect(() => {
     const hasInviteHash = window.location.hash.startsWith('#invite?token=');
+    // Deep link: ?install=ITEM_ID&type=agent|team|skill — navigate to Store if not already there
+    const urlParams = new URLSearchParams(window.location.search);
+    const installItemId = urlParams.get('install');
+    if (installItemId && getPageFromHash() !== PAGE.STORE) {
+      const itemType = urlParams.get('type');
+      const tabMap: Record<string, string> = { agent: 'agents', team: 'teams', skill: 'skills' };
+      const storeTab = (itemType && tabMap[itemType]) || 'agents';
+      localStorage.setItem('markus_nav_installItem', installItemId);
+      localStorage.setItem('markus_nav_storeTab', storeTab);
+      urlParams.delete('install');
+      urlParams.delete('type');
+      const qs = urlParams.toString();
+      window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : '') + '#store');
+      setTimeout(() => navBus.navigate(PAGE.STORE, { storeTab, installItem: installItemId }), 300);
+    }
+
     api.auth.me()
       .then(({ user }) => {
         setAuthUser(user);

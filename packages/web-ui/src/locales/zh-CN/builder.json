@@ -1,19 +1,19 @@
 {
-  "title": "构建器",
+  "title": "创建",
   "subtitle": "招聘智能体、组建团队并创建技能。秘书会全程处理 — 从寻源到入职。",
   "prompts": {
     "hireAgent": "招聘智能体",
     "hireAgentDesc": "从模板招聘、创建自定义智能体，或在 Markus Hub 上寻找专家",
     "hireAgentExamples": ["招聘一名高级 React 开发者", "创建自定义代码审查智能体", "在 Hub 上寻找 DevOps 专家"],
-    "hireAgentPrompt": "我需要招聘一名智能体： ",
+    "hireAgentPrompt": "我需要你帮我创建或者招聘一名智能体： ",
     "buildTeam": "组建团队",
     "buildTeamDesc": "为项目组建最佳团队，或部署团队模板",
     "buildTeamExamples": ["包含 PM、开发与 QA 的 Web 开发团队", "数据工程小组", "内容创作团队"],
-    "buildTeamPrompt": "我需要为以下目标组建团队： ",
+    "buildTeamPrompt": "我需要你帮我创建或者为以下目标组建团队： ",
     "createSkill": "创建技能",
     "createSkillDesc": "设计智能体可学习并使用的新能力",
     "createSkillExamples": ["Git 变更日志生成器", "网页抓取技能", "数据库迁移工具"],
-    "createSkillPrompt": "我需要一个能够： "
+    "createSkillPrompt": "我需要一个你帮我创建一个skill： "
   },
   "myCreations": {
     "title": "我的创作",
@@ -51,5 +51,78 @@
     "skills": "技能",
     "files": "文件（{{count}}）",
     "members": "成员（{{count}}）"
+  },
+  "share": {
+    "imagePrompt": "分享前是否要添加一些图片？图片能帮助你的作品在 Hub 上吸引更多用户。",
+    "directly": "直接分享",
+    "addImagesFirst": "先添加图片",
+    "toHub": "分享到 Hub",
+    "sharing": "正在分享...",
+    "updating": "正在更新...",
+    "updateVersion": "更新 v{{version}}",
+    "viewOnHub": "在 Hub 查看"
+  },
+  "shareMode": {
+    "title": "选择分享模式",
+    "titleUpdate": "更新分享设置",
+    "free": "免费",
+    "freeDesc": "所有人均可免费下载",
+    "donation": "接受打赏",
+    "donationDesc": "免费下载，用户可自愿打赏",
+    "paid": "付费下载",
+    "paidDesc": "用户需付费才能下载",
+    "priceLabel": "价格（美元）",
+    "pricePlaceholder": "例如 4.99",
+    "update": "更新",
+    "share": "分享"
+  },
+  "versionBump": {
+    "contentModified": "内容已修改，建议更新版本号。",
+    "bumpVersion": "更新版本",
+    "newVersion": "新版本："
+  },
+  "images": {
+    "dropOrClick": "拖拽图片或点击上传",
+    "hint": "上传效果图、截图或演示图片，展示你的作品"
+  },
+  "detail": {
+    "backToBuilder": "返回构建器",
+    "notFound": "未找到该产物",
+    "saving": "正在保存...",
+    "saved": "已保存",
+    "saveFailed": "保存失败",
+    "edit": "编辑",
+    "overview": "概览",
+    "untitled": "未命名",
+    "addDescription": "点击添加描述...",
+    "typeTagAndEnter": "输入后按回车",
+    "pasteEmojiOrUrl": "粘贴 emoji 或图片链接...",
+    "upload": "上传"
+  },
+  "sidebar": {
+    "info": "基本信息",
+    "type": "类型",
+    "category": "分类",
+    "version": "版本",
+    "author": "作者",
+    "agentSpecs": "智能体规格",
+    "role": "角色",
+    "provider": "服务商",
+    "model": "模型",
+    "temperature": "温度",
+    "composition": "团队构成",
+    "totalMembers": "总人数",
+    "managers": "管理者",
+    "workers": "工作者",
+    "skillInfo": "技能信息",
+    "alwaysOn": "始终启用",
+    "skillFile": "技能文件",
+    "permissions": "权限",
+    "yes": "是",
+    "no": "否",
+    "dependencies": "依赖",
+    "skills": "技能",
+    "environment": "环境变量",
+    "openInFinder": "在 Finder 中打开"
   }
 }

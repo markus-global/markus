@@ -3,13 +3,13 @@
   "team": "团队",
   "work": "工作",
   "store": "商店",
-  "builder": "构建器",
-  "deliverables": "交付物",
+  "builder": "创建",
+  "deliverables": "交付",
   "reports": "报告",
   "settings": "设置",
   "sections": {
     "workspace": "工作区",
-    "build": "构建",
+    "build": "资产",
     "system": "系统"
   },
   "sidebar": {

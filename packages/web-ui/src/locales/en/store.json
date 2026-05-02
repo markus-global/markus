@@ -28,5 +28,19 @@
     "members": "Members",
     "requirements": "Requirements",
     "configuration": "Configuration"
+  },
+  "installDialog": {
+    "successTitle": "Installed Successfully!",
+    "successDesc": "{{name}} has been installed and is ready to use.",
+    "done": "Done",
+    "errorTitle": "Installation Failed",
+    "errorDesc": "Something went wrong. Please try again.",
+    "close": "Close",
+    "retry": "Retry",
+    "paidNote": "This is a paid item. You need to purchase it on the Hub before installing.",
+    "cancel": "Cancel",
+    "buyOnHub": "Buy on Hub",
+    "installing": "Installing...",
+    "install": "Install"
   }
 }

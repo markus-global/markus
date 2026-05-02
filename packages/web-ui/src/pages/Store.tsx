@@ -11,18 +11,44 @@ const tabs = [{ id: 'agents' }, { id: 'teams' }, { id: 'skills' }] as const;
 
 type TabId = (typeof tabs)[number]['id'];
 
-function readStoreTab(): TabId {
-  const raw = localStorage.getItem('markus_nav_storeTab');
-  if (raw) localStorage.removeItem('markus_nav_storeTab');
-  if (raw === 'agents' || raw === 'teams' || raw === 'skills') return raw;
-  return 'agents';
+const TYPE_TO_TAB: Record<string, TabId> = { agent: 'agents', team: 'teams', skill: 'skills' };
+
+function readInitialState(): { tab: TabId; installId: string | null } {
+  // 1. Check localStorage (set by navBus.navigate)
+  const lsItem = localStorage.getItem('markus_nav_installItem');
+  const lsTab = localStorage.getItem('markus_nav_storeTab');
+  if (lsItem) localStorage.removeItem('markus_nav_installItem');
+  if (lsTab) localStorage.removeItem('markus_nav_storeTab');
+  if (lsItem) {
+    const tab: TabId = (lsTab && (lsTab === 'agents' || lsTab === 'teams' || lsTab === 'skills')) ? lsTab : 'agents';
+    return { tab, installId: lsItem };
+  }
+
+  // 2. Check URL query params (direct deep link)
+  const params = new URLSearchParams(window.location.search);
+  const id = params.get('install');
+  if (id) {
+    const itemType = params.get('type');
+    const tab: TabId = (itemType && TYPE_TO_TAB[itemType]) || 'agents';
+    params.delete('install');
+    params.delete('type');
+    const qs = params.toString();
+    window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash);
+    return { tab, installId: id };
+  }
+
+  // 3. Normal tab from localStorage
+  const tab: TabId = (lsTab && (lsTab === 'agents' || lsTab === 'teams' || lsTab === 'skills')) ? lsTab : 'agents';
+  return { tab, installId: null };
 }
 
 export function StorePage({ authUser }: { authUser?: AuthUser }) {
   const { t } = useTranslation(['store', 'common']);
-  const [activeTab, setActiveTab] = useState<TabId>(readStoreTab);
+  const [initial] = useState(readInitialState);
+  const [activeTab, setActiveTab] = useState<TabId>(initial.tab);
   const isMobile = useIsMobile();
   const swipe = useSwipeTabs(tabs, activeTab, setActiveTab);
+  const [highlightItemId, setHighlightItemId] = useState<string | null>(initial.installId);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -32,6 +58,11 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
         if (tab) {
           localStorage.removeItem('markus_nav_storeTab');
           if (tab === 'agents' || tab === 'teams' || tab === 'skills') setActiveTab(tab);
+        }
+        const installId = localStorage.getItem('markus_nav_installItem');
+        if (installId) {
+          localStorage.removeItem('markus_nav_installItem');
+          setHighlightItemId(installId);
         }
       }
     };
@@ -58,9 +89,9 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
           ))}
         </div>
         <div className="flex-1 overflow-hidden flex flex-col">
-          {activeTab === 'agents' && <TemplateMarketplace authUser={authUser} />}
-          {activeTab === 'teams' && <TeamsStore />}
-          {activeTab === 'skills' && <SkillStore />}
+          {activeTab === 'agents' && <TemplateMarketplace authUser={authUser} highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
+          {activeTab === 'teams' && <TeamsStore highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
+          {activeTab === 'skills' && <SkillStore highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
         </div>
       </div>
     );
@@ -87,9 +118,9 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
         ))}
       </nav>
       <div className="flex-1 overflow-hidden flex flex-col">
-        {activeTab === 'agents' && <TemplateMarketplace authUser={authUser} />}
-        {activeTab === 'teams' && <TeamsStore />}
-        {activeTab === 'skills' && <SkillStore />}
+        {activeTab === 'agents' && <TemplateMarketplace authUser={authUser} highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
+        {activeTab === 'teams' && <TeamsStore highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
+        {activeTab === 'skills' && <SkillStore highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
       </div>
     </div>
   );

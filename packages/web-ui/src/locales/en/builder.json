@@ -5,15 +5,15 @@
     "hireAgent": "Hire an Agent",
     "hireAgentDesc": "Hire from templates, create custom agents, or find specialists on Markus Hub",
     "hireAgentExamples": ["Hire a senior React developer", "Create a custom code reviewer", "Find a DevOps specialist on Hub"],
-    "hireAgentPrompt": "I need to hire an agent: ",
+    "hireAgentPrompt": "I need you to help me create or hire an agent: ",
     "buildTeam": "Build a Team",
     "buildTeamDesc": "Compose an optimal team for your project or deploy a team template",
     "buildTeamExamples": ["A web dev team with PM, devs, and QA", "A data engineering squad", "A content creation team"],
-    "buildTeamPrompt": "I need to build a team for: ",
+    "buildTeamPrompt": "I need you to help me create or build a team for: ",
     "createSkill": "Create a Skill",
     "createSkillDesc": "Design new capabilities that agents can learn and use",
     "createSkillExamples": ["A Git changelog generator", "A web scraping skill", "A database migration tool"],
-    "createSkillPrompt": "I need a skill that: "
+    "createSkillPrompt": "I need you to help me create a skill: "
   },
   "myCreations": {
     "title": "My Creations",
@@ -51,5 +51,78 @@
     "skills": "Skills",
     "files": "Files ({{count}})",
     "members": "Members ({{count}})"
+  },
+  "share": {
+    "imagePrompt": "Would you like to add images before sharing? Images help attract more users on the Hub.",
+    "directly": "Share Directly",
+    "addImagesFirst": "Add Images First",
+    "toHub": "Share to Hub",
+    "sharing": "Sharing...",
+    "updating": "Updating...",
+    "updateVersion": "Update v{{version}}",
+    "viewOnHub": "View on Hub"
+  },
+  "shareMode": {
+    "title": "Choose Share Mode",
+    "titleUpdate": "Update Share Settings",
+    "free": "Free",
+    "freeDesc": "Anyone can download for free",
+    "donation": "Accept Donations",
+    "donationDesc": "Free download, users can optionally tip",
+    "paid": "Paid Download",
+    "paidDesc": "Users must pay to download",
+    "priceLabel": "Price (USD)",
+    "pricePlaceholder": "e.g. 4.99",
+    "update": "Update",
+    "share": "Share"
+  },
+  "versionBump": {
+    "contentModified": "Content has been modified. Consider updating the version number.",
+    "bumpVersion": "Bump Version",
+    "newVersion": "New version:"
+  },
+  "images": {
+    "dropOrClick": "Drop images or click to upload",
+    "hint": "Screenshots, demos, or previews showing your artifact in action"
+  },
+  "detail": {
+    "backToBuilder": "Back to Builder",
+    "notFound": "Artifact not found",
+    "saving": "Saving...",
+    "saved": "Saved",
+    "saveFailed": "Save failed",
+    "edit": "Edit",
+    "overview": "Overview",
+    "untitled": "Untitled",
+    "addDescription": "Click to add a description...",
+    "typeTagAndEnter": "Type and press Enter",
+    "pasteEmojiOrUrl": "Paste emoji or image URL...",
+    "upload": "Upload"
+  },
+  "sidebar": {
+    "info": "Info",
+    "type": "Type",
+    "category": "Category",
+    "version": "Version",
+    "author": "Author",
+    "agentSpecs": "Agent Specs",
+    "role": "Role",
+    "provider": "Provider",
+    "model": "Model",
+    "temperature": "Temperature",
+    "composition": "Composition",
+    "totalMembers": "Total members",
+    "managers": "Managers",
+    "workers": "Workers",
+    "skillInfo": "Skill Info",
+    "alwaysOn": "Always On",
+    "skillFile": "Skill File",
+    "permissions": "Permissions",
+    "yes": "Yes",
+    "no": "No",
+    "dependencies": "Dependencies",
+    "skills": "Skills",
+    "environment": "Environment",
+    "openInFinder": "Open in Finder"
   }
 }
