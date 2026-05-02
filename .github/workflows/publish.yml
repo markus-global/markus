@@ -82,7 +82,7 @@ jobs:
           - os: macos-latest
             platform: darwin
             arch: arm64
-          - os: macos-13
+          - os: macos-latest
             platform: darwin
             arch: x64
           - os: windows-latest
