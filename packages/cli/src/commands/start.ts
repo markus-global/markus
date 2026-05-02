@@ -45,6 +45,7 @@ import {
   TrustService,
   ArchiveService,
   ScheduledTaskRunner,
+  StaleDetector,
   initStorage,
   searchRegistries,
   installSkill,
@@ -851,6 +852,14 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
   const scheduledTaskRunner = new ScheduledTaskRunner(taskService);
   scheduledTaskRunner.start();
+
+  // StaleDetector: auto-escalates review tasks that sit idle beyond maxReviewWaitMs.
+  // Uses the bootstrap owner as the default escalation target so important tasks
+  // don't get stuck waiting for an unresponsive reviewer.
+  const staleDetector = new StaleDetector(taskService, {
+    escalationTargetId: ownerUserId,
+  });
+  staleDetector.start();
 
   // Escalation callback kept for agent-internal state management; actual notification/DB/WS/audit
   // logic is handled by the 'agent:escalation' event handler registered above.
