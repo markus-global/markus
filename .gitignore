@@ -15,6 +15,9 @@ coverage/
 # Build artifacts copied during bundle (packages/cli/build.mjs)
 packages/cli/templates/
 
+# Binary distribution build output (scripts/build-binary.sh)
+dist-binary/
+
 # Auto-generated API docs (regenerate via typedoc)
 docs/api/
 docs/api-test/

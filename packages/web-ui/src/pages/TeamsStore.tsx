@@ -379,8 +379,16 @@ function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDo
   const iconSrc = item.icon && (item.icon.startsWith('http') ? item.icon : item.icon.startsWith('/') ? `${hubApi.getUrl()}${item.icon}` : null);
   const rating = Math.round(parseFloat(item.avgRating));
 
+  const hubDetailUrl = item.slug && item.author?.username
+    ? `${hubApi.getUrl()}/${encodeURIComponent(item.author.username)}/${encodeURIComponent(item.slug)}`
+    : null;
+
+  const handleCardClick = () => {
+    if (hubDetailUrl) window.open(hubDetailUrl, '_blank', 'noopener,noreferrer');
+  };
+
   return (
-    <div ref={cardRef} className={`group relative bg-surface-secondary rounded-xl overflow-hidden cursor-pointer transition-all duration-300 hover:shadow-xl hover:shadow-brand-500/5 hover:-translate-y-0.5 ${glowing ? 'ring-2 ring-brand-500 shadow-lg shadow-brand-500/20 animate-pulse' : ''}`}>
+    <div ref={cardRef} onClick={handleCardClick} className={`group relative bg-surface-secondary rounded-xl overflow-hidden cursor-pointer transition-all duration-300 hover:shadow-xl hover:shadow-brand-500/5 hover:-translate-y-0.5 ${glowing ? 'ring-2 ring-brand-500 shadow-lg shadow-brand-500/20 animate-pulse' : ''}`}>
       <div className={`absolute inset-0 rounded-xl border transition-colors duration-300 ${glowing ? 'border-brand-500/60' : 'border-border-default group-hover:border-brand-500/30'}`} />
       <div className="relative p-5">
         <div className="flex items-start gap-3 mb-3">
@@ -416,16 +424,11 @@ function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDo
           <span>{'\u2193'} {item.downloadCount}</span>
         </div>
 
-        <div className="flex items-center gap-2 pt-3 border-t border-border-default/50">
-          {item.slug && item.author?.username && (
-            <a href={`${hubApi.getUrl()}/${encodeURIComponent(item.author.username)}/${encodeURIComponent(item.slug)}`}
-              target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
-              className="text-[10px] text-brand-500 hover:text-brand-400 mr-auto transition-colors">View on Hub \u2192</a>
-          )}
+        <div className="flex items-center justify-end gap-2 pt-3 border-t border-border-default/50" onClick={e => e.stopPropagation()}>
           {canUpgrade ? (
             <button onClick={e => void handleInstall(e)} disabled={installing}
               className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50">
-              {installing ? 'Upgrading...' : `Upgrade \u2192 v${item.version}`}
+              {installing ? 'Upgrading...' : `Upgrade → v${item.version}`}
             </button>
           ) : isInstalled ? (
             <span className="px-3 py-1.5 text-xs bg-green-500/10 text-green-500 rounded-lg border border-green-500/20 inline-flex items-center gap-1">
@@ -434,7 +437,7 @@ function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDo
             </span>
           ) : isPaid ? (
             <a href={`${hubApi.getUrl()}/${encodeURIComponent(item.author?.username ?? '')}/${encodeURIComponent(item.slug ?? item.id)}`}
-              target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+              target="_blank" rel="noopener noreferrer"
               className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors inline-flex items-center gap-1">
               Buy {priceLabel}
             </a>
