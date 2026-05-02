@@ -234,10 +234,35 @@ export class MemoryStore implements IMemoryStore {
       }
 
       if (updated.length > MEMORY_MD_TOTAL_MAX_CHARS) {
-        log.warn('MEMORY.md total size exceeds limit, refusing write', {
+        // Attempt auto-compression first before refusing the write
+        log.warn('MEMORY.md total size exceeds limit, attempting compression', {
           key, fileSize: updated.length, limit: MEMORY_MD_TOTAL_MAX_CHARS,
         });
-        return;
+        const compressed = this.compressLongTermMemory();
+        if (compressed.charsAfter < updated.length) {
+          log.info('Compression freed space, retrying write', {
+            key, charsFreed: updated.length - compressed.charsAfter,
+          });
+          // Re-read the freshly compressed file and retry
+          existing = readFileSync(this.longTermFile, "utf-8");
+          if (existing.includes(sectionHeader)) {
+            const regex = new RegExp(`(## ${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\n[\\s\\S]*?(?=\\n## |$)`);
+            updated = existing.replace(regex, `${sectionHeader}\n${truncatedContent}\n`);
+          } else {
+            updated = existing + `\n${sectionHeader}\n${truncatedContent}\n`;
+          }
+          if (updated.length > MEMORY_MD_TOTAL_MAX_CHARS) {
+            log.warn('MEMORY.md still exceeds limit even after compression, refusing write', {
+              key, fileSize: updated.length, limit: MEMORY_MD_TOTAL_MAX_CHARS,
+            });
+            return;
+          }
+        } else {
+          log.warn('MEMORY.md still exceeds limit after compression, refusing write', {
+            key, fileSize: updated.length, limit: MEMORY_MD_TOTAL_MAX_CHARS,
+          });
+          return;
+        }
       }
 
       writeFileSync(this.longTermFile, updated);
@@ -435,5 +460,73 @@ export class MemoryStore implements IMemoryStore {
       this.saveSessionToDisk(session);
       this.saveDebounce = null;
     }, 1000);
+  }
+
+  /** Compress MEMORY.md — truncate oversized sections to prevent context bloat */
+  compressLongTermMemory(): { charsBefore: number; charsAfter: number; sectionsBefore: number; sectionsAfter: number; truncatedChunks: number } {
+    if (!existsSync(this.longTermFile)) {
+      return { charsBefore: 0, charsAfter: 0, sectionsBefore: 0, sectionsAfter: 0, truncatedChunks: 0 };
+    }
+
+    const content = readFileSync(this.longTermFile, 'utf-8');
+    const charsBefore = content.length;
+    const lines = content.split('\n');
+
+    // Phase 1: walk lines to identify preamble + section layout
+    let i = 0;
+    const preambleLines: string[] = [];
+    while (i < lines.length && !lines[i].startsWith('## ')) {
+      preambleLines.push(lines[i]);
+      i++;
+    }
+
+    // Sections as [headerLine, ...bodyLines]
+    const sections: { headerLine: string; body: string[] }[] = [];
+    let currentHeader = '';
+    let currentBody: string[] = [];
+
+    while (i < lines.length) {
+      const line = lines[i];
+      if (line.startsWith('## ')) {
+        if (currentHeader) {
+          sections.push({ headerLine: currentHeader, body: currentBody });
+        }
+        currentHeader = line;
+        currentBody = [];
+      } else {
+        currentBody.push(line);
+      }
+      i++;
+    }
+    // Push last section
+    if (currentHeader) {
+      sections.push({ headerLine: currentHeader, body: currentBody });
+    }
+
+    const sectionsBefore = sections.length;
+    let truncatedChunks = 0;
+    const outputLines: string[] = [...preambleLines];
+
+    for (const section of sections) {
+      const bodyStr = section.body.join('\n');
+      if (bodyStr.length > MEMORY_MD_SECTION_MAX_CHARS) {
+        const truncatedBody = bodyStr.slice(0, MEMORY_MD_SECTION_MAX_CHARS);
+        outputLines.push(section.headerLine, truncatedBody);
+        truncatedChunks++;
+      } else {
+        outputLines.push(section.headerLine, bodyStr);
+      }
+    }
+
+    const compressed = outputLines.join('\n');
+    writeFileSync(this.longTermFile, compressed);
+
+    return {
+      charsBefore,
+      charsAfter: compressed.length,
+      sectionsBefore,
+      sectionsAfter: sections.length,
+      truncatedChunks,
+    };
   }
 }

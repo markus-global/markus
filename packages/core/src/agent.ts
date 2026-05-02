@@ -5214,7 +5214,8 @@ export class Agent {
 
   /**
    * Enforce MEMORY.md hygiene: remove daily-report sections (they belong in
-   * daily-logs/), strip leaked LLM <think> blocks, and enforce section size limits.
+   * daily-logs/), strip leaked LLM <think> blocks, and enforce section/total
+   * size limits via heuristic compression.
    */
   private pruneMemoryMd(): void {
     const content = this.memory.getLongTermMemory();
@@ -5257,6 +5258,17 @@ export class Agent {
       const memoryMdPath = join(this.dataDir, 'MEMORY.md');
       writeFileSync(memoryMdPath, pruned + '\n');
       log.info('Pruned MEMORY.md: removed daily-report sections and LLM artifacts', { agentId: this.id });
+    }
+
+    // Pass 3: heuristic compression — enforce per-section & total size limits
+    const compressed = this.memory.compressLongTermMemory();
+    if (compressed.truncatedChunks > 0) {
+      log.info('Compressed MEMORY.md during Dream Cycle', {
+        agentId: this.id,
+        charsBefore: compressed.charsBefore,
+        charsAfter: compressed.charsAfter,
+        sectionsTrimmed: compressed.truncatedChunks,
+      });
     }
   }
 }
