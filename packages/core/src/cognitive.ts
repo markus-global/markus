@@ -45,10 +45,10 @@ export interface RetrievalBackend {
 const SCENARIO_DEPTH_MAP: Record<string, CognitiveDepth> = {
   heartbeat: CognitiveDepth.D0_Reflexive,
   memory_consolidation: CognitiveDepth.D0_Reflexive,
-  human_chat: CognitiveDepth.D1_Reactive,
+  chat: CognitiveDepth.D1_Reactive,
   a2a: CognitiveDepth.D1_Reactive,
-  a2a_message: CognitiveDepth.D1_Reactive,
   comment_response: CognitiveDepth.D1_Reactive,
+  review: CognitiveDepth.D1_Reactive,
   task_execution: CognitiveDepth.D2_Deliberative,
 };
 
@@ -83,36 +83,48 @@ export class CognitivePreparation {
     agent: CognitiveAgentContext,
     depth: CognitiveDepth,
     llm: CognitiveLLM,
-    retrieval: RetrievalBackend,
+    retrieval?: RetrievalBackend,
   ): Promise<PreparedCognitiveContext> {
-    if (!this.config.enabled || depth === CognitiveDepth.D0_Reflexive) {
-      return { depth, isEmpty: true };
+    const effectiveDepth = this.config.maxDepth !== undefined
+      ? Math.min(depth, this.config.maxDepth) as CognitiveDepth
+      : depth;
+
+    if (!this.config.enabled || effectiveDepth === CognitiveDepth.D0_Reflexive) {
+      return { depth: effectiveDepth, isEmpty: true };
     }
 
-    log.info('CPP starting', { depth, stimulus: stimulus.type, agent: agent.name });
+    log.info('CPP starting', { depth: effectiveDepth, stimulus: stimulus.type, agent: agent.name });
 
     // Phase 1: Appraisal
     const appraisal = await this.appraise(stimulus, agent, llm);
 
-    if (depth === CognitiveDepth.D1_Reactive) {
+    if (effectiveDepth === CognitiveDepth.D1_Reactive) {
       return {
-        depth,
+        depth: effectiveDepth,
         cognitiveContext: appraisal.cognitiveContext,
         isEmpty: false,
       };
     }
 
-    // Phase 2: Directed Retrieval (D2+)
-    const retrieved = await this.retrieve(appraisal.retrievalPlan, retrieval, agent.name);
+    // Phase 2: Directed Retrieval (D2+) — requires retrieval backend
+    if (!retrieval) {
+      log.warn('D2+ requested but no RetrievalBackend provided, returning appraisal only');
+      return {
+        depth: effectiveDepth,
+        cognitiveContext: appraisal.cognitiveContext,
+        isEmpty: false,
+      };
+    }
+    const retrieved = await this.retrieve(appraisal.retrievalPlan, retrieval, agent.id);
 
     // Phase 3: Reflection (D2+ when needed)
     let reflection: ReflectionResult | undefined;
-    if (appraisal.reflectionNeeded && depth >= CognitiveDepth.D2_Deliberative) {
+    if (appraisal.reflectionNeeded && effectiveDepth >= CognitiveDepth.D2_Deliberative) {
       reflection = await this.reflect(stimulus, agent, retrieved, llm);
     }
 
     // Phase 4: Assembly
-    return this.assemble(depth, appraisal, retrieved, reflection);
+    return this.assemble(effectiveDepth, appraisal, retrieved, reflection);
   }
 
   // ─── Phase 1: Appraisal ─────────────────────────────────────────────────────

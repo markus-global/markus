@@ -1,11 +1,8 @@
 /**
- * SQLite storage backend — zero-dependency alternative to PostgreSQL.
+ * SQLite storage backend — the sole persistence layer for Markus.
  *
- * When no DATABASE_URL is configured, Markus uses this lightweight SQLite
- * implementation so users can run locally without Docker or external databases.
- *
- * Implements the same repo interfaces as the PostgreSQL Drizzle-based repos
- * so the rest of the application is completely unaware of the storage backend.
+ * Uses Node.js built-in `node:sqlite` (zero external dependencies).
+ * All data is stored in a single SQLite file (default: ~/.markus/data.db).
  */
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';

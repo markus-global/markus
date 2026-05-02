@@ -21,6 +21,10 @@ import {
   type DecisionType,
   type AgentMindState,
   type TriageResult,
+  type CognitiveConfig,
+  type CognitiveStimulus,
+  type CognitiveAgentContext,
+  type PreparedCognitiveContext,
   MailboxPriorityLevel,
   MAILBOX_TYPE_REGISTRY,
   HEARTBEAT_DAILY_LOG_CHARS,
@@ -40,6 +44,7 @@ import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metrics.js';
 import { ContextEngine, type OrgContext, type LLMSummarizer } from './context-engine.js';
+import { CognitivePreparation, selectCognitiveDepth } from './cognitive.js';
 import { detectEnvironment, type EnvironmentProfile } from './environment-profile.js';
 import { ToolSelector } from './tool-selector.js';
 import type { SkillRegistry } from './skills/types.js';
@@ -177,6 +182,8 @@ export interface AgentOptions {
   maxToolIterations?: number;
   /** Skill registry for runtime skill discovery and activation */
   skillRegistry?: SkillRegistry;
+  /** Cognitive Preparation Pipeline config (default: disabled) */
+  cognitive?: CognitiveConfig;
 }
 
 export class Agent {
@@ -261,6 +268,8 @@ export class Agent {
   private lastInjectedActivityType?: string;
   /** Persistent situational awareness from the latest triage deliberation. */
   private currentCognition?: string;
+  /** Cognitive Preparation Pipeline instance (null when CPP is disabled) */
+  private cognitivePrep?: CognitivePreparation;
   /** Ring buffer of recent activity summaries for triage context. */
   private recentActivityRing: string[] = [];
   private static readonly ACTIVITY_RING_SIZE = 8;
@@ -336,6 +345,9 @@ export class Agent {
     this.guardrails = new GuardrailPipeline();
     this.toolHooks = new ToolHookRegistry();
     this.metricsCollector = new AgentMetricsCollector(this.id, options.dataDir);
+    if (options.cognitive?.enabled) {
+      this.cognitivePrep = new CognitivePreparation(options.cognitive);
+    }
     this.heartbeat = new HeartbeatScheduler(this.id, this.eventBus, {
       intervalMs: this.config.heartbeatIntervalMs,
       enabled: true,
@@ -577,6 +589,7 @@ export class Agent {
       }>;
       taskId?: string;
       requirementId?: string;
+      waitForReply?: boolean;
     },
   ): Promise<string> {
     const sourceType = options?.sourceType
@@ -597,6 +610,7 @@ export class Agent {
           : undefined,
         scenario: options?.scenario,
         toolEventCollector: options?.toolEventCollector,
+        waitForReply: options?.waitForReply,
       },
     };
 
@@ -857,6 +871,7 @@ export class Agent {
       if (extra.fileNames !== undefined) opts.fileNames = extra.fileNames;
       if (extra.scenario !== undefined) opts.scenario = extra.scenario;
       if (extra.toolEventCollector !== undefined) opts.toolEventCollector = extra.toolEventCollector;
+      if (extra.waitForReply !== undefined) opts.waitForReply = extra.waitForReply;
       if (extra.allowedTools !== undefined) {
         opts.allowedTools = new Set(extra.allowedTools as string[]);
       }
@@ -1840,6 +1855,52 @@ export class Agent {
     return parts.length > 0 ? parts.join('\n\n') : undefined;
   }
 
+  /**
+   * Run the Cognitive Preparation Pipeline (appraisal phase) before the main LLM call.
+   * Returns undefined when CPP is disabled or on error (caller falls back to mechanical retrieval).
+   */
+  private async prepareCognitiveContext(
+    scenario: string,
+    message: string,
+    sender?: string,
+  ): Promise<PreparedCognitiveContext | undefined> {
+    if (!this.cognitivePrep) return undefined;
+
+    const stimulus: CognitiveStimulus = {
+      type: scenario,
+      summary: message.slice(0, 200),
+      content: message,
+      sender,
+      scenario,
+    };
+
+    const agentCtx: CognitiveAgentContext = {
+      id: this.id,
+      name: this.config.name,
+      roleDescription: this.role.systemPrompt.slice(0, 300),
+      status: this.state.status,
+      currentTask: this.currentTaskId,
+      recentActivity: this.recentActivityRing.slice(-5),
+    };
+
+    const tasks = this.tasksFetcher?.();
+    const hasFailedTasks = tasks?.some(t => t.status === 'failed') ?? false;
+    const hasBlockers = tasks?.some(t => t.status === 'blocked') ?? false;
+
+    const depth = selectCognitiveDepth(scenario, { hasFailedTasks, hasBlockers }, message.length);
+
+    try {
+      const startMs = Date.now();
+      const result = await this.cognitivePrep.prepare(stimulus, agentCtx, depth, this.llmRouter);
+      const elapsedMs = Date.now() - startMs;
+      log.info('CPP completed', { depth: result.depth, isEmpty: result.isEmpty, elapsedMs });
+      return result;
+    } catch (err) {
+      log.warn('CPP failed, falling back to mechanical retrieval', { error: String(err) });
+      return undefined;
+    }
+  }
+
   private getMailboxContext(): {
     currentFocus?: { type: string; label: string; elapsedMs: number; taskId?: string };
     queueDepth: number;
@@ -2217,6 +2278,7 @@ export class Agent {
         result?: string;
         durationMs?: number;
       }>;
+      waitForReply?: boolean;
     }
   ): Promise<string> {
     if (this.activeTasks.size === 0) {
@@ -2324,6 +2386,8 @@ export class Agent {
       await counter.ensureReady();
     }
 
+    const cognitiveContext = await this.prepareCognitiveContext(scenario, effectiveMessage, senderId);
+
     const systemPrompt = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
@@ -2338,6 +2402,7 @@ export class Agent {
       deliverableContext: isLightweight ? undefined : this.getDeliverableContext(effectiveMessage),
       environment: this.environmentProfile,
       scenario,
+      a2aWaitForReply: scenario === 'a2a' ? options?.waitForReply : undefined,
       agentWorkspace: this.pathPolicy ? {
         primaryWorkspace: this.pathPolicy.primaryWorkspace,
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
@@ -2347,6 +2412,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      cognitiveContext,
       ...this.getTeamContextParams(),
     });
 
@@ -2692,6 +2758,8 @@ export class Agent {
     const userContent = await this.buildUserContent(userMessage, images, fileNames);
     this.memory.appendMessage(this.currentSessionId, { role: 'user', content: userContent });
 
+    const cognitiveContext = await this.prepareCognitiveContext('chat', effectiveMessage, senderId);
+
     const systemPrompt = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
@@ -2715,6 +2783,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      cognitiveContext,
       ...this.getTeamContextParams(),
     });
 
@@ -3287,6 +3356,8 @@ export class Agent {
       this.memory.appendMessage(sessionId, { role: 'user', content: taskPrompt });
     }
 
+    const cognitiveContext = await this.prepareCognitiveContext('task_execution', taskPrompt);
+
     const systemPrompt = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
@@ -3310,6 +3381,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      cognitiveContext,
       ...this.getTeamContextParams(),
     });
 
@@ -3804,6 +3876,8 @@ export class Agent {
     this.memory.getOrCreateSession(this.id, sessionId);
     this.memory.appendMessage(sessionId, { role: 'user', content: userMessage });
 
+    const cognitiveContext = await this.prepareCognitiveContext('chat', userMessage);
+
     const systemPrompt = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
@@ -3826,6 +3900,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      cognitiveContext,
       ...this.getTeamContextParams(),
     });
 

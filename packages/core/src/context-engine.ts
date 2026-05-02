@@ -148,6 +148,8 @@ export class ContextEngine {
       anchor?: { section: string; itemId?: string };
     }>;
     scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review';
+    /** When scenario is 'a2a', indicates whether the sender is blocking for a reply */
+    a2aWaitForReply?: boolean;
     agentWorkspace?: {
       primaryWorkspace: string;
       sharedWorkspace?: string;
@@ -507,7 +509,7 @@ export class ContextEngine {
 
     // --- Scenario-specific behavioral guidance ---
     const scenario = opts.scenario ?? 'chat';
-    parts.push(this.buildScenarioSection(scenario));
+    parts.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply }));
 
     // Timestamp at the end of the system prompt preserves KV-cache for the
     // stable prefix (identity, role, policies, memory) which rarely changes.
@@ -559,7 +561,7 @@ export class ContextEngine {
     return lines.join('\n');
   }
 
-  private buildScenarioSection(scenario: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review'): string {
+  private buildScenarioSection(scenario: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review', extra?: { a2aWaitForReply?: boolean }): string {
     const lines: string[] = ['\n## Current Interaction Mode'];
 
     switch (scenario) {
@@ -613,10 +615,19 @@ export class ContextEngine {
         lines.push('If nothing needs attention, respond with exactly: HEARTBEAT_OK');
         break;
 
-      case 'a2a':
+      case 'a2a': {
+        const waitForReply = extra?.a2aWaitForReply;
         lines.push('You are in an **agent-to-agent (A2A) conversation**. This context is for COORDINATION, not for executing work.');
         lines.push('');
-        lines.push('**Communication channel**: Your text output is sent **directly to the peer agent** who messaged you. Humans do NOT see this conversation. To reach a human, use `notify_user`. To reach a different agent (not the one who messaged you), use `agent_send_message`.');
+        if (waitForReply) {
+          lines.push('**Communication channel**: The peer agent is **waiting for your reply**. Your text output is sent **directly back** to the peer agent as the response. Humans do NOT see this conversation. To reach a human, use `notify_user`. To reach a different agent (not the one who messaged you), use `agent_send_message`.');
+        } else {
+          lines.push('**Communication channel**: The peer agent sent you a **one-way notification** and is **NOT waiting for a reply**. Your text output will NOT reach the sender. Humans do NOT see this conversation.');
+          lines.push('- To **reply to the sender**, use `agent_send_message` with the sender\'s agent ID.');
+          lines.push('- To reach a **human**, use `notify_user`.');
+          lines.push('- To reach a **different agent**, use `agent_send_message`.');
+          lines.push('- If no response is needed, just process the information silently (e.g., update your state, create tasks, take notes).');
+        }
         lines.push('');
         lines.push('**Communication rules:**');
         lines.push('- Be concise and structured — your colleague needs actionable information');
@@ -631,6 +642,7 @@ export class ContextEngine {
         lines.push('- For multi-agent work: decompose into a task DAG with `blocked_by` dependencies, assign each to the right agent');
         lines.push('- If you cannot help, explain why and suggest who can');
         break;
+      }
 
       case 'comment_response':
         lines.push('You are responding to a **comment on a task or requirement**. You MUST follow the context-first protocol below.');

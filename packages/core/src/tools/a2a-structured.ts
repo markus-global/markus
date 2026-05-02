@@ -34,7 +34,7 @@ export interface StructuredA2AContext {
   selfId: string;
   selfName: string;
   listColleagues: () => Array<{ id: string; name: string; role: string; status: string; skills?: string[] }>;
-  sendMessage: (targetId: string, message: string, fromId: string, fromName: string, priority?: number) => Promise<string>;
+  sendMessage: (targetId: string, message: string, fromId: string, fromName: string, priority?: number, waitForReply?: boolean) => Promise<string>;
   /** When provided, delegations go through DelegationManager for real task creation */
   delegateTask?: (targetId: string, delegation: TaskDelegation) => Promise<DelegationResult>;
 }
@@ -68,7 +68,7 @@ export function createStructuredA2ATools(ctx: StructuredA2AContext): AgentToolHa
     // Enqueue dispatch so sends are serialised globally with a gap between each
     enqueueSend(async () => {
       try {
-        await ctx.sendMessage(targetId, message, ctx.selfId, ctx.selfName);
+        await ctx.sendMessage(targetId, message, ctx.selfId, ctx.selfName, undefined, false);
       } catch (err: unknown) {
         log.warn(`Structured A2A message to ${targetId} failed in background`, { 
           error: String(err),

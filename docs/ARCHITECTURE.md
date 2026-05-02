@@ -49,7 +49,7 @@ Markus is an **AI Digital Workforce Platform** that lets organizations hire, man
 packages/
 ├── shared/       # Shared types, constants, utils (governance/project/knowledge types)
 ├── core/         # Agent runtime (core engine) + ReviewService
-├── storage/      # Database schema + Repository layer
+├── storage/      # SQLite persistence + Repository layer
 ├── org-manager/  # Org management + REST API + governance (Project/Report/Knowledge/Trust)
 ├── comms/        # Communication adapters (Feishu, etc.)
 ├── a2a/          # Agent-to-Agent protocol types + DelegationManager (A2ABus retired)
@@ -96,7 +96,7 @@ The runtime also supports **spawning lightweight LLM subagents** (`spawn_subagen
 Each agent has a **single-threaded attention model** — it processes one item at a time. **Every LLM invocation** flows through a per-agent **Mailbox** (priority queue), and an **AttentionController** manages which item the agent focuses on.
 
 Key components:
-- **AgentMailbox** — Priority queue accepting 12 item types: `human_chat`, `a2a_message`, `task_status_update`, `task_comment`, `mention`, `review_request`, `requirement_update`, `session_reply`, `daily_report`, `heartbeat`, `memory_consolidation`, `system_event`
+- **AgentMailbox** — Priority queue accepting 13 item types: `human_chat`, `a2a_message`, `task_status_update`, `task_comment`, `requirement_comment`, `mention`, `review_request`, `requirement_update`, `session_reply`, `daily_report`, `heartbeat`, `memory_consolidation`, `system_event`
 - **AttentionController** — Event-driven focus loop; reacts to new mail with interrupt signals
 - **Yield Points** — Safe checkpoints in the tool loop where the agent can pause to evaluate interrupts
 - **Decision Engine** — Produces decisions: `continue`, `preempt`, `cancel`, `merge`, `defer`, `drop`. Heuristic rules handle clear cases (e.g., user chat always preempts); an **LLM interrupt judge** handles ambiguous cases with semantic understanding (e.g., "stop publishing" → cancel, "hold off for now" → preempt)
@@ -587,8 +587,8 @@ Markus supports multiple human users and agents communicating through various ch
 
 | Channel | Delivery mechanism | Notification |
 |---------|-------------------|--------------|
-| DM (`dm:{id1}:{id2}`) | WebSocket push to recipient + persisted to `channel_messages` | Bell notification (`direct_message` type) with click-to-navigate |
-| Group chat (`group:*`) | WebSocket push to all human members + persisted | Bell notification (`group_message` type) with click-to-navigate |
+| DM (`dm:{id1}:{id2}`) | WebSocket push to recipient + persisted to `channel_messages` | Bell notification (type `direct_message`) with click-to-navigate |
+| Group chat (`group:*`) | WebSocket push to all human members + persisted | Bell notification (type `group_message`) with click-to-navigate |
 | @mention in comments | Persisted in task/requirement comments | Bell notification with click-to-navigate to task/requirement |
 
 **Key tools for agent communication:**

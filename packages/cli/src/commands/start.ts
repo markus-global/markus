@@ -280,6 +280,15 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (config.agent?.maxToolIterations) {
     agentManager.maxToolIterations = config.agent.maxToolIterations;
   }
+  if (config.agent?.cognitive) {
+    const cc = config.agent.cognitive;
+    agentManager.cognitiveConfig = {
+      enabled: cc.enabled ?? false,
+      maxDepth: cc.maxDepth,
+      appraisalModel: cc.appraisalModel,
+      timeoutMs: cc.timeoutMs,
+    };
+  }
   if (config.browser?.bringToFront !== undefined) {
     agentManager.setBrowserBringToFront(config.browser.bringToFront);
   }

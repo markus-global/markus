@@ -45,7 +45,8 @@ Not memory (never read back by agent):
 | Interface | `IMemoryStore` | `packages/core/src/memory/types.ts` |
 | Episodic (history) | `SqliteActivityRepo` | `packages/storage/src/sqlite-storage.ts` |
 | Episodic retrieval | `recall_activity` tool | `packages/core/src/tools/recall.ts` |
-| Procedural | `RoleLoader` / `EnhancedRoleLoader` | `packages/core/src/role-loader.ts` |
+| Procedural | `RoleLoader` | `packages/core/src/role-loader.ts` |
+| Procedural (enhanced) | `EnhancedRoleLoader` | `packages/core/src/enhanced-role-loader.ts` |
 | Semantic tools | `memory_save`, etc. | `packages/core/src/tools/memory.ts` |
 | Vector search | `SemanticMemorySearch` | `packages/core/src/memory/semantic-search.ts` |
 
@@ -171,7 +172,7 @@ How the agent operates — managed outside `MemoryStore` by the role/skill syste
 
 | Component | Storage | Loader |
 |-----------|---------|--------|
-| ROLE.md | `~/.markus/agents/{id}/role/ROLE.md` | `RoleLoader` / `EnhancedRoleLoader` |
+| ROLE.md | `~/.markus/agents/{id}/role/ROLE.md` | `RoleLoader` / `EnhancedRoleLoader` (`enhanced-role-loader.ts`) |
 | HEARTBEAT.md | `~/.markus/agents/{id}/HEARTBEAT.md` | Loaded by heartbeat processor |
 | Skills | Installed via `discover_tools` | Skill registry + MCP |
 

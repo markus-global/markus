@@ -61,19 +61,19 @@ All mailbox item types, their metadata, and their processing behaviour are defin
 // @markus/shared — packages/shared/src/types/mailbox.ts
 
 export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescriptor> = {
-  system_event:          { label: 'System Event',         defaultPriority: 0, category: 'system',       icon: '⚙', createsActivity: true,  invokesLLM: true  },
-  human_chat:            { label: 'Chat',                 defaultPriority: 0, category: 'interaction',   icon: '💬', createsActivity: true,  invokesLLM: true  },
-  task_comment:          { label: 'Task Comment',         defaultPriority: 0, category: 'task',          icon: '💬', createsActivity: false, invokesLLM: false },
-  requirement_comment:   { label: 'Requirement Comment',  defaultPriority: 0, category: 'task',          icon: '💬', createsActivity: true,  invokesLLM: true  },
-  mention:               { label: 'Mention',              defaultPriority: 1, category: 'interaction',   icon: '@', createsActivity: true,  invokesLLM: true  },
-  session_reply:         { label: 'Session Reply',        defaultPriority: 1, category: 'task',          icon: '↩', createsActivity: true,  invokesLLM: true  },
-  task_status_update:    { label: 'Task Status',          defaultPriority: 2, category: 'task',          icon: '📋', createsActivity: true,  invokesLLM: false },
-  a2a_message:           { label: 'Agent Message',        defaultPriority: 2, category: 'interaction',   icon: '🔗', createsActivity: true,  invokesLLM: true  },
-  review_request:        { label: 'Review Request',       defaultPriority: 2, category: 'task',          icon: '👀', createsActivity: true,  invokesLLM: true  },
-  requirement_update:    { label: 'Requirement Update',   defaultPriority: 2, category: 'notification',  icon: '📝', createsActivity: true,  invokesLLM: false },
-  daily_report:          { label: 'Daily Report',         defaultPriority: 2, category: 'system',        icon: '📊', createsActivity: true,  invokesLLM: true  },
-  heartbeat:             { label: 'Heartbeat',            defaultPriority: 3, category: 'system',        icon: '♡', createsActivity: true,  invokesLLM: true  },
-  memory_consolidation:  { label: 'Memory Consolidation', defaultPriority: 4, category: 'system',        icon: '🧠', createsActivity: true,  invokesLLM: true  },
+  system_event:         { label: 'System Event',         defaultPriority: 1, category: 'system',       icon: '⚙',  activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
+  human_chat:           { label: 'Chat',                 defaultPriority: 0, category: 'interaction',   icon: '💬', activityType: 'chat',               createsActivity: true,  invokesLLM: true  },
+  task_comment:         { label: 'Task Comment',         defaultPriority: 2, category: 'task',          icon: '💬', activityType: null,                 createsActivity: false, invokesLLM: false },
+  mention:              { label: 'Mention',              defaultPriority: 1, category: 'interaction',   icon: '@',  activityType: 'chat',               createsActivity: true,  invokesLLM: true  },
+  session_reply:        { label: 'Session Reply',        defaultPriority: 1, category: 'task',          icon: '↩',  activityType: 'respond_in_session', createsActivity: true,  invokesLLM: true  },
+  task_status_update:   { label: 'Task Status',          defaultPriority: 1, category: 'task',          icon: '📋', activityType: null,                 createsActivity: true,  invokesLLM: false },
+  a2a_message:          { label: 'Agent Message',        defaultPriority: 2, category: 'interaction',   icon: '🔗', activityType: 'a2a',                createsActivity: true,  invokesLLM: true  },
+  review_request:       { label: 'Review Request',       defaultPriority: 1, category: 'task',          icon: '👀', activityType: 'chat',               createsActivity: true,  invokesLLM: true  },
+  requirement_comment:  { label: 'Requirement Comment',  defaultPriority: 2, category: 'task',          icon: '💬', activityType: null,                 createsActivity: false, invokesLLM: false },
+  requirement_update:   { label: 'Requirement Update',   defaultPriority: 1, category: 'notification',  icon: '📝', activityType: 'internal',           createsActivity: true,  invokesLLM: false },
+  daily_report:         { label: 'Daily Report',         defaultPriority: 2, category: 'system',        icon: '📊', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
+  heartbeat:            { label: 'Heartbeat',            defaultPriority: 3, category: 'system',        icon: '♡',  activityType: 'heartbeat',          createsActivity: true,  invokesLLM: true  },
+  memory_consolidation: { label: 'Memory Consolidation', defaultPriority: 4, category: 'system',        icon: '🧠', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
 };
 ```
 
@@ -85,6 +85,7 @@ export interface MailboxTypeDescriptor {
   defaultPriority: MailboxPriority; // 0=critical, 1=high, 2=normal, 3=low, 4=background
   category: MailboxCategory;        // Filter group for UI
   icon: string;                     // Emoji/icon for UI display
+  activityType: string | null;      // Derived agent_activities.type (null = set at runtime)
   createsActivity: boolean;         // Whether processing normally creates an activity record
   invokesLLM: boolean;              // Whether processing invokes an LLM call
 }
@@ -138,9 +139,9 @@ There are three exceptions where `extra.actionRequired = true` triggers an LLM c
 
 **`requirement_comment` — Direct Discussion on Requirements**
 
-`requirement_comment` is a new type dedicated to threaded comments on requirements (analogous to `task_comment` for tasks). Unlike `requirement_update` (which covers status/decision notifications), `requirement_comment` represents interactive dialogue — questions, feedback, coordination.
+`requirement_comment` is dedicated to threaded comments on requirements (analogous to `task_comment` for tasks). Unlike `requirement_update` (which covers status/decision notifications), `requirement_comment` represents interactive dialogue — questions, feedback, coordination.
 
-Processing: always invokes LLM via `handleMessage()` with `scenario: 'comment_response'`, following the context-first protocol (§3.5).
+Processing follows the same pattern as `task_comment`: `createsActivity: false`, `invokesLLM: false`. If the requirement has an active agent context, the comment is injected; otherwise it falls back to `handleMessage` with `scenario: 'comment_response'`, following the context-first protocol (§3.5).
 
 **`task_comment` — Live Session Injection**
 
@@ -465,7 +466,7 @@ The `agent_activities.type` field is **not an independent enum**. It is determin
 | `human_chat` | `chat` | |
 | `a2a_message` | `a2a` | |
 | `task_comment` | *(none or `chat`)* | Active task → inject only (no activity); inactive → `chat` |
-| `requirement_comment` | `chat` | Always invokes LLM (scenario: `comment_response`) |
+| `requirement_comment` | *(none or `chat`)* | Same pattern as `task_comment`: inject or fallback to `chat` |
 | `task_status_update` | `task` or *(none)* | Execution mode → `task`; informational → auto-completed (no activity) |
 | `requirement_update` | `internal` or *(none)* | `actionRequired` → LLM call; otherwise auto-completed (no activity) |
 | `mention` | `chat` | |
@@ -476,7 +477,7 @@ The `agent_activities.type` field is **not an independent enum**. It is determin
 | `daily_report` | `internal` | |
 | `memory_consolidation` | `internal` | |
 
-The `activityType` is set to `null` in the registry for `task_status_update` because it depends on the processing mode. `Agent.startActivity()` sets the type explicitly: `executeTask()` creates a `task` activity, while `handleMessage()` creates the appropriate type based on scenario.
+The `activityType` is set to `null` in the registry for `task_comment`, `requirement_comment`, and `task_status_update` because it depends on the processing mode. `Agent.startActivity()` sets the type explicitly: `executeTask()` creates a `task` activity, while `handleMessage()` creates the appropriate type based on scenario.
 
 ### 6.4 Migration Plan
 
@@ -640,17 +641,17 @@ CREATE TABLE user_notifications (
 
 Analogous to `MAILBOX_TYPE_REGISTRY`, user notification types are defined in `USER_NOTIFICATION_TYPE_REGISTRY` in `@markus/shared`:
 
-| Type | Label | Icon | Default Priority |
-|------|-------|------|-----------------|
-| `approval_request` | Approval Request | ⚠ | high |
-| `task_created` | Task Created | ☑ | normal |
-| `task_review` | Task Review | 👀 | high |
-| `task_completed` | Task Completed | ✓ | normal |
-| `task_failed` | Task Failed | ✗ | high |
-| `requirement_created` | Requirement Proposed | 📝 | normal |
-| `agent_chat_request` | Chat Request | 💬 | high |
-| `agent_notification` | Agent Notification | 🔔 | normal |
-| `system` | System | ⚙ | normal |
+| Type | Label | Icon | Default Priority | Action | Category |
+|------|-------|------|-----------------|--------|----------|
+| `approval_request` | Approval Request | 🔐 | high | navigate | approval |
+| `task_created` | Task Created | 📋 | normal | navigate | task |
+| `task_completed` | Task Completed | ✅ | normal | navigate | task |
+| `task_review` | Task Review | 👁️ | normal | navigate | task |
+| `task_failed` | Task Failed | ❌ | high | navigate | task |
+| `requirement_created` | Requirement Proposed | 📝 | high | navigate | task |
+| `requirement_decision` | Requirement Decision | ⚖️ | normal | navigate | task |
+| `agent_report` | Agent Report | 📊 | normal | none | agent |
+| `system` | System | ⚙️ | normal | none | system |
 
 ### 12.3 Action Types
 
@@ -660,7 +661,7 @@ Notifications can be **actionable** — clicking them navigates the user to the 
 |---------------|----------------------|-----------|
 | `navigate` | `{ "path": "/work?task=T123" }` | Navigate to the specified route |
 | `open_chat` | `{ "agentId": "...", "sessionId": "..." }` | Open chat with agent, resume session |
-| *(null)* | — | Notification only, no navigation |
+| `none` | — | Notification only, no navigation |
 
 ### 12.4 REST API
 

@@ -12,6 +12,7 @@ import {
   type PathAccessPolicy,
   type RoleTemplate,
   type RoleCategory,
+  type CognitiveConfig,
   saveConfig,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
@@ -347,6 +348,7 @@ export class AgentManager {
   private recallCallbacks?: RecallCallbacks;
   private delegationManager: DelegationManager;
   private _maxToolIterations = Infinity;
+  private _cognitiveConfig?: CognitiveConfig;
   private templateRegistry?: TemplateRegistry;
   private builderService?: { listArtifacts: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>; installArtifact: (type: 'agent' | 'team' | 'skill', name: string) => Promise<{ type: string; installed: unknown }> };
   private hubClient?: { search: (opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>; downloadAndInstall: (itemId: string) => Promise<{ type: string; installed: unknown }> };
@@ -544,7 +546,7 @@ export class AgentManager {
           `[Delegated Task from ${envelope.from}]\nTitle: ${delegation.title}\nDescription: ${delegation.description}\nPriority: ${delegation.priority}`,
           envelope.from,
           { name: envelope.from, role: 'manager' },
-          { sourceType: 'a2a_message', sessionId: `sys_${envelope.from}_${Date.now()}` }
+          { sourceType: 'a2a_message', sessionId: `sys_${envelope.from}_${Date.now()}`, waitForReply: false }
         );
       }
     });
@@ -558,6 +560,14 @@ export class AgentManager {
 
   set maxToolIterations(value: number) {
     this._maxToolIterations = value <= 0 ? Infinity : value;
+  }
+
+  get cognitiveConfig(): CognitiveConfig | undefined {
+    return this._cognitiveConfig;
+  }
+
+  set cognitiveConfig(value: CognitiveConfig | undefined) {
+    this._cognitiveConfig = value;
   }
 
   setBrowserBringToFront(value: boolean): void {
@@ -788,6 +798,7 @@ export class AgentManager {
       pathPolicy,
       skillRegistry: this.skillRegistry,
       maxToolIterations: this._maxToolIterations,
+      cognitive: this._cognitiveConfig,
     };
 
     const agent = new Agent(agentOpts);
@@ -896,7 +907,7 @@ export class AgentManager {
             return { ...a, skills: [] };
           }
         }),
-      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string, priority?: number) => {
+      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string, priority?: number, waitForReply?: boolean) => {
         // Lightweight path: informational broadcasts are stored directly,
         // skipping the expensive LLM call that would cause cascade amplification.
         try {
@@ -923,6 +934,7 @@ export class AgentManager {
             sessionId: `a2a_${targetId}_${Date.now()}`,
             scenario: 'a2a',
             priority: priority as 0 | 1 | 2 | 3 | 4 | undefined,
+            waitForReply,
           }
         );
         return stripInternalBlocks(reply);
@@ -1200,7 +1212,7 @@ export class AgentManager {
           }),
         delegateMessage: async (targetId, message, _from) => {
           const target = this.getAgent(targetId);
-          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message' });
+          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message', waitForReply: false });
           return stripInternalBlocks(reply);
         },
         getTeamStatus: () =>
@@ -1466,6 +1478,7 @@ export class AgentManager {
       restoredState: { tokensUsedToday: row.tokensUsedToday ?? 0 },
       skillRegistry: this.skillRegistry,
       maxToolIterations: this._maxToolIterations,
+      cognitive: this._cognitiveConfig,
     });
 
     // Inject always-on builtin skill instructions into every agent (text only, no MCP)
@@ -1574,7 +1587,7 @@ export class AgentManager {
             return { ...a, skills: [] };
           }
         }),
-      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string, priority?: number) => {
+      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string, priority?: number, waitForReply?: boolean) => {
         // Lightweight path: informational broadcasts are stored directly,
         // skipping the expensive LLM call that would cause cascade amplification.
         try {
@@ -1601,6 +1614,7 @@ export class AgentManager {
             sessionId: `a2a_${targetId}_${Date.now()}`,
             scenario: 'a2a',
             priority: priority as 0 | 1 | 2 | 3 | 4 | undefined,
+            waitForReply,
           }
         );
       },
@@ -1838,7 +1852,7 @@ export class AgentManager {
           }),
         delegateMessage: async (targetId, message) => {
           const target = this.getAgent(targetId);
-          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message' });
+          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message', waitForReply: false });
           return stripInternalBlocks(reply);
         },
         getTeamStatus: () =>
