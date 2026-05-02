@@ -8,8 +8,6 @@ export interface StaleConfig {
   maxReviewWaitMs: number;
   maxAssignedUnstartedMs: number;
   maxBranchDivergenceCommits: number;
-  /** ID of the agent to escalate stale review tasks to (e.g. team manager). */
-  escalationTargetId?: string;
 }
 
 export interface StaleItem {
@@ -18,8 +16,6 @@ export interface StaleItem {
   ageMs: number;
   agentId?: string;
   message: string;
-  /** True if the detector auto-escalated this stale item. */
-  escalated?: boolean;
 }
 
 const DEFAULT_CONFIG: StaleConfig = {
@@ -73,39 +69,13 @@ export class StaleDetector {
       }
 
       if (task.status === 'review' && age > this.config.maxReviewWaitMs) {
-        const hours = Math.round(age / 3600000);
-        const staleReviewerId = task.reviewerId ?? task.assignedAgentId;
-        const item: StaleItem = {
+        staleItems.push({
           type: 'review_stale',
           taskId: task.id,
           ageMs: age,
-          agentId: staleReviewerId,
-          message: `Task "${task.title}" has been in review for ${hours}h with no action`,
-        };
-
-        // Auto-escalate: if an escalation target is configured and the reviewer is different,
-        // reassign the reviewer and add a note so the task doesn't get stuck.
-        if (this.config.escalationTargetId && staleReviewerId !== this.config.escalationTargetId) {
-          try {
-            this.taskService.addTaskNote(
-              task.id,
-              `[Auto-escalation] Reviewer (${staleReviewerId}) did not act for ${hours}h. Escalating to ${this.config.escalationTargetId}.`,
-              'system',
-            );
-            this.taskService.updateTask(task.id, { reviewerId: this.config.escalationTargetId }, 'system');
-            log.warn('Auto-escalated stale review task', {
-              taskId: task.id,
-              from: staleReviewerId,
-              to: this.config.escalationTargetId,
-              hours,
-            });
-            item.escalated = true;
-          } catch (err) {
-            log.warn('Auto-escalation failed', { taskId: task.id, error: String(err) });
-          }
-        }
-
-        staleItems.push(item);
+          agentId: task.reviewerId ?? task.assignedAgentId,
+          message: `Task "${task.title}" has been in review for ${Math.round(age / 3600000)}h with no action`,
+        });
       }
 
       if (task.status === 'pending' && age > this.config.maxAssignedUnstartedMs) {
