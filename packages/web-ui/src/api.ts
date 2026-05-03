@@ -19,9 +19,10 @@ export interface AgentToolEvent {
 }
 
 export interface StreamCommitEvent {
-  type: 'thinking_commit' | 'text_commit';
+  type: 'thinking_commit' | 'text_commit' | 'session_start';
   content: string;
   createdAt: string;
+  sessionId?: string;
 }
 
 export interface AuthUser {
@@ -903,13 +904,16 @@ export const api = {
               if (!trimmed.startsWith('data: ')) continue;
               try {
                 const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; thinking?: string; tool?: string; phase?: 'start' | 'end'; success?: boolean; arguments?: unknown; result?: string; error?: string; durationMs?: number; toolCall?: { id?: string; name?: string }; sessionId?: string };
-                if (event.type === 'text_delta' && event.text) {
+                if (event.type === 'session_start' && event.sessionId) {
+                  resultSessionId = event.sessionId;
+                  onCommit?.({ type: 'session_start', content: '', createdAt: new Date().toISOString(), sessionId: event.sessionId });
+                } else if (event.type === 'text_delta' && event.text) {
                   fullContent += event.text;
                   onChunk(event.text);
                 } else if (event.type === 'thinking_delta' && event.thinking) {
                   onChunk?.(`<think>${event.thinking}</think>`);
                 } else if (event.type === 'done') {
-                  fullContent = event.content ?? fullContent;
+                  fullContent = event.content || fullContent;
                   if (event.sessionId) resultSessionId = event.sessionId;
                   const doneSegments = (event as Record<string, unknown>).segments as StoredSegment[] | undefined;
                   if (doneSegments?.length) resultSegments = doneSegments;
