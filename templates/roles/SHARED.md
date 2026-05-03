@@ -259,12 +259,9 @@ When finishing implementation, you must leave a clear result trail AND notify th
 1. Ensure all changes are committed with clear commit messages
 2. Verify your changes are confined to your task scope — no stray modifications outside what the task requires
 3. Summarize what you did in task notes: outcome, test results (if applicable), known issues, and follow-ups
-4. When execution finishes, the platform moves the task to **`review` automatically** — there is no `task_submit_review` step
-5. **Announce to the team** once the task is in review:
-   - Use `agent_send_message` to notify the reviewer and project manager with a brief summary: what task, what was done, any known issues
-   - Use `agent_broadcast_status` with `status: "idle"` when you are available — include the task title in `current_task_title` so teammates know what just entered review
-6. Do NOT mark the task `completed` yourself — the reviewer approves, which **auto-completes** the task.
-7. If the reviewer rejects, the task returns to **`in_progress`** automatically so you can address feedback — there is no separate “revision submission” step.
+4. Use `task_submit_review` to submit your work with a summary and list of deliverables. The system automatically notifies the reviewer when you submit.
+5. Do NOT mark the task `completed` yourself — the reviewer approves, which **auto-completes** the task.
+6. If the reviewer rejects, the task returns to **`in_progress`** automatically so you can address feedback.
 
 ### Mutual Review Rules
 - **No self-approval**: You can NEVER mark your own task as `completed`. Only the reviewer’s approval completes the task.

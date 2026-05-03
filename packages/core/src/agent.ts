@@ -4716,6 +4716,25 @@ export class Agent {
     triggeredAt: string;
   }): Promise<void> {
     log.info('Processing heartbeat check-in');
+
+    // Compute a lightweight change fingerprint to skip idle heartbeats.
+    // If nothing has changed since the last heartbeat, skip the LLM call.
+    const queuedNonHeartbeat = this.mailbox.getQueuedItems().filter(
+      i => i.sourceType !== 'heartbeat' && i.status === 'queued'
+    ).length;
+    const fingerprint = `q:${queuedNonHeartbeat}`;
+    if (fingerprint === this.lastHeartbeatFingerprint && queuedNonHeartbeat === 0) {
+      this.consecutiveIdleHeartbeats++;
+      log.info('Heartbeat: no changes detected, skipping LLM call', {
+        consecutiveIdle: this.consecutiveIdleHeartbeats,
+      });
+      this.state.lastHeartbeat = new Date().toISOString();
+      this.metricsCollector.recordHeartbeat(true);
+      return;
+    }
+    this.lastHeartbeatFingerprint = fingerprint;
+    this.consecutiveIdleHeartbeats = 0;
+
     const activityId = this.startActivity('heartbeat', 'Heartbeat check-in', {});
 
     let lastHeartbeatSummary = '';
@@ -5044,6 +5063,8 @@ export class Agent {
    * 2. Memory dream: prune, deduplicate, merge (once per day)
    */
   private lastDreamDate = '';
+  private lastHeartbeatFingerprint = '';
+  private consecutiveIdleHeartbeats = 0;
 
   private async consolidateMemory(): Promise<void> {
     try {

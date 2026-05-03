@@ -12,7 +12,7 @@
 - Before modifying shared infrastructure (schemas, API contracts, shared libraries), notify the team and wait for acknowledgment
 
 ## Delivery & Review
-- When implementation finishes, the task moves to **`review` automatically** — there is no `task_submit_review` step. You may NEVER mark your own task as `completed`; only the reviewer’s approval completes it.
+- Use `task_submit_review` to submit your completed work with a summary and deliverables. The system notifies the reviewer automatically. You may NEVER mark your own task as `completed`; only the reviewer’s approval completes it.
 - When assigned as a reviewer, check correctness, conventions, test coverage, and that changes stay within the submitter's task scope
 - Verify changes stay within the task scope before approving
 - Escalate to the project manager if a submission conflicts with your work or another agent's work

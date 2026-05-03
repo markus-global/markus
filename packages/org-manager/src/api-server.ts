@@ -6176,6 +6176,68 @@ EXPLANATION_END`;
       return;
     }
 
+    // Unified activity feed — merges notifications, task comments, and deliverables
+    if (path === '/api/activity' && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const userId = authUser.userId;
+      const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '50', 10), 200);
+      const typeFilter = url.searchParams.get('type') ?? undefined;
+
+      interface ActivityItem {
+        id: string;
+        type: string;
+        title: string;
+        body: string;
+        timestamp: string;
+        source: 'notification' | 'task_comment' | 'deliverable';
+        metadata?: Record<string, unknown>;
+      }
+
+      const items: ActivityItem[] = [];
+
+      // 1. Notifications
+      if (!typeFilter || typeFilter === 'notification') {
+        const notifications = this.hitlService?.listNotifications(userId, false, { limit }) ?? [];
+        for (const n of notifications) {
+          items.push({
+            id: n.id,
+            type: n.type,
+            title: n.title,
+            body: n.body,
+            timestamp: n.createdAt,
+            source: 'notification',
+            metadata: n.metadata as Record<string, unknown> | undefined,
+          });
+        }
+      }
+
+      // 2. Recent task comments
+      if ((!typeFilter || typeFilter === 'task_comment') && this.storage?.taskCommentRepo) {
+        try {
+          const recentComments = this.storage.taskCommentRepo.listRecent?.(limit) ?? [];
+          for (const c of recentComments) {
+            items.push({
+              id: c.id,
+              type: 'task_comment',
+              title: `Comment on task ${c.taskId}`,
+              body: typeof c.body === 'string' ? c.body.slice(0, 300) : String(c.body ?? ''),
+              timestamp: c.createdAt,
+              source: 'task_comment',
+              metadata: { taskId: c.taskId, authorId: c.authorId, authorName: c.authorName },
+            });
+          }
+        } catch { /* listRecent may not exist yet */ }
+      }
+
+      // Sort by timestamp descending, limit
+      items.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      const page = items.slice(0, limit);
+
+      this.json(res, 200, { items: page, totalCount: items.length });
+      return;
+    }
+
     // Billing: Usage — computed from persisted agent metrics for restart-safety
     if (path === '/api/usage' && req.method === 'GET') {
       const orgId = url.searchParams.get('orgId') ?? 'default';
@@ -9072,6 +9134,9 @@ EXPLANATION_END`;
       exact('/api/notifications', 'GET'),
       exact('/api/notifications/mark-all-read', 'POST'),
       startsWith('/api/notifications/', 'POST'),
+
+      // ── Activity feed ─────────────────────────────────────────────────
+      exact('/api/activity', 'GET'),
 
       // ── Users ────────────────────────────────────────────────────────────
       exact('/api/users', 'GET', 'POST'),

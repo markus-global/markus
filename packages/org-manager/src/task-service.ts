@@ -2462,6 +2462,15 @@ export class TaskService {
     if (data.reviewerType !== undefined) task.reviewerType = data.reviewerType;
 
     if (data.blockedBy !== undefined) {
+      if (data.blockedBy.length > 0) {
+        const cycle = this.detectBlockedByCycle(id, data.blockedBy);
+        if (cycle) {
+          throw new Error(
+            `Circular dependency detected: ${cycle.join(' → ')}. ` +
+            `Cannot set blocked_by — this would create a deadlock.`
+          );
+        }
+      }
       task.blockedBy = data.blockedBy;
       if (this.taskRepo && 'updateBlockedBy' in this.taskRepo) {
         (this.taskRepo as any).updateBlockedBy(id, data.blockedBy)
@@ -2596,6 +2605,30 @@ export class TaskService {
       this.updateTaskStatus(task.id, 'cancelled', undefined, true);
       this.cascadeCancelDependents(task);
     }
+  }
+
+  /**
+   * Detect cycles in blocked_by dependencies using BFS.
+   * Returns the cycle path if found, or null if no cycle exists.
+   */
+  private detectBlockedByCycle(taskId: string, proposedBlockers: string[]): string[] | null {
+    for (const blockerId of proposedBlockers) {
+      const visited = new Set<string>();
+      const queue: { id: string; path: string[] }[] = [{ id: blockerId, path: [taskId, blockerId] }];
+      while (queue.length > 0) {
+        const { id: current, path } = queue.shift()!;
+        if (current === taskId) return path;
+        if (visited.has(current)) continue;
+        visited.add(current);
+        const blockerTask = this.tasks.get(current);
+        if (blockerTask?.blockedBy) {
+          for (const nextId of blockerTask.blockedBy) {
+            queue.push({ id: nextId, path: [...path, nextId] });
+          }
+        }
+      }
+    }
+    return null;
   }
 
   private areBlockersSatisfied(task: Task): boolean {

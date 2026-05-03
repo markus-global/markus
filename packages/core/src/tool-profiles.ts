@@ -12,7 +12,7 @@ export type ToolProfile = 'full' | 'coding' | 'messaging' | 'minimal';
 const TOOL_GROUPS: Record<string, string[]> = {
   'group:fs': ['file_read', 'file_write', 'file_edit', 'apply_patch', 'grep_search', 'glob_find', 'list_directory'],
   'group:runtime': ['shell_execute', 'background_exec', 'process'],
-  'group:memory': ['memory_save', 'memory_search', 'memory_list', 'memory_update_longterm'],
+  'group:memory': ['memory_save', 'memory_search', 'memory_list', 'memory_update_longterm', 'memory_delete'],
   'group:web': ['web_search', 'web_fetch', 'web_extract'],
   'group:messaging': ['agent_send_message', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats'],
   'group:a2a': ['agent_delegate_task', 'agent_broadcast_status', 'agent_send_message', 'agent_list_colleagues'],

@@ -377,11 +377,12 @@ export class ContextEngine {
         const byPriority = (a: { priority?: string }, b: { priority?: string }) =>
           (priorityOrder.indexOf(a.priority ?? 'medium')) - (priorityOrder.indexOf(b.priority ?? 'medium'));
 
+        const CLOSED_STATUSES = new Set(['completed', 'cancelled', 'failed', 'archived', 'rejected']);
         const myTasks = opts.assignedTasks.filter(t => t.assignedAgentId === opts.agentId);
         const otherTasks = opts.assignedTasks.filter(t => t.assignedAgentId !== opts.agentId);
 
-        const myActive = myTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status)).sort(byPriority);
-        const myDone = myTasks.filter(t => ['completed', 'cancelled', 'failed'].includes(t.status));
+        const myActive = myTasks.filter(t => !CLOSED_STATUSES.has(t.status)).sort(byPriority);
+        const myDone = myTasks.filter(t => CLOSED_STATUSES.has(t.status));
 
         const MY_TASK_LIMIT = SYSTEM_MY_TASKS_MAX;
         const TEAM_TASK_LIMIT = SYSTEM_TEAM_TASKS_MAX;
@@ -408,8 +409,8 @@ export class ContextEngine {
         }
 
         if (otherTasks.length > 0) {
-          const otherActive = otherTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status)).sort(byPriority);
-          const otherDone = otherTasks.filter(t => ['completed', 'cancelled', 'failed'].includes(t.status));
+          const otherActive = otherTasks.filter(t => !CLOSED_STATUSES.has(t.status)).sort(byPriority);
+          const otherDone = otherTasks.filter(t => CLOSED_STATUSES.has(t.status));
           if (otherActive.length > 0) {
             parts.push('### Team Tasks (assigned to others):');
             const shown = otherActive.slice(0, TEAM_TASK_LIMIT);
@@ -437,7 +438,7 @@ export class ContextEngine {
       parts.push('');
       parts.push('**Requirements** (governance gate):');
       parts.push('- `requirement_propose` → pending human approval → approved → link tasks via `requirement_id`');
-      parts.push('- When governance requires it, every task MUST reference an approved `requirement_id`.');
+      parts.push('- Every task MUST reference an approved `requirement_id`. Use `requirement_propose` first if no requirement exists.');
       parts.push('');
       parts.push('**Task lifecycle** — Create → Execute → Review → Complete:');
       parts.push('- **Create**: `task_create` (REQUIRED: `assigned_agent_id`, `reviewer_id`; optional `reviewer_type`: "agent"|"human"). Check `task_list` first to avoid duplicates.');

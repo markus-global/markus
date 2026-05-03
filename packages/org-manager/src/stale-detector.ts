@@ -28,17 +28,26 @@ const DEFAULT_CONFIG: StaleConfig = {
 export class StaleDetector {
   private config: StaleConfig;
   private scanInterval?: ReturnType<typeof setInterval>;
+  private onStaleItems?: (items: StaleItem[]) => void;
 
   constructor(
     private taskService: TaskService,
-    config?: Partial<StaleConfig>
+    config?: Partial<StaleConfig>,
+    onStaleItems?: (items: StaleItem[]) => void
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.onStaleItems = onStaleItems;
   }
 
   start(intervalMs = 3600000): void {
     this.scanInterval = setInterval(() => {
-      this.scan().catch(err => log.warn('Stale scan failed', { error: String(err) }));
+      this.scan()
+        .then(items => {
+          if (items.length > 0 && this.onStaleItems) {
+            this.onStaleItems(items);
+          }
+        })
+        .catch(err => log.warn('Stale scan failed', { error: String(err) }));
     }, intervalMs);
     log.info('Stale detector started', { intervalMs });
   }

@@ -44,6 +44,7 @@ import {
   ReportService,
   TrustService,
   ArchiveService,
+  StaleDetector,
   ScheduledTaskRunner,
   initStorage,
   searchRegistries,
@@ -519,6 +520,23 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   const archiveService = new ArchiveService(taskService, projectService);
   archiveService.setRequirementService(requirementService);
   archiveService.start();
+
+  // Stale task detection: alert humans when tasks are stuck in review/in_progress/pending
+  const staleDetector = new StaleDetector(taskService, undefined, (items) => {
+    for (const item of items) {
+      hitlService.notify({
+        targetUserId: 'all',
+        type: 'system',
+        title: item.type === 'review_stale' ? 'Stale review' : item.type === 'stuck_task' ? 'Stuck task' : 'Unstarted task',
+        body: item.message,
+        priority: item.type === 'review_stale' ? 'high' : 'normal',
+        actionType: item.taskId ? 'navigate' : 'none',
+        actionTarget: item.taskId ? JSON.stringify({ path: `/work?openTask=${item.taskId}` }) : undefined,
+        metadata: { taskId: item.taskId, agentId: item.agentId, staleType: item.type },
+      });
+    }
+  });
+  staleDetector.start();
 
   // Expose LLM router to API server so settings can read/write it at runtime
   apiServer.setLLMRouter(llmRouter);
@@ -1408,6 +1426,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     closeStartupLogger();
     closeRuntimeLogger();
     archiveService.stop();
+    staleDetector.stop();
     scheduledTaskRunner.stop();
     apiServer.stop();
     agentManager.shutdown()

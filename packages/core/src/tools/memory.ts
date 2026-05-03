@@ -226,5 +226,56 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
         return JSON.stringify({ status: 'updated', section, mode });
       },
     },
+
+    {
+      name: 'memory_delete',
+      description:
+        'Delete specific entries from your memory buffer (memories.json). ' +
+        'Use this to clean up outdated, incorrect, or redundant observations. ' +
+        'Provide either a list of entry IDs (from memory_list/memory_search) or a tag to remove all entries with that tag. ' +
+        'Maximum 20 entries per call.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ids: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Array of memory entry IDs to delete. Use memory_list or memory_search to find IDs.',
+          },
+          tag: {
+            type: 'string',
+            description: 'Delete all entries with this tag. Alternative to specifying individual IDs.',
+          },
+        },
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const ids = args['ids'] as string[] | undefined;
+        const tag = args['tag'] as string | undefined;
+
+        if (!ids?.length && !tag) {
+          return JSON.stringify({ status: 'error', error: 'Provide either ids or tag to delete.' });
+        }
+
+        const MAX_DELETE = 20;
+        let removed = 0;
+
+        if (ids?.length) {
+          const capped = ids.slice(0, MAX_DELETE);
+          removed = ctx.memory.removeEntries(capped);
+          if (ctx.semanticSearch?.isEnabled()) {
+            for (const id of capped) {
+              ctx.semanticSearch.deleteMemory(id).catch(err => {
+                log.warn('Failed to remove memory from semantic index', { error: String(err) });
+              });
+            }
+          }
+        } else if (tag) {
+          removed = ctx.memory.removeEntriesByTag(tag);
+        }
+
+        log.info('Agent deleted memories', { agentId: ctx.agentId, removed, byTag: tag ?? null });
+        return JSON.stringify({ status: 'deleted', removed });
+      },
+    },
   ];
 }

@@ -1287,6 +1287,17 @@ export const api = {
     markAllRead: (userId: string) => request<{ success: boolean; count: number }>('/notifications/mark-all-read', { method: 'POST', body: JSON.stringify({ userId }) }),
   },
 
+  // ─── Activity Feed ────────────────────────────────────────────────
+  activity: {
+    list: (opts?: { limit?: number; type?: string }) => {
+      const params = new URLSearchParams();
+      if (opts?.limit) params.set('limit', String(opts.limit));
+      if (opts?.type) params.set('type', opts.type);
+      const qs = params.toString();
+      return request<{ items: { id: string; type: string; title: string; body: string; timestamp: string; source: string; metadata?: Record<string, unknown> }[]; totalCount: number }>(`/activity${qs ? `?${qs}` : ''}`);
+    },
+  },
+
   // ─── Projects ──────────────────────────────────────────────────────
   projects: {
     list: (orgId?: string) => {
