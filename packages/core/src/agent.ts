@@ -2809,10 +2809,13 @@ export class Agent {
 
         if (cancelToken?.cancelled) {
           log.info('Stream cancelled by user during tool loop', { agentId: this.id });
-          if (lastResponseContent && this.currentSessionId) {
+          if (this.currentSessionId) {
+            const content = lastResponseContent
+              ? lastResponseContent + '\n\n[interrupted by user]'
+              : '[interrupted by user]';
             this.memory.appendMessage(this.currentSessionId, {
               role: 'assistant',
-              content: lastResponseContent + '\n\n[interrupted by user]',
+              content,
             });
           }
           if (streamChatActivityId) this.endActivity(streamChatActivityId);
@@ -2832,6 +2835,19 @@ export class Agent {
             content: '[Continue from where you left off. Do not repeat what you already said.]',
           });
         } else {
+          // Check cancel before executing tools (tools may be long-running)
+          if (cancelToken?.cancelled) {
+            log.info('Stream cancelled before tool execution', { agentId: this.id });
+            this.memory.appendMessage(this.currentSessionId, {
+              role: 'assistant',
+              content: response.content + '\n\n[interrupted by user]',
+              reasoningContent: response.reasoningContent,
+            });
+            if (streamChatActivityId) this.endActivity(streamChatActivityId);
+            if (this.activeTasks.size === 0) this.setStatus('idle');
+            return response.content || lastResponseContent || '';
+          }
+
           this.memory.appendMessage(this.currentSessionId, {
             role: 'assistant',
             content: response.content,
@@ -2943,10 +2959,13 @@ export class Agent {
 
         if (cancelToken?.cancelled) {
           log.info('Stream cancelled before LLM re-call', { agentId: this.id });
-          if (lastResponseContent && this.currentSessionId) {
+          if (this.currentSessionId) {
+            const content = lastResponseContent
+              ? lastResponseContent + '\n\n[interrupted by user]'
+              : '[interrupted by user]';
             this.memory.appendMessage(this.currentSessionId, {
               role: 'assistant',
-              content: lastResponseContent + '\n\n[interrupted by user]',
+              content,
             });
           }
           if (streamChatActivityId) this.endActivity(streamChatActivityId);
@@ -3011,11 +3030,14 @@ export class Agent {
       streamMarkerDelta.flush();
       if (streamChatActivityId) this.endActivity(streamChatActivityId, { success: !cancelToken?.cancelled });
       if (cancelToken?.cancelled) {
-        if (lastResponseContent && this.currentSessionId) {
+        if (this.currentSessionId) {
           try {
+            const content = lastResponseContent
+              ? lastResponseContent + '\n\n[interrupted by user]'
+              : '[interrupted by user]';
             this.memory.appendMessage(this.currentSessionId, {
               role: 'assistant',
-              content: lastResponseContent + '\n\n[interrupted by user]',
+              content,
             });
           } catch { /* avoid masking */ }
         }

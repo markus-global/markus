@@ -91,6 +91,12 @@ export class SSEHandler {
         this.sessionId = this.options.sessionId ?? null;
       }
 
+      // Deliver sessionId early so the client can persist it even if the stream
+      // is aborted before the final 'done' event arrives.
+      if (this.sessionId && this.sseBuffer && !this.sseDisconnected) {
+        this.sseBuffer.send({ type: 'session_start', sessionId: this.sessionId });
+      }
+
       const reply = await this.options.agent.sendMessageStream(
         this.options.userText,
         (event) => this.handleStreamEvent(event),
