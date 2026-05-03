@@ -551,6 +551,30 @@ ISS
   rm -f "$ISS_FILE"
 fi
 
+# ── Step 5: Create portable archive (used by install.sh / install.ps1) ───────
+# Native installers above are for direct-download; the archive is for CLI scripts
+# that extract to ~/.markus/app/ without requiring root/admin.
+
+if [[ "$PLATFORM" == "win" ]]; then
+  if [[ ! -f "$OUT_DIR/${ARCHIVE_NAME}.zip" ]]; then
+    info "Creating portable .zip archive..."
+    cd "$OUT_DIR"
+    if command -v zip &>/dev/null; then
+      zip -qr "${ARCHIVE_NAME}.zip" "$(basename "$STAGE_DIR")"
+    elif command -v 7z &>/dev/null; then
+      7z a -tzip "${ARCHIVE_NAME}.zip" "$(basename "$STAGE_DIR")" > /dev/null 2>&1
+    else
+      powershell -Command "Compress-Archive -Path '$(basename "$STAGE_DIR")' -DestinationPath '${ARCHIVE_NAME}.zip'" 2>/dev/null || true
+    fi
+    cd "$ROOT_DIR"
+    ok "Portable archive: ${ARCHIVE_NAME}.zip"
+  fi
+else
+  info "Creating portable .tar.gz archive..."
+  tar -czf "$OUT_DIR/${ARCHIVE_NAME}.tar.gz" -C "$OUT_DIR" "$(basename "$STAGE_DIR")"
+  ok "Portable archive: ${ARCHIVE_NAME}.tar.gz"
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 printf "\n"
 info "Output files in dist-binary/:"
