@@ -69,7 +69,7 @@ describe('memory_search tool', () => {
     const result = JSON.parse(await searchTool.execute({ query: 'TypeScript' }));
     expect(result.count).toBe(1);
     expect(result.results[0].content).toBe('TypeScript is awesome');
-    // Should NOT have fallen through to substring
+    expect(result.searchMethod).toBe('semantic');
     expect(ctx.memory.search).not.toHaveBeenCalled();
   });
 
@@ -87,7 +87,7 @@ describe('memory_search tool', () => {
     const result = JSON.parse(await searchTool.execute({ query: 'TypeScript' }));
     expect(result.count).toBe(1);
     expect(result.results[0].content).toBe('TypeScript is great');
-    // Should have fallen through to substring
+    expect(result.searchMethod).toBe('substring');
     expect(ctx.memory.search).toHaveBeenCalledWith('TypeScript');
   });
 
@@ -111,6 +111,7 @@ describe('memory_search tool', () => {
     const result = JSON.parse(await searchTool.execute({ query: 'TypeScript' }));
     expect(result.count).toBe(1);
     expect(result.results[0].content).toBe('TypeScript is great');
+    expect(result.searchMethod).toBe('substring');
   });
 
   it('uses substring search when semantic search is not enabled', async () => {
@@ -126,5 +127,6 @@ describe('memory_search tool', () => {
     const result = JSON.parse(await searchTool.execute({ query: 'TypeScript' }));
     expect(result.count).toBe(1);
     expect(result.results[0].content).toBe('TypeScript is great');
+    expect(result.searchMethod).toBe('substring');
   });
 });

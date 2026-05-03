@@ -223,6 +223,16 @@ export class SemanticMemorySearch {
     }
   }
 
+  /**
+   * Search indexed memories by semantic similarity.
+   *
+   * Returns an empty array when the service is not enabled.
+   *
+   * @throws {Error} Propagates embedding or vector-store errors to the caller
+   *   so that callers (e.g. memory_search tool) can implement their own
+   *   fallback strategy. Contrast with {@link indexMemory}, which silently
+   *   swallows errors because indexing is best-effort.
+   */
   async search(
     query: string,
     opts?: {

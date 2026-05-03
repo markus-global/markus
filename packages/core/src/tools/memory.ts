@@ -106,9 +106,6 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
             let entries = semResults.map(r => r.entry);
             if (type) entries = entries.filter(e => e.type === type);
 
-            // Only return semantic results when there are actual matches.
-            // On 0 results (e.g. empty vector store, no indexed memories),
-            // fall through to substring search as a robust fallback.
             if (entries.length > 0) {
               log.debug('Semantic memory search', { agentId: ctx.agentId, query, results: entries.length });
               return JSON.stringify({
@@ -120,9 +117,10 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
                   similarity: semResults.find(r => r.entry.id === e.id)?.similarity,
                 })),
                 count: entries.length,
+                searchMethod: 'semantic',
               });
             }
-            log.debug('Semantic search returned 0 results, falling back to substring', {
+            log.info('Semantic search returned 0 results, falling back to substring', {
               agentId: ctx.agentId, query,
             });
           } catch (err) {
@@ -144,6 +142,7 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
             tags: (e.metadata as Record<string, unknown>)?.tags,
           })),
           count: results.length,
+          searchMethod: 'substring',
         });
       },
     },
