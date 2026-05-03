@@ -74,8 +74,8 @@ export interface AgentTaskContext {
   assignTask?: (taskId: string, agentId: string) => Promise<{ id: string; status: string }>;
   /** Add a progress note to a task */
   addTaskNote?: (taskId: string, note: string, author?: string) => Promise<void>;
-  /** Update task fields (description, blockedBy, etc.) — works even for pending tasks */
-  updateTaskFields?: (taskId: string, fields: { description?: string; blockedBy?: string[] }) => Promise<{ id: string; title: string; status: string }>;
+  /** Update task fields (description, blockedBy, reviewerId, etc.) — works even for pending tasks */
+  updateTaskFields?: (taskId: string, fields: { description?: string; blockedBy?: string[]; reviewerId?: string; reviewerType?: 'agent' | 'human' }) => Promise<{ id: string; title: string; status: string }>;
   /** Update the schedule config for a scheduled task */
   updateScheduleConfig?: (taskId: string, config: { every?: string; cron?: string; maxRuns?: number; timezone?: string }) => Promise<{ id: string; title: string; status: string }>;
   /** Cancel a pending task (calls rejectTask under the hood) */
@@ -478,6 +478,15 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             items: { type: 'string' },
             description: 'Update the list of task IDs that block this task. Only the task creator can modify this field. Pass an empty array to clear all blockers.',
           },
+          reviewer_id: {
+            type: 'string',
+            description: 'New reviewer agent or human ID. Only the task creator or a manager can change the reviewer.',
+          },
+          reviewer_type: {
+            type: 'string',
+            enum: ['agent', 'human'],
+            description: 'Whether the new reviewer is an agent or a human user. Required when changing reviewer_id.',
+          },
           schedule: {
             type: 'object',
             description: 'Update the schedule for a scheduled (recurring) task. Only works on tasks with taskType "scheduled". Set either "every" OR "cron", not both.',
@@ -498,24 +507,34 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           const note = args['note'] as string | undefined;
           const description = args['description'] as string | undefined;
           const blockedBy = args['blocked_by'] as string[] | undefined;
+          const reviewerId = args['reviewer_id'] as string | undefined;
+          const reviewerType = args['reviewer_type'] as 'agent' | 'human' | undefined;
 
-          // Permission check: only task creator can modify blocked_by
-          if (blockedBy !== undefined) {
+          // Permission check: only task creator can modify blocked_by or reviewer
+          if (blockedBy !== undefined || reviewerId !== undefined) {
             const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
             const createdBy = (existing as Record<string, unknown> | null)?.['createdBy'] as string | undefined;
-            if (createdBy && createdBy !== ctx.agentId) {
+            if (blockedBy !== undefined && createdBy && createdBy !== ctx.agentId) {
               return JSON.stringify({
                 status: 'denied',
                 error: 'Only the task creator can modify blocked_by. You are not the creator of this task.',
               });
             }
+            if (reviewerId !== undefined && createdBy && createdBy !== ctx.agentId) {
+              return JSON.stringify({
+                status: 'denied',
+                error: 'Only the task creator or a manager can change the reviewer.',
+              });
+            }
           }
 
           // Handle field updates first — works for any status including pending
-          if ((description !== undefined || blockedBy !== undefined) && ctx.updateTaskFields) {
+          if ((description !== undefined || blockedBy !== undefined || reviewerId !== undefined) && ctx.updateTaskFields) {
             await ctx.updateTaskFields(taskId, {
               ...(description !== undefined ? { description } : {}),
               ...(blockedBy !== undefined ? { blockedBy } : {}),
+              ...(reviewerId !== undefined ? { reviewerId } : {}),
+              ...(reviewerType !== undefined ? { reviewerType } : {}),
             });
           }
 
@@ -719,7 +738,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           {
             name: 'task_note',
             description:
-              'Add a progress note or comment to a task without changing its status. Use this to log intermediate findings, decisions, or observations while working on a task.',
+              'Add a one-way progress note to a task\'s timeline log without changing its status. Use this to record intermediate findings, decisions, or milestones. For interactive discussion with other agents or humans, use task_comment instead.',
             inputSchema: {
               type: 'object',
               properties: {

@@ -377,11 +377,12 @@ export class ContextEngine {
         const byPriority = (a: { priority?: string }, b: { priority?: string }) =>
           (priorityOrder.indexOf(a.priority ?? 'medium')) - (priorityOrder.indexOf(b.priority ?? 'medium'));
 
+        const CLOSED_STATUSES = new Set(['completed', 'cancelled', 'failed', 'archived', 'rejected']);
         const myTasks = opts.assignedTasks.filter(t => t.assignedAgentId === opts.agentId);
         const otherTasks = opts.assignedTasks.filter(t => t.assignedAgentId !== opts.agentId);
 
-        const myActive = myTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status)).sort(byPriority);
-        const myDone = myTasks.filter(t => ['completed', 'cancelled', 'failed'].includes(t.status));
+        const myActive = myTasks.filter(t => !CLOSED_STATUSES.has(t.status)).sort(byPriority);
+        const myDone = myTasks.filter(t => CLOSED_STATUSES.has(t.status));
 
         const MY_TASK_LIMIT = SYSTEM_MY_TASKS_MAX;
         const TEAM_TASK_LIMIT = SYSTEM_TEAM_TASKS_MAX;
@@ -408,8 +409,8 @@ export class ContextEngine {
         }
 
         if (otherTasks.length > 0) {
-          const otherActive = otherTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status)).sort(byPriority);
-          const otherDone = otherTasks.filter(t => ['completed', 'cancelled', 'failed'].includes(t.status));
+          const otherActive = otherTasks.filter(t => !CLOSED_STATUSES.has(t.status)).sort(byPriority);
+          const otherDone = otherTasks.filter(t => CLOSED_STATUSES.has(t.status));
           if (otherActive.length > 0) {
             parts.push('### Team Tasks (assigned to others):');
             const shown = otherActive.slice(0, TEAM_TASK_LIMIT);
@@ -437,7 +438,7 @@ export class ContextEngine {
       parts.push('');
       parts.push('**Requirements** (governance gate):');
       parts.push('- `requirement_propose` → pending human approval → approved → link tasks via `requirement_id`');
-      parts.push('- When governance requires it, every task MUST reference an approved `requirement_id`.');
+      parts.push('- Every task MUST reference an approved `requirement_id`. Use `requirement_propose` first if no requirement exists.');
       parts.push('');
       parts.push('**Task lifecycle** — Create → Execute → Review → Complete:');
       parts.push('- **Create**: `task_create` (REQUIRED: `assigned_agent_id`, `reviewer_id`; optional `reviewer_type`: "agent"|"human"). Check `task_list` first to avoid duplicates.');
@@ -463,7 +464,8 @@ export class ContextEngine {
       parts.push('- `recall_activity` — query your own past execution logs by task or activity type. Use when you need to review what you did previously (e.g., to answer a follow-up question).');
       parts.push('');
       parts.push('**Communicating with other agents**:');
-      parts.push('- `agent_send_message` — send a direct message to a peer agent. Use for coordination, questions, sharing context, or instructions. The message enters their mailbox and they will process it.');
+      parts.push('- `agent_send_message` — send a direct message to a peer agent. **By default this is asynchronous (fire-and-forget)**: the message enters their mailbox and you continue working without waiting. Set `wait_for_reply: true` only when you need the answer before you can proceed (rare — prefer async).');
+      parts.push('- A2A messaging is inherently **non-blocking**. You send a message, the recipient processes it on their own schedule, and may reply later via their own `agent_send_message`. Do NOT spin-wait or poll for responses.');
       parts.push('- For substantial work requests, create a `task_create` assigned to the target agent instead of asking via message.');
       parts.push('- Do NOT use A2A messages for routine task status notifications — the system handles those automatically.');
     }
