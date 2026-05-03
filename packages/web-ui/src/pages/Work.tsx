@@ -3022,6 +3022,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   const kanbanSwipeOpts = useMemo(() => ({ scrollContainerRef: kanbanScrollRef }), []);
   const kanbanSwipe = useSwipeTabs(boardTabs, boardType, setBoardType, kanbanSwipeOpts);
   const [showArchived, setShowArchived] = useState(false);
+  const [showTerminal, setShowTerminal] = useState(false);
   const [showFilterSheet, setShowFilterSheet] = useState(false);
   const dragTaskRef = useRef<TaskInfo | null>(null);
   const dragReqRef = useRef<RequirementInfo | null>(null);
@@ -3484,9 +3485,11 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   // ── Filter & display helpers ──
 
   const isArchived = (t: { status: string }) => t.status === 'archived';
+  const TERMINAL_STATUSES = new Set(['completed', 'failed', 'rejected', 'cancelled', 'archived']);
+  const isTerminal = (t: { status: string }) => TERMINAL_STATUSES.has(t.status);
 
   const filterTasks = (tasks: TaskInfo[], includeArchived = false) => {
-    let result = tasks.filter(t => showArchived || includeArchived || !isArchived(t));
+    let result = tasks.filter(t => showTerminal || !isTerminal(t));
     if (viewMode === 'project' && selectedProjectId) {
       result = result.filter(t => t.projectId === selectedProjectId);
     }
@@ -3503,7 +3506,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
   const filteredReqs = useMemo(() => {
     let list = allRequirements;
-    if (!showArchived) list = list.filter(r => !isArchived(r));
+    if (!showTerminal) list = list.filter(r => !isTerminal(r));
     if (viewMode === 'project' && selectedProjectId) list = list.filter(r => r.projectId === selectedProjectId);
     if (projectFilter.size > 0) list = list.filter(r => r.projectId && projectFilter.has(r.projectId));
     if (agentFilter.size > 0) {
@@ -3516,7 +3519,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     }
     if (myTasksOnly && authUser?.id) list = list.filter(r => r.createdBy === authUser.id);
     return list;
-  }, [allRequirements, showArchived, viewMode, selectedProjectId, projectFilter, agentFilter, myTasksOnly, authUser?.id, agentIds]);
+  }, [allRequirements, showTerminal, viewMode, selectedProjectId, projectFilter, agentFilter, myTasksOnly, authUser?.id, agentIds]);
 
   const getColumnReqs = useCallback((col: typeof BOARD_COLUMNS_BASE[number] & { label: string }) =>
     filteredReqs.filter(r => REQ_COLUMN_MAP[r.status] === col.id), [filteredReqs]);
@@ -3530,8 +3533,8 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     return true;
   });
 
-  const archivedCount = Object.values(board).flat().filter(t => isArchived(t)).length
-    + allRequirements.filter(r => isArchived(r)).length;
+  const terminalCount = Object.values(board).flat().filter(t => isTerminal(t)).length
+    + allRequirements.filter(r => isTerminal(r)).length;
 
   const sortedAgents = useMemo(() => {
     const terminal = new Set(['completed', 'failed', 'cancelled', 'archived']);
@@ -3628,9 +3631,9 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
                   >{v === 'backlog' ? t('work:task.backlog') : v === 'kanban' ? t('work:task.kanban') : t('work:task.dag')}</button>
                 ))}
               </div>
-              {archivedCount > 0 && (
-                <button onClick={() => setShowArchived(v => !v)} className={`text-[10px] shrink-0 px-2 py-0.5 rounded-md transition-colors ${showArchived ? 'bg-surface-overlay text-fg-secondary' : 'text-fg-tertiary'}`}>
-                  {showArchived ? t('work:task.hideArchived') : t('work:task.archivedCount', { count: archivedCount })}
+              {terminalCount > 0 && (
+                <button onClick={() => setShowTerminal(v => !v)} className={`text-[10px] shrink-0 px-2 py-0.5 rounded-md transition-colors ${showTerminal ? 'bg-surface-overlay text-fg-secondary' : 'text-fg-tertiary'}`}>
+                  {showTerminal ? t('work:task.hideArchived') : t('work:task.archivedCount', { count: terminalCount })}
                 </button>
               )}
               <div className="flex-1" />
@@ -3672,9 +3675,9 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
               {projects.length === 1 ? projects[0].name : t('work:task.projectsCount', { count: projects.length })}
             </h2>
           )}
-          {archivedCount > 0 && (
-            <button onClick={() => setShowArchived(v => !v)} className={`text-[10px] shrink-0 px-2 py-0.5 rounded-md transition-colors ${showArchived ? 'bg-surface-overlay text-fg-secondary' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-              {showArchived ? t('work:task.hideArchivedWithCount', { count: archivedCount }) : t('work:task.archivedCount', { count: archivedCount })}
+          {terminalCount > 0 && (
+            <button onClick={() => setShowTerminal(v => !v)} className={`text-[10px] shrink-0 px-2 py-0.5 rounded-md transition-colors ${showTerminal ? 'bg-surface-overlay text-fg-secondary' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
+                {showTerminal ? t('work:task.hideArchivedWithCount', { count: terminalCount }) : t('work:task.archivedCount', { count: terminalCount })}
             </button>
           )}
 
@@ -3810,8 +3813,8 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
             tasks={filterTasks(Object.values(board).flat(), true)}
             requirements={filteredReqs}
             agents={agents}
-            showArchived={showArchived}
-            onShowArchivedChange={setShowArchived}
+            showArchived={showTerminal}
+            onShowArchivedChange={setShowTerminal}
             onTaskClick={(task) => handleSelectTask(task)}
             onReqClick={(req) => handleSelectReq(req)}
             onDependencyChange={refreshBoard}
