@@ -31,6 +31,10 @@ export function useResizablePanel({
   });
 
   const dragging = useRef(false);
+  const minRef = useRef(minWidth);
+  const maxRef = useRef(maxWidth);
+  minRef.current = minWidth;
+  maxRef.current = maxWidth;
 
   useEffect(() => {
     try { localStorage.setItem(`${storageKey}_w`, String(width)); } catch { /* ignore */ }
@@ -39,6 +43,10 @@ export function useResizablePanel({
   useEffect(() => {
     try { localStorage.setItem(`${storageKey}_c`, collapsed ? '1' : '0'); } catch { /* ignore */ }
   }, [collapsed, storageKey]);
+
+  useEffect(() => {
+    setWidth(w => Math.max(minWidth, Math.min(maxWidth, w)));
+  }, [minWidth, maxWidth]);
 
   const onResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -49,7 +57,7 @@ export function useResizablePanel({
     const onMove = (ev: MouseEvent) => {
       if (!dragging.current) return;
       const diff = side === 'left' ? ev.clientX - startX : startX - ev.clientX;
-      setWidth(Math.max(minWidth, Math.min(maxWidth, startW + diff)));
+      setWidth(Math.max(minRef.current, Math.min(maxRef.current, startW + diff)));
     };
 
     const onUp = () => {
@@ -64,7 +72,7 @@ export function useResizablePanel({
     document.addEventListener('mouseup', onUp);
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
-  }, [width, side, minWidth, maxWidth]);
+  }, [width, side]);
 
   const toggle = useCallback(() => setCollapsed(v => !v), []);
 
@@ -74,6 +82,7 @@ export function useResizablePanel({
     collapsed,
     toggle,
     setCollapsed,
+    setWidth,
     onResizeStart,
   };
 }

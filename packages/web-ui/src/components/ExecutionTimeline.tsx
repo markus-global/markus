@@ -360,9 +360,11 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
   const isPending = cardState === 'pending' || cardState === 'approving' || cardState === 'rejecting';
   const cfg = REQ_STATUS_CONFIG[cardState] ?? REQ_STATUS_CONFIG['loading']!;
 
+  const goToReq = () => navBus.navigate(PAGE.WORK, { openRequirement: info.requirementId });
+
   return (
     <div className={`my-2 rounded-lg border ${cfg.borderClass} ${cfg.bgClass} p-3 max-w-md transition-colors`}>
-      <div className="flex items-start gap-2 mb-1">
+      <div className="flex items-start gap-2 mb-1 cursor-pointer group" role="button" tabIndex={0} onClick={goToReq} onKeyDown={e => e.key === 'Enter' && goToReq()}>
         <span className="text-sm mt-0.5">{cfg.icon}</span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
@@ -371,7 +373,7 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
               <span className={`text-[10px] font-medium ${cfg.textClass}`}>{cfg.label}</span>
             )}
           </div>
-          <div className={`text-sm font-medium truncate mt-1 ${!isPending && cardState !== 'loading' ? 'text-fg-secondary' : 'text-fg-primary'}`}>{info.title}</div>
+          <div className={`text-sm font-medium truncate mt-1 group-hover:underline ${!isPending && cardState !== 'loading' ? 'text-fg-secondary' : 'text-fg-primary'}`}>{info.title}</div>
           {info.description && (
             <div className="text-xs text-fg-secondary mt-0.5 line-clamp-3">{info.description}</div>
           )}
