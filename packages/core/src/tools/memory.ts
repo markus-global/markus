@@ -106,16 +106,22 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
             let entries = semResults.map(r => r.entry);
             if (type) entries = entries.filter(e => e.type === type);
 
-            log.debug('Semantic memory search', { agentId: ctx.agentId, query, results: entries.length });
-            return JSON.stringify({
-              results: entries.map(e => ({
-                id: e.id,
-                type: e.type,
-                content: e.content,
-                timestamp: e.timestamp,
-                similarity: semResults.find(r => r.entry.id === e.id)?.similarity,
-              })),
-              count: entries.length,
+            if (entries.length > 0) {
+              log.debug('Semantic memory search', { agentId: ctx.agentId, query, results: entries.length });
+              return JSON.stringify({
+                results: entries.map(e => ({
+                  id: e.id,
+                  type: e.type,
+                  content: e.content,
+                  timestamp: e.timestamp,
+                  similarity: semResults.find(r => r.entry.id === e.id)?.similarity,
+                })),
+                count: entries.length,
+                searchMethod: 'semantic',
+              });
+            }
+            log.info('Semantic search returned 0 results, falling back to substring', {
+              agentId: ctx.agentId, query,
             });
           } catch (err) {
             log.warn('Semantic search failed, falling back to substring', { error: String(err) });
@@ -136,6 +142,7 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
             tags: (e.metadata as Record<string, unknown>)?.tags,
           })),
           count: results.length,
+          searchMethod: 'substring',
         });
       },
     },

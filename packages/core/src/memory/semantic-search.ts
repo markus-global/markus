@@ -223,6 +223,16 @@ export class SemanticMemorySearch {
     }
   }
 
+  /**
+   * Search indexed memories by semantic similarity.
+   *
+   * Returns an empty array when the service is not enabled.
+   *
+   * @throws {Error} Propagates embedding or vector-store errors to the caller
+   *   so that callers (e.g. memory_search tool) can implement their own
+   *   fallback strategy. Contrast with {@link indexMemory}, which silently
+   *   swallows errors because indexing is best-effort.
+   */
   async search(
     query: string,
     opts?: {
@@ -233,27 +243,22 @@ export class SemanticMemorySearch {
   ): Promise<SemanticSearchResult[]> {
     if (!this.enabled) return [];
 
-    try {
-      const queryEmbedding = await this.embedding.embed(query);
-      const results = await this.vectorStore.search(queryEmbedding, {
-        topK: opts?.topK ?? 5,
-        agentId: opts?.agentId,
-        minSimilarity: opts?.minSimilarity ?? 0.3,
-      });
+    const queryEmbedding = await this.embedding.embed(query);
+    const results = await this.vectorStore.search(queryEmbedding, {
+      topK: opts?.topK ?? 5,
+      agentId: opts?.agentId,
+      minSimilarity: opts?.minSimilarity ?? 0.3,
+    });
 
-      return results.map(r => ({
-        entry: {
-          id: r.id,
-          content: r.content,
-          type: r.type as MemoryEntry['type'],
-          timestamp: '',
-        },
-        similarity: r.similarity,
-      }));
-    } catch (err) {
-      log.warn('Semantic search failed, returning empty results', { error: String(err) });
-      return [];
-    }
+    return results.map(r => ({
+      entry: {
+        id: r.id,
+        content: r.content,
+        type: r.type as MemoryEntry['type'],
+        timestamp: '',
+      },
+      similarity: r.similarity,
+    }));
   }
 
   async deleteMemory(id: string): Promise<void> {
