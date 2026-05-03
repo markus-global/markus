@@ -5074,10 +5074,12 @@ export class Agent {
       // (triggered on appendMessage at >80 messages). No session compaction here —
       // consolidateMemory only runs the dream cycle.
 
-      // Memory dream: prune, deduplicate, merge — once per day when entries are large
+      // Memory dream: prune, deduplicate, merge.
+      // Runs once per day normally, but up to 4x/day when memory is heavily bloated.
       const entries = this.memory.getEntries();
-      if (entries.length >= 50 && this.lastDreamDate !== today) {
-        this.lastDreamDate = today;
+      const dreamKey = entries.length > 500 ? `${today}_${Math.floor(Date.now() / (6 * 3600_000))}` : today;
+      if (entries.length >= 50 && this.lastDreamDate !== dreamKey) {
+        this.lastDreamDate = dreamKey;
         await this.dreamConsolidateMemory(entries);
         this.pruneMemoryMd();
       }
@@ -5093,7 +5095,7 @@ export class Agent {
    * outdated items, and merge opportunities. Apply changes programmatically.
    */
   private async dreamConsolidateMemory(entries: MemoryEntry[]): Promise<void> {
-    const MAX_ENTRIES_FOR_LLM = 200;
+    const MAX_ENTRIES_FOR_LLM = 500;
     const truncated = entries.length > MAX_ENTRIES_FOR_LLM;
     const batch = truncated ? entries.slice(-MAX_ENTRIES_FOR_LLM) : entries;
 
@@ -5174,8 +5176,8 @@ export class Agent {
       };
 
       // Guardrails: cap operations and validate IDs
-      const MAX_REMOVE_PER_CYCLE = 10;
-      const MAX_MERGE_PER_CYCLE = 5;
+      const MAX_REMOVE_PER_CYCLE = 50;
+      const MAX_MERGE_PER_CYCLE = 20;
       const entryIds = new Set(batch.map(e => e.id));
 
       const plan = {
@@ -5290,6 +5292,7 @@ export class Agent {
     if (!content) return;
 
     // Pass 1: remove ## daily-report-* sections (they belong in daily-logs/)
+    // and deduplicate sections with identical or near-identical content.
     const lines = content.split('\n');
     const afterSectionPrune: string[] = [];
     let inDailyReport = false;
@@ -5303,6 +5306,59 @@ export class Agent {
         inDailyReport = false;
       }
       if (!inDailyReport) afterSectionPrune.push(line);
+    }
+
+    // Pass 1b: deduplicate sections with the same heading or very similar content.
+    // Parse into sections, keep the last occurrence of duplicate headings,
+    // and remove sections whose body is a subset of another same-titled section.
+    const sections: Array<{ heading: string; body: string; startIdx: number }> = [];
+    let currentHeading = '';
+    let currentBody: string[] = [];
+    let sectionStart = 0;
+
+    for (let i = 0; i <= afterSectionPrune.length; i++) {
+      const line = i < afterSectionPrune.length ? afterSectionPrune[i] : undefined;
+      const isHeading = line !== undefined && /^#{1,3}\s/.test(line);
+      if (isHeading || line === undefined) {
+        if (currentHeading || currentBody.length > 0) {
+          sections.push({
+            heading: currentHeading,
+            body: currentBody.join('\n').trim(),
+            startIdx: sectionStart,
+          });
+        }
+        currentHeading = line ?? '';
+        currentBody = [];
+        sectionStart = i;
+      } else {
+        currentBody.push(line);
+      }
+    }
+
+    // For sections with the same heading, keep the last (most recent) one.
+    // Also remove sections whose body is fully contained in another section with the same heading.
+    const headingLastIdx = new Map<string, number>();
+    const normalizeHeading = (h: string) => h.replace(/^#+\s*/, '').trim().toLowerCase();
+    for (let i = 0; i < sections.length; i++) {
+      const key = normalizeHeading(sections[i].heading);
+      if (key) headingLastIdx.set(key, i);
+    }
+
+    const deduped: typeof sections = [];
+    for (let i = 0; i < sections.length; i++) {
+      const s = sections[i];
+      const key = normalizeHeading(s.heading);
+      if (key && headingLastIdx.get(key) !== i && headingLastIdx.has(key)) {
+        continue;
+      }
+      deduped.push(s);
+    }
+
+    afterSectionPrune.length = 0;
+    for (const s of deduped) {
+      if (s.heading) afterSectionPrune.push(s.heading);
+      if (s.body) afterSectionPrune.push(s.body);
+      afterSectionPrune.push('');
     }
 
     // Pass 2: strip <think>...</think> blocks leaked from LLM output

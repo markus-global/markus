@@ -464,7 +464,8 @@ export class ContextEngine {
       parts.push('- `recall_activity` — query your own past execution logs by task or activity type. Use when you need to review what you did previously (e.g., to answer a follow-up question).');
       parts.push('');
       parts.push('**Communicating with other agents**:');
-      parts.push('- `agent_send_message` — send a direct message to a peer agent. Use for coordination, questions, sharing context, or instructions. The message enters their mailbox and they will process it.');
+      parts.push('- `agent_send_message` — send a direct message to a peer agent. **By default this is asynchronous (fire-and-forget)**: the message enters their mailbox and you continue working without waiting. Set `wait_for_reply: true` only when you need the answer before you can proceed (rare — prefer async).');
+      parts.push('- A2A messaging is inherently **non-blocking**. You send a message, the recipient processes it on their own schedule, and may reply later via their own `agent_send_message`. Do NOT spin-wait or poll for responses.');
       parts.push('- For substantial work requests, create a `task_create` assigned to the target agent instead of asking via message.');
       parts.push('- Do NOT use A2A messages for routine task status notifications — the system handles those automatically.');
     }
