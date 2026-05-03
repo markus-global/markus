@@ -1418,7 +1418,7 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
 // ─── Task Detail Modal ──────────────────────────────────────────────────────────
 
 function TaskDetailPanel({
-  task, agents, projects, requirements, allTasks, users, onClose, onRefresh, authUser, scrollToComments, onScrollToCommentsDone,
+  task, agents, projects, requirements, allTasks, users, onClose, onRefresh, authUser, scrollToComments, onScrollToCommentsDone, onReqClick, onProjectClick,
 }: {
   task: TaskInfo;
   agents: AgentInfo[];
@@ -1431,6 +1431,8 @@ function TaskDetailPanel({
   authUser?: { id: string; name: string; role: string; orgId: string };
   scrollToComments?: boolean;
   onScrollToCommentsDone?: () => void;
+  onReqClick?: (req: RequirementInfo) => void;
+  onProjectClick?: (projectId: string) => void;
 }) {
   const { t } = useTranslation(['work', 'common']);
   const taskStatusBadges = useMemo(() => buildTaskStatusBadges(t), [t]);
@@ -1603,27 +1605,28 @@ function TaskDetailPanel({
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-surface-secondary">
-      {/* Header – title, status & close */}
-      <div className="flex items-start justify-between px-6 pt-5 pb-3 border-b border-border-default shrink-0">
-        <div className="flex items-center gap-2 min-w-0 flex-1 pr-4">
+      {/* Header – status, title & close */}
+      <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-3 border-b border-border-default shrink-0">
+        <div className="flex items-center gap-2 flex-1 min-w-0">
           {isMobile && (
             <button onClick={onClose} className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1 shrink-0">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
             </button>
           )}
-          <div className="flex items-center gap-2 flex-wrap flex-1 min-w-0">
-            <h3 className="text-base font-semibold leading-snug truncate">{task.title}</h3>
+          <h3 className="flex-1 min-w-0 text-base font-semibold leading-snug text-fg-primary">
+            {task.title}
+            {' '}
             {(() => {
               const badge = taskStatusBadges[task.status];
               return badge ? (
-                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${badge.cls}`}>{badge.label}</span>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap align-middle ${badge.cls}`}>{badge.label}</span>
               ) : (
-                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap">{task.status.replace(/_/g, ' ')}</span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap align-middle">{task.status.replace(/_/g, ' ')}</span>
               );
             })()}
-          </div>
+          </h3>
         </div>
-        {!isMobile && <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-lg shrink-0">×</button>}
+        <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-xl leading-none shrink-0 mt-1">×</button>
       </div>
 
         {/* Tabs — fixed at top */}
@@ -1707,13 +1710,25 @@ function TaskDetailPanel({
               {(taskProject || taskRequirement) && (
                 <div className="px-6 py-2.5 border-b border-border-default flex flex-wrap items-center gap-2">
                   {taskProject && (
-                    <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-brand-500/10 text-brand-500 rounded-full">
+                    <span
+                      className={`flex items-center gap-1 text-[11px] px-2 py-0.5 bg-brand-500/10 text-brand-500 rounded-full ${onProjectClick ? 'cursor-pointer hover:bg-brand-500/20 transition-colors' : ''}`}
+                      onClick={onProjectClick ? () => onProjectClick(taskProject.id) : undefined}
+                      role={onProjectClick ? 'button' : undefined}
+                      tabIndex={onProjectClick ? 0 : undefined}
+                      onKeyDown={onProjectClick ? e => e.key === 'Enter' && onProjectClick(taskProject.id) : undefined}
+                    >
                       <span className="text-[9px] text-brand-500/60">{t('work:task.projectLabel')}</span>
                       {taskProject.name}
                     </span>
                   )}
                   {taskRequirement && (
-                    <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-brand-500/10 text-brand-500 rounded-full">
+                    <span
+                      className={`flex items-center gap-1 text-[11px] px-2 py-0.5 bg-brand-500/10 text-brand-500 rounded-full ${onReqClick ? 'cursor-pointer hover:bg-brand-500/20 transition-colors' : ''}`}
+                      onClick={onReqClick ? () => onReqClick(taskRequirement) : undefined}
+                      role={onReqClick ? 'button' : undefined}
+                      tabIndex={onReqClick ? 0 : undefined}
+                      onKeyDown={onReqClick ? e => e.key === 'Enter' && onReqClick(taskRequirement) : undefined}
+                    >
                       <span className="text-[9px] text-brand-500/60">{t('work:task.requirementLabel')}</span>
                       {taskRequirement.title.length > 40 ? taskRequirement.title.slice(0, 40) + '…' : taskRequirement.title}
                     </span>
@@ -2971,7 +2986,25 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   const subStatusBadges = useMemo(() => buildSubStatusBadges(t), [t]);
   const reqStatusBadges = useMemo(() => buildReqStatusBadges(t), [t]);
   const isMobile = useIsMobile();
-  const detailPanel = useResizablePanel({ side: 'right', defaultWidth: Math.round(window.innerWidth / 2), minWidth: 380, maxWidth: Math.round(window.innerWidth * 0.8), storageKey: 'markus_projects_detail_v3' });
+  const workContainerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
+  useEffect(() => {
+    const el = workContainerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => setContainerWidth(entry.contentRect.width));
+    ro.observe(el);
+    setContainerWidth(el.clientWidth);
+    return () => ro.disconnect();
+  }, []);
+  const availableWidth = containerWidth || window.innerWidth;
+  const containerMeasured = useRef(false);
+  const detailPanel = useResizablePanel({ side: 'right', defaultWidth: Math.round(availableWidth / 2), minWidth: 380, maxWidth: Math.round(availableWidth * 0.8), storageKey: 'markus_projects_detail_v4' });
+  useEffect(() => {
+    if (containerWidth > 0 && !containerMeasured.current) {
+      containerMeasured.current = true;
+      detailPanel.setWidth(Math.round(containerWidth / 2));
+    }
+  }, [containerWidth]); // eslint-disable-line react-hooks/exhaustive-deps
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
   const mobileShowDetailRef = useRef(mobileShowDetail);
   mobileShowDetailRef.current = mobileShowDetail;
@@ -3118,6 +3151,13 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     }
   }, [isMobile]);
 
+  const handleCloseTask = useCallback(() => {
+    setSelectedTask(null);
+    if (!selectedReqRef.current && isMobile && mobileShowDetailRef.current) {
+      setMobileShowDetail(false);
+    }
+  }, [isMobile]);
+
   useEffect(() => {
     if (!isMobile) return;
     const handler = () => {
@@ -3133,6 +3173,20 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
   const selectedTaskRef = useRef(selectedTask);
   selectedTaskRef.current = selectedTask;
+  const selectedReqRef = useRef(selectedReq);
+  selectedReqRef.current = selectedReq;
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (selectedTaskRef.current) { setSelectedTask(null); return; }
+      if (selectedReqRef.current) { setSelectedReq(null); return; }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   useEffect(() => {
     const pollMs = selectedTaskRef.current ? 60000 : 15000;
@@ -3474,11 +3528,16 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   };
 
   const toggleProjectFilter = (id: string) => {
-    setProjectFilter(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
+    if (viewMode === 'project') {
+      if (selectedProjectId === id) selectAllTasks();
+      else selectProject(id);
+    } else {
+      setProjectFilter(prev => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id); else next.add(id);
+        return next;
+      });
+    }
   };
 
   // ── Filter & display helpers ──
@@ -3585,13 +3644,14 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   if (loading) return <div className="flex-1 flex items-center justify-center text-fg-tertiary">{t('work:task.loadingPage')}</div>;
 
   const hasDetail = !!(selectedTask || selectedReq);
+  const dualDetail = !isMobile && !!(selectedTask && selectedReq);
 
   return (
-    <div className="flex-1 overflow-hidden flex bg-surface-secondary">
+    <div ref={workContainerRef} className="flex-1 overflow-hidden flex bg-surface-secondary">
       {/* ── Task Board + Project Context (left panel) ── */}
       <div
-        className={`${isMobile ? 'flex-1 min-w-0' : hasDetail ? 'shrink-0' : 'flex-1'} overflow-hidden flex flex-col bg-surface-secondary`}
-        style={isMobile ? (mobileShowDetail ? { display: 'none' } : undefined) : (hasDetail ? { width: `calc(100% - ${detailPanel.width}px - 4px)` } : undefined)}
+        className={`${isMobile ? 'flex-1 min-w-0' : hasDetail ? 'shrink-0 min-w-0' : 'flex-1'} overflow-hidden flex flex-col bg-surface-secondary`}
+        style={isMobile ? (mobileShowDetail ? { display: 'none' } : undefined) : (dualDetail ? { width: 0 } : hasDetail ? { width: `calc(100% - ${detailPanel.width}px - 4px)` } : undefined)}
       >
         {/* Flash */}
         {flash && <div className="mx-6 mt-2 px-3 py-1.5 bg-green-500/15 text-green-600 text-xs rounded-lg">{flash}</div>}
@@ -3972,11 +4032,57 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
         <div className="w-1 shrink-0 cursor-col-resize bg-border-default/40 hover:bg-brand-500/30 active:bg-brand-500/50 transition-colors" onMouseDown={detailPanel.onResizeStart} />
       )}
 
-      {/* Right detail panel */}
+      {/* Detail panel(s) */}
       {(!isMobile || mobileShowDetail) && hasDetail && (
-        <div className={`${isMobile ? 'flex-1' : 'shrink-0'} overflow-hidden min-w-0 border-l border-border-default`}
-          style={isMobile ? undefined : { width: detailPanel.width }}>
-          {selectedTask ? (
+        <div className={`${isMobile ? 'flex-1' : dualDetail ? 'flex-1' : 'shrink-0'} overflow-hidden min-w-0 border-l border-border-default flex`}
+          style={isMobile || dualDetail ? undefined : { width: detailPanel.width }}>
+          {dualDetail ? (
+            <>
+              <div className="flex-1 min-w-0 overflow-hidden">
+                <RequirementDetailPanel
+                  req={selectedReq!}
+                  agents={agents}
+                  projects={projects}
+                  allTasks={Object.values(board).flat()}
+                  users={users}
+                  onClose={() => { setSelectedReq(null); }}
+                  onApprove={id => { handleApproveReq(id); }}
+                  onReject={id => { setRejectReqId(id); }}
+                  onCancel={id => { handleDeleteReq(id); setSelectedReq(null); }}
+                  onStatusChange={async (id, status) => {
+                    try { await api.requirements.updateStatus(id, status); msg(`Requirement status → ${status}`); markNotifRead({ requirementId: id }); handleReqRefresh(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
+                  }}
+                  onRefresh={handleReqRefresh}
+                  authUser={authUser}
+                  onTaskClick={task => { setSelectedTask(task); }}
+                  onCreateTask={(reqId, projectId) => {
+                    setTaskRequirementId(reqId);
+                    if (projectId) setTaskProjectId(projectId);
+                    setShowCreateTask(true);
+                  }}
+                  onProjectClick={toggleProjectFilter}
+                />
+              </div>
+              <div className="w-px shrink-0 bg-border-default" />
+              <div className="flex-1 min-w-0 overflow-hidden">
+                <TaskDetailPanel
+                  task={selectedTask!}
+                  agents={agents}
+                  projects={projects}
+                  requirements={allRequirements}
+                  allTasks={Object.values(board).flat()}
+                  users={users}
+                  onClose={handleCloseTask}
+                  onRefresh={handleTaskRefresh}
+                  authUser={authUser}
+                  scrollToComments={scrollToComments}
+                  onScrollToCommentsDone={() => setScrollToComments(false)}
+                  onReqClick={req => { setSelectedReq(prev => prev?.id === req.id ? null : req); }}
+                  onProjectClick={toggleProjectFilter}
+                />
+              </div>
+            </>
+          ) : selectedTask ? (
             <TaskDetailPanel
               task={selectedTask}
               agents={agents}
@@ -3989,6 +4095,8 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
               authUser={authUser}
               scrollToComments={scrollToComments}
               onScrollToCommentsDone={() => setScrollToComments(false)}
+              onReqClick={req => { setSelectedReq(prev => prev?.id === req.id ? null : req); }}
+              onProjectClick={toggleProjectFilter}
             />
           ) : selectedReq ? (
             <RequirementDetailPanel
@@ -4008,12 +4116,16 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
               onScrollToCommentsDone={() => setScrollToComments(false)}
               onRefresh={handleReqRefresh}
               authUser={authUser}
-              onTaskClick={task => handleSelectTask(task)}
+              onTaskClick={task => {
+                setSelectedTask(task);
+                if (isMobile) { setMobileShowDetail(true); history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash); }
+              }}
               onCreateTask={(reqId, projectId) => {
                 setTaskRequirementId(reqId);
                 if (projectId) setTaskProjectId(projectId);
                 setShowCreateTask(true);
               }}
+              onProjectClick={toggleProjectFilter}
             />
           ) : null}
         </div>
@@ -4432,7 +4544,7 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
 // ─── Requirement Detail Modal ────────────────────────────────────────────────────
 
 function RequirementDetailPanel({
-  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange, onRefresh, authUser, scrollToComments, onScrollToCommentsDone, onTaskClick, onCreateTask,
+  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange, onRefresh, authUser, scrollToComments, onScrollToCommentsDone, onTaskClick, onCreateTask, onProjectClick,
 }: {
   req: RequirementInfo;
   agents: AgentInfo[];
@@ -4450,6 +4562,7 @@ function RequirementDetailPanel({
   onScrollToCommentsDone?: () => void;
   onTaskClick?: (task: TaskInfo) => void;
   onCreateTask?: (reqId: string, projectId?: string) => void;
+  onProjectClick?: (projectId: string) => void;
 }) {
   const { t } = useTranslation(['work', 'common']);
   const reqBadges = useMemo(() => buildReqStatusBadges(t), [t]);
@@ -4491,20 +4604,21 @@ function RequirementDetailPanel({
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
             </button>
           )}
-          <div className="flex-1 min-w-0 pb-4">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-[10px] font-bold text-brand-500 bg-brand-500/15 px-2 py-0.5 rounded">{t('work:task.requirementShort')}</span>
-              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${badge.cls}`}>{badge.label}</span>
-              {req.priority === 'high' || req.priority === 'urgent' ? (
-                <span className={`text-[10px] font-medium ${req.priority === 'urgent' ? 'text-red-500' : 'text-amber-600'}`}>{req.priority}</span>
-              ) : (
-                <span className="text-[10px] text-fg-tertiary">{req.priority}</span>
-              )}
-            </div>
-            <h2 className="text-lg font-semibold text-fg-primary leading-snug">{req.title}</h2>
-          </div>
+          <h2 className="flex-1 min-w-0 pb-4 text-lg font-semibold text-fg-primary leading-snug">
+            {req.title}
+            {' '}
+            <span className="text-[10px] font-bold text-brand-500 bg-brand-500/15 px-2 py-0.5 rounded align-middle">{t('work:task.requirementShort')}</span>
+            {' '}
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium align-middle ${badge.cls}`}>{badge.label}</span>
+            {' '}
+            {req.priority === 'high' || req.priority === 'urgent' ? (
+              <span className={`text-[10px] font-medium align-middle ${req.priority === 'urgent' ? 'text-red-500' : 'text-amber-600'}`}>{req.priority}</span>
+            ) : (
+              <span className="text-[10px] text-fg-tertiary align-middle">{req.priority}</span>
+            )}
+          </h2>
         </div>
-        {!isMobile && <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-xl leading-none shrink-0 mt-1">&times;</button>}
+        <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-xl leading-none shrink-0 mt-1">&times;</button>
       </div>
 
       {/* Body */}
@@ -4565,7 +4679,13 @@ function RequirementDetailPanel({
               <span className="text-fg-secondary">{new Date(req.createdAt).toLocaleString()}</span>
             </div>
             {reqProject && (
-              <div className="bg-surface-elevated/60 rounded-lg p-2.5">
+              <div
+                className={`bg-surface-elevated/60 rounded-lg p-2.5 ${onProjectClick ? 'cursor-pointer hover:bg-surface-elevated transition-colors' : ''}`}
+                onClick={onProjectClick ? () => onProjectClick(reqProject.id) : undefined}
+                role={onProjectClick ? 'button' : undefined}
+                tabIndex={onProjectClick ? 0 : undefined}
+                onKeyDown={onProjectClick ? e => e.key === 'Enter' && onProjectClick(reqProject.id) : undefined}
+              >
                 <span className="text-[10px] text-fg-tertiary block mb-1">{t('work:task.projectLabel')}</span>
                 <span className="text-fg-secondary">{reqProject.name}</span>
               </div>
@@ -4602,20 +4722,59 @@ function RequirementDetailPanel({
                 </button>
               )}
             </div>
-            {linkedTasks.length > 0 ? (
-              <div className="space-y-1.5">
-                {linkedTasks.map(lt => {
-                  const sb = subBadges[lt.status];
-                  return (
-                    <div key={lt.id} onClick={() => onTaskClick?.(lt)} className={`flex items-center gap-2 bg-surface-elevated/60 rounded-lg px-3 py-2 ${onTaskClick ? 'cursor-pointer hover:bg-surface-elevated transition-colors' : ''}`}>
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_COLORS[lt.priority]?.replace('border-l-', 'bg-') ?? 'bg-gray-500'}`} />
-                      <span className="text-xs text-fg-secondary flex-1 truncate">{lt.title}</span>
+            {linkedTasks.length > 0 ? (() => {
+              const taskMap = new Map(linkedTasks.map(t => [t.id, t]));
+              const hasDeps = linkedTasks.some(t => t.blockedBy?.some(id => taskMap.has(id)));
+              if (!hasDeps) {
+                return (
+                  <div className="space-y-1.5">
+                    {linkedTasks.map(lt => {
+                      const sb = subBadges[lt.status];
+                      return (
+                        <div key={lt.id} onClick={() => onTaskClick?.(lt)} className={`flex items-center gap-2 bg-surface-elevated/60 rounded-lg px-3 py-2 ${onTaskClick ? 'cursor-pointer hover:bg-surface-elevated transition-colors' : ''}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[lt.status] ?? 'bg-gray-500'}`} />
+                          <span className="text-xs text-fg-secondary flex-1 truncate">{lt.title}</span>
+                          {sb && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${sb.cls}`}>{sb.label}</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              }
+              const childrenOf = new Map<string, string[]>();
+              const hasParent = new Set<string>();
+              for (const t of linkedTasks) {
+                for (const dep of t.blockedBy ?? []) {
+                  if (taskMap.has(dep)) {
+                    hasParent.add(t.id);
+                    const arr = childrenOf.get(dep) ?? [];
+                    arr.push(t.id);
+                    childrenOf.set(dep, arr);
+                  }
+                }
+              }
+              const roots = linkedTasks.filter(t => !hasParent.has(t.id));
+              const renderNode = (task: TaskInfo, depth: number): React.ReactNode => {
+                const sb = subBadges[task.status];
+                const children = (childrenOf.get(task.id) ?? []).map(id => taskMap.get(id)!).filter(Boolean);
+                return (
+                  <div key={task.id}>
+                    <div
+                      onClick={() => onTaskClick?.(task)}
+                      className={`flex items-center gap-2 bg-surface-elevated/60 rounded-lg px-3 py-2 ${onTaskClick ? 'cursor-pointer hover:bg-surface-elevated transition-colors' : ''}`}
+                      style={depth > 0 ? { marginLeft: depth * 20 } : undefined}
+                    >
+                      {depth > 0 && <span className="text-fg-quaternary text-[10px] shrink-0">↳</span>}
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[task.status] ?? 'bg-gray-500'}`} />
+                      <span className="text-xs text-fg-secondary flex-1 truncate">{task.title}</span>
                       {sb && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${sb.cls}`}>{sb.label}</span>}
                     </div>
-                  );
-                })}
-              </div>
-            ) : (
+                    {children.map(c => renderNode(c, depth + 1))}
+                  </div>
+                );
+              };
+              return <div className="space-y-1.5">{roots.map(r => renderNode(r, 0))}</div>;
+            })() : (
               <div className="text-xs text-fg-tertiary italic py-2">{t('work:requirement.noLinkedTasks')}</div>
             )}
           </div>
