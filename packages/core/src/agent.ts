@@ -910,9 +910,20 @@ export class Agent {
 
         case 'task_status_update': {
           if (extra.triggerExecution && item.payload.taskId) {
+            if (typeof extra.onLog !== 'function') {
+              // Resurfaced from persistence after preemption — closures (onLog,
+              // cancelToken, responsePromise) were lost during JSON serialization.
+              // Skip execution; TaskService's own re-queue mechanism will create
+              // a fresh execution with proper callbacks.
+              log.info('Skipping resurfaced task execution item (closures lost)', {
+                agentId: this.id, taskId: item.payload.taskId,
+              });
+              resolveResponse('');
+              return;
+            }
             const taskId = item.payload.taskId;
             const description = item.payload.content;
-            const onLog = (extra.onLog as ((entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void)) ?? (() => {});
+            const onLog = extra.onLog as (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void;
             await this.executeTask(
               taskId,
               description,
@@ -922,6 +933,13 @@ export class Agent {
               extra.executionRound as number | undefined,
               item.payload.requirementId,
             );
+            // Task execution handles preemption internally: it emits a
+            // 'preempted' status event and TaskService re-queues the task
+            // with fresh callbacks after a delay.  Clear the yield decision
+            // so the attention controller completes this mailbox item normally
+            // instead of deferring it (deferred items lose their closures
+            // after serialization and cannot be properly resumed).
+            this.attentionController.clearLastYieldDecision();
             resolveResponse('');
             return;
           }

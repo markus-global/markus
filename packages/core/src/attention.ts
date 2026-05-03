@@ -545,6 +545,16 @@ export class AttentionController {
   }
 
   /**
+   * Clear the lastYieldDecision flag set by checkYieldPoint().
+   * Used by processing code that handles preemption internally (e.g. task
+   * execution delegates resumption to TaskService) so the attention loop
+   * completes the item normally instead of deferring it.
+   */
+  clearLastYieldDecision(): void {
+    this.lastYieldDecision = undefined;
+  }
+
+  /**
    * Called from the Agent's tool loop at safe yield points (between LLM turns).
    * If an interrupt signal is pending, evaluates whether to continue or switch.
    *
