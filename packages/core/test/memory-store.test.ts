@@ -204,6 +204,62 @@ describe('MemoryStore — Semantic: MEMORY.md', () => {
     const reloaded = new MemoryStore(tmp);
     expect(reloaded.getLongTermSection('test')).toBe('persisted');
   });
+
+  it('compressLongTermMemory returns zeros for empty memory', () => {
+    const result = store.compressLongTermMemory();
+    expect(result.charsBefore).toBe(0);
+    expect(result.charsAfter).toBe(0);
+    expect(result.sectionsBefore).toBe(0);
+    expect(result.sectionsAfter).toBe(0);
+    expect(result.truncatedChunks).toBe(0);
+  });
+
+  it('compressLongTermMemory is no-op when within per-section and total limits', () => {
+    store.addLongTermMemory('conventions', 'Use kebab-case for file names.');
+    store.addLongTermMemory('procedures', 'Step 1: build\nStep 2: test\nStep 3: deploy');
+    store.addLongTermMemory('preferences', 'Prefer TypeScript strict mode.');
+
+    const result = store.compressLongTermMemory();
+    expect(result.truncatedChunks).toBe(0);
+    expect(result.charsBefore).toBe(result.charsAfter);
+  });
+
+  it('compressLongTermMemory truncates oversized sections to per-section limit', () => {
+    const bigContent = 'a'.repeat(3500);
+    store.addLongTermMemory('oversized', bigContent);
+
+    const result = store.compressLongTermMemory();
+    expect(result.truncatedChunks).toBeGreaterThan(0);
+
+    const section = store.getLongTermSection('oversized');
+    expect(section!.length).toBeLessThanOrEqual(3000);
+    expect(section!.length).toBe(3000);
+  });
+
+  it('compressLongTermMemory trims from bottom when total exceeds limit', () => {
+    for (let i = 0; i < 6; i++) {
+      store.addLongTermMemory(`section-${i}`, 'b'.repeat(2500));
+    }
+
+    const result = store.compressLongTermMemory();
+    const contentAfter = store.getLongTermMemory();
+    expect(contentAfter.length).toBeLessThanOrEqual(15000);
+  });
+
+  it('addLongTermMemory auto-compresses before refusing write', () => {
+    for (let i = 0; i < 6; i++) {
+      // 2483 chars × 6 sections = 14988 total (under 15000 limit);
+      // only the 'overflow' push takes it over the edge
+      store.addLongTermMemory(`section-${i}`, 'c'.repeat(2483));
+    }
+
+    const contentBefore = store.getLongTermMemory();
+    expect(contentBefore.length).toBeGreaterThanOrEqual(14000);
+
+    store.addLongTermMemory('overflow', 'extra content');
+    const section0 = store.getLongTermSection('section-0');
+    expect(section0!.length).toBeGreaterThan(0);
+  });
 });
 
 // =============================================================================
