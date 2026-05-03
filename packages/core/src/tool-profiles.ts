@@ -14,9 +14,13 @@ const TOOL_GROUPS: Record<string, string[]> = {
   'group:runtime': ['shell_execute', 'background_exec', 'process'],
   'group:memory': ['memory_save', 'memory_search', 'memory_list', 'memory_update_longterm'],
   'group:web': ['web_search', 'web_fetch', 'web_extract'],
-  'group:messaging': ['message', 'send_message'],
-  'group:a2a': ['delegate_task', 'query_agent', 'team_broadcast'],
+  'group:messaging': ['agent_send_message', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats'],
+  'group:a2a': ['agent_delegate_task', 'agent_broadcast_status', 'agent_send_message', 'agent_list_colleagues'],
   'group:agent': ['spawn_subagent', 'spawn_subagents'],
+  'group:tasks': ['task_create', 'task_list', 'task_get', 'task_update', 'task_note', 'task_assign', 'task_submit_review', 'task_comment', 'subtask_create', 'subtask_complete', 'subtask_list'],
+  'group:requirements': ['requirement_propose', 'requirement_list', 'requirement_get', 'requirement_update', 'requirement_update_status', 'requirement_resubmit', 'requirement_comment'],
+  'group:project': ['list_projects', 'get_project', 'create_project', 'update_project', 'project_info', 'deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'],
+  'group:manager': ['team_list', 'team_status', 'delegate_message', 'team_hire_agent', 'team_list_templates', 'team_update', 'agent_update', 'task_check_duplicates', 'task_cleanup_duplicates', 'task_board_health'],
 };
 
 /**

@@ -28,7 +28,7 @@
         "role": "manager",
         "roleName": "project-manager",
         "count": 1,
-        "skills": ["markus-project-cli", "team-building"]
+        "skills": ["team-building"]
       },
       {
         "name": "Backend Developer",
