@@ -1651,6 +1651,17 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
       /** Handle server-committed per-turn text/thinking entries (clean, non-fragmented) */
       const handleCommitEvent = (event: StreamCommitEvent) => {
+        // Capture sessionId early so subsequent messages continue in the same session
+        // even if the stream is aborted before the final 'done' event.
+        if (event.type === 'session_start' && event.sessionId) {
+          if (currentConvKeyRef.current === sendKey) {
+            setActiveSessionId(event.sessionId);
+            setOpenSessionTabs(prev =>
+              prev.map(t => t.id === NEW_CHAT_PLACEHOLDER_ID ? { ...t, id: event.sessionId! } : t)
+            );
+          }
+          return;
+        }
         updateConvMsgs(sendKey, prev => {
           const u = [...prev];
           const idx = u.findIndex(m => m.id === agentMsgId);
@@ -1795,7 +1806,16 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                   ? { type: 'tool' as const, key: `${s.tool}_${i}`, tool: s.tool, status: s.status, args: s.arguments, result: s.result, error: s.error, durationMs: s.durationMs, createdAt: s.createdAt }
                   : { type: 'text' as const, content: s.content, thinking: s.thinking, createdAt: s.createdAt }
               );
-              const finalText = streamResult.content || u[idx]!.text;
+              // Reconstruct text from segments if both streamResult.content and
+              // accumulated msg.text are empty — prevents blank bubble when all
+              // content arrived via text_commit events.
+              let finalText = streamResult.content || u[idx]!.text;
+              if (!finalText) {
+                finalText = finalSegs
+                  .filter(s => s.type === 'text')
+                  .map(s => (s as { content: string }).content)
+                  .join('');
+              }
               u[idx] = { ...u[idx]!, text: finalText, segments: finalSegs, committedSegments: finalSegs };
               return u;
             });
@@ -1918,7 +1938,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       const currentMsgs = msgBuffers.current.get(sendKey) ?? [];
       const agentMsg = currentMsgs.find(m => m.id === agentMsgId);
       const pollSessionId = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
-      if (agentMsg && !agentMsg.text && chatMode === 'direct' && pollSessionId && !abortCtrl.signal.aborted) {
+      const hasVisibleContent = agentMsg?.text || (agentMsg?.segments?.some(s =>
+        (s.type === 'text' && (s as { content: string }).content) || s.type === 'tool'
+      ));
+      if (agentMsg && !hasVisibleContent && chatMode === 'direct' && pollSessionId && !abortCtrl.signal.aborted) {
         const pollForReply = async (retries: number, delayMs: number) => {
           for (let i = 0; i < retries; i++) {
             await new Promise(r => setTimeout(r, delayMs));
