@@ -5260,9 +5260,9 @@ EXPLANATION_END`;
           const rawMembers = (Array.isArray((artifact.team as Record<string, unknown>)?.members)
             ? (artifact.team as Record<string, unknown>).members
             : Array.isArray(artifact.members) ? artifact.members : []) as Array<Record<string, unknown>>;
-          for (const m of rawMembers) {
+          for (const [idx, m] of rawMembers.entries()) {
             const mName = (m.name as string) ?? 'Agent';
-            const slug = kebab(mName, 'agent');
+            const slug = kebab(mName, 'member-' + idx);
             const memberDir = join(artDir, 'members', slug);
             const roleContent = (m.roleContent as string) || (m.role_md as string);
             const policiesContent = (m.policiesContent as string) || (m.policies_md as string);
@@ -7850,10 +7850,10 @@ EXPLANATION_END`;
       } catch { /* skip */ }
       const rolesRoot = rolesCandidates.find(d => ex(d)) ?? rolesDir;
       const files: Record<string, string> = {};
-      for (const member of tpl.members) {
+      for (const [idx, member] of tpl.members.entries()) {
         const roleName = member.roleName;
         if (!roleName) continue;
-        const memberSlug = (member.name ?? roleName).toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/-{2,}/g, '-').replace(/^-|-$/g, '');
+        const memberSlug = kebab(member.name ?? roleName, 'member-' + idx);
         const roleDir = resolve(rolesRoot, roleName);
         if (!ex(roleDir)) continue;
         try {

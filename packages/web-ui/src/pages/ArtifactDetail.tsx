@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { api, hubApi, type AuthUser } from '../api.ts';
+import { api, hubApi, kebab, type AuthUser } from '../api.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { PAYMENTS_ENABLED } from './AgentBuilder.tsx';
 
@@ -464,18 +464,73 @@ function TeamTabs({ members, teamTopFiles, files, onFileSave, readOnly }: {
     return [...dirs];
   }, [files]);
 
-  const getMemberFiles = useCallback((name: string, idx: number): [string, string][] => {
-    const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '');
-    if (slug) {
-      const matched = Object.entries(files).filter(([k]) => k.startsWith(`members/${slug}/`));
-      if (matched.length > 0) return matched;
+  // Build a stable member-index → directory mapping upfront using multiple
+  // matching strategies.  This avoids the broken index-based fallback that
+  // assumes memberDirs order matches the manifest's members order.
+  const memberDirMap = useMemo(() => {
+    const map = new Map<number, string>();
+    const usedDirs = new Set<string>();
+
+    // Pass 1: exact slug match on member name
+    for (let i = 0; i < members.length; i++) {
+      const slug = kebab(members[i]!.name);
+      if (memberDirs.includes(slug) && !usedDirs.has(slug)) {
+        map.set(i, slug);
+        usedDirs.add(slug);
+      }
     }
-    if (idx < memberDirs.length) {
-      const dirName = memberDirs[idx]!;
+
+    // Pass 2: slug match on roleName (directory may be named after the role)
+    for (let i = 0; i < members.length; i++) {
+      if (map.has(i)) continue;
+      const rn = members[i]!.roleName;
+      if (rn) {
+        const roleSlug = kebab(rn);
+        if (memberDirs.includes(roleSlug) && !usedDirs.has(roleSlug)) {
+          map.set(i, roleSlug);
+          usedDirs.add(roleSlug);
+        }
+      }
+    }
+
+    // Pass 3: scan ROLE.md titles in remaining directories
+    for (let i = 0; i < members.length; i++) {
+      if (map.has(i)) continue;
+      const name = members[i]!.name;
+      for (const dir of memberDirs) {
+        if (usedDirs.has(dir)) continue;
+        const roleContent = files[`members/${dir}/ROLE.md`];
+        if (!roleContent) continue;
+        const title = roleContent.match(/^#\s+(.+)$/m)?.[1]?.trim();
+        if (title && (title.toLowerCase().includes(name.toLowerCase()) || name.toLowerCase().includes(title.toLowerCase()))) {
+          map.set(i, dir);
+          usedDirs.add(dir);
+          break;
+        }
+      }
+    }
+
+    // Pass 4: assign remaining unmatched members to remaining dirs in order
+    const remainingDirs = memberDirs.filter(d => !usedDirs.has(d));
+    let ri = 0;
+    for (let i = 0; i < members.length; i++) {
+      if (map.has(i)) continue;
+      if (ri < remainingDirs.length) {
+        map.set(i, remainingDirs[ri]!);
+        ri++;
+      }
+    }
+
+    return map;
+  }, [members, memberDirs, files]);
+
+  const getMemberFiles = useCallback((_name: string, idx: number): [string, string][] => {
+    const dirName = memberDirMap.get(idx);
+    if (dirName) {
       return Object.entries(files).filter(([k]) => k.startsWith(`members/${dirName}/`));
     }
     return [];
-  }, [files, memberDirs]);
+  }, [files, memberDirMap]);
 
   const tabs = useMemo(() => {
     const list: { label: string; role?: string }[] = [{ label: t('detail.overview') }];
