@@ -197,7 +197,7 @@ export class BuilderService {
       const memberRole = (member.role ?? 'worker') as 'worker' | 'manager';
       const memberName = member.name ?? 'Agent';
       const memberSkills = member.skills ?? [];
-      const memberFilesDir = this.findMemberDir(artDir, memberName, usedMemberDirs);
+      const memberFilesDir = this.findMemberDir(artDir, memberName, usedMemberDirs, member.roleName);
       const hasCustomRole = !!memberFilesDir && existsSync(join(memberFilesDir, 'ROLE.md'));
       if (memberFilesDir) usedMemberDirs.add(memberFilesDir);
       log.info('installTeam: member lookup', { memberName, memberFilesDir, hasCustomRole });
@@ -249,16 +249,27 @@ export class BuilderService {
    * Find the member directory under artDir/members/ by trying multiple slug strategies.
    * Returns the absolute path to the member directory, or null if not found.
    */
-  private findMemberDir(artDir: string, memberName: string, usedDirs: Set<string>): string | null {
+  private findMemberDir(artDir: string, memberName: string, usedDirs: Set<string>, roleName?: string): string | null {
     const membersBase = join(artDir, 'members');
     if (!existsSync(membersBase)) return null;
 
-    // Strategy 1: exact slug match (using the canonical kebab function)
-    const slug = kebab(memberName, 'agent');
-    const exact = join(membersBase, slug);
-    if (existsSync(exact) && !usedDirs.has(exact)) return exact;
+    // Strategy 1: exact slug match on member name
+    const nameSlug = kebab(memberName);
+    if (nameSlug && !/^pkg-/.test(nameSlug)) {
+      const exact = join(membersBase, nameSlug);
+      if (existsSync(exact) && !usedDirs.has(exact)) return exact;
+    }
 
-    // Strategy 3: scan directories for matching ROLE.md title
+    // Strategy 2: slug match on roleName (directory is often named after the role)
+    if (roleName) {
+      const roleSlug = kebab(roleName);
+      if (roleSlug && !/^pkg-/.test(roleSlug)) {
+        const roleDir = join(membersBase, roleSlug);
+        if (existsSync(roleDir) && !usedDirs.has(roleDir)) return roleDir;
+      }
+    }
+
+    // Strategy 3: scan directories for matching ROLE.md title (partial match)
     try {
       for (const entry of readdirSync(membersBase, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
@@ -269,7 +280,11 @@ export class BuilderService {
         try {
           const content = readFileSync(rolePath, 'utf-8');
           const title = content.match(/^#\s+(.+)$/m)?.[1]?.trim();
-          if (title && title.toLowerCase() === memberName.toLowerCase()) return candidateDir;
+          if (title) {
+            const tLower = title.toLowerCase();
+            const nLower = memberName.toLowerCase();
+            if (tLower === nLower || tLower.includes(nLower) || nLower.includes(tLower)) return candidateDir;
+          }
         } catch { /* skip */ }
       }
     } catch { /* skip */ }
@@ -278,7 +293,7 @@ export class BuilderService {
     try {
       const remaining = readdirSync(membersBase, { withFileTypes: true })
         .filter(e => e.isDirectory() && !usedDirs.has(join(membersBase, e.name)));
-      if (remaining.length === 1) return join(membersBase, remaining[0].name);
+      if (remaining.length === 1) return join(membersBase, remaining[0]!.name);
     } catch { /* skip */ }
 
     return null;
