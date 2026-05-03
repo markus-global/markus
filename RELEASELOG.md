@@ -1,5 +1,35 @@
 # Release Log
 
+## v0.6.3
+
+中文 Agent 名兼容修复；记忆搜索语义 fallback；Agent 初始化自动创建系统文件；CLI 工具整合精简；团队聊天稳定性修复；二进制安装包签名与托盘控制器。
+
+### New Features
+
+- **系统托盘控制器** — 桌面快捷方式启动后在菜单栏/系统托盘显示 Markus 图标，提供 Open Web UI / Start / Stop / Quit 操作（macOS/Windows/Linux），tray 启动失败自动回退到直接启动服务器
+- **Agent 初始化自动创建系统文件** — 新 Agent 启动时自动生成 MEMORY.md / HEARTBEAT.md 等系统文件，MEMORY.md 超长时自动压缩
+- **便携归档包** — 除平台原生安装包外，同时生成 .tar.gz/.zip 便携归档
+
+### Bug Fixes
+
+- **修复中文名 Agent 目录定位失败** — findMemberDir 改用多轮 member-to-directory 映射匹配，支持非 ASCII Agent 名
+- **修复中文名 Agent slug 生成 bug** — 统一使用 kebab() + 唯一索引 fallback，避免空 slug
+- **修复 memory_search 返回 0 结果** — 语义搜索 fallback + dist 重建
+- **修复团队聊天停止按钮/会话上下文丢失/空气泡** — 三个前端交互 bug 一并修复
+- **修复被抢占任务不自动恢复** — 高优先级任务完成后，被抢占的低优先级任务自动恢复执行
+- **修复已完成/失败任务不可见** — 任务列表默认隐藏已关闭状态，但保留已完成和失败状态可见
+- **修复二进制安装包 Apple 公证失败** — codesign 扫描所有 Mach-O 文件（含 systray2 的 Go 二进制），修复权限过滤遗漏
+
+### Refactoring
+
+- **CLI 工具整合精简** — 删除 5 个冗余 CLI skill 模板（agent-cli/cli/project-cli/skill-cli/team-cli），合并到 markus-admin-cli；新增测试覆盖
+
+### Stats
+
+- 43 files changed, +1,888 / −671 lines
+
+---
+
 ## v0.5.0
 
 记忆系统重构（Tulving 三层认知分类）；评论多模态图片支持（上传/拖拽/粘贴/预览）；内置 Agent 模板大规模升级（重写 5 + 新建 5）；弹窗错误 UX 优化；Hub 地址修正；文档全面对齐。
