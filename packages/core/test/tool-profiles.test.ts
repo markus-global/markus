@@ -28,8 +28,8 @@ const ALL_TOOLS: AgentToolHandler[] = [
   makeTool('memory_search'),
   makeTool('memory_list'),
   makeTool('memory_update_longterm'),
-  makeTool('message'),
-  makeTool('send_message'),
+  makeTool('agent_send_message'),
+  makeTool('agent_list_colleagues'),
 ];
 
 describe('Tool Profiles', () => {
@@ -46,15 +46,15 @@ describe('Tool Profiles', () => {
     expect(names).toContain('shell_execute');
     expect(names).toContain('memory_search');
     expect(names).toContain('web_search');
-    expect(names).not.toContain('message');
-    expect(names).not.toContain('send_message');
+    expect(names).not.toContain('agent_send_message');
+    expect(names).not.toContain('agent_list_colleagues');
   });
 
   it('messaging profile should only allow messaging + memory tools', () => {
     const result = applyToolPolicy(ALL_TOOLS, { profile: 'messaging' });
     const names = result.map(t => t.name);
 
-    expect(names).toContain('message');
+    expect(names).toContain('agent_send_message');
     expect(names).toContain('memory_search');
     expect(names).not.toContain('file_read');
     expect(names).not.toContain('shell_execute');
@@ -89,7 +89,7 @@ describe('Tool Profiles', () => {
     });
     const names = result.map(t => t.name);
 
-    expect(names).toContain('message');
+    expect(names).toContain('agent_send_message');
     expect(names).toContain('web_search');
   });
 

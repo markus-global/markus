@@ -7,7 +7,15 @@ description: System administration via markus CLI — system controls, audit, us
 
 > **NOTE**: Most admin CLI commands have no built-in tool equivalent — CLI is the primary interface for system administration. Use `builder_install`/`builder_list` for artifact management when available.
 
-Administrative operations through `shell_execute` with `markus admin` commands. Always use `--json` for parseable output.
+## How to invoke
+
+Use `markus` via `shell_execute`. The binary is automatically available in PATH.
+
+```bash
+markus admin system status --json
+```
+
+**Always use `--json` when parsing results programmatically.** The CLI connects to `http://localhost:8056` by default. Override with `--server <url>` or `MARKUS_API_URL`. For authenticated access use `--api-key <key>` or `MARKUS_API_KEY`.
 
 ## System Controls
 

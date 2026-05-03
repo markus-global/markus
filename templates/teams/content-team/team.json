@@ -27,7 +27,7 @@
         "role": "manager",
         "roleName": "project-manager",
         "count": 1,
-        "skills": ["markus-project-cli", "self-evolution"]
+        "skills": ["self-evolution"]
       },
       {
         "name": "Senior Writer",
