@@ -1223,6 +1223,8 @@ export const api = {
       request<{ avatarUrl: string }>('/avatars/upload', { method: 'POST', body: JSON.stringify({ image, type, id }) }),
   },
   sessions: {
+    hasAny: () =>
+      request<{ hasAny: boolean }>('/sessions/has-any'),
     listByAgent: (agentId: string, limit = 20) =>
       request<{ sessions: ChatSessionInfo[] }>(`/agents/${agentId}/sessions?limit=${limit}`),
     getMessages: (sessionId: string, limit = 50, before?: string) =>
