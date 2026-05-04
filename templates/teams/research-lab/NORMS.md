@@ -1,88 +1,77 @@
-# Research Lab — Working Norms
+# 调研研究团队 — 工作规范
 
-## Methodology: Frame → Investigate → Challenge → Synthesize
+## 方法论：框架 → 调研 → 验证 → 综合
 
-### Phase 1: Frame (Research Lead)
-- Define the research question precisely. Vague questions produce vague answers.
-- Set **success criteria** upfront: what "done" looks like, what evidence would confirm or disprove each hypothesis.
-- Identify **competing hypotheses** or **angles of investigation** — assign each researcher a different one.
-- Create tasks with clear scope: "Investigate hypothesis X by examining Y, looking for evidence of Z."
-- Set dependencies via `blockedBy` so later phases do not start until prerequisites are satisfied.
+### 阶段 1：框架（主任）
+- 精确界定研究问题。模糊的问题产生模糊的答案。
+- 设定**成功标准**：什么是"完成"，什么证据足以证实或否定假设。
+- 识别**竞争性假设**或**调研角度** — 为每个研究员分配不同的角度。
+- 使用 `blockedBy` 设置依赖关系，确保后阶段在前置阶段完成后启动。
+- 通过 `task_create` 创建调研任务，明确 `assigned_agent_id` 和 `reviewer_id`。
 
-### Phase 2: Investigate (Researchers, Parallel)
-- Each researcher independently explores their assigned angle.
-- Use `spawn_subagent` for deep dives into specific files, logs, or codebases without losing your investigation context.
-- Use `web_search` and `web_fetch` for external research — documentation, papers, vendor comparisons. Prefer `web_fetch` to verify quotes and numbers; do not rely on search snippets alone for high-stakes conclusions.
-- Record all findings as `deliverable_create` artifacts with evidence:
-  - Code snippets, log excerpts, benchmark data, documentation references
-  - Confidence level (High/Medium/Low) with reasoning
-  - Explicitly note what you did NOT find (negative evidence matters)
-- **Do not anchor on your first finding.** Actively look for disconfirming evidence.
-- Run `memory_search` at the start of each investigation thread to avoid redoing prior work.
+### 阶段 2：调研（研究员，并行）
+- 每个研究员独立探索分配的角度。
+- 使用 `spawn_subagent` 子代理进行深度挖掘（代码审查、文件分析、网络搜索），不丢失主调研上下文。
+- 使用 `web_search` 和 `web_fetch` 进行外部研究 — 文档、论文、竞品对比。关键结论优先使用 `web_fetch` 验证原文，不依赖搜索摘要。
+- 所有发现通过 `deliverable_create` 记录为带有证据的交付物：
+  - 代码片段、日志摘录、基准数据、文献引用
+  - 置信度（高/中/低）及理由
+  - 明确记录**没有找到什么**（负证据同样有价值）
+- **不要锚定于第一个发现**。主动寻找反证。
+- 开始调研前运行 `memory_search`，避免重复已有工作。
 
-### Phase 3: Challenge (All Researchers)
-- After initial investigation, researchers **review each other's findings** via `agent_send_message`.
-- The goal is adversarial: each researcher tries to find weaknesses in others' conclusions.
-- Ask: "What would have to be true for this finding to be wrong?"
-- Prefer specific questions over rubber-stamp agreement. Escalate unresolved conflicts to the Lead with a summary of positions and evidence.
-- Update your deliverables based on challenges received. Strengthen or retract claims.
+### 阶段 3：验证与交叉检验（全体研究员）
+- 初步调研完成后，研究员通过 `agent_send_message` 互相审阅发现。
+- 目标是对抗性的：每个研究员试图找出他人结论中的弱点。
+- 追问："要让这个结论被推翻，什么必须为真？"
+- 倾向于提出具体质疑，而非简单盖章通过。未解决的分歧升级到主任，附上立场总结和证据。
+- 基于收到的质疑更新自己的交付物。加强或撤回声明。
 
-### Phase 4: Synthesize (Synthesizer + Research Lead)
-- Synthesizer collects all deliverables and cross-examination results.
-- Use `spawn_subagent` to systematically compare findings across researchers.
-- Produce a synthesis deliverable (`deliverable_create`) that includes:
-  1. **Executive summary** — decision-oriented: key conclusions and confidence level.
-  2. **Methodology** — scope, sources consulted, tools used, limitations.
-  3. **Findings** — organized by theme or question, each tied to cited evidence.
-  4. **Recommendations** — actionable next steps, explicit assumptions, open questions.
-- If no consensus emerges, the synthesis should say so honestly and recommend further investigation.
-- Research Lead reviews and approves the final synthesis.
+### 阶段 4：综合（首席研究员 + 主任）
+- 首席研究员收集所有交付物和交叉检验结果。
+- 使用 `spawn_subagent` 系统比较各研究员发现。
+- 产出综合交付物（`deliverable_create`），包括：
+  1. **执行摘要** — 面向决策者：关键结论和置信度
+  2. **方法论** — 范围、参考来源、使用工具、局限性
+  3. **发现** — 按主题或问题组织，每个发现附带引证证据
+  4. **建议** — 可操作的后续步骤、明确假设、未解决问题
+- 如未达成共识，综合报告应如实说明并建议进一步调研。
+- 主任审阅并批准最终综合报告。
 
-## Competing Hypotheses Protocol
+### 协调秘书的职责任务
+- 使用 `task_note` 记录调研过程中的关键决策和讨论要点。
+- 使用 `deliverable_create` 管理所有交付物版本，确保可追溯。
+- 协调跨研究员的信息同步，避免重复工作。
+- 在调研关键节点使用 `notify_user` 通知利益相关者进展。
+- 最终交付物归档：确保格式规范、引用完整、附件齐全。
 
-For ambiguous investigations (unclear root cause, conflicting sources, multiple plausible explanations):
+## 竞争性假设检验协议
 
-1. Each researcher **independently** forms a primary hypothesis and at least one alternative before heavy collaboration.
-2. Each analyst tests their hypothesis using evidence gathering without anchoring on another's conclusion first.
-3. Record hypotheses in `memory_save` with tags including `hypothesis` plus topic tags.
-4. Only after individual testing do researchers compare notes in the Challenge phase.
+对于模糊的调查（不确定根本原因、冲突来源、多个合理解释）：
 
-## Investigation Playbooks
+1. 每个研究员**独立**形成主要假设和至少一个备选假设，再进行深度协作。
+2. 每个研究员先用自己的假设进行证据收集，不被他人结论锚定。
+3. 使用 `memory_save` 记录假设，标签包含 `hypothesis` 加主题标签。
+4. 只有在独立测试后才在验证阶段比较笔记。
 
-### Debugging / Root Cause Analysis
-- Assign researchers to different hypotheses: "race condition" vs "data corruption" vs "configuration issue."
-- Each investigator must produce **reproduction steps** or explain why reproduction is not possible.
-- Share raw evidence (stack traces, logs, diffs) in task notes so others can verify.
+## 证据标准
 
-### Technology Evaluation
-- Assign each researcher a different technology to evaluate against the same criteria.
-- Criteria must be defined in the framing phase: performance, ecosystem, learning curve, cost, security.
-- Each researcher writes a balanced assessment — strengths AND weaknesses.
-- The Synthesizer produces a comparison matrix from individual assessments.
+- **每个非平凡声明**必须引用具体来源（URL、文件路径、日志行或交付物引用）。
+- 对主要结论分配**置信度**（高/中/低），明确说明什么会改变评级。
+- 区分**事实**（直接支持）、**推理**（合理推断）和**推测**（未支持）。
+- 无证据的发现是观点，不是研究。
+- 负结果同样有价值 — "我调查了 X 但没有发现 Y 的证据"是有用的发现。
 
-### Security Audit
-- Divide the codebase by attack surface: authentication, authorization, input handling, data storage, network.
-- Each researcher focuses on one surface using the OWASP framework.
-- Findings must include severity, exploitability, and recommended remediation.
-- Cross-challenge phase: can one researcher exploit a path that another declared safe?
+## 知识积累
 
-## Evidence Standards
+- 开始新的调研线索前运行 `memory_search`，避免重复工作。
+- 使用 `memory_save` 保存所有持久性洞察：试验过的方法、死胡同、关键引用、已解决分歧、经验教训。
+- 使用一致的标签（主题、项目、阶段、`hypothesis`）以便快速检索。
 
-- **Every non-trivial claim** must cite specific sources (URL, file path, log line, or deliverable reference).
-- Assign a **confidence level** to major conclusions and state what would change that rating.
-- Distinguish **facts** (directly supported) from **inference** (reasonable interpretation) from **speculation** (unsupported).
-- A finding without evidence is an opinion, not research.
-- Negative results are valuable — "I investigated X and found no evidence of Y" is a useful finding.
+## 沟通规范
 
-## Knowledge Accumulation
-
-- Run `memory_search` at the start of new investigation threads to avoid redoing work.
-- `memory_save` all durable insights: methods tried, dead ends, key citations, resolved disagreements, takeaways.
-- Use consistent tagging (topic, project, phase, `hypothesis` when applicable) for fast retrieval.
-
-## Communication
-
-- **Share early, share raw**: Post intermediate findings to task notes. Don't wait for polished conclusions.
-- **Cite your sources**: Every claim links to a file, URL, log line, or benchmark.
-- **Disagree constructively**: "I found evidence that contradicts X because..." not "X is wrong."
-- **Track confidence**: Use explicit levels (High/Medium/Low) and update as evidence changes.
+- **尽早分享，分享原始数据**：将中期发现发布到任务备注。不要等到打磨成最终结论。
+- **引用来源**：每个声明链接到文件、URL、日志行或基准测试。
+- **建设性异议**："我发现了与 X 矛盾的证据，因为..."而非"X 错了。"
+- **跟踪置信度**：使用显式级别（高/中/低），随证据变化更新。
+- 协调秘书确保关键沟通内容记录可追溯。
