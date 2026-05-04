@@ -1,5 +1,6 @@
 import { createLogger, generateId, readManifest } from '@markus/shared';
 import type { AgentTemplate } from '../templates/types.js';
+import type { StarterTaskDef } from '@markus/shared';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +30,8 @@ export interface TeamTemplate {
   icon?: string;
   announcements?: string;
   norms?: string;
+  /** Initial tasks to create on team startup (for onboarding) */
+  starterTasks?: StarterTaskDef[];
   /** Localized name/description keyed by locale (e.g. 'zh-CN') */
   i18n?: Record<string, { displayName?: string; name?: string; description?: string; members?: Record<string, string> }>;
 }
@@ -100,11 +103,13 @@ function loadTeamTemplateFromDir(dirPath: string): TeamTemplate | null {
         name: m.name,
         count: m.count,
         role: m.role,
+        description: m.description,
         skills: m.skills ?? [],
       })),
       tags: manifest.tags ?? [],
       category: manifest.category,
       icon: manifest.icon,
+      starterTasks: manifest.starterTasks,
       announcements: existsSync(annPath) ? readFileSync(annPath, 'utf-8') : undefined,
       norms: existsSync(normsPath) ? readFileSync(normsPath, 'utf-8') : undefined,
       i18n: manifest.i18n,
