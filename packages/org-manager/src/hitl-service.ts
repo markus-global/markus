@@ -268,7 +268,7 @@ export class HITLService {
     this.notify({
       targetUserId: opts.targetUserId ?? 'all',
       type: 'approval_request',
-      title: `Approval needed: ${opts.title}`,
+      title: opts.title,
       body: opts.description,
       priority: 'high',
       actionType: 'navigate',

@@ -4,7 +4,7 @@
 
 <h1 align="center">Markus</h1>
 
-<p align="center"><strong>AI teams that actually deliver.</strong></p>
+<p align="center"><strong>Build AI teams that actually deliver.</strong></p>
 
 <p align="center">
   The open-source AI workforce platform. Developers, researchers, writers, analysts &mdash;<br>

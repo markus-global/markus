@@ -4,7 +4,7 @@
 
 <h1 align="center">Markus</h1>
 
-<p align="center"><strong>真正能交付的 AI 团队。</strong></p>
+<p align="center"><strong>创建真正能交付的 AI 团队。</strong></p>
 
 <p align="center">
   开源 AI 员工平台。开发、调研、写作、分析 &mdash;<br>

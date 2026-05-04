@@ -283,8 +283,10 @@ export function NotificationBell({ collapsed, userId }: Props) {
         const approvalId = meta.approvalId as string | undefined;
         const approval = approvalId ? approvals.find(a => a.id === approvalId) : undefined;
         const taskId = (approval?.details?.taskId ?? meta.taskId) as string | undefined;
+        const requirementId = (approval?.details?.requirementId ?? meta.requirementId) as string | undefined;
         const apAgentId = (approval?.details?.agentId ?? approval?.agentId) as string | undefined;
         if (taskId) navBus.navigate(PAGE.WORK, { openTask: taskId });
+        else if (requirementId) navBus.navigate(PAGE.WORK, { openRequirement: requirementId });
         else if (apAgentId) navBus.navigate(PAGE.TEAM, { agentId: apAgentId });
         else navBus.navigate(PAGE.WORK);
         break;
@@ -385,10 +387,20 @@ export function NotificationBell({ collapsed, userId }: Props) {
     }
   };
 
+  const approvalTypeLabel = (a: ApprovalInfo): string | null => {
+    const sub = a.details?.subType as string | undefined;
+    if (sub === 'requirement_resubmit') return t('team:notifications.approvalType.requirementResubmit');
+    if (sub === 'requirement' || a.details?.requirementId) return t('team:notifications.approvalType.requirement');
+    if (sub === 'task' || a.details?.taskId) return t('team:notifications.approvalType.task');
+    return null;
+  };
+
   const navigateForApproval = (a: ApprovalInfo) => {
     const taskId = a.details?.taskId as string | undefined;
+    const requirementId = a.details?.requirementId as string | undefined;
     const agentId = (a.details?.agentId ?? a.agentId) as string | undefined;
     if (taskId) navBus.navigate(PAGE.WORK, { openTask: taskId });
+    else if (requirementId) navBus.navigate(PAGE.WORK, { openRequirement: requirementId });
     else if (agentId) navBus.navigate(PAGE.TEAM, { agentId });
     else navBus.navigate(PAGE.WORK);
   };
@@ -474,7 +486,8 @@ export function NotificationBell({ collapsed, userId }: Props) {
                           </svg>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
-                              <span className="text-xs text-fg-primary font-medium">{a.title}</span>
+                              {approvalTypeLabel(a) && <span className="text-[10px] text-amber-500 font-medium shrink-0">{approvalTypeLabel(a)}</span>}
+                              <span className="text-xs text-fg-primary font-medium truncate">{a.title}</span>
                               <span className="text-[10px] text-fg-tertiary shrink-0">{timeAgo(a.requestedAt, t)}</span>
                             </div>
                             <div className="text-[11px] text-fg-tertiary mt-0.5">{a.agentName}</div>
@@ -592,6 +605,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
                     <button key={a.id} onClick={() => navigateForApproval(a)} className="w-full text-left px-3 py-2.5 opacity-50 hover:opacity-70 transition-colors">
                       <div className="flex items-center gap-2">
                         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${a.status === 'approved' ? 'bg-green-500' : 'bg-red-500'}`} />
+                        {approvalTypeLabel(a) && <span className="text-[10px] text-fg-tertiary font-medium shrink-0">{approvalTypeLabel(a)}</span>}
                         <span className="text-xs text-fg-secondary truncate flex-1">{a.title}</span>
                         <span className="text-[10px] text-fg-tertiary shrink-0">{t(`common:status.${a.status === 'approved' ? 'approved' : a.status === 'rejected' ? 'rejected' : a.status}`, { defaultValue: a.status })}</span>
                       </div>

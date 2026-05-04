@@ -1706,14 +1706,15 @@ export class TaskService {
 
     // Request HITL approval (only for agent-created tasks that need approval)
     if (this.hitlService && request.creatorRole !== 'human' && task.status === 'pending') {
-      const creatorName = request.createdBy ?? 'unknown agent';
+      const creatorId = request.createdBy ?? 'system';
+      const creatorName = this.resolveActorName(creatorId, 'agent') ?? creatorId;
       this.hitlService.requestApprovalAndWait({
-        agentId: request.createdBy ?? 'system',
+        agentId: creatorId,
         agentName: creatorName,
         type: 'custom',
-        title: `Task approval: ${task.title}`,
+        title: task.title,
         description: `Agent "${creatorName}" wants to create task "${task.title}" (priority: ${task.priority}).`,
-        details: { taskId: task.id, priority: task.priority },
+        details: { taskId: task.id, priority: task.priority, subType: 'task' },
       }).then(result => {
         const current = this.tasks.get(task.id);
         if (!current || current.status !== 'pending') return;
@@ -2045,9 +2046,10 @@ export class TaskService {
       deliverablesSummary ? `\nDeliverables:\n${deliverablesSummary}` : '',
     ].filter(Boolean).join('\n');
 
+    const assigneeName = this.resolveActorName(task.assignedAgentId, 'agent') ?? task.assignedAgentId;
     this.hitlService.requestApprovalAndWait({
       agentId: task.assignedAgentId,
-      agentName: task.assignedAgentId,
+      agentName: assigneeName,
       type: 'custom',
       title: `Review: ${task.title}`,
       description,

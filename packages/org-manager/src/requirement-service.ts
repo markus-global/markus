@@ -190,13 +190,14 @@ export class RequirementService {
 
     this.broadcast('requirement:created', req);
     if (this.hitlService && req.source === 'agent') {
+      const creatorName = this.resolveAgentName(req.createdBy);
       this.hitlService.requestApprovalAndWait({
         agentId: req.createdBy,
-        agentName: req.createdBy,
+        agentName: creatorName,
         type: 'custom',
-        title: `Requirement approval: ${req.title}`,
-        description: `Agent "${req.createdBy}" proposed requirement "${req.title}" (priority: ${req.priority}).`,
-        details: { requirementId: req.id, priority: req.priority },
+        title: req.title,
+        description: `Agent "${creatorName}" proposed requirement "${req.title}" (priority: ${req.priority}).`,
+        details: { requirementId: req.id, priority: req.priority, subType: 'requirement' },
         targetUserId: 'all',
       }).then(result => {
         const current = this.requirements.get(req.id);
@@ -371,13 +372,14 @@ export class RequirementService {
     log.info('Requirement resubmitted for review', { id, hasUpdates: !!updates });
 
     if (this.hitlService && req.source === 'agent') {
+      const creatorName = this.resolveAgentName(req.createdBy);
       this.hitlService.requestApprovalAndWait({
         agentId: req.createdBy,
-        agentName: req.createdBy,
+        agentName: creatorName,
         type: 'custom',
-        title: `Requirement approval (resubmitted): ${req.title}`,
-        description: `Agent "${req.createdBy}" resubmitted requirement "${req.title}" (priority: ${req.priority}).`,
-        details: { requirementId: req.id, priority: req.priority },
+        title: req.title,
+        description: `Agent "${creatorName}" resubmitted requirement "${req.title}" (priority: ${req.priority}).`,
+        details: { requirementId: req.id, priority: req.priority, subType: 'requirement_resubmit' },
         targetUserId: 'all',
       }).then(result => {
         const current = this.requirements.get(req.id);
@@ -765,6 +767,16 @@ export class RequirementService {
         metadata: { requirementId: req.id, decision, createdBy: creatorId },
       });
     }
+  }
+
+  private resolveAgentName(agentId: string): string {
+    if (this.agentManager) {
+      try {
+        const agent = this.agentManager.getAgent(agentId);
+        if (agent) return (agent as any).config?.name ?? (agent as any).name ?? agentId;
+      } catch { /* ignore */ }
+    }
+    return agentId;
   }
 
   private broadcast(type: string, data: unknown): void {

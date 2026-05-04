@@ -272,7 +272,7 @@ function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
         onClick={() => { onClose(); onViewProfile(agent.id); }}
         className="w-full py-1.5 text-xs text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg transition-colors text-center"
       >
-        {t('page.viewProfileArrow')}
+        {t('team:page.viewProfileArrow')}
       </button>
     </div>
   );
@@ -1361,6 +1361,26 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     });
     return unsub;
   }, [updateConvMsgs, authUser?.id, activeChannel]);
+
+  // Remove agent from thinkingAgents when it decides not to respond
+  useEffect(() => {
+    const unsub = wsClient.on('chat:agent_no_response', (event) => {
+      const p = event.payload;
+      const msgChannel = (p['channel'] as string) ?? '';
+      const agentId = (p['agentId'] as string) ?? '';
+      if (msgChannel && agentId && `ch:${activeChannel}` === `ch:${msgChannel}`) {
+        setThinkingAgents(prev => {
+          const next = prev.filter(a => a.id !== agentId);
+          if (next.length === 0 && thinkingTimeoutRef.current) {
+            clearTimeout(thinkingTimeoutRef.current);
+            thinkingTimeoutRef.current = null;
+          }
+          return next;
+        });
+      }
+    });
+    return unsub;
+  }, [activeChannel]);
 
   // WS live updates for proactive agent messages (direct mode)
   useEffect(() => {

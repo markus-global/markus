@@ -1,5 +1,33 @@
 # Release Log
 
+## v0.6.4
+
+新 Logo；聊天上下文大幅扩容；审批通知优化；Agent 记忆编辑 UX 改进；thinking 气泡及时清除。
+
+### New Features
+
+- **新 Logo** — 替换项目 Logo，体积从 5MB 缩减至 96KB
+- **聊天历史扩容** — 群聊上下文从 20 条扩展到 80 条，Agent 工具获取上限从 30→80 条（max 200），消息截取从 500→2000 字符，Agent 获得更完整的对话上下文
+- **Agent 无回复事件** — 新增 `chat:agent_no_response` WebSocket 事件，Agent 决定不回复时前端即时清除 thinking 气泡
+
+### Bug Fixes
+
+- **修复审批通知标题冗余前缀** — 移除 "Approval needed:" / "Task approval:" / "Requirement approval:" 等前缀，直接显示任务/需求标题
+- **修复审批请求中 Agent 名显示为 ID** — requirement-service / task-service 中解析 Agent 显示名称替代原始 ID
+- **修复切换任务/需求时 thinking 气泡残留** — 切换 task/requirement 时重置 thinkingAgents 状态
+- **修复 Team 页 i18n key 前缀缺失** — `page.viewProfileArrow` → `team:page.viewProfileArrow`
+
+### Improvements
+
+- **Agent 记忆编辑 UX** — 日报/长期记忆改为常驻 textarea，脏数据时才显示保存按钮，最小高度 50vh
+- **通知铃铛增强** — NotificationBell 组件改进，工具分组覆盖 memory_delete / recall_context / recall_activity
+
+### Stats
+
+- 15 files changed, +175 / −67 lines
+
+---
+
 ## v0.6.3
 
 中文 Agent 名兼容修复；记忆搜索语义 fallback；Agent 初始化自动创建系统文件；CLI 工具整合精简；团队聊天稳定性修复；二进制安装包签名与托盘控制器。

@@ -286,7 +286,7 @@ export class APIServer {
             let channelContext: Array<{ role: string; content: string }> = [];
             if (this.storage) {
               try {
-                const recent = await this.storage.channelMessageRepo.getMessages(channelKey, 20);
+                const recent = await this.storage.channelMessageRepo.getMessages(channelKey, 80);
                 channelContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
                   role: m.senderType === 'agent' ? 'assistant' : 'user',
                   content: m.senderType === 'agent' ? stripInternalBlocks(m.text) : `[${m.senderName}]: ${m.text}`,
@@ -957,13 +957,35 @@ export class APIServer {
         }
       );
 
+      const emitNoResponse = () => {
+        const evt = {
+          type: 'chat:agent_no_response' as const,
+          payload: { channel, agentId },
+          timestamp: new Date().toISOString(),
+        };
+        if (channel.startsWith('dm:') || channel.startsWith('notes:')) {
+          const parts = channel.startsWith('notes:')
+            ? [channel.slice(6)]
+            : channel.slice(3).split(':');
+          this.ws.sendToUsers(parts, evt);
+        } else {
+          const humanIds = this.resolveChannelHumanIds(channel);
+          if (humanIds.length > 0) this.ws.sendToUsers(humanIds, evt);
+          else this.ws.broadcast(evt);
+        }
+      };
+
       if (!reply || !reply.trim() || reply.includes('[NO_RESPONSE]')) {
+        emitNoResponse();
         return;
       }
 
       const { thinking, clean: rawClean } = extractThinkBlocks(reply);
       const cleanReply = rawClean.replace(/\[NO_RESPONSE\]/gi, '').trim();
-      if (!cleanReply) return;
+      if (!cleanReply) {
+        emitNoResponse();
+        return;
+      }
 
       const metadata: Record<string, unknown> = {};
       if (thinking.length > 0) metadata['thinking'] = thinking;
@@ -1090,11 +1112,11 @@ export class APIServer {
     }
     const channelCooldowns = this.a2aCooldowns.get(channel)!;
 
-    // Build fresh channel context
+    // Build fresh channel context — provide ample history for informed replies
     let channelContext: Array<{ role: string; content: string }> = [];
     if (this.storage) {
       try {
-        const recent = await this.storage.channelMessageRepo.getMessages(channel, 20);
+        const recent = await this.storage.channelMessageRepo.getMessages(channel, 80);
         channelContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
           role: m.senderType === 'agent' ? 'assistant' : 'user',
           content: m.senderType === 'agent'
@@ -1729,11 +1751,11 @@ export class APIServer {
       const humanOnly = (body['humanOnly'] as boolean) === true;
       const isHumanChannel = humanOnly || channel.startsWith('notes:') || channel.startsWith('dm:');
 
-      // Build lightweight channel context (last 20 messages, strip internal blocks for agents)
+      // Build channel context — give agents enough history to understand the full discussion
       const buildChannelContext = async (): Promise<Array<{ role: string; content: string }>> => {
         if (!this.storage) return [];
         try {
-          const recent = await this.storage.channelMessageRepo.getMessages(channel, 20);
+          const recent = await this.storage.channelMessageRepo.getMessages(channel, 80);
           return (recent.messages ?? []).map((m: ChannelMsg) => ({
             role: m.senderType === 'agent' ? 'assistant' : 'user',
             content: m.senderType === 'agent'

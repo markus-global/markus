@@ -171,6 +171,11 @@
       "viewRequirement": "View requirement →",
       "viewAgent": "View agent →",
       "viewApproval": "View approval →"
+    },
+    "approvalType": {
+      "task": "Task",
+      "requirement": "Requirement",
+      "requirementResubmit": "Requirement (resubmitted)"
     }
   },
   "intro": {

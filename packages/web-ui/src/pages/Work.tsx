@@ -757,6 +757,8 @@ function TaskActivitySection({ task, agents, users, authUser }: {
   const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    setThinkingAgents([]);
+    if (thinkingTimeoutRef.current) { clearTimeout(thinkingTimeoutRef.current); thinkingTimeoutRef.current = null; }
     api.tasks.getComments(task.id).then(r => setComments(r.comments)).catch(() => {});
   }, [task.id]);
 
@@ -904,6 +906,11 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
   const topRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { setIsExecuting(isRunning); }, [isRunning]);
+
+  useEffect(() => {
+    setThinkingAgents([]);
+    if (thinkingTimeoutRef.current) { clearTimeout(thinkingTimeoutRef.current); thinkingTimeoutRef.current = null; }
+  }, [taskId]);
 
   // On mount: fetch rounds summary + latest round logs + comments (lightweight)
   useEffect(() => {
@@ -4432,6 +4439,8 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
   const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    setThinkingAgents([]);
+    if (thinkingTimeoutRef.current) { clearTimeout(thinkingTimeoutRef.current); thinkingTimeoutRef.current = null; }
     api.requirements.getComments(requirementId).then(r => setComments(r.comments)).catch(() => {});
   }, [requirementId]);
 
