@@ -135,6 +135,8 @@ export {
   createBuiltinTools,
   createManagerTools,
   type ManagerToolsContext,
+  createBuilderTools,
+  type BuilderToolsContext,
   createA2ATools,
   type A2AContext,
   createStructuredA2ATools,

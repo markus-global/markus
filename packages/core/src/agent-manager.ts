@@ -23,7 +23,7 @@ import { EventBus } from './events.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { MCPClientManager } from './tools/mcp-client.js';
 import { BrowserSessionManager } from './tools/browser-session.js';
-import { createManagerTools } from './tools/manager.js';
+import { createManagerTools, createBuilderTools } from './tools/manager.js';
 import { createHubTools } from './tools/hub-tools.js';
 import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
@@ -1314,6 +1314,15 @@ export class AgentManager {
       }
     }
 
+    // Builder tools (builder_install / builder_list) — available to all agents
+    if (this.builderService) {
+      const builderTools = createBuilderTools({
+        installArtifact: (type: 'agent' | 'team' | 'skill', name: string) => this.builderService!.installArtifact(type, name),
+        listArtifacts: (type?: 'agent' | 'team' | 'skill') => this.builderService!.listArtifacts(type),
+      });
+      for (const tool of builderTools) agent.registerTool(tool);
+    }
+
     // Connect MCP servers and register their tools
     const mcpConfigs = request.mcpServers ?? this.globalMcpServers;
     if (mcpConfigs) {
@@ -1949,6 +1958,15 @@ export class AgentManager {
         });
         for (const tool of hubTools) agent.registerTool(tool);
       }
+    }
+
+    // Builder tools (builder_install / builder_list) — available to all agents
+    if (this.builderService) {
+      const builderTools = createBuilderTools({
+        installArtifact: (type: 'agent' | 'team' | 'skill', name: string) => this.builderService!.installArtifact(type, name),
+        listArtifacts: (type?: 'agent' | 'team' | 'skill') => this.builderService!.listArtifacts(type),
+      });
+      for (const tool of builderTools) agent.registerTool(tool);
     }
 
     if (this.agentAuditCallback) {

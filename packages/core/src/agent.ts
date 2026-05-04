@@ -5075,12 +5075,13 @@ export class Agent {
       'requirement_propose', 'requirement_list', 'requirement_update_status',
       'memory_save', 'memory_search', 'memory_update_longterm',
       'discover_tools', 'notify_user', 'request_user_approval', 'recall_activity',
+      'builder_install', 'builder_list',
     ];
     if (isManager) {
       baseTools.push(
         'task_board_health', 'task_cleanup_duplicates', 'task_assign',
         'team_status', 'deliverable_create', 'deliverable_search',
-        'team_hire_agent', 'team_list_templates', 'builder_install', 'builder_list',
+        'team_hire_agent', 'team_list_templates',
       );
     }
     const HEARTBEAT_ALLOWED_TOOLS = new Set(baseTools);

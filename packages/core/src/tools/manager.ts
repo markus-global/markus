@@ -18,6 +18,85 @@ export interface ManagerToolsContext {
   updateAgentConfig?: (agentId: string, data: { name?: string }) => Promise<{ id: string; name: string }>;
 }
 
+export interface BuilderToolsContext {
+  installArtifact?: (type: 'agent' | 'team' | 'skill', name: string) => Promise<{ type: string; installed: unknown }>;
+  listArtifacts?: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>;
+}
+
+export function createBuilderTools(ctx: BuilderToolsContext): AgentToolHandler[] {
+  return [
+    ...(ctx.listArtifacts
+      ? [
+          {
+            name: 'builder_list',
+            description: 'List builder artifacts (custom-created or Hub-downloaded agent/team/skill packages). These can be installed with builder_install.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                type: {
+                  type: 'string',
+                  enum: ['agent', 'team', 'skill'],
+                  description: 'Filter by artifact type (optional)',
+                },
+              },
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const artifacts = ctx.listArtifacts!(args['type'] as 'agent' | 'team' | 'skill' | undefined);
+                return JSON.stringify({ artifacts, count: artifacts.length });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.installArtifact
+      ? [
+          {
+            name: 'builder_install',
+            description: 'Install a builder artifact — deploys an agent, team, or skill package into the live organization. For agents/teams: after installation, onboard with project context and assign initial tasks.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                type: {
+                  type: 'string',
+                  enum: ['agent', 'team', 'skill'],
+                  description: 'Artifact type',
+                },
+                name: { type: 'string', description: 'Artifact name (from builder_list)' },
+              },
+              required: ['type', 'name'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const type = (args['type'] as string | undefined)?.trim() as 'agent' | 'team' | 'skill' | undefined;
+                const name = (args['name'] as string | undefined)?.trim();
+                if (!type || !['agent', 'team', 'skill'].includes(type)) return JSON.stringify({ status: 'error', error: 'type is required and must be one of: agent, team, skill' });
+                if (!name) return JSON.stringify({ status: 'error', error: 'name is required — provide the artifact name from builder_list' });
+                const result = await ctx.installArtifact!(
+                  type,
+                  name,
+                );
+                const isAgentOrTeam = result.type === 'agent' || result.type === 'team';
+                return JSON.stringify({
+                  status: 'success',
+                  ...result,
+                  ...(isAgentOrTeam ? {
+                    next_steps: 'Installed successfully. Next: onboard new agent(s) with project context via agent_send_message, then assign initial tasks via task_create.',
+                  } : {}),
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+  ];
+}
+
 export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[] {
   return [
     {
@@ -215,33 +294,6 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
         ]
       : []),
 
-    ...(ctx.listArtifacts
-      ? [
-          {
-            name: 'builder_list',
-            description: 'List builder artifacts (custom-created or Hub-downloaded agent/team/skill packages). These can be installed with builder_install.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                type: {
-                  type: 'string',
-                  enum: ['agent', 'team', 'skill'],
-                  description: 'Filter by artifact type (optional)',
-                },
-              },
-            },
-            async execute(args: Record<string, unknown>): Promise<string> {
-              try {
-                const artifacts = ctx.listArtifacts!(args['type'] as 'agent' | 'team' | 'skill' | undefined);
-                return JSON.stringify({ artifacts, count: artifacts.length });
-              } catch (error) {
-                return JSON.stringify({ status: 'error', error: String(error) });
-              }
-            },
-          } as AgentToolHandler,
-        ]
-      : []),
-
     ...(ctx.updateTeam
       ? [
           {
@@ -298,49 +350,6 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
                 if (!name) return JSON.stringify({ status: 'error', error: 'name is required' });
                 const result = await ctx.updateAgentConfig!(agentId, { name });
                 return JSON.stringify({ status: 'success', agent: result });
-              } catch (error) {
-                return JSON.stringify({ status: 'error', error: String(error) });
-              }
-            },
-          } as AgentToolHandler,
-        ]
-      : []),
-
-    ...(ctx.installArtifact
-      ? [
-          {
-            name: 'builder_install',
-            description: 'Install a builder artifact — deploys an agent, team, or skill package into the live organization. For agents/teams: after installation, onboard with project context and assign initial tasks.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                type: {
-                  type: 'string',
-                  enum: ['agent', 'team', 'skill'],
-                  description: 'Artifact type',
-                },
-                name: { type: 'string', description: 'Artifact name (from builder_list)' },
-              },
-              required: ['type', 'name'],
-            },
-            async execute(args: Record<string, unknown>): Promise<string> {
-              try {
-                const type = (args['type'] as string | undefined)?.trim() as 'agent' | 'team' | 'skill' | undefined;
-                const name = (args['name'] as string | undefined)?.trim();
-                if (!type || !['agent', 'team', 'skill'].includes(type)) return JSON.stringify({ status: 'error', error: 'type is required and must be one of: agent, team, skill' });
-                if (!name) return JSON.stringify({ status: 'error', error: 'name is required — provide the artifact name from builder_list' });
-                const result = await ctx.installArtifact!(
-                  type,
-                  name,
-                );
-                const isAgentOrTeam = result.type === 'agent' || result.type === 'team';
-                return JSON.stringify({
-                  status: 'success',
-                  ...result,
-                  ...(isAgentOrTeam ? {
-                    next_steps: 'Installed successfully. Next: onboard new agent(s) with project context via agent_send_message, then assign initial tasks via task_create.',
-                  } : {}),
-                });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
