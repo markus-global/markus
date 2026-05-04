@@ -96,6 +96,10 @@ export interface LLMRequest {
   };
   /** Enable Anthropic server-side context compaction (beta) */
   compaction?: boolean;
+  /** Structured system prompt segments for cache-aware providers. Each
+   *  segment with `cacheBreakpoint: true` hints the provider to insert a
+   *  cache checkpoint at the end of that segment (e.g. Anthropic cache_control). */
+  systemCacheSegments?: Array<{ content: string; cacheBreakpoint?: boolean }>;
 }
 
 export type LLMContentPart =

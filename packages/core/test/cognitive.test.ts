@@ -266,7 +266,7 @@ describe('ContextEngine CPP section rendering', () => {
         isEmpty: false,
       };
 
-      const prompt = await engine.buildSystemPrompt({
+      const { text: prompt } = await engine.buildSystemPrompt({
         agentId: 'agent-1',
         agentName: 'TestBot',
         role: MOCK_ROLE,
@@ -290,7 +290,7 @@ describe('ContextEngine CPP section rendering', () => {
       const memory = new MemoryStore(tempDir);
       memory.addEntry({ id: 'mem-1', type: 'fact', content: 'Auth uses JWT tokens', timestamp: Date.now() });
 
-      const prompt = await engine.buildSystemPrompt({
+      const { text: prompt } = await engine.buildSystemPrompt({
         agentId: 'agent-1',
         agentName: 'TestBot',
         role: MOCK_ROLE,
@@ -318,7 +318,7 @@ describe('ContextEngine CPP section rendering', () => {
         isEmpty: true,
       };
 
-      const prompt = await engine.buildSystemPrompt({
+      const { text: prompt } = await engine.buildSystemPrompt({
         agentId: 'agent-1',
         agentName: 'TestBot',
         role: MOCK_ROLE,
@@ -348,7 +348,7 @@ describe('ContextEngine CPP section rendering', () => {
         isEmpty: false,
       };
 
-      const prompt = await engine.buildSystemPrompt({
+      const { text: prompt } = await engine.buildSystemPrompt({
         agentId: 'agent-1',
         agentName: 'TestBot',
         role: MOCK_ROLE,

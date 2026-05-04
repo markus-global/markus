@@ -56,6 +56,17 @@ export interface ContextUsageStats {
 export interface PreparedContext {
   messages: LLMMessage[];
   usage: ContextUsageStats;
+  systemCacheSegments?: SystemPromptSegment[];
+}
+
+export interface SystemPromptSegment {
+  content: string;
+  cacheBreakpoint?: boolean;
+}
+
+export interface SystemPromptResult {
+  text: string;
+  segments: SystemPromptSegment[];
 }
 
 function estimateTokens(text: string, counter?: TokenCounter): number {
@@ -122,7 +133,6 @@ export class ContextEngine {
     knowledgeContext?: string;
     deliverableContext?: string;
     environment?: EnvironmentProfile;
-    // Governance context extensions
     projectContext?: {
       project: { id: string; name: string; description: string; status: string };
       repositories?: Array<{ localPath: string; defaultBranch: string; role: string }>;
@@ -170,26 +180,101 @@ export class ContextEngine {
       mergedContent?: string;
     };
     cognitiveContext?: PreparedCognitiveContext;
-  }): Promise<string> {
-    const parts: string[] = [];
+  }): Promise<SystemPromptResult> {
+    const isDream = opts.scenario === 'memory_consolidation';
 
-    parts.push(opts.role.systemPrompt);
+    // ═══════════════════════════════════════════════════════════════════════
+    // TIER 1 — STABLE
+    // Content that rarely changes for a given agent configuration.
+    // Placing the most stable content first maximises prefix-cache hits
+    // across requests (Anthropic, OpenAI, DeepSeek all cache by prefix).
+    // ═══════════════════════════════════════════════════════════════════════
+    const stable: string[] = [];
 
-    if (opts.dynamicContext) {
-      parts.push(opts.dynamicContext);
+    stable.push(opts.role.systemPrompt);
+
+    if (opts.role.defaultPolicies.length > 0) {
+      stable.push('\n## Policies');
+      for (const policy of opts.role.defaultPolicies) {
+        stable.push(`### ${policy.name}`);
+        for (const rule of policy.rules) {
+          stable.push(`- ${rule}`);
+        }
+      }
     }
 
-    parts.push(this.buildIdentitySection(opts));
+    if (!isDream) {
+      stable.push('\n## Tool Usage Rules');
+      stable.push('**File editing discipline**: You MUST use `file_write` and `file_edit` for all file creation and modification. NEVER use `shell_execute` with `cat`, `echo`, `printf`, `tee`, pipes (`|`), output redirection (`>`, `>>`), heredocs (`<<`), or `sed`/`awk` to write or modify files — these bypass file access controls. `shell_execute` is for running commands (build, test, git, etc.), not for writing files.');
+      stable.push('**Large file writing**: NEVER write a document >200 lines in a single `file_write` call. Write section by section: `file_write` the first section, then `file_edit` to append each subsequent section.');
+      stable.push('**Error handling**: If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action.');
+      stable.push('**Subagent delegation**: For heavy subtasks needing many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
+      stable.push('**Built-in tools over CLI**: ALWAYS prefer built-in tools (`task_create`, `task_assign`, `team_hire_agent`, `builder_install`, `agent_send_message`, `memory_save`, etc.) over running `markus` CLI commands via `shell_execute`. The CLI is for human operators — agents must use their native tool interface. Only fall back to CLI if no built-in tool exists for the operation.');
+      stable.push('**No auto-install/deploy**: NEVER automatically install or deploy agents, teams, or skills via `builder_install`, `team_hire_agent`, or `hub_install` unless explicitly requested by a human team member (e.g., "install", "deploy", "hire", "start"). Creating an artifact (writing files to `builder-artifacts/`) is separate from deploying it into the live organization.');
+
+      stable.push('');
+      stable.push('\n## Task & Requirement Workflow');
+      stable.push('');
+      stable.push('**Requirements** (governance gate):');
+      stable.push('- `requirement_propose` → pending human approval → approved → link tasks via `requirement_id`');
+      stable.push('- Every task MUST reference an approved `requirement_id`. Use `requirement_propose` first if no requirement exists.');
+      stable.push('');
+      stable.push('**Task lifecycle** — Create → Execute → Review → Complete:');
+      stable.push('- **Create**: `task_create` (REQUIRED: `assigned_agent_id`, `reviewer_id`; optional `reviewer_type`: "agent"|"human"). Check `task_list` first to avoid duplicates.');
+      stable.push('- **Execute**: Decompose with `subtask_create` → work through subtasks → `task_submit_review` with summary + deliverables (MANDATORY). System auto-fills `task_id` and `reviewer`.');
+      stable.push('- **Review**: Reviewer approves with `task_update(status:"completed")` or rejects with `task_update(status:"in_progress", note:"what needs to change")` (auto-restarts execution). Workers MUST NOT set status=completed on their own tasks.');
+      stable.push('- **Blockers**: Use `task_update(status:"blocked", note:"reason")` when unable to proceed.');
+      stable.push('');
+      stable.push('**Dependencies & DAG decomposition**:');
+      stable.push('- **CRITICAL**: Use `blocked_by` to express ALL dependency relationships. If task B needs output from task A, B **MUST** include A\'s ID in `blocked_by`. Without this, tasks run in parallel and downstream tasks lack upstream deliverables.');
+      stable.push('- For complex goals, create a DAG of tasks. Assign each to the best team member (`team_list`). Independent tasks run in parallel; dependent tasks wait for predecessors.');
+      stable.push('- If consolidated output is needed, create a final synthesis task assigned to a manager, `blocked_by` ALL prerequisites.');
+      stable.push('');
+      stable.push('**Work discovery**: `list_projects` → `requirement_list` → `task_list`. Use `memory_save`/`memory_search` for personal notes; `deliverable_create`/`deliverable_search` for shared outputs.');
+      stable.push('');
+      stable.push('**Automatic status notifications** (do NOT duplicate manually):');
+      stable.push('- When task status changes, the system **automatically** handles all side effects: execution start/cancel, reviewer notification, dependency unblocking.');
+      stable.push('- Task status notifications are placed in assignees\' mailboxes as **informational context only**.');
+      stable.push('- Do NOT send A2A messages to notify about task status changes — only send A2A when you have substantive coordination needs beyond the status change itself.');
+      stable.push('');
+      stable.push('**Communicating with humans**:');
+      stable.push('- `notify_user` — proactive message to a human team member: status updates, progress reports, findings, alerts. Appears in chat timeline AND notification bell. The human can reply. Write comprehensive body with full context. **This is the ONLY way to reach humans from non-chat contexts** (heartbeat, autonomous tasks, etc.).');
+      stable.push('- `request_user_approval` — when you need a human decision, approval, or input. BLOCKS until the user responds. Supports custom options and freeform text. Do NOT use for routine updates.');
+      stable.push('- `recall_activity` — query your own past execution logs by task or activity type. Use when you need to review what you did previously (e.g., to answer a follow-up question).');
+      stable.push('');
+      stable.push('**Communicating with other agents**:');
+      stable.push('- `agent_send_message` — send a direct message to a peer agent. **By default this is asynchronous (fire-and-forget)**: the message enters their mailbox and you continue working without waiting. Set `wait_for_reply: true` only when you need the answer before you can proceed (rare — prefer async).');
+      stable.push('- A2A messaging is inherently **non-blocking**. You send a message, the recipient processes it on their own schedule, and may reply later via their own `agent_send_message`. Do NOT spin-wait or poll for responses.');
+      stable.push('- For substantial work requests, create a `task_create` assigned to the target agent instead of asking via message.');
+      stable.push('- Do NOT use A2A messages for routine task status notifications — the system handles those automatically.');
+    }
+
+    const scenario = opts.scenario ?? 'chat';
+    stable.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply }));
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // TIER 2 — SEMI-STABLE
+    // Changes with org/config/session, not per query. Identity, org
+    // structure, workspace paths, long-term memory.
+    // ═══════════════════════════════════════════════════════════════════════
+    const semiStable: string[] = [];
+
+    semiStable.push(this.buildIdentitySection({
+      agentId: opts.agentId,
+      agentName: opts.agentName,
+      role: opts.role,
+      identity: opts.identity,
+      availableSkills: opts.availableSkills,
+    }));
 
     const orgCtx = this.buildOrgContextSection(opts.orgContext, opts.contextMdPath);
-    if (orgCtx) parts.push(orgCtx);
+    if (orgCtx) semiStable.push(orgCtx);
 
-    // ── Team Announcements & Norms ───────────────────────────────────────
     if (opts.teamAnnouncements?.trim()) {
-      parts.push('\n## Team Announcements\n' + opts.teamAnnouncements.trim());
+      semiStable.push('\n## Team Announcements\n' + opts.teamAnnouncements.trim());
     }
     if (opts.teamNorms?.trim()) {
-      parts.push('\n## Team Working Norms\n' + opts.teamNorms.trim());
+      semiStable.push('\n## Team Working Norms\n' + opts.teamNorms.trim());
     }
     if (opts.teamDataDir) {
       const lines = ['\n## Team Data Directory', `Path: \`${opts.teamDataDir}\``, 'Files:', '- `ANNOUNCEMENT.md` — team announcements', '- `NORMS.md` — team working norms'];
@@ -198,67 +283,44 @@ export class ContextEngine {
       } else {
         lines.push('\nRead and follow the announcements and norms above. If you need changes, ask the team manager.');
       }
-      parts.push(lines.join('\n'));
+      semiStable.push(lines.join('\n'));
     }
 
-    // ── Governance: Project Context (P1 priority) ────────────────────────
-    if (opts.projectContext) {
-      const { project, repositories, governanceRules, teamRole } = opts.projectContext;
-      parts.push('\n## Current Project');
-      parts.push(`- Project: **${project.name}** (${project.status})`);
-      if (project.description) parts.push(`- ${project.description.slice(0, SYSTEM_PROJECT_DESC_CHARS)}`);
-      if (repositories?.length) {
-        for (const repo of repositories) {
-          parts.push(
-            `- Repository: \`${repo.localPath}\` (${repo.role}, default branch: \`${repo.defaultBranch}\`)`
-          );
-        }
-      }
-      parts.push('');
-      parts.push('Some git operations (switching to existing branches, pushing to protected branches, merge, rebase) require human approval — the system will pause and ask the reviewer. If denied, you will receive a reason; read it and adjust your approach.');
-      if (teamRole) parts.push(`- Your role: ${teamRole}`);
-      if (governanceRules) parts.push(`- Governance: ${governanceRules}`);
-    }
-
-    // ── Workspace Info ──────────────────────────────────────────────────
     if (opts.agentWorkspace) {
-      parts.push('\n## Your Workspace');
-      parts.push(`- Working directory: \`${opts.agentWorkspace.primaryWorkspace}\``);
+      semiStable.push('\n## Your Workspace');
+      semiStable.push(`- Working directory: \`${opts.agentWorkspace.primaryWorkspace}\``);
       if (opts.agentWorkspace.sharedWorkspace) {
-        parts.push(`- Shared workspace: \`${opts.agentWorkspace.sharedWorkspace}\` (all agents can read/write here)`);
+        semiStable.push(`- Shared workspace: \`${opts.agentWorkspace.sharedWorkspace}\` (all agents can read/write here)`);
       }
       const artifactsDir = opts.agentWorkspace.builderArtifactsDir ?? '~/.markus/builder-artifacts';
       if (opts.agentWorkspace.builderArtifactsDir) {
-        parts.push(`- Builder artifacts directory: \`${artifactsDir}/\``);
-        parts.push('  When creating agents, teams, or skills, place them in the correct subdirectory:');
-        parts.push(`  - Agents → \`${artifactsDir}/agents/{agent-name}/\``);
-        parts.push(`  - Teams → \`${artifactsDir}/teams/{team-name}/\``);
-        parts.push(`  - Skills → \`${artifactsDir}/skills/{skill-name}/\``);
-        parts.push('  The Builder page and install system ONLY recognize these paths.');
+        semiStable.push(`- Builder artifacts directory: \`${artifactsDir}/\``);
+        semiStable.push('  When creating agents, teams, or skills, place them in the correct subdirectory:');
+        semiStable.push(`  - Agents → \`${artifactsDir}/agents/{agent-name}/\``);
+        semiStable.push(`  - Teams → \`${artifactsDir}/teams/{team-name}/\``);
+        semiStable.push(`  - Skills → \`${artifactsDir}/skills/{skill-name}/\``);
+        semiStable.push('  The Builder page and install system ONLY recognize these paths.');
       }
       if (opts.agentDataDir) {
-        parts.push(`- Agent data directory: \`${opts.agentDataDir}\` (your ROLE.md, MEMORY.md, and personal files)`);
+        semiStable.push(`- Agent data directory: \`${opts.agentDataDir}\` (your ROLE.md, MEMORY.md, and personal files)`);
       }
-      parts.push('- IMPORTANT: Always use **absolute paths** in file operations. Relative paths are error-prone.');
-      parts.push('- You can directly read files in the shared workspace using `file_read` — no need to request them from other agents.');
+      semiStable.push('- IMPORTANT: Always use **absolute paths** in file operations. Relative paths are error-prone.');
+      semiStable.push('- You can directly read files in the shared workspace using `file_read` — no need to request them from other agents.');
     } else if (opts.agentDataDir) {
-      parts.push('\n## Your Workspace');
-      parts.push(`- Agent data directory: \`${opts.agentDataDir}\` (your ROLE.md, MEMORY.md, and personal files)`);
-      parts.push('- IMPORTANT: Always use **absolute paths** in file operations. Relative paths are error-prone.');
+      semiStable.push('\n## Your Workspace');
+      semiStable.push(`- Agent data directory: \`${opts.agentDataDir}\` (your ROLE.md, MEMORY.md, and personal files)`);
+      semiStable.push('- IMPORTANT: Always use **absolute paths** in file operations. Relative paths are error-prone.');
     }
 
-    // ── Shared User Profile (loaded from shared workspace USER.md) ─────
-    // Like OpenClaw's USER.md: loaded every session for every agent.
-    // Secretary maintains this file; all agents benefit from knowing the owner.
     if (opts.agentWorkspace?.sharedWorkspace) {
       const userMdPath = `${opts.agentWorkspace.sharedWorkspace}/USER.md`;
       try {
         if (existsSync(userMdPath)) {
           const userProfile = readFileSync(userMdPath, 'utf-8').trim();
           if (userProfile) {
-            parts.push('\n## About the Owner');
-            parts.push(userProfile.slice(0, SYSTEM_USER_PROFILE_CHARS));
-            parts.push('\n_This profile is maintained by the Secretary. If you notice new preferences or patterns from the owner, mention them to the Secretary via `agent_send_message`._');
+            semiStable.push('\n## About the Owner');
+            semiStable.push(userProfile.slice(0, SYSTEM_USER_PROFILE_CHARS));
+            semiStable.push('\n_This profile is maintained by the Secretary. If you notice new preferences or patterns from the owner, mention them to the Secretary via `agent_send_message`._');
           }
         }
       } catch {
@@ -266,34 +328,66 @@ export class ContextEngine {
       }
     }
 
-    // ── Governance: Trust Level (P2 priority) ──────────────────────────
     if (opts.trustLevel) {
-      parts.push('\n## Your Trust Level');
-      parts.push(`- Level: **${opts.trustLevel.level}** (score: ${opts.trustLevel.score})`);
+      semiStable.push('\n## Your Trust Level');
+      semiStable.push(`- Level: **${opts.trustLevel.level}** (score: ${opts.trustLevel.score})`);
       if (opts.trustLevel.level === 'probation') {
-        parts.push('- You are on probation. All your task creations require human approval. Focus on quality to build trust.');
+        semiStable.push('- You are on probation. All your task creations require human approval. Focus on quality to build trust.');
       } else if (opts.trustLevel.level === 'standard') {
-        parts.push('- You are a standard-level agent. Routine tasks may auto-approve; significant tasks need manager approval.');
+        semiStable.push('- You are a standard-level agent. Routine tasks may auto-approve; significant tasks need manager approval.');
       } else if (opts.trustLevel.level === 'trusted') {
-        parts.push('- You are a trusted agent. You have a proven track record and higher autonomy.');
+        semiStable.push('- You are a trusted agent. You have a proven track record and higher autonomy.');
       } else if (opts.trustLevel.level === 'senior') {
-        parts.push('- You are a senior agent. You have the highest autonomy. Routine tasks auto-approve.');
+        semiStable.push('- You are a senior agent. You have the highest autonomy. Routine tasks auto-approve.');
       }
     }
 
-    // ── Governance: System Announcements (P1 urgent, P2 others) ──────────
+    if (opts.environment) {
+      semiStable.push(this.buildEnvironmentSection(opts.environment));
+    }
+
+    const longTermMem = opts.memory.getLongTermMemory();
+    if (longTermMem) {
+      semiStable.push('\n## Your Knowledge');
+      semiStable.push(longTermMem.slice(0, SYSTEM_KNOWLEDGE_CHARS));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // TIER 3 — DYNAMIC
+    // Changes per interaction: project data, task board, cognitive context,
+    // mailbox state, current time.
+    // ═══════════════════════════════════════════════════════════════════════
+    const dynamic: string[] = [];
+
+    if (opts.projectContext) {
+      const { project, repositories, governanceRules, teamRole } = opts.projectContext;
+      dynamic.push('\n## Current Project');
+      dynamic.push(`- Project: **${project.name}** (${project.status})`);
+      if (project.description) dynamic.push(`- ${project.description.slice(0, SYSTEM_PROJECT_DESC_CHARS)}`);
+      if (repositories?.length) {
+        for (const repo of repositories) {
+          dynamic.push(
+            `- Repository: \`${repo.localPath}\` (${repo.role}, default branch: \`${repo.defaultBranch}\`)`
+          );
+        }
+      }
+      dynamic.push('');
+      dynamic.push('Some git operations (switching to existing branches, pushing to protected branches, merge, rebase) require human approval — the system will pause and ask the reviewer. If denied, you will receive a reason; read it and adjust your approach.');
+      if (teamRole) dynamic.push(`- Your role: ${teamRole}`);
+      if (governanceRules) dynamic.push(`- Governance: ${governanceRules}`);
+    }
+
     if (opts.announcements?.length) {
-      parts.push('\n## System Announcements');
+      dynamic.push('\n## System Announcements');
       for (const a of opts.announcements) {
         const prefix =
           a.priority === 'urgent' ? '[URGENT] ' : a.priority === 'high' ? '[HIGH] ' : '[INFO] ';
-        parts.push(`- ${prefix}${a.title}: ${a.content}`);
+        dynamic.push(`- ${prefix}${a.title}: ${a.content}`);
       }
     }
 
-    // ── Governance: Human Feedback (P1 priority) ─────────────────────────
     if (opts.recentFeedback?.length) {
-      parts.push('\n## Human Feedback (recent)');
+      dynamic.push('\n## Human Feedback (recent)');
       for (const fb of opts.recentFeedback) {
         const urgency =
           fb.priority === 'critical'
@@ -304,71 +398,20 @@ export class ContextEngine {
         const anchor = fb.anchor
           ? ` (re: ${fb.anchor.section}${fb.anchor.itemId ? '/' + fb.anchor.itemId : ''})`
           : '';
-        parts.push(`- ${urgency}**${fb.authorName}**${anchor}: ${fb.content}`);
+        dynamic.push(`- ${urgency}**${fb.authorName}**${anchor}: ${fb.content}`);
       }
     }
 
-    // ── Governance: Project Deliverables (P1 priority) ─────────────────────
     if (opts.projectDeliverables?.length) {
-      parts.push('\n## Project Deliverables (key entries)');
+      dynamic.push('\n## Project Deliverables (key entries)');
       for (const k of opts.projectDeliverables) {
-        parts.push(`- **[${k.category}]** ${k.title}: ${k.content.slice(0, SYSTEM_DELIVERABLE_PREVIEW_CHARS)}`);
+        dynamic.push(`- **[${k.category}]** ${k.title}: ${k.content.slice(0, SYSTEM_DELIVERABLE_PREVIEW_CHARS)}`);
       }
     }
-
-    if (opts.role.defaultPolicies.length > 0) {
-      parts.push('\n## Policies');
-      for (const policy of opts.role.defaultPolicies) {
-        parts.push(`### ${policy.name}`);
-        for (const rule of policy.rules) {
-          parts.push(`- ${rule}`);
-        }
-      }
-    }
-
-    // Unified knowledge section — MEMORY.md loaded as a single block.
-    // Agent-organized: no rigid SOP/lesson/best-practice taxonomy.
-    const longTermMem = opts.memory.getLongTermMemory();
-    if (longTermMem) {
-      parts.push('\n## Your Knowledge');
-      parts.push(longTermMem.slice(0, SYSTEM_KNOWLEDGE_CHARS));
-    }
-
-    // Track IDs of insight entries shown in knowledge to avoid duplication in Relevant Memories
-    const alreadyShownIds = new Set<string>();
-
-    const isDream = opts.scenario === 'memory_consolidation';
 
     if (!isDream && (opts.deliverableContext || opts.knowledgeContext)) {
-      parts.push('\n## Shared Deliverables');
-      parts.push((opts.deliverableContext ?? opts.knowledgeContext ?? '').slice(0, SYSTEM_DELIVERABLES_CHARS));
-    }
-
-    // When CPP is active, cognitive sections replace mechanical retrieval
-    const cpp = opts.cognitiveContext;
-    if (cpp && !cpp.isEmpty) {
-      if (cpp.cognitiveContext) {
-        parts.push('\n## Cognitive Context');
-        parts.push(cpp.cognitiveContext);
-      }
-      if (cpp.retrievedContext) {
-        parts.push('\n## Retrieved Context');
-        parts.push(cpp.retrievedContext);
-      }
-      if (cpp.reflection) {
-        parts.push('\n## Reflection');
-        parts.push(cpp.reflection);
-      }
-    } else if (!isDream) {
-      // Fallback: mechanical retrieval when CPP is off or D0
-      const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId, alreadyShownIds);
-      if (relevantMemories.length > 0) {
-        parts.push('\n## Relevant Memories');
-        for (const mem of relevantMemories) {
-          const ts = mem.timestamp ? new Date(mem.timestamp).toLocaleDateString() : '';
-          parts.push(`- [${ts}] ${mem.content}`);
-        }
-      }
+      dynamic.push('\n## Shared Deliverables');
+      dynamic.push((opts.deliverableContext ?? opts.knowledgeContext ?? '').slice(0, SYSTEM_DELIVERABLES_CHARS));
     }
 
     if (!isDream) {
@@ -387,134 +430,107 @@ export class ContextEngine {
         const MY_TASK_LIMIT = SYSTEM_MY_TASKS_MAX;
         const TEAM_TASK_LIMIT = SYSTEM_TEAM_TASKS_MAX;
 
-        parts.push('\n## Task Board');
+        dynamic.push('\n## Task Board');
 
-        parts.push('### My Tasks (assigned to you):');
+        dynamic.push('### My Tasks (assigned to you):');
         if (myActive.length > 0) {
           const shown = myActive.slice(0, MY_TASK_LIMIT);
           for (const t of shown) {
-            parts.push(
+            dynamic.push(
               `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, priority: ${t.priority})`
             );
-            if (t.description) parts.push(`  ${t.description.slice(0, SYSTEM_TASK_DESC_CHARS)}`);
+            if (t.description) dynamic.push(`  ${t.description.slice(0, SYSTEM_TASK_DESC_CHARS)}`);
           }
           if (myActive.length > MY_TASK_LIMIT) {
-            parts.push(`_(${myActive.length - MY_TASK_LIMIT} more active tasks not shown — use \`task_list\` for full list)_`);
+            dynamic.push(`_(${myActive.length - MY_TASK_LIMIT} more active tasks not shown — use \`task_list\` for full list)_`);
           }
         } else {
-          parts.push('No active tasks assigned to you.');
+          dynamic.push('No active tasks assigned to you.');
         }
         if (myDone.length > 0) {
-          parts.push(`_(${myDone.length} completed/closed tasks)_`);
+          dynamic.push(`_(${myDone.length} completed/closed tasks)_`);
         }
 
         if (otherTasks.length > 0) {
           const otherActive = otherTasks.filter(t => !CLOSED_STATUSES.has(t.status)).sort(byPriority);
           const otherDone = otherTasks.filter(t => CLOSED_STATUSES.has(t.status));
           if (otherActive.length > 0) {
-            parts.push('### Team Tasks (assigned to others):');
+            dynamic.push('### Team Tasks (assigned to others):');
             const shown = otherActive.slice(0, TEAM_TASK_LIMIT);
             for (const t of shown) {
               const owner = t.assignedAgentName ?? t.assignedAgentId ?? 'unassigned';
-              parts.push(
+              dynamic.push(
                 `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, assignee: ${owner}, priority: ${t.priority})`
               );
             }
             if (otherActive.length > TEAM_TASK_LIMIT) {
-              parts.push(`_(${otherActive.length - TEAM_TASK_LIMIT} more team tasks not shown)_`);
+              dynamic.push(`_(${otherActive.length - TEAM_TASK_LIMIT} more team tasks not shown)_`);
             }
           }
           if (otherDone.length > 0) {
-            parts.push(`_(${otherDone.length} other completed/closed tasks)_`);
+            dynamic.push(`_(${otherDone.length} other completed/closed tasks)_`);
           }
         }
       } else {
-        parts.push('\n## Task Board');
-        parts.push('No tasks on the board.');
+        dynamic.push('\n## Task Board');
+        dynamic.push('No tasks on the board.');
       }
-
-      parts.push('');
-      parts.push('### Task & Requirement Workflow');
-      parts.push('');
-      parts.push('**Requirements** (governance gate):');
-      parts.push('- `requirement_propose` → pending human approval → approved → link tasks via `requirement_id`');
-      parts.push('- Every task MUST reference an approved `requirement_id`. Use `requirement_propose` first if no requirement exists.');
-      parts.push('');
-      parts.push('**Task lifecycle** — Create → Execute → Review → Complete:');
-      parts.push('- **Create**: `task_create` (REQUIRED: `assigned_agent_id`, `reviewer_id`; optional `reviewer_type`: "agent"|"human"). Check `task_list` first to avoid duplicates.');
-      parts.push('- **Execute**: Decompose with `subtask_create` → work through subtasks → `task_submit_review` with summary + deliverables (MANDATORY). System auto-fills `task_id` and `reviewer`.');
-      parts.push('- **Review**: Reviewer approves with `task_update(status:"completed")` or rejects with `task_update(status:"in_progress", note:"what needs to change")` (auto-restarts execution). Workers MUST NOT set status=completed on their own tasks.');
-      parts.push('- **Blockers**: Use `task_update(status:"blocked", note:"reason")` when unable to proceed.');
-      parts.push('');
-      parts.push('**Dependencies & DAG decomposition**:');
-      parts.push('- **CRITICAL**: Use `blocked_by` to express ALL dependency relationships. If task B needs output from task A, B **MUST** include A\'s ID in `blocked_by`. Without this, tasks run in parallel and downstream tasks lack upstream deliverables.');
-      parts.push('- For complex goals, create a DAG of tasks. Assign each to the best team member (`team_list`). Independent tasks run in parallel; dependent tasks wait for predecessors.');
-      parts.push('- If consolidated output is needed, create a final synthesis task assigned to a manager, `blocked_by` ALL prerequisites.');
-      parts.push('');
-      parts.push('**Work discovery**: `list_projects` → `requirement_list` → `task_list`. Use `memory_save`/`memory_search` for personal notes; `deliverable_create`/`deliverable_search` for shared outputs.');
-      parts.push('');
-      parts.push('**Automatic status notifications** (do NOT duplicate manually):');
-      parts.push('- When task status changes, the system **automatically** handles all side effects: execution start/cancel, reviewer notification, dependency unblocking.');
-      parts.push('- Task status notifications are placed in assignees\' mailboxes as **informational context only**.');
-      parts.push('- Do NOT send A2A messages to notify about task status changes — only send A2A when you have substantive coordination needs beyond the status change itself.');
-      parts.push('');
-      parts.push('**Communicating with humans**:');
-      parts.push('- `notify_user` — proactive message to a human team member: status updates, progress reports, findings, alerts. Appears in chat timeline AND notification bell. The human can reply. Write comprehensive body with full context. **This is the ONLY way to reach humans from non-chat contexts** (heartbeat, autonomous tasks, etc.).');
-      parts.push('- `request_user_approval` — when you need a human decision, approval, or input. BLOCKS until the user responds. Supports custom options and freeform text. Do NOT use for routine updates.');
-      parts.push('- `recall_activity` — query your own past execution logs by task or activity type. Use when you need to review what you did previously (e.g., to answer a follow-up question).');
-      parts.push('');
-      parts.push('**Communicating with other agents**:');
-      parts.push('- `agent_send_message` — send a direct message to a peer agent. **By default this is asynchronous (fire-and-forget)**: the message enters their mailbox and you continue working without waiting. Set `wait_for_reply: true` only when you need the answer before you can proceed (rare — prefer async).');
-      parts.push('- A2A messaging is inherently **non-blocking**. You send a message, the recipient processes it on their own schedule, and may reply later via their own `agent_send_message`. Do NOT spin-wait or poll for responses.');
-      parts.push('- For substantial work requests, create a `task_create` assigned to the target agent instead of asking via message.');
-      parts.push('- Do NOT use A2A messages for routine task status notifications — the system handles those automatically.');
     }
 
-    if (opts.environment) {
-      parts.push(this.buildEnvironmentSection(opts.environment));
+    if (opts.dynamicContext) {
+      dynamic.push(opts.dynamicContext);
+    }
+
+    const alreadyShownIds = new Set<string>();
+    const cpp = opts.cognitiveContext;
+    if (cpp && !cpp.isEmpty) {
+      if (cpp.cognitiveContext) {
+        dynamic.push('\n## Cognitive Context');
+        dynamic.push(cpp.cognitiveContext);
+      }
+      if (cpp.retrievedContext) {
+        dynamic.push('\n## Retrieved Context');
+        dynamic.push(cpp.retrievedContext);
+      }
+      if (cpp.reflection) {
+        dynamic.push('\n## Reflection');
+        dynamic.push(cpp.reflection);
+      }
+    } else if (!isDream) {
+      const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId, alreadyShownIds);
+      if (relevantMemories.length > 0) {
+        dynamic.push('\n## Relevant Memories');
+        for (const mem of relevantMemories) {
+          const ts = mem.timestamp ? new Date(mem.timestamp).toLocaleDateString() : '';
+          dynamic.push(`- [${ts}] ${mem.content}`);
+        }
+      }
+    }
+
+    if (!isDream && opts.mailboxContext) {
+      dynamic.push(this.buildMailboxSection(opts.mailboxContext));
     }
 
     if (!isDream && opts.senderIdentity) {
-      parts.push(`\n## Current Conversation`);
-      parts.push(
+      dynamic.push(`\n## Current Conversation`);
+      dynamic.push(
         `You are now talking to **${opts.senderIdentity.name}** (${opts.senderIdentity.role}).`
       );
       if (opts.senderIdentity.role === 'owner') {
-        parts.push(
+        dynamic.push(
           'This person is the organization owner. Their instructions have the highest priority. Be proactive in reporting and responsive to their needs.'
         );
       } else if (opts.senderIdentity.role === 'admin') {
-        parts.push(
+        dynamic.push(
           'This person is an administrator. Cooperate actively and share progress proactively.'
         );
       } else if (opts.senderIdentity.role === 'guest') {
-        parts.push(
+        dynamic.push(
           'This person is an external guest. Be polite but cautious — do not expose internal sensitive information.'
         );
       }
     }
 
-    if (!isDream) {
-      parts.push('\n## Tool Usage Rules');
-      parts.push('**File editing discipline**: You MUST use `file_write` and `file_edit` for all file creation and modification. NEVER use `shell_execute` with `cat`, `echo`, `printf`, `tee`, pipes (`|`), output redirection (`>`, `>>`), heredocs (`<<`), or `sed`/`awk` to write or modify files — these bypass file access controls. `shell_execute` is for running commands (build, test, git, etc.), not for writing files.');
-      parts.push('**Large file writing**: NEVER write a document >200 lines in a single `file_write` call. Write section by section: `file_write` the first section, then `file_edit` to append each subsequent section.');
-      parts.push('**Error handling**: If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action.');
-      parts.push('**Subagent delegation**: For heavy subtasks needing many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
-      parts.push('**Built-in tools over CLI**: ALWAYS prefer built-in tools (`task_create`, `task_assign`, `team_hire_agent`, `builder_install`, `agent_send_message`, `memory_save`, etc.) over running `markus` CLI commands via `shell_execute`. The CLI is for human operators — agents must use their native tool interface. Only fall back to CLI if no built-in tool exists for the operation.');
-      parts.push('**No auto-install/deploy**: NEVER automatically install or deploy agents, teams, or skills via `builder_install`, `team_hire_agent`, or `hub_install` unless explicitly requested by a human team member (e.g., "install", "deploy", "hire", "start"). Creating an artifact (writing files to `builder-artifacts/`) is separate from deploying it into the live organization.');
-    }
-
-    // --- Mailbox & attention context ---
-    if (!isDream && opts.mailboxContext) {
-      parts.push(this.buildMailboxSection(opts.mailboxContext));
-    }
-
-    // --- Scenario-specific behavioral guidance ---
-    const scenario = opts.scenario ?? 'chat';
-    parts.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply }));
-
-    // Timestamp at the end of the system prompt preserves KV-cache for the
-    // stable prefix (identity, role, policies, memory) which rarely changes.
     const now = new Date();
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const offset = now.getTimezoneOffset();
@@ -523,9 +539,24 @@ export class ContextEngine {
     const absM = String(Math.abs(offset) % 60).padStart(2, '0');
     const pad = (n: number) => String(n).padStart(2, '0');
     const localStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-    parts.push(`\n---\nCurrent date and time: ${localStr} (${tz}, UTC${sign}${absH}:${absM})`);
+    dynamic.push(`\n---\nCurrent date and time: ${localStr} (${tz}, UTC${sign}${absH}:${absM})`);
 
-    return parts.join('\n');
+    // Build cache-aware segments: each tier becomes a segment with an
+    // optional cache breakpoint. Providers that support explicit cache
+    // hints (e.g. Anthropic cache_control) can split on these boundaries.
+    const stableText = stable.join('\n');
+    const semiStableText = semiStable.join('\n');
+    const dynamicText = dynamic.join('\n');
+
+    const segments: SystemPromptSegment[] = [];
+    if (stableText) segments.push({ content: stableText, cacheBreakpoint: true });
+    if (semiStableText) segments.push({ content: semiStableText, cacheBreakpoint: true });
+    if (dynamicText) segments.push({ content: dynamicText });
+
+    return {
+      text: segments.map(s => s.content).join('\n'),
+      segments,
+    };
   }
 
   private buildMailboxSection(ctx: NonNullable<Parameters<ContextEngine['buildSystemPrompt']>[0]['mailboxContext']>): string {
@@ -863,6 +894,7 @@ export class ContextEngine {
       description: string;
       inputSchema: Record<string, unknown>;
     }>;
+    systemCacheSegments?: SystemPromptSegment[];
   }): Promise<PreparedContext> {
     const contextWindow = opts.modelContextWindow ?? 64000;
     const rawMaxOutput = opts.modelMaxOutput ?? 16384;
@@ -985,6 +1017,7 @@ export class ContextEngine {
         available,
         usagePercent: Math.round(usagePercent * 10) / 10,
       },
+      systemCacheSegments: opts.systemCacheSegments,
     };
   }
 

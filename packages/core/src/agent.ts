@@ -2406,7 +2406,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext(scenario, effectiveMessage, senderId);
 
-    const systemPrompt = await this.contextEngine.buildSystemPrompt({
+    const { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -2452,6 +2452,7 @@ export class Agent {
       modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
       modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
       toolDefinitions: llmTools,
+      systemCacheSegments,
     });
     const messages = prepared.messages;
     log.debug('Context usage for chat', { usagePercent: prepared.usage.usagePercent, totalUsed: prepared.usage.totalUsed });
@@ -2467,6 +2468,7 @@ export class Agent {
           tools: llmTools.length > 0 ? llmTools : undefined,
           metadata: this.getLLMMetadata(sessionId),
           compaction: useCompaction,
+          systemCacheSegments,
         }, this.getEffectiveProvider()),
         'Chat LLM call',
       );
@@ -2659,6 +2661,7 @@ export class Agent {
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
           modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
           toolDefinitions: llmTools,
+          systemCacheSegments,
         });
         const updatedMessages = prepared2.messages;
 
@@ -2669,6 +2672,7 @@ export class Agent {
             tools: llmTools.length > 0 ? llmTools : undefined,
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
+            systemCacheSegments,
           }, this.getEffectiveProvider()),
           'Chat LLM continuation',
         );
@@ -2714,6 +2718,7 @@ export class Agent {
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
           modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
           toolDefinitions: llmTools,
+          systemCacheSegments,
         });
 
         response = await this.withNetworkRetry(
@@ -2722,6 +2727,7 @@ export class Agent {
             tools: llmTools.length > 0 ? llmTools : undefined,
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
+            systemCacheSegments,
           }, this.getEffectiveProvider()),
           'Chat LLM comment-reminder',
         );
@@ -2776,6 +2782,7 @@ export class Agent {
             modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
             modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
             toolDefinitions: llmTools,
+            systemCacheSegments,
           });
           response = await this.withNetworkRetry(
             () => this.llmRouter.chat({
@@ -2783,6 +2790,7 @@ export class Agent {
               tools: llmTools.length > 0 ? llmTools : undefined,
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
+              systemCacheSegments,
             }, this.getEffectiveProvider()),
             'Chat LLM comment-reminder-final',
           );
@@ -2893,7 +2901,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('chat', effectiveMessage, senderId);
 
-    const systemPrompt = await this.contextEngine.buildSystemPrompt({
+    const { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -2932,6 +2940,7 @@ export class Agent {
       modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
       modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
       toolDefinitions: llmTools,
+      systemCacheSegments,
     });
     const messages = preparedStream.messages;
     log.debug('Context usage for stream', { usagePercent: preparedStream.usage.usagePercent });
@@ -2973,7 +2982,7 @@ export class Agent {
       const llmStart = Date.now();
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chatStream(
-          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId), compaction: useCompaction },
+          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId), compaction: useCompaction, systemCacheSegments },
           wrappedOnEvent,
           this.getEffectiveProvider(),
           abortController.signal,
@@ -3155,6 +3164,7 @@ export class Agent {
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
           modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
           toolDefinitions: llmTools,
+          systemCacheSegments,
         });
         const updatedMessages = preparedCont.messages;
 
@@ -3177,7 +3187,7 @@ export class Agent {
         const llmStart2 = Date.now();
         response = await this.withNetworkRetry(
           () => this.llmRouter.chatStream(
-            { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId), compaction: useCompaction },
+            { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId), compaction: useCompaction, systemCacheSegments },
             wrappedOnEvent,
             this.getEffectiveProvider(),
             abortController.signal,
@@ -3513,7 +3523,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('task_execution', taskPrompt);
 
-    const systemPrompt = await this.contextEngine.buildSystemPrompt({
+    const { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -3585,6 +3595,7 @@ export class Agent {
         modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
         modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
         toolDefinitions: llmTools,
+        systemCacheSegments,
       });
       const messages = preparedTask.messages;
       log.debug('Context usage for task execution', { taskId, usagePercent: preparedTask.usage.usagePercent, totalUsed: preparedTask.usage.totalUsed });
@@ -3592,7 +3603,7 @@ export class Agent {
       let taskLlmStart = Date.now();
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chatStream(
-          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
+          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments },
           handleStreamEvent,
           this.getEffectiveProvider(),
           abortController.signal,
@@ -3801,6 +3812,7 @@ export class Agent {
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
           modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
           toolDefinitions: llmTools,
+          systemCacheSegments,
         });
         taskLlmStart = Date.now();
         response = await this.withNetworkRetry(
@@ -3810,6 +3822,7 @@ export class Agent {
               tools: llmTools.length > 0 ? llmTools : undefined,
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
+              systemCacheSegments,
             },
             handleStreamEvent,
             this.getEffectiveProvider(),
@@ -3867,6 +3880,7 @@ export class Agent {
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
           modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
           toolDefinitions: llmTools,
+          systemCacheSegments,
         });
         taskLlmStart = Date.now();
         response = await this.withNetworkRetry(
@@ -3876,6 +3890,7 @@ export class Agent {
               tools: llmTools.length > 0 ? llmTools : undefined,
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
+              systemCacheSegments,
             },
             handleStreamEvent,
             this.getEffectiveProvider(),
@@ -4033,7 +4048,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('chat', userMessage);
 
-    const systemPrompt = await this.contextEngine.buildSystemPrompt({
+    const { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -4097,13 +4112,14 @@ export class Agent {
         modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
         modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
         toolDefinitions: llmTools,
+        systemCacheSegments,
       });
       const messages = prepared.messages;
 
       let risLlmStart = Date.now();
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chatStream(
-          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
+          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments },
           handleStreamEvent,
           this.getEffectiveProvider(),
         ),
@@ -4173,11 +4189,12 @@ export class Agent {
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
           modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
           toolDefinitions: llmTools,
+          systemCacheSegments,
         });
         risLlmStart = Date.now();
         response = await this.withNetworkRetry(
           () => this.llmRouter.chatStream(
-            { messages: preparedCont.messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
+            { messages: preparedCont.messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments },
             handleStreamEvent,
             this.getEffectiveProvider(),
           ),
