@@ -279,12 +279,17 @@ export class TaskService {
       }
 
       if (!isReviewerDuringReview) {
-        // 2. Notify task assignee as 'task_comment'
-        if (task?.assignedAgentId) {
+        const terminalStatuses = new Set(['completed', 'accepted', 'archived']);
+        const handledByInjection = task?.status === 'in_progress' || (task?.status && terminalStatuses.has(task.status));
+
+        // 2. Notify task assignee as 'task_comment' — skip when assignee is
+        // already reached via injectCommentIntoRunningTask (in_progress → live
+        // injection) or handlePostTaskComment (terminal → session reply).
+        if (task?.assignedAgentId && !handledByInjection) {
           enqueueFor(task.assignedAgentId, 'task_comment', `New comment from ${authorName} on your assigned task`);
         }
-        // 3. Notify creator only when task is NOT in_progress
-        if (task?.createdBy && task.status !== 'in_progress') {
+        // 3. Notify creator (skip in_progress and terminal — same reasons)
+        if (task?.createdBy && !handledByInjection) {
           enqueueFor(task.createdBy, 'task_comment', `New comment from ${authorName} on a task you created`);
         }
       }
@@ -1714,7 +1719,7 @@ export class TaskService {
         type: 'custom',
         title: task.title,
         description: `Agent "${creatorName}" wants to create task "${task.title}" (priority: ${task.priority}).`,
-        details: { taskId: task.id, priority: task.priority, subType: 'task' },
+        details: { taskId: task.id, taskTitle: task.title, priority: task.priority, subType: 'task' },
       }).then(result => {
         const current = this.tasks.get(task.id);
         if (!current || current.status !== 'pending') return;
@@ -1986,6 +1991,14 @@ export class TaskService {
     if (from === 'review' && to !== 'review') {
       this.activeReviews.delete(taskId);
     }
+    if (TERMINAL_STATUSES.has(to) && this.hitlService) {
+      const cancelled = this.hitlService.cancelApprovalsByDetail(
+        'taskId', taskId, 'system', `Task ${to}`,
+      );
+      if (cancelled > 0) {
+        log.info(`Cancelled ${cancelled} pending approval(s) for task ${taskId} (status → ${to})`);
+      }
+    }
   }
 
   // ─── Stage 2: DB persistence ─────────────────────────────────────────────────
@@ -2053,6 +2066,7 @@ export class TaskService {
       type: 'custom',
       title: `Review: ${task.title}`,
       description,
+      details: { taskId: task.id, taskTitle: task.title, subType: 'task_review' },
       targetUserId: task.reviewerId,
       options: [
         { id: 'approve', label: 'Approve' },
@@ -3966,8 +3980,10 @@ export class TaskService {
       content,
       '',
       `(This task "${task.title}" is already ${task.status}. You have full context from your execution above.`,
-      'Respond to the comment. If the feedback contains something worth remembering, save it to memory.',
-      'You have all your tools available — take action if appropriate.)',
+      'Your text response will be posted as a reply in the task comment thread automatically.',
+      'Do NOT use the `task_comment` tool — your text output IS the reply visible to the commenter.',
+      'If the feedback contains something worth remembering, save it to memory.',
+      'You have all your tools available for taking action if appropriate.)',
     ].join('\n');
 
     try {

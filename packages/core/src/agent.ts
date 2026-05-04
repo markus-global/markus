@@ -2406,7 +2406,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext(scenario, effectiveMessage, senderId);
 
-    const systemPrompt = await this.contextEngine.buildSystemPrompt({
+    const { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -2452,6 +2452,7 @@ export class Agent {
       modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
       modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
       toolDefinitions: llmTools,
+      systemCacheSegments,
     });
     const messages = prepared.messages;
     log.debug('Context usage for chat', { usagePercent: prepared.usage.usagePercent, totalUsed: prepared.usage.totalUsed });
@@ -2467,6 +2468,7 @@ export class Agent {
           tools: llmTools.length > 0 ? llmTools : undefined,
           metadata: this.getLLMMetadata(sessionId),
           compaction: useCompaction,
+          systemCacheSegments,
         }, this.getEffectiveProvider()),
         'Chat LLM call',
       );
@@ -2484,6 +2486,7 @@ export class Agent {
 
       let toolIterations = 0;
       const effectiveMaxIter = options?.maxToolIterations ?? this._maxToolIterations;
+      const commentToolUsed = new Set<string>();
 
       while (
         (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
@@ -2594,10 +2597,13 @@ export class Agent {
             });
           }
 
-          // Record calls for loop detection
+          // Record calls for loop detection + comment tool tracking
           for (let i = 0; i < response.toolCalls!.length; i++) {
             const tc = response.toolCalls![i]!;
             this.loopDetector.record(tc.name, tc.arguments ?? {}, toolResults[i]?.content ?? '');
+            if (tc.name === 'task_comment' || tc.name === 'requirement_comment') {
+              commentToolUsed.add(tc.name);
+            }
           }
           const loopCheck = this.loopDetector.check();
           if (loopCheck.detected) {
@@ -2655,6 +2661,7 @@ export class Agent {
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
           modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
           toolDefinitions: llmTools,
+          systemCacheSegments,
         });
         const updatedMessages = prepared2.messages;
 
@@ -2665,6 +2672,7 @@ export class Agent {
             tools: llmTools.length > 0 ? llmTools : undefined,
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
+            systemCacheSegments,
           }, this.getEffectiveProvider()),
           'Chat LLM continuation',
         );
@@ -2679,6 +2687,114 @@ export class Agent {
           durationMs: Date.now() - llmStart2,
           success: true,
         });
+      }
+
+      // Safeguard: if agent finishes comment_response without calling
+      // task_comment/requirement_comment, remind it and give one more chance.
+      // Only trigger when agent produced substantive text (likely forgot to use
+      // the tool). If text is empty/short, the agent likely decided not to reply
+      // per conversation-termination rules — that's legitimate.
+      const pendingReplyText = sanitizeLLMReply(response.content);
+      if (scenario === 'comment_response' && commentToolUsed.size === 0
+        && pendingReplyText.length > 60 && toolIterations < effectiveMaxIter) {
+        this.memory.appendMessage(sessionId, {
+          role: 'assistant',
+          content: response.content,
+          toolCalls: response.toolCalls,
+          reasoningContent: response.reasoningContent,
+        });
+        this.memory.appendMessage(sessionId, {
+          role: 'user',
+          content: '[SYSTEM] You are about to end your turn WITHOUT posting a reply. In this scenario your text output is NOT visible to anyone. You MUST call `task_comment` or `requirement_comment` tool to post your reply in the comment thread. Do it now.',
+        });
+
+        const reminderMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+        const preparedReminder = await this.contextEngine.prepareMessages({
+          systemPrompt,
+          sessionMessages: reminderMessages,
+          memory: this.memory,
+          sessionId,
+          agentId: this.id,
+          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          toolDefinitions: llmTools,
+          systemCacheSegments,
+        });
+
+        response = await this.withNetworkRetry(
+          () => this.llmRouter.chat({
+            messages: preparedReminder.messages,
+            tools: llmTools.length > 0 ? llmTools : undefined,
+            metadata: this.getLLMMetadata(sessionId),
+            compaction: useCompaction,
+            systemCacheSegments,
+          }, this.getEffectiveProvider()),
+          'Chat LLM comment-reminder',
+        );
+
+        // Execute tool calls from the reminder response
+        if (response.finishReason === 'tool_use' && response.toolCalls?.length) {
+          const currentActId = this.state.currentActivity?.id;
+          this.memory.appendMessage(sessionId, {
+            role: 'assistant',
+            content: response.content,
+            toolCalls: response.toolCalls,
+            reasoningContent: response.reasoningContent,
+          });
+          const toolResults = await Promise.all(
+            response.toolCalls.map(async tc => {
+              const toolStart = Date.now();
+              if (currentActId) {
+                this.emitActivityLog(currentActId, 'tool_start', tc.name, { arguments: tc.arguments });
+              }
+              try {
+                let result = await this.executeTool(tc, undefined, sessionId);
+                result = this.offloadLargeResult(tc.name, result);
+                if (currentActId) {
+                  this.emitActivityLog(currentActId, 'tool_end', tc.name, {
+                    durationMs: Date.now() - toolStart,
+                    success: !isErrorResult(result),
+                    arguments: tc.arguments,
+                    result,
+                  });
+                }
+                return { toolCallId: tc.id, content: result, error: false };
+              } catch (toolErr) {
+                if (currentActId) {
+                  this.emitActivityLog(currentActId, 'error', `Tool ${tc.name} failed: ${String(toolErr)}`);
+                }
+                return { toolCallId: tc.id, content: `Error: ${String(toolErr)}`, error: true };
+              }
+            })
+          );
+          for (const tr of toolResults) {
+            this.memory.appendMessage(sessionId, { role: 'tool', content: tr.content, toolCallId: tr.toolCallId });
+          }
+
+          // One final LLM call to get the closing text
+          const finalMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+          const preparedFinal = await this.contextEngine.prepareMessages({
+            systemPrompt,
+            sessionMessages: finalMessages,
+            memory: this.memory,
+            sessionId,
+            agentId: this.id,
+            modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+            modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+            toolDefinitions: llmTools,
+            systemCacheSegments,
+          });
+          response = await this.withNetworkRetry(
+            () => this.llmRouter.chat({
+              messages: preparedFinal.messages,
+              tools: llmTools.length > 0 ? llmTools : undefined,
+              metadata: this.getLLMMetadata(sessionId),
+              compaction: useCompaction,
+              systemCacheSegments,
+            }, this.getEffectiveProvider()),
+            'Chat LLM comment-reminder-final',
+          );
+        }
       }
 
       const rawReply = sanitizeLLMReply(response.content);
@@ -2785,7 +2901,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('chat', effectiveMessage, senderId);
 
-    const systemPrompt = await this.contextEngine.buildSystemPrompt({
+    const { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -2824,6 +2940,7 @@ export class Agent {
       modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
       modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
       toolDefinitions: llmTools,
+      systemCacheSegments,
     });
     const messages = preparedStream.messages;
     log.debug('Context usage for stream', { usagePercent: preparedStream.usage.usagePercent });
@@ -2865,7 +2982,7 @@ export class Agent {
       const llmStart = Date.now();
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chatStream(
-          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId), compaction: useCompaction },
+          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId), compaction: useCompaction, systemCacheSegments },
           wrappedOnEvent,
           this.getEffectiveProvider(),
           abortController.signal,
@@ -3047,6 +3164,7 @@ export class Agent {
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
           modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
           toolDefinitions: llmTools,
+          systemCacheSegments,
         });
         const updatedMessages = preparedCont.messages;
 
@@ -3069,7 +3187,7 @@ export class Agent {
         const llmStart2 = Date.now();
         response = await this.withNetworkRetry(
           () => this.llmRouter.chatStream(
-            { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId), compaction: useCompaction },
+            { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId), compaction: useCompaction, systemCacheSegments },
             wrappedOnEvent,
             this.getEffectiveProvider(),
             abortController.signal,
@@ -3405,7 +3523,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('task_execution', taskPrompt);
 
-    const systemPrompt = await this.contextEngine.buildSystemPrompt({
+    const { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -3477,6 +3595,7 @@ export class Agent {
         modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
         modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
         toolDefinitions: llmTools,
+        systemCacheSegments,
       });
       const messages = preparedTask.messages;
       log.debug('Context usage for task execution', { taskId, usagePercent: preparedTask.usage.usagePercent, totalUsed: preparedTask.usage.totalUsed });
@@ -3484,7 +3603,7 @@ export class Agent {
       let taskLlmStart = Date.now();
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chatStream(
-          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
+          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments },
           handleStreamEvent,
           this.getEffectiveProvider(),
           abortController.signal,
@@ -3693,6 +3812,7 @@ export class Agent {
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
           modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
           toolDefinitions: llmTools,
+          systemCacheSegments,
         });
         taskLlmStart = Date.now();
         response = await this.withNetworkRetry(
@@ -3702,6 +3822,7 @@ export class Agent {
               tools: llmTools.length > 0 ? llmTools : undefined,
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
+              systemCacheSegments,
             },
             handleStreamEvent,
             this.getEffectiveProvider(),
@@ -3759,6 +3880,7 @@ export class Agent {
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
           modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
           toolDefinitions: llmTools,
+          systemCacheSegments,
         });
         taskLlmStart = Date.now();
         response = await this.withNetworkRetry(
@@ -3768,6 +3890,7 @@ export class Agent {
               tools: llmTools.length > 0 ? llmTools : undefined,
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
+              systemCacheSegments,
             },
             handleStreamEvent,
             this.getEffectiveProvider(),
@@ -3925,7 +4048,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('chat', userMessage);
 
-    const systemPrompt = await this.contextEngine.buildSystemPrompt({
+    const { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -3989,13 +4112,14 @@ export class Agent {
         modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
         modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
         toolDefinitions: llmTools,
+        systemCacheSegments,
       });
       const messages = prepared.messages;
 
       let risLlmStart = Date.now();
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chatStream(
-          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
+          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments },
           handleStreamEvent,
           this.getEffectiveProvider(),
         ),
@@ -4065,11 +4189,12 @@ export class Agent {
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
           modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
           toolDefinitions: llmTools,
+          systemCacheSegments,
         });
         risLlmStart = Date.now();
         response = await this.withNetworkRetry(
           () => this.llmRouter.chatStream(
-            { messages: preparedCont.messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
+            { messages: preparedCont.messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments },
             handleStreamEvent,
             this.getEffectiveProvider(),
           ),
@@ -4950,12 +5075,13 @@ export class Agent {
       'requirement_propose', 'requirement_list', 'requirement_update_status',
       'memory_save', 'memory_search', 'memory_update_longterm',
       'discover_tools', 'notify_user', 'request_user_approval', 'recall_activity',
+      'builder_install', 'builder_list',
     ];
     if (isManager) {
       baseTools.push(
         'task_board_health', 'task_cleanup_duplicates', 'task_assign',
         'team_status', 'deliverable_create', 'deliverable_search',
-        'team_hire_agent', 'team_list_templates', 'builder_install', 'builder_list',
+        'team_hire_agent', 'team_list_templates',
       );
     }
     const HEARTBEAT_ALLOWED_TOOLS = new Set(baseTools);

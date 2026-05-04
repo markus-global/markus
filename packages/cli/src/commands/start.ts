@@ -625,6 +625,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
   // Wire user approval requester through HITL service
   agentManager.setUserApprovalRequester(async (opts) => {
+    const taskTitle = opts.relatedTaskId ? taskService.getTask(opts.relatedTaskId)?.title : undefined;
     return hitlService.requestApprovalAndWait({
       agentId: opts.agentId,
       agentName: opts.agentName,
@@ -634,7 +635,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       targetUserId: ownerUserId,
       options: opts.options,
       allowFreeform: opts.allowFreeform,
-      details: { priority: opts.priority, taskId: opts.relatedTaskId },
+      details: { priority: opts.priority, taskId: opts.relatedTaskId, taskTitle },
     });
   });
 
@@ -884,13 +885,14 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       const reasonMatch = request.reason.match(/requires approval:\s*(.+?)\.?\s*Command:/);
       title = reasonMatch ? `Git: ${reasonMatch[1]}` : 'Shell: command approval';
     }
+    const taskTitle = request.taskId ? taskService.getTask(request.taskId)?.title : undefined;
     const result = await hitlService.requestApprovalAndWait({
       agentId,
       agentName,
       type: 'action',
       title,
       description: request.reason,
-      details: { ...request.toolArgs, toolName: request.toolName, agentId, taskId: request.taskId },
+      details: { ...request.toolArgs, toolName: request.toolName, agentId, taskId: request.taskId, taskTitle },
       targetUserId: ownerUserId,
     });
     auditService.record({

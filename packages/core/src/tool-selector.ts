@@ -57,6 +57,12 @@ const TOOL_GROUPS: ToolGroup[] = [
       '产出物', '产出', '交付物', '知识', '知识库', '贡献', '约定', '架构决策', '最佳实践', '经验'],
     toolNames: ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'],
   },
+  {
+    name: 'builder',
+    keywords: ['builder', 'artifact', 'deploy', 'skill', 'package', 'hub',
+      '部署', '工件', '技能包'],
+    toolNames: ['builder_install', 'builder_list'],
+  },
 ];
 
 /**

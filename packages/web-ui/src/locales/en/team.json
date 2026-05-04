@@ -175,8 +175,11 @@
     "approvalType": {
       "task": "Task",
       "requirement": "Requirement",
-      "requirementResubmit": "Requirement (resubmitted)"
-    }
+      "requirementResubmit": "Requirement (resubmitted)",
+      "taskReview": "Task Review",
+      "toolExecution": "Tool Execution"
+    },
+    "approvalHistory": "History"
   },
   "intro": {
     "en": "Introduce yourself",

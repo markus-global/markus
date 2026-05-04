@@ -391,9 +391,34 @@ export function NotificationBell({ collapsed, userId }: Props) {
     const sub = a.details?.subType as string | undefined;
     if (sub === 'requirement_resubmit') return t('team:notifications.approvalType.requirementResubmit');
     if (sub === 'requirement' || a.details?.requirementId) return t('team:notifications.approvalType.requirement');
+    if (sub === 'task_review') return t('team:notifications.approvalType.taskReview');
     if (sub === 'task' || a.details?.taskId) return t('team:notifications.approvalType.task');
+    if (a.details?.toolName) return t('team:notifications.approvalType.toolExecution');
     return null;
   };
+
+  const approvalSourceLabel = (a: ApprovalInfo): string => {
+    const parts: string[] = [];
+    parts.push(a.agentName);
+    const taskTitle = a.details?.taskTitle as string | undefined;
+    const taskId = a.details?.taskId as string | undefined;
+    if (taskTitle) {
+      parts.push(taskTitle);
+    } else if (taskId) {
+      parts.push(`Task ${taskId.slice(0, 8)}`);
+    }
+    const reqId = a.details?.requirementId as string | undefined;
+    if (reqId && !taskId) {
+      parts.push(`Req ${reqId.slice(0, 8)}`);
+    }
+    return parts.join(' · ');
+  };
+
+  const sortedApprovals = [...approvals].sort((a, b) =>
+    new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime()
+  );
+  const pendingList = sortedApprovals.filter(a => a.status === 'pending');
+  const historyList = sortedApprovals.filter(a => a.status !== 'pending');
 
   const navigateForApproval = (a: ApprovalInfo) => {
     const taskId = a.details?.taskId as string | undefined;
@@ -471,7 +496,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
                 <div className="p-6 text-center text-xs text-fg-tertiary">{t('team:notifications.noApprovals')}</div>
               ) : (
                 <div className="divide-y divide-border-default/50">
-                  {approvals.filter(a => a.status === 'pending').map(a => {
+                  {pendingList.map(a => {
                     const cmd = a.details?.command as string | undefined;
                     const descClean = cmd ? a.description.replace(/\s*Command:.*$/, '') : a.description;
                     return (
@@ -601,19 +626,35 @@ export function NotificationBell({ collapsed, userId }: Props) {
                     </div>
                     );
                   })}
-                  {approvals.filter(a => a.status !== 'pending').slice(0, 20).map(a => (
-                    <button key={a.id} onClick={() => navigateForApproval(a)} className="w-full text-left px-3 py-2.5 opacity-50 hover:opacity-70 transition-colors">
-                      <div className="flex items-center gap-2">
-                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${a.status === 'approved' ? 'bg-green-500' : 'bg-red-500'}`} />
-                        {approvalTypeLabel(a) && <span className="text-[10px] text-fg-tertiary font-medium shrink-0">{approvalTypeLabel(a)}</span>}
-                        <span className="text-xs text-fg-secondary truncate flex-1">{a.title}</span>
-                        <span className="text-[10px] text-fg-tertiary shrink-0">{t(`common:status.${a.status === 'approved' ? 'approved' : a.status === 'rejected' ? 'rejected' : a.status}`, { defaultValue: a.status })}</span>
-                      </div>
-                      {a.responseComment && (
-                        <p className="text-[10px] text-fg-tertiary mt-0.5 pl-3.5 truncate">&ldquo;{a.responseComment}&rdquo;</p>
+                  {historyList.length > 0 && (
+                    <>
+                      {pendingList.length > 0 && (
+                        <div className="px-3 py-1.5 text-[10px] font-medium text-fg-tertiary uppercase tracking-wider bg-surface-overlay/30">
+                          {t('team:notifications.approvalHistory')}
+                        </div>
                       )}
-                    </button>
-                  ))}
+                      {historyList.slice(0, 50).map(a => (
+                        <button key={a.id} onClick={() => navigateForApproval(a)} className="w-full text-left px-3 py-2.5 hover:bg-surface-overlay/50 transition-colors group">
+                          <div className="flex items-center gap-2">
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${a.status === 'approved' ? 'bg-green-500' : a.status === 'cancelled' || a.status === 'expired' ? 'bg-gray-400' : 'bg-red-500'}`} />
+                            {approvalTypeLabel(a) && <span className="text-[10px] text-fg-tertiary font-medium shrink-0">{approvalTypeLabel(a)}</span>}
+                            <span className="text-xs text-fg-secondary truncate flex-1 group-hover:text-fg-primary">{a.title}</span>
+                            <span className={`text-[10px] font-medium shrink-0 ${a.status === 'approved' ? 'text-green-500' : a.status === 'cancelled' || a.status === 'expired' ? 'text-fg-muted' : 'text-red-500'}`}>
+                              {t(`common:status.${a.status}`, { defaultValue: a.status })}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-0.5 pl-3.5">
+                            <span className="text-[10px] text-fg-muted truncate">{approvalSourceLabel(a)}</span>
+                            <span className="text-[10px] text-fg-muted shrink-0">·</span>
+                            <span className="text-[10px] text-fg-muted shrink-0">{timeAgo(a.respondedAt ?? a.requestedAt, t)}</span>
+                          </div>
+                          {a.responseComment && (
+                            <p className="text-[10px] text-fg-muted mt-0.5 pl-3.5 truncate">&ldquo;{a.responseComment}&rdquo;</p>
+                          )}
+                        </button>
+                      ))}
+                    </>
+                  )}
                 </div>
               )
             )}

@@ -62,7 +62,9 @@ export class AnthropicProvider implements LLMProviderInterface {
       messages,
     };
 
-    if (systemMsg) body['system'] = getTextContent(systemMsg.content);
+    if (systemMsg) {
+      body['system'] = this.buildSystemContent(getTextContent(systemMsg.content), request.systemCacheSegments);
+    }
     if (request.temperature !== undefined) body['temperature'] = request.temperature;
     if (request.stopSequences?.length) body['stop_sequences'] = request.stopSequences;
     if (request.tools?.length) body['tools'] = this.convertTools(request.tools);
@@ -105,7 +107,9 @@ export class AnthropicProvider implements LLMProviderInterface {
       messages,
       stream: true,
     };
-    if (systemMsg) body['system'] = getTextContent(systemMsg.content);
+    if (systemMsg) {
+      body['system'] = this.buildSystemContent(getTextContent(systemMsg.content), request.systemCacheSegments);
+    }
     if (request.temperature !== undefined) body['temperature'] = request.temperature;
     if (request.stopSequences?.length) body['stop_sequences'] = request.stopSequences;
     if (request.tools?.length) body['tools'] = this.convertTools(request.tools);
@@ -308,6 +312,26 @@ export class AnthropicProvider implements LLMProviderInterface {
 
   private isCompactionSupported(): boolean {
     return this.model.startsWith('claude-opus-4') || this.model.startsWith('claude-sonnet-4');
+  }
+
+  /**
+   * Build the `system` field for the Anthropic API. When structured cache
+   * segments are provided, returns an array of content blocks with
+   * `cache_control` breakpoints so the API can cache stable prefixes.
+   * Falls back to a plain string when no segments are available.
+   */
+  private buildSystemContent(
+    plainText: string,
+    segments?: Array<{ content: string; cacheBreakpoint?: boolean }>,
+  ): string | Array<{ type: 'text'; text: string; cache_control?: { type: string } }> {
+    if (!segments || segments.length <= 1) return plainText;
+    return segments
+      .filter(s => s.content.length > 0)
+      .map(s => ({
+        type: 'text' as const,
+        text: s.content,
+        ...(s.cacheBreakpoint ? { cache_control: { type: 'ephemeral' } } : {}),
+      }));
   }
 
   private convertResponse(data: AnthropicResponse): LLMResponse {

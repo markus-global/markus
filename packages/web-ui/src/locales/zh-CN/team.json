@@ -175,8 +175,11 @@
     "approvalType": {
       "task": "任务",
       "requirement": "需求",
-      "requirementResubmit": "需求（重新提交）"
-    }
+      "requirementResubmit": "需求（重新提交）",
+      "taskReview": "任务审核",
+      "toolExecution": "工具执行"
+    },
+    "approvalHistory": "历史记录"
   },
   "intro": {
     "en": "Introduce yourself",

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createManagerTools, type ManagerToolsContext } from '../src/tools/manager.js';
+import { createManagerTools, createBuilderTools, type ManagerToolsContext, type BuilderToolsContext } from '../src/tools/manager.js';
 
 function createMockContext(overrides?: Partial<ManagerToolsContext>): ManagerToolsContext {
   return {
@@ -170,10 +170,27 @@ describe('team_hire_agent', () => {
   });
 });
 
+function createMockBuilderContext(overrides?: Partial<BuilderToolsContext>): BuilderToolsContext {
+  return {
+    installArtifact: vi.fn(async (type, name) => ({ type, installed: { name } })),
+    listArtifacts: vi.fn(() => [
+      { type: 'agent', name: 'custom-dev', description: 'Custom developer' },
+    ]),
+    ...overrides,
+  };
+}
+
+function findBuilderTool(ctx: BuilderToolsContext, name: string) {
+  const tools = createBuilderTools(ctx);
+  const tool = tools.find(t => t.name === name);
+  if (!tool) throw new Error(`Tool "${name}" not found. Available: ${tools.map(t => t.name).join(', ')}`);
+  return tool;
+}
+
 describe('builder_list', () => {
   it('lists artifacts', async () => {
-    const ctx = createMockContext();
-    const tool = findTool(ctx, 'builder_list');
+    const ctx = createMockBuilderContext();
+    const tool = findBuilderTool(ctx, 'builder_list');
     const result = JSON.parse(await tool.execute({}));
     expect(result.count).toBe(1);
     expect(result.artifacts[0].name).toBe('custom-dev');
@@ -182,23 +199,23 @@ describe('builder_list', () => {
 
 describe('builder_install', () => {
   it('installs an artifact', async () => {
-    const ctx = createMockContext();
-    const tool = findTool(ctx, 'builder_install');
+    const ctx = createMockBuilderContext();
+    const tool = findBuilderTool(ctx, 'builder_install');
     const result = JSON.parse(await tool.execute({ type: 'agent', name: 'custom-dev' }));
     expect(result.status).toBe('success');
     expect(result.next_steps).toBeDefined();
   });
 
   it('rejects invalid type', async () => {
-    const ctx = createMockContext();
-    const tool = findTool(ctx, 'builder_install');
+    const ctx = createMockBuilderContext();
+    const tool = findBuilderTool(ctx, 'builder_install');
     const result = JSON.parse(await tool.execute({ type: 'invalid', name: 'test' }));
     expect(result.status).toBe('error');
   });
 
   it('rejects missing name', async () => {
-    const ctx = createMockContext();
-    const tool = findTool(ctx, 'builder_install');
+    const ctx = createMockBuilderContext();
+    const tool = findBuilderTool(ctx, 'builder_install');
     const result = JSON.parse(await tool.execute({ type: 'agent' }));
     expect(result.status).toBe('error');
   });

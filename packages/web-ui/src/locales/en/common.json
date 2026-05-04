@@ -73,7 +73,8 @@
     "error": "Error",
     "online": "Online",
     "verified": "Verified",
-    "outdated": "Outdated"
+    "outdated": "Outdated",
+    "expired": "Expired"
   },
   "priority": {
     "urgent": "Urgent",

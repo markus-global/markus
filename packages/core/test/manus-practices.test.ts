@@ -36,7 +36,7 @@ describe('Manus Best Practices Integration', () => {
       const engine = new ContextEngine();
       const memory = new MemoryStore(tempDir);
 
-      const prompt = await engine.buildSystemPrompt({
+      const { text: prompt } = await engine.buildSystemPrompt({
         agentId: 'agent-1',
         agentName: 'Test Agent',
         role: MOCK_ROLE,
@@ -57,7 +57,7 @@ describe('Manus Best Practices Integration', () => {
       const engine = new ContextEngine();
       const memory = new MemoryStore(tempDir);
 
-      const prompt = await engine.buildSystemPrompt({
+      const { text: prompt } = await engine.buildSystemPrompt({
         agentId: 'agent-1',
         agentName: 'Test Agent',
         role: MOCK_ROLE,
@@ -81,8 +81,8 @@ describe('Manus Best Practices Integration', () => {
         memory,
       };
 
-      const prompt1 = await engine.buildSystemPrompt(opts);
-      const prompt2 = await engine.buildSystemPrompt(opts);
+      const { text: prompt1 } = await engine.buildSystemPrompt(opts);
+      const { text: prompt2 } = await engine.buildSystemPrompt(opts);
 
       // Remove the last line (date) and compare - should be identical
       const prefix1 = prompt1.split('\n').slice(0, -2).join('\n');
@@ -96,7 +96,7 @@ describe('Manus Best Practices Integration', () => {
       const engine = new ContextEngine();
       const memory = new MemoryStore(tempDir);
 
-      const prompt = await engine.buildSystemPrompt({
+      const { text: prompt } = await engine.buildSystemPrompt({
         agentId: 'agent-1',
         agentName: 'Test Agent',
         role: MOCK_ROLE,
