@@ -160,7 +160,6 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
 function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { agent: AgentDetail; onUpdate: () => void; externalInfo?: ExternalAgentInfo | null; t: TFunction; canManageAgents: boolean }) {
-  const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(agent.name);
   const [editRole, setEditRole] = useState(agent.agentRole);
   const [editModelMode, setEditModelMode] = useState<'default' | 'custom'>((agent.config?.llmConfig as Record<string, unknown>)?.modelMode as 'default' | 'custom' ?? 'default');
@@ -195,8 +194,23 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
     }).catch(() => {});
   }, [agent.id]);
 
+  useEffect(() => {
+    setEditName(agent.name);
+    setEditRole(agent.agentRole);
+    setEditModelMode((agent.config?.llmConfig as Record<string, unknown>)?.modelMode as 'default' | 'custom' ?? 'default');
+    setEditModel(agent.config?.llmConfig.primary ?? '');
+    setEditFallback(agent.config?.llmConfig.fallback ?? '');
+  }, [agent.name, agent.agentRole, agent.config?.llmConfig]);
+
   const configuredModels = Object.entries(providers).filter(([, v]) => v.configured).map(([k]) => k);
   const currentModelMode = ((agent.config?.llmConfig as Record<string, unknown>)?.modelMode as string) ?? 'default';
+
+  const identityDirty = canManageAgents && (editName !== agent.name || editRole !== agent.agentRole);
+  const llmDirty = canManageAgents && (
+    editModelMode !== currentModelMode
+    || (editModelMode === 'custom' && editModel !== (agent.config?.llmConfig.primary ?? ''))
+    || editFallback !== (agent.config?.llmConfig.fallback ?? '')
+  );
 
   const save = async () => {
     setSaving(true);
@@ -210,9 +224,16 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
         },
       });
       onUpdate();
-      setEditing(false);
     } catch { /* */ }
     setSaving(false);
+  };
+
+  const discardChanges = () => {
+    setEditName(agent.name);
+    setEditRole(agent.agentRole);
+    setEditModelMode((agent.config?.llmConfig as Record<string, unknown>)?.modelMode as 'default' | 'custom' ?? 'default');
+    setEditModel(agent.config?.llmConfig.primary ?? '');
+    setEditFallback(agent.config?.llmConfig.fallback ?? '');
   };
 
   const toggleAgent = () => {
@@ -317,13 +338,11 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
   return (
     <div className="space-y-4">
       <Card title={t('agent:profilePage.overview.identity')} action={
-        !canManageAgents ? null
-          : editing
-          ? <div className="flex gap-2">
-              <button onClick={() => setEditing(false)} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:cancel')}</button>
+        !canManageAgents || !identityDirty ? null
+          : <div className="flex gap-2">
+              <button onClick={discardChanges} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:cancel')}</button>
               <button onClick={save} disabled={saving} className="text-xs text-brand-500 hover:text-brand-500">{saving ? t('common:saving') : t('common:save')}</button>
             </div>
-          : <button onClick={() => { setEditing(true); setEditName(agent.name); setEditRole(agent.agentRole); setEditModelMode((agent.config?.llmConfig as Record<string, unknown>)?.modelMode as 'default' | 'custom' ?? 'default'); setEditModel(agent.config?.llmConfig.primary ?? ''); setEditFallback(agent.config?.llmConfig.fallback ?? ''); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:edit')}</button>
       }>
         <div className="flex items-start gap-4 mb-3">
           {canManageAgents ? (
@@ -339,14 +358,19 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
           <Avatar name={agent.name} avatarUrl={agent.avatarUrl} size={48} className="rounded-xl" />
           )}
           <div className="flex-1 min-w-0 pt-1">
-            <div className="text-sm font-medium text-fg-primary">{agent.name}</div>
+            {canManageAgents ? (
+              <input value={editName} onChange={e => setEditName(e.target.value)}
+                className="text-sm font-medium text-fg-primary bg-transparent border-0 border-b border-transparent hover:border-border-default focus:border-brand-500 outline-none w-full px-0 py-0 transition-colors" />
+            ) : (
+              <div className="text-sm font-medium text-fg-primary">{agent.name}</div>
+            )}
             <div className="text-xs text-fg-tertiary mt-0.5">{agent.role} · {agent.agentRole ?? t('agent:profilePage.roles.worker')}</div>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-          <KV label={t('agent:profilePage.overview.labels.name')}>{editing ? <input className="input-sm" value={editName} onChange={e => setEditName(e.target.value)} /> : agent.name}</KV>
+          <KV label={t('agent:profilePage.overview.labels.name')}>{canManageAgents ? <input className="input-sm" value={editName} onChange={e => setEditName(e.target.value)} /> : agent.name}</KV>
           <KV label={t('agent:profilePage.overview.labels.agentRole')}>
-            {editing
+            {canManageAgents
               ? <div className="flex gap-1.5">{(['worker', 'manager'] as const).map(r => (
                   <button key={r} onClick={() => setEditRole(r)} className={`px-2 py-1 text-[10px] rounded border transition-colors capitalize ${editRole === r ? (r === 'manager' ? 'bg-amber-500/15 text-amber-600 border-amber-500/30' : 'bg-blue-500/15 text-blue-600 border-blue-500/30') : 'bg-surface-elevated text-fg-tertiary border-border-default'}`}>{r}</button>
                 ))}</div>
@@ -453,10 +477,16 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
         </Card>
       )}
 
-      <Card title={t('agent:profilePage.overview.llmConfiguration')}>
+      <Card title={t('agent:profilePage.overview.llmConfiguration')} action={
+        !canManageAgents || !llmDirty ? null
+          : <div className="flex gap-2">
+              <button onClick={discardChanges} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:cancel')}</button>
+              <button onClick={save} disabled={saving} className="text-xs text-brand-500 hover:text-brand-500">{saving ? t('common:saving') : t('common:save')}</button>
+            </div>
+      }>
           <div className="grid grid-cols-2 gap-x-6 gap-y-3">
             <KV label={t('agent:profilePage.overview.labels.modelMode')}>
-              {editing
+              {canManageAgents
                 ? <div className="flex gap-1.5">
                     {(['default', 'custom'] as const).map(m => (
                       <button key={m} onClick={() => setEditModelMode(m)}
@@ -473,7 +503,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
                   </span>}
             </KV>
             <KV label={t('agent:profilePage.overview.labels.primaryModel')}>
-              {editing
+              {canManageAgents
                 ? editModelMode === 'custom'
                   ? <select className="input-sm" value={editModel} onChange={e => setEditModel(e.target.value)}>
                       {configuredModels.map(m => <option key={m} value={m}>{m} ({providers[m]?.model})</option>)}
@@ -487,7 +517,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
                   </span>}
             </KV>
             <KV label={t('agent:profilePage.overview.labels.fallback')}>
-              {editing
+              {canManageAgents
                 ? <select className="input-sm" value={editFallback} onChange={e => setEditFallback(e.target.value)}>
                     <option value="">{t('agent:profilePage.overview.noneOption')}</option>
                     {configuredModels.map(m => <option key={m} value={m}>{m}</option>)}
@@ -978,7 +1008,7 @@ function FilesTab({ agentId }: { agentId: string }) {
             <textarea
               value={editContent}
               onChange={e => { setEditContent(e.target.value); setDirty(true); }}
-              className="w-full h-80 bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-fg-secondary leading-relaxed resize-y focus:border-brand-500 outline-none"
+              className="w-full min-h-[60vh] bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-fg-secondary leading-relaxed resize-y focus:border-brand-500 outline-none"
               spellCheck={false}
             />
             {selected === 'ROLE.md' && (
@@ -1005,7 +1035,7 @@ const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
   { id: 'projects', prefixes: ['list_projects', 'get_project', 'create_project', 'update_project', 'project_info'] },
   { id: 'deliverables', prefixes: ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'] },
   { id: 'communication', prefixes: ['agent_send_message', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats', 'agent_broadcast_status', 'agent_delegate_task'] },
-  { id: 'memory', prefixes: ['memory_save', 'memory_search', 'memory_list', 'memory_update_longterm'] },
+  { id: 'memory', prefixes: ['memory_save', 'memory_search', 'memory_list', 'memory_update_longterm', 'memory_delete', 'recall_context', 'recall_activity'] },
   { id: 'teamManager', prefixes: ['team_list', 'team_status', 'delegate_message', 'team_hire_agent', 'team_list_templates', 'team_update', 'agent_update'] },
   { id: 'subagents', prefixes: ['spawn_subagent', 'spawn_subagents'] },
   { id: 'llm', prefixes: ['llm_list_providers', 'llm_switch_model', 'llm_switch_default_provider', 'llm_add_provider', 'llm_edit_provider', 'llm_add_model'] },
@@ -1239,9 +1269,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
   const [data, setData] = useState<AgentMemorySummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [section, setSection] = useState<'entries' | 'sessions' | 'daily' | 'longterm'>('entries');
-  const [editingDaily, setEditingDaily] = useState(false);
   const [dailyContent, setDailyContent] = useState('');
-  const [editingLong, setEditingLong] = useState(false);
   const [longContent, setLongContent] = useState('');
   const [saving, setSaving] = useState(false);
   const [expandedEntryIdx, setExpandedEntryIdx] = useState<number | null>(null);
@@ -1264,7 +1292,6 @@ function MemoryTab({ agentId }: { agentId: string }) {
     setSaving(true);
     await api.agents.updateDailyMemory(agentId, dailyContent).catch(() => {});
     setSaving(false);
-    setEditingDaily(false);
     loadData();
   };
 
@@ -1272,9 +1299,11 @@ function MemoryTab({ agentId }: { agentId: string }) {
     setSaving(true);
     await api.agents.updateLongTermMemory(agentId, t('agent:profilePage.memoryTab.userEditedSource'), longContent).catch(() => {});
     setSaving(false);
-    setEditingLong(false);
     loadData();
   };
+
+  const dailyDirty = dailyContent !== (data?.recentDailyLogs ?? '');
+  const longDirty = longContent !== (data?.longTermMemory ?? '');
 
   if (loading) return <div className="text-xs text-fg-tertiary py-8 text-center">{t('agent:profilePage.memoryTab.loading')}</div>;
   if (!data) return <div className="text-xs text-fg-tertiary py-8 text-center">{t('agent:profilePage.memoryTab.loadFailed')}</div>;
@@ -1428,37 +1457,27 @@ function MemoryTab({ agentId }: { agentId: string }) {
 
       {section === 'daily' && (
         <Card title={t('agent:profilePage.memoryTab.dailyLogs')} action={
-          editingDaily
-            ? <div className="flex gap-2">
-                <button onClick={() => setEditingDaily(false)} className="text-xs text-fg-tertiary">{t('common:cancel')}</button>
+          !dailyDirty ? null
+            : <div className="flex gap-2">
+                <button onClick={() => setDailyContent(data?.recentDailyLogs ?? '')} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:cancel')}</button>
                 <button onClick={saveDaily} disabled={saving} className="text-xs text-brand-500">{saving ? t('common:saving') : t('common:save')}</button>
               </div>
-            : <button onClick={() => setEditingDaily(true)} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:edit')}</button>
         }>
-          {editingDaily ? (
-            <textarea value={dailyContent} onChange={e => setDailyContent(e.target.value)}
-              className="w-full h-64 bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-fg-secondary leading-relaxed resize-y focus:border-brand-500 outline-none" />
-          ) : data.recentDailyLogs ? (
-            <pre className="text-xs text-fg-secondary whitespace-pre-wrap font-mono leading-relaxed bg-surface-elevated/30 rounded-lg p-4 max-h-96 overflow-y-auto">{data.recentDailyLogs}</pre>
-          ) : <Empty text={t('agent:profilePage.memoryTab.noDailyLogs')} />}
+          <textarea value={dailyContent} onChange={e => setDailyContent(e.target.value)} placeholder={t('agent:profilePage.memoryTab.noDailyLogs')}
+            className="w-full min-h-[50vh] bg-surface-elevated/30 border border-border-default/50 hover:border-border-default focus:border-brand-500 rounded-lg p-4 text-xs font-mono text-fg-secondary leading-relaxed resize-y outline-none transition-colors" />
         </Card>
       )}
 
       {section === 'longterm' && (
         <Card title={t('agent:profilePage.memoryTab.longTermTitle')} action={
-          editingLong
-            ? <div className="flex gap-2">
-                <button onClick={() => setEditingLong(false)} className="text-xs text-fg-tertiary">{t('common:cancel')}</button>
+          !longDirty ? null
+            : <div className="flex gap-2">
+                <button onClick={() => setLongContent(data?.longTermMemory ?? '')} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:cancel')}</button>
                 <button onClick={saveLong} disabled={saving} className="text-xs text-brand-500">{saving ? t('common:saving') : t('common:save')}</button>
               </div>
-            : <button onClick={() => setEditingLong(true)} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:edit')}</button>
         }>
-          {editingLong ? (
-            <textarea value={longContent} onChange={e => setLongContent(e.target.value)}
-              className="w-full h-64 bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-fg-secondary leading-relaxed resize-y focus:border-brand-500 outline-none" />
-          ) : data.longTermMemory ? (
-            <pre className="text-xs text-fg-secondary whitespace-pre-wrap font-mono leading-relaxed bg-surface-elevated/30 rounded-lg p-4 max-h-96 overflow-y-auto">{data.longTermMemory}</pre>
-          ) : <Empty text={t('agent:profilePage.memoryTab.noLongTerm')} />}
+          <textarea value={longContent} onChange={e => setLongContent(e.target.value)} placeholder={t('agent:profilePage.memoryTab.noLongTerm')}
+            className="w-full min-h-[50vh] bg-surface-elevated/30 border border-border-default/50 hover:border-border-default focus:border-brand-500 rounded-lg p-4 text-xs font-mono text-fg-secondary leading-relaxed resize-y outline-none transition-colors" />
         </Card>
       )}
     </div>

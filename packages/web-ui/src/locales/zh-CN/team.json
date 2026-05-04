@@ -171,6 +171,11 @@
       "viewRequirement": "查看需求 →",
       "viewAgent": "查看智能体 →",
       "viewApproval": "查看审批 →"
+    },
+    "approvalType": {
+      "task": "任务",
+      "requirement": "需求",
+      "requirementResubmit": "需求（重新提交）"
     }
   },
   "intro": {

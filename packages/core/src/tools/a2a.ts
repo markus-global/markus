@@ -168,7 +168,7 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
             type: 'string',
             description: 'Required when scope="channel". The channel key (e.g., "group:<teamId>" for team chats, "dm:<id1>_<id2>" for DMs).',
           },
-          limit: { type: 'number', description: 'Number of items to fetch (default 30, max 50).' },
+          limit: { type: 'number', description: 'Number of items to fetch (default 80, max 200).' },
           before: { type: 'string', description: 'ISO timestamp — fetch items older than this for pagination. Omit for most recent.' },
         },
         required: ['scope'],
@@ -181,12 +181,12 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
           if (!channelKey) {
             return JSON.stringify({ status: 'error', error: 'channel_key is required when scope="channel"' });
           }
-          const limit = Math.min((args['limit'] as number) ?? 30, 50);
+          const limit = Math.min((args['limit'] as number) ?? 80, 200);
           const before = args['before'] as string | undefined;
           try {
             const result = await ctx.getChannelMessages!(channelKey, limit, before);
             const formatted = result.messages.map(m =>
-              `[${m.createdAt}] ${m.senderType === 'agent' ? `[agent] ${m.senderName}` : `[human] ${m.senderName}`}: ${m.text.slice(0, 500)}`
+              `[${m.createdAt}] ${m.senderType === 'agent' ? `[agent] ${m.senderName}` : `[human] ${m.senderName}`}: ${m.text.slice(0, 2000)}`
             );
             return JSON.stringify({
               messages: formatted,
