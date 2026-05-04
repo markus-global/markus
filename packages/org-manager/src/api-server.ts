@@ -1659,6 +1659,18 @@ export class APIServer {
     }
 
     // ── Chat sessions ──────────────────────────────────────────────────────
+    if (path === '/api/sessions/has-any' && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.storage) {
+        this.json(res, 200, { hasAny: false });
+        return;
+      }
+      const hasAny = this.storage.chatSessionRepo.hasAnySessions(authUser.userId);
+      this.json(res, 200, { hasAny });
+      return;
+    }
+
     if (path.match(/^\/api\/agents\/[^/]+\/sessions$/) && req.method === 'GET') {
       const authUser = await this.getAuthUser(req);
       const agentId = path.split('/')[3]!;

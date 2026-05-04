@@ -1878,6 +1878,13 @@ export class SqliteChatSessionRepo {
     ).map(r => this._mapSession(r));
   }
 
+  hasAnySessions(userId: string) {
+    const r = this.db
+      .prepare('SELECT COUNT(*) AS cnt FROM chat_sessions WHERE user_id = ?')
+      .get(userId) as { cnt: number } | undefined;
+    return (r?.cnt ?? 0) > 0;
+  }
+
   getSession(sessionId: string) {
     const r = this.db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(sessionId) as
       | Record<string, unknown>

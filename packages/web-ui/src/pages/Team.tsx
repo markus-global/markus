@@ -1278,11 +1278,18 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           } else {
             setActiveSessionId(null);
             if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
-            // First-time conversation: auto-send intro request (locale from app language, fallback en)
-            const introBase = (i18n.language || 'en').split('-')[0]?.toLowerCase() ?? 'en';
-            const introKey = ['zh', 'ja', 'ko', 'fr', 'de', 'es', 'pt', 'ru'].includes(introBase) ? introBase : 'en';
-            const introMsg = t(`intro.${introKey}`);
-            setTimeout(() => sendRef.current?.(introMsg), 150);
+            // Check if this user truly has no sessions at all (first-time user)
+            // or just no sessions for this specific agent (returning user)
+            api.sessions.hasAny().then(({ hasAny }) => {
+              if (currentConvKeyRef.current !== newKey) return;
+              if (!hasAny) {
+                // Truly first-time user — auto-send intro request
+                const introBase = (i18n.language || 'en').split('-')[0]?.toLowerCase() ?? 'en';
+                const introKey = ['zh', 'ja', 'ko', 'fr', 'de', 'es', 'pt', 'ru'].includes(introBase) ? introBase : 'en';
+                const introMsg = t(`intro.${introKey}`);
+                setTimeout(() => sendRef.current?.(introMsg), 150);
+              }
+            });
           }
         });
       }
