@@ -1,6 +1,4 @@
-import { createLogger, generateId, readManifest } from '@markus/shared';
-import type { AgentTemplate } from '../templates/types.js';
-import type { StarterTaskDef } from '@markus/shared';
+import { createLogger, generateId, readManifest, type StarterTaskDef } from '@markus/shared';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
