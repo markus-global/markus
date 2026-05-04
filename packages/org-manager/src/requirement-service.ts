@@ -575,6 +575,12 @@ export class RequirementService {
     const req = this.requirements.get(id);
     if (!req) throw new Error(`Requirement ${id} not found`);
 
+    if (this.hitlService) {
+      this.hitlService.cancelApprovalsByDetail(
+        'requirementId', id, cancelledBy ?? 'system', 'Requirement cancelled',
+      );
+    }
+
     const oldStatus = req.status;
     req.status = 'cancelled';
     req.updatedAt = new Date().toISOString();
@@ -681,6 +687,11 @@ export class RequirementService {
   }
 
   deleteRequirement(id: string): void {
+    if (this.hitlService) {
+      this.hitlService.cancelApprovalsByDetail(
+        'requirementId', id, 'system', 'Requirement deleted',
+      );
+    }
     this.requirements.delete(id);
     if (this.requirementRepo) {
       this.requirementRepo.delete(id).catch((e: unknown) =>

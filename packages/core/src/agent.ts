@@ -2484,6 +2484,7 @@ export class Agent {
 
       let toolIterations = 0;
       const effectiveMaxIter = options?.maxToolIterations ?? this._maxToolIterations;
+      const commentToolUsed = new Set<string>();
 
       while (
         (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
@@ -2594,10 +2595,13 @@ export class Agent {
             });
           }
 
-          // Record calls for loop detection
+          // Record calls for loop detection + comment tool tracking
           for (let i = 0; i < response.toolCalls!.length; i++) {
             const tc = response.toolCalls![i]!;
             this.loopDetector.record(tc.name, tc.arguments ?? {}, toolResults[i]?.content ?? '');
+            if (tc.name === 'task_comment' || tc.name === 'requirement_comment') {
+              commentToolUsed.add(tc.name);
+            }
           }
           const loopCheck = this.loopDetector.check();
           if (loopCheck.detected) {
@@ -2679,6 +2683,110 @@ export class Agent {
           durationMs: Date.now() - llmStart2,
           success: true,
         });
+      }
+
+      // Safeguard: if agent finishes comment_response without calling
+      // task_comment/requirement_comment, remind it and give one more chance.
+      // Only trigger when agent produced substantive text (likely forgot to use
+      // the tool). If text is empty/short, the agent likely decided not to reply
+      // per conversation-termination rules — that's legitimate.
+      const pendingReplyText = sanitizeLLMReply(response.content);
+      if (scenario === 'comment_response' && commentToolUsed.size === 0
+        && pendingReplyText.length > 60 && toolIterations < effectiveMaxIter) {
+        this.memory.appendMessage(sessionId, {
+          role: 'assistant',
+          content: response.content,
+          toolCalls: response.toolCalls,
+          reasoningContent: response.reasoningContent,
+        });
+        this.memory.appendMessage(sessionId, {
+          role: 'user',
+          content: '[SYSTEM] You are about to end your turn WITHOUT posting a reply. In this scenario your text output is NOT visible to anyone. You MUST call `task_comment` or `requirement_comment` tool to post your reply in the comment thread. Do it now.',
+        });
+
+        const reminderMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+        const preparedReminder = await this.contextEngine.prepareMessages({
+          systemPrompt,
+          sessionMessages: reminderMessages,
+          memory: this.memory,
+          sessionId,
+          agentId: this.id,
+          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          toolDefinitions: llmTools,
+        });
+
+        response = await this.withNetworkRetry(
+          () => this.llmRouter.chat({
+            messages: preparedReminder.messages,
+            tools: llmTools.length > 0 ? llmTools : undefined,
+            metadata: this.getLLMMetadata(sessionId),
+            compaction: useCompaction,
+          }, this.getEffectiveProvider()),
+          'Chat LLM comment-reminder',
+        );
+
+        // Execute tool calls from the reminder response
+        if (response.finishReason === 'tool_use' && response.toolCalls?.length) {
+          const currentActId = this.state.currentActivity?.id;
+          this.memory.appendMessage(sessionId, {
+            role: 'assistant',
+            content: response.content,
+            toolCalls: response.toolCalls,
+            reasoningContent: response.reasoningContent,
+          });
+          const toolResults = await Promise.all(
+            response.toolCalls.map(async tc => {
+              const toolStart = Date.now();
+              if (currentActId) {
+                this.emitActivityLog(currentActId, 'tool_start', tc.name, { arguments: tc.arguments });
+              }
+              try {
+                let result = await this.executeTool(tc, undefined, sessionId);
+                result = this.offloadLargeResult(tc.name, result);
+                if (currentActId) {
+                  this.emitActivityLog(currentActId, 'tool_end', tc.name, {
+                    durationMs: Date.now() - toolStart,
+                    success: !isErrorResult(result),
+                    arguments: tc.arguments,
+                    result,
+                  });
+                }
+                return { toolCallId: tc.id, content: result, error: false };
+              } catch (toolErr) {
+                if (currentActId) {
+                  this.emitActivityLog(currentActId, 'error', `Tool ${tc.name} failed: ${String(toolErr)}`);
+                }
+                return { toolCallId: tc.id, content: `Error: ${String(toolErr)}`, error: true };
+              }
+            })
+          );
+          for (const tr of toolResults) {
+            this.memory.appendMessage(sessionId, { role: 'tool', content: tr.content, toolCallId: tr.toolCallId });
+          }
+
+          // One final LLM call to get the closing text
+          const finalMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+          const preparedFinal = await this.contextEngine.prepareMessages({
+            systemPrompt,
+            sessionMessages: finalMessages,
+            memory: this.memory,
+            sessionId,
+            agentId: this.id,
+            modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+            modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+            toolDefinitions: llmTools,
+          });
+          response = await this.withNetworkRetry(
+            () => this.llmRouter.chat({
+              messages: preparedFinal.messages,
+              tools: llmTools.length > 0 ? llmTools : undefined,
+              metadata: this.getLLMMetadata(sessionId),
+              compaction: useCompaction,
+            }, this.getEffectiveProvider()),
+            'Chat LLM comment-reminder-final',
+          );
+        }
       }
 
       const rawReply = sanitizeLLMReply(response.content);

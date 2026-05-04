@@ -150,7 +150,7 @@ export interface ApprovalInfo {
   title: string;
   description: string;
   details: Record<string, unknown>;
-  status: 'pending' | 'approved' | 'rejected' | 'expired';
+  status: 'pending' | 'approved' | 'rejected' | 'expired' | 'cancelled';
   requestedAt: string;
   respondedAt?: string;
   respondedBy?: string;

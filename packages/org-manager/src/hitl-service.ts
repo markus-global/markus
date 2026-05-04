@@ -3,7 +3,7 @@ import type { OrganizationService } from './org-service.js';
 
 const log = createLogger('hitl');
 
-export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired';
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired' | 'cancelled';
 export type NotificationPriority = 'low' | 'normal' | 'high' | 'urgent';
 
 export type NotificationType =
@@ -299,6 +299,14 @@ export class HITLService {
         setTimeout(() => {
           if (this.pendingResolvers.has(approval.id)) {
             this.pendingResolvers.delete(approval.id);
+            const a = this.approvals.get(approval.id);
+            if (a && a.status === 'pending') {
+              a.status = 'expired';
+              a.respondedAt = new Date().toISOString();
+              a.responseComment = 'Approval timed out';
+              this.persistApproval(a);
+              this.markApprovalNotificationsRead(a.id);
+            }
             resolve({ approved: false, comment: 'Approval timed out' });
           }
         }, opts.expiresInMs);
@@ -326,6 +334,38 @@ export class HITLService {
       resolve({ approved, comment, selectedOption, respondedBy });
     }
     return approval;
+  }
+
+  cancelApproval(id: string, cancelledBy: string, comment?: string): ApprovalRequest | undefined {
+    const approval = this.approvals.get(id);
+    if (!approval || approval.status !== 'pending') return undefined;
+
+    approval.status = 'cancelled';
+    approval.respondedAt = new Date().toISOString();
+    approval.respondedBy = cancelledBy;
+    if (comment) approval.responseComment = comment;
+    this.persistApproval(approval);
+    log.info(`Approval ${id} cancelled by ${cancelledBy}`, { comment });
+
+    this.markApprovalNotificationsRead(id);
+
+    const resolve = this.pendingResolvers.get(id);
+    if (resolve) {
+      this.pendingResolvers.delete(id);
+      resolve({ approved: false, comment: comment ?? 'Approval cancelled' });
+    }
+    return approval;
+  }
+
+  cancelApprovalsByDetail(key: string, value: unknown, cancelledBy: string, comment?: string): number {
+    let count = 0;
+    for (const approval of this.approvals.values()) {
+      if (approval.status === 'pending' && approval.details[key] === value) {
+        this.cancelApproval(approval.id, cancelledBy, comment);
+        count++;
+      }
+    }
+    return count;
   }
 
   private persistApproval(approval: ApprovalRequest): void {
