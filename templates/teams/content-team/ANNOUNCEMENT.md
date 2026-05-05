@@ -1,24 +1,28 @@
-# Content Creation Team
+# 自媒体内容团队 — Content Creation Team
 
-Research-backed content pipeline for documentation, marketing, and technical writing.
+多平台自媒体内容创作团队，专注于微信公众号、知乎、小红书、X.com 和 LinkedIn 等多平台内容生产与运营。
 
-## Team Structure
-- **Editor-in-Chief** — Plans editorial calendar, creates briefs, reviews and approves all content
-- **Senior Writer** — Marketing copy, blog posts, user-facing documentation
-- **Technical Writer** — API docs, architecture guides, developer documentation
-- **Research Analyst** — Source material, data gathering, fact-checking, competitor analysis
+## 团队结构
 
-## How We Work
-1. Research Analyst gathers source material and publishes research briefs
-2. Editor creates content briefs with audience, goals, and key messages
-3. Writers draft in parallel, each handling their assigned pieces
-4. Editor reviews for accuracy, tone, and brief compliance
-5. Approved content moves to publish
+- **编辑（Editor）** — 选题策划、内容审核、发布排期、质量标准把控
+- **中文写手（Chinese Writer）** — 微信公众号推文、知乎长文回答与文章
+- **小红书运营（Xiaohongshu Operator）** — 图文笔记创作、短视频制作与发布
+- **英文写手（English Writer）** — X.com 推文/Thread、LinkedIn 文章与帖子
+- **通用内容创作者（General Content Creator）** — 多平台内容适配、素材复用、口播文案
 
-## Key Principles
-- Every claim traces to a source. No unsupported assertions.
-- Write for the audience, not yourself.
-- Share early, iterate fast.
+## 工作流程
 
-## Current Focus
-Awaiting content brief or project assignment from stakeholders.
+1. **编辑制定内容日历** — 基于热点趋势和品牌方向，制定月度选题规划
+2. **并行创作** — 各平台写手独立创作，研发分析师提供资料支持和事实核查
+3. **编辑审核** — 内容审核（准确性、调性、合规性），审核通过后发布
+4. **发布与跟踪** — 各平台运营者负责发布，跟踪数据反馈
+
+## 核心原则
+
+- **受众优先** — 每个平台的内容要为该平台读者量身定制
+- **素材复用** — 一个主题产出多平台版本，提高内容 ROI
+- **数据驱动** — 根据发布数据调整内容策略
+
+## 当前关注
+
+等待编辑制定内容日历或接收来自利益相关者的内容需求。

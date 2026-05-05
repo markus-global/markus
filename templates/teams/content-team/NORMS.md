@@ -1,48 +1,50 @@
-# Content Team — Working Norms
+# 自媒体内容团队 — 工作规范
 
-## Pipeline: Research → Brief → Draft → Edit → Publish
+## 工作流：选题 → 创作 → 审核 → 发布 → 复盘
 
-### 1. Research (Research Analyst)
-- Use `web_search` and `web_fetch` to gather source material, competitor analysis, and data.
-- Use `spawn_subagent` for parallel research tracks: market data, user insights, technical accuracy.
-- Publish research briefs as `deliverable_create` artifacts with citations and key findings.
-- Every factual claim must trace to a source. Unsupported claims are flagged in review.
+### 1. 选题与规划（编辑）
+- 使用 `web_search` 研究各平台趋势、热点话题和竞争对手内容。
+- 制定月度内容日历，包含：发布主题、目标平台、目标受众、关键时间节点。
+- 使用 `task_create` 创建内容任务，明确 `assigned_agent_id` 和 `reviewer_id`。
+- 内容日历作为 `deliverable_create` 发布，供全团队可见。
 
-### 2. Brief (Editor-in-Chief)
-- Create a content brief for each piece: audience, goal, key messages, tone, word count, references.
-- Assign briefs to writers based on expertise — technical docs to Technical Writer, marketing copy to Senior Writer.
-- Set dependencies: writing tasks should `blockedBy` the corresponding research task.
-- Define the content calendar as a task dependency graph when running campaigns.
+### 2. 并行创作（各写手，独立工作）
+- **中文写手**：使用 `web_search` 和 `web_fetch` 收集素材，撰写公众号/知乎长文。
+- **小红书运营**：使用 `xhs-posting` 技能创建图文笔记，注意图片配文和话题标签。
+- **英文写手**：使用 `x-com-browser-posting` 技能撰写 X.com Thread/LinkedIn 文章。
+- **通用内容创作者**：适配多平台格式，复用已有素材制作口播文案或短视频脚本。
+- 使用 `spawn_subagent` 进行事实核查，确保每个声明可追溯。
+- 通过 `task_submit_review` 提交初稿，附上：目标平台、受众分析、关键词、字数。
 
-### 3. Draft (Writers, Parallel)
-- Each writer works on their assigned pieces independently.
-- Reference research deliverables — don't re-research what the analyst already covered.
-- Use `spawn_subagent` for fact-checking individual claims during drafting.
-- Submit drafts via `task_submit_review` with a summary: audience, key messages, word count, and any deviations from the brief.
-- Include all content as `deliverable_create` artifacts so the editor can review inline.
+### 3. 审核（编辑）
+- 审核标准：准确性、调性一致性、受众适配度、平台规范合规性。
+- 使用 `spawn_subagent` 交叉验证声明与来源材料。
+- 通过 `task_note` 留下结构化反馈：分类为"必须修改"、"建议"、"已通过"。
+- 审核通过的内容标记为可发布。驳回的内容附上具体修改意见退回写手。
 
-### 4. Edit (Editor-in-Chief)
-- Review for: accuracy, clarity, tone consistency, audience fit, brief compliance.
-- Use `spawn_subagent` to cross-reference claims against research deliverables.
-- Leave structured feedback via `task_note`: categorize as "must fix", "suggestion", or "approved".
-- For major rewrites, create a new task rather than overloading revision notes.
-- Approved pieces move to publish. Rejected pieces return to the writer with specific feedback.
+### 4. 发布（各平台运营者）
+- **中文写手**：公众号排版（使用微信编辑器或 Markdown 转换），定时发布。
+- **小红书运营**：使用 `xhs-posting` 技能发布图文笔记，配置正确的话题标签。
+- **英文写手**：使用 `x-com-browser-posting` 技能发布 Thread 或推文。
+- **通用内容创作者**：根据需求将内容分发到其他平台（抖音、B站等）。
+- 在 `deliverable_create` 中记录发布链接和发布时间。
 
-### 5. Publish (Editor-in-Chief coordinates)
-- Final proofread pass.
-- Generate metadata: title, description, tags, categories.
-- Publish via the appropriate channel (docs site, blog, CMS).
+### 5. 数据复盘（编辑）
+- 定期检查各平台数据（阅读量、互动率、转化等）。
+- 将数据洞察反馈到下一轮内容日历规划中。
+- 记录成功模式和失败教训到团队 NORMS 中。
 
-## Quality Standards
+## 质量标准
 
-- **No unsupported claims.** Every factual statement needs a traceable source in the research deliverable.
-- **Audience-first.** Write for the reader, not yourself. Technical docs explain; marketing copy persuades.
-- **Consistency.** Use the established style guide for terminology, formatting, and tone.
-- **Conciseness.** Every sentence must carry information. Cut filler ruthlessly.
+- **平台适配**：每个平台的内容风格必须适配该平台特点（微信长文 vs 小红书图文 vs X 短推文）。
+- **可追溯声明**：每个事实性声明必须有可查证的来源。
+- **一致性**：保持品牌调性一致，使用统一的术语和风格指南。
+- **ROI 思维**：一个主题产出多平台版本，最大化内容投资回报。
 
-## Communication
+## 沟通规范
 
-- Share drafts early for directional feedback — don't wait until "perfect."
-- Research Analyst: proactively share interesting findings with writers via `agent_send_message`.
-- Writers: flag brief ambiguities immediately. Don't guess at the editor's intent.
-- Use `deliverable_create` for all artifacts — research briefs, drafts, final pieces. This creates an audit trail.
+- 编辑通过 `agent_send_message` 发布内容日历更新和选题通知。
+- 写手在遇到平台适配问题时第一时间在团队内沟通。
+- 所有内容成品通过 `deliverable_create` 登记，确保可追溯。
+- 紧急发布需求使用 `notify_user` 通知编辑。
+- 各平台数据表现定期通过 `task_note` 汇总。

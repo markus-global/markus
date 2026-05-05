@@ -231,61 +231,35 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
         ]
       : []),
 
-    ...(ctx.listTemplates
+    ...(ctx.listArtifacts
       ? [
           {
-            name: 'team_list_templates',
-            description: 'List available agent templates that can be hired. Each template has a role, description, and category.',
-            inputSchema: {
-              type: 'object',
-              properties: {},
-            },
-            async execute(): Promise<string> {
-              try {
-                const templates = ctx.listTemplates!();
-                return JSON.stringify({ templates, count: templates.length });
-              } catch (error) {
-                return JSON.stringify({ status: 'error', error: String(error) });
-              }
-            },
-          } as AgentToolHandler,
-        ]
-      : []),
-
-    ...(ctx.hireFromTemplate
-      ? [
-          {
-            name: 'team_hire_agent',
-            description: 'Hire a new agent from a template and add them to your team. After hiring, onboard the agent: send a welcome message with project context via agent_send_message, then assign initial tasks via task_create.',
+            name: 'package_list',
+            description: 'List all available packages. type "agent": built-in roles (developer, content-writer, etc.) and custom agent packages. type "team": team templates (content-team, research-lab, etc.). type "skill": skill packages. Omit type to list all. Install with package_install. To find more online, use hub_search.',
             inputSchema: {
               type: 'object',
               properties: {
-                template_id: { type: 'string', description: 'Template ID (from team_list_templates)' },
-                name: { type: 'string', description: 'Display name for the new agent' },
-                skills: {
-                  type: 'array',
-                  items: { type: 'string' },
-                  description: 'Optional skill IDs to assign',
+                type: {
+                  type: 'string',
+                  enum: ['agent', 'team', 'skill'],
+                  description: 'Filter by type (optional). Omit to list all.',
                 },
               },
-              required: ['template_id', 'name'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const templateId = (args['template_id'] as string | undefined)?.trim();
-                const name = (args['name'] as string | undefined)?.trim();
-                if (!templateId) return JSON.stringify({ status: 'error', error: 'template_id is required' });
-                if (!name) return JSON.stringify({ status: 'error', error: 'name is required — please provide a display name for the new agent' });
-                const result = await ctx.hireFromTemplate!(
-                  templateId,
-                  name,
-                  args['skills'] as string[] | undefined,
-                );
-                return JSON.stringify({
-                  status: 'success',
-                  agent: result,
-                  next_steps: 'Agent created and started. Next: onboard them with project context via agent_send_message, then assign initial tasks via task_create.',
-                });
+                const type = args['type'] as string | undefined;
+                const artifacts = ctx.listArtifacts!(type as 'agent' | 'team' | 'skill' | undefined);
+                const roles = (!type || type === 'agent') && ctx.listTemplates ? ctx.listTemplates() : [];
+                const roleItems = roles.map((r: { id?: string; name?: string; description?: string }) => ({
+                  type: 'agent' as const,
+                  source: 'role' as const,
+                  name: r.id ?? r.name,
+                  description: r.description ?? r.name,
+                  ...r,
+                }));
+                const items = [...roleItems, ...artifacts];
+                return JSON.stringify({ items, count: items.length });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
@@ -350,6 +324,76 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
                 if (!name) return JSON.stringify({ status: 'error', error: 'name is required' });
                 const result = await ctx.updateAgentConfig!(agentId, { name });
                 return JSON.stringify({ status: 'success', agent: result });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.installArtifact
+      ? [
+          {
+            name: 'package_install',
+            description: 'Install a package into the live organization. type "agent": hire/install an agent (from a built-in role or a custom package). type "team": deploy a full team with all members, norms, and starter tasks. type "skill": install a skill package. Use package_list to see what is available.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                type: {
+                  type: 'string',
+                  enum: ['agent', 'team', 'skill'],
+                  description: 'Package type',
+                },
+                name: { type: 'string', description: 'Package name (from package_list)' },
+                agent_name: { type: 'string', description: 'Display name for the new agent (required when installing from a built-in role, e.g. "developer")' },
+                skills: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Optional skill IDs to assign to the new agent',
+                },
+              },
+              required: ['type', 'name'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const type = (args['type'] as string | undefined)?.trim();
+                const name = (args['name'] as string | undefined)?.trim();
+                if (!type || !['agent', 'team', 'skill'].includes(type)) return JSON.stringify({ status: 'error', error: 'type is required and must be one of: agent, team, skill' });
+                if (!name) return JSON.stringify({ status: 'error', error: 'name is required — use package_list to see available packages' });
+
+                if (type === 'agent') {
+                  try {
+                    const result = await ctx.installArtifact!(type, name);
+                    return JSON.stringify({
+                      status: 'success',
+                      ...result,
+                      next_steps: 'Installed successfully. Next: onboard new agent with project context via agent_send_message, then assign tasks via task_create.',
+                    });
+                  } catch {
+                    if (ctx.hireFromTemplate) {
+                      const agentName = (args['agent_name'] as string | undefined)?.trim();
+                      if (!agentName) return JSON.stringify({ status: 'error', error: 'agent_name is required when installing from a built-in role — provide a display name for the new agent' });
+                      const result = await ctx.hireFromTemplate(name, agentName, args['skills'] as string[] | undefined);
+                      return JSON.stringify({
+                        status: 'success',
+                        type: 'agent',
+                        agent: result,
+                        next_steps: 'Agent hired and started. Next: onboard with project context via agent_send_message, then assign tasks via task_create.',
+                      });
+                    }
+                    throw new Error(`Agent package not found: ${name}. Use package_list to see available packages.`);
+                  }
+                }
+
+                const result = await ctx.installArtifact!(type as 'team' | 'skill', name);
+                return JSON.stringify({
+                  status: 'success',
+                  ...result,
+                  ...(type === 'team' ? {
+                    next_steps: 'Installed successfully. Next: onboard new agent(s) with project context via agent_send_message, then assign initial tasks via task_create.',
+                  } : {}),
+                });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }

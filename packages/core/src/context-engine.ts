@@ -120,7 +120,7 @@ export class ContextEngine {
     memory: IMemoryStore;
     currentQuery?: string;
     identity?: IdentityContext;
-    senderIdentity?: { id: string; name: string; role: string };
+    senderIdentity?: { id: string; name: string; role: string; isFirstConversation?: boolean };
     assignedTasks?: Array<{
       id: string;
       title: string;
@@ -516,6 +516,11 @@ export class ContextEngine {
       dynamic.push(
         `You are now talking to **${opts.senderIdentity.name}** (${opts.senderIdentity.role}).`
       );
+      if (opts.senderIdentity.isFirstConversation) {
+        dynamic.push(
+          '**This is their first conversation** — they have never used Markus before. Follow your onboarding protocol if you have one.'
+        );
+      }
       if (opts.senderIdentity.role === 'owner') {
         dynamic.push(
           'This person is the organization owner. Their instructions have the highest priority. Be proactive in reporting and responsive to their needs.'
@@ -531,6 +536,18 @@ export class ContextEngine {
       }
     }
 
+    if (!isDream) {
+      dynamic.push('\n## Tool Usage Rules');
+      dynamic.push('**File editing discipline**: You MUST use `file_write` and `file_edit` for all file creation and modification. NEVER use `shell_execute` with `cat`, `echo`, `printf`, `tee`, pipes (`|`), output redirection (`>`, `>>`), heredocs (`<<`), or `sed`/`awk` to write or modify files — these bypass file access controls. `shell_execute` is for running commands (build, test, git, etc.), not for writing files.');
+      dynamic.push('**Large file writing**: NEVER write a document >200 lines in a single `file_write` call. Write section by section: `file_write` the first section, then `file_edit` to append each subsequent section.');
+      dynamic.push('**Error handling**: If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action.');
+      dynamic.push('**Subagent delegation**: For heavy subtasks needing many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
+      dynamic.push('**Built-in tools over CLI**: ALWAYS prefer built-in tools (`task_create`, `task_assign`, `package_install`, `agent_send_message`, `memory_save`, etc.) over running `markus` CLI commands via `shell_execute`. The CLI is for human operators — agents must use their native tool interface. Only fall back to CLI if no built-in tool exists for the operation.');
+      dynamic.push('**No auto-install/deploy**: NEVER automatically install or deploy agents, teams, or skills via `package_install` or `hub_install` unless explicitly requested by a human team member (e.g., "install", "deploy", "hire", "start"). Creating an artifact (writing files to `builder-artifacts/`) is separate from deploying it into the live organization.');
+    }
+
+    // Timestamp at the end of the system prompt preserves KV-cache for the
+    // stable prefix (identity, role, policies, memory) which rarely changes.
     const now = new Date();
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const offset = now.getTimezoneOffset();
@@ -836,8 +853,7 @@ export class ContextEngine {
         lines.push('6. **Hiring & Team Building** — Two phases: CREATE then INSTALL (only when user requests).');
         lines.push('   a) *Creating* (design the artifact): activate `agent-building` or `team-building` skill → write artifact files. Or `hub_search` to browse community packages.');
         lines.push('   b) *Installing* (deploy into org — ONLY when user explicitly asks to install/deploy/hire):');
-        lines.push('      - Quick hire from template: `team_list_templates` → `team_hire_agent`');
-        lines.push('      - Install artifact: `builder_install` (for custom-built or Hub-downloaded packages)');
+        lines.push('      - `package_list` → `package_install` (type: agent/team/skill)');
         lines.push('      - Hub one-step: `hub_install` (download + install)');
         lines.push('   c) After install: onboard via `agent_send_message` (project context) → `task_create` (initial work)');
         lines.push('   **IMPORTANT**: NEVER auto-install. Creating an artifact does NOT mean deploying it. Wait for explicit user request.');

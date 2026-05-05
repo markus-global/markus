@@ -2,52 +2,78 @@
   "type": "team",
   "name": "research-lab",
   "displayName": "Research Lab",
-  "version": "1.1.0",
-  "description": "Structured research team for investigating complex problems: debugging with competing hypotheses, technology evaluation, security audits, and deep analysis. Multiple researchers explore different angles in parallel, challenge each other's findings, and a synthesizer produces high-quality deliverables. Uses subagents for deep dives, web tools for evidence, memory for knowledge accumulation, and deliverables for traceable outputs.",
+  "version": "2.0.0",
+  "description": "A structured think tank research team. The Director defines research directions and assigns tasks; Senior Researcher leads deep investigations and produces reports; Junior Researcher handles data collection, preliminary analysis and literature review; Coordinator manages schedules, meeting notes, and deliverable organization. Designed for deep research projects, competitive analysis, industry reports, and knowledge synthesis. Features parallel investigation tracks, adversarial hypothesis testing, and evidence-based synthesis.",
   "author": "Markus Team",
   "category": "research",
-  "tags": ["research", "investigation", "debugging", "analysis", "competing-hypotheses", "audit"],
+  "tags": ["research", "think-tank", "investigation", "analysis", "report", "knowledge", "synthesis", "deep-research"],
   "icon": "search",
+  "starterTasks": [
+    {
+      "title": "制定调研框架与方法论",
+      "description": "由主任制定本次调研项目的总体框架：明确研究问题、设定成功标准、识别关键信息来源、分配调研角色和并行调研方向。产出调研计划文档（含时间线、里程碑和交付物清单），供全体团队成员审阅确认。",
+      "priority": "high"
+    },
+    {
+      "title": "竞品/行业资料收集与初步分析",
+      "description": "协调秘书负责组织资料收集工作。高级研究员和助理研究员并行工作：一方收集行业报告、市场数据和竞品动态；另一方进行文献综述和技术趋势分析。使用子代理并行深挖各子领域。产出初步资料索引和关键发现摘要。",
+      "priority": "high"
+    },
+    {
+      "title": "深度调研与交叉验证",
+      "description": "各研究员在各自方向上深入调研，使用对抗性假设检验方法挑战彼此的发现。协调秘书跟踪进度并记录讨论要点。主任组织中期评审会议，决定是否需要调整方向。产出各方向深度调研报告（含置信度评估）。",
+      "priority": "medium"
+    },
+    {
+      "title": "综合报告撰写与交付",
+      "description": "高级研究员负责综合各方向调研成果撰写最终报告。主任审核并提供修改意见。协调秘书负责格式规范、图表制作和交付物归档。产出：最终研究报告、执行摘要（面向决策者）、附录（数据来源和方法论）。",
+      "priority": "high"
+    }
+  ],
   "i18n": {
     "zh-CN": {
-      "displayName": "研究实验室",
-      "description": "结构化研究团队，用于调查复杂问题：通过竞争性假设进行调试、技术评估、安全审计和深度分析。多位研究员并行探索不同角度，相互质疑发现，由综合分析师产出高质量交付物。",
+      "displayName": "调研研究团队",
+      "description": "结构化智库研究团队。主任制定调研方向并分配任务；高级研究员主导深度调研和报告撰写；助理研究员负责资料收集、初步分析和文献综述；协调秘书管理进度、会议记录和交付物整理。适用于深度研究项目、竞品分析、行业报告和知识综合。",
       "members": {
-        "Research Lead": "研究负责人",
-        "Researcher Alpha": "研究员 Alpha",
-        "Researcher Beta": "研究员 Beta",
-        "Synthesizer": "综合分析师"
+        "Director": "主任",
+        "Senior Researcher": "高级研究员",
+        "Junior Researcher": "助理研究员",
+        "Coordinator": "协调秘书"
       }
     }
   },
   "team": {
     "members": [
       {
-        "name": "Research Lead",
+        "name": "Director",
         "role": "manager",
         "roleName": "project-manager",
         "count": 1,
+        "description": "制定调研方向、分配任务、审核综合产出",
         "skills": ["self-evolution"]
       },
       {
-        "name": "Researcher Alpha",
+        "name": "Senior Researcher",
         "role": "worker",
         "roleName": "research-assistant",
         "count": 1,
+        "description": "深度调研、报告撰写、方法论证",
         "skills": ["self-evolution"]
       },
       {
-        "name": "Researcher Beta",
+        "name": "Junior Researcher",
         "role": "worker",
         "roleName": "research-assistant",
         "count": 1,
+        "description": "资料收集、初步分析、文献综述",
         "skills": ["self-evolution"]
       },
       {
-        "name": "Synthesizer",
+        "name": "Coordinator",
         "role": "worker",
-        "roleName": "content-writer",
+        "roleName": "operations",
         "count": 1,
+        "description": "会议记录、进度跟踪、交付物整理",
         "skills": ["self-evolution"]
       }
     ]

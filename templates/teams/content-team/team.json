@@ -2,52 +2,82 @@
   "type": "team",
   "name": "content-team",
   "displayName": "Content Creation Team",
-  "version": "2.0.0",
-  "description": "A research-backed content team with a structured pipeline: Research → Brief → Draft → Edit → Publish. Features parallel writing with independent workstreams, fact-checking via subagent research, and editorial review gates. Ideal for documentation projects, marketing campaigns, technical writing, and content operations.",
+  "version": "3.0.0",
+  "description": "A multi-platform content creation team with specialized writers for Chinese and English markets. Editor-in-Chief plans the editorial calendar and reviews content; Chinese writer handles WeChat public accounts and Zhihu long-form articles; Little Red Book (Xiaohongshu) operator creates image-text notes and short videos; English writer produces X.com threads and LinkedIn articles; General content creator handles multi-platform adaptation and asset reuse. Each writer owns their platform domain. Designed for content operations, brand marketing, and cross-platform content strategies.",
   "author": "Markus Team",
   "category": "productivity",
-  "tags": ["content", "writing", "marketing", "documentation", "creative", "editorial"],
+  "tags": ["content", "writing", "marketing", "multi-platform", "social-media", "wechat", "xiaohongshu", "x.com", "linkedin", "zhihu"],
   "icon": "edit",
+  "starterTasks": [
+    {
+      "title": "制定内容日历",
+      "description": "制定接下来一个月的选题规划，包含各平台发布节奏、内容主题、目标受众和关键时间节点。需要产出内容日历文档（Google Sheets 或 Markdown），供全体团队成员审阅。",
+      "priority": "high"
+    },
+    {
+      "title": "各平台账号配置与调研",
+      "description": "调研目标平台当前趋势和热门话题，确认各平台账号状态并完成配置。包括：微信公众号排版规范确认、小红书笔记格式适配、X.com Thread 模板准备、LinkedIn 文章风格调研。产出各平台内容风格指南。",
+      "priority": "medium"
+    },
+    {
+      "title": "第一篇内容策划与发布",
+      "description": "根据内容日历，选择第一个内容主题进行写作。各平台写手并行工作：中文内容适配公众号/知乎，小红书笔记同步制作，英文内容适配 X/LinkedIn。编辑审核后发布。",
+      "priority": "high"
+    }
+  ],
   "i18n": {
     "zh-CN": {
-      "displayName": "内容创作团队",
-      "description": "以研究驱动的内容团队，具有结构化的流水线：调研 → 简报 → 草稿 → 编辑 → 发布。支持并行写作、事实核查和编辑审核。适用于文档项目、营销活动、技术写作和内容运营。",
+      "displayName": "自媒体内容团队",
+      "description": "多平台自媒体内容创作团队，配备覆盖中文和英文市场的专业创作者。编辑负责选题策划与内容审核；中文写手负责公众号和知乎长文；小红书运营制作图文笔记与短视频；英文写手生产 X.com 推文与 LinkedIn 文章；通用内容创作者负责多平台适配与素材复用。适用于内容运营、品牌营销和跨平台内容策略。",
       "members": {
-        "Editor-in-Chief": "主编",
-        "Senior Writer": "高级作者",
-        "Technical Writer": "技术文档工程师",
-        "Research Analyst": "研究分析师"
+        "Editor": "编辑",
+        "Chinese Writer": "中文写手",
+        "Xiaohongshu Operator": "小红书运营",
+        "English Writer": "英文写手",
+        "General Content Creator": "通用内容创作者"
       }
     }
   },
   "team": {
     "members": [
       {
-        "name": "Editor-in-Chief",
+        "name": "Editor",
         "role": "manager",
         "roleName": "project-manager",
         "count": 1,
+        "description": "选题策划、内容审核、发布排期协调",
         "skills": ["self-evolution"]
       },
       {
-        "name": "Senior Writer",
+        "name": "Chinese Writer",
         "role": "worker",
         "roleName": "content-writer",
         "count": 1,
+        "description": "微信公众号/知乎长文写作",
         "skills": ["self-evolution"]
       },
       {
-        "name": "Technical Writer",
+        "name": "Xiaohongshu Operator",
         "role": "worker",
-        "roleName": "tech-writer",
+        "roleName": "content-writer",
         "count": 1,
-        "skills": ["self-evolution"]
+        "description": "小红书图文/短视频创作与发布",
+        "skills": ["chrome-devtools", "xhs-posting", "self-evolution"]
       },
       {
-        "name": "Research Analyst",
+        "name": "English Writer",
         "role": "worker",
-        "roleName": "research-assistant",
+        "roleName": "content-writer",
         "count": 1,
+        "description": "X.com/LinkedIn 英文推文与文章",
+        "skills": ["x-com-browser-posting", "self-evolution"]
+      },
+      {
+        "name": "General Content Creator",
+        "role": "worker",
+        "roleName": "content-writer",
+        "count": 1,
+        "description": "多平台适应、素材复用、抖音口播文案",
         "skills": ["self-evolution"]
       }
     ]

@@ -388,6 +388,7 @@ export class APIServer {
       registry,
       (msg) => this.ws?.broadcast(msg as Parameters<WSBroadcaster['broadcast']>[0]),
     );
+    this.builderService.setTaskService(this.taskService);
   }
 
   getBuilderService(): BuilderService | undefined {
@@ -1659,6 +1660,18 @@ export class APIServer {
     }
 
     // ── Chat sessions ──────────────────────────────────────────────────────
+    if (path === '/api/sessions/has-any' && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.storage) {
+        this.json(res, 200, { hasAny: false });
+        return;
+      }
+      const hasAny = this.storage.chatSessionRepo.hasAnySessions(authUser.userId);
+      this.json(res, 200, { hasAny });
+      return;
+    }
+
     if (path.match(/^\/api\/agents\/[^/]+\/sessions$/) && req.method === 'GET') {
       const authUser = await this.getAuthUser(req);
       const agentId = path.split('/')[3]!;
@@ -2135,7 +2148,13 @@ export class APIServer {
         const fileNames = (body['fileNames'] as string[] | undefined)?.filter(Boolean);
         const isRetry = body['isRetry'] as boolean | undefined;
         const isResume = body['isResume'] as boolean | undefined;
-        const senderInfo = this.orgService.resolveHumanIdentity(senderId);
+        const baseSenderInfo = this.orgService.resolveHumanIdentity(senderId);
+        const isFirstConversation = this.storage
+          ? !this.storage.chatSessionRepo.hasAnySessions(senderId)
+          : false;
+        const senderInfo = baseSenderInfo
+          ? { ...baseSenderInfo, isFirstConversation }
+          : undefined;
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'working');
 

@@ -22,6 +22,62 @@ Use Chrome DevTools tools when you need to:
 Do NOT use these tools when `web_fetch` or `web_search` suffice (simple content retrieval or search).
 Chrome DevTools is for interactive browser sessions that require a real rendering engine.
 
+## Installation & Setup
+
+### 1. Check if Chrome is already installed
+
+Before installing, check if Chrome is available on the system:
+
+- **macOS**: `ls /Applications/Google\ Chrome.app` or `mdfind "kMDItemCFBundleIdentifier == com.google.Chrome"`
+- **Linux**: `which google-chrome || which google-chrome-stable || which chromium-browser`
+- **Windows**: `where chrome` or check `"C:\Program Files\Google\Chrome\Application\chrome.exe"`
+
+To check the installed version:
+- **macOS**: `/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --version`
+- **Linux**: `google-chrome --version`
+
+If Chrome is already installed and version is **144+**, skip to step 2.
+
+**Only if Chrome is NOT installed:**
+
+- **macOS**: `brew install --cask google-chrome` or download from https://www.google.com/chrome/
+- **Linux (Debian/Ubuntu)**: `wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add - && sudo apt update && sudo apt install google-chrome-stable`
+- **Windows**: Download from https://www.google.com/chrome/
+
+Chrome version **144+** is required (146+ recommended).
+
+### 2. Launch Chrome with Remote Debugging
+
+To use DevTools automation you must start Chrome with remote debugging enabled:
+
+- **macOS**:
+  ```
+  /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+  ```
+- **Linux**:
+  ```
+  google-chrome --remote-debugging-port=9222
+  ```
+- **Windows**:
+  ```
+  "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+  ```
+
+Alternatively, skip the launch flag and use Auto-Connect (see Mode 1 below) — but you must
+manually enable remote debugging in Chrome first.
+
+### 3. Verify Connection
+
+Open `chrome://inspect/#remote-debugging` in Chrome. You should see your open tabs listed.
+If the MCP server is running, it will appear as a connected client.
+
+### Troubleshooting
+
+- **Port conflict**: If port 9222 is in use, pick another (e.g. 9333) and update Settings > Browser Automation > Remote Debugging Port.
+- **Firewall**: Ensure localhost access to the debugging port is not blocked.
+- **Memory Saver**: Chrome's Memory Saver can freeze tabs and cause connection timeouts. Disable it at `chrome://settings/performance` or upgrade to Chrome 146+.
+- **Permission dialog**: On first Auto-Connect, Chrome shows a permission dialog — click **Allow**.
+
 ## Prerequisites
 
 The MCP server connects to the user's running Chrome via one of two modes:

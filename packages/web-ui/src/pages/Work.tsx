@@ -1501,6 +1501,17 @@ function TaskDetailPanel({
   const [previewFile, setPreviewFile] = useState<string | null>(null);
   const [editingDesc, setEditingDesc] = useState(false);
   const [descDraft, setDescDraft] = useState(task.description);
+  const descRef = useRef<HTMLDivElement>(null);
+  const descTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const descHeightRef = useRef(80);
+  useEffect(() => {
+    if (editingDesc && descTextareaRef.current) {
+      const el = descTextareaRef.current;
+      el.style.height = 'auto';
+      el.style.height = Math.max(el.scrollHeight, descHeightRef.current) + 'px';
+      el.focus();
+    }
+  }, [editingDesc]);
   const [showRevision, setShowRevision] = useState(false);
   const [revisionReason, setRevisionReason] = useState('');
   const [deliverablesPage, setDeliverablesPage] = useState(1);
@@ -1671,32 +1682,47 @@ function TaskDetailPanel({
               {/* Description */}
               <div className="px-6 pt-4 pb-3 border-b border-border-default">
                 {editingDesc ? (
-                  <div className="space-y-2">
-                    <textarea
-                      value={descDraft}
-                      onChange={e => setDescDraft(e.target.value)}
-                      className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none resize-y min-h-[80px]"
-                      rows={4}
-                      placeholder={t('work:task.addDescription')}
-                    />
-                    <div className="flex gap-2 justify-end">
-                      <button onClick={() => { setEditingDesc(false); setDescDraft(task.description); }} className="px-2.5 py-1 text-xs border border-border-default rounded-lg hover:bg-surface-elevated">{t('common:cancel')}</button>
-                      <button
-                        onClick={() => { void doUpdate(() => api.tasks.update(task.id, { description: descDraft })); setEditingDesc(false); }}
-                        disabled={actionInFlight}
-                        className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50"
-                      >{t('common:save')}</button>
-                    </div>
-                  </div>
+                  <textarea
+                    ref={descTextareaRef}
+                    value={descDraft}
+                    onChange={e => {
+                      setDescDraft(e.target.value);
+                      const el = e.target;
+                      el.style.height = 'auto';
+                      el.style.height = el.scrollHeight + 'px';
+                    }}
+                    onBlur={() => {
+                      if (descDraft !== task.description) {
+                        void doUpdate(() => api.tasks.update(task.id, { description: descDraft }));
+                      }
+                      setEditingDesc(false);
+                    }}
+                    onKeyDown={e => {
+                      if (e.key === 'Escape') {
+                        e.preventDefault();
+                        setDescDraft(task.description);
+                        setEditingDesc(false);
+                      }
+                    }}
+                    className="w-full bg-transparent border border-brand-500/30 rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none resize-none -mx-2 px-2 -my-1 py-1"
+                    placeholder={t('work:task.addDescription')}
+                  />
                 ) : (
-                  <div className="group relative">
+                  <div
+                    ref={descRef}
+                    className="group relative cursor-pointer rounded-lg -mx-2 px-2 -my-1 py-1 hover:bg-surface-elevated/50 transition-colors"
+                    onClick={() => { descHeightRef.current = Math.max(descRef.current?.offsetHeight ?? 80, 60); setDescDraft(task.description); setEditingDesc(true); }}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={e => e.key === 'Enter' && (setDescDraft(task.description), setEditingDesc(true))}
+                  >
                     {task.description ? (
                       <div>
                         <div className={isMobile && !descExpanded ? 'line-clamp-3' : ''}>
                           <MarkdownMessage content={task.description} className="text-sm text-fg-secondary leading-relaxed" />
                         </div>
                         {isMobile && task.description.length > 150 && (
-                          <button onClick={() => setDescExpanded(!descExpanded)}
+                          <button onClick={(e) => { e.stopPropagation(); setDescExpanded(!descExpanded); }}
                             className="text-[11px] text-brand-500 mt-1 font-medium">
                             {descExpanded ? t('work:task.collapse') : t('common:showMore')}
                           </button>
@@ -1705,10 +1731,6 @@ function TaskDetailPanel({
                     ) : (
                       <p className="text-sm text-fg-tertiary italic">{t('work:task.noDescription')}</p>
                     )}
-                    <button
-                      onClick={() => { setDescDraft(task.description); setEditingDesc(true); }}
-                      className="absolute top-0 right-0 text-[10px] text-fg-tertiary hover:text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >{t('common:edit')}</button>
                   </div>
                 )}
               </div>
@@ -4584,6 +4606,35 @@ function RequirementDetailPanel({
   const [savingDesc, setSavingDesc] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const reqScrollRef = useRef<HTMLDivElement>(null);
+  const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
+  const descRef = useRef<HTMLDivElement>(null);
+  const descTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const descHeightRef = useRef(80);
+  useEffect(() => {
+    const el = reqScrollRef.current;
+    if (!el) return;
+    const update = () => {
+      const { scrollTop, scrollHeight, clientHeight } = el;
+      const scrollable = scrollHeight > clientHeight + 50;
+      if (!scrollable) { setScrollState('none'); return; }
+      const atTop = scrollTop < 30;
+      const atBottom = scrollTop + clientHeight >= scrollHeight - 30;
+      setScrollState(atTop ? 'top' : atBottom ? 'bottom' : 'middle');
+    };
+    update();
+    el.addEventListener('scroll', update, { passive: true });
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => { el.removeEventListener('scroll', update); ro.disconnect(); };
+  }, []);
+  useEffect(() => {
+    if (editingDesc && descTextareaRef.current) {
+      const el = descTextareaRef.current;
+      el.style.height = 'auto';
+      el.style.height = Math.max(el.scrollHeight, descHeightRef.current) + 'px';
+      el.focus();
+    }
+  }, [editingDesc]);
 
   useEffect(() => {
     if (!scrollToComments) return;
@@ -4633,47 +4684,54 @@ function RequirementDetailPanel({
       </div>
 
       {/* Body */}
-      <div ref={reqScrollRef} className="flex-1 overflow-y-auto p-5 space-y-4">
+      <div className="flex-1 min-h-0 relative">
+      <div ref={reqScrollRef} className="h-full overflow-y-auto p-5 space-y-4">
           <div>
             <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 block">{t('work:task.requirementDetailDescription')}</label>
             {editingDesc ? (
-              <div className="space-y-2">
-                <textarea
-                  value={descDraft}
-                  onChange={e => setDescDraft(e.target.value)}
-                  className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none resize-y min-h-[80px]"
-                  rows={4}
-                  autoFocus
-                />
-                <div className="flex gap-2 justify-end">
-                  <button onClick={() => { setEditingDesc(false); setDescDraft(req.description); }} className="px-2.5 py-1 text-xs border border-border-default rounded-lg hover:bg-surface-elevated">{t('common:cancel')}</button>
-                  <button
-                    onClick={async () => {
-                      setSavingDesc(true);
-                      try {
-                        await api.requirements.update(req.id, { description: descDraft });
-                        setEditingDesc(false);
-                        onRefresh?.();
-                      } catch (e) { /* keep editing */ }
-                      finally { setSavingDesc(false); }
-                    }}
-                    disabled={savingDesc}
-                    className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50"
-                  >{t('common:save')}</button>
-                </div>
-              </div>
+              <textarea
+                ref={descTextareaRef}
+                value={descDraft}
+                onChange={e => {
+                  setDescDraft(e.target.value);
+                  const el = e.target;
+                  el.style.height = 'auto';
+                  el.style.height = el.scrollHeight + 'px';
+                }}
+                onBlur={async () => {
+                  if (descDraft !== req.description) {
+                    setSavingDesc(true);
+                    try {
+                      await api.requirements.update(req.id, { description: descDraft });
+                      onRefresh?.();
+                    } catch { /* keep editing */ }
+                    finally { setSavingDesc(false); }
+                  }
+                  setEditingDesc(false);
+                }}
+                onKeyDown={e => {
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setDescDraft(req.description);
+                    setEditingDesc(false);
+                  }
+                }}
+                className="w-full bg-transparent border border-brand-500/30 rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none resize-none -mx-2 px-2 -my-1 py-1"
+                placeholder={t('work:task.requirementDetailDescription')}
+              />
             ) : (
-              <div className="group relative">
+              <div
+                ref={descRef}
+                className={`group relative rounded-lg -mx-2 px-2 -my-1 py-1 transition-colors ${!isTerminal ? 'cursor-pointer hover:bg-surface-elevated/50' : ''}`}
+                onClick={!isTerminal ? () => { descHeightRef.current = Math.max(descRef.current?.offsetHeight ?? 80, 60); setDescDraft(req.description); setEditingDesc(true); } : undefined}
+                role={!isTerminal ? 'button' : undefined}
+                tabIndex={!isTerminal ? 0 : undefined}
+                onKeyDown={!isTerminal ? e => e.key === 'Enter' && (setDescDraft(req.description), setEditingDesc(true)) : undefined}
+              >
                 {req.description ? (
                   <MarkdownMessage content={req.description} className="text-sm text-fg-secondary leading-relaxed" />
                 ) : (
                   <p className="text-sm text-fg-tertiary italic">{t('work:task.requirementNoDescription')}</p>
-                )}
-                {!isTerminal && (
-                  <button
-                    onClick={() => { setDescDraft(req.description); setEditingDesc(true); }}
-                    className="absolute top-0 right-0 text-[10px] text-fg-tertiary hover:text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                  >{t('common:edit')}</button>
                 )}
               </div>
             )}
@@ -4795,6 +4853,25 @@ function RequirementDetailPanel({
 
           {/* Status History */}
           <StatusHistoryTimeline entityType="requirement" entityId={req.id} />
+        </div>
+        {scrollState !== 'none' && scrollState !== 'top' && (
+          <button
+            onClick={() => reqScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+            className="absolute bottom-20 right-4 md:bottom-14 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
+            title={t('work:task.scrollToTop')}
+          >
+            <svg className="w-6 h-6 md:w-4 md:h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M14.77 12.79a.75.75 0 01-1.06-.02L10 8.832l-3.71 3.938a.75.75 0 11-1.08-1.04l4.25-4.5a.75.75 0 011.08 0l4.25 4.5a.75.75 0 01-.02 1.06z" clipRule="evenodd" /></svg>
+          </button>
+        )}
+        {scrollState !== 'none' && scrollState !== 'bottom' && (
+          <button
+            onClick={() => { const el = reqScrollRef.current; if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }}
+            className="absolute bottom-6 right-4 md:bottom-4 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
+            title={t('work:task.scrollToBottom')}
+          >
+            <svg className="w-6 h-6 md:w-4 md:h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
+          </button>
+        )}
         </div>
 
         {/* Actions */}

@@ -189,7 +189,7 @@ file_write("~/.markus/builder-artifacts/teams/research-team/members/senior-resea
 Once all files are written, tell the user:
 
 1. **The team has been created and saved** — summarize the team composition (name, members, their roles).
-2. **Ready to install** — the user can install from the Builder page, or ask you to install it (you would use `builder_install`). Do NOT install unless asked.
+2. **Ready to install** — the user can install from the Builder page, or ask you to install it (you would use `package_install`). Do NOT install unless asked.
 3. **To modify or improve** this team (e.g., add new members, update roles, change team norms), just continue the conversation here — describe what you want to change and I'll update the files directly.
 
 ## Rules

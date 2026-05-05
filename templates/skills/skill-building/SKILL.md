@@ -150,7 +150,7 @@ file_write("~/.markus/builder-artifacts/skills/git-changelog/README.md", "# Git 
 Once all files are written, tell the user:
 
 1. **The skill has been created and saved** — summarize what was created (name, purpose, what agents can do with it).
-2. **Ready to install** — the user can install from the Builder page, or ask you to install it (you would use `builder_install`). Do NOT install unless asked.
+2. **Ready to install** — the user can install from the Builder page, or ask you to install it (you would use `package_install`). Do NOT install unless asked.
 3. **To modify or improve** this skill (e.g., add more instructions, update examples, fix edge cases), just continue the conversation here — describe what you want to change and I'll update the files directly.
 
 ## Guidelines

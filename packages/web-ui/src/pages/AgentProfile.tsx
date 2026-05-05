@@ -1036,7 +1036,7 @@ const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
   { id: 'deliverables', prefixes: ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'] },
   { id: 'communication', prefixes: ['agent_send_message', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats', 'agent_broadcast_status', 'agent_delegate_task'] },
   { id: 'memory', prefixes: ['memory_save', 'memory_search', 'memory_list', 'memory_update_longterm', 'memory_delete', 'recall_context', 'recall_activity'] },
-  { id: 'teamManager', prefixes: ['team_list', 'team_status', 'delegate_message', 'team_hire_agent', 'team_list_templates', 'team_update', 'agent_update'] },
+  { id: 'teamManager', prefixes: ['team_list', 'team_status', 'delegate_message', 'team_update', 'agent_update', 'package_list', 'package_install'] },
   { id: 'subagents', prefixes: ['spawn_subagent', 'spawn_subagents'] },
   { id: 'llm', prefixes: ['llm_list_providers', 'llm_switch_model', 'llm_switch_default_provider', 'llm_add_provider', 'llm_edit_provider', 'llm_add_model'] },
 ];

@@ -41,11 +41,20 @@ export interface TeamMemberSection {
   role: 'manager' | 'worker';
   roleName?: string;
   count: number;
+  description?: string;
   skills?: string[];
+}
+
+export interface StarterTaskDef {
+  title: string;
+  description: string;
+  priority?: 'low' | 'medium' | 'high' | 'urgent';
 }
 
 export interface TeamSection {
   members: TeamMemberSection[];
+  /** Pre-built tasks created when the team is first set up (for onboarding) */
+  starterTasks?: StarterTaskDef[];
 }
 
 export interface SkillSection {
@@ -83,6 +92,8 @@ export interface MarkusPackageManifest {
   agent?: AgentSection;
   team?: TeamSection;
   skill?: SkillSection;
+  /** Pre-built tasks created when the team is first set up (for onboarding) */
+  starterTasks?: StarterTaskDef[];
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

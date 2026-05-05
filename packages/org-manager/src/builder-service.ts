@@ -17,6 +17,7 @@ import {
   type SkillRegistry,
 } from '@markus/core';
 import type { OrganizationService } from './org-service.js';
+import type { TaskService } from './task-service.js';
 
 const log = createLogger('builder-service');
 
@@ -45,11 +46,22 @@ const FS_HELPER = {
 };
 
 export class BuilderService {
+  private taskService?: TaskService;
+  private builtinTeamTemplatesDir?: string;
+
   constructor(
     private orgService: OrganizationService,
     private skillRegistry?: SkillRegistry,
     private wsBroadcast?: WSBroadcastFn,
   ) {}
+
+  setTaskService(taskService: TaskService): void {
+    this.taskService = taskService;
+  }
+
+  setBuiltinTeamTemplatesDir(dir: string): void {
+    this.builtinTeamTemplatesDir = dir;
+  }
 
   private get baseDir(): string {
     return join(homedir(), '.markus', 'builder-artifacts');
@@ -83,16 +95,43 @@ export class BuilderService {
       }
     }
 
+    if ((!type || type === 'team') && this.builtinTeamTemplatesDir && existsSync(this.builtinTeamTemplatesDir)) {
+      const artifactNames = new Set(artifacts.filter(a => a.type === 'team').map(a => a.name));
+      for (const entry of readdirSync(this.builtinTeamTemplatesDir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || artifactNames.has(entry.name)) continue;
+        const tplDir = join(this.builtinTeamTemplatesDir, entry.name);
+        const manifest = readManifest(tplDir, 'team', FS_HELPER);
+        if (!manifest) continue;
+        artifacts.push({
+          type: 'team',
+          name: entry.name,
+          description: (manifest.description as string) ?? undefined,
+          meta: { ...manifest, source: 'builtin' },
+          path: tplDir,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+
     artifacts.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return artifacts;
   }
 
   async installArtifact(type: 'agent' | 'team' | 'skill', name: string): Promise<InstallResult> {
     const typeDir = type === 'agent' ? 'agents' : type === 'team' ? 'teams' : 'skills';
-    const artDir = join(this.baseDir, typeDir, name);
+    let artDir = join(this.baseDir, typeDir, name);
 
     if (!existsSync(artDir)) {
-      throw new Error(`Artifact not found: ${type}/${name}`);
+      if (type === 'team' && this.builtinTeamTemplatesDir) {
+        const builtinDir = join(this.builtinTeamTemplatesDir, name);
+        if (existsSync(builtinDir)) {
+          artDir = builtinDir;
+        } else {
+          throw new Error(`Team template not found: ${name}. Use package_list to see available packages.`);
+        }
+      } else {
+        throw new Error(`Artifact not found: ${type}/${name}`);
+      }
     }
 
     const installType = type as PackageType;
@@ -239,9 +278,37 @@ export class BuilderService {
       }
     }
 
+    const starterTasks = manifest.starterTasks ?? manifest.team?.starterTasks ?? [];
+    const createdTaskIds: string[] = [];
+    if (starterTasks.length > 0 && this.taskService) {
+      const managerId = createdAgents.find(a => a.role === 'manager' || members.find(m => m.name === a.name)?.role === 'manager')?.id
+        ?? createdAgents[0]?.id;
+      if (managerId) {
+        for (const st of starterTasks) {
+          try {
+            const task = this.taskService.createTask({
+              orgId: 'default',
+              title: st.title,
+              description: st.description,
+              priority: (st.priority as 'low' | 'medium' | 'high' | 'urgent') ?? 'medium',
+              assignedAgentId: managerId,
+              reviewerId: managerId,
+              reviewerType: 'human',
+              creatorRole: 'human',
+              taskType: 'standard',
+            });
+            createdTaskIds.push(task.id);
+            log.info('installTeam: created starterTask', { taskId: task.id, title: st.title });
+          } catch (err) {
+            log.warn('installTeam: failed to create starterTask', { title: st.title, error: String(err) });
+          }
+        }
+      }
+    }
+
     return {
       type: 'team',
-      installed: { team: { id: team.id, name: teamName }, agents: createdAgents },
+      installed: { team: { id: team.id, name: teamName }, agents: createdAgents, starterTaskIds: createdTaskIds },
     };
   }
 

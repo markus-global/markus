@@ -39,6 +39,7 @@ export type SkillCategory =
   | 'data'
   | 'productivity'
   | 'browser'
+  | 'creative'
   | 'custom';
 
 /** @deprecated Tool definitions inside skills are no longer used */

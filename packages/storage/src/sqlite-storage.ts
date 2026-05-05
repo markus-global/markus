@@ -1878,6 +1878,13 @@ export class SqliteChatSessionRepo {
     ).map(r => this._mapSession(r));
   }
 
+  hasAnySessions(userId: string): boolean {
+    const r = this.db
+      .prepare('SELECT 1 FROM chat_sessions WHERE user_id = ? LIMIT 1')
+      .get(userId);
+    return r !== null && r !== undefined;
+  }
+
   getSession(sessionId: string) {
     const r = this.db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(sessionId) as
       | Record<string, unknown>

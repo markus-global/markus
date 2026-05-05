@@ -41,7 +41,7 @@ Skip trivial matters — typos, one-off path errors, situations that won't recur
 | Tool tip or preference | Observation buffer | `memory_save` with tags: `["insight", "tool:<name>"]` |
 | Validated pattern from successful task | Observation buffer | `memory_save` with tags: `["insight", ...]` |
 | Multi-step repeatable workflow (personal) | MEMORY.md | `memory_update_longterm({ section: "<your-section>", mode: "patch" })` |
-| Practice worth sharing with the team | Skill package | Create via **skill-building**, install with `builder_install` |
+| Practice worth sharing with the team | Skill package | Create via **skill-building**, install with `package_install` |
 | Behavioral rule or guiding principle | ROLE.md | `file_read` → `file_edit` to append |
 | New recurring check for your patrol | HEARTBEAT.md | `file_read` → `file_edit` to add/remove items |
 
@@ -146,21 +146,21 @@ When a practice would benefit **other agents on the team** (not just you), packa
 
 Before creating a new skill, check if one already exists:
 1. Run `discover_tools({ mode: "list_skills" })` to see all installed skills
-2. Run `builder_list` to see artifacts in builder-artifacts
+2. Run `package_list` to see packages in builder-artifacts
 3. If a similar skill exists, **update it** instead of creating a new one
 
 ### How to Create and Install
 
 1. Use the **skill-building** skill to create the package:
    - Write `skill.json` manifest + `SKILL.md` instructions to `~/.markus/builder-artifacts/skills/{name}/`
-2. Install with `builder_install({ type: "skill", name: "{name}" })`
+2. Install with `package_install({ type: "skill", name: "{name}" })`
 3. Log the creation via `memory_save` with tags `["insight", "skill-created"]`
 
 ### How to Update an Existing Skill
 
 1. Edit the files in `~/.markus/builder-artifacts/skills/{name}/` (use `file_read` then `file_edit`)
 2. Bump the version in `skill.json` (e.g., `"1.0.0"` → `"1.1.0"`)
-3. Re-install with `builder_install({ type: "skill", name: "{name}" })` — this overwrites the old version and re-registers
+3. Re-install with `package_install({ type: "skill", name: "{name}" })` — this overwrites the old version and re-registers
 4. Log the update via `memory_save` with tags `["insight", "skill-updated"]`
 
 Only create a skill when you are confident the practice is validated (proven across 2+ tasks) and genuinely useful for others.

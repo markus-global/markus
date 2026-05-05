@@ -32,10 +32,14 @@ function createMockContext(overrides?: Partial<ManagerToolsContext>): ManagerToo
       name,
       role: 'developer',
     })),
-    installArtifact: vi.fn(async (type, name) => ({ type, installed: { name } })),
-    listArtifacts: vi.fn(() => [
-      { type: 'agent', name: 'custom-dev', description: 'Custom developer' },
-    ]),
+    installArtifact: vi.fn(async (type: string, name: string) => {
+      if (type === 'agent' && name === 'custom-dev') return { type, installed: { name } };
+      throw new Error(`Artifact not found: ${type}/${name}`);
+    }),
+    listArtifacts: vi.fn((type?: string) => {
+      const all = [{ type: 'agent', name: 'custom-dev', description: 'Custom developer' }];
+      return type ? all.filter(a => a.type === type) : all;
+    }),
     updateTeam: vi.fn(async (teamId, data) => ({
       id: teamId,
       name: data.name ?? 'Team',
@@ -131,91 +135,69 @@ describe('task_board_health', () => {
   });
 });
 
-describe('team_list_templates', () => {
-  it('lists available templates', async () => {
+describe('package_list', () => {
+  it('lists all packages including roles when no type filter', async () => {
     const ctx = createMockContext();
-    const tool = findTool(ctx, 'team_list_templates');
+    const tool = findTool(ctx, 'package_list');
     const result = JSON.parse(await tool.execute({}));
-    expect(result.count).toBe(1);
-    expect(result.templates[0].name).toBe('Developer');
+    expect(result.count).toBe(2);
+    expect(result.items.some((i: { source?: string }) => i.source === 'role')).toBe(true);
+  });
+
+  it('lists roles and agent packages when type is agent', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'package_list');
+    const result = JSON.parse(await tool.execute({ type: 'agent' }));
+    expect(result.count).toBe(2);
+  });
+
+  it('lists only team packages when type is team', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'package_list');
+    const result = JSON.parse(await tool.execute({ type: 'team' }));
+    expect(result.count).toBe(0);
   });
 });
 
-describe('team_hire_agent', () => {
-  it('hires from template successfully', async () => {
+describe('package_install', () => {
+  it('installs an agent artifact package', async () => {
     const ctx = createMockContext();
-    const tool = findTool(ctx, 'team_hire_agent');
-    const result = JSON.parse(await tool.execute({
-      template_id: 'tpl_dev',
-      name: 'Charlie',
-    }));
-    expect(result.status).toBe('success');
-    expect(result.agent.name).toBe('Charlie');
-  });
-
-  it('rejects missing template_id', async () => {
-    const ctx = createMockContext();
-    const tool = findTool(ctx, 'team_hire_agent');
-    const result = JSON.parse(await tool.execute({ name: 'Charlie' }));
-    expect(result.status).toBe('error');
-    expect(result.error).toContain('template_id');
-  });
-
-  it('rejects missing name', async () => {
-    const ctx = createMockContext();
-    const tool = findTool(ctx, 'team_hire_agent');
-    const result = JSON.parse(await tool.execute({ template_id: 'tpl_dev' }));
-    expect(result.status).toBe('error');
-    expect(result.error).toContain('name');
-  });
-});
-
-function createMockBuilderContext(overrides?: Partial<BuilderToolsContext>): BuilderToolsContext {
-  return {
-    installArtifact: vi.fn(async (type, name) => ({ type, installed: { name } })),
-    listArtifacts: vi.fn(() => [
-      { type: 'agent', name: 'custom-dev', description: 'Custom developer' },
-    ]),
-    ...overrides,
-  };
-}
-
-function findBuilderTool(ctx: BuilderToolsContext, name: string) {
-  const tools = createBuilderTools(ctx);
-  const tool = tools.find(t => t.name === name);
-  if (!tool) throw new Error(`Tool "${name}" not found. Available: ${tools.map(t => t.name).join(', ')}`);
-  return tool;
-}
-
-describe('builder_list', () => {
-  it('lists artifacts', async () => {
-    const ctx = createMockBuilderContext();
-    const tool = findBuilderTool(ctx, 'builder_list');
-    const result = JSON.parse(await tool.execute({}));
-    expect(result.count).toBe(1);
-    expect(result.artifacts[0].name).toBe('custom-dev');
-  });
-});
-
-describe('builder_install', () => {
-  it('installs an artifact', async () => {
-    const ctx = createMockBuilderContext();
-    const tool = findBuilderTool(ctx, 'builder_install');
+    const tool = findTool(ctx, 'package_install');
     const result = JSON.parse(await tool.execute({ type: 'agent', name: 'custom-dev' }));
     expect(result.status).toBe('success');
     expect(result.next_steps).toBeDefined();
   });
 
+  it('falls back to role template when agent package not found', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'package_install');
+    const result = JSON.parse(await tool.execute({
+      type: 'agent',
+      name: 'tpl_dev',
+      agent_name: 'Charlie',
+    }));
+    expect(result.status).toBe('success');
+    expect(result.agent.name).toBe('Charlie');
+  });
+
+  it('rejects role fallback without agent_name', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'package_install');
+    const result = JSON.parse(await tool.execute({ type: 'agent', name: 'nonexistent-pkg' }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('agent_name');
+  });
+
   it('rejects invalid type', async () => {
-    const ctx = createMockBuilderContext();
-    const tool = findBuilderTool(ctx, 'builder_install');
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'package_install');
     const result = JSON.parse(await tool.execute({ type: 'invalid', name: 'test' }));
     expect(result.status).toBe('error');
   });
 
   it('rejects missing name', async () => {
-    const ctx = createMockBuilderContext();
-    const tool = findBuilderTool(ctx, 'builder_install');
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'package_install');
     const result = JSON.parse(await tool.execute({ type: 'agent' }));
     expect(result.status).toBe('error');
   });

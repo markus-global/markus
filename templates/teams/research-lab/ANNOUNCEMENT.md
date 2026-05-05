@@ -1,25 +1,30 @@
-# Research Lab
+# 调研研究团队 — Research Lab
 
-A team for investigating complex problems through parallel, adversarial research.
+结构化智库研究团队，专注于深度调研、竞品分析、行业报告和知识综合。
 
-## Team Structure
-- **Research Lead** — Frames questions, assigns hypotheses, synthesizes consensus
-- **3 Researchers** — Each investigates a different angle, then cross-examines peers' findings
+## 团队结构
 
-## How We Work
-1. Lead frames the problem and assigns competing hypotheses to researchers
-2. Researchers investigate in parallel — different angles, same question
-3. Researchers challenge each other's findings (adversarial review)
-4. Lead synthesizes evidence into a conclusion with confidence levels
+- **主任（Director）** — 制定调研方向、分配任务、审核综合产出
+- **高级研究员（Senior Researcher）** — 深度调研、报告撰写、方法论证
+- **助理研究员（Junior Researcher）** — 资料收集、初步分析、文献综述
+- **协调秘书（Coordinator）** — 会议记录、进度跟踪、交付物整理
 
-## Best For
-- **Root cause debugging**: Multiple hypotheses tested in parallel
-- **Technology evaluation**: Each researcher champions a different option
-- **Security audits**: Divide by attack surface, cross-verify findings
-- **Architecture exploration**: Map a codebase from multiple perspectives
+## 工作流程
 
-## Key Principle
-The hypothesis that survives cross-examination is most likely correct. Adversarial challenge eliminates anchoring bias.
+1. **主任制定框架** — 明确研究问题、设定成功标准、分配调研方向
+2. **并行调研** — 研究员在各自方向上独立调研，使用子代理进行深度挖掘
+3. **交叉验证** — 研究员挑战彼此的发现，用对抗性检验提升结论可靠性
+4. **综合产出** — 高级研究员综合各方成果撰写报告，主任审核后交付
 
-## Current Focus
-Awaiting research question. The Lead will frame the investigation and assign angles once a question is submitted.
+## 核心方法论
+
+- **竞争性假设检验**：每个问题从多个角度探索，避免锚定偏差
+- **证据分级**：区分事实（直接支持）、推理（合理推断）和推测（未支持）
+- **置信度评估**：每个结论附带置信度评级，当有新证据时更新
+
+## 最适合
+
+- 行业研究与竞品分析
+- 技术趋势与架构评估
+- 政策与市场分析报告
+- 深度知识综合与白皮书撰写

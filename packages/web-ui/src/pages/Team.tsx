@@ -1278,11 +1278,22 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           } else {
             setActiveSessionId(null);
             if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
-            // First-time conversation: auto-send intro request (locale from app language, fallback en)
-            const introBase = (i18n.language || 'en').split('-')[0]?.toLowerCase() ?? 'en';
-            const introKey = ['zh', 'ja', 'ko', 'fr', 'de', 'es', 'pt', 'ru'].includes(introBase) ? introBase : 'en';
-            const introMsg = t(`intro.${introKey}`);
-            setTimeout(() => sendRef.current?.(introMsg), 150);
+            api.sessions.hasAny().then(({ hasAny }) => {
+              if (currentConvKeyRef.current !== newKey) return;
+              if (!hasAny) {
+                const introBase = (i18n.language || 'en').split('-')[0]?.toLowerCase() ?? 'en';
+                const introKey = ['zh', 'ja', 'ko', 'fr', 'de', 'es', 'pt', 'ru'].includes(introBase) ? introBase : 'en';
+                const introMsg = t(`intro.${introKey}`);
+                setTimeout(() => sendRef.current?.(introMsg), 150);
+              }
+            }).catch(() => {
+              // Fallback: on API failure, send intro anyway for new conversations
+              if (currentConvKeyRef.current !== newKey) return;
+              const introBase = (i18n.language || 'en').split('-')[0]?.toLowerCase() ?? 'en';
+              const introKey = ['zh', 'ja', 'ko', 'fr', 'de', 'es', 'pt', 'ru'].includes(introBase) ? introBase : 'en';
+              const introMsg = t(`intro.${introKey}`);
+              setTimeout(() => sendRef.current?.(introMsg), 150);
+            });
           }
         });
       }
