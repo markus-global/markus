@@ -2235,6 +2235,7 @@ export class AgentManager {
     skills: string[];
     activeTaskCount: number;
     teamId?: string;
+    teamName?: string;
     lastError?: string;
     lastErrorAt?: string;
     currentTaskId?: string;
@@ -2260,6 +2261,7 @@ export class AgentManager {
         skills: a.config.skills,
         activeTaskCount: state.activeTaskCount ?? 0,
         teamId: a.config.teamId,
+        teamName: a.getTeamName(),
         lastError: state.lastError,
         lastErrorAt: state.lastErrorAt,
         currentTaskId: state.currentTaskId,

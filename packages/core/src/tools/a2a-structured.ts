@@ -33,7 +33,7 @@ export interface A2AMessage {
 export interface StructuredA2AContext {
   selfId: string;
   selfName: string;
-  listColleagues: () => Array<{ id: string; name: string; role: string; status: string; skills?: string[] }>;
+  listColleagues: () => Array<{ id: string; name: string; role: string; status: string; skills?: string[]; teamId?: string; teamName?: string; agentRole?: string }>;
   sendMessage: (targetId: string, message: string, fromId: string, fromName: string, priority?: number, waitForReply?: boolean) => Promise<string>;
   /** When provided, delegations go through DelegationManager for real task creation */
   delegateTask?: (targetId: string, delegation: TaskDelegation) => Promise<DelegationResult>;

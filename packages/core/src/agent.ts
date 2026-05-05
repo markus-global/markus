@@ -1723,6 +1723,10 @@ export class Agent {
     this.identityContext = ctx;
   }
 
+  getTeamName(): string | undefined {
+    return this.identityContext?.team?.name;
+  }
+
   addDynamicContextProvider(provider: () => string, key?: string): void {
     const providerKey = key ?? `provider_${this.dynamicContextProviders.size}`;
     this.dynamicContextProviders.set(providerKey, provider);
