@@ -570,7 +570,7 @@ export class Agent {
   sendMessage(
     userMessage: string,
     senderId?: string,
-    senderInfo?: { name: string; role: string },
+    senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
     options?: {
       sourceType?: MailboxItemType;
       priority?: MailboxPriority;
@@ -636,7 +636,7 @@ export class Agent {
     userMessage: string,
     onEvent: (event: LLMStreamEvent & { agentEvent?: string }) => void,
     senderId?: string,
-    senderInfo?: { name: string; role: string },
+    senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
     cancelToken?: { cancelled: boolean },
     images?: string[],
     fileNames?: string[],
@@ -719,7 +719,7 @@ export class Agent {
     userMessage: string,
     onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
     senderId?: string,
-    senderInfo?: { name: string; role: string },
+    senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: userMessage.slice(0, 100),
@@ -2280,7 +2280,7 @@ export class Agent {
   async handleMessage(
     userMessage: string,
     senderId?: string,
-    senderInfo?: { name: string; role: string },
+    senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
     options?: {
       sessionId?: string;
       channelContext?: Array<{ role: string; content: string }>;
@@ -2857,7 +2857,7 @@ export class Agent {
     userMessage: string,
     onEvent: (event: LLMStreamEvent & { agentEvent?: string }) => void,
     senderId?: string,
-    senderInfo?: { name: string; role: string },
+    senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
     cancelToken?: { cancelled: boolean },
     images?: string[],
     fileNames?: string[],
@@ -4964,8 +4964,8 @@ export class Agent {
       '- Common sections: `procedures`, `conventions`, `preferences`, `domain-knowledge`.',
       '',
       '**Shareable skills** (for team-wide practices):',
-      '- Check existing skills first: `discover_tools({ mode: "list_skills" })` and `builder_list`.',
-      '- To update an existing skill: edit files in `~/.markus/builder-artifacts/skills/{name}/`, bump version, re-install with `builder_install`.',
+      '- Check existing skills first: `discover_tools({ mode: "list_skills" })` and `package_list`.',
+      '- To update an existing skill: edit files in `~/.markus/builder-artifacts/skills/{name}/`, bump version, re-install with `package_install`.',
       '',
       '**Direct self-evolution** (simplest and most impactful):',
       '- **Update ROLE.md** — When you discover a behavioral rule, working style, or guiding principle that should always apply, append it to your ROLE.md via `file_edit`. ROLE.md is loaded into every conversation, so changes take effect immediately. Read first, then append. No need to accumulate 3 insights — even a single validated lesson can warrant a role update if it is fundamental.',
@@ -4977,7 +4977,7 @@ export class Agent {
       '| Single insight / gotcha | `memory_save` with tags: `["insight"]` |',
       '| Tool tip or preference | `memory_save` with tags: `["insight", "tool:<name>"]` |',
       '| Multi-step repeatable workflow | `memory_update_longterm({ section: "procedures", mode: "patch" })` |',
-      '| Practice worth sharing with the team | Create skill via **skill-building**, then install with `builder_install` |',
+      '| Practice worth sharing with the team | Create skill via **skill-building**, then install with `package_install` |',
       '| Behavioral rule or guiding principle | Update ROLE.md (`file_read` → `file_edit` to append) |',
       '| New recurring check for your patrol | Update HEARTBEAT.md (`file_read` → `file_edit`) |',
       '',
@@ -5081,7 +5081,7 @@ export class Agent {
       baseTools.push(
         'task_board_health', 'task_cleanup_duplicates', 'task_assign',
         'team_status', 'deliverable_create', 'deliverable_search',
-        'team_hire_agent', 'team_list_templates',
+        'package_install', 'package_list',
       );
     }
     const HEARTBEAT_ALLOWED_TOOLS = new Set(baseTools);

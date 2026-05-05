@@ -403,11 +403,10 @@ Agents can be sourced from three paths:
 
 | Source | Tool | Flow |
 |--------|------|------|
-| **Built-in template** | `team_hire_agent` | Browse `team_list_templates` → hire → onboard |
-| **Builder artifact** | `builder_install` | Custom-created or Hub-downloaded package in `~/.markus/builder-artifacts/` → install → onboard |
-| **Markus Hub** | `hub_install` | Search `hub_search` → download + install in one step → onboard |
+| **Local package** | `package_install` | `package_list` → choose agent/team/skill → `package_install` → onboard |
+| **Markus Hub** | `hub_install` | `hub_search` → `hub_install` (download + install in one step) → onboard |
 
-The **Secretary** agent is the sole default agent (builder agents have been removed). The Secretary holds all building skills (`agent-building`, `team-building`, `skill-building`) and hub tools (`hub_search`, `hub_install`). All managers (including Secretary) have hiring tools (`team_hire_agent`, `team_list_templates`, `builder_install`, `builder_list`).
+The **Secretary** agent is the sole default agent (builder agents have been removed). The Secretary holds all building skills (`agent-building`, `team-building`, `skill-building`) and hub tools (`hub_search`, `hub_install`). All managers (including Secretary) have package tools (`package_list`, `package_install`).
 
 The `BuilderService` (`packages/org-manager/src/builder-service.ts`) encapsulates artifact install/list logic, used by both the HTTP API and agent tools.
 

@@ -146,7 +146,7 @@ If an agent needs to be cautious with certain tools, write that into `POLICIES.m
 Once all files are written, tell the user:
 
 1. **The agent has been created and saved** — summarize what was created (name, purpose, key skills).
-2. **Ready to install** — the user can install from the Builder page, or ask you to install it (you would use `builder_install`). Do NOT install unless asked.
+2. **Ready to install** — the user can install from the Builder page, or ask you to install it (you would use `package_install`). Do NOT install unless asked.
 3. **To modify or improve** this agent (e.g., update the role, change skills, adjust policies), just continue the conversation here — describe what you want to change and I'll update the files directly.
 
 ## Rules

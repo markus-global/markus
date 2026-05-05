@@ -2148,7 +2148,13 @@ export class APIServer {
         const fileNames = (body['fileNames'] as string[] | undefined)?.filter(Boolean);
         const isRetry = body['isRetry'] as boolean | undefined;
         const isResume = body['isResume'] as boolean | undefined;
-        const senderInfo = this.orgService.resolveHumanIdentity(senderId);
+        const baseSenderInfo = this.orgService.resolveHumanIdentity(senderId);
+        const isFirstConversation = this.storage
+          ? !this.storage.chatSessionRepo.hasAnySessions(senderId)
+          : false;
+        const senderInfo = baseSenderInfo
+          ? { ...baseSenderInfo, isFirstConversation }
+          : undefined;
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'working');
 

@@ -1195,7 +1195,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     });
   }
 
-  // Persist runtime-created agents (e.g. via team_hire_agent tool) to DB
+  // Persist runtime-created agents (e.g. via package_install role) to DB
   if (storage?.agentRepo) {
     const agentRepo = storage.agentRepo;
     const existingIds = new Set(agentManager.listAgents().map(a => a.id));

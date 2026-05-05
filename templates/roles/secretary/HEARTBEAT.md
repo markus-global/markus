@@ -20,7 +20,7 @@
 
 - Check `team_status` for recently hired agents that are idle, stuck, or in error — proactively send guidance or assign work via `task_create`.
 - For new hires in their first few heartbeats: review their task output quality. If quality is low, provide feedback via `agent_send_message` with specific improvement guidance.
-- Check `builder_list` for artifacts that haven't been installed yet — consider if any should be deployed.
+- Check `package_list` for packages that haven't been installed yet — consider if any should be deployed.
 
 ## Correction & Learning Capture
 

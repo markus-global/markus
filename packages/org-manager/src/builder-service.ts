@@ -127,7 +127,7 @@ export class BuilderService {
         if (existsSync(builtinDir)) {
           artDir = builtinDir;
         } else {
-          throw new Error(`Team template not found: ${name}. Use builder_list to see available team templates.`);
+          throw new Error(`Team template not found: ${name}. Use package_list to see available packages.`);
         }
       } else {
         throw new Error(`Artifact not found: ${type}/${name}`);

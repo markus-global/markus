@@ -15,7 +15,7 @@ export interface SSEMessageHandlerOptions {
   fileNames?: string[];
   senderId?: string;
   sessionId?: string;
-  senderInfo?: { name: string; role: string };
+  senderInfo?: { name: string; role: string; isFirstConversation?: boolean };
   wsBroadcaster?: {
     broadcastChat: (agentId: string, message: string, sender: 'agent' | 'user') => void;
     broadcastAgentUpdate?: (agentId: string, status: string) => void;

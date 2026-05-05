@@ -360,7 +360,7 @@ The heartbeat prompt is assembled inline (not via `buildSystemPrompt`) and inclu
 10. When `background_exec` sessions have finished since the last turn, a `## Background Processes Completed` section is included so the model sees completion summaries on the next heartbeat
 11. Conditional actions (failed bg processes, blocked tasks, completed dependencies, patterns)
 
-Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `notify_user`, `request_user_approval`, `recall_activity`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`, `team_hire_agent`, `team_list_templates`, `builder_install`, `builder_list`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
+Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `notify_user`, `request_user_approval`, `recall_activity`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`, `package_list`, `package_install`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
 
 Agent communication guidance (heartbeat context):
 
@@ -459,7 +459,7 @@ This ensures that modern models with large output windows are not artificially c
 `ToolSelector.selectTools()` determines which tools appear in each LLM call:
 
 1. **Always-on tools**: Core set always included (e.g., `memory_save`, `memory_search`, `file_read`, `file_write`, `task_create`, `task_list`, `spawn_subagent`, `spawn_subagents`, etc.)
-2. **Manager-only tools**: Added when `isManager=true` (e.g., `task_assign`, `team_status`, `team_hire_agent`, `team_list_templates`, `builder_install`, `builder_list`)
+2. **Manager-only tools**: Added when `isManager=true` (e.g., `task_assign`, `team_status`, `package_list`, `package_install`)
 3. **Hub tools**: Added for agents with building skills — Secretary only (e.g., `hub_search`, `hub_install`)
 4. **Task-execution tools**: Added when `isTaskExecution=true` (e.g., `task_submit_review`, `subtask_create`)
 5. **Recently used tools**: Tools used in recent calls are re-included to maintain continuity
@@ -479,13 +479,12 @@ Creation and deployment are **two separate phases** with an explicit user gate b
 **Phase 2 — Deploy (ONLY on explicit user request):**
 | Method | When to use | Tools |
 |--------|-------------|-------|
-| Quick hire from template | Standard roles, minor customization | `team_list_templates` → `team_hire_agent` |
-| Install artifact | Custom-built or Hub-downloaded packages | `builder_install` |
+| Local package | Agents, teams, skills from package_list | `package_list` → `package_install` |
 | Hub one-step | Community packages from Markus Hub | `hub_search` → `hub_install` |
 
 **Post-deploy:** Onboard new agents via `agent_send_message` (project context) → `task_create` (initial work).
 
-**Critical rule:** Agents must NEVER auto-deploy. `builder_install`, `team_hire_agent`, and `hub_install` create live agents that consume LLM tokens and join the organization. Only execute when the user explicitly says "install", "deploy", "hire", or "start".
+**Critical rule:** Agents must NEVER auto-deploy. `package_install` and `hub_install` create live agents that consume LLM tokens and join the organization. Only execute when the user explicitly says "install", "deploy", "hire", or "start".
 
 ---
 

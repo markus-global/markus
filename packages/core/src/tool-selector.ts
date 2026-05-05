@@ -48,7 +48,7 @@ const TOOL_GROUPS: ToolGroup[] = [
     name: 'manager',
     keywords: ['team', 'delegate', 'status', 'manage', 'assign', 'route',
       '团队', '管理', '委派', '分配', '路由'],
-    toolNames: ['team_list', 'team_status', 'delegate_message', 'team_hire_agent', 'team_list_templates'],
+    toolNames: ['team_list', 'team_status', 'delegate_message', 'package_list', 'package_install'],
   },
   {
     name: 'deliverables',
