@@ -588,6 +588,10 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // Wire BuilderService and HubClient into AgentManager for hire/install/hub tools
   const builderService = apiServer.getBuilderService();
   if (builderService) {
+    const builtinTeamsDir = resolveTemplatesDir('teams');
+    if (builtinTeamsDir && existsSync(builtinTeamsDir)) {
+      builderService.setBuiltinTeamTemplatesDir(builtinTeamsDir);
+    }
     agentManager.setBuilderService(builderService);
   }
   const hubClient = apiServer.getHubClient();

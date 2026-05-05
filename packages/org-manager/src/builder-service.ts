@@ -47,6 +47,7 @@ const FS_HELPER = {
 
 export class BuilderService {
   private taskService?: TaskService;
+  private builtinTeamTemplatesDir?: string;
 
   constructor(
     private orgService: OrganizationService,
@@ -56,6 +57,10 @@ export class BuilderService {
 
   setTaskService(taskService: TaskService): void {
     this.taskService = taskService;
+  }
+
+  setBuiltinTeamTemplatesDir(dir: string): void {
+    this.builtinTeamTemplatesDir = dir;
   }
 
   private get baseDir(): string {
@@ -90,16 +95,43 @@ export class BuilderService {
       }
     }
 
+    if ((!type || type === 'team') && this.builtinTeamTemplatesDir && existsSync(this.builtinTeamTemplatesDir)) {
+      const artifactNames = new Set(artifacts.filter(a => a.type === 'team').map(a => a.name));
+      for (const entry of readdirSync(this.builtinTeamTemplatesDir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || artifactNames.has(entry.name)) continue;
+        const tplDir = join(this.builtinTeamTemplatesDir, entry.name);
+        const manifest = readManifest(tplDir, 'team', FS_HELPER);
+        if (!manifest) continue;
+        artifacts.push({
+          type: 'team',
+          name: entry.name,
+          description: (manifest.description as string) ?? undefined,
+          meta: { ...manifest, source: 'builtin' },
+          path: tplDir,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+
     artifacts.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return artifacts;
   }
 
   async installArtifact(type: 'agent' | 'team' | 'skill', name: string): Promise<InstallResult> {
     const typeDir = type === 'agent' ? 'agents' : type === 'team' ? 'teams' : 'skills';
-    const artDir = join(this.baseDir, typeDir, name);
+    let artDir = join(this.baseDir, typeDir, name);
 
     if (!existsSync(artDir)) {
-      throw new Error(`Artifact not found: ${type}/${name}`);
+      if (type === 'team' && this.builtinTeamTemplatesDir) {
+        const builtinDir = join(this.builtinTeamTemplatesDir, name);
+        if (existsSync(builtinDir)) {
+          artDir = builtinDir;
+        } else {
+          throw new Error(`Team template not found: ${name}. Use builder_list to see available team templates.`);
+        }
+      } else {
+        throw new Error(`Artifact not found: ${type}/${name}`);
+      }
     }
 
     const installType = type as PackageType;
