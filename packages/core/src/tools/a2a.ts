@@ -7,7 +7,7 @@ const log = createLogger('a2a-tools');
 export interface A2AContext {
   selfId: string;
   selfName: string;
-  listColleagues: () => Array<{ id: string; name: string; role: string; status: string; skills?: string[] }>;
+  listColleagues: () => Array<{ id: string; name: string; role: string; status: string; skills?: string[]; teamId?: string; teamName?: string; agentRole?: string }>;
   sendMessage: (targetId: string, message: string, fromId: string, fromName: string, priority?: number, waitForReply?: boolean) => Promise<string>;
   delegateTask?: (targetId: string, delegation: TaskDelegation) => Promise<DelegationResult>;
   sendGroupMessage?: (channelKey: string, message: string, senderId: string, senderName: string) => Promise<string>;
@@ -73,14 +73,40 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
     },
     {
       name: 'agent_list_colleagues',
-      description: 'List all other agents in your organization that you can collaborate with. Shows their names, roles, skills, and current status.',
+      description: 'List all other agents in your organization grouped by team. Shows team structure, roles, skills, and current status.',
       inputSchema: {
         type: 'object',
         properties: {},
       },
       async execute(): Promise<string> {
         const colleagues = ctx.listColleagues().filter(a => a.id !== ctx.selfId);
-        return JSON.stringify({ colleagues, count: colleagues.length });
+        const byTeam = new Map<string, typeof colleagues>();
+        for (const c of colleagues) {
+          const key = c.teamId ?? '__ungrouped__';
+          if (!byTeam.has(key)) byTeam.set(key, []);
+          byTeam.get(key)!.push(c);
+        }
+
+        const lines: string[] = [];
+        lines.push(`Organization colleagues: ${colleagues.length} agents\n`);
+
+        for (const [teamId, members] of byTeam) {
+          const manager = members.find(m => m.agentRole === 'manager');
+          const teamLabel = members[0]?.teamName ?? teamId;
+          if (teamId === '__ungrouped__') {
+            lines.push(`── Ungrouped ──`);
+          } else {
+            lines.push(`── Team: ${teamLabel}${manager ? ` (manager: ${manager.name})` : ''} ──`);
+          }
+          const sorted = [...members].sort((a, b) => (a.agentRole === 'manager' ? -1 : b.agentRole === 'manager' ? 1 : 0));
+          for (const m of sorted) {
+            const badge = m.agentRole === 'manager' ? ' [Manager]' : '';
+            const skills = m.skills?.length ? ` | skills: ${m.skills.join(', ')}` : '';
+            lines.push(`  • ${m.name} (${m.id})${badge} — ${m.role} | ${m.status}${skills}`);
+          }
+          lines.push('');
+        }
+        return lines.join('\n');
       },
     },
     ...(ctx.sendGroupMessage ? [{
