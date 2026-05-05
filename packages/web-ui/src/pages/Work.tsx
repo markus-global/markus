@@ -4606,9 +4606,27 @@ function RequirementDetailPanel({
   const [savingDesc, setSavingDesc] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const reqScrollRef = useRef<HTMLDivElement>(null);
+  const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
   const descRef = useRef<HTMLDivElement>(null);
   const descTextareaRef = useRef<HTMLTextAreaElement>(null);
   const descHeightRef = useRef(80);
+  useEffect(() => {
+    const el = reqScrollRef.current;
+    if (!el) return;
+    const update = () => {
+      const { scrollTop, scrollHeight, clientHeight } = el;
+      const scrollable = scrollHeight > clientHeight + 50;
+      if (!scrollable) { setScrollState('none'); return; }
+      const atTop = scrollTop < 30;
+      const atBottom = scrollTop + clientHeight >= scrollHeight - 30;
+      setScrollState(atTop ? 'top' : atBottom ? 'bottom' : 'middle');
+    };
+    update();
+    el.addEventListener('scroll', update, { passive: true });
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => { el.removeEventListener('scroll', update); ro.disconnect(); };
+  }, []);
   useEffect(() => {
     if (editingDesc && descTextareaRef.current) {
       const el = descTextareaRef.current;
@@ -4666,7 +4684,8 @@ function RequirementDetailPanel({
       </div>
 
       {/* Body */}
-      <div ref={reqScrollRef} className="flex-1 overflow-y-auto p-5 space-y-4">
+      <div className="flex-1 min-h-0 relative">
+      <div ref={reqScrollRef} className="h-full overflow-y-auto p-5 space-y-4">
           <div>
             <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 block">{t('work:task.requirementDetailDescription')}</label>
             {editingDesc ? (
@@ -4834,6 +4853,25 @@ function RequirementDetailPanel({
 
           {/* Status History */}
           <StatusHistoryTimeline entityType="requirement" entityId={req.id} />
+        </div>
+        {scrollState !== 'none' && scrollState !== 'top' && (
+          <button
+            onClick={() => reqScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+            className="absolute bottom-20 right-4 md:bottom-14 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
+            title={t('work:task.scrollToTop')}
+          >
+            <svg className="w-6 h-6 md:w-4 md:h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M14.77 12.79a.75.75 0 01-1.06-.02L10 8.832l-3.71 3.938a.75.75 0 11-1.08-1.04l4.25-4.5a.75.75 0 011.08 0l4.25 4.5a.75.75 0 01-.02 1.06z" clipRule="evenodd" /></svg>
+          </button>
+        )}
+        {scrollState !== 'none' && scrollState !== 'bottom' && (
+          <button
+            onClick={() => { const el = reqScrollRef.current; if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }}
+            className="absolute bottom-6 right-4 md:bottom-4 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
+            title={t('work:task.scrollToBottom')}
+          >
+            <svg className="w-6 h-6 md:w-4 md:h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
+          </button>
+        )}
         </div>
 
         {/* Actions */}
