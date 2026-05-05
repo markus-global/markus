@@ -685,6 +685,11 @@ if (typeof window !== 'undefined') {
   window.addEventListener('hashchange', () => _hashSubs.forEach(fn => fn()));
 }
 
+// Guards against sending the intro message twice within the same page session.
+// The real "first time" check is DB-based: intro is only sent when loadSessions
+// returns zero sessions for this agent (i.e., the user has never chatted with it).
+const _introSentGlobal = new Set<string>();
+
 export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string; authUser?: AuthUser } = {}) {
   const { t, i18n } = useTranslation(['team', 'common']);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -1111,7 +1116,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   }, []);
 
   // Load session messages from DB → store in buffer + update display
-  const loadSessionMessages = useCallback(async (sessionId: string, convKey: string) => {
+  const loadSessionMessages = useCallback(async (sessionId: string, convKey: string): Promise<number> => {
     loadingSessionRef.current = sessionId;
     try {
       const result = await api.sessions.getMessages(sessionId, 50);
@@ -1122,8 +1127,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         setHasMore(result.hasMore);
         oldestMsgId.current = result.messages[0] ? new Date(result.messages[0].createdAt).toISOString() : null;
       }
+      return msgs.length;
     } catch {
       if (currentConvKeyRef.current === convKey && loadingSessionRef.current === sessionId) { setMessages([]); setHasMore(false); oldestMsgId.current = null; }
+      return 0;
     }
   }, []);
 
@@ -1278,22 +1285,14 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           } else {
             setActiveSessionId(null);
             if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
-            api.sessions.hasAny().then(({ hasAny }) => {
-              if (currentConvKeyRef.current !== newKey) return;
-              if (!hasAny) {
-                const introBase = (i18n.language || 'en').split('-')[0]?.toLowerCase() ?? 'en';
-                const introKey = ['zh', 'ja', 'ko', 'fr', 'de', 'es', 'pt', 'ru'].includes(introBase) ? introBase : 'en';
-                const introMsg = t(`intro.${introKey}`);
-                setTimeout(() => sendRef.current?.(introMsg), 150);
-              }
-            }).catch(() => {
-              // Fallback: on API failure, send intro anyway for new conversations
-              if (currentConvKeyRef.current !== newKey) return;
-              const introBase = (i18n.language || 'en').split('-')[0]?.toLowerCase() ?? 'en';
-              const introKey = ['zh', 'ja', 'ko', 'fr', 'de', 'es', 'pt', 'ru'].includes(introBase) ? introBase : 'en';
-              const introMsg = t(`intro.${introKey}`);
+            // Only auto-send intro when DB confirms no sessions ever existed for this agent
+            if (!_introSentGlobal.has(selectedAgent)) {
+              _introSentGlobal.add(selectedAgent);
+              const agentInfo = agents.find(a => a.id === selectedAgent);
+              const introNs = agentInfo?.role === 'secretary' ? 'secretary' : 'agent';
+              const introMsg = t(`intro.${introNs}`);
               setTimeout(() => sendRef.current?.(introMsg), 150);
-            });
+            }
           }
         });
       }

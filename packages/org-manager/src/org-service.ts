@@ -79,6 +79,34 @@ export class OrganizationService {
     return [...this.humans.values()].filter(h => h.orgId === orgId);
   }
 
+  /**
+   * Update (or insert) a user's in-memory identity without touching the DB.
+   * Safe to call from auth endpoints that already persisted DB changes.
+   * Never throws — logs warnings on failure.
+   */
+  syncHumanIdentity(userId: string, orgId: string, name: string, role: HumanRole, email?: string): void {
+    try {
+      const existing = this.humans.get(userId);
+      if (existing) {
+        existing.name = name;
+        if (email !== undefined) existing.email = email;
+        existing.role = role;
+      } else {
+        this.humans.set(userId, {
+          id: userId,
+          name,
+          email,
+          role,
+          orgId,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      this.refreshIdentityContextsForOrg(orgId);
+    } catch (err) {
+      log.warn('syncHumanIdentity failed (non-fatal)', { userId, error: String(err) });
+    }
+  }
+
   updateHumanUser(userId: string, updates: { name?: string; role?: HumanRole; email?: string }): HumanUser {
     const user = this.humans.get(userId);
     if (!user) throw new Error(`User not found: ${userId}`);

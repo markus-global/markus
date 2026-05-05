@@ -182,15 +182,8 @@
     "approvalHistory": "History"
   },
   "intro": {
-    "en": "Introduce yourself",
-    "zh": "介绍一下你自己",
-    "ja": "自己紹介をしてください",
-    "ko": "자기소개를 해주세요",
-    "fr": "Présentez-vous",
-    "de": "Stell dich vor",
-    "es": "Preséntate",
-    "pt": "Apresente-se",
-    "ru": "Представьтесь"
+    "secretary": "I just set up Markus. Help me get started — what can I do here?",
+    "agent": "Introduce yourself — what can you do?"
   },
   "batchAction": {
     "succeeded": "{{count}} agent(s) {{action}}",

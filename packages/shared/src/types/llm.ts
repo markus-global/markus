@@ -68,6 +68,8 @@ export interface EnhancedProviderSettings {
   baseUrl?: string;
   configured: boolean;
   enabled: boolean;
+  apiKeyPreview?: string;
+  apiKeySource?: 'config' | 'env' | 'oauth';
   contextWindow?: number;
   maxOutputTokens?: number;
   cost?: ModelCostConfig;

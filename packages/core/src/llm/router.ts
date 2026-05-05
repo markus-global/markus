@@ -10,6 +10,12 @@ import { OAuthManager } from './oauth-manager.js';
 
 const log = createLogger('llm-router');
 
+function maskApiKey(key: string): string | undefined {
+  if (!key) return undefined;
+  if (key.length <= 8) return '****';
+  return key.slice(0, 4) + '...' + key.slice(-4);
+}
+
 export type ComplexityLevel = 'simple' | 'moderate' | 'complex';
 
 export interface ProviderTier {
@@ -825,6 +831,8 @@ export class LLMRouter {
       const builtinModels = BUILTIN_MODEL_CATALOG.filter(m => m.provider === name);
       const customCatalogModels = this.customModelCatalog.get(name) ?? [];
       const mergedModels = [...builtinModels, ...customCatalogModels.filter(cm => !builtinModels.some(bm => bm.id === cm.id))];
+      const rawKey: string = (p as any).apiKey ?? '';
+      const keySource = oauthProfile?.authType === 'oauth' ? 'oauth' as const : rawKey ? 'config' as const : undefined;
       providers[name] = {
         name,
         displayName: PROVIDER_DISPLAY_NAMES[name] ?? name,
@@ -832,6 +840,8 @@ export class LLMRouter {
         baseUrl: (p as any).baseUrl,
         configured: true,
         enabled: this.isProviderEnabled(name),
+        apiKeyPreview: maskApiKey(rawKey),
+        apiKeySource: keySource,
         contextWindow: customModels?.contextWindow ?? modelDef?.contextWindow,
         maxOutputTokens: customModels?.maxOutputTokens ?? modelDef?.maxOutputTokens,
         cost: customModels?.cost ?? modelDef?.cost,

@@ -13,7 +13,7 @@ import { BottomNav } from './components/BottomNav.tsx';
 import { MobileBuilderTabs } from './components/MobileBuilderTabs.tsx';
 import { MobileSettingsTabs } from './components/MobileSettingsTabs.tsx';
 import { Onboarding } from './components/Onboarding.tsx';
-import { Login, InviteSetup } from './pages/Login.tsx';
+import { Login, InviteSetup, InitialSetup } from './pages/Login.tsx';
 import { ChangePassword } from './pages/ChangePassword.tsx';
 import { api, hubApi, type AuthUser, wsClient } from './api.ts';
 import { navBus } from './navBus.ts';
@@ -43,6 +43,8 @@ export function App() {
   });
   const [mountedPages, setMountedPages] = useState<Set<PageId>>(() => new Set([getPageFromHash()]));
   const [authUser, setAuthUser] = useState<AuthUser | null | 'loading'>('loading');
+  const [systemInitialized, setSystemInitialized] = useState<boolean | null>(null);
+  const [skipOnboardingProfile, setSkipOnboardingProfile] = useState(false);
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [llmConfigured, setLlmConfigured] = useState<boolean | null>(null);
   const [llmBannerDismissed, setLlmBannerDismissed] = useState(false);
@@ -97,7 +99,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const hasInviteHash = window.location.hash.startsWith('#invite?token=');
     // Deep link: ?install=ITEM_ID&type=agent|team|skill — navigate to Store if not already there
     const urlParams = new URLSearchParams(window.location.search);
     const installItemId = urlParams.get('install');
@@ -117,10 +118,7 @@ export function App() {
     api.auth.me()
       .then(({ user }) => {
         setAuthUser(user);
-        if (!hasInviteHash && !localStorage.getItem('markus_onboarded')) {
-          localStorage.setItem('markus_onboarded', '1');
-          setShowOnboarding(false);
-        }
+        setSystemInitialized(true);
         wsClient.connect(user.id);
         checkLlmConfig();
         api.health().then(h => {
@@ -136,7 +134,10 @@ export function App() {
         prefetch(PREFETCH_KEYS.hubTeams, () => hubApi.search({ type: 'team', limit: 50 }));
         prefetch(PREFETCH_KEYS.hubSkills, () => hubApi.search({ type: 'skill', limit: 50 }));
       })
-      .catch(() => setAuthUser(null));
+      .catch(() => {
+        setAuthUser(null);
+        api.auth.status().then(({ initialized }) => setSystemInitialized(initialized)).catch(() => setSystemInitialized(true));
+      });
 
     wsClient.connect();
     const unsubNotif = wsClient.on('notification', () => {
@@ -177,7 +178,7 @@ export function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id, currentUser?.role, theme.mode, isMobile]);
 
-  if (authUser === 'loading') {
+  if (authUser === 'loading' || (authUser === null && systemInitialized === null)) {
     return (
       <div className="min-h-dvh bg-surface-primary flex items-center justify-center">
         <div className="text-fg-tertiary text-sm animate-pulse">{t('loading')}</div>
@@ -193,16 +194,30 @@ export function App() {
       window.location.hash = '';
       localStorage.removeItem('markus_onboarded');
       setShowOnboarding(true);
+      setSkipOnboardingProfile(true);
       setAuthUser('loading');
       api.auth.me().then(d => setAuthUser(d.user)).catch(() => setAuthUser(null));
     }} />;
   }
 
   if (authUser === null) {
-    return <Login onLogin={(user, isDefaultPassword) => {
+    if (systemInitialized === false) {
+      return <InitialSetup onSetup={(user, needsOnboarding) => {
+        setAuthUser(user);
+        setSystemInitialized(true);
+        setSkipOnboardingProfile(true);
+        if (needsOnboarding) {
+          localStorage.removeItem('markus_onboarded');
+          setShowOnboarding(true);
+        }
+      }} />;
+    }
+    return <Login onLogin={(user, needsOnboarding) => {
       setAuthUser(user);
-      if (isDefaultPassword) setMustChangePassword(true);
-      else if (!localStorage.getItem('markus_onboarded')) {
+      if (needsOnboarding) {
+        localStorage.removeItem('markus_onboarded');
+        setShowOnboarding(true);
+      } else if (!localStorage.getItem('markus_onboarded')) {
         localStorage.setItem('markus_onboarded', '1');
         setShowOnboarding(false);
       }
@@ -220,7 +235,14 @@ export function App() {
     return <Onboarding
       theme={theme.mode}
       onThemeChange={theme.setMode}
-      onComplete={() => { localStorage.setItem('markus_onboarded', '1'); setShowOnboarding(false); checkLlmConfig(); }}
+      skipProfile={skipOnboardingProfile}
+      onComplete={() => {
+        localStorage.setItem('markus_onboarded', '1');
+        setShowOnboarding(false);
+        setSkipOnboardingProfile(false);
+        checkLlmConfig();
+        navigate(PAGE.TEAM);
+      }}
     />;
   }
 
