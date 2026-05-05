@@ -83,7 +83,18 @@ const PROVIDERS = {
     name: 'SiliconFlow',
     envKey: 'SILICONFLOW_API_KEY',
     defaultModel: 'black-forest-labs/FLUX.1-schnell',
-    models: ['black-forest-labs/FLUX.1-schnell', 'stabilityai/stable-diffusion-3-5-large', 'stabilityai/stable-diffusion-3-5-large-turbo', 'stabilityai/stable-diffusion-xl-base-1.0'],
+    models: [
+      'black-forest-labs/FLUX.1-schnell',
+      'black-forest-labs/FLUX.1-dev',
+      'black-forest-labs/FLUX.1-pro',
+      'black-forest-labs/FLUX.1.1-pro',
+      'stabilityai/stable-diffusion-3-5-large',
+      'stabilityai/stable-diffusion-3-5-large-turbo',
+      'stabilityai/stable-diffusion-3-5-medium',
+      'stabilityai/stable-diffusion-xl-base-1.0',
+      'Qwen/Qwen-Image',
+      'deepseek-ai/Janus-Pro-7B',
+    ],
     supportedSizes: ['1024x1024', '1024x768', '768x1024', '1024x576', '576x1024'],
     supportsEdit: false,
     supportsNegativePrompt: true,
@@ -539,7 +550,9 @@ async function generateZhipu(args) {
 
 async function generateSiliconFlow(args) {
   const apiKey = getEnv('SILICONFLOW_API_KEY');
-  const model = args.model || 'black-forest-labs/FLUX.1-schnell';
+  const SILICONFLOW_DEFAULT = 'black-forest-labs/FLUX.1-schnell';
+  const model = args.model || SILICONFLOW_DEFAULT;
+  const isFallbackAttempt = args._siliconflowRetry === true;
 
   const body = {
     model,
@@ -558,10 +571,37 @@ async function generateSiliconFlow(args) {
     },
     body: JSON.stringify(body),
   });
+
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
-    throw new Error(`SiliconFlow API error ${res.status}: ${errText}`);
+    const isModelIssue = (res.status === 400 || res.status === 404) &&
+      (errText.toLowerCase().includes('not found') ||
+       errText.toLowerCase().includes('disabled') ||
+       errText.toLowerCase().includes('not support') ||
+       errText.toLowerCase().includes('available') ||
+       errText.toLowerCase().includes('permission'));
+
+    if (isModelIssue && !isFallbackAttempt && model !== SILICONFLOW_DEFAULT) {
+      // Auto-fallback: retry with the default model
+      const fallbackArgs = { ...args, model: SILICONFLOW_DEFAULT, _siliconflowRetry: true };
+      const fallbackResult = await generateSiliconFlow(fallbackArgs);
+      // Tag the result so the caller knows fallback occurred
+      fallbackResult._fallback = true;
+      fallbackResult._originalModel = model;
+      fallbackResult._fallbackModel = SILICONFLOW_DEFAULT;
+      // Update args.model so the response handler uses the actual model
+      args.model = SILICONFLOW_DEFAULT;
+      return fallbackResult;
+    }
+
+    // Enhanced error message with available models hint
+    const modelHint = isModelIssue
+      ? `The requested model "${model}" is not available on your account. Available models: ${PROVIDERS.siliconflow.models.join(', ')}`
+      : `Available models: ${PROVIDERS.siliconflow.models.join(', ')}`;
+
+    throw new Error(`SiliconFlow API error ${res.status}: ${errText}. ${modelHint}`);
   }
+
   const data = await res.json();
   const results = [];
   for (const item of (data.images || data.data || [])) {
@@ -1046,7 +1086,7 @@ async function handleGenerateImage(toolArgs) {
     status: 'success',
     provider: providerCfg.name,
     provider_id: providerId,
-    model,
+    model: genArgs.model,  // Use genArgs.model to reflect auto-fallback model changes
     prompt: toolArgs.prompt,
     images,
     count: images.length,
