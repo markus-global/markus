@@ -8,6 +8,7 @@ interface Props {
   onComplete: () => void;
   theme: ThemeMode;
   onThemeChange: (mode: ThemeMode) => void;
+  skipProfile?: boolean;
 }
 
 interface EnvModelDetected {
@@ -17,10 +18,10 @@ interface EnvModelDetected {
 interface EnvModelsResponse { detected: EnvModelDetected[]; timeoutMs?: number }
 interface OpenClawPreview { found: boolean; summary: { configPath: string; models?: { providerCount: number; providers: Array<{ name: string; modelCount: number; baseUrl?: string }> } } }
 
-const PROFILE_STEP = 1;
-const LLM_STEP = 3;
+const PROFILE_STEP_ID = 'profile';
+const LLM_STEP_ID = 'llm';
 
-export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
+export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Props) {
   const { t } = useTranslation(['onboarding', 'common']);
   const [step, setStep] = useState(0);
 
@@ -50,6 +51,7 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
   const [openclawPreview, setOpenclawPreview] = useState<OpenClawPreview | null>(null);
   const [openclawLoading, setOpenclawLoading] = useState(false);
   const [llmConfigured, setLlmConfigured] = useState(false);
+  const [configuredProviders, setConfiguredProviders] = useState<Array<{ name: string; displayName: string; model: string; apiKeyPreview?: string }>>([]);
   const [setupMsg, setSetupMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const envDetected = useRef(false);
 
@@ -62,20 +64,27 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
     fetch('/api/settings/llm')
       .then(r => r.ok ? r.json() : null)
       .then(d => {
-        if (d?.providers && Object.values(d.providers as Record<string, { configured: boolean }>).some(p => p.configured)) {
-          setLlmConfigured(true);
+        if (d?.providers) {
+          const active = Object.entries(d.providers as Record<string, { configured: boolean; enabled: boolean; displayName?: string; model?: string; apiKeyPreview?: string }>)
+            .filter(([, p]) => p.configured)
+            .map(([k, p]) => ({ name: k, displayName: p.displayName ?? k, model: p.model ?? '', apiKeyPreview: p.apiKeyPreview }));
+          if (active.length > 0) {
+            setLlmConfigured(true);
+            setConfiguredProviders(active);
+          }
         }
       })
       .catch(() => {});
   }, []);
 
+  const earlyLlmStepIdx = skipProfile ? 2 : 3;
   useEffect(() => {
-    if (step === LLM_STEP && !envDetected.current && !llmConfigured) {
+    if (step === earlyLlmStepIdx && !envDetected.current && !llmConfigured) {
       envDetected.current = true;
       void detectEnvModels();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, llmConfigured]);
+  }, [step, llmConfigured, earlyLlmStepIdx]);
 
   const detectEnvModels = async () => {
     setEnvLoading(true);
@@ -177,9 +186,10 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
     { value: 'midnight', label: t('theme.midnight'), icon: '🌊', desc: t('theme.midnightDesc') },
   ];
 
-  const steps = [
+  const allSteps = [
     // Step 0: Welcome
     {
+      id: 'welcome',
       title: t('welcome.title'),
       subtitle: t('welcome.subtitle'),
       content: (
@@ -209,6 +219,7 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
     },
     // Step 1: Profile Setup
     {
+      id: PROFILE_STEP_ID,
       title: t('profile.title'),
       subtitle: t('profile.subtitle'),
       content: profileSaved ? (
@@ -284,6 +295,7 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
     },
     // Step 2: Appearance
     {
+      id: 'theme',
       title: t('theme.title'),
       subtitle: t('theme.subtitle'),
       content: (
@@ -306,17 +318,28 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
         </div>
       ),
     },
-    // Step 2: LLM Setup
+    // Step 3: LLM Setup
     {
+      id: LLM_STEP_ID,
       title: t('llm.title'),
       subtitle: t('llm.subtitle'),
       content: llmConfigured ? (
-        <div className="flex items-center gap-3 bg-green-500/10 border border-green-500/30 rounded-xl p-4">
-          <span className="text-green-600 text-lg">&#10003;</span>
-          <div>
-            <div className="text-sm font-medium text-green-600">{t('llm.configured')}</div>
-            <div className="text-xs text-fg-secondary mt-0.5">{t('llm.configuredHint')}</div>
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-green-600 text-sm font-medium mb-1">
+            <span>&#10003;</span>
+            <span>{t('llm.configured')}</span>
           </div>
+          {configuredProviders.map(p => (
+            <div key={p.name} className="flex items-center justify-between bg-green-500/10 border border-green-500/30 rounded-lg px-4 py-2.5">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-green-400" />
+                <span className="text-sm text-fg-primary font-medium">{p.displayName}</span>
+                {p.model && <span className="text-xs text-fg-tertiary">{p.model}</span>}
+              </div>
+              {p.apiKeyPreview && <code className="text-[10px] text-fg-tertiary">{p.apiKeyPreview}</code>}
+            </div>
+          ))}
+          <div className="text-xs text-fg-secondary mt-1">{t('llm.configuredHint')}</div>
         </div>
       ) : (
         <div className="space-y-4">
@@ -391,8 +414,9 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
         </div>
       ),
     },
-    // Step 3: Done
+    // Step 4: Done
     {
+      id: 'done',
       title: t('done.title'),
       subtitle: t('done.subtitle'),
       content: (
@@ -416,8 +440,12 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
     },
   ];
 
+  const steps = skipProfile ? allSteps.filter(s => s.id !== PROFILE_STEP_ID) : allSteps;
+  const profileStepIdx = steps.findIndex(s => s.id === PROFILE_STEP_ID);
+  const llmStepIdx = steps.findIndex(s => s.id === LLM_STEP_ID);
+
   const handleNext = () => {
-    if (step === PROFILE_STEP && !profileSaved) return;
+    if (step === profileStepIdx && profileStepIdx >= 0 && !profileSaved) return;
     if (step < steps.length - 1) {
       setStep(step + 1);
     } else {
@@ -453,21 +481,21 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
               </button>
             )}
             <div className="flex items-center gap-3">
-              {step === PROFILE_STEP && !profileSaved && (
+              {profileStepIdx >= 0 && step === profileStepIdx && !profileSaved && (
                 <button onClick={() => setStep(step + 1)} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
                   {t('llm.skipForNow')}
                 </button>
               )}
-              {step === LLM_STEP && !llmConfigured && (
+              {llmStepIdx >= 0 && step === llmStepIdx && !llmConfigured && (
                 <button onClick={handleNext} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
                   {t('llm.skipForNow')}
                 </button>
               )}
               <button
                 onClick={handleNext}
-                disabled={step === PROFILE_STEP && !profileSaved}
+                disabled={profileStepIdx >= 0 && step === profileStepIdx && !profileSaved}
                 className={`px-6 py-2.5 text-white text-sm rounded-xl transition-colors ${
-                  step === PROFILE_STEP && !profileSaved
+                  profileStepIdx >= 0 && step === profileStepIdx && !profileSaved
                     ? 'bg-brand-600/40 cursor-not-allowed'
                     : 'bg-brand-600 hover:bg-brand-500'
                 }`}

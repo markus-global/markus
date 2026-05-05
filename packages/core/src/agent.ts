@@ -621,6 +621,7 @@ export class Agent {
           senderId,
           senderName: senderInfo?.name,
           senderRole: senderInfo?.role,
+          isFirstConversation: senderInfo?.isFirstConversation,
           responsePromise: { resolve, reject },
         },
       });
@@ -660,6 +661,7 @@ export class Agent {
           senderId,
           senderName: senderInfo?.name,
           senderRole: senderInfo?.role,
+          isFirstConversation: senderInfo?.isFirstConversation,
           responsePromise: { resolve, reject },
         },
       });
@@ -844,7 +846,7 @@ export class Agent {
     }
     const extra = item.payload.extra ?? {};
     const senderInfo = item.metadata?.senderName
-      ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'user' }
+      ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'user', isFirstConversation: item.metadata.isFirstConversation as boolean | undefined }
       : undefined;
     const resolveResponse = (reply: string) => {
       if (typeof item.metadata?.responsePromise?.resolve === 'function') {

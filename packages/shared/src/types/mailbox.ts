@@ -116,6 +116,7 @@ export interface MailboxItemMetadata {
   senderId?: string;
   senderName?: string;
   senderRole?: string;
+  isFirstConversation?: boolean;
   sessionId?: string;
   taskId?: string;
   channelContext?: string;

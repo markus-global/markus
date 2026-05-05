@@ -1207,8 +1207,11 @@ export const api = {
     },
   },
   auth: {
+    status: () => request<{ initialized: boolean }>('/auth/status'),
+    init: (name: string, email: string, password: string) =>
+      request<{ user: AuthUser; needsOnboarding?: boolean }>('/auth/init', { method: 'POST', body: JSON.stringify({ name, email, password }) }),
     login: (email: string, password: string) =>
-      request<{ user: AuthUser }>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+      request<{ user: AuthUser; needsOnboarding?: boolean }>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
     logout: () => request('/auth/logout', { method: 'POST' }),
     me: () => request<{ user: AuthUser }>('/auth/me'),
     changePassword: (currentPassword: string, newPassword: string) =>

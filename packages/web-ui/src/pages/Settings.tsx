@@ -10,6 +10,7 @@ interface ModelCost { input: number; output: number; cacheRead?: number; cacheWr
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[] }
 interface ProviderInfo {
   name: string; displayName?: string; model: string; baseUrl?: string; configured: boolean; enabled: boolean;
+  apiKeyPreview?: string; apiKeySource?: 'config' | 'env' | 'oauth';
   contextWindow?: number; maxOutputTokens?: number; cost?: ModelCost; models?: ModelDef[];
   authType?: string; oauthConnected?: boolean; oauthAccountId?: string;
 }
@@ -873,7 +874,11 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
                           </span>
                         )}
                       </div>
-                      <div className="text-xs text-fg-tertiary mt-0.5">{info.model || t('modelProviders.notConfigured')}</div>
+                      <div className="text-xs text-fg-tertiary mt-0.5">
+                        {info.configured ? (
+                          <>{info.model}{info.apiKeyPreview && <> · <code className="text-fg-secondary">{info.apiKeyPreview}</code></>}</>
+                        ) : t('modelProviders.notConfigured')}
+                      </div>
                     </div>
                   </div>
                   <div className="flex items-center gap-4">

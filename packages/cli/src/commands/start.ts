@@ -67,13 +67,14 @@ export function registerStartCommand(program: Command) {
       const globalOpts = program.optsWithGlobals();
       const configPath = globalOpts.config ?? getDefaultConfigPath();
 
-      // Auto-detect first run: no config file → run setup wizard
+      // Auto-detect first run: no config file → run setup wizard (non-interactive
+      // so it won't hang when stdin isn't available, e.g. under concurrently/CI).
       if (opts.setup || !existsSync(configPath)) {
         if (!existsSync(configPath)) {
-          console.log('  No configuration found — running first-time setup...\n');
+          console.log('  No configuration found — auto-configuring from environment...\n');
         }
         const { quickInit } = await import('./init.js');
-        await quickInit();
+        await quickInit({ nonInteractive: true });
       }
 
       const config = loadConfig(globalOpts.config);
@@ -381,9 +382,12 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     startupLog('INFO', '  1. 在浏览器中配置  → http://localhost:8056');
     startupLog('INFO', '  2. 交互式配置    → 正在启动向导...');
     startupBlank();
-    // Launch interactive init wizard inline — don't proceed without valid config
+    // Always use non-interactive mode during server startup — interactive
+    // prompts can hang when stdin is shared (concurrently, CI, systemd, etc.).
+    // Users who need interactive setup should run `markus init` first.
     const { quickInit } = await import('./init.js');
-    await quickInit();
+    startupLog('INFO', '自动从环境变量/已知配置导入 LLM 设置...');
+    await quickInit({ nonInteractive: true });
     // Reload config after init
     const { loadConfig: reloadConfig } = await import('@markus/shared');
     const updatedConfig = reloadConfig(values['config'] as string | undefined);
@@ -728,7 +732,8 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         taskId?: string; requirementId?: string; targetUserId?: string;
       };
       try {
-        const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId, defaultSessionUserId);
+        const sessionUserId = targetUserId || defaultSessionUserId;
+        const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId, sessionUserId);
         const agent = agentManager.getAgent(agentId);
         const formattedMsg = `**${title}**\n\n${body}`;
         const msg = storage.chatSessionRepo.appendMessage(
@@ -737,7 +742,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         storage.chatSessionRepo.updateLastMessage(mainSession.id);
         ws.broadcastProactiveMessage(agentId, agent.config.name, mainSession.id, msg.id, formattedMsg, {
           isMainSession: true,
-        }, defaultSessionUserId);
+        }, sessionUserId);
         const hasTask = !!taskId;
         hitlService.notify({
           targetUserId: targetUserId ?? 'all',
