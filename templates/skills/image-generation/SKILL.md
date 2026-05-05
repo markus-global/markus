@@ -43,7 +43,7 @@ If no provider is specified, the first available one is used.
 | Replicate | `REPLICATE_API_TOKEN` | black-forest-labs/flux-1.1-pro | Wide model selection, Flux models |
 | Tongyi Wanxiang | `DASHSCOPE_API_KEY` | wanx2.1-t2i-turbo | Chinese text support, fast turbo mode |
 | Zhipu CogView | `ZHIPU_API_KEY` | cogview-4 | Chinese text support, multiple styles |
-| SiliconFlow | `SILICONFLOW_API_KEY` | FLUX.1-schnell | Affordable, hosts FLUX & SD models, fast |
+| SiliconFlow | `SILICONFLOW_API_KEY` | FLUX.1-schnell | Affordable, hosts FLUX & SD & Qwen models, fast |
 | Together AI | `TOGETHER_API_KEY` | FLUX.1.1-pro | High-quality FLUX, competitive pricing |
 | FAL | `FAL_KEY` | flux-pro/v1.1 | Fast inference, Flux Pro/Dev/Schnell |
 | Ideogram | `IDEOGRAM_API_KEY` | V_2 | Excellent text-in-image, supports editing |
@@ -71,7 +71,7 @@ If no provider is specified, the first available one is used.
   - Replicate: `black-forest-labs/flux-1.1-pro`, `black-forest-labs/flux-schnell`
   - Tongyi: `wanx2.1-t2i-turbo`, `wanx2.1-t2i-plus`
   - Zhipu: `cogview-4`, `cogview-4-250304`, `cogview-3-plus`
-  - SiliconFlow: `black-forest-labs/FLUX.1-schnell`, `stabilityai/stable-diffusion-3-5-large`
+  - SiliconFlow: `black-forest-labs/FLUX.1-schnell`, `black-forest-labs/FLUX.1-dev`, `black-forest-labs/FLUX.1-pro`, `black-forest-labs/FLUX.1.1-pro`, `stabilityai/stable-diffusion-3-5-large`, `stabilityai/stable-diffusion-3-5-medium`, `Qwen/Qwen-Image`, `deepseek-ai/Janus-Pro-7B`
   - Together: `black-forest-labs/FLUX.1.1-pro`, `black-forest-labs/FLUX.1-schnell`
   - FAL: `fal-ai/flux-pro/v1.1`, `fal-ai/flux/schnell`, `fal-ai/flux/dev`
   - Ideogram: `V_2`, `V_2_TURBO`, `V_1`
