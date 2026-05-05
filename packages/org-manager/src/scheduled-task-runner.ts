@@ -49,7 +49,7 @@ export class ScheduledTaskRunner {
 
       const config = task.scheduleConfig;
 
-      if (config.maxRuns !== undefined && (config.currentRuns ?? 0) >= config.maxRuns) {
+      if (config.maxRuns && config.maxRuns > 0 && (config.currentRuns ?? 0) >= config.maxRuns) {
         continue;
       }
 

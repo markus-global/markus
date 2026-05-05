@@ -3571,7 +3571,7 @@ export class TaskService {
     const updated: ScheduleConfig = { ...task.scheduleConfig };
     if (fields.every !== undefined) { updated.every = fields.every; updated.cron = undefined; updated.runAt = undefined; }
     if (fields.cron !== undefined) { updated.cron = fields.cron; updated.every = undefined; updated.runAt = undefined; }
-    if (fields.maxRuns !== undefined) updated.maxRuns = fields.maxRuns;
+    if (fields.maxRuns !== undefined) updated.maxRuns = fields.maxRuns > 0 ? fields.maxRuns : undefined;
     if (fields.timezone !== undefined) updated.timezone = fields.timezone;
     updated.nextRunAt = computeNextRunFromConfig(updated);
     await this.updateScheduleConfig(taskIdStr, updated);

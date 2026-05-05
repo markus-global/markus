@@ -2081,7 +2081,7 @@ function TaskDetailPanel({
               setScheduleMode(task.scheduleConfig?.cron ? 'cron' : 'every');
               setScheduleEveryDraft(task.scheduleConfig?.every ?? '4h');
               setScheduleCronDraft(task.scheduleConfig?.cron ?? '');
-              setScheduleMaxRunsDraft(task.scheduleConfig?.maxRuns != null ? String(task.scheduleConfig.maxRuns) : '');
+              setScheduleMaxRunsDraft(task.scheduleConfig?.maxRuns && task.scheduleConfig.maxRuns > 0 ? String(task.scheduleConfig.maxRuns) : '');
               setEditingSchedule(true);
             }}>
             <div className="flex items-center gap-2 flex-wrap">
@@ -2153,7 +2153,7 @@ function TaskDetailPanel({
               </div>
             ) : (
               <div className="flex items-center gap-2 mt-1 text-fg-tertiary">
-                <span>{t('work:task.scheduleRuns', { current: task.scheduleConfig.currentRuns ?? 0, max: task.scheduleConfig.maxRuns != null ? t('work:task.scheduleRunsMax', { max: task.scheduleConfig.maxRuns }) : '' })}</span>
+                <span>{t('work:task.scheduleRuns', { current: task.scheduleConfig.currentRuns ?? 0, max: task.scheduleConfig.maxRuns && task.scheduleConfig.maxRuns > 0 ? t('work:task.scheduleRunsMax', { max: task.scheduleConfig.maxRuns }) : '' })}</span>
                 {task.scheduleConfig.lastRunAt && (
                   <>
                     <span>·</span>
