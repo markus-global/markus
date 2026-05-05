@@ -517,7 +517,7 @@ export class ContextEngine {
         `You are now talking to **${opts.senderIdentity.name}** (${opts.senderIdentity.role}).`
       );
       if (opts.senderIdentity.isFirstConversation) {
-        parts.push(
+        dynamic.push(
           '**This is their first conversation** — they have never used Markus before. Follow your onboarding protocol if you have one.'
         );
       }
@@ -537,23 +537,14 @@ export class ContextEngine {
     }
 
     if (!isDream) {
-      parts.push('\n## Tool Usage Rules');
-      parts.push('**File editing discipline**: You MUST use `file_write` and `file_edit` for all file creation and modification. NEVER use `shell_execute` with `cat`, `echo`, `printf`, `tee`, pipes (`|`), output redirection (`>`, `>>`), heredocs (`<<`), or `sed`/`awk` to write or modify files — these bypass file access controls. `shell_execute` is for running commands (build, test, git, etc.), not for writing files.');
-      parts.push('**Large file writing**: NEVER write a document >200 lines in a single `file_write` call. Write section by section: `file_write` the first section, then `file_edit` to append each subsequent section.');
-      parts.push('**Error handling**: If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action.');
-      parts.push('**Subagent delegation**: For heavy subtasks needing many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
-      parts.push('**Built-in tools over CLI**: ALWAYS prefer built-in tools (`task_create`, `task_assign`, `package_install`, `agent_send_message`, `memory_save`, etc.) over running `markus` CLI commands via `shell_execute`. The CLI is for human operators — agents must use their native tool interface. Only fall back to CLI if no built-in tool exists for the operation.');
-      parts.push('**No auto-install/deploy**: NEVER automatically install or deploy agents, teams, or skills via `package_install` or `hub_install` unless explicitly requested by a human team member (e.g., "install", "deploy", "hire", "start"). Creating an artifact (writing files to `builder-artifacts/`) is separate from deploying it into the live organization.');
+      dynamic.push('\n## Tool Usage Rules');
+      dynamic.push('**File editing discipline**: You MUST use `file_write` and `file_edit` for all file creation and modification. NEVER use `shell_execute` with `cat`, `echo`, `printf`, `tee`, pipes (`|`), output redirection (`>`, `>>`), heredocs (`<<`), or `sed`/`awk` to write or modify files — these bypass file access controls. `shell_execute` is for running commands (build, test, git, etc.), not for writing files.');
+      dynamic.push('**Large file writing**: NEVER write a document >200 lines in a single `file_write` call. Write section by section: `file_write` the first section, then `file_edit` to append each subsequent section.');
+      dynamic.push('**Error handling**: If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action.');
+      dynamic.push('**Subagent delegation**: For heavy subtasks needing many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
+      dynamic.push('**Built-in tools over CLI**: ALWAYS prefer built-in tools (`task_create`, `task_assign`, `package_install`, `agent_send_message`, `memory_save`, etc.) over running `markus` CLI commands via `shell_execute`. The CLI is for human operators — agents must use their native tool interface. Only fall back to CLI if no built-in tool exists for the operation.');
+      dynamic.push('**No auto-install/deploy**: NEVER automatically install or deploy agents, teams, or skills via `package_install` or `hub_install` unless explicitly requested by a human team member (e.g., "install", "deploy", "hire", "start"). Creating an artifact (writing files to `builder-artifacts/`) is separate from deploying it into the live organization.');
     }
-
-    // --- Mailbox & attention context ---
-    if (!isDream && opts.mailboxContext) {
-      parts.push(this.buildMailboxSection(opts.mailboxContext));
-    }
-
-    // --- Scenario-specific behavioral guidance ---
-    const scenario = opts.scenario ?? 'chat';
-    parts.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply }));
 
     // Timestamp at the end of the system prompt preserves KV-cache for the
     // stable prefix (identity, role, policies, memory) which rarely changes.
