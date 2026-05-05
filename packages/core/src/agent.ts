@@ -621,6 +621,7 @@ export class Agent {
           senderId,
           senderName: senderInfo?.name,
           senderRole: senderInfo?.role,
+          isFirstConversation: senderInfo?.isFirstConversation,
           responsePromise: { resolve, reject },
         },
       });
@@ -660,6 +661,7 @@ export class Agent {
           senderId,
           senderName: senderInfo?.name,
           senderRole: senderInfo?.role,
+          isFirstConversation: senderInfo?.isFirstConversation,
           responsePromise: { resolve, reject },
         },
       });
@@ -844,7 +846,7 @@ export class Agent {
     }
     const extra = item.payload.extra ?? {};
     const senderInfo = item.metadata?.senderName
-      ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'user' }
+      ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'user', isFirstConversation: item.metadata.isFirstConversation as boolean | undefined }
       : undefined;
     const resolveResponse = (reply: string) => {
       if (typeof item.metadata?.responsePromise?.resolve === 'function') {
@@ -2695,12 +2697,11 @@ export class Agent {
 
       // Safeguard: if agent finishes comment_response without calling
       // task_comment/requirement_comment, remind it and give one more chance.
-      // Only trigger when agent produced substantive text (likely forgot to use
-      // the tool). If text is empty/short, the agent likely decided not to reply
-      // per conversation-termination rules — that's legitimate.
-      const pendingReplyText = sanitizeLLMReply(response.content);
+      // The agent MUST either call the tool or include [NO_REPLY_NEEDED] marker
+      // to explicitly signal that no response is warranted.
+      const hasNoReplyMarker = /\[NO_REPLY_NEEDED\]/i.test(response.content ?? '');
       if (scenario === 'comment_response' && commentToolUsed.size === 0
-        && pendingReplyText.length > 60 && toolIterations < effectiveMaxIter) {
+        && !hasNoReplyMarker && toolIterations < effectiveMaxIter) {
         this.memory.appendMessage(sessionId, {
           role: 'assistant',
           content: response.content,
@@ -2709,7 +2710,7 @@ export class Agent {
         });
         this.memory.appendMessage(sessionId, {
           role: 'user',
-          content: '[SYSTEM] You are about to end your turn WITHOUT posting a reply. In this scenario your text output is NOT visible to anyone. You MUST call `task_comment` or `requirement_comment` tool to post your reply in the comment thread. Do it now.',
+          content: '[SYSTEM] You are about to end your turn WITHOUT posting a reply and WITHOUT marking [NO_REPLY_NEEDED]. In this scenario your text output is NOT visible to anyone. You MUST either: (1) call `task_comment` or `requirement_comment` tool to post your reply in the comment thread, OR (2) output exactly [NO_REPLY_NEEDED] if you have determined that no response is warranted. Do it now.',
         });
 
         const reminderMessages = this.memory.getRecentMessages(sessionId, maxHistory);

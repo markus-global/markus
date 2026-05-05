@@ -182,15 +182,8 @@
     "approvalHistory": "历史记录"
   },
   "intro": {
-    "en": "Introduce yourself",
-    "zh": "介绍一下你自己",
-    "ja": "自己紹介をしてください",
-    "ko": "자기소개를 해주세요",
-    "fr": "Présentez-vous",
-    "de": "Stell dich vor",
-    "es": "Preséntate",
-    "pt": "Apresente-se",
-    "ru": "Представьтесь"
+    "secretary": "我刚装好 Markus，帮我上手吧——这里能做什么？",
+    "agent": "介绍一下你自己——你能做什么？"
   },
   "batchAction": {
     "succeeded": "{{count}} 个智能体 {{action}}",

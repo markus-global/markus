@@ -1,5 +1,37 @@
 # Release Log
 
+## v0.6.5
+
+新用户初始化注册流程；非交互式启动修复；群聊可见性隔离；评论回复强制机制改进；Agent 思考活动实时指示器；LLM Key 预览。
+
+### New Features
+
+- **初始化注册页面** — 新增 `InitialSetup` 组件和 `/api/auth/init`、`/api/auth/status` 端点，首次使用时展示管理员注册页面（用户名/邮箱/密码/头像上传），替代旧的默认密码登录方式
+- **Secretary 新用户欢迎** — 新用户完成注册后，Secretary 自动发送引导消息帮助上手，通过 `isFirstConversation` 标记透传到 Mailbox
+- **评论思考活动指示器** — Work 页任务/需求评论区 Agent 思考时实时展示工具调用步骤（`ActivityIndicator`），替代纯 bouncing dots
+
+### Bug Fixes
+
+- **修复启动 stdin 阻塞** — `quickInit` 改为 `nonInteractive: true`，避免在 concurrently / CI / systemd 等无 TTY 环境下挂起
+- **修复群聊可见性** — 非管理员用户只能看到自己参与的群聊和团队聊天，新增 `listByMember` 查询
+- **修复评论不回复检测** — `comment_response` 场景改用 `[NO_REPLY_NEEDED]` 显式标记替代文本长度启发式判断，避免 Agent 决定不回复时被强制重试
+- **修复用户 identity 不同步** — 注册/登录后立即调用 `syncHumanIdentity` 同步内存用户身份，Agent 即时看到真实用户名
+- **修复 proactive message 目标用户错误** — `notify_user` 通知消息发送到正确的 `targetUserId` 而非默认用户
+- **修复首次 intro 消息重复发送** — 全局 Set 防护同一页面会话内重复发送自我介绍消息
+
+### Improvements
+
+- **LLM API Key 预览** — Settings 和 Onboarding 页面显示 API Key 掩码预览（`sk-ab...cd12`），区分 config / env / oauth 来源
+- **角色感知 intro 消息** — Secretary 和普通 Agent 使用不同的首次对话消息，不再按语言硬编码多国文案
+- **Onboarding 智能跳步** — InitialSetup 已完成 profile 信息时，Onboarding 自动跳过 Profile 步骤
+- **首登引导流程** — 登录/注册接口返回 `needsOnboarding` 标志，首次登录自动进入 Onboarding
+
+### Stats
+
+- 21 files changed, +728 / −160 lines
+
+---
+
 ## v0.6.4
 
 新 Logo；聊天上下文大幅扩容；审批通知优化；Agent 记忆编辑 UX 改进；thinking 气泡及时清除。

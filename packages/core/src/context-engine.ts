@@ -718,11 +718,17 @@ export class ContextEngine {
         lines.push('- Give a generic acknowledgment like "Got it, will look into it" without substantive content');
         lines.push('- Ignore prior comments that provide important context for the current discussion');
         lines.push('');
-        lines.push('**Conversation termination — when NOT to reply:**');
-        lines.push('- The comment is just an acknowledgment ("Got it", "Will do", "Thanks", "Agreed") — do NOT reply');
-        lines.push('- Both parties have reached agreement or the discussion is resolved — do NOT reply');
-        lines.push('- Your reply would only be "Sounds good", "Agreed", or similar zero-information response — do NOT reply');
-        lines.push('- The comment does not ask a question, request action, or contain information you need to correct — do NOT reply');
+        lines.push('**MANDATORY outcome — you MUST end with exactly one of these:**');
+        lines.push('1. Call `task_comment` or `requirement_comment` tool to post your reply, OR');
+        lines.push('2. Output `[NO_REPLY_NEEDED]` in your text to explicitly signal that no response is warranted.');
+        lines.push('');
+        lines.push('If you finish without doing either of the above, the system will automatically retry your turn — your text output alone is NEVER sufficient.');
+        lines.push('');
+        lines.push('**When to use `[NO_REPLY_NEEDED]` — do NOT reply when:**');
+        lines.push('- The comment is just an acknowledgment ("Got it", "Will do", "Thanks", "Agreed")');
+        lines.push('- Both parties have reached agreement or the discussion is resolved');
+        lines.push('- Your reply would only be "Sounds good", "Agreed", or similar zero-information response');
+        lines.push('- The comment does not ask a question, request action, or contain information you need to correct');
         lines.push('- **Principle**: only comment when your reply adds **new information** or requests a **decision**. Avoid comment ping-pong.');
         break;
 

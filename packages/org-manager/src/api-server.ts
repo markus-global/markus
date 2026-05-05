@@ -1221,6 +1221,26 @@ export class APIServer {
     }
   }
 
+  private triggerSecretaryWelcome(userId: string, userName: string, userRole: string): void {
+    try {
+      const mgr = this.orgService.getAgentManager();
+      const agentList = mgr.listAgents();
+      const secretaryInfo = agentList.find(a =>
+        a.agentRole === 'secretary' || a.role?.toLowerCase() === 'secretary'
+      );
+      if (!secretaryInfo) return;
+      const secretary = mgr.getAgent(secretaryInfo.id);
+      const welcomeMsg = `[SYSTEM] A new team member just joined: "${userName}" (role: ${userRole}, id: ${userId}). They have completed their account setup. As their Secretary, proactively guide them through the system capabilities. Send them a welcome message using notify_user (target the new user by their id: ${userId}) explaining what they can do in Markus — projects, tasks, deliverables, team collaboration, and how to work with AI agents. Help them get started with their first steps.`;
+      secretary.sendMessage(welcomeMsg, userId, {
+        name: userName,
+        role: userRole,
+        isFirstConversation: true,
+      }, { sourceType: 'human_chat', scenario: 'chat' });
+    } catch (err) {
+      log.warn('Failed to trigger secretary welcome for new user', { userId, error: String(err) });
+    }
+  }
+
   start(): void {
     this.server = createServer((req, res) => this.handleRequest(req, res));
     this.ws.attach(this.server);
@@ -1303,6 +1323,78 @@ export class APIServer {
     }
 
     // ── Auth endpoints (no auth required) ──────────────────────────────────
+
+    // System initialization status — tells frontend whether to show Login or InitialSetup
+    if (path === '/api/auth/status' && req.method === 'GET') {
+      if (!this.storage || !this.authEnabled) {
+        this.json(res, 200, { initialized: true });
+        return;
+      }
+      const allUsers = await this.storage.userRepo.listByOrg('default');
+      const hasRealUsers = allUsers.some((u: any) => u.passwordHash && u.email !== 'admin@markus.local');
+      this.json(res, 200, { initialized: hasRealUsers });
+      return;
+    }
+
+    // First-time system initialization — creates admin user (only works when no real users exist)
+    if (path === '/api/auth/init' && req.method === 'POST') {
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Storage not available' });
+        return;
+      }
+      // Only allow when system is not yet initialized
+      const allUsers = await this.storage.userRepo.listByOrg('default');
+      const hasRealUsers = allUsers.some((u: any) => u.passwordHash && u.email !== 'admin@markus.local');
+      if (hasRealUsers) {
+        this.json(res, 403, { error: 'System already initialized' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const name = ((body['name'] as string) ?? '').trim();
+      const email = ((body['email'] as string) ?? '').trim().toLowerCase();
+      const password = (body['password'] as string) ?? '';
+      if (!name || !email || !password) {
+        this.json(res, 400, { error: 'name, email and password are required' });
+        return;
+      }
+      if (password.length < 6) {
+        this.json(res, 400, { error: 'Password must be at least 6 characters' });
+        return;
+      }
+      const hash = await hashPassword(password);
+      // Check if there's an unclaimed placeholder admin to adopt
+      const placeholder = allUsers.find((u: any) => u.role === 'owner' && u.email === 'admin@markus.local');
+      let userId: string;
+      if (placeholder) {
+        userId = placeholder.id as string;
+        this.storage.userRepo.updateProfile(userId, { name, email });
+        await this.storage.userRepo.updatePassword(userId, hash);
+      } else {
+        userId = genUserId();
+        await this.storage.userRepo.upsert({
+          id: userId, orgId: 'default', name, email, role: 'owner', passwordHash: hash,
+        });
+      }
+      // Sync in-memory identity so agents see the real name immediately
+      // (DB was already updated above — this only touches the in-memory map)
+      this.orgService.syncHumanIdentity(userId, 'default', name, 'owner', email);
+      await this.storage.userRepo.updateLastLogin(userId);
+      const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
+      const token = await signToken(
+        { userId, orgId: 'default', role: 'owner', exp },
+        this.jwtSecret
+      );
+      res.setHeader(
+        'Set-Cookie',
+        `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
+      );
+      this.json(res, 200, {
+        user: { id: userId, name, email, role: 'owner', orgId: 'default' },
+        needsOnboarding: true,
+      });
+      return;
+    }
+
     if (path === '/api/auth/login' && req.method === 'POST') {
       const body = await this.readBody(req);
       const email = ((body['email'] as string) ?? '').trim().toLowerCase();
@@ -1313,7 +1405,25 @@ export class APIServer {
         return;
       }
 
-      const userRow = this.storage ? await this.storage.userRepo.findByEmail(email) : null;
+      let userRow = this.storage ? await this.storage.userRepo.findByEmail(email) : null;
+
+      // First-time login: if the email isn't found, check if there's an unclaimed
+      // admin user (still using the placeholder email). If the password matches,
+      // adopt that admin user with the provided email.
+      if (!userRow && this.storage) {
+        const allUsers = await this.storage.userRepo.listByOrg('default');
+        const unclaimedOwner = allUsers.find((u: any) =>
+          u.role === 'owner' && !u.lastLoginAt && u.email === 'admin@markus.local'
+        );
+        if (unclaimedOwner && unclaimedOwner.passwordHash) {
+          const ownerPasswordValid = await verifyPassword(password, unclaimedOwner.passwordHash);
+          if (ownerPasswordValid) {
+            this.storage.userRepo.updateProfile(unclaimedOwner.id, { email });
+            userRow = { ...unclaimedOwner, email } as typeof userRow;
+          }
+        }
+      }
+
       if (!userRow || !userRow.passwordHash) {
         this.json(res, 401, { error: 'Invalid email or password' });
         return;
@@ -1323,6 +1433,7 @@ export class APIServer {
         this.json(res, 401, { error: 'Invalid email or password' });
         return;
       }
+      const isFirstLogin = !userRow.lastLoginAt;
       await this.storage!.userRepo.updateLastLogin(userRow.id);
       const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
       const token = await signToken(
@@ -1342,6 +1453,7 @@ export class APIServer {
           orgId: userRow.orgId,
           avatarUrl: userRow.avatarUrl ?? undefined,
         },
+        needsOnboarding: isFirstLogin,
       });
       return;
     }
@@ -1463,6 +1575,7 @@ export class APIServer {
         'Set-Cookie',
         `markus_token=${jwtToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
       );
+
       this.json(res, 200, { ok: true, email: userRow.email });
       return;
     }
@@ -2295,9 +2408,16 @@ export class APIServer {
 
     // ── Group Chats ──────────────────────────────────────────────────────────────
     if (path === '/api/group-chats' && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const orgId = url.searchParams.get('orgId') ?? 'default';
+      const userId = authUser.userId;
+      const isAdmin = authUser.role === 'owner' || authUser.role === 'admin';
       const teams = this.orgService.listTeamsWithMembers(orgId);
-      const teamChats = teams.map(t => ({
+      const filteredTeams = isAdmin
+        ? teams
+        : teams.filter(t => t.members.some(m => m.id === userId));
+      const teamChats = filteredTeams.map(t => ({
         id: `group:${t.id}`,
         name: t.name,
         type: 'team' as const,
@@ -2306,7 +2426,10 @@ export class APIServer {
         channelKey: `group:${t.id}`,
       }));
       const customChats = this.storage?.groupChatRepo
-        ? this.storage.groupChatRepo.list(orgId).map((c: any) => ({
+        ? (isAdmin
+            ? this.storage.groupChatRepo.list(orgId)
+            : this.storage.groupChatRepo.listByMember(orgId, userId)
+          ).map((c: any) => ({
             id: c.id,
             name: c.name,
             type: 'custom' as const,

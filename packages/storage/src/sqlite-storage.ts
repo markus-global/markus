@@ -4086,6 +4086,20 @@ export class SqliteGroupChatRepo {
     }));
   }
 
+  listByMember(orgId: string, memberId: string): Array<GroupChat & { memberCount: number }> {
+    const rows = this.db.prepare(
+      `SELECT g.*, (SELECT COUNT(*) FROM group_chat_members WHERE group_chat_id = g.id) AS member_count
+       FROM group_chats g
+       INNER JOIN group_chat_members m ON m.group_chat_id = g.id
+       WHERE g.org_id = ? AND m.member_id = ?
+       ORDER BY g.created_at DESC`
+    ).all(orgId, memberId) as Record<string, unknown>[];
+    return rows.map(r => ({
+      ...this.mapRow(r),
+      memberCount: r['member_count'] as number,
+    }));
+  }
+
   getById(id: string): (GroupChat & { members: GroupChatMember[] }) | undefined {
     const r = this.db.prepare('SELECT * FROM group_chats WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     if (!r) return undefined;
