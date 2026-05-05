@@ -1,0 +1,26 @@
+{
+  "type": "skill",
+  "name": "image-generation",
+  "displayName": "Image Generation",
+  "version": "1.0.0",
+  "description": "Generate images using AI models — supports 14 providers including OpenAI DALL-E, Stability AI, Google Imagen, Replicate, SiliconFlow, Together AI, FAL, Ideogram, Tongyi, Zhipu, Baidu, Hunyuan, Volcengine, and more",
+  "author": "markus",
+  "category": "creative",
+  "tags": ["image", "drawing", "dall-e", "stable-diffusion", "generation", "art", "mcp"],
+  "i18n": {
+    "zh-CN": {
+      "displayName": "AI 画图",
+      "description": "使用 AI 模型生成图片 — 支持 14 个平台：OpenAI DALL-E、Stability AI、Google Imagen、Replicate、SiliconFlow、Together AI、FAL、Ideogram、通义万相、智谱 CogView、百度文心、腾讯混元、火山引擎等"
+    }
+  },
+  "skill": {
+    "skillFile": "SKILL.md",
+    "requiredPermissions": ["network", "file"],
+    "mcpServers": {
+      "image-generation": {
+        "command": "node",
+        "args": ["${SKILL_DIR}/server.mjs"]
+      }
+    }
+  }
+}
