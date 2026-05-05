@@ -1221,6 +1221,26 @@ export class APIServer {
     }
   }
 
+  private triggerSecretaryWelcome(userId: string, userName: string, userRole: string): void {
+    try {
+      const mgr = this.orgService.getAgentManager();
+      const agentList = mgr.listAgents();
+      const secretaryInfo = agentList.find(a =>
+        a.agentRole === 'secretary' || a.role?.toLowerCase() === 'secretary'
+      );
+      if (!secretaryInfo) return;
+      const secretary = mgr.getAgent(secretaryInfo.id);
+      const welcomeMsg = `[SYSTEM] A new team member just joined: "${userName}" (role: ${userRole}, id: ${userId}). They have completed their account setup. As their Secretary, proactively welcome them and guide them through onboarding. Send them a welcome message using notify_user (target the new user by their id: ${userId}) introducing yourself and asking how you can help them get started.`;
+      secretary.sendMessage(welcomeMsg, 'system', {
+        name: 'System',
+        role: 'system',
+        isFirstConversation: false,
+      }, { sourceType: 'system_event' });
+    } catch (err) {
+      log.warn('Failed to trigger secretary welcome for new user', { userId, error: String(err) });
+    }
+  }
+
   start(): void {
     this.server = createServer((req, res) => this.handleRequest(req, res));
     this.ws.attach(this.server);
@@ -1463,6 +1483,10 @@ export class APIServer {
         'Set-Cookie',
         `markus_token=${jwtToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
       );
+
+      // Notify the secretary about the new user so it can proactively welcome them
+      this.triggerSecretaryWelcome(userRow.id as string, (userRow.name as string) ?? 'New User', (userRow.role as string) ?? 'member');
+
       this.json(res, 200, { ok: true, email: userRow.email });
       return;
     }
@@ -2295,9 +2319,16 @@ export class APIServer {
 
     // ── Group Chats ──────────────────────────────────────────────────────────────
     if (path === '/api/group-chats' && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const orgId = url.searchParams.get('orgId') ?? 'default';
+      const userId = authUser.userId;
+      const isAdmin = authUser.role === 'owner' || authUser.role === 'admin';
       const teams = this.orgService.listTeamsWithMembers(orgId);
-      const teamChats = teams.map(t => ({
+      const filteredTeams = isAdmin
+        ? teams
+        : teams.filter(t => t.members.some(m => m.id === userId));
+      const teamChats = filteredTeams.map(t => ({
         id: `group:${t.id}`,
         name: t.name,
         type: 'team' as const,
@@ -2306,7 +2337,10 @@ export class APIServer {
         channelKey: `group:${t.id}`,
       }));
       const customChats = this.storage?.groupChatRepo
-        ? this.storage.groupChatRepo.list(orgId).map((c: any) => ({
+        ? (isAdmin
+            ? this.storage.groupChatRepo.list(orgId)
+            : this.storage.groupChatRepo.listByMember(orgId, userId)
+          ).map((c: any) => ({
             id: c.id,
             name: c.name,
             type: 'custom' as const,

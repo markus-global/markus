@@ -6,6 +6,7 @@ import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, s
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { Avatar } from '../components/Avatar.tsx';
+import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
 import { CommentInput, type PendingImage } from '../components/CommentInput.tsx';
@@ -755,9 +756,11 @@ function TaskActivitySection({ task, agents, users, authUser }: {
   const [comments, setComments] = useState<TaskComment[]>([]);
   const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
   const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [agentActivities, setAgentActivities] = useState<Map<string, ActivityStep[]>>(new Map());
 
   useEffect(() => {
     setThinkingAgents([]);
+    setAgentActivities(new Map());
     if (thinkingTimeoutRef.current) { clearTimeout(thinkingTimeoutRef.current); thinkingTimeoutRef.current = null; }
     api.tasks.getComments(task.id).then(r => setComments(r.comments)).catch(() => {});
   }, [task.id]);
@@ -779,11 +782,45 @@ function TaskActivitySection({ task, agents, users, authUser }: {
             }
             return next;
           });
+          setAgentActivities(prev => {
+            const next = new Map(prev);
+            next.delete(c.authorId);
+            return next;
+          });
         }
       }
     });
     return unsub;
   }, [task.id]);
+
+  // Subscribe to agent activity logs during thinking period
+  useEffect(() => {
+    if (thinkingAgents.length === 0) return;
+    const thinkingIds = new Set(thinkingAgents.map(a => a.id));
+    const unsub = wsClient.on('agent:activity_log', (event: { payload?: Record<string, unknown> }) => {
+      const p = event.payload as Record<string, unknown> | undefined;
+      if (!p) return;
+      const agentId = p['agentId'] as string;
+      if (!thinkingIds.has(agentId)) return;
+      const evtType = p['type'] as string;
+      if (evtType === 'tool_start' || evtType === 'tool_end') {
+        const tool = (p['content'] as string) ?? (p['metadata'] as Record<string, unknown>)?.['tool'] as string ?? '';
+        const step: ActivityStep = {
+          tool,
+          phase: evtType === 'tool_start' ? 'start' : 'end',
+          success: evtType === 'tool_end' ? (p['metadata'] as Record<string, unknown>)?.['success'] !== false : undefined,
+          ts: Date.now(),
+        };
+        setAgentActivities(prev => {
+          const next = new Map(prev);
+          const list = [...(next.get(agentId) ?? []), step];
+          next.set(agentId, list);
+          return next;
+        });
+      }
+    });
+    return unsub;
+  }, [thinkingAgents]);
 
   const items = useMemo<ActivityItem[]>(() => {
     const result: ActivityItem[] = [];
@@ -853,27 +890,39 @@ function TaskActivitySection({ task, agents, users, authUser }: {
           return <CommentBubble key={`c-${item.comment.id}`} comment={item.comment} agents={agents} onReply={handleReply} />;
         })}
         {thinkingAgents.length > 0 && (
-          <div className="flex flex-col gap-1 pt-1">
-            {thinkingAgents.map(ta => (
-              <div
-                key={ta.id}
-                className="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer hover:bg-surface-elevated/60 transition-colors"
-                onClick={() => navBus.navigate(PAGE.TEAM, { agentId: ta.id, profileTab: 'mind' })}
-              >
-                <div className="relative shrink-0">
-                  <Avatar name={ta.name} avatarUrl={ta.avatarUrl} size={22} bgClass="bg-brand-500/15 text-brand-600" />
-                  <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500 animate-pulse ring-2 ring-surface-primary" />
+          <div className="flex flex-col gap-1.5 pt-1">
+            {thinkingAgents.map(ta => {
+              const activities = agentActivities.get(ta.id) ?? [];
+              return (
+                <div
+                  key={ta.id}
+                  className="px-2 py-1.5 rounded-lg cursor-pointer hover:bg-surface-elevated/60 transition-colors"
+                  onClick={() => navBus.navigate(PAGE.TEAM, { agentId: ta.id, profileTab: 'mind' })}
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="relative shrink-0">
+                      <Avatar name={ta.name} avatarUrl={ta.avatarUrl} size={22} bgClass="bg-brand-500/15 text-brand-600" />
+                      <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500 animate-pulse ring-2 ring-surface-primary" />
+                    </div>
+                    <span className="text-xs font-medium text-fg-secondary">{ta.name}</span>
+                    {activities.length === 0 && (
+                      <span className="flex items-center gap-0.5">
+                        <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" />
+                        <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.15s' }} />
+                        <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.3s' }} />
+                      </span>
+                    )}
+                    <span className="text-[10px] text-fg-tertiary">{t('work:task.agentProcessing')}</span>
+                    <span className="ml-auto text-[10px] text-fg-tertiary">→</span>
+                  </div>
+                  {activities.length > 0 && (
+                    <div className="ml-8 mt-1">
+                      <ActivityIndicator activities={activities} isActive={true} />
+                    </div>
+                  )}
                 </div>
-                <span className="text-xs font-medium text-fg-secondary">{ta.name}</span>
-                <span className="flex items-center gap-0.5">
-                  <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" />
-                  <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.15s' }} />
-                  <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.3s' }} />
-                </span>
-                <span className="text-[10px] text-fg-tertiary">{t('work:task.agentProcessing')}</span>
-                <span className="ml-auto text-[10px] text-fg-tertiary">→</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -899,6 +948,7 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
   const [submitting, setSubmitting] = useState(false);
   const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
   const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [agentActivities, setAgentActivities] = useState<Map<string, ActivityStep[]>>(new Map());
   const [imageAttachments, setImageAttachments] = useState<Array<{ type: string; url: string; name: string }>>([]);
   const [relatedActivities, setRelatedActivities] = useState<ActivityRecord[]>([]);
   const [loadingActivities, setLoadingActivities] = useState(false);
@@ -909,6 +959,7 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
 
   useEffect(() => {
     setThinkingAgents([]);
+    setAgentActivities(new Map());
     if (thinkingTimeoutRef.current) { clearTimeout(thinkingTimeoutRef.current); thinkingTimeoutRef.current = null; }
   }, [taskId]);
 
@@ -1031,10 +1082,44 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
           }
           return next;
         });
+        setAgentActivities(prev => {
+          const next = new Map(prev);
+          next.delete(c.authorId);
+          return next;
+        });
       }
     });
     return () => { unsubLog(); unsubDelta(); unsubComment(); };
   }, [taskId]);
+
+  // Subscribe to agent activity logs during thinking period
+  useEffect(() => {
+    if (thinkingAgents.length === 0) return;
+    const thinkingIds = new Set(thinkingAgents.map(a => a.id));
+    const unsub = wsClient.on('agent:activity_log', (event: { payload?: Record<string, unknown> }) => {
+      const p = event.payload as Record<string, unknown> | undefined;
+      if (!p) return;
+      const agentId = p['agentId'] as string;
+      if (!thinkingIds.has(agentId)) return;
+      const evtType = p['type'] as string;
+      if (evtType === 'tool_start' || evtType === 'tool_end') {
+        const tool = (p['content'] as string) ?? (p['metadata'] as Record<string, unknown>)?.['tool'] as string ?? '';
+        const step: ActivityStep = {
+          tool,
+          phase: evtType === 'tool_start' ? 'start' : 'end',
+          success: evtType === 'tool_end' ? (p['metadata'] as Record<string, unknown>)?.['success'] !== false : undefined,
+          ts: Date.now(),
+        };
+        setAgentActivities(prev => {
+          const next = new Map(prev);
+          const list = [...(next.get(agentId) ?? []), step];
+          next.set(agentId, list);
+          return next;
+        });
+      }
+    });
+    return unsub;
+  }, [thinkingAgents]);
 
   // All logs from loaded rounds merged (for compact card / single-round view)
   const allLoadedLogs = useMemo(() => {
@@ -1339,29 +1424,41 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
           );
         })}
         {thinkingAgents.length > 0 && (
-          <div className="flex flex-col gap-1 mt-2">
-            {thinkingAgents.map(ta => (
-              <div
-                key={ta.id}
-                className="flex items-center gap-2.5 px-3 py-2 rounded-lg cursor-pointer hover:bg-surface-elevated/60 transition-colors"
-                onClick={() => navBus.navigate(PAGE.TEAM, { agentId: ta.id, profileTab: 'mind' })}
-              >
-                <div className="relative shrink-0">
-                  <Avatar name={ta.name} avatarUrl={ta.avatarUrl} size={24} bgClass="bg-brand-500/15 text-brand-600" />
-                  <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500 animate-pulse ring-2 ring-surface-primary" />
+          <div className="flex flex-col gap-1.5 mt-2">
+            {thinkingAgents.map(ta => {
+              const activities = agentActivities.get(ta.id) ?? [];
+              return (
+                <div
+                  key={ta.id}
+                  className="px-3 py-2 rounded-lg cursor-pointer hover:bg-surface-elevated/60 transition-colors"
+                  onClick={() => navBus.navigate(PAGE.TEAM, { agentId: ta.id, profileTab: 'mind' })}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="relative shrink-0">
+                      <Avatar name={ta.name} avatarUrl={ta.avatarUrl} size={24} bgClass="bg-brand-500/15 text-brand-600" />
+                      <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500 animate-pulse ring-2 ring-surface-primary" />
+                    </div>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-xs font-medium text-fg-secondary truncate">{ta.name}</span>
+                      {activities.length === 0 && (
+                        <span className="flex items-center gap-0.5">
+                          <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" />
+                          <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.15s' }} />
+                          <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.3s' }} />
+                        </span>
+                      )}
+                      <span className="text-[10px] text-fg-tertiary">{t('work:task.agentProcessing')}</span>
+                    </div>
+                    <span className="ml-auto text-[10px] text-fg-tertiary">→</span>
+                  </div>
+                  {activities.length > 0 && (
+                    <div className="ml-9 mt-1">
+                      <ActivityIndicator activities={activities} isActive={true} />
+                    </div>
+                  )}
                 </div>
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="text-xs font-medium text-fg-secondary truncate">{ta.name}</span>
-                  <span className="flex items-center gap-0.5">
-                    <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" />
-                    <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.15s' }} />
-                    <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.3s' }} />
-                  </span>
-                  <span className="text-[10px] text-fg-tertiary">{t('work:task.agentProcessing')}</span>
-                </div>
-                <span className="ml-auto text-[10px] text-fg-tertiary">→</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -4461,9 +4558,11 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
   const [comments, setComments] = useState<RequirementComment[]>([]);
   const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
   const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [agentActivities, setAgentActivities] = useState<Map<string, ActivityStep[]>>(new Map());
 
   useEffect(() => {
     setThinkingAgents([]);
+    setAgentActivities(new Map());
     if (thinkingTimeoutRef.current) { clearTimeout(thinkingTimeoutRef.current); thinkingTimeoutRef.current = null; }
     api.requirements.getComments(requirementId).then(r => setComments(r.comments)).catch(() => {});
   }, [requirementId]);
@@ -4485,11 +4584,44 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
             }
             return next;
           });
+          setAgentActivities(prev => {
+            const next = new Map(prev);
+            next.delete(c.authorId);
+            return next;
+          });
         }
       }
     });
     return unsub;
   }, [requirementId]);
+
+  useEffect(() => {
+    if (thinkingAgents.length === 0) return;
+    const thinkingIds = new Set(thinkingAgents.map(a => a.id));
+    const unsub = wsClient.on('agent:activity_log', (event: { payload?: Record<string, unknown> }) => {
+      const p = event.payload as Record<string, unknown> | undefined;
+      if (!p) return;
+      const agentId = p['agentId'] as string;
+      if (!thinkingIds.has(agentId)) return;
+      const evtType = p['type'] as string;
+      if (evtType === 'tool_start' || evtType === 'tool_end') {
+        const tool = (p['content'] as string) ?? (p['metadata'] as Record<string, unknown>)?.['tool'] as string ?? '';
+        const step: ActivityStep = {
+          tool,
+          phase: evtType === 'tool_start' ? 'start' : 'end',
+          success: evtType === 'tool_end' ? (p['metadata'] as Record<string, unknown>)?.['success'] !== false : undefined,
+          ts: Date.now(),
+        };
+        setAgentActivities(prev => {
+          const next = new Map(prev);
+          const list = [...(next.get(agentId) ?? []), step];
+          next.set(agentId, list);
+          return next;
+        });
+      }
+    });
+    return unsub;
+  }, [thinkingAgents]);
 
   const [replyTo, setReplyTo] = useState<{ id: string; authorName: string; content: string } | null>(null);
 
@@ -4545,27 +4677,39 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
           <CommentBubble key={c.id} comment={c} agents={agents} onReply={handleReply} />
         ))}
         {thinkingAgents.length > 0 && (
-          <div className="flex flex-col gap-1 pt-1">
-            {thinkingAgents.map(a => (
-              <div
-                key={a.id}
-                className="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer hover:bg-surface-elevated/60 transition-colors"
-                onClick={() => navBus.navigate(PAGE.TEAM, { agentId: a.id, profileTab: 'mind' })}
-              >
-                <div className="relative shrink-0">
-                  <Avatar name={a.name} avatarUrl={a.avatarUrl} size={22} bgClass="bg-brand-500/15 text-brand-600" />
-                  <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500 animate-pulse ring-2 ring-surface-primary" />
+          <div className="flex flex-col gap-1.5 pt-1">
+            {thinkingAgents.map(a => {
+              const activities = agentActivities.get(a.id) ?? [];
+              return (
+                <div
+                  key={a.id}
+                  className="px-2 py-1.5 rounded-lg cursor-pointer hover:bg-surface-elevated/60 transition-colors"
+                  onClick={() => navBus.navigate(PAGE.TEAM, { agentId: a.id, profileTab: 'mind' })}
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="relative shrink-0">
+                      <Avatar name={a.name} avatarUrl={a.avatarUrl} size={22} bgClass="bg-brand-500/15 text-brand-600" />
+                      <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500 animate-pulse ring-2 ring-surface-primary" />
+                    </div>
+                    <span className="text-xs font-medium text-fg-secondary">{a.name}</span>
+                    {activities.length === 0 && (
+                      <span className="flex items-center gap-0.5">
+                        <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" />
+                        <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.15s' }} />
+                        <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.3s' }} />
+                      </span>
+                    )}
+                    <span className="text-[10px] text-fg-tertiary">{t('work:task.agentProcessing')}</span>
+                    <span className="ml-auto text-[10px] text-fg-tertiary">→</span>
+                  </div>
+                  {activities.length > 0 && (
+                    <div className="ml-8 mt-1">
+                      <ActivityIndicator activities={activities} isActive={true} />
+                    </div>
+                  )}
                 </div>
-                <span className="text-xs font-medium text-fg-secondary">{a.name}</span>
-                <span className="flex items-center gap-0.5">
-                  <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" />
-                  <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.15s' }} />
-                  <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.3s' }} />
-                </span>
-                <span className="text-[10px] text-fg-tertiary">{t('work:task.agentProcessing')}</span>
-                <span className="ml-auto text-[10px] text-fg-tertiary">→</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

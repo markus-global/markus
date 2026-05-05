@@ -19,6 +19,7 @@ export interface SSEMessageHandlerOptions {
   wsBroadcaster?: {
     broadcastChat: (agentId: string, message: string, sender: 'agent' | 'user') => void;
     broadcastAgentUpdate?: (agentId: string, status: string) => void;
+    broadcastProactiveMessage?: (agentId: string, agentName: string, sessionId: string, messageId: string, message: string, metadata?: Record<string, unknown>, targetUserId?: string) => void;
   };
   persistUserMessage?: (agentId: string, text: string, senderId?: string, images?: string[], sessionId?: string) => Promise<string | null>;
   persistAssistantMessage?: (sessionId: string | null, agentId: string, reply: string, tokensUsed: number, meta?: unknown) => Promise<void>;
@@ -150,7 +151,17 @@ export class SSEHandler {
           replyLength: persistReply.length,
         });
         if (this.options.wsBroadcaster) {
-          this.options.wsBroadcaster.broadcastChat(this.options.agentId, persistReply, 'agent');
+          if (this.options.wsBroadcaster.broadcastProactiveMessage && this.sessionId) {
+            const agentName = this.options.agent.config?.name ?? this.options.agentId;
+            this.options.wsBroadcaster.broadcastProactiveMessage(
+              this.options.agentId, agentName, this.sessionId,
+              `ws_fallback_${Date.now()}`, persistReply,
+              { isMainSession: true },
+              this.options.senderId,
+            );
+          } else {
+            this.options.wsBroadcaster.broadcastChat(this.options.agentId, persistReply, 'agent');
+          }
         }
       } else {
         this.sseBuffer.send({ 
