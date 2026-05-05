@@ -388,6 +388,7 @@ export class APIServer {
       registry,
       (msg) => this.ws?.broadcast(msg as Parameters<WSBroadcaster['broadcast']>[0]),
     );
+    this.builderService.setTaskService(this.taskService);
   }
 
   getBuilderService(): BuilderService | undefined {

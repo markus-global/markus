@@ -59,7 +59,7 @@
       {
         "name": "Xiaohongshu Operator",
         "role": "worker",
-        "roleName": "content-creator",
+        "roleName": "content-writer",
         "count": 1,
         "description": "小红书图文/短视频创作与发布",
         "skills": ["chrome-devtools", "xhs-posting", "self-evolution"]
@@ -75,7 +75,7 @@
       {
         "name": "General Content Creator",
         "role": "worker",
-        "roleName": "content-creator",
+        "roleName": "content-writer",
         "count": 1,
         "description": "多平台适应、素材复用、抖音口播文案",
         "skills": ["self-evolution"]

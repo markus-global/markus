@@ -17,6 +17,7 @@ import {
   type SkillRegistry,
 } from '@markus/core';
 import type { OrganizationService } from './org-service.js';
+import type { TaskService } from './task-service.js';
 
 const log = createLogger('builder-service');
 
@@ -45,11 +46,17 @@ const FS_HELPER = {
 };
 
 export class BuilderService {
+  private taskService?: TaskService;
+
   constructor(
     private orgService: OrganizationService,
     private skillRegistry?: SkillRegistry,
     private wsBroadcast?: WSBroadcastFn,
   ) {}
+
+  setTaskService(taskService: TaskService): void {
+    this.taskService = taskService;
+  }
 
   private get baseDir(): string {
     return join(homedir(), '.markus', 'builder-artifacts');
@@ -239,9 +246,37 @@ export class BuilderService {
       }
     }
 
+    const starterTasks = manifest.starterTasks ?? manifest.team?.starterTasks ?? [];
+    const createdTaskIds: string[] = [];
+    if (starterTasks.length > 0 && this.taskService) {
+      const managerId = createdAgents.find(a => a.role === 'manager' || members.find(m => m.name === a.name)?.role === 'manager')?.id
+        ?? createdAgents[0]?.id;
+      if (managerId) {
+        for (const st of starterTasks) {
+          try {
+            const task = this.taskService.createTask({
+              orgId: 'default',
+              title: st.title,
+              description: st.description,
+              priority: (st.priority as 'low' | 'medium' | 'high' | 'urgent') ?? 'medium',
+              assignedAgentId: managerId,
+              reviewerId: managerId,
+              reviewerType: 'human',
+              creatorRole: 'human',
+              taskType: 'standard',
+            });
+            createdTaskIds.push(task.id);
+            log.info('installTeam: created starterTask', { taskId: task.id, title: st.title });
+          } catch (err) {
+            log.warn('installTeam: failed to create starterTask', { title: st.title, error: String(err) });
+          }
+        }
+      }
+    }
+
     return {
       type: 'team',
-      installed: { team: { id: team.id, name: teamName }, agents: createdAgents },
+      installed: { team: { id: team.id, name: teamName }, agents: createdAgents, starterTaskIds: createdTaskIds },
     };
   }
 

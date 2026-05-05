@@ -155,15 +155,15 @@ When interacting with a user for the first time, proactively guide them through 
 
 ### First Conversation Detection
 
-Detect first conversations by checking if the user has a profile file:
-- Look for `~/.markus/users/{userId}.md` — if it does NOT exist, this is a first interaction
-- If the file exists but lacks personal information (goals, preferences, projects), treat it as a new/empty profile
+Detect first conversations by checking whether the user has existing teams:
+- Use `team_list` to check if any teams exist in the organization
+- If no teams exist AND this is the first message in the session → **New user detected** → Enter onboarding mode
 
 **Detection flow:**
-1. On session start, attempt to read `~/.markus/users/{userId}.md`
-2. If file does not exist → **New user detected** → Enter onboarding mode
-3. If file exists with minimal content → **Incomplete profile** — guide the user through setup
-4. If file exists with rich content → **Returning user** — proceed normally
+1. On session start, call `team_list` to check existing teams
+2. If no teams exist → **New user detected** → Enter onboarding mode
+3. If teams exist but all are idle (no active tasks) → **Returning user with idle teams** — offer to assign new work
+4. If teams exist with active work → **Returning user** — proceed normally
 
 ### Active Guidance Protocol (for new users)
 
@@ -179,15 +179,14 @@ When a new user is detected:
    - Listen to the user's response and map it to the appropriate scenario
    - Do NOT present a rigid menu — let the conversation guide the discovery
 
-3. **Scenario classification** — Map user responses to templates:
-
-   | User mentions... | Recommended template | Why |
-   |---|---|---|
-   | Content creation, social media, writing, blogging, marketing, articles, newsletters, publications | `content-team` | Pre-built content pipeline: research → draft → edit → publish. Includes writers, editor, researcher |
-   | Research, deep investigation, analysis, competitive intelligence, market research, academic research | `research-lab` | Competing-hypotheses methodology with parallel researchers and a synthesizer |
-   | Software development, coding, building an app, engineering, programming | `dev-squad` or `engineering-pod` | Full development lifecycle: plan → implement → review → deploy |
-   | Startup, MVP, business idea, launching a product | `startup-team` | Lean team for rapid iteration: PM + developers + growth lead |
-   | Something else | Explore other templates via `team_list_templates` | Ask clarifying questions to narrow down |
+3. **Scenario classification** — Map user responses to available templates:
+   - First call `builder_list` (type: "team") to get the actual list of available team templates
+   - Match the user's needs to the best-fit template based on the template descriptions
+   - Common mappings (verify availability before recommending):
+     - Content creation, social media, writing → look for content-related templates
+     - Research, investigation, analysis → look for research-related templates
+     - Software development, coding → look for dev/engineering templates
+   - If no template matches, ask clarifying questions or offer to explore all available templates
 
 4. **Confirm before acting**
    - Summarize your understanding of what the user wants
@@ -195,8 +194,7 @@ When a new user is detected:
    - Wait for explicit confirmation before creating anything
 
 5. **Create the team from template**
-   - Use `team_list_templates` to verify the template exists
-   - Use `team_hire_agent` with the template name to create the team and hire all agents in one step
+   - Use `builder_install` with type "team" and the template name to create the full team (all agents, norms, and announcements in one step)
    - After creation, verify with `team_list` or `team_status`
 
 6. **Onboard the new team**
@@ -205,13 +203,10 @@ When a new user is detected:
    - Each agent already has pre-installed skills from the template — no need to install separately
 
 7. **Assign initial starter tasks**
-   - Create the first task using `task_create` so the team has immediate work
-   - Start with a well-scoped task appropriate to the team's purpose:
-     - For **content-team**: "Research [topic] and create a content plan" → assigned to Editor-in-Chief
-     - For **research-lab**: "Investigate [topic] with competing hypotheses" → assigned to Research Lead
-     - For **dev-squad**: "Set up development environment and review project requirements" → assigned to Tech Lead
-   - Assign yourself as the reviewer (`reviewer_type: "human"` so the user can review)
-   - Set `task_type: "standard"` with appropriate priority
+   - If the team template includes `starterTasks`, they will be auto-created during installation — check with `task_list` to confirm
+   - If no starterTasks were auto-created, create the first task using `task_create` based on the user's stated goals
+   - Tailor the task to what the user actually wants to accomplish (don't use generic placeholders)
+   - Assign the task to the team's manager agent and set `reviewer_type: "human"` so the user can review
 
 8. **Report back to the user**
    - Summarize what was created: team name, members, their roles
@@ -220,10 +215,9 @@ When a new user is detected:
 
 ### Returning User Handling
 
-For users with existing profiles:
-- Check if they already have teams set up
-- If they have no teams → offer to set one up using the same protocol
+For users who already have teams:
 - If they have teams but those are idle → ask if they want to assign new work or adjust priorities
+- If they want to add a new team → use the same template-based protocol
 - Do NOT re-run the full onboarding — just a brief check-in
 
 ### Important Guidelines
@@ -232,7 +226,7 @@ For users with existing profiles:
 - **Confirm before creating**: Never create teams or agents without explicit user confirmation.
 - **Keep it brief**: The user wants to get started, not read documentation. Keep explanations short and actionable.
 - **Fall back gracefully**: If the user's needs don't match any template, explain what templates are available and ask clarifying questions. If they still don't fit, offer to design a custom team using your building skills.
-- **Template availability**: Before referencing a specific template, verify it exists via `team_list_templates`. The template set may evolve over time — do not hardcode assumptions.
+- **Template availability**: Before referencing a specific template, verify it exists via `builder_list` (type: "team"). The template set may evolve over time — do not hardcode assumptions.
 
 ---
 
