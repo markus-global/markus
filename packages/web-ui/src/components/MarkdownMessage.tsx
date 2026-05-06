@@ -114,7 +114,7 @@ const mdComponents = {
   h6: ({ children }: { children?: React.ReactNode }) => <h6 className="text-xs font-medium mb-1 mt-2 first:mt-0 text-fg-primary">{children}</h6>,
   ul: ({ children }: { children?: React.ReactNode }) => <ul className="list-disc pl-4 mb-2 space-y-0.5">{children}</ul>,
   ol: ({ children }: { children?: React.ReactNode }) => <ol className="list-decimal pl-4 mb-2 space-y-0.5">{children}</ol>,
-  li: ({ children }: { children?: React.ReactNode }) => <li className="leading-relaxed text-fg-secondary">{children}</li>,
+  li: ({ children }: { children?: React.ReactNode }) => <li className="leading-relaxed text-fg-secondary marker:text-fg-secondary">{children}</li>,
   code: ({ children, className: cls }: { children?: React.ReactNode; className?: string }) => {
     if (cls?.includes('language-')) {
       return <code className="text-fg-secondary font-mono">{children}</code>;
@@ -132,6 +132,7 @@ const mdComponents = {
   ),
   strong: ({ children }: { children?: React.ReactNode }) => <strong className="font-bold text-fg-primary">{children}</strong>,
   em: ({ children }: { children?: React.ReactNode }) => <em className="italic text-fg-secondary">{children}</em>,
+  del: ({ children }: { children?: React.ReactNode }) => <del className="line-through text-fg-tertiary">{children}</del>,
   blockquote: ({ children }: { children?: React.ReactNode }) => (
     <blockquote className="border-l-2 border-brand-500 pl-3 my-2 text-fg-secondary italic">{children}</blockquote>
   ),
@@ -145,7 +146,7 @@ const mdComponents = {
     </div>
   ),
   thead: ({ children }: { children?: React.ReactNode }) => <thead className="bg-surface-elevated">{children}</thead>,
-  tbody: ({ children }: { children?: React.ReactNode }) => <tbody className="divide-y divide-gray-700/50">{children}</tbody>,
+  tbody: ({ children }: { children?: React.ReactNode }) => <tbody className="divide-y divide-border-default">{children}</tbody>,
   tr: ({ children }: { children?: React.ReactNode }) => <tr className="hover:bg-surface-elevated/50 transition-colors">{children}</tr>,
   th: ({ children }: { children?: React.ReactNode }) => (
     <th className="px-3 py-1.5 text-left text-xs font-semibold text-fg-secondary border border-border-default">{children}</th>
@@ -353,7 +354,7 @@ export function MarkdownMessage({ content, className = '', onMentionClick, known
     <div className="relative group/md">
       <CopyMenu content={content} contentRef={contentRef} />
       <div ref={contentRef}>
-        <div className={`prose prose-sm max-w-none break-words pr-8 ${className}`}>
+        <div className={`prose prose-sm max-w-none break-words pr-8 text-fg-secondary ${className}`}>
           {thinking.length > 0 && (() => {
             const full = thinking.join('\n\n');
             const firstLine = full.split('\n')[0] ?? '';
