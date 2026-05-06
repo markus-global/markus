@@ -347,17 +347,22 @@ export class AttentionController {
               if (redequeued) item = redequeued;
             }
           }
-          // Build a lookup so we can guard user chat items from triage actions.
+          // Guard items that must never be dropped/deferred by triage.
           const queueSnapshot = this.mailbox.getQueuedItems();
-          const isUserChat = (id: string) =>
-            queueSnapshot.find(i => i.id === id)?.sourceType === 'human_chat';
+          const isProtected = (id: string) => {
+            const it = queueSnapshot.find(i => i.id === id);
+            if (!it) return false;
+            if (it.sourceType === 'human_chat') return true;
+            if (it.payload.extra?.triggerExecution) return true;
+            return false;
+          };
 
           for (const deferId of triageResult.deferItemIds) {
-            if (isUserChat(deferId)) continue;
+            if (isProtected(deferId)) continue;
             this.mailbox.defer(deferId);
           }
           for (const dropId of triageResult.dropItemIds) {
-            if (isUserChat(dropId)) continue;
+            if (isProtected(dropId)) continue;
             this.mailbox.drop(dropId);
           }
           this.lastTriageResult = { ...triageResult, timestamp: new Date().toISOString() };
@@ -1049,7 +1054,7 @@ export class AttentionController {
       '',
       '## Rules',
       '- Human messages (human_chat) and human comments are ALWAYS highest priority — process them first.',
-      '- Task status updates (task_status_update) are **informational only** — the system handles all side effects automatically. These serve as context for your decisions, not as work items.',
+      '- Task status updates (task_status_update) come in two flavours: **execution triggers** (priority 1, carry execution context) that MUST be processed — never drop or defer them; and **informational** ones that the system already handled. Informational updates serve as decision context, not work items.',
       '- **Time decay**: Items older than 1 hour are increasingly stale. Multiple status updates about the same task — only the latest matters. Aggressively DROP old informational items (heartbeats, old status updates, memory consolidation) that no longer provide actionable context.',
       '- **Task grouping**: When multiple items reference the same taskId, consider them together. Drop redundant/superseded items for the same task — only keep the most recent or most actionable one.',
       '- Consider dependencies: if one item provides context needed by another, process it first.',
