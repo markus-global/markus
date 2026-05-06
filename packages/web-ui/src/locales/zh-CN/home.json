@@ -1,11 +1,12 @@
 {
-  "title": "概览",
-  "hireAgent": "+ 招聘智能体",
+  "title": "仪表盘",
+  "subtitle": "以下是你的 AI 团队今日动态。",
+  "hireAgent": "部署智能体",
   "metrics": {
     "activeAgents": "活跃智能体",
-    "tasksInProgress": "进行中的任务",
-    "pendingQueue": "待处理队列",
-    "completed": "已完成"
+    "workingNow": "工作中",
+    "healthScore": "健康分",
+    "totalTasks": "总任务数"
   },
   "gettingStarted": {
     "title": "你的 AI 团队已就绪",
@@ -17,14 +18,25 @@
     "createProject": "创建项目",
     "createProjectDesc": "设定需求，让智能体规划、执行并交付"
   },
+  "heroBanner": {
+    "title": "构建，协作，扩展。",
+    "subtitle": "Markus 是你的 AI 协作平台。部署专业智能体，自动化复杂任务，达成更多目标。",
+    "watchDemo": "观看演示",
+    "learnMore": "了解更多"
+  },
   "agentFocus": {
     "title": "智能体焦点",
     "totalQueued": "共 {{count}} 项排队",
     "working": "工作中..."
   },
-  "taskDistribution": {
-    "title": "任务分布",
-    "blockedNeedsAttention": "{{count}} 项已阻塞 — 需要处理"
+  "teamOverview": {
+    "title": "团队概览",
+    "subtitle": "{{teams}} 个团队 · {{members}} 名成员",
+    "activeCount": "{{count}} 活跃"
+  },
+  "taskOverview": {
+    "title": "任务总览",
+    "subtitle": "共 {{total}} 个任务"
   },
   "teamStatus": {
     "title": "团队状态",
@@ -42,14 +54,19 @@
     "user": "用户"
   },
   "recentActivity": {
-    "title": "最近动态"
+    "title": "活动动态"
+  },
+  "topPerformers": {
+    "title": "最佳表现智能体",
+    "tasksCompleted": "已完成 {{count}} 个任务"
   },
   "systemHealth": {
     "title": "系统健康",
+    "allOperational": "所有系统正常运行",
     "healthScore": "健康分",
     "successRate": "成功率",
     "activeTotal": "活跃 / 总计",
-    "tokenCost": "Token 消耗",
+    "tokenUsage": "Token 用量",
     "workingNow": "当前工作中",
     "needsAttention": "需要关注：",
     "agentScoreChip": "{{name}}（{{score}}%）"
