@@ -176,6 +176,28 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 sm:gap-6">
           {/* Left Column */}
           <div className="lg:col-span-2 space-y-5 sm:space-y-6">
+            {/* Task Overview — donut + all status legend */}
+            {totalRootTasks > 0 && (
+              <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5 cursor-pointer hover:border-border-default/80 transition-colors" onClick={() => navBus.navigate(PAGE.WORK)}>
+                <div className="flex items-center justify-between mb-5">
+                  <div>
+                    <h3 className="text-sm font-semibold text-fg-primary">{t('taskOverview.title')}</h3>
+                    <p className="text-[11px] text-fg-tertiary mt-0.5">{t('taskOverview.subtitle', { total: totalRootTasks })}</p>
+                  </div>
+                  <button onClick={e => { e.stopPropagation(); navBus.navigate(PAGE.WORK); }} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-center gap-6 sm:gap-10">
+                  <DonutChart statusCounts={rootStatusCounts} total={totalRootTasks} completionRate={completionRate} completed={completed} />
+                  <div className="flex-1 grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-3 min-w-0 w-full sm:w-auto">
+                    {sortedStatusEntries.map(({ status, count }) => (
+                      <DonutLegendItem key={status} color={STATUS_COLORS_BG[status] ?? 'bg-gray-500'} label={t(TASK_STATUS_I18N[status] ?? status)} count={count} />
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Activity Feed */}
             {ops && ops.taskKPI.recentActivity.length > 0 && (
               <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5">
@@ -239,28 +261,6 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                 </div>
               )}
             </div>
-
-            {/* Task Overview — donut + all status legend */}
-            {totalRootTasks > 0 && (
-              <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5 cursor-pointer hover:border-border-default/80 transition-colors" onClick={() => navBus.navigate(PAGE.WORK)}>
-                <div className="flex items-center justify-between mb-5">
-                  <div>
-                    <h3 className="text-sm font-semibold text-fg-primary">{t('taskOverview.title')}</h3>
-                    <p className="text-[11px] text-fg-tertiary mt-0.5">{t('taskOverview.subtitle', { total: totalRootTasks })}</p>
-                  </div>
-                  <button onClick={e => { e.stopPropagation(); navBus.navigate(PAGE.WORK); }} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
-                </div>
-
-                <div className="flex flex-col sm:flex-row items-center gap-6 sm:gap-10">
-                  <DonutChart statusCounts={rootStatusCounts} total={totalRootTasks} completionRate={completionRate} completed={completed} />
-                  <div className="flex-1 grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-3 min-w-0 w-full sm:w-auto">
-                    {sortedStatusEntries.map(({ status, count }) => (
-                      <DonutLegendItem key={status} color={STATUS_COLORS_BG[status] ?? 'bg-gray-500'} label={t(TASK_STATUS_I18N[status] ?? status)} count={count} />
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
 
             {/* Pending Requirement Reviews */}
             {pendingReqs.length > 0 && (
