@@ -181,9 +181,9 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
   const themeOptions: Array<{ value: ThemeMode; label: string; icon: string; desc: string }> = [
     { value: 'system', label: t('theme.system'), icon: '💻', desc: t('theme.systemDesc') },
     { value: 'light', label: t('theme.light'), icon: '☀️', desc: t('theme.lightDesc') },
-    { value: 'dark', label: t('theme.dark'), icon: '🌙', desc: t('theme.darkDesc') },
+    { value: 'dark', label: t('theme.dark'), icon: '🌊', desc: t('theme.darkDesc') },
     { value: 'cyberpunk', label: t('theme.cyberpunk'), icon: '🔮', desc: t('theme.cyberpunkDesc') },
-    { value: 'midnight', label: t('theme.midnight'), icon: '🌊', desc: t('theme.midnightDesc') },
+    { value: 'mono', label: t('theme.mono'), icon: '⬛', desc: t('theme.monoDesc') },
   ];
 
   const allSteps = [

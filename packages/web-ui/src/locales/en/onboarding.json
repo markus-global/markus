@@ -22,11 +22,11 @@
     "light": "Light",
     "lightDesc": "Always light background",
     "dark": "Dark",
-    "darkDesc": "Always dark background",
+    "darkDesc": "Deep ocean, teal accents",
     "cyberpunk": "Cyberpunk",
     "cyberpunkDesc": "Neon pink, dark violet",
-    "midnight": "Midnight",
-    "midnightDesc": "Deep ocean, teal accents"
+    "mono": "Mono",
+    "monoDesc": "Pure black & white"
   },
   "llm": {
     "title": "Configure LLM",

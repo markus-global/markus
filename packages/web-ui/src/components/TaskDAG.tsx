@@ -123,7 +123,10 @@ const nodeTypes: NodeTypes = {
 
 const isLightSnapshot = () =>
   document.documentElement.classList.contains('light') ||
-  (!document.documentElement.classList.contains('dark') && window.matchMedia('(prefers-color-scheme: light)').matches);
+  (!document.documentElement.classList.contains('dark') &&
+   !document.documentElement.classList.contains('cyberpunk') &&
+   !document.documentElement.classList.contains('mono') &&
+   window.matchMedia('(prefers-color-scheme: light)').matches);
 const subscribeLightMode = (cb: () => void) => {
   const obs = new MutationObserver(cb);
   obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
