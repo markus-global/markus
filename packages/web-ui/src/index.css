@@ -2,31 +2,31 @@
 @plugin "@tailwindcss/typography";
 
 @theme {
-  --color-brand-50: oklch(0.97 0.02 270);
-  --color-brand-100: oklch(0.93 0.04 270);
-  --color-brand-200: oklch(0.87 0.08 270);
-  --color-brand-300: oklch(0.78 0.12 270);
-  --color-brand-400: oklch(0.68 0.16 270);
-  --color-brand-500: oklch(0.58 0.22 270);
-  --color-brand-600: oklch(0.50 0.22 270);
-  --color-brand-700: oklch(0.42 0.18 270);
-  --color-brand-800: oklch(0.34 0.14 270);
-  --color-brand-900: oklch(0.26 0.10 270);
-  --color-brand-950: oklch(0.18 0.06 270);
+  --color-brand-50: oklch(0.97 0.02 200);
+  --color-brand-100: oklch(0.93 0.04 200);
+  --color-brand-200: oklch(0.85 0.08 200);
+  --color-brand-300: oklch(0.75 0.14 200);
+  --color-brand-400: oklch(0.65 0.18 200);
+  --color-brand-500: oklch(0.55 0.16 200);
+  --color-brand-600: oklch(0.48 0.14 200);
+  --color-brand-700: oklch(0.40 0.12 200);
+  --color-brand-800: oklch(0.32 0.08 200);
+  --color-brand-900: oklch(0.24 0.06 200);
+  --color-brand-950: oklch(0.16 0.04 200);
 
-  --color-surface-primary: oklch(0.13 0.005 270);
-  --color-surface-secondary: oklch(0.16 0.008 270);
-  --color-surface-elevated: oklch(0.19 0.012 270);
-  --color-surface-overlay: oklch(0.22 0.015 270);
-  --color-surface-chat-bubble: oklch(0.19 0.012 270);
+  --color-surface-primary: oklch(0.08 0.01 240);
+  --color-surface-secondary: oklch(0.11 0.015 240);
+  --color-surface-elevated: oklch(0.15 0.02 240);
+  --color-surface-overlay: oklch(0.18 0.025 240);
+  --color-surface-chat-bubble: oklch(0.13 0.02 240);
 
-  --color-border-default: oklch(0.25 0.012 270);
-  --color-border-subtle: oklch(0.22 0.008 270);
+  --color-border-default: oklch(0.22 0.03 220);
+  --color-border-subtle: oklch(0.18 0.02 220);
 
-  --color-fg-primary: oklch(0.93 0.006 264);
-  --color-fg-secondary: oklch(0.71 0.012 264);
-  --color-fg-tertiary: oklch(0.55 0.012 264);
-  --color-fg-muted: oklch(0.42 0.010 264);
+  --color-fg-primary: oklch(0.92 0.01 220);
+  --color-fg-secondary: oklch(0.68 0.02 220);
+  --color-fg-tertiary: oklch(0.50 0.02 220);
+  --color-fg-muted: oklch(0.38 0.015 220);
 
   --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
@@ -55,7 +55,7 @@ html.light {
 }
 
 @media (prefers-color-scheme: light) {
-  html:not(.dark):not(.light):not(.cyberpunk):not(.midnight) {
+  html:not(.dark):not(.light):not(.cyberpunk):not(.mono) {
     color-scheme: light;
     --color-surface-primary: oklch(0.985 0.002 270);
     --color-surface-secondary: oklch(0.96 0.003 270);
@@ -101,30 +101,35 @@ html.cyberpunk {
   --color-fg-muted: oklch(0.40 0.02 330);
 }
 
-html.midnight {
+html.mono {
   color-scheme: dark;
-  --color-brand-50: oklch(0.97 0.02 200);
-  --color-brand-100: oklch(0.93 0.04 200);
-  --color-brand-200: oklch(0.85 0.08 200);
-  --color-brand-300: oklch(0.75 0.14 200);
-  --color-brand-400: oklch(0.65 0.18 200);
-  --color-brand-500: oklch(0.55 0.16 200);
-  --color-brand-600: oklch(0.48 0.14 200);
-  --color-brand-700: oklch(0.40 0.12 200);
-  --color-brand-800: oklch(0.32 0.08 200);
-  --color-brand-900: oklch(0.24 0.06 200);
-  --color-brand-950: oklch(0.16 0.04 200);
-  --color-surface-primary: oklch(0.08 0.01 240);
-  --color-surface-secondary: oklch(0.11 0.015 240);
-  --color-surface-elevated: oklch(0.15 0.02 240);
-  --color-surface-overlay: oklch(0.18 0.025 240);
-  --color-surface-chat-bubble: oklch(0.13 0.02 240);
-  --color-border-default: oklch(0.22 0.03 220);
-  --color-border-subtle: oklch(0.18 0.02 220);
-  --color-fg-primary: oklch(0.92 0.01 220);
-  --color-fg-secondary: oklch(0.68 0.02 220);
-  --color-fg-tertiary: oklch(0.50 0.02 220);
-  --color-fg-muted: oklch(0.38 0.015 220);
+  --color-brand-50: oklch(1 0 0);
+  --color-brand-100: oklch(1 0 0);
+  --color-brand-200: oklch(1 0 0);
+  --color-brand-300: oklch(1 0 0);
+  --color-brand-400: oklch(1 0 0);
+  --color-brand-500: oklch(1 0 0);
+  --color-brand-600: oklch(1 0 0);
+  --color-brand-700: oklch(1 0 0);
+  --color-brand-800: oklch(0 0 0);
+  --color-brand-900: oklch(0 0 0);
+  --color-brand-950: oklch(0 0 0);
+  --color-surface-primary: oklch(0 0 0);
+  --color-surface-secondary: oklch(0 0 0);
+  --color-surface-elevated: oklch(0 0 0);
+  --color-surface-overlay: oklch(0 0 0);
+  --color-surface-chat-bubble: oklch(0 0 0);
+  --color-border-default: oklch(0.35 0 0);
+  --color-border-subtle: oklch(0.35 0 0);
+  --color-fg-primary: oklch(1 0 0);
+  --color-fg-secondary: oklch(1 0 0);
+  --color-fg-tertiary: oklch(1 0 0);
+  --color-fg-muted: oklch(1 0 0);
+}
+html.mono .btn-primary,
+html.mono .bg-brand-600,
+html.mono .bg-brand-500 {
+  color: oklch(0 0 0);
 }
 
 html, body, #root {

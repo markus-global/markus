@@ -1,30 +1,34 @@
 import { useState, useEffect, useCallback } from 'react';
 
-export type ThemeMode = 'system' | 'light' | 'dark' | 'cyberpunk' | 'midnight';
+export type ThemeMode = 'system' | 'light' | 'dark' | 'cyberpunk' | 'mono';
 
 export const THEME_OPTIONS: Array<{ value: ThemeMode; label: string }> = [
   { value: 'system', label: 'System' },
   { value: 'light', label: 'Light' },
   { value: 'dark', label: 'Dark' },
   { value: 'cyberpunk', label: 'Cyberpunk' },
-  { value: 'midnight', label: 'Midnight' },
+  { value: 'mono', label: 'Mono' },
 ];
 
 const STORAGE_KEY = 'markus-theme';
 
 function applyTheme(mode: ThemeMode) {
   const html = document.documentElement;
-  html.classList.remove('light', 'dark', 'cyberpunk', 'midnight');
+  html.classList.remove('light', 'dark', 'cyberpunk', 'mono');
   if (mode === 'light') html.classList.add('light');
   else if (mode === 'dark') html.classList.add('dark');
   else if (mode === 'cyberpunk') html.classList.add('cyberpunk');
-  else if (mode === 'midnight') html.classList.add('midnight');
+  else if (mode === 'mono') html.classList.add('mono');
 }
 
 function getStored(): ThemeMode {
   try {
     const v = localStorage.getItem(STORAGE_KEY);
-    if (v === 'light' || v === 'dark' || v === 'system' || v === 'cyberpunk' || v === 'midnight') return v;
+    if (v === 'midnight') {
+      localStorage.setItem(STORAGE_KEY, 'dark');
+      return 'dark';
+    }
+    if (v === 'light' || v === 'dark' || v === 'system' || v === 'cyberpunk' || v === 'mono') return v;
   } catch { /* ignore */ }
   return 'system';
 }
