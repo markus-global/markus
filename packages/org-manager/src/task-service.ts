@@ -53,6 +53,7 @@ import type { RequirementService } from './requirement-service.js';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, cpSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { CronExpressionParser } from 'cron-parser';
 
 const log = createLogger('task-service');
 
@@ -1742,8 +1743,13 @@ export class TaskService {
 
   /** Approve a pending task and transition it to normal flow.
    * Uses the task's current assignedAgentId (the human reviewer may have changed it).
-   * Optionally resolves the associated HITL promise to prevent double-fire. */
-  approveTask(taskIdStr: string, userId?: string): Task {
+   * Optionally resolves the associated HITL promise to prevent double-fire.
+   *
+   * For scheduled tasks, `runNow` controls first-execution behaviour:
+   *   - true  → immediate execution (same as standard tasks)
+   *   - false → transition to completed and wait for the next cron/interval trigger
+   */
+  approveTask(taskIdStr: string, userId?: string, runNow?: boolean): Task {
     const task = this.tasks.get(taskIdStr);
     if (!task) throw new Error(`Task not found: ${taskIdStr}`);
     if (task.status !== 'pending') {
@@ -1757,6 +1763,22 @@ export class TaskService {
     }
 
     task.approvedVia = 'human';
+
+    // Scheduled tasks: wait for cron trigger unless user explicitly chose "run now"
+    if (task.taskType === 'scheduled' && !runNow) {
+      if (task.scheduleConfig && !task.scheduleConfig.nextRunAt) {
+        task.scheduleConfig.nextRunAt = computeNextRunFromConfig(task.scheduleConfig);
+      }
+      task.notes = task.notes ?? [];
+      const nextLabel = task.scheduleConfig?.nextRunAt
+        ? new Date(task.scheduleConfig.nextRunAt).toLocaleString()
+        : 'N/A';
+      task.notes.push(
+        `[${formatLocalTimestamp(new Date())}] Approved — scheduled, waiting for next trigger (${nextLabel})`,
+      );
+      return this.updateTaskStatus(taskIdStr, 'completed', userId, true, true, 'human', 'Approved (scheduled, awaiting trigger)');
+    }
+
     const hasBlockers = task.blockedBy && task.blockedBy.length > 0 && !this.areBlockersSatisfied(task);
     const targetStatus: TaskStatus = hasBlockers ? 'blocked' : 'in_progress';
     return this.updateTaskStatus(taskIdStr, targetStatus, userId, true, false, 'human', 'Approved');
@@ -3355,7 +3377,13 @@ export class TaskService {
   }
 
   archiveTask(taskId: string, archivedBy?: string, archivedByType?: 'human' | 'agent' | 'system'): Task {
-    return this.updateTaskStatus(taskId, 'archived', archivedBy, false, false, archivedByType ?? 'system', 'Archived');
+    const task = this.updateTaskStatus(taskId, 'archived', archivedBy, false, false, archivedByType ?? 'system', 'Archived');
+    if (task.taskType === 'scheduled' && task.scheduleConfig && !task.scheduleConfig.paused) {
+      task.scheduleConfig.paused = true;
+      this.updateScheduleConfig(taskId, task.scheduleConfig)
+        .catch(err => log.warn('Failed to pause schedule on archive', { taskId, error: String(err) }));
+    }
+    return task;
   }
 
   // ─── Duplicate Detection & Board Health ───────────────────────────────────
@@ -3587,11 +3615,12 @@ export class TaskService {
     const task = this.tasks.get(taskIdStr);
     if (!task?.scheduleConfig) return;
     const config = task.scheduleConfig;
+    const now = new Date();
     const updatedConfig: ScheduleConfig = {
       ...config,
       currentRuns: (config.currentRuns ?? 0) + 1,
-      lastRunAt: new Date().toISOString(),
-      nextRunAt: computeNextRunFromConfig(config),
+      lastRunAt: now.toISOString(),
+      nextRunAt: computeNextRunFromConfig(config, now),
     };
     await this.updateScheduleConfig(taskIdStr, updatedConfig);
   }
@@ -4086,23 +4115,7 @@ export class TaskService {
 
 function computeInitialNextRun(config: ScheduleConfig): string | undefined {
   if (config.runAt) return config.runAt;
-
-  if (config.every) {
-    const match = config.every.match(/^(\d+)(ms|s|m|h|d|w)$/);
-    if (match) {
-      const value = parseInt(match[1]!, 10);
-      const unit = match[2]!;
-      const multipliers: Record<string, number> = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
-      const ms = value * (multipliers[unit] ?? 0);
-      if (ms > 0) return new Date(Date.now() + ms).toISOString();
-    }
-  }
-
-  if (config.cron) {
-    return new Date(Date.now() + 3_600_000).toISOString();
-  }
-
-  return undefined;
+  return computeNextRunFromConfig(config);
 }
 
 const INTERVAL_MULTIPLIERS: Record<string, number> = {
@@ -4115,28 +4128,36 @@ function parseInterval(shorthand: string): number {
   return parseInt(match[1]!, 10) * (INTERVAL_MULTIPLIERS[match[2]!] ?? 0);
 }
 
-function estimateCronInterval(cron: string): number {
-  const parts = cron.trim().split(/\s+/);
-  if (parts.length < 5) return 3_600_000;
-  const [minute, hour] = parts;
-  if (minute !== '*' && hour === '*') return 3_600_000;
-  if (minute !== '*' && hour !== '*') return 86_400_000;
-  return 3_600_000;
-}
-
 /**
  * Compute the next run timestamp from a schedule config.
+ * Uses cron-parser for accurate next-occurrence calculation (handles
+ * multi-value fields like "0 9,15,21 * * *" and timezone/DST correctly).
  * Returns undefined for one-shot (`runAt`) or unrecognised configs.
  */
-export function computeNextRunFromConfig(config: ScheduleConfig): string | undefined {
+export function computeNextRunFromConfig(config: ScheduleConfig, from?: Date): string | undefined {
   if (config.runAt) return undefined;
+
+  const baseDate = from ?? new Date();
+
   if (config.every) {
     const ms = parseInterval(config.every);
-    if (ms > 0) return new Date(Date.now() + ms).toISOString();
+    if (ms > 0) return new Date(baseDate.getTime() + ms).toISOString();
   }
+
   if (config.cron) {
-    const ms = estimateCronInterval(config.cron);
-    if (ms > 0) return new Date(Date.now() + ms).toISOString();
+    try {
+      const interval = CronExpressionParser.parse(config.cron, {
+        currentDate: baseDate,
+        tz: config.timezone || undefined,
+      });
+      return interval.next().toISOString() ?? undefined;
+    } catch (e) {
+      log.warn('Failed to parse cron expression, falling back to 1h interval', {
+        cron: config.cron, error: String(e),
+      });
+      return new Date(baseDate.getTime() + 3_600_000).toISOString();
+    }
   }
+
   return undefined;
 }

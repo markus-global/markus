@@ -1025,7 +1025,7 @@ export const api = {
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ status }) }),
     assign: (id: string, agentId: string | null) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ assignedAgentId: agentId }) }),
-    approve: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/approve`, { method: 'POST' }),
+    approve: (id: string, runNow?: boolean) => request<{ task: TaskInfo }>(`/tasks/${id}/approve`, { method: 'POST', body: JSON.stringify({ runNow: runNow ?? undefined }) }),
     reject: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/reject`, { method: 'POST' }),
     cancel: (id: string, cascade = false) => request<{ task: TaskInfo }>(`/tasks/${id}/cancel`, { method: 'POST', body: JSON.stringify({ cascade }) }),
     getDependentCount: (id: string) => request<{ count: number }>(`/tasks/${id}/dependents`),

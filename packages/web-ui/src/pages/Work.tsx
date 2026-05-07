@@ -1595,6 +1595,7 @@ function TaskDetailPanel({
   }, [scrollToComments, onScrollToCommentsDone]);
 
   const [runError, setRunError] = useState<string | null>(null);
+  const [scheduleApproveModal, setScheduleApproveModal] = useState(false);
   const [previewFile, setPreviewFile] = useState<string | null>(null);
   const [editingDesc, setEditingDesc] = useState(false);
   const [descDraft, setDescDraft] = useState(task.description);
@@ -2297,7 +2298,10 @@ function TaskDetailPanel({
             {/* ── Approve / Start Execution (pending) ── */}
             {task.status === 'pending' && (
               <>
-                <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">
+                <button onClick={() => {
+                  if (isScheduled) { setScheduleApproveModal(true); return; }
+                  void doUpdate(() => api.tasks.approve(task.id));
+                }} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">
                   {task.createdBy && !task.createdBy.startsWith('agt_') ? t('work:task.startExecution') : t('work:task.approve')}
                 </button>
                 {task.createdBy && !task.createdBy.startsWith('agt_') ? (
@@ -2355,12 +2359,12 @@ function TaskDetailPanel({
               </>
             )}
             {/* ── Scheduled task: Run Now / Schedule controls ── */}
-            {isScheduled && (isCompleted || isFailed) && (
+            {isScheduled && (isCompleted || isFailed) && !isArchived && (
               <button onClick={() => void runScheduledNow()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
                 {actionInFlight ? <>{t('work:task.running')}</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>{t('work:task.runNow')}</>}
               </button>
             )}
-            {isScheduled && !isRunning && (
+            {isScheduled && !isRunning && !isArchived && !isRejected && (
               schedPaused
                 ? <button onClick={() => void doUpdate(() => api.tasks.resumeSchedule(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">{t('work:task.resumeSchedule')}</button>
                 : <button onClick={() => void doUpdate(() => api.tasks.pauseSchedule(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-amber-500/30 text-amber-600 rounded-lg hover:bg-amber-500/10 disabled:opacity-50">{t('work:task.pauseSchedule')}</button>
@@ -2436,6 +2440,42 @@ function TaskDetailPanel({
         />
       )}
       {previewFile && <FilePreviewModal filePath={previewFile} onClose={() => setPreviewFile(null)} />}
+      {scheduleApproveModal && task.scheduleConfig && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60]" onClick={() => setScheduleApproveModal(false)}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[380px] shadow-2xl" onClick={e => e.stopPropagation()}>
+            <h3 className="font-semibold text-base mb-2">{t('work:task.scheduleApproveTitle')}</h3>
+            <p className="text-sm text-fg-secondary mb-5 leading-relaxed">{t('work:task.scheduleApproveDesc', {
+              schedule: task.scheduleConfig.cron
+                ? `Cron: ${task.scheduleConfig.cron}`
+                : task.scheduleConfig.every
+                  ? t('work:task.scheduleEvery', { interval: task.scheduleConfig.every })
+                  : '',
+              nextRun: task.scheduleConfig.nextRunAt
+                ? new Date(task.scheduleConfig.nextRunAt).toLocaleString()
+                : t('work:task.scheduleNA'),
+            })}</p>
+            <div className="flex flex-col gap-2">
+              <button
+                disabled={actionInFlight}
+                onClick={() => { setScheduleApproveModal(false); void doUpdate(() => api.tasks.approve(task.id, true)); }}
+                className="w-full px-4 py-2.5 text-sm bg-green-600 hover:bg-green-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
+              >
+                {t('work:task.scheduleApproveRunNow')}
+              </button>
+              <button
+                disabled={actionInFlight}
+                onClick={() => { setScheduleApproveModal(false); void doUpdate(() => api.tasks.approve(task.id, false)); }}
+                className="w-full px-4 py-2.5 text-sm bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
+              >
+                {t('work:task.scheduleApproveWait')}
+              </button>
+              <button onClick={() => setScheduleApproveModal(false)} className="w-full px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary">
+                {t('common:cancel')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
