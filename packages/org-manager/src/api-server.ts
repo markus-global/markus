@@ -3058,7 +3058,7 @@ export class APIServer {
       return;
     }
 
-    if (path.startsWith('/api/tasks/') && req.method === 'PUT') {
+    if (path.match(/^\/api\/tasks\/[^/]+$/) && req.method === 'PUT') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
       const taskId = path.split('/')[3]!;
