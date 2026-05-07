@@ -56,7 +56,7 @@ export class ScheduledTaskRunner {
       const nextRun = config.nextRunAt ? new Date(config.nextRunAt).getTime() : 0;
       if (nextRun > now) continue;
 
-      if (['in_progress', 'review', 'blocked', 'pending'].includes(task.status)) {
+      if (['in_progress', 'review', 'blocked', 'pending', 'archived', 'rejected'].includes(task.status)) {
         continue;
       }
 

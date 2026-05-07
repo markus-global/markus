@@ -3117,7 +3117,9 @@ export class APIServer {
       if (!authUser) return;
       const taskId = path.split('/')[3]!;
       try {
-        const task = this.taskService.approveTask(taskId, authUser?.userId);
+        const body = await this.readBody(req).catch(() => ({} as Record<string, unknown>));
+        const runNow = body['runNow'] === true;
+        const task = this.taskService.approveTask(taskId, authUser?.userId, runNow);
         this.auditService?.record({
           orgId: task.orgId,
           type: 'task_approval_granted',
@@ -8839,6 +8841,9 @@ EXPLANATION_END`;
         if (!task) { this.json(res, 404, { error: 'Task not found' }); return; }
         if (task.taskType !== 'scheduled' || !task.scheduleConfig) {
           this.json(res, 400, { error: 'Task is not a scheduled task' }); return;
+        }
+        if (['archived', 'rejected'].includes(task.status)) {
+          this.json(res, 400, { error: `Cannot resume schedule for ${task.status} task` }); return;
         }
         const updated = { ...task.scheduleConfig, paused: false };
         await this.taskService.updateScheduleConfig(taskId, updated);

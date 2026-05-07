@@ -14,6 +14,7 @@
     "@markus/core": "workspace:*",
     "@markus/shared": "workspace:*",
     "@markus/storage": "workspace:*",
+    "cron-parser": "^5.5.0",
     "ws": "^8.19.0"
   },
   "devDependencies": {

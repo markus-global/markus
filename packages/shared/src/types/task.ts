@@ -21,7 +21,7 @@ export type TaskStatus = ItemStatus;
  * `updateTaskStatus()` rejects any transition not present here.
  */
 export const TASK_TRANSITIONS: Readonly<Record<ItemStatus, ReadonlySet<ItemStatus>>> = {
-  pending:     new Set<ItemStatus>(['in_progress', 'blocked', 'rejected', 'cancelled']),
+  pending:     new Set<ItemStatus>(['in_progress', 'blocked', 'rejected', 'cancelled', 'completed']),
   in_progress: new Set<ItemStatus>(['review', 'blocked', 'failed', 'cancelled']),
   blocked:     new Set<ItemStatus>(['in_progress', 'cancelled']),
   review:      new Set<ItemStatus>(['completed', 'in_progress', 'cancelled']),
