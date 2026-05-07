@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import { api, hubApi, kebab, type AuthUser } from '../api.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { PAYMENTS_ENABLED } from './AgentBuilder.tsx';
@@ -243,7 +244,7 @@ function RenderedMarkdown({ content }: { content: string }) {
       prose-li:text-fg-secondary
       prose-hr:border-border-default
       prose-blockquote:border-brand-500/40 prose-blockquote:text-fg-secondary">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{content}</ReactMarkdown>
     </div>
   );
 }

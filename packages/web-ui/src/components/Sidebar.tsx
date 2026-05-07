@@ -208,16 +208,16 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, onUserUpd
           </>
         )}
       </div>
-      <nav className={`${collapsed ? 'p-1.5' : 'p-3'} flex-1 overflow-y-auto`}>
+      <nav className={`${collapsed ? 'p-1.5' : 'px-3 py-2'} flex-1 overflow-y-auto scrollbar-thin`}>
         {SIDEBAR_SECTIONS.map((section, si) => (
           <div key={section.key}>
-            <div className="mb-3">
+            <div className={si > 0 ? 'mt-4' : ''}>
               {!collapsed && (
-                <div className="px-3 py-1.5 text-[11px] font-semibold text-fg-tertiary uppercase tracking-widest">
+                <div className="px-3 py-1.5 mb-1 text-[10px] font-semibold text-fg-muted uppercase tracking-[0.1em]">
                   {t(`sections.${section.key}`)}
                 </div>
               )}
-              {collapsed && si > 0 && <div className="my-2 mx-1" />}
+              {collapsed && si > 0 && <div className="my-3 mx-2 border-t border-border-subtle" />}
               {SIDEBAR_NAV.filter(i => i.section === section.key).map((item) => {
                 const isActive = currentPage === item.id;
                 return (
@@ -225,14 +225,14 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, onUserUpd
                     key={item.id}
                     onClick={() => onNavigate(item.id)}
                     title={collapsed ? t(item.id) : undefined}
-                    className={`w-full flex items-center ${collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2'} rounded-lg text-sm mb-0.5 transition-all ${
+                    className={`w-full flex items-center ${collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-[7px]'} rounded-xl text-[13px] mb-0.5 transition-all ${
                       isActive
-                        ? 'bg-brand-600 text-white shadow-sm shadow-brand-900/30'
-                        : 'text-fg-primary hover:bg-surface-overlay'
+                        ? 'bg-brand-600 text-white shadow-sm shadow-brand-900/30 font-medium'
+                        : 'text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary'
                     }`}
                   >
                     <Icon d={PAGE_ICONS[item.id] ?? ''} />
-                    {!collapsed && t(item.id)}
+                    {!collapsed && <span className="truncate">{t(item.id)}</span>}
                   </button>
                 );
               })}

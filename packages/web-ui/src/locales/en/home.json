@@ -1,11 +1,12 @@
 {
-  "title": "Overview",
-  "hireAgent": "+ Hire Agent",
+  "title": "Dashboard",
+  "subtitle": "Here's what's happening with your AI workforce today.",
+  "hireAgent": "Deploy Agent",
   "metrics": {
     "activeAgents": "Active Agents",
-    "tasksInProgress": "Tasks In Progress",
-    "pendingQueue": "Pending Queue",
-    "completed": "Completed"
+    "workingNow": "Working Now",
+    "healthScore": "Health Score",
+    "totalTasks": "Total Tasks"
   },
   "gettingStarted": {
     "title": "Your AI workforce is ready",
@@ -17,14 +18,25 @@
     "createProject": "Create a Project",
     "createProjectDesc": "Set up requirements and let agents plan, execute, and deliver"
   },
+  "heroBanner": {
+    "title": "Build. Collaborate. Scale.",
+    "subtitle": "Markus is your AI workforce platform. Deploy specialized agents, automate complex tasks, and achieve more together.",
+    "watchDemo": "Watch Demo",
+    "learnMore": "Learn More"
+  },
   "agentFocus": {
     "title": "Agent Focus",
     "totalQueued": "{{count}} total queued",
     "working": "Working..."
   },
-  "taskDistribution": {
-    "title": "Task Distribution",
-    "blockedNeedsAttention": "{{count}} blocked — needs attention"
+  "teamOverview": {
+    "title": "Team Overview",
+    "subtitle": "{{teams}} teams · {{members}} members",
+    "activeCount": "{{count}} Active"
+  },
+  "taskOverview": {
+    "title": "Task Overview",
+    "subtitle": "{{total}} tasks total"
   },
   "teamStatus": {
     "title": "Team Status",
@@ -42,14 +54,19 @@
     "user": "User"
   },
   "recentActivity": {
-    "title": "Recent Activity"
+    "title": "Activity Feed"
+  },
+  "topPerformers": {
+    "title": "Top Performing Agents",
+    "tasksCompleted": "{{count}} tasks completed"
   },
   "systemHealth": {
     "title": "System Health",
+    "allOperational": "All Systems Operational",
     "healthScore": "Health Score",
     "successRate": "Success Rate",
     "activeTotal": "Active / Total",
-    "tokenCost": "Token Cost",
+    "tokenUsage": "Token Usage",
     "workingNow": "Working Now",
     "needsAttention": "Needs attention:",
     "agentScoreChip": "{{name}} ({{score}}%)"

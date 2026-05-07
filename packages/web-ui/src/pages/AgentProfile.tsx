@@ -1651,6 +1651,7 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
 // ─── Task Log ────────────────────────────────────────────────────────────────
 
 function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
+  const { t } = useTranslation('agent');
   const [logs, setLogs] = useState<TaskLogEntry[]>([]);
   const [streamingText, setStreamingText] = useState('');
   const [loading, setLoading] = useState(true);
@@ -1678,8 +1679,8 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
     return () => { unsubLog(); unsubDelta(); };
   }, [taskId, isLive]);
 
-  if (loading) return <div className="px-4 py-3 text-xs text-fg-tertiary">Loading...</div>;
-  if (logs.length === 0 && !streamingText) return <div className="px-4 py-3 text-xs text-fg-tertiary">No execution logs yet.</div>;
+  if (loading) return <div className="px-4 py-3 text-xs text-fg-tertiary">{t('profilePage.taskLog.loading')}</div>;
+  if (logs.length === 0 && !streamingText) return <div className="px-4 py-3 text-xs text-fg-tertiary">{t('profilePage.taskLog.noLogs')}</div>;
 
   const streamEntries: ExecutionStreamEntryUI[] = logs.map(l => taskLogToStreamEntry(l));
   const hasMultipleRounds = new Set(streamEntries.filter(e => e.executionRound != null).map(e => e.executionRound!)).size > 1;
@@ -1699,6 +1700,7 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
 // ─── Activity Log (Heartbeat / A2A) ─────────────────────────────────────────
 
 function ActivityLog({ agentId, activityId, isLive = false }: { agentId: string; activityId: string; isLive?: boolean }) {
+  const { t } = useTranslation('agent');
   const [logs, setLogs] = useState<AgentActivityLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<'compact' | 'full'>('compact');
@@ -1730,8 +1732,8 @@ function ActivityLog({ agentId, activityId, isLive = false }: { agentId: string;
     return unsub;
   }, [agentId, activityId, isLive]);
 
-  if (loading) return <div className="px-4 py-3 text-xs text-fg-tertiary">Loading...</div>;
-  if (logs.length === 0) return <div className="px-4 py-3 text-xs text-fg-tertiary">No activity logs available.</div>;
+  if (loading) return <div className="px-4 py-3 text-xs text-fg-tertiary">{t('profilePage.activityLog.loading')}</div>;
+  if (logs.length === 0) return <div className="px-4 py-3 text-xs text-fg-tertiary">{t('profilePage.activityLog.noLogs')}</div>;
 
   const streamEntries: ExecutionStreamEntryUI[] = logs.map(e => activityLogToStreamEntry(e, activityId, agentId)).filter((e): e is ExecutionStreamEntryUI => e !== null);
 
@@ -1783,7 +1785,7 @@ function fmtBytesLocal(bytes: number): string {
 
 // ─── Mind Tab (Mailbox & Attention) ──────────────────────────────────────────
 
-const PRIORITY_LABELS: Record<number, string> = { 0: 'Critical', 1: 'High', 2: 'Normal', 3: 'Low', 4: 'Background' };
+const PRIORITY_KEYS: Record<number, string> = { 0: '0', 1: '1', 2: '2', 3: '3', 4: '4' };
 const PRIORITY_COLORS: Record<number, string> = { 0: 'text-red-500', 1: 'text-amber-500', 2: 'text-fg-secondary', 3: 'text-fg-tertiary', 4: 'text-fg-tertiary/60' };
 const DECISION_COLORS: Record<string, string> = {
   pick: 'bg-brand-500/20 text-brand-500',
@@ -1807,44 +1809,30 @@ const MAILBOX_TYPE_ICONS: Record<string, string> = {
   heartbeat: '♡', memory_consolidation: '🧠',
 };
 
-const CATEGORY_FILTERS: Array<{ key: string; label: string }> = [
-  { key: 'all', label: 'All' },
-  { key: 'interaction', label: 'Interaction' },
-  { key: 'task', label: 'Task' },
-  { key: 'notification', label: 'Notification' },
-  { key: 'system', label: 'System' },
-];
+const CATEGORY_FILTER_KEYS = ['all', 'interaction', 'task', 'notification', 'system'] as const;
 
 const STATUS_COLORS: Record<string, string> = {
   completed: 'bg-green-500', processing: 'bg-blue-400 animate-pulse',
   deferred: 'bg-purple-400', merged: 'bg-cyan-400', queued: 'bg-amber-400', dropped: 'bg-red-500',
 };
 
-const ACTIVITY_FILTERS: Array<{ key: AgentActivityType | 'all'; label: string }> = [
-  { key: 'all', label: 'All' },
-  { key: 'task', label: 'Task' },
-  { key: 'chat', label: 'Chat' },
-  { key: 'heartbeat', label: 'Heartbeat' },
-  { key: 'a2a', label: 'A2A' },
-  { key: 'internal', label: 'Internal' },
-  { key: 'respond_in_session', label: 'Session' },
-];
+const ACTIVITY_FILTER_KEYS: Array<AgentActivityType | 'all'> = ['all', 'task', 'chat', 'heartbeat', 'a2a', 'internal', 'respond_in_session'];
 
 const ACTIVITY_ICONS: Record<string, string> = {
   task: '☑', chat: '💬', heartbeat: '♡', a2a: '🔗', internal: '⚙', respond_in_session: '↩',
 };
 
-const STATUS_DISPLAY: Record<string, { label: string; color: string }> = {
-  pending: { label: 'Pending', color: 'text-gray-400' },
-  assigned: { label: 'Assigned', color: 'text-blue-400' },
-  in_progress: { label: 'In Progress', color: 'text-brand-400' },
-  completed: { label: 'Completed', color: 'text-green-400' },
-  failed: { label: 'Failed', color: 'text-red-400' },
-  cancelled: { label: 'Cancelled', color: 'text-gray-500' },
-  review: { label: 'Review', color: 'text-amber-400' },
-  approved: { label: 'Approved', color: 'text-green-500' },
-  rejected: { label: 'Rejected', color: 'text-red-500' },
-  draft: { label: 'Draft', color: 'text-gray-400' },
+const STATUS_DISPLAY_COLORS: Record<string, string> = {
+  pending: 'text-gray-400',
+  assigned: 'text-blue-400',
+  in_progress: 'text-brand-400',
+  completed: 'text-green-400',
+  failed: 'text-red-400',
+  cancelled: 'text-gray-500',
+  review: 'text-amber-400',
+  approved: 'text-green-500',
+  rejected: 'text-red-500',
+  draft: 'text-gray-400',
 };
 
 /**
@@ -1868,7 +1856,7 @@ function extractCommentText(content: string): string | undefined {
  * Extract user-friendly display title and optional subtitle from a mailbox item,
  * replacing raw prompt text with structured information.
  */
-function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem): { title: string; subtitle?: string; badge?: { label: string; color: string } } {
+function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem, t: TFunction): { title: string; subtitle?: string; badge?: { label: string; color: string } } {
   const payload = item.payload;
   const summary = payload?.summary ?? '';
   const content = payload?.content ?? '';
@@ -1876,22 +1864,22 @@ function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem): {
 
   switch (item.sourceType) {
     case 'task_status_update': {
-      // Extract task title and status transition from summary: `Task "title" status: from → to`
       const titleMatch = summary.match(/^Task "(.+?)" status:/);
       const statusMatch = summary.match(/status:\s*(\S+)\s*→\s*(\S+)/);
       const taskTitle = titleMatch?.[1] ?? summary;
       if (statusMatch) {
         const from = statusMatch[1];
         const to = statusMatch[2];
-        const fromDisplay = STATUS_DISPLAY[from] ?? { label: from, color: 'text-fg-tertiary' };
-        const toDisplay = STATUS_DISPLAY[to] ?? { label: to, color: 'text-fg-secondary' };
+        const fromLabel = taskStatusLabel(from, t);
+        const fromColor = STATUS_DISPLAY_COLORS[from] ?? 'text-fg-tertiary';
+        const toLabel = taskStatusLabel(to, t);
+        const toColor = STATUS_DISPLAY_COLORS[to] ?? 'text-fg-secondary';
         return {
           title: taskTitle,
-          subtitle: `${fromDisplay.label} → ${toDisplay.label}`,
-          badge: toDisplay,
+          subtitle: t('agent:profilePage.mind.mailbox.statusArrow', { from: fromLabel, to: toLabel }),
+          badge: { label: toLabel, color: toColor },
         };
       }
-      // Fallback for task execution triggers
       const execMatch = summary.match(/^Task:\s*(.+)/);
       if (execMatch) return { title: execMatch[1] };
       return { title: taskTitle };
@@ -1902,15 +1890,14 @@ function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem): {
       const commentText = extractCommentText(content);
       if (m) {
         const sub = commentText
-          ? `${m[2]}: ${commentText}`
-          : `Comment from ${m[2]}`;
+          ? t('agent:profilePage.mind.mailbox.commentFromAuthor', { author: m[2], text: commentText })
+          : t('agent:profilePage.mind.mailbox.commentFrom', { name: m[2] });
         return { title: m[1], subtitle: sub };
       }
       return { title: summary };
     }
 
     case 'requirement_update': {
-      // Summary: `Requirement "title" status: from → to` or `Requirement "title" rejected/approved`
       const titleMatch = summary.match(/^Requirement "(.+?)"\s+(.*)/);
       if (titleMatch) return { title: titleMatch[1], subtitle: titleMatch[2] };
       return { title: summary };
@@ -1921,8 +1908,8 @@ function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem): {
       const commentText = extractCommentText(content);
       if (m) {
         const sub = commentText
-          ? `${m[2]}: ${commentText}`
-          : `Comment from ${m[2]}`;
+          ? t('agent:profilePage.mind.mailbox.commentFromAuthor', { author: m[2], text: commentText })
+          : t('agent:profilePage.mind.mailbox.commentFrom', { name: m[2] });
         return { title: m[1], subtitle: sub };
       }
       return { title: summary };
@@ -1931,7 +1918,7 @@ function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem): {
     case 'human_chat': {
       const preview = content.slice(0, 120).replace(/\n/g, ' ');
       return {
-        title: sender ? `Chat from ${sender}` : 'Human Chat',
+        title: sender ? t('agent:profilePage.mind.mailbox.chatFrom', { sender }) : t('agent:profilePage.mind.mailbox.humanChat'),
         subtitle: preview + (content.length > 120 ? '…' : ''),
       };
     }
@@ -1939,7 +1926,7 @@ function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem): {
     case 'a2a_message': {
       const preview = content.slice(0, 120).replace(/\n/g, ' ');
       return {
-        title: sender ? `Message from ${sender}` : 'Agent Message',
+        title: sender ? t('agent:profilePage.mind.mailbox.messageFrom', { sender }) : t('agent:profilePage.mind.mailbox.agentMessage'),
         subtitle: preview + (content.length > 120 ? '…' : ''),
       };
     }
@@ -1948,7 +1935,7 @@ function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem): {
       const m = summary.match(/from (.+)$/);
       const commentText = extractCommentText(content);
       return {
-        title: m ? `Mentioned by ${m[1]}` : 'Mention',
+        title: m ? t('agent:profilePage.mind.mailbox.mentionedBy', { name: m[1] }) : t('agent:profilePage.mind.mailbox.mention'),
         subtitle: commentText || undefined,
       };
     }
@@ -1956,7 +1943,7 @@ function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem): {
     case 'review_request': {
       const preview = content.slice(0, 120).replace(/\n/g, ' ');
       return {
-        title: sender ? `Review request from ${sender}` : 'Review Request',
+        title: sender ? t('agent:profilePage.mind.mailbox.reviewRequestFrom', { sender }) : t('agent:profilePage.mind.mailbox.reviewRequest'),
         subtitle: preview + (content.length > 120 ? '…' : ''),
       };
     }
@@ -1964,25 +1951,24 @@ function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem): {
     case 'session_reply': {
       const preview = content.slice(0, 120).replace(/\n/g, ' ');
       return {
-        title: sender ? `Reply in session (${sender})` : 'Session Reply',
+        title: sender ? t('agent:profilePage.mind.mailbox.replyInSession', { sender }) : t('agent:profilePage.mind.mailbox.sessionReply'),
         subtitle: preview + (content.length > 120 ? '…' : ''),
       };
     }
 
     case 'heartbeat':
-      return { title: 'Scheduled heartbeat check-in' };
+      return { title: t('agent:profilePage.mind.mailbox.scheduledHeartbeat') };
 
     case 'daily_report':
-      return { title: 'Daily Report' };
+      return { title: t('agent:profilePage.mind.mailbox.dailyReport') };
 
     case 'memory_consolidation':
-      return { title: 'Memory Consolidation' };
+      return { title: t('agent:profilePage.mind.mailbox.memoryConsolidation') };
 
     case 'system_event': {
-      // Summary: `[Announcement] title`
       const annoMatch = summary.match(/^\[Announcement]\s*(.+)/);
-      if (annoMatch) return { title: annoMatch[1], subtitle: 'System Announcement' };
-      return { title: summary || 'System Event' };
+      if (annoMatch) return { title: annoMatch[1], subtitle: t('agent:profilePage.mind.mailbox.systemAnnouncement') };
+      return { title: summary || t('agent:profilePage.mind.mailbox.systemEvent') };
     }
 
     default:
@@ -1991,6 +1977,7 @@ function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem): {
 }
 
 function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: string }) {
+  const { t } = useTranslation(['agent', 'common']);
   const [mind, setMind] = useState<import('../api.ts').AgentMindState | null>(null);
   const [mailbox, setMailbox] = useState<import('../api.ts').AgentMailboxResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -2084,7 +2071,7 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
     return () => unsubs.forEach(u => u());
   }, [agentId, load]);
 
-  if (loading && !mind) return <div className="text-fg-tertiary text-sm animate-pulse">Loading agent mind state...</div>;
+  if (loading && !mind) return <div className="text-fg-tertiary text-sm animate-pulse">{t('agent:profilePage.mind.loading')}</div>;
 
   return (
     <div className="space-y-4">
@@ -2092,7 +2079,7 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
       <section>
         <div className="flex items-center gap-3 mb-3">
           <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${ATTENTION_COLORS[mind?.attentionState ?? 'idle'] ?? 'bg-gray-500/20 text-gray-500'}`}>
-            {(mind?.attentionState ?? 'idle').toUpperCase()}
+            {t(`agent:profilePage.mind.attention.${mind?.attentionState ?? 'idle'}`)}
           </span>
           {mind?.currentFocus ? (() => {
             const focusDisplay = getMailboxItemDisplay({
@@ -2104,30 +2091,30 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
               payload: { summary: mind.currentFocus.label, taskId: mind.currentFocus.taskId },
               metadata: {},
               queuedAt: mind.currentFocus.startedAt,
-            } as import('../api.ts').EnrichedMailboxItem);
+            } as import('../api.ts').EnrichedMailboxItem, t);
             return (
               <span className="text-sm text-fg-secondary">
                 {MAILBOX_TYPE_ICONS[mind.currentFocus.type] ?? '●'}{' '}
                 <span className="text-fg-primary font-medium">{focusDisplay.title}</span>
                 {focusDisplay.subtitle && <span className="text-fg-tertiary ml-1.5 text-xs">{focusDisplay.subtitle}</span>}
-                <span className="text-fg-tertiary ml-2 text-xs">since {new Date(mind.currentFocus.startedAt).toLocaleTimeString()}</span>
+                <span className="text-fg-tertiary ml-2 text-xs">{t('agent:profilePage.mind.since', { time: new Date(mind.currentFocus.startedAt).toLocaleTimeString() })}</span>
               </span>
             );
           })() : (
-            <span className="text-sm text-fg-tertiary">Idle — waiting for new mail</span>
+            <span className="text-sm text-fg-tertiary">{t('agent:profilePage.mind.idleWaiting')}</span>
           )}
-          <button onClick={() => { load(); }} className="ml-auto text-xs text-fg-tertiary hover:text-fg-secondary active:text-fg-primary transition-colors">↻ Refresh</button>
+          <button onClick={() => { load(); }} className="ml-auto text-xs text-fg-tertiary hover:text-fg-secondary active:text-fg-primary transition-colors">{t('agent:profilePage.mind.refresh')}</button>
         </div>
 
         {(mind?.queuedItems?.length ?? 0) > 0 && (
           <div className="mb-3">
-            <h4 className="text-xs font-medium text-amber-500 uppercase tracking-wider mb-1.5">Queue ({mind!.queuedItems.length})</h4>
+            <h4 className="text-xs font-medium text-amber-500 uppercase tracking-wider mb-1.5">{t('agent:profilePage.mind.queue', { count: mind!.queuedItems.length })}</h4>
             <div className="space-y-1">
               {mind!.queuedItems.map((item, i) => (
                 <div key={item.id} className="flex items-center gap-2 px-3 py-1.5 rounded bg-amber-500/5 border border-amber-500/20 text-sm">
                   <span className="text-fg-tertiary w-4 text-right text-xs">{i + 1}</span>
                   <span className="text-sm">{MAILBOX_TYPE_ICONS[item.sourceType] ?? '●'}</span>
-                  <span className={`text-[10px] ${PRIORITY_COLORS[item.priority] ?? 'text-fg-tertiary'}`}>{PRIORITY_LABELS[item.priority] ?? `P${item.priority}`}</span>
+                  <span className={`text-[10px] ${PRIORITY_COLORS[item.priority] ?? 'text-fg-tertiary'}`}>{t(`agent:profilePage.mind.priority.${PRIORITY_KEYS[item.priority] ?? item.priority}`, { defaultValue: `P${item.priority}` })}</span>
                   <span className="text-fg-secondary truncate flex-1 text-xs">{item.summary}</span>
                   <span className="text-[10px] text-fg-tertiary">{new Date(item.queuedAt).toLocaleTimeString()}</span>
                 </div>
@@ -2142,17 +2129,17 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
         <section className="bg-surface-2 rounded-lg border border-indigo-500/20 p-3">
           <div className="flex items-center gap-2 mb-2">
             <span className="text-sm">🧠</span>
-            <h4 className="text-xs font-medium text-indigo-400 uppercase tracking-wider">Triage Decision</h4>
+            <h4 className="text-xs font-medium text-indigo-400 uppercase tracking-wider">{t('agent:profilePage.mind.triageDecision')}</h4>
             <span className="text-[10px] text-fg-quaternary ml-auto">{new Date(mind.lastTriage.timestamp).toLocaleTimeString()}</span>
           </div>
           <p className="text-xs text-fg-secondary leading-relaxed">{mind.lastTriage.reasoning}</p>
           <div className="flex flex-wrap gap-2 mt-2 text-[10px]">
-            <span className="px-1.5 py-0.5 rounded bg-green-500/10 text-green-400">Processing: {mind.lastTriage.processedItemId.slice(0, 12)}…</span>
+            <span className="px-1.5 py-0.5 rounded bg-green-500/10 text-green-400">{t('agent:profilePage.mind.processingItem', { id: mind.lastTriage.processedItemId.slice(0, 12) })}</span>
             {mind.lastTriage.deferredItemIds.length > 0 && (
-              <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">Deferred: {mind.lastTriage.deferredItemIds.length}</span>
+              <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">{t('agent:profilePage.mind.deferred', { count: mind.lastTriage.deferredItemIds.length })}</span>
             )}
             {mind.lastTriage.droppedItemIds.length > 0 && (
-              <span className="px-1.5 py-0.5 rounded bg-red-500/10 text-red-400">Dropped: {mind.lastTriage.droppedItemIds.length}</span>
+              <span className="px-1.5 py-0.5 rounded bg-red-500/10 text-red-400">{t('agent:profilePage.mind.dropped', { count: mind.lastTriage.droppedItemIds.length })}</span>
             )}
           </div>
         </section>
@@ -2161,28 +2148,28 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
       {/* ── Mailbox History ── */}
       <section>
         <div className="flex items-center gap-2 mb-2">
-          <h3 className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">Mailbox History</h3>
+          <h3 className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">{t('agent:profilePage.mind.mailboxHistory')}</h3>
           <div className="flex gap-1 ml-auto flex-wrap">
-            {CATEGORY_FILTERS.map(f => (
-              <button key={f.key} onClick={() => setCatFilter(f.key)}
+            {CATEGORY_FILTER_KEYS.map(key => (
+              <button key={key} onClick={() => setCatFilter(key)}
                 className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors ${
-                  catFilter === f.key
+                  catFilter === key
                     ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
                     : 'bg-surface-2 border-border-subtle text-fg-secondary hover:bg-surface-3'
                 }`}
-              >{f.label}</button>
+              >{t(`agent:profilePage.mind.categoryFilters.${key}`)}</button>
             ))}
           </div>
         </div>
         <div className="flex gap-1 mb-2 flex-wrap">
           {[
-            { key: 'all', label: 'All', dot: '' },
-            { key: 'queued', label: 'Queued', dot: 'bg-amber-400' },
-            { key: 'processing', label: 'Processing', dot: 'bg-blue-400' },
-            { key: 'completed', label: 'Completed', dot: 'bg-green-500' },
-            { key: 'merged', label: 'Merged', dot: 'bg-cyan-400' },
-            { key: 'deferred', label: 'Deferred', dot: 'bg-purple-400' },
-            { key: 'dropped', label: 'Dropped', dot: 'bg-red-500' },
+            { key: 'all', dot: '' },
+            { key: 'queued', dot: 'bg-amber-400' },
+            { key: 'processing', dot: 'bg-blue-400' },
+            { key: 'completed', dot: 'bg-green-500' },
+            { key: 'merged', dot: 'bg-cyan-400' },
+            { key: 'deferred', dot: 'bg-purple-400' },
+            { key: 'dropped', dot: 'bg-red-500' },
           ].map(f => (
             <button key={f.key} onClick={() => setStatusFilter(f.key)}
               className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors flex items-center gap-1 ${
@@ -2190,19 +2177,19 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
                   ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
                   : 'bg-surface-2 border-border-subtle text-fg-secondary hover:bg-surface-3'
               }`}
-            >{f.dot && <span className={`w-1.5 h-1.5 rounded-full ${f.dot}`} />}{f.label}</button>
+            >{f.dot && <span className={`w-1.5 h-1.5 rounded-full ${f.dot}`} />}{t(`agent:profilePage.mind.statusFilters.${f.key}`)}</button>
           ))}
         </div>
 
         {(!mailbox?.history || mailbox.history.length === 0) && !loading && (
-          <div className="text-center text-fg-tertiary text-sm py-8">No mailbox history yet</div>
+          <div className="text-center text-fg-tertiary text-sm py-8">{t('agent:profilePage.mind.noHistory')}</div>
         )}
 
         <div className="space-y-1">
           {mailbox?.history?.map(item => {
             const isExpanded = expandedId === item.id;
             const icon = MAILBOX_TYPE_ICONS[item.sourceType] ?? '●';
-            const display = getMailboxItemDisplay(item);
+            const display = getMailboxItemDisplay(item, t);
             const senderName = item.metadata?.senderName as string | undefined;
             const senderRole = item.metadata?.senderRole as string | undefined;
             const isHighlighted = highlightedId === item.id;
@@ -2221,7 +2208,7 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
                       {display.badge && (
                         <span className={`text-[10px] font-medium shrink-0 ${display.badge.color}`}>{display.badge.label}</span>
                       )}
-                      <span className={`text-[10px] shrink-0 ${PRIORITY_COLORS[item.priority] ?? 'text-fg-tertiary'}`}>{PRIORITY_LABELS[item.priority] ?? ''}</span>
+                      <span className={`text-[10px] shrink-0 ${PRIORITY_COLORS[item.priority] ?? 'text-fg-tertiary'}`}>{t(`agent:profilePage.mind.priority.${PRIORITY_KEYS[item.priority] ?? item.priority}`, { defaultValue: '' })}</span>
                     </div>
                     {display.subtitle && (
                       <div className={`text-[11px] text-fg-secondary mt-0.5 ${isExpanded ? '' : 'truncate'}`}>{display.subtitle}</div>
@@ -2231,8 +2218,8 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
                       {item.completedAt && <span>→ {new Date(item.completedAt).toLocaleTimeString()}</span>}
                       {item.activity && (
                         <>
-                          {item.activity.totalTokens > 0 && <span>{fmtNum(item.activity.totalTokens)} tokens</span>}
-                          {item.activity.totalTools > 0 && <span>{item.activity.totalTools} tools</span>}
+                          {item.activity.totalTokens > 0 && <span>{t('agent:profilePage.mind.tokensCount', { count: fmtNum(item.activity.totalTokens) })}</span>}
+                          {item.activity.totalTools > 0 && <span>{t('agent:profilePage.mind.toolsCount', { count: item.activity.totalTools })}</span>}
                         </>
                       )}
                     </div>
@@ -2245,7 +2232,7 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
                     {/* Sender & contextual metadata */}
                     {senderName && (
                       <div className="text-[10px] text-fg-tertiary">
-                        From: <span className="text-fg-secondary">{senderName}</span>
+                        {t('agent:profilePage.mind.from')} <span className="text-fg-secondary">{senderName}</span>
                         {senderRole && <span className="text-fg-tertiary"> ({senderRole})</span>}
                       </div>
                     )}
@@ -2260,7 +2247,7 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
                     {/* Decisions for this item */}
                     {item.decisions && item.decisions.length > 0 && (
                       <div>
-                        <h5 className="text-[10px] font-medium text-fg-tertiary uppercase tracking-wider mb-1">Decisions</h5>
+                        <h5 className="text-[10px] font-medium text-fg-tertiary uppercase tracking-wider mb-1">{t('agent:profilePage.mind.decisions')}</h5>
                         <div className="space-y-1">
                           {item.decisions.map((d: import('../api.ts').MailboxHistoryDecision) => (
                             <div key={d.id} className="flex items-start gap-2 text-xs">
@@ -2277,9 +2264,9 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
                     {item.activity ? (
                       <div>
                         <h5 className="text-[10px] font-medium text-fg-tertiary uppercase tracking-wider mb-1">
-                          Activity — {item.activity.label}
+                          {t('agent:profilePage.mind.activityHeading', { label: item.activity.label })}
                           <span className={`ml-2 inline-block px-1 py-0 rounded text-[9px] ${item.activity.success ? 'bg-green-500/15 text-green-500' : 'bg-red-500/15 text-red-500'}`}>
-                            {item.activity.success ? '✓ Success' : '✗ Failed'}
+                            {item.activity.success ? t('agent:profilePage.mind.success') : t('agent:profilePage.mind.failed')}
                           </span>
                         </h5>
                         {item.activity.type === 'task' && item.payload?.taskId ? (
@@ -2289,9 +2276,9 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
                         )}
                       </div>
                     ) : item.status === 'processing' ? (
-                      <div className="text-xs text-fg-tertiary text-center py-2 animate-pulse">Processing...</div>
+                      <div className="text-xs text-fg-tertiary text-center py-2 animate-pulse">{t('agent:profilePage.mind.processing')}</div>
                     ) : item.status === 'completed' ? (
-                      <div className="text-xs text-fg-tertiary text-center py-2">No activity log recorded</div>
+                      <div className="text-xs text-fg-tertiary text-center py-2">{t('agent:profilePage.mind.noActivityLog')}</div>
                     ) : null}
                   </div>
                 )}
@@ -2302,7 +2289,7 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
 
         {hasMore && (mailbox?.history?.length ?? 0) > 0 && (
           <div className="text-center mt-3">
-            <button onClick={loadMore} className="text-xs text-brand-400 hover:text-brand-300 transition-colors">Load Earlier...</button>
+            <button onClick={loadMore} className="text-xs text-brand-400 hover:text-brand-300 transition-colors">{t('agent:profilePage.mind.loadEarlier')}</button>
           </div>
         )}
       </section>

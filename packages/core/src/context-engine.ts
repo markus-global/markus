@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs';
+import type { AgentScenario } from './agent.js';
 import {
   createLogger,
   getTextContent,
@@ -157,7 +158,7 @@ export class ContextEngine {
       content: string;
       anchor?: { section: string; itemId?: string };
     }>;
-    scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review';
+    scenario?: AgentScenario;
     /** When scenario is 'a2a', indicates whether the sender is blocking for a reply */
     a2aWaitForReply?: boolean;
     agentWorkspace?: {
@@ -611,7 +612,7 @@ export class ContextEngine {
     return lines.join('\n');
   }
 
-  private buildScenarioSection(scenario: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review', extra?: { a2aWaitForReply?: boolean }): string {
+  private buildScenarioSection(scenario: AgentScenario, extra?: { a2aWaitForReply?: boolean }): string {
     const lines: string[] = ['\n## Current Interaction Mode'];
 
     switch (scenario) {

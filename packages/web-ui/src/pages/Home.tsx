@@ -6,6 +6,30 @@ import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { NotificationBell } from '../components/NotificationBell.tsx';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { Avatar } from '../components/Avatar.tsx';
+
+const SHOW_HERO_BANNER = false;
+
+const DONUT_COLORS: Record<string, string> = {
+  completed: '#22c55e', in_progress: '#8b5cf6', review: '#3b82f6',
+  pending: '#f59e0b', failed: '#ef4444', blocked: '#f87171',
+  rejected: '#fb7185', cancelled: '#6b7280',
+};
+
+const STATUS_COLORS_BG: Record<string, string> = {
+  completed: 'bg-green-500', in_progress: 'bg-brand-500', review: 'bg-blue-500',
+  pending: 'bg-amber-500', failed: 'bg-red-500', blocked: 'bg-red-400',
+  rejected: 'bg-rose-400', cancelled: 'bg-gray-500',
+};
+
+const TASK_STATUS_I18N: Record<string, string> = {
+  pending: 'common:status.pending', in_progress: 'common:status.inProgress',
+  blocked: 'common:status.blocked', review: 'common:status.review',
+  completed: 'common:status.completed', failed: 'common:status.failed',
+  rejected: 'common:status.rejected', cancelled: 'common:status.cancelled',
+};
+
+const STATUS_ORDER = ['completed', 'in_progress', 'review', 'pending', 'failed', 'blocked', 'rejected', 'cancelled'];
 
 export function HomePage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } } = {}) {
   const { t } = useTranslation(['home', 'common']);
@@ -38,17 +62,13 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opsPeriod]);
 
-  const rootOnly = (tasks: TaskInfo[]) => tasks;
   const rootStatusCounts: Record<string, number> = {};
   for (const [status, tasks] of Object.entries(board)) {
     if (status === 'archived') continue;
-    const count = rootOnly(tasks).length;
+    const count = tasks.length;
     if (count > 0) rootStatusCounts[status] = count;
   }
-  const pending = rootStatusCounts['pending'] ?? 0;
-  const inProgress = rootStatusCounts['in_progress'] ?? 0;
   const completed = rootStatusCounts['completed'] ?? 0;
-  const failed = rootStatusCounts['failed'] ?? 0;
   const totalRootTasks = Object.values(rootStatusCounts).reduce((s, c) => s + c, 0);
 
   const activeAgents = agents.filter(a => a.status === 'idle' || a.status === 'working').length;
@@ -68,31 +88,54 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
     });
   }, [teams, agents]);
 
+  const topPerformers = useMemo(() => {
+    if (!ops) return [];
+    return [...ops.agentEfficiency]
+      .filter(a => a.taskMetrics.completed > 0)
+      .sort((a, b) => b.taskMetrics.completed - a.taskMetrics.completed)
+      .slice(0, 5);
+  }, [ops]);
+
+  const completionRate = totalRootTasks > 0 ? Math.round((completed / totalRootTasks) * 100) : 0;
+
+  const sortedStatusEntries = STATUS_ORDER
+    .filter(s => (rootStatusCounts[s] ?? 0) > 0)
+    .map(s => ({ status: s, count: rootStatusCounts[s]! }));
+
+  const totalTokens = ops ? ops.agentEfficiency.reduce((sum, a) => sum + a.tokenUsage.input + a.tokenUsage.output, 0) : 0;
+
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div className="flex-1 overflow-y-auto scrollbar-thin">
       {/* Header */}
-      <div className="flex items-center justify-between px-6 h-14 border-b border-border-default bg-surface-secondary">
+      <div className="flex items-center justify-between px-4 sm:px-6 lg:px-8 h-14 sm:h-16 border-b border-border-default bg-surface-secondary/50">
         <div className="flex items-center gap-3">
           {isMobile && <NotificationBell collapsed userId={authUser?.id} />}
-          <h2 className="text-lg font-semibold">{t('title')}</h2>
+          <div>
+            <h2 className="text-base sm:text-lg font-bold">{t('title')}</h2>
+            <p className="text-xs text-fg-tertiary hidden sm:block">{t('subtitle')}</p>
+          </div>
         </div>
-        <div className="flex gap-2">
-          <button onClick={() => navBus.navigate(PAGE.STORE, { storeTab: 'agents' })} className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition-colors">{t('hireAgent')}</button>
-        </div>
+        <button
+          onClick={() => navBus.navigate(PAGE.STORE, { storeTab: 'agents' })}
+          className="flex items-center gap-2 px-3 sm:px-4 py-2 sm:py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-xs sm:text-sm font-medium rounded-xl transition-all shadow-md shadow-brand-900/30 hover:shadow-lg hover:shadow-brand-900/40"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="hidden sm:block"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><line x1="19" y1="8" x2="19" y2="14" /><line x1="22" y1="11" x2="16" y2="11" /></svg>
+          {t('hireAgent')}
+        </button>
       </div>
 
-      <div className="p-7 space-y-6">
-        {/* Hero Metrics */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <MetricTile label={t('metrics.activeAgents')} value={activeAgents} total={agents.length} color="indigo" onClick={() => navBus.navigate(PAGE.TEAM)} />
-          <MetricTile label={t('metrics.tasksInProgress')} value={inProgress} color="blue" onClick={() => navBus.navigate(PAGE.WORK)} />
-          <MetricTile label={t('metrics.pendingQueue')} value={pending} color="amber" onClick={() => navBus.navigate(PAGE.WORK)} />
-          <MetricTile label={t('metrics.completed')} value={completed} total={totalRootTasks > 0 ? totalRootTasks : undefined} color="green" onClick={() => navBus.navigate(PAGE.WORK)} />
+      <div className="p-4 sm:p-6 lg:p-8 space-y-5 sm:space-y-6">
+        {/* Metric Cards */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+          <MetricCard label={t('metrics.activeAgents')} value={activeAgents} total={agents.length} icon={<IconAgents />} color="brand" onClick={() => navBus.navigate(PAGE.TEAM)} />
+          <MetricCard label={t('metrics.workingNow')} value={workingAgents} icon={<IconRunning />} color="blue" onClick={() => navBus.navigate(PAGE.TEAM)} />
+          <MetricCard label={t('metrics.healthScore')} value={ops?.systemHealth.overallScore ?? 0} suffix="%" icon={<IconHealth />} color="green" onClick={() => {}} />
+          <MetricCard label={t('metrics.totalTasks')} value={totalRootTasks} icon={<IconTasks />} color="amber" onClick={() => navBus.navigate(PAGE.WORK)} />
         </div>
 
-        {/* Getting Started — shown when no tasks exist yet */}
+        {/* Getting Started */}
         {totalRootTasks === 0 && (!ops || ops.taskKPI.recentActivity.length === 0) && (
-          <div className="bg-surface-secondary border border-brand-500/20 rounded-xl p-6">
+          <div className="bg-gradient-to-br from-brand-600/10 via-surface-secondary to-surface-secondary border border-brand-500/20 rounded-2xl p-5 sm:p-6">
             <h3 className="text-sm font-semibold text-fg-primary mb-1">{t('gettingStarted.title')}</h3>
             <p className="text-xs text-fg-secondary mb-4">{t('gettingStarted.subtitle')}</p>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -101,7 +144,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                 { labelKey: 'gettingStarted.hireAgents', descKey: 'gettingStarted.hireAgentsDesc', page: PAGE.STORE },
                 { labelKey: 'gettingStarted.createProject', descKey: 'gettingStarted.createProjectDesc', page: PAGE.WORK },
               ].map(item => (
-                <button key={item.labelKey} onClick={() => navBus.navigate(item.page)} className="text-left bg-surface-elevated/50 hover:bg-surface-elevated border border-border-default/50 hover:border-brand-500/30 rounded-lg p-4 transition-colors">
+                <button key={item.labelKey} onClick={() => navBus.navigate(item.page)} className="text-left bg-surface-elevated/50 hover:bg-surface-elevated border border-border-default/50 hover:border-brand-500/30 rounded-xl p-4 transition-all hover:shadow-lg hover:shadow-brand-500/5">
                   <div className="text-xs font-medium text-fg-primary">{t(item.labelKey)}</div>
                   <div className="text-[11px] text-fg-tertiary mt-1">{t(item.descKey)}</div>
                 </button>
@@ -110,127 +153,118 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
           </div>
         )}
 
-        {/* Agent Focus Summary — shows what each working agent is doing */}
-        {workingAgents > 0 && (
-          <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('agentFocus.title')}</h3>
-              {totalMailboxDepth > 0 && <span className="text-xs text-fg-tertiary">{t('agentFocus.totalQueued', { count: totalMailboxDepth })}</span>}
+        {/* Hidden Hero Banner */}
+        {SHOW_HERO_BANNER && (
+          <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-brand-700 via-brand-600 to-blue-600 p-8">
+            <div className="absolute inset-0 opacity-10">
+              <div className="absolute top-4 right-12 w-24 h-24 rounded-full bg-white/20" />
+              <div className="absolute bottom-4 right-32 w-16 h-16 rounded-full bg-white/15" />
+              <div className="absolute top-8 right-48 w-12 h-12 rounded-full bg-white/10" />
             </div>
-            <div className="space-y-1.5">
-              {agents.filter(a => a.status === 'working').map(a => (
-                <div key={a.id}
-                  className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated/30 hover:bg-surface-elevated/60 cursor-pointer transition-colors"
-                  onClick={() => navBus.navigate(PAGE.TEAM, { agentId: a.id, profileTab: 'mind' })}
-                >
-                  <div className="w-5 h-5 rounded-full bg-brand-600/30 flex items-center justify-center text-[9px] font-bold text-brand-400 shrink-0">
-                    {a.name.charAt(0)}
-                  </div>
-                  <span className="text-xs font-medium text-fg-primary truncate">{a.name}</span>
-                  <span className="text-[10px] text-fg-tertiary truncate flex-1">
-                    {a.currentActivity?.label ?? t('agentFocus.working')}
-                  </span>
-                  {(a.mailboxDepth ?? 0) > 0 && (
-                    <span className="text-[9px] bg-amber-500/20 text-amber-400 rounded-full px-1.5 shrink-0">{t('common:units.queued', { count: a.mailboxDepth })}</span>
-                  )}
-                  <span className={`w-2 h-2 rounded-full shrink-0 ${
-                    a.attentionState === 'focused' ? 'bg-brand-400 animate-pulse'
-                    : a.attentionState === 'deciding' ? 'bg-amber-400 animate-pulse'
-                    : 'bg-green-400'
-                  }`} />
-                </div>
-              ))}
+            <div className="relative z-10 max-w-md">
+              <h3 className="text-xl font-bold text-white mb-2">{t('heroBanner.title')}</h3>
+              <p className="text-sm text-white/80 mb-5">{t('heroBanner.subtitle')}</p>
+              <div className="flex gap-3">
+                <button className="px-5 py-2.5 bg-white text-brand-700 text-sm font-semibold rounded-xl hover:bg-white/90 transition-colors shadow-lg">{t('heroBanner.watchDemo')}</button>
+                <button className="px-5 py-2.5 bg-white/15 text-white text-sm font-medium rounded-xl hover:bg-white/25 transition-colors border border-white/20">{t('heroBanner.learnMore')}</button>
+              </div>
             </div>
           </div>
         )}
 
-        {/* Two-column layout */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left: Charts */}
-          <div className="lg:col-span-2 space-y-6">
-            {/* Task Distribution Bar Chart */}
+        {/* Main Content Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 sm:gap-6">
+          {/* Left Column */}
+          <div className="lg:col-span-2 space-y-5 sm:space-y-6">
+            {/* Task Overview — donut + all status legend */}
             {totalRootTasks > 0 && (
-              <div className="bg-surface-secondary border border-border-default rounded-xl p-5 cursor-pointer hover:border-gray-600 transition-colors" onClick={() => navBus.navigate(PAGE.WORK)}>
-                <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-4">{t('taskDistribution.title')}</h3>
-                <TaskBar statusCounts={rootStatusCounts} total={totalRootTasks} />
-                {(rootStatusCounts['blocked'] ?? 0) > 0 && (
-                  <div className="mt-3 text-xs text-amber-600 flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 bg-amber-400 rounded-full" />
-                    {t('taskDistribution.blockedNeedsAttention', { count: rootStatusCounts['blocked'] })}
+              <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5 cursor-pointer hover:border-border-default/80 transition-colors" onClick={() => navBus.navigate(PAGE.WORK)}>
+                <div className="flex items-center justify-between mb-5">
+                  <div>
+                    <h3 className="text-sm font-semibold text-fg-primary">{t('taskOverview.title')}</h3>
+                    <p className="text-[11px] text-fg-tertiary mt-0.5">{t('taskOverview.subtitle', { total: totalRootTasks })}</p>
                   </div>
-                )}
+                  <button onClick={e => { e.stopPropagation(); navBus.navigate(PAGE.WORK); }} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-center gap-6 sm:gap-10">
+                  <DonutChart statusCounts={rootStatusCounts} total={totalRootTasks} completionRate={completionRate} completed={completed} />
+                  <div className="flex-1 grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-3 min-w-0 w-full sm:w-auto">
+                    {sortedStatusEntries.map(({ status, count }) => (
+                      <DonutLegendItem key={status} color={STATUS_COLORS_BG[status] ?? 'bg-gray-500'} label={t(TASK_STATUS_I18N[status] ?? status)} count={count} />
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
 
-            {/* Team Status — grouped by team */}
-            <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('teamStatus.title')}</h3>
-                <button onClick={() => navBus.navigate(PAGE.TEAM)} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">{t('common:viewAll')}</button>
-              </div>
-              {teamSummaries.length === 0 && agents.length === 0 ? (
-                <div className="text-sm text-fg-tertiary py-4 text-center cursor-pointer" onClick={() => navBus.navigate(PAGE.TEAM)}>{t('teamStatus.noTeams')}</div>
-              ) : (
-                <div className="space-y-4">
-                  {teamSummaries.map(ts => (
-                    <div key={ts.team.id} className="bg-surface-elevated/30 border border-border-default/30 rounded-lg p-4 hover:border-brand-500/20 transition-colors cursor-pointer" onClick={() => navBus.navigate(PAGE.TEAM)}>
-                      <div className="flex items-center gap-2 mb-3 flex-wrap">
-                        <div className="w-7 h-7 rounded-lg bg-brand-600/30 flex items-center justify-center text-xs font-bold text-brand-500 shrink-0">{ts.team.name.charAt(0)}</div>
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium">{ts.team.name}</div>
-                          {ts.team.description && <div className="text-[11px] text-fg-tertiary truncate max-w-[260px]">{ts.team.description}</div>}
-                        </div>
-                        <div className="flex items-center gap-2 text-[11px] text-fg-tertiary ml-auto shrink-0">
-                          <span className="px-1.5 py-0.5 rounded bg-surface-overlay/50">{t('common:units.members', { count: ts.total })}</span>
-                          {ts.working > 0 && <span className="px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-500">{t('teamStatus.workingCount', { count: ts.working })}</span>}
-                          <span className={`px-1.5 py-0.5 rounded ${ts.active === ts.total ? 'bg-green-500/15 text-green-600' : 'bg-surface-overlay/50'}`}>{t('teamStatus.activeCount', { count: ts.active })}</span>
-                        </div>
+            {/* Activity Feed */}
+            {ops && ops.taskKPI.recentActivity.length > 0 && (
+              <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-semibold text-fg-primary">{t('recentActivity.title')}</h3>
+                  <button onClick={() => navBus.navigate(PAGE.WORK)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5">
+                  {ops.taskKPI.recentActivity.slice(0, 10).map(act => (
+                    <div key={act.taskId}
+                      className="flex items-center gap-2.5 py-2 px-2 rounded-xl hover:bg-surface-elevated/40 transition-colors cursor-pointer"
+                      onClick={() => navBus.navigate(PAGE.WORK, { openTask: act.taskId })}
+                    >
+                      <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${ACTIVITY_ICON_BG[act.status] ?? 'bg-gray-500/15'}`}>
+                        <ActivityIcon status={act.status} />
                       </div>
-                      <div className="flex gap-2 flex-wrap">
-                        {ts.agents.slice(0, 6).map(a => (
-                          <div key={a.id} className="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-overlay/30" onClick={e => { e.stopPropagation(); navBus.navigate(PAGE.TEAM, { selectAgent: a.id }); }}>
-                            <span className={`w-1.5 h-1.5 rounded-full ${a.status === 'idle' ? 'bg-green-400' : a.status === 'working' ? 'bg-blue-400 animate-pulse' : 'bg-gray-600'}`} />
-                            <span className="text-[11px] text-fg-secondary">{a.name}</span>
-                          </div>
-                        ))}
-                        {ts.agents.length > 6 && <span className="text-[10px] text-fg-tertiary self-center">{t('common:units.more', { count: ts.agents.length - 6 })}</span>}
-                      </div>
+                      <span className="text-xs text-fg-secondary truncate flex-1">{act.title}</span>
+                      <span className="text-[10px] text-fg-tertiary shrink-0">{formatRelativeTime(act.updatedAt, t)}</span>
                     </div>
                   ))}
-                  {/* Ungrouped agents */}
-                  {(() => {
-                    const teamAgentIds = new Set(teams.flatMap(t => t.members.filter(m => m.type === 'agent').map(m => m.id)));
-                    const ungrouped = agents.filter(a => !teamAgentIds.has(a.id));
-                    if (ungrouped.length === 0) return null;
-                    return (
-                      <div className="bg-surface-elevated/20 border border-border-default/20 rounded-lg p-4">
-                        <div className="flex items-center justify-between mb-3">
-                          <div className="text-xs text-fg-tertiary font-medium">{t('teamStatus.unassignedAgents')}</div>
-                          <span className="text-[10px] text-fg-tertiary">{t('common:units.agents', { count: ungrouped.length })}</span>
-                        </div>
-                        <div className="flex gap-2 flex-wrap">
-                          {ungrouped.slice(0, 6).map(a => (
-                            <div key={a.id} className="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-overlay/30 cursor-pointer" onClick={() => navBus.navigate(PAGE.TEAM, { selectAgent: a.id })}>
-                              <span className={`w-1.5 h-1.5 rounded-full ${a.status === 'idle' ? 'bg-green-400' : a.status === 'working' ? 'bg-blue-400 animate-pulse' : 'bg-gray-600'}`} />
-                              <span className="text-[11px] text-fg-secondary">{a.name}</span>
-                            </div>
-                          ))}
-                          {ungrouped.length > 6 && <span className="text-[10px] text-fg-tertiary self-center">{t('common:units.more', { count: ungrouped.length - 6 })}</span>}
-                        </div>
+                </div>
+              </div>
+            )}
+
+            {/* Team Overview */}
+            <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-fg-primary">{t('teamOverview.title')}</h3>
+                  <p className="text-[11px] text-fg-tertiary mt-0.5">{t('teamOverview.subtitle', { teams: teams.length, members: agents.length })}</p>
+                </div>
+                <button onClick={() => navBus.navigate(PAGE.TEAM)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
+              </div>
+              {teamSummaries.length === 0 && agents.length === 0 ? (
+                <div className="text-sm text-fg-tertiary py-6 text-center cursor-pointer" onClick={() => navBus.navigate(PAGE.TEAM)}>{t('teamStatus.noTeams')}</div>
+              ) : (
+                <div className="space-y-1">
+                  {teamSummaries.slice(0, 5).map(ts => (
+                    <div key={ts.team.id}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface-elevated/40 cursor-pointer transition-colors"
+                      onClick={() => navBus.navigate(PAGE.TEAM)}
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-brand-600/20 flex items-center justify-center text-xs font-bold text-brand-400 shrink-0">{ts.team.name.charAt(0)}</div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium text-fg-primary truncate">{ts.team.name}</div>
+                        {ts.team.description && <div className="text-[11px] text-fg-tertiary truncate">{ts.team.description}</div>}
                       </div>
-                    );
-                  })()}
+                      <div className="flex items-center -space-x-1.5 shrink-0">
+                        {ts.agents.slice(0, 3).map(a => (
+                          <Avatar key={a.id} name={a.name} avatarUrl={(a as any).avatarUrl} size={22} bgClass="bg-surface-overlay text-fg-secondary ring-2 ring-surface-secondary" />
+                        ))}
+                        {ts.agents.length > 3 && (
+                          <div className="w-[22px] h-[22px] rounded-full bg-surface-overlay text-fg-tertiary flex items-center justify-center text-[8px] font-bold ring-2 ring-surface-secondary">+{ts.agents.length - 3}</div>
+                        )}
+                      </div>
+                      {ts.active > 0 && (
+                        <span className="text-[10px] bg-green-500/15 text-green-500 px-2 py-0.5 rounded-full shrink-0">{t('teamOverview.activeCount', { count: ts.active })}</span>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
 
-          </div>
-
-          {/* Right: Activity Feed */}
-          <div className="space-y-6">
             {/* Pending Requirement Reviews */}
             {pendingReqs.length > 0 && (
-              <div className="bg-surface-secondary border border-amber-500/30 rounded-xl p-5">
+              <div className="bg-surface-secondary border border-amber-500/30 rounded-2xl p-4 sm:p-5">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <span className="w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
@@ -240,57 +274,99 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                 </div>
                 <div className="space-y-2">
                   {pendingReqs.slice(0, 5).map(req => (
-                    <div key={req.id} className="flex items-start gap-2.5 py-2 px-2.5 rounded-lg bg-surface-elevated/40 hover:bg-surface-elevated/60 transition-colors cursor-pointer" onClick={() => navBus.navigate(PAGE.WORK)}>
+                    <div key={req.id} className="flex items-start gap-2.5 py-2 px-2.5 rounded-xl bg-surface-elevated/40 hover:bg-surface-elevated/60 transition-colors cursor-pointer" onClick={() => navBus.navigate(PAGE.WORK)}>
                       <div className="flex-1 min-w-0">
                         <div className="text-xs text-fg-primary font-medium truncate">{req.title}</div>
-                        <div className="text-[10px] text-fg-tertiary mt-0.5">
-                          {t('pendingReviews.proposedBy', { author: req.createdBy, priority: req.priority })}
-                        </div>
+                        <div className="text-[10px] text-fg-tertiary mt-0.5">{t('pendingReviews.proposedBy', { author: req.createdBy, priority: req.priority })}</div>
                       </div>
-                      <span className="text-[10px] bg-amber-500/15 text-amber-600 px-1.5 py-0.5 rounded-full shrink-0">
-                        {req.source === 'agent' ? t('pendingReviews.agent') : t('pendingReviews.user')}
-                      </span>
+                      <span className="text-[10px] bg-amber-500/15 text-amber-600 px-1.5 py-0.5 rounded-full shrink-0">{req.source === 'agent' ? t('pendingReviews.agent') : t('pendingReviews.user')}</span>
                     </div>
                   ))}
-                  {pendingReqs.length > 5 && (
-                    <div className="text-[10px] text-fg-tertiary text-center pt-1">{t('common:units.more', { count: pendingReqs.length - 5 })}</div>
-                  )}
+                  {pendingReqs.length > 5 && <div className="text-[10px] text-fg-tertiary text-center pt-1">{t('common:units.more', { count: pendingReqs.length - 5 })}</div>}
                 </div>
-                <p className="text-[10px] text-fg-tertiary mt-3">
-                  {t('pendingReviews.agentProposed', { count: pendingReqs.length })}
-                </p>
+                <p className="text-[10px] text-fg-tertiary mt-3">{t('pendingReviews.agentProposed', { count: pendingReqs.length })}</p>
               </div>
             )}
+          </div>
 
-            {/* Recent Activity */}
-            {ops && ops.taskKPI.recentActivity.length > 0 && (
-              <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
+          {/* Right Column */}
+          <div className="space-y-5 sm:space-y-6">
+            {/* Agent Focus — compact, only when agents working */}
+            {workingAgents > 0 && (
+              <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5">
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('recentActivity.title')}</h3>
-                  <button onClick={() => navBus.navigate(PAGE.WORK)} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">{t('common:viewAll')}</button>
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-brand-500 animate-pulse" />
+                    <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('agentFocus.title')}</h3>
+                  </div>
+                  {totalMailboxDepth > 0 && <span className="text-[10px] text-fg-tertiary">{t('agentFocus.totalQueued', { count: totalMailboxDepth })}</span>}
                 </div>
                 <div className="space-y-1.5">
-                  {ops.taskKPI.recentActivity.slice(0, 8).map(act => (
-                    <div key={act.taskId} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-surface-elevated/40 transition-colors cursor-pointer" onClick={() => navBus.navigate(PAGE.WORK, { openTask: act.taskId })}>
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_COLORS[act.status] ?? 'bg-gray-500'}`} />
-                      <span className="text-xs text-fg-secondary truncate flex-1">{act.title}</span>
-                      <span className="text-[10px] text-fg-tertiary shrink-0">{new Date(act.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                  {agents.filter(a => a.status === 'working').map(a => (
+                    <div key={a.id}
+                      className="flex items-center gap-2 px-2.5 py-2 rounded-xl bg-surface-elevated/30 hover:bg-surface-elevated/60 cursor-pointer transition-colors"
+                      onClick={() => navBus.navigate(PAGE.TEAM, { agentId: a.id, profileTab: 'mind' })}
+                    >
+                      <Avatar name={a.name} avatarUrl={(a as any).avatarUrl} size={22} bgClass="bg-brand-600/40 text-brand-300" />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-medium text-fg-primary truncate">{a.name}</div>
+                        <div className="text-[10px] text-fg-tertiary truncate">{a.currentActivity?.label ?? t('agentFocus.working')}</div>
+                      </div>
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${
+                        a.attentionState === 'focused' ? 'bg-brand-400 animate-pulse'
+                        : a.attentionState === 'deciding' ? 'bg-amber-400 animate-pulse'
+                        : 'bg-green-400'
+                      }`} />
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* System Health */}
+            {/* Top Performing Agents */}
+            {topPerformers.length > 0 && (
+              <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-semibold text-fg-primary">{t('topPerformers.title')}</h3>
+                  <button onClick={() => navBus.navigate(PAGE.TEAM)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
+                </div>
+                <div className="space-y-2.5">
+                  {topPerformers.map(agent => (
+                    <div key={agent.agentId}
+                      className="flex items-center gap-3 cursor-pointer hover:bg-surface-elevated/30 rounded-xl px-2 py-1.5 transition-colors"
+                      onClick={() => navBus.navigate(PAGE.TEAM, { selectAgent: agent.agentId })}
+                    >
+                      <Avatar name={agent.agentName} size={28} bgClass="bg-brand-600/30 text-brand-300" />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-medium text-fg-primary truncate">{agent.agentName}</div>
+                        <div className="text-[10px] text-fg-tertiary">{t('topPerformers.tasksCompleted', { count: agent.taskMetrics.completed })}</div>
+                      </div>
+                      {agent.healthScore >= 80 && (
+                        <span className="text-[10px] text-green-500 font-medium">~{agent.healthScore}%</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* System Health + Storage */}
             {ops && (
-              <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-4">{t('systemHealth.title')}</h3>
+              <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-semibold text-fg-primary">{t('systemHealth.title')}</h3>
+                  {ops.systemHealth.overallScore >= 80 && (
+                    <span className="flex items-center gap-1 text-[11px] text-green-500">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                      {t('systemHealth.allOperational')}
+                    </span>
+                  )}
+                </div>
                 <div className="space-y-3">
-                  <HealthGauge label={t('systemHealth.healthScore')} value={ops.systemHealth.overallScore} max={100} unit="%" color={ops.systemHealth.overallScore >= 80 ? 'green' : ops.systemHealth.overallScore >= 50 ? 'amber' : 'red'} />
-                  <HealthGauge label={t('systemHealth.successRate')} value={ops.taskKPI.successRate} max={100} unit="%" color={ops.taskKPI.successRate >= 80 ? 'green' : 'amber'} />
-                  <HealthGauge label={t('systemHealth.activeTotal')} value={activeAgents} max={agents.length || 1} unit={`/${agents.length}`} color="brand" />
-                  <HealthGauge label={t('systemHealth.tokenCost')} value={parseFloat(ops.systemHealth.totalTokenCost.toFixed(2))} max={Math.max(1, Math.ceil(ops.systemHealth.totalTokenCost * 2))} unit="$" color="brand" raw />
-                  <HealthGauge label={t('systemHealth.workingNow')} value={workingAgents} max={agents.length || 1} unit={`/${agents.length}`} color="blue" />
+                  <HealthRow label={t('systemHealth.successRate')} value={ops.taskKPI.successRate} max={100} suffix="%" />
+                  <HealthRow label={t('systemHealth.activeTotal')} value={activeAgents} max={agents.length || 1} suffix={`/${agents.length}`} />
+                  <HealthRow label={t('systemHealth.tokenUsage')} value={totalTokens} max={totalTokens || 1} displayValue={fmtNumber(totalTokens)} alwaysGreen />
+                  <HealthRow label={t('systemHealth.workingNow')} value={workingAgents} max={agents.length || 1} suffix={`/${agents.length}`} />
                 </div>
 
                 {ops.systemHealth.criticalAgents.length > 0 && (
@@ -299,28 +375,25 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                       <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
                       {t('systemHealth.needsAttention')}
                       {ops.systemHealth.criticalAgents.map(a => (
-                        <span key={a.id} className="px-2 py-0.5 bg-red-500/10 rounded text-red-500 cursor-pointer hover:bg-red-500/20" onClick={() => navBus.navigate(PAGE.TEAM, { selectAgent: a.id })}>{t('systemHealth.agentScoreChip', { name: a.name, score: a.score })}</span>
+                        <span key={a.id} className="px-2 py-0.5 bg-red-500/10 rounded-lg text-red-500 cursor-pointer hover:bg-red-500/20 transition-colors" onClick={() => navBus.navigate(PAGE.TEAM, { selectAgent: a.id })}>{t('systemHealth.agentScoreChip', { name: a.name, score: a.score })}</span>
                       ))}
                     </div>
                   </div>
                 )}
-              </div>
-            )}
 
-            {/* Storage Summary */}
-            {storageInfo && (
-              <div className="bg-surface-secondary border border-border-default rounded-xl p-5 cursor-pointer hover:border-brand-500/30 transition-colors"
-                onClick={() => navBus.navigate(PAGE.SETTINGS)}>
-                <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-3">{t('storage.title')}</h3>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-2xl font-bold text-fg-primary">{fmtBytes(storageInfo.totalSize, t)}</span>
-                  <span className="text-xs text-fg-tertiary">{t('storage.total')}</span>
-                </div>
-                <div className="mt-2 flex gap-4 text-xs text-fg-tertiary">
-                  <span>{t('storage.db', { size: fmtBytes(storageInfo.database.size, t) })}</span>
-                  <span>{t('storage.agents', { count: storageInfo.agents.length })}</span>
-                </div>
-                <div className="mt-2 text-[10px] text-fg-tertiary">{t('storage.clickToView')}</div>
+                {/* Storage */}
+                {storageInfo && (
+                  <div className="mt-4 pt-3 border-t border-border-default cursor-pointer" onClick={() => navBus.navigate(PAGE.SETTINGS)}>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-fg-secondary">{t('storage.title')}</span>
+                      <span className="text-sm font-semibold text-fg-primary">{fmtBytes(storageInfo.totalSize, t)}</span>
+                    </div>
+                    <div className="mt-1.5 flex gap-3 text-[11px] text-fg-tertiary">
+                      <span>{t('storage.db', { size: fmtBytes(storageInfo.database.size, t) })}</span>
+                      <span>{t('storage.agents', { count: storageInfo.agents.length })}</span>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -330,105 +403,190 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
   );
 }
 
-// ─── Task Distribution Bar ───────────────────────────────────────────────────
+// ─── Metric Card ─────────────────────────────────────────────────────────────
 
-const STATUS_COLORS: Record<string, string> = {
-  pending: 'bg-amber-500', in_progress: 'bg-brand-500', blocked: 'bg-red-500',
-  review: 'bg-blue-500', completed: 'bg-green-500', failed: 'bg-red-500', rejected: 'bg-red-500', cancelled: 'bg-gray-600',
-};
-
-const STATUS_TEXT: Record<string, string> = {
-  pending: 'text-amber-600', in_progress: 'text-brand-500', blocked: 'text-red-500',
-  review: 'text-blue-600', completed: 'text-green-600', failed: 'text-red-500', rejected: 'text-red-500', cancelled: 'text-fg-tertiary',
-};
-
-const TASK_STATUS_I18N: Record<string, string> = {
-  pending: 'common:status.pending',
-  in_progress: 'common:status.inProgress',
-  blocked: 'common:status.blocked',
-  review: 'common:status.review',
-  completed: 'common:status.completed',
-  failed: 'common:status.failed',
-  rejected: 'common:status.rejected',
-  cancelled: 'common:status.cancelled',
-};
-
-function TaskBar({ statusCounts, total }: { statusCounts: Record<string, number>; total: number }) {
-  const { t } = useTranslation(['home', 'common']);
-  const labelForStatus = (status: string) => {
-    const key = TASK_STATUS_I18N[status];
-    return key ? t(key) : status.replace(/_/g, ' ');
-  };
-  const entries = Object.entries(statusCounts).filter(([, v]) => v > 0).sort(([, a], [, b]) => b - a);
-  return (
-    <div>
-      {/* Stacked bar */}
-      <div className="flex h-4 rounded-full overflow-hidden gap-0.5 mb-4">
-        {entries.map(([status, count]) => (
-          <div key={status} className={`${STATUS_COLORS[status] ?? 'bg-gray-600'} transition-all`} style={{ width: `${(count / total) * 100}%` }} title={`${labelForStatus(status)}: ${count}`} />
-        ))}
-      </div>
-      {/* Legend */}
-      <div className="flex gap-4 flex-wrap">
-        {entries.map(([status, count]) => (
-          <div key={status} className="flex items-center gap-1.5">
-            <span className={`w-2.5 h-2.5 rounded-sm ${STATUS_COLORS[status] ?? 'bg-gray-600'}`} />
-            <span className="text-xs text-fg-secondary capitalize">{labelForStatus(status)}</span>
-            <span className={`text-xs font-semibold ${STATUS_TEXT[status] ?? 'text-fg-secondary'}`}>{count}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ─── Components ──────────────────────────────────────────────────────────────
-
-function MetricTile({ label, value, total, color, onClick }: {
-  label: string; value: number; total?: number; color: string; onClick: () => void;
+function MetricCard({ label, value, total, suffix, icon, color, onClick }: {
+  label: string; value: number; total?: number; suffix?: string; icon: React.ReactNode; color: string; onClick: () => void;
 }) {
-  const accentMap: Record<string, { text: string; border: string; glow: string }> = {
-    indigo: { text: 'text-brand-400', border: 'border-l-brand-500', glow: 'hover:shadow-brand-500/10' },
-    blue: { text: 'text-blue-400', border: 'border-l-blue-500', glow: 'hover:shadow-blue-500/10' },
-    amber: { text: 'text-amber-400', border: 'border-l-amber-500', glow: 'hover:shadow-amber-500/10' },
-    green: { text: 'text-green-400', border: 'border-l-green-500', glow: 'hover:shadow-green-500/10' },
+  const styles: Record<string, { bg: string; iconBg: string; text: string; glow: string }> = {
+    brand:  { bg: 'border-brand-500/20', iconBg: 'bg-brand-500/15', text: 'text-brand-400', glow: 'hover:shadow-brand-500/10' },
+    blue:   { bg: 'border-blue-500/20', iconBg: 'bg-blue-500/15', text: 'text-blue-400', glow: 'hover:shadow-blue-500/10' },
+    amber:  { bg: 'border-amber-500/20', iconBg: 'bg-amber-500/15', text: 'text-amber-400', glow: 'hover:shadow-amber-500/10' },
+    green:  { bg: 'border-green-500/20', iconBg: 'bg-green-500/15', text: 'text-green-400', glow: 'hover:shadow-green-500/10' },
   };
-  const c = accentMap[color] ?? accentMap['indigo']!;
+  const s = styles[color] ?? styles.brand!;
 
   return (
-    <div onClick={onClick} className={`bg-surface-secondary border border-border-default ${c.border} border-l-2 rounded-xl p-5 cursor-pointer hover:bg-surface-elevated/80 hover:shadow-lg ${c.glow} transition-all duration-200`}>
-      <div className="text-xs text-fg-tertiary mb-2">{label}</div>
-      <div className={`text-3xl font-bold ${c.text}`}>
-        {value}
-        {total !== undefined && <span className="text-base font-normal text-fg-muted">/{total}</span>}
+    <div onClick={onClick} className={`bg-surface-secondary border ${s.bg} rounded-2xl p-4 sm:p-5 cursor-pointer hover:bg-surface-elevated/60 hover:shadow-lg ${s.glow} transition-all duration-200 card-shine`}>
+      <div className="flex items-start justify-between mb-2 sm:mb-3">
+        <div className="text-[11px] sm:text-xs text-fg-tertiary font-medium">{label}</div>
+        <div className={`w-8 h-8 sm:w-9 sm:h-9 rounded-xl ${s.iconBg} ${s.text} flex items-center justify-center`}>{icon}</div>
+      </div>
+      <div className="flex items-baseline gap-1">
+        <span className={`text-2xl sm:text-3xl font-bold ${s.text}`}>{value}</span>
+        {suffix && <span className="text-base sm:text-lg font-semibold text-fg-muted">{suffix}</span>}
+        {total !== undefined && <span className="text-xs sm:text-sm font-normal text-fg-muted">/{total}</span>}
       </div>
     </div>
   );
 }
 
-function HealthGauge({ label, value, max, unit, color, raw }: {
-  label: string; value: number; max: number; unit: string; color: string; raw?: boolean;
+// ─── Donut Chart ─────────────────────────────────────────────────────────────
+
+function DonutChart({ statusCounts, total, completionRate, completed }: {
+  statusCounts: Record<string, number>; total: number; completionRate: number; completed: number;
+}) {
+  const size = 140;
+  const r = 38;
+  const strokeW = 14;
+  const c = 2 * Math.PI * r;
+
+  const segments = STATUS_ORDER
+    .filter(s => (statusCounts[s] ?? 0) > 0)
+    .map(s => ({ value: statusCounts[s]!, color: DONUT_COLORS[s] ?? '#6b7280' }));
+
+  let offset = 0;
+  const arcs = segments.map(seg => {
+    const len = (seg.value / total) * c;
+    const gap = Math.max(0, c - len - 1);
+    const arc = { len: Math.max(len - 1, 0.5), gap, offset, color: seg.color };
+    offset += len;
+    return arc;
+  });
+
+  return (
+    <div className="relative shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} viewBox="0 0 100 100">
+        {arcs.map((arc, i) => (
+          <circle
+            key={i}
+            cx="50" cy="50" r={r}
+            fill="none"
+            stroke={arc.color}
+            strokeWidth={strokeW}
+            strokeDasharray={`${arc.len} ${c - arc.len}`}
+            strokeDashoffset={-arc.offset}
+            transform="rotate(-90 50 50)"
+            className="transition-all duration-500"
+          />
+        ))}
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="text-2xl sm:text-3xl font-bold text-fg-primary">{completionRate}%</span>
+        <span className="text-[10px] text-fg-tertiary">{completed}/{total}</span>
+      </div>
+    </div>
+  );
+}
+
+function DonutLegendItem({ color, label, count }: { color: string; label: string; count: number }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${color}`} />
+        <span className="text-xs text-fg-secondary truncate">{label}</span>
+      </div>
+      <span className="text-xs font-semibold text-fg-primary shrink-0">{count}</span>
+    </div>
+  );
+}
+
+// ─── Activity Feed ───────────────────────────────────────────────────────────
+
+const ACTIVITY_ICON_BG: Record<string, string> = {
+  completed: 'bg-green-500/15', in_progress: 'bg-brand-500/15', pending: 'bg-amber-500/15',
+  review: 'bg-blue-500/15', failed: 'bg-red-500/15', blocked: 'bg-red-500/15',
+  rejected: 'bg-red-500/15', cancelled: 'bg-gray-500/15',
+};
+
+function ActivityIcon({ status }: { status: string }) {
+  const sz = 12;
+  const colorMap: Record<string, string> = {
+    completed: '#22c55e', in_progress: '#8b5cf6', pending: '#f59e0b',
+    review: '#3b82f6', failed: '#ef4444', blocked: '#ef4444', rejected: '#ef4444', cancelled: '#6b7280',
+  };
+  const color = colorMap[status] ?? '#6b7280';
+  return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      {status === 'completed' && <polyline points="20 6 9 17 4 12" />}
+      {status === 'in_progress' && <><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></>}
+      {status === 'pending' && <><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></>}
+      {status === 'review' && <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></>}
+      {(status === 'failed' || status === 'rejected') && <><circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" /></>}
+      {status === 'blocked' && <><circle cx="12" cy="12" r="10" /><line x1="4.93" y1="4.93" x2="19.07" y2="19.07" /></>}
+      {status === 'cancelled' && <><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></>}
+    </svg>
+  );
+}
+
+function formatRelativeTime(dateStr: string, t: TFunction): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return t('common:time.now');
+  if (mins < 60) return t('common:time.minutesAgo', { count: mins });
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return t('common:time.hoursAgo', { count: hours });
+  const days = Math.floor(hours / 24);
+  return t('common:time.daysAgo', { count: days });
+}
+
+// ─── Health Row ──────────────────────────────────────────────────────────────
+
+function HealthRow({ label, value, max, suffix, displayValue, alwaysGreen }: {
+  label: string; value: number; max: number; suffix?: string; displayValue?: string; alwaysGreen?: boolean;
 }) {
   const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
-  const colorMap: Record<string, string> = { green: 'bg-green-400', amber: 'bg-amber-400', red: 'bg-red-400', brand: 'bg-brand-400', blue: 'bg-blue-400' };
-  const textMap: Record<string, string> = { green: 'text-green-600', amber: 'text-amber-600', red: 'text-red-500', brand: 'text-brand-500', blue: 'text-blue-600' };
-  const bar = colorMap[color] ?? 'bg-gray-400';
-  const txt = textMap[color] ?? 'text-fg-secondary';
+  const barColor = alwaysGreen ? 'bg-brand-500' : pct >= 80 ? 'bg-green-500' : pct >= 50 ? 'bg-amber-500' : 'bg-red-500';
+  const textColor = alwaysGreen ? 'text-brand-400' : pct >= 80 ? 'text-green-500' : pct >= 50 ? 'text-amber-500' : 'text-red-500';
 
   return (
     <div>
-      <div className="flex items-baseline justify-between mb-1.5">
-        <span className="text-[11px] text-fg-tertiary">{label}</span>
-        <span className={`text-sm font-semibold ${txt}`}>
-          {raw ? `${unit}${value}` : <>{value}<span className="text-[10px] font-normal text-fg-tertiary">{unit}</span></>}
-        </span>
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-xs text-fg-secondary">{label}</span>
+        <span className={`text-sm font-semibold ${textColor}`}>{displayValue ?? `${value}${suffix ?? ''}`}</span>
       </div>
       <div className="w-full h-1.5 bg-surface-elevated rounded-full overflow-hidden">
-        <div className={`h-full rounded-full ${bar} transition-all`} style={{ width: `${pct}%` }} />
+        <div className={`h-full rounded-full ${barColor} transition-all duration-500`} style={{ width: `${pct}%` }} />
       </div>
     </div>
   );
 }
+
+// ─── Icons ───────────────────────────────────────────────────────────────────
+
+function IconAgents() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  );
+}
+
+function IconRunning() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+    </svg>
+  );
+}
+
+function IconHealth() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+    </svg>
+  );
+}
+
+function IconTasks() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+    </svg>
+  );
+}
+
+// ─── Utils ───────────────────────────────────────────────────────────────────
 
 function fmtBytes(bytes: number, t: TFunction): string {
   if (bytes === 0) return t('storage.bytesZero');
@@ -438,3 +596,8 @@ function fmtBytes(bytes: number, t: TFunction): string {
   return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${t(unitKeys[i])}`;
 }
 
+function fmtNumber(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}

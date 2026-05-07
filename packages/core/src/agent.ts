@@ -186,6 +186,26 @@ export interface AgentOptions {
   cognitive?: CognitiveConfig;
 }
 
+export type AgentScenario = 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review' | 'requirement_action';
+
+interface HandleMessageOptions {
+  sessionId?: string;
+  channelContext?: Array<{ role: string; content: string }>;
+  images?: string[];
+  fileNames?: string[];
+  allowedTools?: Set<string>;
+  scenario?: AgentScenario;
+  maxToolIterations?: number;
+  toolEventCollector?: Array<{
+    tool: string;
+    status: 'done' | 'error';
+    arguments?: unknown;
+    result?: string;
+    durationMs?: number;
+  }>;
+  waitForReply?: boolean;
+}
+
 export class Agent {
   readonly id: string;
   readonly config: AgentConfig;
@@ -571,25 +591,11 @@ export class Agent {
     userMessage: string,
     senderId?: string,
     senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
-    options?: {
+    options?: HandleMessageOptions & {
       sourceType?: MailboxItemType;
       priority?: MailboxPriority;
-      sessionId?: string;
-      channelContext?: Array<{ role: string; content: string }>;
-      images?: string[];
-      fileNames?: string[];
-      allowedTools?: Set<string>;
-      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review';
-      toolEventCollector?: Array<{
-        tool: string;
-        status: 'done' | 'error';
-        arguments?: unknown;
-        result?: string;
-        durationMs?: number;
-      }>;
       taskId?: string;
       requirementId?: string;
-      waitForReply?: boolean;
     },
   ): Promise<string> {
     const sourceType = options?.sourceType
@@ -865,17 +871,18 @@ export class Agent {
     const needsMarker = !!registry?.invokesLLM;
     const markerSuffix = needsMarker ? COMPLETION_MARKER_INSTRUCTION : '';
 
-    const buildHandleOpts = (defaults: Record<string, unknown> = {}) => {
-      const opts: Record<string, unknown> = { ...defaults };
-      if (extra.sessionId !== undefined) opts.sessionId = extra.sessionId;
-      if (extra.channelContext !== undefined) opts.channelContext = extra.channelContext;
-      if (extra.images !== undefined) opts.images = extra.images;
-      if (extra.fileNames !== undefined) opts.fileNames = extra.fileNames;
-      if (extra.scenario !== undefined) opts.scenario = extra.scenario;
-      if (extra.toolEventCollector !== undefined) opts.toolEventCollector = extra.toolEventCollector;
-      if (extra.waitForReply !== undefined) opts.waitForReply = extra.waitForReply;
-      if (extra.allowedTools !== undefined) {
-        opts.allowedTools = new Set(extra.allowedTools as string[]);
+    const buildHandleOpts = (defaults: HandleMessageOptions = {}): HandleMessageOptions => {
+      const opts: HandleMessageOptions = { ...defaults };
+      const ex = extra as Record<string, unknown>;
+      if (ex.sessionId !== undefined) opts.sessionId = ex.sessionId as string;
+      if (ex.channelContext !== undefined) opts.channelContext = ex.channelContext as HandleMessageOptions['channelContext'];
+      if (ex.images !== undefined) opts.images = ex.images as string[];
+      if (ex.fileNames !== undefined) opts.fileNames = ex.fileNames as string[];
+      if (ex.scenario !== undefined) opts.scenario = ex.scenario as AgentScenario;
+      if (ex.toolEventCollector !== undefined) opts.toolEventCollector = ex.toolEventCollector as HandleMessageOptions['toolEventCollector'];
+      if (ex.waitForReply !== undefined) opts.waitForReply = ex.waitForReply as boolean;
+      if (ex.allowedTools !== undefined) {
+        opts.allowedTools = new Set(ex.allowedTools as string[]);
       }
       return opts;
     };
@@ -2287,23 +2294,7 @@ export class Agent {
     userMessage: string,
     senderId?: string,
     senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
-    options?: {
-      sessionId?: string;
-      channelContext?: Array<{ role: string; content: string }>;
-      images?: string[];
-      fileNames?: string[];
-      allowedTools?: Set<string>;
-      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review';
-      maxToolIterations?: number;
-      toolEventCollector?: Array<{
-        tool: string;
-        status: 'done' | 'error';
-        arguments?: unknown;
-        result?: string;
-        durationMs?: number;
-      }>;
-      waitForReply?: boolean;
-    }
+    options?: HandleMessageOptions,
   ): Promise<string> {
     if (this.activeTasks.size === 0) {
       this.setStatus('working');
@@ -2337,6 +2328,14 @@ export class Agent {
         case 'review':
           actType = 'internal';
           actLabel = peerName ? `Reviewing task from ${peerName}` : 'Task Review';
+          break;
+        case 'memory_consolidation':
+          actType = 'internal';
+          actLabel = 'Memory Consolidation';
+          break;
+        case 'requirement_action':
+          actType = 'internal';
+          actLabel = peerName ? `Requirement action from ${peerName}` : 'Requirement Action';
           break;
         default:
           actLabel = peerName ? `Chat with ${peerName}` : 'Human Chat';
