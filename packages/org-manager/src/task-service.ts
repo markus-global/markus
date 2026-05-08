@@ -928,7 +928,7 @@ export class TaskService {
    * Returns immediately; execution runs concurrently via async.
    * @param _retryAttempt - internal retry counter, do not pass from outside
    */
-  async runTask(taskId: string, _retryAttempt = 0): Promise<void> {
+  async runTask(taskId: string, _retryAttempt = 0, _retryReason?: 'error' | 'no_submit'): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (!task.assignedAgentId) throw new Error(`Task ${taskId} has no assigned agent`);
@@ -1071,21 +1071,45 @@ export class TaskService {
     // Add explicit retry notice so agent knows to continue, not restart
     let retryNotice = '';
     if (_retryAttempt > 0 && prevContext) {
-      retryNotice = [
-        '## ⚠ RETRY — CONTINUE FROM WHERE YOU LEFT OFF',
-        '',
-        `**Current time:** ${formatLocalTimestamp(new Date())}`,
-        `**Retry attempt:** ${_retryAttempt + 1}`,
-        '',
-        'Your previous attempt was interrupted by a transient error (network issue, timeout, etc.).',
-        '**You MUST NOT start over.** Review the execution details below and continue from where you stopped.',
-        '- Do NOT re-read files you already read in the previous attempt',
-        '- Do NOT redo work that was already completed',
-        '- Pick up exactly where the previous attempt was interrupted',
-        '',
-        '---',
-        '',
-      ].join('\n');
+      if (_retryReason === 'no_submit') {
+        retryNotice = [
+          '## ⚠ CRITICAL — YOU FORGOT TO CALL `task_submit_review`',
+          '',
+          `**Current time:** ${formatLocalTimestamp(new Date())}`,
+          `**Retry attempt:** ${_retryAttempt + 1}`,
+          '',
+          'Your previous execution finished WITHOUT calling `task_submit_review`. This is MANDATORY to complete a task.',
+          'The task is still in_progress and will NOT enter review until you call `task_submit_review`.',
+          '',
+          '**ACTION REQUIRED — Call `task_submit_review` NOW with:**',
+          '- `summary`: A concise description of what you accomplished',
+          '- `deliverables`: List of files/artifacts you produced or modified',
+          '',
+          'If you were unable to complete the task, call `task_update` with status "blocked" or "failed" and a note explaining why.',
+          '',
+          'Review the execution details below for context on what you already did, then IMMEDIATELY call `task_submit_review`.',
+          'Do NOT redo any work — just submit.',
+          '',
+          '---',
+          '',
+        ].join('\n');
+      } else {
+        retryNotice = [
+          '## ⚠ RETRY — CONTINUE FROM WHERE YOU LEFT OFF',
+          '',
+          `**Current time:** ${formatLocalTimestamp(new Date())}`,
+          `**Retry attempt:** ${_retryAttempt + 1}`,
+          '',
+          'Your previous attempt was interrupted by a transient error (network issue, timeout, etc.).',
+          '**You MUST NOT start over.** Review the execution details below and continue from where you stopped.',
+          '- Do NOT re-read files you already read in the previous attempt',
+          '- Do NOT redo work that was already completed',
+          '- Pick up exactly where the previous attempt was interrupted',
+          '',
+          '---',
+          '',
+        ].join('\n');
+      }
     }
 
     // Include existing subtasks so the agent knows what was already decomposed
@@ -1307,7 +1331,7 @@ export class TaskService {
                   setTimeout(() => {
                     const current = this.tasks.get(taskId);
                     if (!current || current.status !== 'in_progress') return;
-                    this.runTask(taskId, nextAttempt).catch(e =>
+                    this.runTask(taskId, nextAttempt, 'no_submit').catch(e =>
                       log.error('No-submit retry invocation failed', { taskId, error: String(e) })
                     );
                   }, delayMs);
@@ -3881,7 +3905,7 @@ export class TaskService {
               setTimeout(() => {
                 const current = this.tasks.get(taskId);
                 if (!current || current.status !== 'in_progress') return;
-                this.runTask(taskId, 1).catch(e =>
+                this.runTask(taskId, 1, 'no_submit').catch(e =>
                   log.error('Fresh no-submit retry invocation failed', { taskId, error: String(e) })
                 );
               }, delayMs);

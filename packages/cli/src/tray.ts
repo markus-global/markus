@@ -7,6 +7,7 @@
 
 import { spawn, exec, type ChildProcess } from 'node:child_process';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { createConnection } from 'node:net';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { platform, homedir } from 'node:os';
@@ -57,8 +58,33 @@ function openBrowser(url: string): void {
 let serverProcess: ChildProcess | null = null;
 let serverRunning = false;
 
-function startServer(): void {
+function isPortListening(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ port, host: '127.0.0.1' }, () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.on('error', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.setTimeout(2000, () => {
+      socket.destroy();
+      resolve(false);
+    });
+  });
+}
+
+async function startServer(): Promise<void> {
   if (serverRunning) return;
+
+  // If the port is already in use, the server is running externally — just open the browser
+  if (await isPortListening(WEB_UI_PORT)) {
+    serverRunning = true;
+    updateTrayMenu();
+    openBrowser(WEB_UI_URL);
+    return;
+  }
 
   mkdirSync(LOG_DIR, { recursive: true });
 
@@ -146,7 +172,7 @@ async function main() {
     if (title === ITEM_OPEN_UI.title) {
       openBrowser(WEB_UI_URL);
     } else if (title === ITEM_START.title) {
-      startServer();
+      await startServer();
     } else if (title === ITEM_STOP.title) {
       stopServer();
     } else if (title === ITEM_QUIT.title) {
@@ -164,7 +190,7 @@ async function main() {
   });
 
   // Auto-start the server on launch
-  startServer();
+  await startServer();
 }
 
 main().catch((err) => {

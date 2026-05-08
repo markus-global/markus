@@ -63,6 +63,7 @@ interface TaskEvent {
 
 interface HeartbeatEvent {
   success: boolean;
+  skipped: boolean;
   timestamp: number;
 }
 
@@ -146,8 +147,8 @@ export class AgentMetricsCollector {
     this.scheduleSave();
   }
 
-  recordHeartbeat(success: boolean): void {
-    this.heartbeatEvents.push({ success, timestamp: Date.now() });
+  recordHeartbeat(success: boolean, skipped = false): void {
+    this.heartbeatEvents.push({ success, skipped, timestamp: Date.now() });
     this.trimEvents(this.heartbeatEvents);
     this.scheduleSave();
   }
@@ -271,9 +272,10 @@ export class AgentMetricsCollector {
   }
 
   private computeHeartbeatRate(heartbeats: HeartbeatEvent[]): number {
-    if (heartbeats.length === 0) return 1;
-    const successes = heartbeats.filter(h => h.success).length;
-    return successes / heartbeats.length;
+    const executed = heartbeats.filter(h => !h.skipped);
+    if (executed.length === 0) return 1;
+    const successes = executed.filter(h => h.success).length;
+    return successes / executed.length;
   }
 
   private periodCutoff(period: '1h' | '24h' | '7d'): number {

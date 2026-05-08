@@ -4846,22 +4846,32 @@ export class Agent {
   }): Promise<void> {
     log.info('Processing heartbeat check-in');
 
-    // Compute a lightweight change fingerprint to skip idle heartbeats.
-    // If nothing has changed since the last heartbeat, skip the LLM call.
+    // Skip idle heartbeats when nothing has changed, but force a real LLM
+    // heartbeat every MAX_CONSECUTIVE_IDLE_SKIPS to ensure periodic patrol.
+    const MAX_CONSECUTIVE_IDLE_SKIPS = 3;
     const queuedNonHeartbeat = this.mailbox.getQueuedItems().filter(
       i => i.sourceType !== 'heartbeat' && i.status === 'queued'
     ).length;
     const fingerprint = `q:${queuedNonHeartbeat}`;
-    if (fingerprint === this.lastHeartbeatFingerprint && queuedNonHeartbeat === 0) {
+    const shouldForce = this.consecutiveIdleHeartbeats >= MAX_CONSECUTIVE_IDLE_SKIPS;
+    if (fingerprint === this.lastHeartbeatFingerprint && queuedNonHeartbeat === 0 && !shouldForce) {
       this.consecutiveIdleHeartbeats++;
       log.info('Heartbeat: no changes detected, skipping LLM call', {
         consecutiveIdle: this.consecutiveIdleHeartbeats,
       });
+      const skipActivityId = this.startActivity('heartbeat', 'Heartbeat check-in (idle skip)', {});
+      this.emitActivityLog(skipActivityId, 'text', `No changes detected (idle ${this.consecutiveIdleHeartbeats}/${MAX_CONSECUTIVE_IDLE_SKIPS}). Skipping LLM patrol — next forced patrol in ${MAX_CONSECUTIVE_IDLE_SKIPS - this.consecutiveIdleHeartbeats} heartbeat(s).`);
+      this.endActivity(skipActivityId);
       this.state.lastHeartbeat = new Date().toISOString();
-      this.metricsCollector.recordHeartbeat(true);
+      this.metricsCollector.recordHeartbeat(true, true);
       return;
     }
     this.lastHeartbeatFingerprint = fingerprint;
+    if (shouldForce) {
+      log.info('Heartbeat: forcing LLM patrol after consecutive idle skips', {
+        consecutiveIdle: this.consecutiveIdleHeartbeats,
+      });
+    }
     this.consecutiveIdleHeartbeats = 0;
 
     const activityId = this.startActivity('heartbeat', 'Heartbeat check-in', {});
@@ -5117,7 +5127,9 @@ export class Agent {
 
         const cleanReply = reply ? stripCompletionMarker(reply) : '';
         const isOk = cleanReply.trim() === 'HEARTBEAT_OK';
-        if (cleanReply && !isOk && cleanReply.length > 20) {
+        if (isOk) {
+          this.emitActivityLog(activityId, 'text', 'Patrol complete — all clear.');
+        } else if (cleanReply && cleanReply.length > 20) {
           this.emitActivityLog(activityId, 'text', cleanReply);
           this.memory.writeDailyLog(this.id, `[Heartbeat] ${cleanReply}`);
         }
