@@ -244,6 +244,12 @@ create_desktop_shortcut() {
     cat > "$shortcut" << SCRIPT
 #!/bin/bash
 # Markus — AI Digital Workforce Platform
+# If the server is already running, just open the browser
+PORT=8056
+if curl -s --max-time 2 -o /dev/null "http://localhost:\$PORT/api/health" 2>/dev/null; then
+  open "http://localhost:\$PORT"
+  exit 0
+fi
 ${markus_cmd} start
 SCRIPT
     chmod +x "$shortcut"
@@ -253,12 +259,24 @@ SCRIPT
     local desktop_dir="${XDG_DESKTOP_DIR:-$HOME/Desktop}"
     if [ -d "$desktop_dir" ]; then
       local shortcut="$desktop_dir/markus.desktop"
+      local wrapper="$HOME/.markus/markus-launch.sh"
+      mkdir -p "$HOME/.markus"
+      cat > "$wrapper" << WRAPPERSCRIPT
+#!/bin/bash
+PORT=8056
+if curl -s --max-time 2 -o /dev/null "http://localhost:\$PORT/api/health" 2>/dev/null; then
+  xdg-open "http://localhost:\$PORT" 2>/dev/null || true
+  exit 0
+fi
+${markus_cmd} start
+WRAPPERSCRIPT
+      chmod +x "$wrapper"
       cat > "$shortcut" << EOF
 [Desktop Entry]
 Type=Application
 Name=Markus
 Comment=AI Digital Workforce Platform
-Exec=${markus_cmd} start
+Exec=${wrapper}
 Terminal=true
 Categories=Development;
 StartupNotify=true

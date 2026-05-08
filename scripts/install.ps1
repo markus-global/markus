@@ -166,20 +166,36 @@ function Set-UserPath {
 function New-DesktopShortcut {
     param([string]$MarkusCmd, [string]$InstallMode)
     try {
+        # Create a launcher script that checks if the server is already running
+        $launcherDir = Join-Path $env:LOCALAPPDATA 'markus'
+        if (-not (Test-Path $launcherDir)) { New-Item -ItemType Directory -Path $launcherDir -Force | Out-Null }
+        $launcherPath = Join-Path $launcherDir 'markus-launch.cmd'
+
+        if ($InstallMode -eq 'binary') {
+            $markusCmdPath = Join-Path $INSTALL_DIR 'markus.cmd'
+        } else {
+            $markusCmdPath = $MarkusCmd
+        }
+
+        @"
+@echo off
+setlocal
+set PORT=8056
+powershell -NoProfile -Command "try { `$r = Invoke-WebRequest -Uri 'http://localhost:%PORT%/api/health' -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop; exit 0 } catch { exit 1 }" >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    start "" "http://localhost:%PORT%"
+    exit /b 0
+)
+"$markusCmdPath" start
+"@ | Set-Content -Path $launcherPath -Encoding ASCII
+
         $WshShell = New-Object -ComObject WScript.Shell
         $desktopPath = [Environment]::GetFolderPath('Desktop')
         $lnkPath = Join-Path $desktopPath 'Markus.lnk'
         $shortcut = $WshShell.CreateShortcut($lnkPath)
 
-        if ($InstallMode -eq 'binary') {
-            $shortcut.TargetPath = Join-Path $INSTALL_DIR 'markus.cmd'
-            $shortcut.Arguments = 'start'
-            $shortcut.WorkingDirectory = $env:USERPROFILE
-        } else {
-            $shortcut.TargetPath = $MarkusCmd
-            $shortcut.Arguments = 'start'
-            $shortcut.WorkingDirectory = $env:USERPROFILE
-        }
+        $shortcut.TargetPath = $launcherPath
+        $shortcut.WorkingDirectory = $env:USERPROFILE
         $shortcut.Description = 'Markus - AI Digital Workforce Platform'
 
         $icoPath = Join-Path $INSTALL_DIR 'markus.ico'

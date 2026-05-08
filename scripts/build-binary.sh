@@ -240,7 +240,14 @@ PLIST_APP
 MARKUS_DIR="/usr/local/lib/markus"
 NODE="$MARKUS_DIR/bin/node"
 LOG_DIR="$HOME/.markus/logs"
+PORT=8056
 mkdir -p "$LOG_DIR"
+
+# If the server is already running, just open the browser
+if curl -s --max-time 2 -o /dev/null "http://localhost:$PORT/api/health" 2>/dev/null; then
+  open "http://localhost:$PORT"
+  exit 0
+fi
 
 # Try tray controller first; fall back to direct server start
 if [ -f "$MARKUS_DIR/bin/tray.mjs" ]; then
@@ -259,7 +266,7 @@ fi
 SERVER_PID=$!
 sleep 3
 if kill -0 "$SERVER_PID" 2>/dev/null; then
-  open "http://localhost:8056"
+  open "http://localhost:$PORT"
 else
   osascript -e 'display dialog "Markus failed to start.\nCheck logs at ~/.markus/logs/" with title "Markus" buttons {"OK"} default button "OK" with icon stop'
   exit 1
