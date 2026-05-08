@@ -9,6 +9,9 @@ const log = createLogger('browser-session');
  */
 const SESSION_KEY = '_browserSessionId';
 
+/** Error substring that chrome-devtools-mcp returns when the selected page is gone. */
+const STALE_PAGE_ERROR = 'The selected page has been closed';
+
 /**
  * Tracks browser tab ownership per session and wraps chrome-devtools MCP
  * tool handlers to enforce strict tab isolation.
@@ -27,17 +30,10 @@ const SESSION_KEY = '_browserSessionId';
  * browser operations acquire a per-agent mutex and auto-select the session's
  * current page before executing. This makes "select → operate" atomic.
  *
- * Defense-in-depth:
- *  1. new_page  → registers the tab's numeric ID as owned by this session
- *  2. list_pages → annotates every page with ownership info (no lock needed)
- *  3. select_page / close_page → blocked unless targeting an owned page ID
- *  4. navigate_page → if session has no owned pages, transparently calls
- *     new_page with the target URL
- *  5. ALL other tools → blocked if the session has no owned pages yet;
- *     if args contain a `pageId`, it must be owned
- *  6. ALL tool responses → "## Pages" section is annotated with ownership
- *     tags so agents always know which tabs they can operate on
- *  7. Per-agent mutex ensures "select_page → tool" is atomic across sessions
+ * Stale page recovery: when Chrome tabs are closed externally (by the user),
+ * the MCP server enters a stuck state where ALL tools return "The selected
+ * page has been closed". When detected, we automatically reconnect the MCP
+ * server and retry the operation.
  */
 export class BrowserSessionManager {
   /**
@@ -64,24 +60,71 @@ export class BrowserSessionManager {
   private selectPageHandlers = new Map<string, AgentToolHandler>();
 
   /**
-   * When true, new_page and select_page will bring Chrome to foreground.
-   * Controlled via Settings > Browser Automation. Default: false.
+   * Per-agent callback to disconnect + reconnect the MCP server process.
+   * Set by agent-manager after wrapping tool handlers. When a stale page
+   * error is detected, this callback is invoked to restart the MCP.
+   * Since handlers look up the server by key dynamically, they automatically
+   * route to the new process after reconnect.
    */
-  private _bringToFront = false;
+  private reconnectors = new Map<string, () => Promise<void>>();
 
-  /** When true, agent-owned tabs are auto-closed on cleanup. Default: true. */
+  private _bringToFront = false;
   private _autoCloseTabs = true;
 
   get bringToFront(): boolean { return this._bringToFront; }
   set bringToFront(v: boolean) { this._bringToFront = v; }
-
   get autoCloseTabs(): boolean { return this._autoCloseTabs; }
   set autoCloseTabs(v: boolean) { this._autoCloseTabs = v; }
 
   /**
-   * Acquire a per-agent mutex.  Operations are serialized per-agent so that
-   * the "select_page → tool" sequence is atomic.
+   * Register a reconnect callback for an agent's MCP server.
+   * Called by agent-manager after wrapToolHandlers.
    */
+  setReconnector(agentId: string, callback: () => Promise<void>): void {
+    this.reconnectors.set(agentId, callback);
+  }
+
+  // ─── Stale page recovery ──────────────────────────────────────────────────
+
+  private isStalePageError(result: string): boolean {
+    return result.includes(STALE_PAGE_ERROR);
+  }
+
+  /**
+   * Clear all ownership state for an agent and reconnect its MCP server.
+   * Returns true if reconnect succeeded.
+   */
+  private async reconnectMcp(agentId: string): Promise<boolean> {
+    const reconnect = this.reconnectors.get(agentId);
+    if (!reconnect) {
+      log.warn(`No reconnector available for agent ${agentId}`);
+      return false;
+    }
+
+    log.info(`Stale page detected for agent ${agentId} — reconnecting MCP server`);
+
+    // Clear all session state for this agent
+    const prefix = `${agentId}::`;
+    for (const key of [...this.ownedPages.keys()]) {
+      if (key === agentId || key.startsWith(prefix)) {
+        this.ownedPages.delete(key);
+        this.currentPage.delete(key);
+      }
+    }
+    this.lastActiveSession.delete(agentId);
+
+    try {
+      await reconnect();
+      log.info(`MCP server reconnected for agent ${agentId}`);
+      return true;
+    } catch (err) {
+      log.error(`Failed to reconnect MCP server for agent ${agentId}: ${err}`);
+      return false;
+    }
+  }
+
+  // ─── Internal helpers ─────────────────────────────────────────────────────
+
   private async withAgentLock<T>(agentId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.agentLocks.get(agentId) ?? Promise.resolve();
     let release: () => void;
@@ -95,21 +138,8 @@ export class BrowserSessionManager {
     }
   }
 
-  /**
-   * The ownerKey of the session that last operated under each agent's lock.
-   * Used to skip redundant select_page calls when only one session is active.
-   */
   private lastActiveSession = new Map<string, { ownerKey: string; pageId: number }>();
 
-  /**
-   * Ensure the MCP server's selected tab matches this session's current page.
-   * Called inside the agent lock before any tool that operates on the active tab.
-   *
-   * Respects the bringToFront setting: when false (default), prevents Chrome
-   * from stealing window focus on macOS.
-   * Skips the call entirely when the agent's last operation was already on
-   * this session's current page.
-   */
   private async ensureCorrectPage(agentId: string, ownerKey: string): Promise<void> {
     const pageId = this.currentPage.get(ownerKey);
     if (pageId === undefined) return;
@@ -144,10 +174,6 @@ export class BrowserSessionManager {
     return set;
   }
 
-  /**
-   * Parse page entries from the "## Pages" section of an MCP text response.
-   * Format: <id>: <url> [selected]? [isolatedContext=<name>]?
-   */
   private parsePageEntries(text: string): Array<{ id: number; url: string; selected: boolean }> {
     const entries: Array<{ id: number; url: string; selected: boolean }> = [];
     const regex = /^(\d+):\s+(\S+)(.*)/gm;
@@ -162,9 +188,6 @@ export class BrowserSessionManager {
     return entries;
   }
 
-  /**
-   * Annotate "## Pages" lines in tool responses with ownership tags.
-   */
   private annotateResponse(result: string, ownerKey: string): string {
     const owned = this.getOwned(ownerKey);
     return result.replace(
@@ -186,9 +209,8 @@ export class BrowserSessionManager {
     return `Your owned tab IDs: [${ids}] (${owned.size} total). You can only operate on these.`;
   }
 
-  /**
-   * Wrap an array of chrome-devtools tool handlers with strict tab isolation.
-   */
+  // ─── Public API ───────────────────────────────────────────────────────────
+
   wrapToolHandlers(handlers: AgentToolHandler[], agentId: string): AgentToolHandler[] {
     const findHandler = (name: string) =>
       handlers.find((h) => (h.name.split('__').pop() ?? h.name) === name);
@@ -218,9 +240,8 @@ export class BrowserSessionManager {
     });
   }
 
-  /**
-   * Track the newly created page as owned by this session and set it as current.
-   */
+  // ─── Tool wrappers ────────────────────────────────────────────────────────
+
   private wrapNewPage(handler: AgentToolHandler, agentId: string): AgentToolHandler {
     return {
       ...handler,
@@ -232,18 +253,31 @@ export class BrowserSessionManager {
         return this.withAgentLock(agentId, async () => {
           const owned = this.getOwned(ownerKey);
           const prevIds = new Set(owned);
-          const result = await handler.execute(args);
-          const pages = this.parsePageEntries(result);
-          const newPage = pages.find((p) => p.selected)
-            ?? pages.find((p) => !prevIds.has(p.id))
-            ?? (pages.length > 0 ? pages.reduce((a, b) => (a.id > b.id ? a : b)) : undefined);
-          if (newPage) {
-            owned.add(newPage.id);
-            this.currentPage.set(ownerKey, newPage.id);
-            this.lastActiveSession.set(agentId, { ownerKey, pageId: newPage.id });
-            log.debug(`Page ${newPage.id} (${newPage.url}) assigned to ${ownerKey}`);
-          } else {
-            log.warn(`new_page response contained no pages for ${ownerKey}`);
+          let result = await handler.execute(args);
+
+          // Stale page recovery: reconnect and retry
+          if (this.isStalePageError(result)) {
+            const ok = await this.reconnectMcp(agentId);
+            if (ok) {
+              result = await handler.execute(args);
+            }
+          }
+
+          if (!this.isStalePageError(result)) {
+            const pages = this.parsePageEntries(result);
+            const newPage = pages.find((p) => p.selected)
+              ?? pages.find((p) => !prevIds.has(p.id))
+              ?? (pages.length > 0 ? pages.reduce((a, b) => (a.id > b.id ? a : b)) : undefined);
+            if (newPage) {
+              // Re-fetch owned after potential reconnect (reconnect clears state)
+              const currentOwned = this.getOwned(ownerKey);
+              currentOwned.add(newPage.id);
+              this.currentPage.set(ownerKey, newPage.id);
+              this.lastActiveSession.set(agentId, { ownerKey, pageId: newPage.id });
+              log.debug(`Page ${newPage.id} (${newPage.url}) assigned to ${ownerKey}`);
+            } else {
+              log.warn(`new_page response contained no pages for ${ownerKey}`);
+            }
           }
           return this.annotateResponse(result, ownerKey);
         });
@@ -251,13 +285,18 @@ export class BrowserSessionManager {
     };
   }
 
-  /** list_pages is read-only: no lock needed, just annotate. */
   private wrapListPages(handler: AgentToolHandler, agentId: string): AgentToolHandler {
     return {
       ...handler,
       execute: async (args: Record<string, unknown>) => {
         const ownerKey = this.extractOwnerKey(agentId, args);
-        const result = await handler.execute(args);
+        let result = await handler.execute(args);
+
+        if (this.isStalePageError(result)) {
+          const ok = await this.reconnectMcp(agentId);
+          if (ok) result = await handler.execute(args);
+        }
+
         return this.annotateResponse(result, ownerKey);
       },
     };
@@ -278,7 +317,16 @@ export class BrowserSessionManager {
           args.bringToFront = this._bringToFront;
         }
         return this.withAgentLock(agentId, async () => {
-          const result = await handler.execute(args);
+          let result = await handler.execute(args);
+
+          if (this.isStalePageError(result)) {
+            const ok = await this.reconnectMcp(agentId);
+            if (ok) {
+              return 'Browser session was reset because tabs were closed externally. '
+                + 'Your previously owned tabs are gone. Call new_page or navigate_page to create a new tab.';
+            }
+          }
+
           if (pageId !== undefined) {
             this.currentPage.set(ownerKey, pageId);
             this.lastActiveSession.set(agentId, { ownerKey, pageId });
@@ -301,7 +349,16 @@ export class BrowserSessionManager {
           return JSON.stringify({ error: msg });
         }
         return this.withAgentLock(agentId, async () => {
-          const result = await handler.execute(args);
+          let result = await handler.execute(args);
+
+          if (this.isStalePageError(result)) {
+            const ok = await this.reconnectMcp(agentId);
+            if (ok) {
+              return 'Browser session was reset because tabs were closed externally. '
+                + 'Your previously owned tabs are gone. Call new_page or navigate_page to create a new tab.';
+            }
+          }
+
           if (pageId !== undefined) {
             this.getOwned(ownerKey).delete(pageId);
             if (this.currentPage.get(ownerKey) === pageId) {
@@ -320,13 +377,6 @@ export class BrowserSessionManager {
     };
   }
 
-  /**
-   * Wrap navigate_page with auto-creation + auto-select.
-   *
-   * When the session has no owned pages, transparently calls new_page.
-   * When it does, acquires the lock and selects the session's current page
-   * before navigating, preventing another session's tab from being overwritten.
-   */
   private wrapNavigatePage(
     handler: AgentToolHandler,
     agentId: string,
@@ -339,53 +389,21 @@ export class BrowserSessionManager {
         const owned = this.getOwned(ownerKey);
 
         if (owned.size === 0) {
-          const url = args.url as string | undefined;
-          if (!url) {
-            const msg = 'Cannot navigate: you have no owned tabs and no URL provided. Call new_page first or provide a URL.';
-            log.warn(msg, { ownerKey });
-            return JSON.stringify({ error: msg });
-          }
-          if (!newPageHandler) {
-            const msg = 'No owned pages and new_page tool unavailable. Cannot navigate safely.';
-            log.error(msg, { ownerKey });
-            return JSON.stringify({ error: msg });
-          }
-
-          log.info(`Session ${ownerKey} called navigate_page with no owned pages -- auto-creating via new_page`, { url });
-
-          return this.withAgentLock(agentId, async () => {
-            const newPageArgs: Record<string, unknown> = { url, background: !this._bringToFront };
-            if (args.timeout) newPageArgs.timeout = args.timeout;
-
-            try {
-              const prevIds = new Set(owned);
-              const result = await newPageHandler.execute(newPageArgs);
-              const pages = this.parsePageEntries(result);
-              const newPage = pages.find((p) => p.selected)
-                ?? pages.find((p) => !prevIds.has(p.id))
-                ?? (pages.length > 0 ? pages.reduce((a, b) => (a.id > b.id ? a : b)) : undefined);
-
-              if (newPage) {
-                owned.add(newPage.id);
-                this.currentPage.set(ownerKey, newPage.id);
-                this.lastActiveSession.set(agentId, { ownerKey, pageId: newPage.id });
-                log.info(`Auto-created page ${newPage.id} (${newPage.url}) for ${ownerKey}`);
-              } else {
-                log.warn(`Auto-created page but could not determine its ID for ${ownerKey}`);
-              }
-
-              return this.annotateResponse(result, ownerKey);
-            } catch (err) {
-              const msg = `Failed to auto-create new tab: ${err}`;
-              log.error(msg, { ownerKey });
-              return JSON.stringify({ error: msg });
-            }
-          });
+          return this.navigateAutoCreate(agentId, ownerKey, args, newPageHandler);
         }
 
         return this.withAgentLock(agentId, async () => {
           await this.ensureCorrectPage(agentId, ownerKey);
-          const result = await handler.execute(args);
+          let result = await handler.execute(args);
+
+          if (this.isStalePageError(result)) {
+            const ok = await this.reconnectMcp(agentId);
+            if (ok) {
+              // After reconnect, state is cleared. Fall back to auto-create.
+              return this.navigateAutoCreateLocked(agentId, ownerKey, args, newPageHandler);
+            }
+          }
+
           return this.annotateResponse(result, ownerKey);
         });
       },
@@ -393,9 +411,67 @@ export class BrowserSessionManager {
   }
 
   /**
-   * Generic guard for ALL interaction tools (click, fill, snapshot, etc.).
-   * Acquires the agent lock and auto-selects the session's current page.
+   * Auto-create a new tab for navigate_page when the session has no owned pages.
+   * Acquires the agent lock internally.
    */
+  private async navigateAutoCreate(
+    agentId: string,
+    ownerKey: string,
+    args: Record<string, unknown>,
+    newPageHandler?: AgentToolHandler,
+  ): Promise<string> {
+    return this.withAgentLock(agentId, async () => {
+      return this.navigateAutoCreateLocked(agentId, ownerKey, args, newPageHandler);
+    });
+  }
+
+  /** Inner auto-create logic, must be called with the agent lock held. */
+  private async navigateAutoCreateLocked(
+    agentId: string,
+    ownerKey: string,
+    args: Record<string, unknown>,
+    newPageHandler?: AgentToolHandler,
+  ): Promise<string> {
+    const url = args.url as string | undefined;
+    if (!url) {
+      return JSON.stringify({ error: 'Cannot navigate: no URL provided. Call new_page first or provide a URL.' });
+    }
+    if (!newPageHandler) {
+      return JSON.stringify({ error: 'new_page tool unavailable. Cannot navigate safely.' });
+    }
+
+    log.info(`Session ${ownerKey} auto-creating tab via new_page`, { url });
+
+    const newPageArgs: Record<string, unknown> = { url, background: !this._bringToFront };
+    if (args.timeout) newPageArgs.timeout = args.timeout;
+
+    try {
+      let result = await newPageHandler.execute(newPageArgs);
+
+      if (this.isStalePageError(result)) {
+        const ok = await this.reconnectMcp(agentId);
+        if (ok) result = await newPageHandler.execute(newPageArgs);
+      }
+
+      if (!this.isStalePageError(result)) {
+        const owned = this.getOwned(ownerKey);
+        const pages = this.parsePageEntries(result);
+        const newPage = pages.find((p) => p.selected)
+          ?? (pages.length > 0 ? pages.reduce((a, b) => (a.id > b.id ? a : b)) : undefined);
+        if (newPage) {
+          owned.add(newPage.id);
+          this.currentPage.set(ownerKey, newPage.id);
+          this.lastActiveSession.set(agentId, { ownerKey, pageId: newPage.id });
+          log.info(`Auto-created page ${newPage.id} (${newPage.url}) for ${ownerKey}`);
+        }
+      }
+
+      return this.annotateResponse(result, ownerKey);
+    } catch (err) {
+      return JSON.stringify({ error: `Failed to auto-create new tab: ${err}` });
+    }
+  }
+
   private wrapGenericTool(handler: AgentToolHandler, agentId: string, toolName: string): AgentToolHandler {
     return {
       ...handler,
@@ -415,17 +491,24 @@ export class BrowserSessionManager {
         }
         return this.withAgentLock(agentId, async () => {
           await this.ensureCorrectPage(agentId, ownerKey);
-          const result = await handler.execute(args);
+          let result = await handler.execute(args);
+
+          if (this.isStalePageError(result)) {
+            const ok = await this.reconnectMcp(agentId);
+            if (ok) {
+              return 'Browser session was reset because tabs were closed externally. '
+                + 'Your previously owned tabs are gone. Call navigate_page or new_page to create a new tab, then retry.';
+            }
+          }
+
           return this.annotateResponse(result, ownerKey);
         });
       },
     };
   }
 
-  /**
-   * Clean up all page ownership records for an agent (all sessions).
-   * Called when an agent is removed.
-   */
+  // ─── Cleanup ──────────────────────────────────────────────────────────────
+
   cleanupAgent(agentId: string): void {
     const prefix = `${agentId}::`;
     let total = 0;
@@ -439,6 +522,7 @@ export class BrowserSessionManager {
     this.agentLocks.delete(agentId);
     this.selectPageHandlers.delete(agentId);
     this.lastActiveSession.delete(agentId);
+    this.reconnectors.delete(agentId);
     if (total > 0) {
       log.info(`Cleaning up ${total} browser page(s) for agent ${agentId}`);
     }
