@@ -6396,11 +6396,19 @@ EXPLANATION_END`;
         } catch { /* listRecent may not exist yet */ }
       }
 
-      // Sort by timestamp descending, limit
-      items.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      const page = items.slice(0, limit);
+      // Filter out items belonging to archived tasks
+      const filtered = items.filter(item => {
+        const taskId = (item.metadata as Record<string, unknown> | undefined)?.taskId as string | undefined;
+        if (!taskId) return true;
+        const task = this.taskService.getTask(taskId);
+        return !task || task.status !== 'archived';
+      });
 
-      this.json(res, 200, { items: page, totalCount: items.length });
+      // Sort by timestamp descending, limit
+      filtered.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      const page = filtered.slice(0, limit);
+
+      this.json(res, 200, { items: page, totalCount: filtered.length });
       return;
     }
 
