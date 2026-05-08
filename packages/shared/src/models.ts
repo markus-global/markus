@@ -39,7 +39,7 @@ export const PROVIDERS: ProviderModel[] = [
     envKey: 'MINIMAX_API_KEY',
     baseUrl: 'https://api.minimax.io/v1',
     defaultModel: 'MiniMax-M2.7',
-    models: ['MiniMax-M2.7', 'MiniMax-M2.5', 'MiniMax-M3', 'MiniMax-M3-high'],
+    models: ['MiniMax-M2.7', 'MiniMax-M2.5'],
   },
   {
     id: 'siliconflow',

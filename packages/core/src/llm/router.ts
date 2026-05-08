@@ -1078,8 +1078,6 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   // MiniMax — https://platform.minimax.io/docs/api-reference/api-overview
   { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2 }, reasoning: true, inputTypes: ['text'] },
   { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.2, output: 0.95 }, reasoning: false, inputTypes: ['text'] },
-  { id: 'MiniMax-M3', name: 'MiniMax M3', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.5, output: 2 }, reasoning: true, inputTypes: ['text'] },
-  { id: 'MiniMax-M3-high', name: 'MiniMax M3-High', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.8, output: 3.2 }, reasoning: true, inputTypes: ['text'] },
   // OpenRouter — https://openrouter.ai/models (pass-through pricing varies by upstream provider)
   { id: 'xiaomi/mimo-v2-pro', name: 'MiMo-V2-Pro', provider: 'openrouter', contextWindow: 1048576, maxOutputTokens: 131072, cost: { input: 1, output: 3, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text'] },
   { id: 'anthropic/claude-opus-4-6', name: 'Claude Opus 4.6 (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, reasoning: true, inputTypes: ['text', 'image'] },
