@@ -1056,24 +1056,38 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, reasoning: false, inputTypes: ['text', 'image'] },
   { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 }, reasoning: false, inputTypes: ['text', 'image'] },
+  { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, reasoning: false, inputTypes: ['text', 'image'] },
   // OpenAI — https://developers.openai.com/api/docs/models
   { id: 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 2.5, output: 15, cacheRead: 0.25 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 2.5, output: 10 }, reasoning: false, inputTypes: ['text', 'image'] },
   { id: 'o4-mini', name: 'o4-mini', provider: 'openai', contextWindow: 200000, maxOutputTokens: 100000, cost: { input: 1.1, output: 4.4 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', provider: 'openai', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 0.75, output: 4.5, cacheRead: 0.075 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'gpt-5.5', name: 'GPT-5.5', provider: 'openai', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 5, output: 30, cacheRead: 0.5 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'gpt-4.1', name: 'GPT-4.1', provider: 'openai', contextWindow: 1000000, maxOutputTokens: 32768, cost: { input: 2, output: 8 }, reasoning: false, inputTypes: ['text', 'image'] },
+  { id: 'gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai', contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 0.15, output: 0.6 }, reasoning: false, inputTypes: ['text', 'image'] },
+  { id: 'o3', name: 'o3', provider: 'openai', contextWindow: 200000, maxOutputTokens: 100000, cost: { input: 10, output: 40 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'o3-mini', name: 'o3-mini', provider: 'openai', contextWindow: 200000, maxOutputTokens: 100000, cost: { input: 1.1, output: 4.4 }, reasoning: true, inputTypes: ['text', 'image'] },
   // OpenAI Codex (OAuth — uses ChatGPT subscription)
   { id: 'gpt-5.4', name: 'GPT-5.4 (Codex)', provider: 'openai-codex', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 0, output: 0 }, reasoning: true, inputTypes: ['text', 'image'], description: 'Uses ChatGPT subscription via OAuth' },
   { id: 'gpt-4o', name: 'GPT-4o (Codex)', provider: 'openai-codex', contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 0, output: 0 }, reasoning: false, inputTypes: ['text', 'image'], description: 'Uses ChatGPT subscription via OAuth' },
   // Google — https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini
   { id: 'gemini-3-1-pro', name: 'Gemini 3.1 Pro', provider: 'google', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'google', contextWindow: 1048576, maxOutputTokens: 65536, cost: { input: 0.15, output: 0.6 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'gemini-3-1-flash', name: 'Gemini 3.1 Flash', provider: 'google', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 0.10, output: 0.40 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'gemini-3-0-flash', name: 'Gemini 3.0 Flash', provider: 'google', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 0.075, output: 0.30 }, reasoning: true, inputTypes: ['text', 'image'] },
   // MiniMax — https://platform.minimax.io/docs/api-reference/api-overview
   { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2 }, reasoning: true, inputTypes: ['text'] },
   { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.2, output: 0.95 }, reasoning: false, inputTypes: ['text'] },
+  { id: 'MiniMax-M3', name: 'MiniMax M3', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.5, output: 2 }, reasoning: true, inputTypes: ['text'] },
+  { id: 'MiniMax-M3-high', name: 'MiniMax M3-High', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.8, output: 3.2 }, reasoning: true, inputTypes: ['text'] },
   // OpenRouter — https://openrouter.ai/models (pass-through pricing varies by upstream provider)
   { id: 'xiaomi/mimo-v2-pro', name: 'MiMo-V2-Pro', provider: 'openrouter', contextWindow: 1048576, maxOutputTokens: 131072, cost: { input: 1, output: 3, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text'] },
   { id: 'anthropic/claude-opus-4-6', name: 'Claude Opus 4.6 (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'openai/gpt-5.4', name: 'GPT-5.4 (via OpenRouter)', provider: 'openrouter', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 2.5, output: 15, cacheRead: 0.25 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'google/gemini-3-1-pro', name: 'Gemini 3.1 Pro (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'anthropic/claude-sonnet-4-20250514', name: 'Claude Sonnet 4 (via OpenRouter)', provider: 'openrouter', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'deepseek/deepseek-v4-flash', name: 'DeepSeek-V4-Flash (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 0.14, output: 0.28, cacheRead: 0.028 }, reasoning: true, inputTypes: ['text'] },
+  { id: 'deepseek/deepseek-v4-pro', name: 'DeepSeek-V4-Pro (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 1.67, output: 3.33, cacheRead: 0.14 }, reasoning: true, inputTypes: ['text'] },
   // DeepSeek — https://api-docs.deepseek.com/
   { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 0.14, output: 0.28, cacheRead: 0.028 }, reasoning: true, inputTypes: ['text'] },
   { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 1.67, output: 3.33, cacheRead: 0.14 }, reasoning: true, inputTypes: ['text'] },
@@ -1085,4 +1099,10 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'deepseek-ai/DeepSeek-V3', name: 'DeepSeek-V3 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 2, output: 8 }, reasoning: true, inputTypes: ['text'] },
   { id: 'deepseek-ai/DeepSeek-Coder-V2', name: 'DeepSeek-Coder-V2 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 1, output: 4 }, reasoning: false, inputTypes: ['text'] },
   { id: 'moonshotai/Kimi-K2.5', name: 'Kimi-K2.5 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 2, output: 8 }, reasoning: true, inputTypes: ['text'] },
+  // ZAI — https://z.ai
+  { id: 'glm-5.1', name: 'GLM-5.1', provider: 'zai', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 1, output: 4 }, reasoning: true, inputTypes: ['text'] },
+  { id: 'glm-5', name: 'GLM-5', provider: 'zai', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 1, output: 4 }, reasoning: true, inputTypes: ['text'] },
+  { id: 'glm-5-turbo', name: 'GLM-5-Turbo', provider: 'zai', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 0.5, output: 2 }, reasoning: false, inputTypes: ['text'] },
+  { id: 'glm-4.9', name: 'GLM-4.9', provider: 'zai', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 0.5, output: 2 }, reasoning: false, inputTypes: ['text'] },
+  { id: 'glm-4-turbo', name: 'GLM-4-Turbo', provider: 'zai', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 0.3, output: 1 }, reasoning: false, inputTypes: ['text'] }
 ];
