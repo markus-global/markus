@@ -8398,6 +8398,54 @@ EXPLANATION_END`;
       return;
     }
 
+    // GET /api/files/image?path=... — serve local image as raw binary (for markdown rendering)
+    if (path === '/api/files/image' && req.method === 'GET') {
+      const filePath = url.searchParams.get('path');
+      if (!filePath) {
+        this.json(res, 400, { error: 'Missing "path" query parameter' });
+        return;
+      }
+      try {
+        const { resolve, extname } = await import('node:path');
+        const { readFileSync, existsSync, statSync } = await import('node:fs');
+        const { homedir } = await import('node:os');
+        const home = homedir();
+        const expanded = filePath.startsWith('~/') ? resolve(home, filePath.slice(2)) : filePath === '~' ? home : filePath;
+        const resolved = resolve(expanded);
+
+        if (!existsSync(resolved) || !statSync(resolved).isFile()) {
+          this.json(res, 404, { error: 'Image not found' });
+          return;
+        }
+        const maxSize = 10 * 1024 * 1024;
+        if (statSync(resolved).size > maxSize) {
+          this.json(res, 413, { error: 'Image too large' });
+          return;
+        }
+        const ext = extname(resolved).toLowerCase();
+        const mimeMap: Record<string, string> = {
+          '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+          '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+          '.bmp': 'image/bmp', '.ico': 'image/x-icon',
+        };
+        const mime = mimeMap[ext];
+        if (!mime) {
+          this.json(res, 400, { error: 'Not an image file' });
+          return;
+        }
+        const data = readFileSync(resolved);
+        res.writeHead(200, {
+          'Content-Type': mime,
+          'Content-Length': data.length,
+          'Cache-Control': 'private, max-age=300',
+        });
+        res.end(data);
+      } catch (err) {
+        this.json(res, 500, { error: `Failed to read image: ${String(err)}` });
+      }
+      return;
+    }
+
     if (path === '/api/files/reveal' && req.method === 'POST') {
       const body = await this.readBody(req);
       const filePath = body?.path as string | undefined;
@@ -9452,6 +9500,7 @@ EXPLANATION_END`;
       // ── Files ────────────────────────────────────────────────────────────
       exact('/api/files/check', 'POST'),
       exact('/api/files/preview', 'GET'),
+      exact('/api/files/image', 'GET'),
       exact('/api/files/reveal', 'POST'),
 
       // ── External Agents ──────────────────────────────────────────────────
