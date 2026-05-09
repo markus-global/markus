@@ -1,5 +1,35 @@
 # Release Log
 
+## v0.6.6
+
+Dashboard 重设计；Markdown 本地图片渲染；Midnight/Mono 主题替换；MCP 浏览器断连自动重连；定时任务与 Mailbox 执行触发保护；大量 UI 与稳定性修复。
+
+### New Features
+
+- **Dashboard 重设计** — 全新现代布局，任务概览移至活动流上方，信息层级优化
+- **Markdown 本地图片渲染** — 支持在 Markdown 消息中渲染本地图片路径
+- **Midnight/Mono 主题** — 用 Midnight 调色板替换旧 dark 主题，新增 Mono（黑白）主题
+
+### Bug Fixes
+
+- **修复 MCP 浏览器断连** — 外部关闭浏览器标签页时 MCP 自动重连
+- **修复已归档任务出现在活动流** — Dashboard 活动流排除已归档任务
+- **修复定时任务调度 bug** — 修复 cron 调度异常，改进定时任务审批 UX；修复通用 task PUT 路由拦截 `/schedule` 等子路径请求
+- **修复 Mailbox 执行触发被误丢弃** — 保护 execution-trigger 类型的 mailbox 项不被 triage 丢弃/延迟
+- **修复心跳空巡逻** — heartbeat idle skip 导致空巡逻记录和静默活动日志
+- **修复 Agent 遗忘 task_submit_review** — 重试时注入针对性上下文提示
+- **修复 SiliconFlow 模型目录缺失** — 将 SiliconFlow 模型加入 BUILTIN_MODEL_CATALOG
+- **修复桌面快捷方式重复启动** — 服务已运行时直接打开浏览器而非再次启动
+- **修复 Builder 页面列表范围** — 仅列出 builder-artifacts 目录下的产物
+- **修复 Markdown 渲染** — 单换行符正确渲染（remark-breaks）；暗色模式下列表标记、删除线等元素样式修复
+- **修复 i18n 标签** — Agent Profile Mind Tab 国际化及 memory_consolidation / requirement_action 活动标签修正
+
+### Stats
+
+- 39 files changed, +1,312 / −703 lines
+
+---
+
 ## v0.6.5
 
 新用户初始化注册流程；非交互式启动修复；群聊可见性隔离；评论回复强制机制改进；Agent 思考活动实时指示器；LLM Key 预览。
