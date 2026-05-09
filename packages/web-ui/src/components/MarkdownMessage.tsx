@@ -17,6 +17,8 @@ interface Props {
   onMentionClick?: (name: string, event: React.MouseEvent) => void;
   /** Known agent/user names for multi-word mention matching (e.g. "Markus Platform Dev Manager") */
   knownNames?: string[];
+  /** Base directory for resolving relative image paths (e.g. the directory containing the source markdown file) */
+  basePath?: string;
 }
 
 const thinkRegex = /<think>([\s\S]*?)(<\/think>|$)/g;
@@ -159,9 +161,40 @@ const mdComponents = {
 
 // ─── Image support ───────────────────────────────────────────────────────────
 
-function MarkdownImage({ src, alt, onPreview }: { src: string; alt?: string; onPreview?: (src: string) => void }) {
+const LOCAL_PATH_RE = /^(?:\/[\w.\-@+ ]|~\/|\.\.?\/|[A-Z]:\\)/;
+const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
+
+function isLocalImagePath(src: string): boolean {
+  return LOCAL_PATH_RE.test(src) && IMAGE_EXTS.test(src);
+}
+
+function resolveImagePath(src: string, basePath?: string): string {
+  if (src.startsWith('/') || src.startsWith('~/') || /^[A-Z]:\\/.test(src)) return src;
+  if ((src.startsWith('./') || src.startsWith('../')) && basePath) {
+    const base = basePath.endsWith('/') ? basePath : basePath + '/';
+    const parts = (base + src).split('/');
+    const resolved: string[] = [];
+    for (const p of parts) {
+      if (p === '..') resolved.pop();
+      else if (p !== '.' && p !== '') resolved.push(p);
+    }
+    return '/' + resolved.join('/');
+  }
+  return src;
+}
+
+function localImageUrl(filePath: string): string {
+  return `/api/files/image?path=${encodeURIComponent(filePath)}`;
+}
+
+function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; alt?: string; onPreview?: (src: string) => void; basePath?: string }) {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
+
+  const effectiveSrc = useMemo(() => {
+    if (!isLocalImagePath(src)) return src;
+    return localImageUrl(resolveImagePath(src, basePath));
+  }, [src, basePath]);
 
   return (
     <span className="inline-block align-middle max-w-full">
@@ -179,12 +212,12 @@ function MarkdownImage({ src, alt, onPreview }: { src: string; alt?: string; onP
         </span>
       ) : (
         <img
-          src={src}
+          src={effectiveSrc}
           alt={alt ?? ''}
           loading="lazy"
           onLoad={() => setLoaded(true)}
           onError={() => setError(true)}
-          onClick={() => onPreview?.(src)}
+          onClick={() => onPreview?.(effectiveSrc)}
           className="max-w-full h-auto rounded-lg cursor-pointer hover:opacity-90 transition-opacity my-1"
           style={{ maxHeight: '400px', objectFit: 'contain' }}
         />
@@ -310,7 +343,7 @@ function CopyMenu({ content, contentRef }: { content: string; contentRef: React.
 
 // ─── MarkdownMessage ─────────────────────────────────────────────────────────
 
-export function MarkdownMessage({ content, className = '', onMentionClick, knownNames }: Props) {
+export function MarkdownMessage({ content, className = '', onMentionClick, knownNames, basePath }: Props) {
   const { thinking, rest } = extractThinkBlocks(content);
   const contentRef = useRef<HTMLDivElement>(null);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
@@ -325,7 +358,7 @@ export function MarkdownMessage({ content, className = '', onMentionClick, known
     const base: Record<string, React.ComponentType<any>> = {
       ...mdComponents,
       img: ({ src, alt }: { src?: string; alt?: string }) => (
-        <MarkdownImage src={src ?? ''} alt={alt} onPreview={setPreviewSrc} />
+        <MarkdownImage src={src ?? ''} alt={alt} onPreview={setPreviewSrc} basePath={basePath} />
       ),
     };
     if (!onMentionClick) return base;
@@ -349,7 +382,7 @@ export function MarkdownMessage({ content, className = '', onMentionClick, known
         );
       },
     };
-  }, [onMentionClick]);
+  }, [onMentionClick, basePath]);
 
   return (
     <div className="relative group/md">

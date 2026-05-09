@@ -866,6 +866,10 @@ export class AgentManager {
                 await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                 mcpTools = this.mcpManager.getToolHandlersScoped(serverName, id);
                 mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, id);
+                this.browserSessionManager.setReconnector(id, async () => {
+                  await this.mcpManager.disconnectServerScoped(serverName, id);
+                  await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
+                });
               } else {
                 await this.mcpManager.connectServer(serverName, serverConfig);
                 mcpTools = this.mcpManager.getToolHandlers(serverName);
@@ -906,6 +910,13 @@ export class AgentManager {
       }
       if (isolated) {
         tools = this.browserSessionManager.wrapToolHandlers(tools, id);
+        for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
+          const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
+          this.browserSessionManager.setReconnector(id, async () => {
+            await this.mcpManager.disconnectServerScoped(serverName, id);
+            await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
+          });
+        }
       }
       return tools;
     });
@@ -1554,6 +1565,10 @@ export class AgentManager {
                   await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                   mcpTools = this.mcpManager.getToolHandlersScoped(serverName, id);
                   mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, id);
+                  this.browserSessionManager.setReconnector(id, async () => {
+                    await this.mcpManager.disconnectServerScoped(serverName, id);
+                    await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
+                  });
                 } else {
                   await this.mcpManager.connectServer(serverName, serverConfig);
                   mcpTools = this.mcpManager.getToolHandlers(serverName);
@@ -1596,6 +1611,13 @@ export class AgentManager {
       }
       if (isolated) {
         tools = this.browserSessionManager.wrapToolHandlers(tools, id);
+        for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
+          const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
+          this.browserSessionManager.setReconnector(id, async () => {
+            await this.mcpManager.disconnectServerScoped(serverName, id);
+            await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
+          });
+        }
       }
       return tools;
     });
