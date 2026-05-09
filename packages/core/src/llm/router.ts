@@ -1079,4 +1079,10 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 1.67, output: 3.33, cacheRead: 0.14 }, reasoning: true, inputTypes: ['text'] },
   { id: 'deepseek-chat', name: 'DeepSeek-Chat (legacy)', provider: 'deepseek', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 0.14, output: 0.28, cacheRead: 0.028 }, reasoning: false, inputTypes: ['text'] },
   { id: 'deepseek-reasoner', name: 'DeepSeek-Reasoner (legacy)', provider: 'deepseek', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 0.55, output: 2.19, cacheRead: 0.14 }, reasoning: true, inputTypes: ['text'] },
+  // SiliconFlow — https://docs.siliconflow.cn/docs/model-library (OpenAI-compatible proxy, pricing varies)
+  { id: 'Qwen/Qwen3.5-35B-A3B', name: 'Qwen3.5-35B-A3B', provider: 'siliconflow', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 1.5, output: 4 }, reasoning: true, inputTypes: ['text'] },
+  { id: 'Qwen/Qwen3.5-32B-A3B', name: 'Qwen3.5-32B-A3B', provider: 'siliconflow', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 1.5, output: 4 }, reasoning: true, inputTypes: ['text'] },
+  { id: 'deepseek-ai/DeepSeek-V3', name: 'DeepSeek-V3 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 2, output: 8 }, reasoning: true, inputTypes: ['text'] },
+  { id: 'deepseek-ai/DeepSeek-Coder-V2', name: 'DeepSeek-Coder-V2 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 1, output: 4 }, reasoning: false, inputTypes: ['text'] },
+  { id: 'moonshotai/Kimi-K2.5', name: 'Kimi-K2.5 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 2, output: 8 }, reasoning: true, inputTypes: ['text'] },
 ];
