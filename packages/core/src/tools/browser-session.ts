@@ -317,7 +317,7 @@ export class BrowserSessionManager {
           args.bringToFront = this._bringToFront;
         }
         return this.withAgentLock(agentId, async () => {
-          let result = await handler.execute(args);
+          const result = await handler.execute(args);
 
           if (this.isStalePageError(result)) {
             const ok = await this.reconnectMcp(agentId);
@@ -349,7 +349,7 @@ export class BrowserSessionManager {
           return JSON.stringify({ error: msg });
         }
         return this.withAgentLock(agentId, async () => {
-          let result = await handler.execute(args);
+          const result = await handler.execute(args);
 
           if (this.isStalePageError(result)) {
             const ok = await this.reconnectMcp(agentId);
@@ -394,7 +394,7 @@ export class BrowserSessionManager {
 
         return this.withAgentLock(agentId, async () => {
           await this.ensureCorrectPage(agentId, ownerKey);
-          let result = await handler.execute(args);
+          const result = await handler.execute(args);
 
           if (this.isStalePageError(result)) {
             const ok = await this.reconnectMcp(agentId);
@@ -491,7 +491,7 @@ export class BrowserSessionManager {
         }
         return this.withAgentLock(agentId, async () => {
           await this.ensureCorrectPage(agentId, ownerKey);
-          let result = await handler.execute(args);
+          const result = await handler.execute(args);
 
           if (this.isStalePageError(result)) {
             const ok = await this.reconnectMcp(agentId);
