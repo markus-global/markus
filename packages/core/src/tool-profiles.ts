@@ -3,7 +3,7 @@ import { createLogger } from '@markus/shared';
 
 const log = createLogger('tool-profiles');
 
-export type ToolProfile = 'full' | 'coding' | 'messaging' | 'minimal';
+export type ToolProfile = 'full' | 'coding' | 'messaging' | 'minimal' | 'external';
 
 /**
  * Tool groups map a short name to a set of tool names.
@@ -32,6 +32,7 @@ const PROFILE_ALLOWLISTS: Record<ToolProfile, string[] | null> = {
   coding: ['group:fs', 'group:runtime', 'group:memory', 'group:web', 'group:agent'],
   messaging: ['group:messaging', 'group:memory'],
   minimal: ['memory_search', 'memory_list'],
+  external: ['memory_search', 'memory_list', 'group:web'],
 };
 
 function expandGroups(names: string[]): Set<string> {

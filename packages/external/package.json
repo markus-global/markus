@@ -1,6 +1,6 @@
 {
-  "name": "@markus/org-manager",
-  "version": "0.6.6",
+  "name": "@markus/external",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -11,14 +11,7 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@markus/core": "workspace:*",
-    "@markus/external": "workspace:*",
     "@markus/shared": "workspace:*",
-    "@markus/storage": "workspace:*",
-    "cron-parser": "^5.5.0",
-    "ws": "^8.19.0"
-  },
-  "devDependencies": {
-    "@types/ws": "^8.18.1"
+    "@markus/storage": "workspace:*"
   }
 }

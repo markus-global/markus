@@ -582,6 +582,100 @@ CREATE TABLE IF NOT EXISTS status_transitions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_st_entity ON status_transitions(entity_type, entity_id, created_at);
+
+-- ─── External Mode ──────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS external_services (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'draft',
+  name TEXT NOT NULL,
+  description TEXT,
+  avatar_url TEXT,
+  max_concurrent_sessions INTEGER NOT NULL DEFAULT 10,
+  session_timeout_ms INTEGER NOT NULL DEFAULT 1800000,
+  max_messages_per_session INTEGER NOT NULL DEFAULT 100,
+  tool_policy TEXT NOT NULL DEFAULT '{}',
+  input_validation TEXT NOT NULL DEFAULT '{}',
+  content_filter TEXT NOT NULL DEFAULT '{}',
+  token_budget_per_session INTEGER NOT NULL DEFAULT 50000,
+  token_budget_per_day INTEGER NOT NULL DEFAULT 500000,
+  ui_mode TEXT NOT NULL DEFAULT 'default',
+  ui_config TEXT,
+  middlewares TEXT NOT NULL DEFAULT '[]',
+  welcome_message TEXT,
+  input_placeholder TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  published_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_external_services_agent ON external_services(agent_id);
+
+CREATE TABLE IF NOT EXISTS external_sessions (
+  id TEXT PRIMARY KEY,
+  service_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  participant_id TEXT NOT NULL,
+  participant_type TEXT NOT NULL DEFAULT 'human',
+  participant_name TEXT,
+  participant_metadata TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  message_count INTEGER NOT NULL DEFAULT 0,
+  tokens_used INTEGER NOT NULL DEFAULT 0,
+  ip_address TEXT,
+  user_agent TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
+  closed_at TEXT,
+  close_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_external_sessions_service ON external_sessions(service_id, status);
+CREATE INDEX IF NOT EXISTS idx_external_sessions_participant ON external_sessions(participant_id);
+
+CREATE TABLE IF NOT EXISTS external_messages (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  tokens INTEGER,
+  metadata TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_external_messages_session ON external_messages(session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS share_tokens (
+  id TEXT PRIMARY KEY,
+  token TEXT NOT NULL UNIQUE,
+  service_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  permissions TEXT NOT NULL DEFAULT '{}',
+  max_uses INTEGER,
+  usage_count INTEGER NOT NULL DEFAULT 0,
+  expires_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_share_tokens_token ON share_tokens(token);
+CREATE INDEX IF NOT EXISTS idx_share_tokens_service ON share_tokens(service_id);
+
+CREATE TABLE IF NOT EXISTS external_service_stats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  service_id TEXT NOT NULL,
+  date TEXT NOT NULL,
+  total_sessions INTEGER NOT NULL DEFAULT 0,
+  active_sessions INTEGER NOT NULL DEFAULT 0,
+  total_messages INTEGER NOT NULL DEFAULT 0,
+  total_tokens_used INTEGER NOT NULL DEFAULT 0,
+  average_session_duration INTEGER NOT NULL DEFAULT 0,
+  average_messages_per_session REAL NOT NULL DEFAULT 0,
+  error_count INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(service_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_external_stats_service_date ON external_service_stats(service_id, date);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────

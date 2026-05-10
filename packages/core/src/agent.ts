@@ -4305,6 +4305,10 @@ export class Agent {
     return this.contextEngine;
   }
 
+  getIdentityContext(): IdentityContext | undefined {
+    return this.identityContext;
+  }
+
   setSemanticSearch(ss: SemanticMemorySearch): void {
     this.semanticSearch = ss;
   }

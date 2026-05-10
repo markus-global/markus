@@ -124,6 +124,15 @@ importers:
         specifier: ^5.0.6
         version: 5.0.6
 
+  packages/external:
+    dependencies:
+      '@markus/shared':
+        specifier: workspace:*
+        version: link:../shared
+      '@markus/storage':
+        specifier: workspace:*
+        version: link:../storage
+
   packages/gui:
     dependencies:
       '@markus/shared':
@@ -145,6 +154,9 @@ importers:
       '@markus/core':
         specifier: workspace:*
         version: link:../core
+      '@markus/external':
+        specifier: workspace:*
+        version: link:../external
       '@markus/shared':
         specifier: workspace:*
         version: link:../shared

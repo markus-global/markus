@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { type PageId, PAGE, resolvePageId, getPageFromHash, MOBILE_REDIRECTS } from './routes.ts';
+import { ExternalChat } from './pages/ExternalChat.tsx';
 import { HomePage } from './pages/Home.tsx';
 import { TeamPage } from './pages/Team.tsx';
 import { Settings } from './pages/Settings.tsx';
@@ -177,6 +178,12 @@ export function App() {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id, currentUser?.role, theme.mode, isMobile]);
+
+  // External chat: standalone page at /ext/:token or #ext/:token — no auth, no chrome
+  const isExternalChat = window.location.pathname.startsWith('/ext/') || window.location.hash.startsWith('#ext/');
+  if (isExternalChat) {
+    return <ExternalChat />;
+  }
 
   if (authUser === 'loading' || (authUser === null && systemInitialized === null)) {
     return (

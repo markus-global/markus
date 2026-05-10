@@ -52,6 +52,47 @@ export interface GatewayMessageResult {
   error?: string;
 }
 
+// ─── A2A Service Invocation Types ───────────────────────────────────────────
+
+export interface ServiceInvocationRequest {
+  /** The content/question to send to the service */
+  content: string;
+  /** Optional session ID to continue an existing conversation */
+  sessionId?: string;
+  /** Caller identity metadata */
+  caller: {
+    agentId: string;
+    name: string;
+    orgId?: string;
+  };
+  /** Whether to stream the response */
+  stream?: boolean;
+  /** Additional context or parameters */
+  metadata?: Record<string, unknown>;
+}
+
+export interface ServiceInvocationResult {
+  sessionId: string;
+  response: string;
+  tokensUsed: number;
+  /** Whether the task is still in progress (for multi-turn) */
+  status: 'completed' | 'in_progress' | 'failed';
+  metadata?: Record<string, unknown>;
+}
+
+export type ServiceInvoker = (
+  markusAgentId: string,
+  request: ServiceInvocationRequest,
+) => Promise<ServiceInvocationResult>;
+
+export interface AgentCard {
+  agentId: string;
+  name: string;
+  capabilities: string[];
+  cardUrl?: string;
+  platform?: string;
+}
+
 /** Persistence layer for external agent registrations. */
 export interface GatewayStore {
   saveRegistration(reg: ExternalAgentRegistration): Promise<void>;
@@ -396,6 +437,60 @@ export class ExternalAgentGateway {
   listRegistrations(orgId?: string): ExternalAgentRegistration[] {
     const all = [...this.registrations.values()];
     return orgId ? all.filter(r => r.orgId === orgId) : all;
+  }
+
+  // --- External Service Invocation (A2A Protocol) ---
+
+  private serviceInvoker?: ServiceInvoker;
+
+  setServiceInvoker(invoker: ServiceInvoker): void {
+    this.serviceInvoker = invoker;
+  }
+
+  /**
+   * Invoke an agent's external service. Used by A2A clients to interact
+   * with a published external service without going through the internal mailbox.
+   */
+  async invokeService(
+    token: GatewayToken,
+    request: ServiceInvocationRequest,
+  ): Promise<ServiceInvocationResult> {
+    if (!this.serviceInvoker) {
+      throw new GatewayError('Service invocation not configured', 503);
+    }
+
+    const key = this.registrationKey(token.externalAgentId, token.orgId);
+    const registration = this.registrations.get(key);
+    if (registration) {
+      registration.lastHeartbeat = new Date().toISOString();
+    }
+
+    try {
+      const result = await this.serviceInvoker(token.markusAgentId, request);
+      log.info('Service invoked', { agentId: token.markusAgentId, sessionId: result.sessionId });
+      return result;
+    } catch (err) {
+      log.error('Service invocation failed', { agentId: token.markusAgentId, error: String(err) });
+      throw new GatewayError(`Service invocation failed: ${String(err)}`, 500);
+    }
+  }
+
+  /**
+   * Get the Agent Card (A2A discovery) for a registered agent's external service.
+   */
+  getAgentCard(markusAgentId: string): AgentCard | null {
+    for (const reg of this.registrations.values()) {
+      if (reg.markusAgentId === markusAgentId && reg.agentCardUrl) {
+        return {
+          agentId: markusAgentId,
+          name: reg.agentName,
+          capabilities: reg.capabilities,
+          cardUrl: reg.agentCardUrl,
+          platform: reg.platform,
+        };
+      }
+    }
+    return null;
   }
 
   // --- Org secret verification (pluggable, v1 uses signing secret) ---

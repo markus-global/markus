@@ -44,6 +44,8 @@ import { WSBroadcaster } from './ws-server.js';
 import { SSEHandler } from './sse-handler.js';
 import { installSkill } from './skill-service.js';
 import type { LocalFileStorageProvider } from './file-storage-provider.js';
+import { initExternalService } from './external-mode-bridge.js';
+import type { ExternalService } from '@markus/external';
 
 const log = createLogger('api-server');
 
@@ -197,6 +199,7 @@ export class APIServer {
   private workflowEngine?: WorkflowEngine;
   private teamTemplateRegistry: TeamTemplateRegistry;
   private fileStorage?: LocalFileStorageProvider;
+  private externalService?: ExternalService;
   // Custom group chats are now persisted in SQLite via storage.groupChatRepo
   constructor(
     private orgService: OrganizationService,
@@ -487,6 +490,7 @@ export class APIServer {
 
   setStorage(storage: StorageBridge): void {
     this.storage = storage;
+    this.initExternalMode();
   }
 
   setGateway(gateway: ExternalAgentGateway, secret?: string): void {
@@ -592,6 +596,13 @@ export class APIServer {
 
   setLLMRouter(router: LLMRouter): void {
     this.llmRouter = router;
+    this.initExternalMode();
+  }
+
+  private initExternalMode(): void {
+    if (this.externalService || !this.llmRouter || !this.storage) return;
+    const agentManager = this.orgService.getAgentManager();
+    this.externalService = initExternalService(this.storage, this.llmRouter, agentManager);
   }
 
   setConfigPath(configPath: string): void {
@@ -718,6 +729,20 @@ export class APIServer {
       return null;
     }
     return user;
+  }
+
+  private verifyAgentAccess(agentId: string, res: ServerResponse): boolean {
+    try {
+      const am = this.orgService.getAgentManager();
+      if (!am.hasAgent(agentId)) {
+        this.json(res, 404, { error: 'Agent not found' });
+        return false;
+      }
+      return true;
+    } catch {
+      this.json(res, 404, { error: 'Agent not found' });
+      return false;
+    }
   }
 
   /** Persist a chat turn (user + assistant) to DB if storage is available */
@@ -6163,6 +6188,479 @@ EXPLANATION_END`;
       return;
     }
 
+    // ── External Mode (对外模式) ────────────────────────────────────────────
+
+    if (path === '/api/external/services' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.externalService) {
+        this.json(res, 503, { error: 'External service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const agentId = body['agentId'] as string;
+      if (!agentId) {
+        this.json(res, 400, { error: 'agentId is required' });
+        return;
+      }
+      try {
+        this.orgService.getAgentManager().getAgent(agentId);
+      } catch {
+        this.json(res, 404, { error: 'Agent not found' });
+        return;
+      }
+      try {
+        const service = await this.externalService.publishService(agentId, body['config'] as Record<string, unknown> ?? body);
+        this.json(res, 201, service);
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path === '/api/external/services/get' && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.externalService) {
+        this.json(res, 503, { error: 'External service not available' });
+        return;
+      }
+      const agentId = url.searchParams.get('agentId');
+      if (!agentId || !this.verifyAgentAccess(agentId, res)) {
+        this.json(res, 400, { error: 'agentId query parameter required' });
+        return;
+      }
+      const service = this.externalService.getActiveService(agentId);
+      if (!service) {
+        this.json(res, 404, { error: 'No active external service' });
+        return;
+      }
+      this.json(res, 200, service);
+      return;
+    }
+
+    if (path === '/api/external/services/status' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.externalService) {
+        this.json(res, 503, { error: 'External service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const serviceId = body['serviceId'] as string;
+      const status = body['status'] as string;
+      if (!serviceId || !status) {
+        this.json(res, 400, { error: 'serviceId and status are required' });
+        return;
+      }
+      if (!['active', 'paused'].includes(status)) {
+        this.json(res, 400, { error: 'Invalid status. Must be active or paused.' });
+        return;
+      }
+      const svc = this.storage?.externalServiceRepo?.findById(serviceId);
+      if (!svc || !this.verifyAgentAccess(svc.agentId, res)) return;
+      this.externalService.updateServiceStatus(serviceId, status as any);
+      this.json(res, 200, { success: true });
+      return;
+    }
+
+    if (path === '/api/external/services/stats' && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.externalService) {
+        this.json(res, 503, { error: 'External service not available' });
+        return;
+      }
+      const serviceId = url.searchParams.get('serviceId');
+      if (!serviceId) {
+        this.json(res, 400, { error: 'serviceId query parameter required' });
+        return;
+      }
+      const svc = this.storage?.externalServiceRepo?.findById(serviceId);
+      if (!svc || !this.verifyAgentAccess(svc.agentId, res)) return;
+      const stats = this.externalService.getServiceStats(serviceId);
+      this.json(res, 200, stats);
+      return;
+    }
+
+    if (path === '/api/external/share' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.storage?.shareTokenRepo || !this.storage?.externalServiceRepo) {
+        this.json(res, 503, { error: 'External service storage not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const agentId = body['agentId'] as string;
+      if (!agentId || !this.verifyAgentAccess(agentId, res)) return;
+      const service = this.storage.externalServiceRepo.findActiveByAgentId(agentId);
+      if (!service) {
+        this.json(res, 404, { error: 'No active external service for this agent' });
+        return;
+      }
+      const { randomBytes } = await import('node:crypto');
+      const tokenStr = randomBytes(32).toString('hex');
+      const maxUses = body['maxUses'] as number | undefined;
+      const expiryMs = (body['expiryMs'] as number) ?? 7 * 24 * 60 * 60 * 1000;
+      const expiresAt = new Date(Date.now() + expiryMs).toISOString();
+
+      const token = this.storage.shareTokenRepo.create({
+        token: tokenStr,
+        serviceId: service.id,
+        agentId,
+        createdBy: authUser.userId,
+        permissions: { canChat: true, canUploadFiles: false },
+        maxUses,
+        expiresAt,
+      });
+
+      this.json(res, 201, { id: token.id, token: token.token, expiresAt: token.expiresAt, shareUrl: `/ext/${token.token}` });
+      return;
+    }
+
+    if (path === '/api/external/share/info' && req.method === 'GET') {
+      if (!this.storage?.shareTokenRepo || !this.storage?.externalServiceRepo) {
+        this.json(res, 503, { error: 'External service storage not available' });
+        return;
+      }
+      const tokenStr = url.searchParams.get('token');
+      if (!tokenStr) {
+        this.json(res, 400, { error: 'token query parameter required' });
+        return;
+      }
+      const token = this.storage.shareTokenRepo.findByToken(tokenStr);
+      if (!token || !this.storage.shareTokenRepo.isValid(token)) {
+        this.json(res, 401, { error: 'Invalid or expired token' });
+        return;
+      }
+      const service = this.storage.externalServiceRepo.findById(token.serviceId);
+      if (!service) {
+        this.json(res, 404, { error: 'Service not found' });
+        return;
+      }
+      this.json(res, 200, {
+        agentId: service.agentId,
+        name: service.name,
+        description: service.description,
+        avatarUrl: service.avatarUrl,
+        welcomeMessage: service.welcomeMessage,
+        inputPlaceholder: service.inputPlaceholder,
+        uiMode: service.uiMode,
+        uiConfig: service.uiConfig,
+        permissions: token.permissions,
+        maxMessagesPerSession: service.maxMessagesPerSession,
+        tokenBudgetPerSession: service.tokenBudgetPerSession,
+      });
+      return;
+    }
+
+    if (path === '/api/external/session/create' && req.method === 'POST') {
+      if (!this.externalService || !this.storage?.shareTokenRepo) {
+        this.json(res, 503, { error: 'External service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const tokenStr = body['token'] as string;
+      if (!tokenStr) {
+        this.json(res, 400, { error: 'token is required' });
+        return;
+      }
+      const token = this.storage.shareTokenRepo.findByToken(tokenStr);
+      if (!token || !this.storage.shareTokenRepo.isValid(token)) {
+        this.json(res, 401, { error: 'Invalid or expired token' });
+        return;
+      }
+      const service = this.externalService.getService(token.serviceId);
+      if (!service) {
+        this.json(res, 404, { error: 'Service not found' });
+        return;
+      }
+      try {
+        const session = await this.externalService.createSession({
+          serviceId: service.id,
+          agentId: service.agentId,
+          participantId: `guest_${Date.now().toString(36)}`,
+          participantType: 'human',
+          participantName: body['participantName'] as string | undefined,
+          participantMetadata: body['participantMetadata'] as Record<string, unknown> | undefined,
+          ipAddress: (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ?? req.socket?.remoteAddress,
+          userAgent: req.headers['user-agent'] as string | undefined,
+        });
+        this.storage.shareTokenRepo.incrementUsage(tokenStr);
+        this.json(res, 201, { sessionId: session.id, welcomeMessage: service.welcomeMessage });
+      } catch (err: any) {
+        const status = err.message?.includes('maximum capacity') ? 429 : 500;
+        this.json(res, status, { error: err.message });
+      }
+      return;
+    }
+
+    if (path === '/api/external/session/message' && req.method === 'POST') {
+      if (!this.externalService || !this.storage?.shareTokenRepo) {
+        this.json(res, 503, { error: 'External service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const sessionId = body['sessionId'] as string;
+      const content = body['content'] as string;
+      const tokenStr = body['token'] as string;
+      if (!sessionId || !content || !tokenStr) {
+        this.json(res, 400, { error: 'sessionId, content, and token are required' });
+        return;
+      }
+      const token = this.storage.shareTokenRepo.findByToken(tokenStr);
+      if (!token || !this.storage.shareTokenRepo.isValid(token)) {
+        this.json(res, 401, { error: 'Invalid or expired token' });
+        return;
+      }
+      const msgSession = this.storage.externalSessionRepo?.findById(sessionId);
+      if (!msgSession || msgSession.serviceId !== token.serviceId) {
+        this.json(res, 403, { error: 'Session does not belong to this token' });
+        return;
+      }
+      const wantsStream = (req.headers['accept'] ?? '').includes('text/event-stream');
+
+      if (wantsStream) {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        });
+        const abortController = new AbortController();
+        req.on('close', () => { abortController.abort(); });
+        const onStream = (event: { type: string; content: string; metadata?: Record<string, unknown> }) => {
+          if (res.writableEnded || abortController.signal.aborted) return;
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+          if (event.type === 'done' || event.type === 'error') {
+            res.write('data: [DONE]\n\n');
+            res.end();
+          }
+        };
+        try {
+          await this.externalService.handleMessage(sessionId, content, onStream, abortController.signal);
+          if (!res.writableEnded) {
+            res.write('data: [DONE]\n\n');
+            res.end();
+          }
+        } catch (err: any) {
+          const msg = err.message ?? String(err);
+          if (!res.writableEnded && !abortController.signal.aborted) {
+            res.write(`data: ${JSON.stringify({ type: 'error', content: msg })}\n\ndata: [DONE]\n\n`);
+            res.end();
+          }
+        }
+      } else {
+        try {
+          const result = await this.externalService.handleMessage(sessionId, content);
+          this.json(res, 200, { response: result.response, tokensUsed: result.tokensUsed });
+        } catch (err: any) {
+          const msg = err.message ?? String(err);
+          if (msg.includes('not found') || msg.includes('not active')) {
+            this.json(res, 404, { error: msg });
+          } else if (msg.includes('limit reached') || msg.includes('budget exhausted')) {
+            this.json(res, 429, { error: msg });
+          } else if (msg.includes('blocked by middleware')) {
+            this.json(res, 403, { error: msg });
+          } else {
+            this.json(res, 500, { error: msg });
+          }
+        }
+      }
+      return;
+    }
+
+    if (path === '/api/external/session/end' && req.method === 'POST') {
+      if (!this.externalService || !this.storage?.shareTokenRepo) {
+        this.json(res, 503, { error: 'External service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const sessionId = body['sessionId'] as string;
+      const tokenStr = body['token'] as string;
+      if (!sessionId || !tokenStr) {
+        this.json(res, 400, { error: 'sessionId and token are required' });
+        return;
+      }
+      const token = this.storage.shareTokenRepo.findByToken(tokenStr);
+      if (!token || !this.storage.shareTokenRepo.isValid(token)) {
+        this.json(res, 401, { error: 'Invalid or expired token' });
+        return;
+      }
+      const endSession = this.storage.externalSessionRepo?.findById(sessionId);
+      if (!endSession || endSession.serviceId !== token.serviceId) {
+        this.json(res, 403, { error: 'Session does not belong to this token' });
+        return;
+      }
+      this.externalService.closeSession(sessionId, 'user_ended');
+      this.json(res, 200, { success: true });
+      return;
+    }
+
+    if (path === '/api/external/session/rate' && req.method === 'POST') {
+      if (!this.storage?.shareTokenRepo || !this.storage?.externalMessageRepo) {
+        this.json(res, 503, { error: 'External service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const sessionId = body['sessionId'] as string;
+      const tokenStr = body['token'] as string;
+      const rating = body['rating'] as number;
+      if (!sessionId || !tokenStr || typeof rating !== 'number' || isNaN(rating) || rating < 1 || rating > 5) {
+        this.json(res, 400, { error: 'sessionId, token, and rating (1-5) are required' });
+        return;
+      }
+      const token = this.storage.shareTokenRepo.findByToken(tokenStr);
+      if (!token || !this.storage.shareTokenRepo.isValid(token)) {
+        this.json(res, 401, { error: 'Invalid or expired token' });
+        return;
+      }
+      const rateSession = this.storage.externalSessionRepo?.findById(sessionId);
+      if (!rateSession || rateSession.serviceId !== token.serviceId) {
+        this.json(res, 403, { error: 'Session does not belong to this token' });
+        return;
+      }
+      this.storage.externalMessageRepo.create({
+        sessionId,
+        role: 'system',
+        content: `[rating:${Math.min(5, Math.max(1, Math.round(rating)))}]`,
+        metadata: { type: 'feedback', rating: Math.min(5, Math.max(1, Math.round(rating))) },
+      });
+      this.json(res, 200, { success: true });
+      return;
+    }
+
+    if (path === '/api/external/session/history' && req.method === 'GET') {
+      if (!this.storage?.shareTokenRepo || !this.storage?.externalMessageRepo) {
+        this.json(res, 503, { error: 'External service storage not available' });
+        return;
+      }
+      const sessionId = url.searchParams.get('sessionId');
+      const tokenStr = url.searchParams.get('token');
+      if (!sessionId || !tokenStr) {
+        this.json(res, 400, { error: 'sessionId and token query parameters required' });
+        return;
+      }
+      const token = this.storage.shareTokenRepo.findByToken(tokenStr);
+      if (!token || !this.storage.shareTokenRepo.isValid(token)) {
+        this.json(res, 401, { error: 'Invalid or expired token' });
+        return;
+      }
+      const histSession = this.storage.externalSessionRepo?.findById(sessionId);
+      if (!histSession || histSession.serviceId !== token.serviceId) {
+        this.json(res, 403, { error: 'Session does not belong to this token' });
+        return;
+      }
+      const messages = this.storage.externalMessageRepo.listBySession(sessionId);
+      this.json(res, 200, { messages });
+      return;
+    }
+
+    if (path === '/api/external/services/update' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.storage?.externalServiceRepo) {
+        this.json(res, 503, { error: 'External service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const serviceId = body['serviceId'] as string;
+      if (!serviceId) {
+        this.json(res, 400, { error: 'serviceId is required' });
+        return;
+      }
+      const service = this.storage.externalServiceRepo.findById(serviceId);
+      if (!service || !this.verifyAgentAccess(service.agentId, res)) {
+        return;
+      }
+      const patch: Record<string, unknown> = {};
+      const allowedFields = ['name', 'description', 'welcomeMessage', 'inputPlaceholder', 'maxConcurrentSessions', 'sessionTimeoutMs', 'maxMessagesPerSession', 'tokenBudgetPerSession', 'tokenBudgetPerDay', 'middlewares', 'uiMode', 'uiConfig'];
+      for (const f of allowedFields) {
+        if (f in body) patch[f] = body[f];
+      }
+      this.storage.externalServiceRepo.update(serviceId, patch as any);
+      const updated = this.storage.externalServiceRepo.findById(serviceId);
+      this.json(res, 200, updated);
+      return;
+    }
+
+    if (path === '/api/external/services/generate-ui' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.llmRouter) {
+        this.json(res, 503, { error: 'LLM service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const description = body['description'] as string;
+      if (!description) {
+        this.json(res, 400, { error: 'description is required' });
+        return;
+      }
+      try {
+        const prompt = `You are a UI configuration generator. Based on the user's description, generate a JSON object conforming to the CustomUIConfig schema.
+
+The schema (TypeScript):
+interface CustomUIConfig {
+  layout: "fullpage" | "widget" | "sidebar";
+  theme: {
+    primaryColor: string;       // e.g. "#6366f1"
+    backgroundColor?: string;   // page background
+    textColor?: string;         // main text color
+    fontFamily?: string;        // e.g. "Inter, system-ui, sans-serif"
+    borderRadius?: string;      // e.g. "12px"
+    logoUrl?: string;           // optional brand logo URL
+    faviconUrl?: string;        // optional favicon URL
+  };
+  components: Array<{
+    type: "chat" | "header" | "footer" | "rating" | "form" | "file-upload";
+    position: "header" | "footer" | "sidebar" | "inline" | "overlay";
+    config: Record<string, unknown>;  // e.g. { title: "..." } for header, { label: "Rate us", scale: 5 } for rating
+    showWhen?: "always" | "session_start" | "session_end";
+  }>;
+  welcomeMessage?: string;
+  placeholder?: string;
+  customCss?: string;
+}
+
+User description: ${description}
+
+Output ONLY valid JSON, no markdown fences, no explanation.`;
+        const resp = await this.llmRouter.chat({ messages: [{ role: 'user', content: prompt }] });
+        let uiConfig: unknown;
+        try {
+          const raw = resp.content.replace(/```json\s*\n?/g, '').replace(/```\s*$/g, '').trim();
+          uiConfig = JSON.parse(raw);
+        } catch {
+          this.json(res, 422, { error: 'Failed to parse generated UI config', raw: resp.content });
+          return;
+        }
+        this.json(res, 200, { uiConfig });
+      } catch (err: any) {
+        this.json(res, 500, { error: err.message ?? String(err) });
+      }
+      return;
+    }
+
+    if (path === '/api/external/share/tokens' && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.storage?.shareTokenRepo || !this.storage?.externalServiceRepo) {
+        this.json(res, 503, { error: 'External service storage not available' });
+        return;
+      }
+      const agentId = url.searchParams.get('agentId');
+      if (!agentId || !this.verifyAgentAccess(agentId, res)) return;
+      const service = this.storage.externalServiceRepo.findActiveByAgentId(agentId);
+      if (!service) {
+        this.json(res, 200, { tokens: [] });
+        return;
+      }
+      const tokens = this.storage.shareTokenRepo.listByService(service.id);
+      this.json(res, 200, { tokens });
+      return;
+    }
+
     // HITL: Approvals
     if (path === '/api/approvals' && req.method === 'GET') {
       const authUser = this.authEnabled
@@ -9507,6 +10005,22 @@ EXPLANATION_END`;
       exact('/api/external-agents', 'GET'),
       exact('/api/external-agents/register', 'POST'),
       regex(/^\/api\/external-agents\/[^/]+$/, 'DELETE'),
+
+      // ── External Mode (对外模式) ──────────────────────────────────────────
+      exact('/api/external/services', 'POST'),
+      exact('/api/external/services/get', 'GET'),
+      exact('/api/external/services/status', 'POST'),
+      exact('/api/external/services/stats', 'GET'),
+      exact('/api/external/services/update', 'POST'),
+      exact('/api/external/services/generate-ui', 'POST'),
+      exact('/api/external/share', 'POST'),
+      exact('/api/external/share/info', 'GET'),
+      exact('/api/external/share/tokens', 'GET'),
+      exact('/api/external/session/create', 'POST'),
+      exact('/api/external/session/message', 'POST'),
+      exact('/api/external/session/end', 'POST'),
+      exact('/api/external/session/rate', 'POST'),
+      exact('/api/external/session/history', 'GET'),
     ];
   }
 

@@ -17,7 +17,8 @@
     "settings": "设置",
     "files": "文件",
     "skills": "技能",
-    "heartbeat": "心跳"
+    "heartbeat": "心跳",
+    "external": "对外模式"
   },
   "mind": {
     "title": "智能体心智",
@@ -413,6 +414,135 @@
         "systemEvent": "系统事件",
         "statusArrow": "{{from}} → {{to}}"
       }
+    }
+  },
+  "external": {
+    "title": "对外模式",
+    "loading": "正在加载外部服务...",
+    "emptyTitle": "对外模式",
+    "emptyDesc": "将此智能体发布为外部服务，使其能够与组织外部的客户、用户或其他智能体交互。",
+    "publishBtn": "发布外部服务",
+    "publishing": "发布中...",
+    "publishSuccess": "服务发布成功",
+    "tabs": {
+      "status": "状态",
+      "links": "分享链接",
+      "config": "配置",
+      "middleware": "中间件",
+      "ui": "UI 定制"
+    },
+    "status": {
+      "active": "运行中",
+      "paused": "已暂停",
+      "draft": "草稿",
+      "archived": "已归档",
+      "version": "v{{version}}",
+      "publishedAt": "发布于 {{date}}",
+      "activeSessions": "活跃会话",
+      "activeLLMCalls": "活跃 LLM 调用",
+      "maxConcurrent": "最大并发",
+      "queue": "排队中",
+      "pauseBtn": "暂停服务",
+      "resumeBtn": "恢复服务",
+      "publishNewBtn": "发布新版本"
+    },
+    "links": {
+      "desc": "分享链接允许外部用户与此智能体对话。",
+      "generateBtn": "生成链接",
+      "empty": "尚未生成分享链接。",
+      "copyBtn": "复制",
+      "copied": "已复制",
+      "uses": "使用次数: {{count}}",
+      "usesMax": "使用次数: {{count}}/{{max}}",
+      "expires": "过期: {{date}}"
+    },
+    "config": {
+      "name": "服务名称",
+      "description": "描述",
+      "welcomeMessage": "欢迎消息",
+      "welcomePlaceholder": "展示给外部用户的第一条消息",
+      "inputPlaceholder": "输入占位符",
+      "inputPlaceholderDefault": "输入消息...",
+      "maxSessions": "最大并发会话数",
+      "maxMessages": "每会话最大消息数",
+      "tokenSession": "每会话 Token 预算",
+      "tokenDay": "每日 Token 预算",
+      "saveBtn": "保存配置",
+      "saving": "保存中..."
+    },
+    "middleware": {
+      "desc": "启用或禁用外部服务管道中的中间件。更改将随配置一起保存。",
+      "saveBtn": "保存中间件配置",
+      "saving": "保存中...",
+      "items": {
+        "security-gate": { "label": "安全门", "desc": "输入验证和提示词注入检测" },
+        "rate-limiter": { "label": "速率限制", "desc": "按 IP/会话限速" },
+        "auth-checker": { "label": "认证检查", "desc": "令牌和会话验证" },
+        "token-budget": { "label": "Token 预算", "desc": "每会话和每日 Token 上限" },
+        "content-filter": { "label": "内容过滤", "desc": "输出过滤和 PII 检测" },
+        "audit-logger": { "label": "审计日志", "desc": "记录所有交互" },
+        "payment": { "label": "支付", "desc": "付费服务的支付钩子" },
+        "file-upload": { "label": "文件上传", "desc": "文件验证（大小、类型、数量）" },
+        "feedback": { "label": "反馈", "desc": "会话后评价收集" }
+      }
+    },
+    "ui": {
+      "currentMode": "当前 UI 模式",
+      "custom": "自定义 UI",
+      "default": "默认模板",
+      "resetBtn": "重置为默认",
+      "generateTitle": "AI 生成自定义 UI",
+      "generateDesc": "描述你想要的外观和风格，AI 将生成 UI 配置。",
+      "generatePlaceholder": "例如：一个专业的深色主题聊天界面，蓝色点缀，头部有公司 Logo，常见问题的快捷回复按钮...",
+      "generateBtn": "生成 UI",
+      "generating": "生成中...",
+      "previewTitle": "生成的 UI 预览",
+      "applyBtn": "应用此 UI",
+      "applying": "应用中...",
+      "discardBtn": "放弃",
+      "applied": "自定义 UI 已应用"
+    },
+    "errors": {
+      "loadFailed": "加载服务失败",
+      "network": "网络错误",
+      "publishFailed": "发布失败",
+      "statusFailed": "更新状态失败",
+      "tokenFailed": "生成令牌失败",
+      "saveFailed": "保存失败",
+      "generateFailed": "生成 UI 失败"
+    },
+    "chat": {
+      "noToken": "未提供分享令牌，请使用有效的分享链接。",
+      "linkExpired": "此链接已过期或不再有效。",
+      "loadFailed": "加载服务信息失败。",
+      "networkError": "无法连接到服务，请检查网络后重试。",
+      "pageTitle": "与 {{name}} 对话",
+      "serviceBusy": "服务当前繁忙，请稍后重试。",
+      "startFailed": "无法开始对话。",
+      "connectionFailed": "连接失败，请检查网络。",
+      "rateLimited": "已达速率限制，请稍等。",
+      "sessionExpired": "会话已过期，请开始新对话。",
+      "responseFailed": "获取回复失败。",
+      "connectionLost": "连接中断，点击重试重新发送。",
+      "unableToConnect": "无法连接",
+      "tryAgain": "重试",
+      "loadingAgent": "加载中...",
+      "connecting": "连接中...",
+      "startConversation": "开始对话",
+      "conversationEnded": "对话结束",
+      "thankYou": "感谢您与 {{name}} 的交流。",
+      "rateExperience": "您的体验如何？",
+      "rateStar": "评 {{n}} 星",
+      "ratingThanks": "感谢您的反馈！",
+      "newConversation": "开始新对话",
+      "online": "在线",
+      "endChat": "结束对话",
+      "messageLimitWarning": "即将达到消息上限 ({{current}}/{{max}})",
+      "tokenLimitWarning": "即将达到 Token 上限",
+      "usingTool": "正在使用 {{tool}}...",
+      "retry": "重试",
+      "inputPlaceholder": "输入消息...",
+      "send": "发送"
     }
   }
 }

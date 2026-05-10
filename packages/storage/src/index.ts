@@ -12,6 +12,15 @@ export type {
   MarketplaceTemplateRow, MarketplaceSkillRow, MarketplaceRatingRow,
 } from './types.js';
 
+// External mode storage
+export {
+  SqliteExternalServiceRepo,
+  SqliteExternalSessionRepo,
+  SqliteExternalMessageRepo,
+  SqliteShareTokenRepo,
+  SqliteExternalStatsRepo,
+} from './external-store.js';
+
 // SQLite storage (sole backend)
 export {
   openSqlite,

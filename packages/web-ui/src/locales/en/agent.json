@@ -17,7 +17,8 @@
     "settings": "Settings",
     "files": "Files",
     "skills": "Skills",
-    "heartbeat": "Heartbeat"
+    "heartbeat": "Heartbeat",
+    "external": "External"
   },
   "mind": {
     "title": "Agent Mind",
@@ -413,6 +414,135 @@
         "systemEvent": "System Event",
         "statusArrow": "{{from}} → {{to}}"
       }
+    }
+  },
+  "external": {
+    "title": "External Mode",
+    "loading": "Loading external service...",
+    "emptyTitle": "External Mode",
+    "emptyDesc": "Publish this agent as an external service so it can interact with customers, users, or other agents outside your organization.",
+    "publishBtn": "Publish External Service",
+    "publishing": "Publishing...",
+    "publishSuccess": "Service published successfully",
+    "tabs": {
+      "status": "Status",
+      "links": "Share Links",
+      "config": "Configuration",
+      "middleware": "Middleware",
+      "ui": "UI Customization"
+    },
+    "status": {
+      "active": "active",
+      "paused": "paused",
+      "draft": "draft",
+      "archived": "archived",
+      "version": "v{{version}}",
+      "publishedAt": "Published {{date}}",
+      "activeSessions": "Active Sessions",
+      "activeLLMCalls": "Active LLM Calls",
+      "maxConcurrent": "Max Concurrent",
+      "queue": "Queue",
+      "pauseBtn": "Pause Service",
+      "resumeBtn": "Resume Service",
+      "publishNewBtn": "Publish New Version"
+    },
+    "links": {
+      "desc": "Share links allow external users to chat with this agent.",
+      "generateBtn": "Generate Link",
+      "empty": "No share links generated yet.",
+      "copyBtn": "Copy",
+      "copied": "Copied",
+      "uses": "Uses: {{count}}",
+      "usesMax": "Uses: {{count}}/{{max}}",
+      "expires": "Expires: {{date}}"
+    },
+    "config": {
+      "name": "Service Name",
+      "description": "Description",
+      "welcomeMessage": "Welcome Message",
+      "welcomePlaceholder": "First message shown to external users",
+      "inputPlaceholder": "Input Placeholder",
+      "inputPlaceholderDefault": "Type a message...",
+      "maxSessions": "Max Concurrent Sessions",
+      "maxMessages": "Max Messages / Session",
+      "tokenSession": "Token Budget / Session",
+      "tokenDay": "Token Budget / Day",
+      "saveBtn": "Save Configuration",
+      "saving": "Saving..."
+    },
+    "middleware": {
+      "desc": "Enable or disable middleware for the external service pipeline. Changes are saved with the configuration.",
+      "saveBtn": "Save Middleware Config",
+      "saving": "Saving...",
+      "items": {
+        "security-gate": { "label": "Security Gate", "desc": "Input validation & prompt injection detection" },
+        "rate-limiter": { "label": "Rate Limiter", "desc": "Per-IP/session rate limits" },
+        "auth-checker": { "label": "Auth Checker", "desc": "Token and session validation" },
+        "token-budget": { "label": "Token Budget", "desc": "Per-session & daily token caps" },
+        "content-filter": { "label": "Content Filter", "desc": "Output filtering & PII detection" },
+        "audit-logger": { "label": "Audit Logger", "desc": "Records all interactions" },
+        "payment": { "label": "Payment", "desc": "Payment hooks for monetized services" },
+        "file-upload": { "label": "File Upload", "desc": "File validation (size, type, count)" },
+        "feedback": { "label": "Feedback", "desc": "Post-session rating collection" }
+      }
+    },
+    "ui": {
+      "currentMode": "Current UI Mode",
+      "custom": "Custom UI",
+      "default": "Default Template",
+      "resetBtn": "Reset to Default",
+      "generateTitle": "Generate Custom UI with AI",
+      "generateDesc": "Describe the look and feel you want. The AI will generate a UI configuration.",
+      "generatePlaceholder": "e.g., A professional dark-themed chat with blue accents, company logo in the header, and quick reply buttons for common questions...",
+      "generateBtn": "Generate UI",
+      "generating": "Generating...",
+      "previewTitle": "Generated UI Preview",
+      "applyBtn": "Apply This UI",
+      "applying": "Applying...",
+      "discardBtn": "Discard",
+      "applied": "Custom UI applied"
+    },
+    "errors": {
+      "loadFailed": "Failed to load service",
+      "network": "Network error",
+      "publishFailed": "Failed to publish",
+      "statusFailed": "Failed to update status",
+      "tokenFailed": "Failed to generate token",
+      "saveFailed": "Failed to save",
+      "generateFailed": "Failed to generate UI"
+    },
+    "chat": {
+      "noToken": "No share token provided. Please use a valid share link.",
+      "linkExpired": "This link has expired or is no longer valid.",
+      "loadFailed": "Failed to load service information.",
+      "networkError": "Unable to connect to the service. Please check your network and try again.",
+      "pageTitle": "Chat with {{name}}",
+      "serviceBusy": "The service is currently busy. Please try again in a moment.",
+      "startFailed": "Failed to start conversation.",
+      "connectionFailed": "Connection failed. Please check your network.",
+      "rateLimited": "Rate limit reached. Please wait a moment.",
+      "sessionExpired": "Session expired. Please start a new conversation.",
+      "responseFailed": "Failed to get a response.",
+      "connectionLost": "Connection lost. Click retry to resend.",
+      "unableToConnect": "Unable to Connect",
+      "tryAgain": "Try Again",
+      "loadingAgent": "Loading...",
+      "connecting": "Connecting...",
+      "startConversation": "Start Conversation",
+      "conversationEnded": "Conversation Ended",
+      "thankYou": "Thank you for chatting with {{name}}.",
+      "rateExperience": "How was your experience?",
+      "rateStar": "Rate {{n}} stars",
+      "ratingThanks": "Thank you for your feedback!",
+      "newConversation": "Start New Conversation",
+      "online": "Online",
+      "endChat": "End Chat",
+      "messageLimitWarning": "Approaching message limit ({{current}}/{{max}})",
+      "tokenLimitWarning": "Approaching token limit",
+      "usingTool": "Using {{tool}}...",
+      "retry": "Retry",
+      "inputPlaceholder": "Type a message...",
+      "send": "Send"
     }
   }
 }

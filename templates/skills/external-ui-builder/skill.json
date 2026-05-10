@@ -1,0 +1,19 @@
+{
+  "type": "skill",
+  "name": "external-ui-builder",
+  "displayName": "External UI Builder",
+  "version": "1.0.0",
+  "description": "Generate custom chat UI configurations for agent external services. Produces CustomUIConfig JSON from natural language descriptions, supporting themes, layouts, and component composition.",
+  "author": "markus",
+  "category": "external",
+  "tags": ["external", "ui", "chat", "frontend", "customization"],
+  "i18n": {
+    "zh-CN": {
+      "displayName": "对外UI构建器",
+      "description": "根据自然语言描述为智能体对外服务生成自定义聊天UI配置，支持主题、布局和组件组合"
+    }
+  },
+  "skill": {
+    "skillFile": "SKILL.md"
+  }
+}

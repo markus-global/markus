@@ -11,10 +11,11 @@ import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
+import { ExternalAdmin } from './ExternalAdmin.tsx';
 
 interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string; authUser?: AuthUser }
 
-type ProfileTab = 'overview' | 'mind' | 'tools' | 'skills' | 'memory' | 'heartbeat' | 'files';
+type ProfileTab = 'overview' | 'mind' | 'tools' | 'skills' | 'memory' | 'heartbeat' | 'files' | 'external';
 
 const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
   { key: 'overview', icon: '▦' },
@@ -24,6 +25,7 @@ const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
   { key: 'skills', icon: '◆' },
   { key: 'memory', icon: '🧠' },
   { key: 'heartbeat', icon: '♡' },
+  { key: 'external', icon: '🌐' },
 ];
 
 function taskStatusLabel(status: string, t: TFunction): string {
@@ -152,6 +154,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
         {tab === 'skills' && <SkillsTab agent={agent} />}
         {tab === 'memory' && <MemoryTab agentId={agentId} />}
         {tab === 'heartbeat' && <HeartbeatTab agentId={agentId} initialData={agent.heartbeat} />}
+        {tab === 'external' && <ExternalAdmin agentId={agentId} orgId={agent.config?.orgId ?? 'default'} />}
       </div>
     </div>
   );
@@ -528,6 +531,8 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
             <KV label={t('agent:profilePage.overview.labels.maxTokensDay')}>{agent.config?.llmConfig.maxTokensPerDay ?? t('agent:profilePage.overview.unlimited')}</KV>
           </div>
         </Card>
+
+      
 
       {/* Recent Tasks */}
       {recentTasks.length > 0 && (
