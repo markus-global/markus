@@ -8,6 +8,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { DynamicUIRenderer } from '../components/DynamicUIRenderer.js';
+import { MarkdownMessage } from '../components/MarkdownMessage.js';
 
 interface AgentInfo {
   agentId: string;
@@ -495,13 +496,21 @@ export function ExternalChat({ token: propToken }: ExternalChatProps) {
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {messages.map(msg => (
           <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-[80%] px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
+            <div className={`max-w-[80%] px-4 py-2.5 text-sm leading-relaxed ${
               msg.role === 'user'
-                ? 'bg-brand-600 text-white rounded-2xl rounded-br-md'
+                ? 'bg-brand-600 text-white rounded-2xl rounded-br-md whitespace-pre-wrap'
                 : 'bg-surface-chat-bubble text-fg-primary rounded-2xl rounded-bl-md'
             } ${msg.error ? 'border border-red-500/30' : ''} ${msg.streaming && !msg.content ? 'opacity-60' : ''}`}>
-              {msg.content || (msg.streaming ? <TypingIndicator /> : '')}
-              {msg.streaming && msg.content && <span className="inline-block ml-0.5 animate-pulse">▍</span>}
+              {msg.role === 'user' ? (
+                msg.content
+              ) : msg.content ? (
+                <>
+                  <MarkdownMessage content={msg.content} className="text-fg-primary [&_a]:text-brand-400" />
+                  {msg.streaming && <span className="inline-block ml-0.5 animate-pulse">▍</span>}
+                </>
+              ) : msg.streaming ? (
+                <TypingIndicator />
+              ) : null}
             </div>
           </div>
         ))}
