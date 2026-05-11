@@ -1034,10 +1034,12 @@ const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
   { id: 'requirements', prefixes: ['requirement_propose', 'requirement_list', 'requirement_get', 'requirement_update', 'requirement_update_status', 'requirement_resubmit', 'requirement_comment'] },
   { id: 'projects', prefixes: ['list_projects', 'get_project', 'create_project', 'update_project', 'project_info'] },
   { id: 'deliverables', prefixes: ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'] },
+  { id: 'packages', prefixes: ['package_list', 'package_install', 'hub_search', 'hub_install'] },
   { id: 'communication', prefixes: ['agent_send_message', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats', 'agent_broadcast_status', 'agent_delegate_task'] },
   { id: 'memory', prefixes: ['memory_save', 'memory_search', 'memory_list', 'memory_update_longterm', 'memory_delete', 'recall_context', 'recall_activity'] },
-  { id: 'teamManager', prefixes: ['team_list', 'team_status', 'delegate_message', 'team_update', 'agent_update', 'package_list', 'package_install'] },
+  { id: 'teamManager', prefixes: ['team_list', 'team_status', 'delegate_message', 'team_update', 'agent_update'] },
   { id: 'subagents', prefixes: ['spawn_subagent', 'spawn_subagents'] },
+  { id: 'system', prefixes: ['discover_tools', 'notify_user', 'request_user_approval'] },
   { id: 'llm', prefixes: ['llm_list_providers', 'llm_switch_model', 'llm_switch_default_provider', 'llm_add_provider', 'llm_edit_provider', 'llm_add_model'] },
 ];
 
