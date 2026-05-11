@@ -96,7 +96,6 @@
     "planning": "规划",
     "teamManager": "团队管理",
     "subagents": "子智能体",
-    "system": "系统",
     "llm": "大模型",
     "other": "其他",
     "mcp": "MCP：{{server}}"
