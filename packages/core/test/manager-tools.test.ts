@@ -38,27 +38,34 @@ function createMockManagerContext(overrides?: Partial<ManagerToolsContext>): Man
 }
 
 function createMockPackageContext(overrides?: Partial<PackageToolsContext>): PackageToolsContext {
+  const listTemplatesFn = vi.fn(() => [
+    { id: 'tpl_dev', name: 'Developer', description: 'A developer', roleId: 'developer', category: 'development' },
+  ]);
+  const hireFromTemplateFn = vi.fn(async (_templateId: string, name: string) => ({
+    id: 'agt_new',
+    name,
+    role: 'developer',
+  }));
+  const installArtifactFn = vi.fn(async (type: string, name: string) => {
+    if (type === 'agent' && name === 'custom-dev') return { type, installed: { name } };
+    throw new Error(`Artifact not found: ${type}/${name}`);
+  });
+  const listArtifactsFn = vi.fn((type?: string) => {
+    const all = [{ type: 'agent', name: 'custom-dev', description: 'Custom developer' }];
+    return type ? all.filter(a => a.type === type) : all;
+  });
+  const searchHubFn = vi.fn(async () => [
+    { id: 'hub_001', name: 'research-team', type: 'team', description: 'A research team', author: 'community', downloads: 42 },
+  ]);
+  const downloadAndInstallFn = vi.fn(async () => ({ type: 'team', installed: { name: 'research-team' } }));
+
   return {
-    listTemplates: vi.fn(() => [
-      { id: 'tpl_dev', name: 'Developer', description: 'A developer', roleId: 'developer', category: 'development' },
-    ]),
-    hireFromTemplate: vi.fn(async (_templateId, name) => ({
-      id: 'agt_new',
-      name,
-      role: 'developer',
-    })),
-    installArtifact: vi.fn(async (type: string, name: string) => {
-      if (type === 'agent' && name === 'custom-dev') return { type, installed: { name } };
-      throw new Error(`Artifact not found: ${type}/${name}`);
-    }),
-    listArtifacts: vi.fn((type?: string) => {
-      const all = [{ type: 'agent', name: 'custom-dev', description: 'Custom developer' }];
-      return type ? all.filter(a => a.type === type) : all;
-    }),
-    searchHub: vi.fn(async () => [
-      { id: 'hub_001', name: 'research-team', type: 'team', description: 'A research team', author: 'community', downloads: 42 },
-    ]),
-    downloadAndInstall: vi.fn(async () => ({ type: 'team', installed: { name: 'research-team' } })),
+    listTemplates: () => listTemplatesFn,
+    hireFromTemplate: () => hireFromTemplateFn,
+    installArtifact: () => installArtifactFn,
+    listArtifacts: () => listArtifactsFn,
+    searchHub: () => searchHubFn,
+    downloadAndInstall: () => downloadAndInstallFn,
     ...overrides,
   };
 }
