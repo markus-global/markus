@@ -2464,6 +2464,7 @@ export class TaskService {
     });
 
     const recentActivity = [...tasks]
+      .filter(t => t.status !== 'archived')
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
       .slice(0, 20)
       .map(t => ({ taskId: t.id, title: t.title, status: t.status, updatedAt: t.updatedAt }));

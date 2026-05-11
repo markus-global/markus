@@ -1039,6 +1039,7 @@ const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
   { id: 'memory', prefixes: ['memory_save', 'memory_search', 'memory_list', 'memory_update_longterm', 'memory_delete', 'recall_context', 'recall_activity'] },
   { id: 'teamManager', prefixes: ['team_list', 'team_status', 'delegate_message', 'team_update', 'agent_update'] },
   { id: 'subagents', prefixes: ['spawn_subagent', 'spawn_subagents'] },
+  { id: 'system', prefixes: ['discover_tools', 'notify_user', 'request_user_approval'] },
   { id: 'llm', prefixes: ['llm_list_providers', 'llm_switch_model', 'llm_switch_default_provider', 'llm_add_provider', 'llm_edit_provider', 'llm_add_model'] },
 ];
 
@@ -1066,6 +1067,16 @@ function categorizeTools(tools: AgentToolInfo[], t: TFunction): Array<{ category
   return [...categorized.entries()].map(([category, catTools]) => ({ category, tools: catTools }));
 }
 
+function toolDisplayName(name: string): { displayName: string; mcpServer?: string } {
+  const sep = name.indexOf('__');
+  if (sep > 0) return { displayName: name.slice(sep + 2), mcpServer: name.slice(0, sep) };
+  return { displayName: name };
+}
+
+function cleanDescription(desc: string): string {
+  return desc.replace(/^\[MCP:[^\]]*\]\s*/i, '');
+}
+
 function ToolsTab({ tools }: { tools: AgentToolInfo[] }) {
   const { t } = useTranslation(['agent', 'common']);
   const groups = categorizeTools(tools, t);
@@ -1075,15 +1086,21 @@ function ToolsTab({ tools }: { tools: AgentToolInfo[] }) {
       {groups.map(g => (
         <Card key={g.category} title={g.category}>
           <div className="grid grid-cols-2 gap-2">
-            {g.tools.map(tool => (
-              <div key={tool.name} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
-                <div className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs font-medium font-mono">{tool.name}</div>
-                  <div className="text-[10px] text-fg-tertiary truncate">{tool.description}</div>
+            {g.tools.map(tool => {
+              const { displayName, mcpServer } = toolDisplayName(tool.name);
+              return (
+                <div key={tool.name} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
+                  <div className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-medium font-mono">{displayName}</span>
+                      {mcpServer && <span className="text-[9px] px-1 py-px rounded bg-surface-elevated text-fg-tertiary border border-border-default/40 shrink-0">MCP</span>}
+                    </div>
+                    <div className="text-[10px] text-fg-tertiary truncate">{cleanDescription(tool.description)}</div>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </Card>
       ))}

@@ -96,6 +96,7 @@
     "planning": "Planning",
     "teamManager": "Team Management",
     "subagents": "Subagents",
+    "system": "System",
     "llm": "LLM",
     "other": "Other",
     "mcp": "MCP: {{server}}"

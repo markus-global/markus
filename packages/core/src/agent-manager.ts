@@ -1290,15 +1290,16 @@ export class AgentManager {
     }
 
     // Package tools (package_install, package_list, hub_search, hub_install) — available to all agents
+    // Uses getter functions (late-binding) so services set after agent creation are still accessible
     {
       const packageTools = createPackageTools({
-        installArtifact: this.builderService
+        installArtifact: () => this.builderService
           ? (type: 'agent' | 'team' | 'skill', name: string) => this.builderService!.installArtifact(type, name)
           : undefined,
-        listArtifacts: this.builderService
+        listArtifacts: () => this.builderService
           ? (type?: 'agent' | 'team' | 'skill') => this.builderService!.listArtifacts(type)
           : undefined,
-        hireFromTemplate: this.templateRegistry
+        hireFromTemplate: () => this.templateRegistry
           ? async (templateId: string, name: string, skills?: string[]) => {
               const newAgent = await this.createAgentFromTemplate({
                 templateId,
@@ -1311,15 +1312,15 @@ export class AgentManager {
               return { id: newAgent.id, name: newAgent.config.name, role: newAgent.role.name };
             }
           : undefined,
-        listTemplates: this.templateRegistry
+        listTemplates: () => this.templateRegistry
           ? () => this.templateRegistry!.list().map(t => ({
               id: t.id, name: t.name, description: t.description, roleId: t.roleId, category: t.category ?? 'general',
             }))
           : undefined,
-        searchHub: this.hubClient
+        searchHub: () => this.hubClient
           ? (opts) => this.hubClient!.search(opts)
           : undefined,
-        downloadAndInstall: this.hubClient
+        downloadAndInstall: () => this.hubClient
           ? (itemId) => this.hubClient!.downloadAndInstall(itemId)
           : undefined,
       });
@@ -1941,15 +1942,16 @@ export class AgentManager {
     }
 
     // Package tools (package_install, package_list, hub_search, hub_install) — available to all agents
+    // Uses getter functions (late-binding) so services set after agent creation are still accessible
     {
       const packageTools = createPackageTools({
-        installArtifact: this.builderService
+        installArtifact: () => this.builderService
           ? (type: 'agent' | 'team' | 'skill', name: string) => this.builderService!.installArtifact(type, name)
           : undefined,
-        listArtifacts: this.builderService
+        listArtifacts: () => this.builderService
           ? (type?: 'agent' | 'team' | 'skill') => this.builderService!.listArtifacts(type)
           : undefined,
-        hireFromTemplate: this.templateRegistry
+        hireFromTemplate: () => this.templateRegistry
           ? async (templateId: string, name: string, skills?: string[]) => {
               const newAgent = await this.createAgentFromTemplate({
                 templateId,
@@ -1962,15 +1964,15 @@ export class AgentManager {
               return { id: newAgent.id, name: newAgent.config.name, role: newAgent.role.name };
             }
           : undefined,
-        listTemplates: this.templateRegistry
+        listTemplates: () => this.templateRegistry
           ? () => this.templateRegistry!.list().map(t => ({
               id: t.id, name: t.name, description: t.description, roleId: t.roleId, category: t.category ?? 'general',
             }))
           : undefined,
-        searchHub: this.hubClient
+        searchHub: () => this.hubClient
           ? (opts) => this.hubClient!.search(opts)
           : undefined,
-        downloadAndInstall: this.hubClient
+        downloadAndInstall: () => this.hubClient
           ? (itemId) => this.hubClient!.downloadAndInstall(itemId)
           : undefined,
       });
