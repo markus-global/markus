@@ -61,7 +61,7 @@ const TOOL_GROUPS: ToolGroup[] = [
     name: 'packages',
     keywords: ['builder', 'artifact', 'deploy', 'skill', 'package', 'hub', 'hire', 'install agent', 'install team',
       '部署', '工件', '技能包', '招聘', '安装'],
-    toolNames: ['package_list', 'package_install', 'builder_list', 'builder_install', 'hub_search', 'hub_install'],
+    toolNames: ['package_list', 'package_install', 'hub_search', 'hub_install'],
   },
 ];
 

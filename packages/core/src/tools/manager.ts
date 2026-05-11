@@ -10,40 +10,50 @@ export interface ManagerToolsContext {
   findDuplicateTasks?: (orgId: string) => Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
   cleanupDuplicateTasks?: (orgId: string) => { cancelledIds: string[]; count: number };
   getTaskBoardHealth?: (orgId: string) => Record<string, unknown>;
-  hireFromTemplate?: (templateId: string, name: string, skills?: string[]) => Promise<{ id: string; name: string; role: string }>;
-  listTemplates?: () => Array<{ id: string; name: string; description: string; roleId: string; category: string }>;
-  installArtifact?: (type: 'agent' | 'team' | 'skill', name: string) => Promise<{ type: string; installed: unknown }>;
-  listArtifacts?: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>;
   updateTeam?: (teamId: string, data: { name?: string; description?: string }) => Promise<{ id: string; name: string; description?: string }>;
   updateAgentConfig?: (agentId: string, data: { name?: string }) => Promise<{ id: string; name: string }>;
 }
 
-export interface BuilderToolsContext {
+export interface PackageToolsContext {
   installArtifact?: (type: 'agent' | 'team' | 'skill', name: string) => Promise<{ type: string; installed: unknown }>;
   listArtifacts?: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>;
+  hireFromTemplate?: (templateId: string, name: string, skills?: string[]) => Promise<{ id: string; name: string; role: string }>;
+  listTemplates?: () => Array<{ id: string; name: string; description: string; roleId: string; category: string }>;
+  searchHub?: (opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>;
+  downloadAndInstall?: (itemId: string) => Promise<{ type: string; installed: unknown }>;
 }
 
-export function createBuilderTools(ctx: BuilderToolsContext): AgentToolHandler[] {
+export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[] {
   return [
     ...(ctx.listArtifacts
       ? [
           {
-            name: 'builder_list',
-            description: 'List builder artifacts (custom-created or Hub-downloaded agent/team/skill packages). These can be installed with builder_install.',
+            name: 'package_list',
+            description: 'List all available packages. type "agent": built-in roles (developer, content-writer, etc.) and custom agent packages. type "team": team templates (content-team, research-lab, etc.). type "skill": skill packages. Omit type to list all. Install with package_install. To find more online, use hub_search.',
             inputSchema: {
               type: 'object',
               properties: {
                 type: {
                   type: 'string',
                   enum: ['agent', 'team', 'skill'],
-                  description: 'Filter by artifact type (optional)',
+                  description: 'Filter by type (optional). Omit to list all.',
                 },
               },
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const artifacts = ctx.listArtifacts!(args['type'] as 'agent' | 'team' | 'skill' | undefined);
-                return JSON.stringify({ artifacts, count: artifacts.length });
+                const type = args['type'] as string | undefined;
+                const artifacts = ctx.listArtifacts!(type as 'agent' | 'team' | 'skill' | undefined);
+                const roles = (!type || type === 'agent') && ctx.listTemplates ? ctx.listTemplates() : [];
+                const roleItems = roles.map((r: { id?: string; name?: string; description?: string }) => ({
+                  type: 'agent' as const,
+                  source: 'role' as const,
+                  name: r.id ?? r.name,
+                  description: r.description ?? r.name,
+                  ...r,
+                }));
+                const items = [...roleItems, ...artifacts];
+                return JSON.stringify({ items, count: items.length });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
@@ -55,36 +65,130 @@ export function createBuilderTools(ctx: BuilderToolsContext): AgentToolHandler[]
     ...(ctx.installArtifact
       ? [
           {
-            name: 'builder_install',
-            description: 'Install a builder artifact — deploys an agent, team, or skill package into the live organization. For agents/teams: after installation, onboard with project context and assign initial tasks.',
+            name: 'package_install',
+            description: 'Install a package into the live organization. type "agent": hire/install an agent (from a built-in role or a custom package). type "team": deploy a full team with all members, norms, and starter tasks. type "skill": install a skill package. Use package_list to see what is available.',
             inputSchema: {
               type: 'object',
               properties: {
                 type: {
                   type: 'string',
                   enum: ['agent', 'team', 'skill'],
-                  description: 'Artifact type',
+                  description: 'Package type',
                 },
-                name: { type: 'string', description: 'Artifact name (from builder_list)' },
+                name: { type: 'string', description: 'Package name (from package_list)' },
+                agent_name: { type: 'string', description: 'Display name for the new agent (required when installing from a built-in role, e.g. "developer")' },
+                skills: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Optional skill IDs to assign to the new agent',
+                },
               },
               required: ['type', 'name'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const type = (args['type'] as string | undefined)?.trim() as 'agent' | 'team' | 'skill' | undefined;
+                const type = (args['type'] as string | undefined)?.trim();
                 const name = (args['name'] as string | undefined)?.trim();
                 if (!type || !['agent', 'team', 'skill'].includes(type)) return JSON.stringify({ status: 'error', error: 'type is required and must be one of: agent, team, skill' });
-                if (!name) return JSON.stringify({ status: 'error', error: 'name is required — provide the artifact name from builder_list' });
-                const result = await ctx.installArtifact!(
-                  type,
-                  name,
-                );
+                if (!name) return JSON.stringify({ status: 'error', error: 'name is required — use package_list to see available packages' });
+
+                if (type === 'agent') {
+                  try {
+                    const result = await ctx.installArtifact!(type, name);
+                    return JSON.stringify({
+                      status: 'success',
+                      ...result,
+                      next_steps: 'Installed successfully. Next: onboard new agent with project context via agent_send_message, then assign tasks via task_create.',
+                    });
+                  } catch {
+                    if (ctx.hireFromTemplate) {
+                      const agentName = (args['agent_name'] as string | undefined)?.trim();
+                      if (!agentName) return JSON.stringify({ status: 'error', error: 'agent_name is required when installing from a built-in role — provide a display name for the new agent' });
+                      const result = await ctx.hireFromTemplate(name, agentName, args['skills'] as string[] | undefined);
+                      return JSON.stringify({
+                        status: 'success',
+                        type: 'agent',
+                        agent: result,
+                        next_steps: 'Agent hired and started. Next: onboard with project context via agent_send_message, then assign tasks via task_create.',
+                      });
+                    }
+                    throw new Error(`Agent package not found: ${name}. Use package_list to see available packages.`);
+                  }
+                }
+
+                const result = await ctx.installArtifact!(type as 'team' | 'skill', name);
+                return JSON.stringify({
+                  status: 'success',
+                  ...result,
+                  ...(type === 'team' ? {
+                    next_steps: 'Installed successfully. Next: onboard new agent(s) with project context via agent_send_message, then assign initial tasks via task_create.',
+                  } : {}),
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.searchHub
+      ? [
+          {
+            name: 'hub_search',
+            description: 'Search Markus Hub for community-published agents, teams, and skills. Returns a list of available items with descriptions and popularity.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                type: {
+                  type: 'string',
+                  enum: ['agent', 'team', 'skill'],
+                  description: 'Filter by item type (optional)',
+                },
+                query: {
+                  type: 'string',
+                  description: 'Search query (optional)',
+                },
+              },
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const items = await ctx.searchHub!({
+                  type: args['type'] as string | undefined,
+                  query: args['query'] as string | undefined,
+                });
+                return JSON.stringify({ items, count: items.length });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.downloadAndInstall
+      ? [
+          {
+            name: 'hub_install',
+            description: 'Download an item from Markus Hub and install it. Combines download, save as artifact, and install into a single step. For agents/teams: remember to onboard the new agent(s) after installation.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                item_id: { type: 'string', description: 'Hub item ID (from hub_search results)' },
+              },
+              required: ['item_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const itemId = (args['item_id'] as string | undefined)?.trim();
+                if (!itemId) return JSON.stringify({ status: 'error', error: 'item_id is required — use hub_search to find available items first' });
+                const result = await ctx.downloadAndInstall!(itemId);
                 const isAgentOrTeam = result.type === 'agent' || result.type === 'team';
                 return JSON.stringify({
                   status: 'success',
                   ...result,
                   ...(isAgentOrTeam ? {
-                    next_steps: 'Installed successfully. Next: onboard new agent(s) with project context via agent_send_message, then assign initial tasks via task_create.',
+                    next_steps: 'Downloaded and installed from Hub. Next: onboard new agent(s) with project context via agent_send_message, then assign initial tasks via task_create.',
                   } : {}),
                 });
               } catch (error) {
@@ -137,8 +241,6 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
       async execute(args: Record<string, unknown>): Promise<string> {
         const targetId = args['agent_id'] as string;
         const message = args['message'] as string;
-        // Fire-and-forget: dispatch to target agent and return immediately.
-        // The target agent works independently; do not block waiting for its reply.
         ctx.delegateMessage(targetId, message, 'manager').catch((err: unknown) => {
           log.warn(`Delegated task to ${targetId} failed in background`, { error: String(err) });
         });
@@ -231,43 +333,6 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
         ]
       : []),
 
-    ...(ctx.listArtifacts
-      ? [
-          {
-            name: 'package_list',
-            description: 'List all available packages. type "agent": built-in roles (developer, content-writer, etc.) and custom agent packages. type "team": team templates (content-team, research-lab, etc.). type "skill": skill packages. Omit type to list all. Install with package_install. To find more online, use hub_search.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                type: {
-                  type: 'string',
-                  enum: ['agent', 'team', 'skill'],
-                  description: 'Filter by type (optional). Omit to list all.',
-                },
-              },
-            },
-            async execute(args: Record<string, unknown>): Promise<string> {
-              try {
-                const type = args['type'] as string | undefined;
-                const artifacts = ctx.listArtifacts!(type as 'agent' | 'team' | 'skill' | undefined);
-                const roles = (!type || type === 'agent') && ctx.listTemplates ? ctx.listTemplates() : [];
-                const roleItems = roles.map((r: { id?: string; name?: string; description?: string }) => ({
-                  type: 'agent' as const,
-                  source: 'role' as const,
-                  name: r.id ?? r.name,
-                  description: r.description ?? r.name,
-                  ...r,
-                }));
-                const items = [...roleItems, ...artifacts];
-                return JSON.stringify({ items, count: items.length });
-              } catch (error) {
-                return JSON.stringify({ status: 'error', error: String(error) });
-              }
-            },
-          } as AgentToolHandler,
-        ]
-      : []),
-
     ...(ctx.updateTeam
       ? [
           {
@@ -324,76 +389,6 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
                 if (!name) return JSON.stringify({ status: 'error', error: 'name is required' });
                 const result = await ctx.updateAgentConfig!(agentId, { name });
                 return JSON.stringify({ status: 'success', agent: result });
-              } catch (error) {
-                return JSON.stringify({ status: 'error', error: String(error) });
-              }
-            },
-          } as AgentToolHandler,
-        ]
-      : []),
-
-    ...(ctx.installArtifact
-      ? [
-          {
-            name: 'package_install',
-            description: 'Install a package into the live organization. type "agent": hire/install an agent (from a built-in role or a custom package). type "team": deploy a full team with all members, norms, and starter tasks. type "skill": install a skill package. Use package_list to see what is available.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                type: {
-                  type: 'string',
-                  enum: ['agent', 'team', 'skill'],
-                  description: 'Package type',
-                },
-                name: { type: 'string', description: 'Package name (from package_list)' },
-                agent_name: { type: 'string', description: 'Display name for the new agent (required when installing from a built-in role, e.g. "developer")' },
-                skills: {
-                  type: 'array',
-                  items: { type: 'string' },
-                  description: 'Optional skill IDs to assign to the new agent',
-                },
-              },
-              required: ['type', 'name'],
-            },
-            async execute(args: Record<string, unknown>): Promise<string> {
-              try {
-                const type = (args['type'] as string | undefined)?.trim();
-                const name = (args['name'] as string | undefined)?.trim();
-                if (!type || !['agent', 'team', 'skill'].includes(type)) return JSON.stringify({ status: 'error', error: 'type is required and must be one of: agent, team, skill' });
-                if (!name) return JSON.stringify({ status: 'error', error: 'name is required — use package_list to see available packages' });
-
-                if (type === 'agent') {
-                  try {
-                    const result = await ctx.installArtifact!(type, name);
-                    return JSON.stringify({
-                      status: 'success',
-                      ...result,
-                      next_steps: 'Installed successfully. Next: onboard new agent with project context via agent_send_message, then assign tasks via task_create.',
-                    });
-                  } catch {
-                    if (ctx.hireFromTemplate) {
-                      const agentName = (args['agent_name'] as string | undefined)?.trim();
-                      if (!agentName) return JSON.stringify({ status: 'error', error: 'agent_name is required when installing from a built-in role — provide a display name for the new agent' });
-                      const result = await ctx.hireFromTemplate(name, agentName, args['skills'] as string[] | undefined);
-                      return JSON.stringify({
-                        status: 'success',
-                        type: 'agent',
-                        agent: result,
-                        next_steps: 'Agent hired and started. Next: onboard with project context via agent_send_message, then assign tasks via task_create.',
-                      });
-                    }
-                    throw new Error(`Agent package not found: ${name}. Use package_list to see available packages.`);
-                  }
-                }
-
-                const result = await ctx.installArtifact!(type as 'team' | 'skill', name);
-                return JSON.stringify({
-                  status: 'success',
-                  ...result,
-                  ...(type === 'team' ? {
-                    next_steps: 'Installed successfully. Next: onboard new agent(s) with project context via agent_send_message, then assign initial tasks via task_create.',
-                  } : {}),
-                });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
