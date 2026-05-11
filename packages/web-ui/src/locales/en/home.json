@@ -27,7 +27,9 @@
   "agentFocus": {
     "title": "Agent Focus",
     "totalQueued": "{{count}} total queued",
-    "working": "Working..."
+    "working": "Working...",
+    "heartbeatCheckIn": "Heartbeat check-in",
+    "heartbeatSkip": "Heartbeat skipped (idle)"
   },
   "teamOverview": {
     "title": "Team Overview",
@@ -49,6 +51,7 @@
     "title": "Pending Reviews",
     "review": "Review →",
     "proposedBy": "proposed by {{author}} · {{priority}}",
+    "proposedBy2": "proposed by {{author}}",
     "agentProposed": "Agents proposed {{count}} requirement(s) — review to authorize work.",
     "agent": "Agent",
     "user": "User"
@@ -59,6 +62,15 @@
   "topPerformers": {
     "title": "Top Performing Agents",
     "tasksCompleted": "{{count}} tasks completed"
+  },
+  "ranking": {
+    "title": "Agent Ranking",
+    "subtitle": "{{count}} agents total",
+    "agent": "Agent",
+    "health": "Health",
+    "tasks": "Tasks",
+    "errorRate": "Errors",
+    "noData": "No agent data available yet."
   },
   "systemHealth": {
     "title": "System Health",

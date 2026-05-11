@@ -4858,9 +4858,9 @@ function RequirementDetailPanel({
             <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium align-middle ${badge.cls}`}>{badge.label}</span>
             {' '}
             {req.priority === 'high' || req.priority === 'urgent' ? (
-              <span className={`text-[10px] font-medium align-middle ${req.priority === 'urgent' ? 'text-red-500' : 'text-amber-600'}`}>{req.priority}</span>
+              <span className={`text-[10px] font-medium align-middle ${req.priority === 'urgent' ? 'text-red-500' : 'text-amber-600'}`}>{t('common:priority.' + req.priority, { defaultValue: req.priority })}</span>
             ) : (
-              <span className="text-[10px] text-fg-tertiary align-middle">{req.priority}</span>
+              <span className="text-[10px] text-fg-tertiary align-middle">{t('common:priority.' + req.priority, { defaultValue: req.priority })}</span>
             )}
           </h2>
         </div>

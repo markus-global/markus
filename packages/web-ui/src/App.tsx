@@ -8,6 +8,7 @@ import { AgentBuilder } from './pages/AgentBuilder.tsx';
 import { WorkPage } from './pages/Work.tsx';
 import { DeliverablesPage } from './pages/Deliverables.tsx';
 import { ReportsPage } from './pages/Reports.tsx';
+import { NotificationsPage } from './pages/Notifications.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { BottomNav } from './components/BottomNav.tsx';
 import { MobileBuilderTabs } from './components/MobileBuilderTabs.tsx';
@@ -58,6 +59,8 @@ export function App() {
     let normalized = resolvePageId(p);
     if (isMobile) {
       normalized = MOBILE_REDIRECTS[normalized] ?? normalized;
+    } else if (normalized === PAGE.NOTIFICATIONS) {
+      normalized = PAGE.HOME;
     }
     // Save current page's full hash (e.g. 'team/d') so it can be restored later
     const curBase = getPageFromHash();
@@ -163,6 +166,7 @@ export function App() {
         [PAGE.SETTINGS]: <MobileSettingsTabs theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} />,
         [PAGE.WORK]: <WorkPage authUser={currentUser} />,
         [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
+        [PAGE.NOTIFICATIONS]: <NotificationsPage authUser={currentUser} />,
       };
     }
     return {
@@ -315,7 +319,7 @@ export function App() {
 
       {/* Mobile bottom nav */}
       {isMobile && (
-        <BottomNav currentPage={page} onNavigate={navigate} />
+        <BottomNav currentPage={page} onNavigate={navigate} userId={currentUser?.id} />
       )}
     </div>
   );

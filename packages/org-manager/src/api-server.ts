@@ -9636,9 +9636,13 @@ EXPLANATION_END`;
     const totalTokenCost = agentRanking.reduce((s, a) => s + a.tokenUsage.cost, 0);
     const totalInteractions = agentRanking.reduce((s, a) => s + a.totalInteractions, 0);
 
+    const terminalTaskCount =
+      taskDashboard.statusCounts.completed +
+      taskDashboard.statusCounts.failed +
+      taskDashboard.statusCounts.rejected;
     const taskSuccessRate =
-      taskDashboard.totalTasks > 0
-        ? Math.round((taskDashboard.statusCounts.completed / taskDashboard.totalTasks) * 100)
+      terminalTaskCount > 0
+        ? Math.round((taskDashboard.statusCounts.completed / terminalTaskCount) * 100)
         : 0;
 
     const blockedTasks = taskDashboard.statusCounts.blocked ?? 0;
