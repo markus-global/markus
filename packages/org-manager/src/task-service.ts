@@ -126,6 +126,10 @@ export class TaskService {
   private taskCancelTokens = new Map<string, { cancelled: boolean }>();
   /** Tasks currently being reviewed — prevents duplicate review notifications */
   private activeReviews = new Set<string>();
+  /** Tracks tasks where submitForReview was called in the current execution round.
+   *  Used to avoid false "did not call task_submit_review" when a fast reviewer
+   *  transitions the task back to in_progress before execution_finished fires. */
+  private tasksSubmittedForReview = new Set<string>();
   private webhooks: TaskWebhook[] = [];
   private timeoutCheckInterval?: ReturnType<typeof setInterval>;
   private projectService?: ProjectService;
@@ -1316,10 +1320,16 @@ export class TaskService {
             if (entry.content === 'completed' || entry.content === 'execution_finished') {
               const currentTask = this.tasks.get(taskId);
               const alreadyTerminal = currentTask && ['review', 'completed', 'failed', 'cancelled', 'archived'].includes(currentTask.status);
-              // Only task_submit_review (→ submitForReview) can transition to review.
+              const didSubmit = this.tasksSubmittedForReview.has(taskId);
+              if (didSubmit) {
+                this.tasksSubmittedForReview.delete(taskId);
+                log.info('Task execution finished after submitForReview — skipping no-submit retry (reviewer may have transitioned status back)', { taskId });
+              }
               // If execution finished but agent didn't submit, auto-retry so the agent
               // gets another chance to call task_submit_review.
-              if (!alreadyTerminal && currentTask && currentTask.status === 'in_progress') {
+              // Skip retry if submitForReview was actually called (task may be back in
+              // in_progress due to a fast reviewer calling requestRevision).
+              if (!alreadyTerminal && !didSubmit && currentTask && currentTask.status === 'in_progress') {
                 const nextAttempt = _retryAttempt + 1;
                 if (nextAttempt < TaskService.MAX_IN_PROGRESS_RETRIES) {
                   const delayMs = withJitter(TaskService.RETRY_DELAYS_MS[Math.min(_retryAttempt, TaskService.RETRY_DELAYS_MS.length - 1)] ?? 300_000);
@@ -2036,6 +2046,9 @@ export class TaskService {
     }
     if (from === 'review' && to !== 'review') {
       this.activeReviews.delete(taskId);
+    }
+    if (TERMINAL_STATUSES.has(to)) {
+      this.tasksSubmittedForReview.delete(taskId);
     }
     if (TERMINAL_STATUSES.has(to) && this.hitlService) {
       const cancelled = this.hitlService.cancelApprovalsByDetail(
@@ -2973,6 +2986,8 @@ export class TaskService {
       metadata: { deliverableCount: deliverables.length, reviewReportStatus: reviewReport?.overallStatus },
     });
 
+    this.tasksSubmittedForReview.add(task.id);
+
     // Transition to review — updateTaskStatus handles persistence, WS broadcast,
     // event emission, and reviewer notification
     this.updateTaskStatus(task.id, 'review', task.assignedAgentId, false, false, 'agent', 'Submitted for review');
@@ -3895,7 +3910,12 @@ export class TaskService {
           if (entry.type === 'status' && (entry.content === 'execution_finished' || entry.content === 'completed')) {
             const currentTask = this.tasks.get(taskId);
             const alreadyTerminal = currentTask && ['review', 'completed', 'failed', 'cancelled', 'archived'].includes(currentTask.status);
-            if (!alreadyTerminal && currentTask && currentTask.status === 'in_progress') {
+            const didSubmit = this.tasksSubmittedForReview.has(taskId);
+            if (didSubmit) {
+              this.tasksSubmittedForReview.delete(taskId);
+              log.info('Fresh retry finished after submitForReview — skipping no-submit retry', { taskId });
+            }
+            if (!alreadyTerminal && !didSubmit && currentTask && currentTask.status === 'in_progress') {
               const delayMs = withJitter(TaskService.RETRY_DELAYS_MS[0] ?? 10_000);
               log.warn(`Fresh retry finished without task_submit_review — auto-retrying in ${Math.round(delayMs / 1000)}s`, { taskId });
               this.addTaskNote(taskId,
