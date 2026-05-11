@@ -4,8 +4,6 @@ import { useTranslation } from 'react-i18next';
 import { api, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo, type StorageInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
-import { NotificationBell } from '../components/NotificationBell.tsx';
-import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { Avatar } from '../components/Avatar.tsx';
 
 const SHOW_HERO_BANNER = false;
@@ -32,8 +30,7 @@ const TASK_STATUS_I18N: Record<string, string> = {
 const STATUS_ORDER = ['completed', 'in_progress', 'review', 'pending', 'failed', 'blocked', 'rejected', 'cancelled'];
 
 export function HomePage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } } = {}) {
-  const { t } = useTranslation(['home', 'common']);
-  const isMobile = useIsMobile();
+  const { t } = useTranslation(['home', 'common', 'team']);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [teams, setTeams] = useState<TeamInfo[]>([]);
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>({});
@@ -41,6 +38,8 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
   const opsPeriod = '7d' as const;
   const [pendingReqs, setPendingReqs] = useState<RequirementInfo[]>([]);
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
+  const [showDeployChoice, setShowDeployChoice] = useState(false);
+  const [showRankingModal, setShowRankingModal] = useState(false);
 
   const refresh = () => {
     api.agents.list().then(d => setAgents(d.agents)).catch(() => {});
@@ -96,6 +95,11 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
       .slice(0, 5);
   }, [ops]);
 
+  const allRankedAgents = useMemo(() => {
+    if (!ops) return [];
+    return [...ops.agentEfficiency].sort((a, b) => b.healthScore - a.healthScore);
+  }, [ops]);
+
   const completionRate = totalRootTasks > 0 ? Math.round((completed / totalRootTasks) * 100) : 0;
 
   const sortedStatusEntries = STATUS_ORDER
@@ -109,14 +113,13 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
       {/* Header */}
       <div className="flex items-center justify-between px-4 sm:px-6 lg:px-8 h-14 sm:h-16 border-b border-border-default bg-surface-secondary/50">
         <div className="flex items-center gap-3">
-          {isMobile && <NotificationBell collapsed userId={authUser?.id} />}
           <div>
             <h2 className="text-base sm:text-lg font-bold">{t('title')}</h2>
             <p className="text-xs text-fg-tertiary hidden sm:block">{t('subtitle')}</p>
           </div>
         </div>
         <button
-          onClick={() => navBus.navigate(PAGE.STORE, { storeTab: 'agents' })}
+          onClick={() => setShowDeployChoice(true)}
           className="flex items-center gap-2 px-3 sm:px-4 py-2 sm:py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-xs sm:text-sm font-medium rounded-xl transition-all shadow-md shadow-brand-900/30 hover:shadow-lg hover:shadow-brand-900/40"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="hidden sm:block"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><line x1="19" y1="8" x2="19" y2="14" /><line x1="22" y1="11" x2="16" y2="11" /></svg>
@@ -129,7 +132,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           <MetricCard label={t('metrics.activeAgents')} value={activeAgents} total={agents.length} icon={<IconAgents />} color="brand" onClick={() => navBus.navigate(PAGE.TEAM)} />
           <MetricCard label={t('metrics.workingNow')} value={workingAgents} icon={<IconRunning />} color="blue" onClick={() => navBus.navigate(PAGE.TEAM)} />
-          <MetricCard label={t('metrics.healthScore')} value={ops?.systemHealth.overallScore ?? 0} suffix="%" icon={<IconHealth />} color="green" onClick={() => {}} />
+          <MetricCard label={t('metrics.healthScore')} value={ops?.systemHealth.overallScore ?? 0} suffix="%" icon={<IconHealth />} color="green" onClick={() => setShowRankingModal(true)} />
           <MetricCard label={t('metrics.totalTasks')} value={totalRootTasks} icon={<IconTasks />} color="amber" onClick={() => navBus.navigate(PAGE.WORK)} />
         </div>
 
@@ -176,6 +179,45 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 sm:gap-6">
           {/* Left Column */}
           <div className="lg:col-span-2 space-y-5 sm:space-y-6">
+            {/* Pending Requirement Reviews */}
+            {pendingReqs.length > 0 && (
+              <div className="bg-surface-secondary border border-amber-500/30 rounded-2xl p-4 sm:p-5">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
+                    <h3 className="text-xs font-semibold text-amber-600 uppercase tracking-wider">{t('pendingReviews.title')}</h3>
+                  </div>
+                  <button onClick={() => navBus.navigate(PAGE.WORK)} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">{t('pendingReviews.review')}</button>
+                </div>
+                <div className="space-y-2">
+                  {pendingReqs.slice(0, 5).map(req => {
+                    const authorAgent = agents.find(a => a.id === req.createdBy);
+                    const authorName = authorAgent?.name ?? req.createdBy;
+                    return (
+                    <div key={req.id} className="flex items-start gap-2.5 py-2 px-2.5 rounded-xl bg-surface-elevated/40 hover:bg-surface-elevated/60 transition-colors cursor-pointer" onClick={() => navBus.navigate(PAGE.WORK, { openRequirement: req.id })}>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          {(req.priority === 'urgent' || req.priority === 'high') && (
+                            <span className={`text-[10px] font-medium shrink-0 ${req.priority === 'urgent' ? 'text-red-500' : 'text-amber-500'}`}>[{t(`common:priority.${req.priority}`)}]</span>
+                          )}
+                          <span className="text-xs text-fg-primary font-medium truncate">{req.title}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span className="text-[10px] text-fg-tertiary">{t('pendingReviews.proposedBy2', { author: authorName })}</span>
+                          <span className="text-[10px] text-fg-muted">·</span>
+                          <span className="text-[10px] text-fg-tertiary">{formatRelativeTime(req.createdAt, t)}</span>
+                        </div>
+                      </div>
+                      <span className="text-[10px] bg-amber-500/15 text-amber-600 px-1.5 py-0.5 rounded-full shrink-0">{req.source === 'agent' ? t('pendingReviews.agent') : t('pendingReviews.user')}</span>
+                    </div>
+                    );
+                  })}
+                  {pendingReqs.length > 5 && <div className="text-[10px] text-fg-tertiary text-center pt-1">{t('common:units.more', { count: pendingReqs.length - 5 })}</div>}
+                </div>
+                <p className="text-[10px] text-fg-tertiary mt-3">{t('pendingReviews.agentProposed', { count: pendingReqs.length })}</p>
+              </div>
+            )}
+
             {/* Task Overview — donut + all status legend */}
             {totalRootTasks > 0 && (
               <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5 cursor-pointer hover:border-border-default/80 transition-colors" onClick={() => navBus.navigate(PAGE.WORK)}>
@@ -238,7 +280,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                   {teamSummaries.slice(0, 5).map(ts => (
                     <div key={ts.team.id}
                       className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface-elevated/40 cursor-pointer transition-colors"
-                      onClick={() => navBus.navigate(PAGE.TEAM)}
+                      onClick={() => navBus.navigate(PAGE.TEAM, { selectTeam: ts.team.id })}
                     >
                       <div className="w-8 h-8 rounded-lg bg-brand-600/20 flex items-center justify-center text-xs font-bold text-brand-400 shrink-0">{ts.team.name.charAt(0)}</div>
                       <div className="flex-1 min-w-0">
@@ -262,31 +304,6 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
               )}
             </div>
 
-            {/* Pending Requirement Reviews */}
-            {pendingReqs.length > 0 && (
-              <div className="bg-surface-secondary border border-amber-500/30 rounded-2xl p-4 sm:p-5">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
-                    <h3 className="text-xs font-semibold text-amber-600 uppercase tracking-wider">{t('pendingReviews.title')}</h3>
-                  </div>
-                  <button onClick={() => navBus.navigate(PAGE.WORK)} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">{t('pendingReviews.review')}</button>
-                </div>
-                <div className="space-y-2">
-                  {pendingReqs.slice(0, 5).map(req => (
-                    <div key={req.id} className="flex items-start gap-2.5 py-2 px-2.5 rounded-xl bg-surface-elevated/40 hover:bg-surface-elevated/60 transition-colors cursor-pointer" onClick={() => navBus.navigate(PAGE.WORK)}>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-xs text-fg-primary font-medium truncate">{req.title}</div>
-                        <div className="text-[10px] text-fg-tertiary mt-0.5">{t('pendingReviews.proposedBy', { author: req.createdBy, priority: req.priority })}</div>
-                      </div>
-                      <span className="text-[10px] bg-amber-500/15 text-amber-600 px-1.5 py-0.5 rounded-full shrink-0">{req.source === 'agent' ? t('pendingReviews.agent') : t('pendingReviews.user')}</span>
-                    </div>
-                  ))}
-                  {pendingReqs.length > 5 && <div className="text-[10px] text-fg-tertiary text-center pt-1">{t('common:units.more', { count: pendingReqs.length - 5 })}</div>}
-                </div>
-                <p className="text-[10px] text-fg-tertiary mt-3">{t('pendingReviews.agentProposed', { count: pendingReqs.length })}</p>
-              </div>
-            )}
           </div>
 
           {/* Right Column */}
@@ -310,7 +327,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                       <Avatar name={a.name} avatarUrl={(a as any).avatarUrl} size={22} bgClass="bg-brand-600/40 text-brand-300" />
                       <div className="flex-1 min-w-0">
                         <div className="text-xs font-medium text-fg-primary truncate">{a.name}</div>
-                        <div className="text-[10px] text-fg-tertiary truncate">{a.currentActivity?.label ?? t('agentFocus.working')}</div>
+                        <div className="text-[10px] text-fg-tertiary truncate">{localizeActivityLabel(a.currentActivity?.label, t) ?? t('agentFocus.working')}</div>
                       </div>
                       <span className={`w-2 h-2 rounded-full shrink-0 ${
                         a.attentionState === 'focused' ? 'bg-brand-400 animate-pulse'
@@ -328,7 +345,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
               <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold text-fg-primary">{t('topPerformers.title')}</h3>
-                  <button onClick={() => navBus.navigate(PAGE.TEAM)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
+                  <button onClick={() => setShowRankingModal(true)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
                 </div>
                 <div className="space-y-2.5">
                   {topPerformers.map(agent => (
@@ -399,6 +416,115 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
           </div>
         </div>
       </div>
+
+      {/* Deploy Agent Method Choice Modal */}
+      {showDeployChoice && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowDeployChoice(false)}>
+          <div className="bg-surface-elevated rounded-xl border border-border-default shadow-2xl w-[340px] max-w-[90vw] overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-border-default">
+              <h3 className="text-sm font-semibold">{t('hireAgent')}</h3>
+              <p className="text-[11px] text-fg-tertiary mt-0.5">{t('team:chat.methodChoiceSubtitle')}</p>
+            </div>
+            <div className="p-3 space-y-2">
+              <button
+                onClick={() => {
+                  setShowDeployChoice(false);
+                  const secretary = agents.find(a => a.role === 'secretary') ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));
+                  if (secretary) {
+                    navBus.navigate(PAGE.TEAM, {
+                      agentId: secretary.id,
+                      prefillMessage: t('team:chat.addAgentPrefill'),
+                    });
+                  } else {
+                    navBus.navigate(PAGE.STORE);
+                  }
+                }}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-lg border border-brand-500/30 bg-brand-500/5 hover:bg-brand-500/10 transition-colors text-left"
+              >
+                <div className="w-8 h-8 rounded-full bg-brand-500/15 flex items-center justify-center shrink-0">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" className="text-brand-500" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z" /><path d="M20 3v4" /><path d="M22 5h-4" /></svg>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-medium text-brand-500">{t('team:chat.methodSecretary')}</div>
+                  <div className="text-[10px] text-fg-tertiary mt-0.5">{t('team:chat.methodSecretaryDesc')}</div>
+                </div>
+                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-brand-500/10 text-brand-500 font-medium shrink-0">{t('team:chat.recommended')}</span>
+              </button>
+              <button
+                onClick={() => {
+                  setShowDeployChoice(false);
+                  navBus.navigate(PAGE.STORE, { storeTab: 'agents' });
+                }}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-lg border border-border-default hover:bg-surface-overlay transition-colors text-left"
+              >
+                <div className="w-8 h-8 rounded-full bg-surface-overlay flex items-center justify-center shrink-0">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" className="text-fg-secondary" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z" /><circle cx="12" cy="12" r="3" /></svg>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-medium text-fg-secondary">{t('team:chat.methodManual')}</div>
+                  <div className="text-[10px] text-fg-tertiary mt-0.5">{t('team:chat.methodManualAgentDesc')}</div>
+                </div>
+              </button>
+            </div>
+            <div className="px-5 py-3 border-t border-border-default flex justify-end">
+              <button onClick={() => setShowDeployChoice(false)} className="px-3 py-1.5 text-xs text-fg-secondary hover:text-fg-primary rounded-lg hover:bg-surface-overlay transition-colors">{t('common:cancel')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Agent Ranking Modal */}
+      {showRankingModal && ops && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowRankingModal(false)}>
+          <div className="bg-surface-elevated rounded-xl border border-border-default shadow-2xl w-[480px] max-w-[90vw] max-h-[80vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-border-default flex items-center justify-between shrink-0">
+              <div>
+                <h3 className="text-sm font-semibold">{t('ranking.title')}</h3>
+                <p className="text-[11px] text-fg-tertiary mt-0.5">{t('ranking.subtitle', { count: allRankedAgents.length })}</p>
+              </div>
+              <button onClick={() => setShowRankingModal(false)} className="p-1.5 rounded-lg hover:bg-surface-overlay transition-colors text-fg-tertiary hover:text-fg-primary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+              </button>
+            </div>
+            <div className="overflow-y-auto flex-1 scrollbar-thin">
+              <div className="px-4 py-2 flex items-center gap-3 text-[10px] text-fg-tertiary uppercase tracking-wider font-medium border-b border-border-default/50">
+                <span className="w-7 text-center">#</span>
+                <span className="flex-1">{t('ranking.agent')}</span>
+                <span className="w-16 text-center">{t('ranking.health')}</span>
+                <span className="w-16 text-center">{t('ranking.tasks')}</span>
+                <span className="w-16 text-center">{t('ranking.errorRate')}</span>
+              </div>
+              {allRankedAgents.map((agent, idx) => {
+                const healthColor = agent.healthScore >= 80 ? 'text-green-500' : agent.healthScore >= 50 ? 'text-amber-500' : 'text-red-500';
+                const errorPct = Math.round(agent.errorRate * 100);
+                const medal = idx === 0 ? 'text-amber-400' : idx === 1 ? 'text-gray-400' : idx === 2 ? 'text-amber-600' : 'text-fg-tertiary';
+                return (
+                  <div
+                    key={agent.agentId}
+                    className="px-4 py-2.5 flex items-center gap-3 hover:bg-surface-overlay/50 cursor-pointer transition-colors border-b border-border-default/30 last:border-0"
+                    onClick={() => { setShowRankingModal(false); navBus.navigate(PAGE.TEAM, { selectAgent: agent.agentId }); }}
+                  >
+                    <span className={`w-7 text-center text-xs font-bold ${medal}`}>{idx + 1}</span>
+                    <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                      <Avatar name={agent.agentName} size={28} bgClass="bg-brand-600/30 text-brand-300" />
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium text-fg-primary truncate">{agent.agentName}</div>
+                        <div className="text-[10px] text-fg-tertiary truncate">{agent.role || agent.agentRole || '—'}</div>
+                      </div>
+                    </div>
+                    <span className={`w-16 text-center text-xs font-semibold ${healthColor}`}>{agent.healthScore}%</span>
+                    <span className="w-16 text-center text-xs text-fg-secondary">{agent.taskMetrics.completed}<span className="text-fg-tertiary">/{agent.taskMetrics.completed + agent.taskMetrics.failed}</span></span>
+                    <span className={`w-16 text-center text-xs ${errorPct > 20 ? 'text-red-500' : errorPct > 5 ? 'text-amber-500' : 'text-green-500'}`}>{errorPct}%</span>
+                  </div>
+                );
+              })}
+              {allRankedAgents.length === 0 && (
+                <div className="py-8 text-center text-xs text-fg-tertiary">{t('ranking.noData')}</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -600,4 +726,16 @@ function fmtNumber(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
+}
+
+const ACTIVITY_LABEL_KEYS: Record<string, string> = {
+  'Heartbeat check-in': 'agentFocus.heartbeatCheckIn',
+  'Heartbeat check-in (idle skip)': 'agentFocus.heartbeatSkip',
+};
+
+function localizeActivityLabel(label: string | undefined, t: TFunction): string | null {
+  if (!label) return null;
+  const key = ACTIVITY_LABEL_KEYS[label];
+  if (key) return t(key);
+  return label;
 }

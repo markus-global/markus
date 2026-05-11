@@ -10,6 +10,8 @@ import { MarkdownMessage } from './MarkdownMessage.tsx';
 interface Props {
   collapsed?: boolean;
   userId?: string;
+  embeddedMode?: boolean;
+  onClose?: () => void;
 }
 
 const PRIORITY_DOT: Record<string, string> = {
@@ -105,7 +107,7 @@ function playNotificationSound() {
   } catch { /* audio not available */ }
 }
 
-export function NotificationBell({ collapsed, userId }: Props) {
+export function NotificationBell({ collapsed, userId, embeddedMode, onClose }: Props) {
   const { t } = useTranslation(['team', 'common']);
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<'approvals' | 'notifications'>('approvals');
@@ -430,67 +432,51 @@ export function NotificationBell({ collapsed, userId }: Props) {
     else navBus.navigate(PAGE.WORK);
   };
 
-  return (
+  const closePanel = () => {
+    setOpen(false);
+    onClose?.();
+  };
+
+  const panelContent = (
     <>
-      <button
-        ref={btnRef}
-        onClick={() => { setOpen(!open); if (!open) fetchData(); }}
-        className={`relative flex items-center justify-center rounded-md transition-colors ${
-          collapsed ? 'w-8 h-8' : 'w-7 h-7'
-        } ${open ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-overlay'}`}
-        title={t('team:notifications.bellTitle')}
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-          <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-        </svg>
-        {badgeCount > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
-            {badgeCount > 99 ? t('common:badgeOverLimit') : badgeCount}
-          </span>
-        )}
-      </button>
+      {/* Tabs + Close */}
+      <div className="flex border-b border-border-default shrink-0">
+        <button
+          onClick={() => setTab('approvals')}
+          className={`flex-1 px-3 py-2.5 text-xs font-medium transition-colors ${
+            tab === 'approvals' ? 'text-fg-primary border-b-2 border-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'
+          }`}
+        >
+          {t('team:notifications.approvals')}{pendingApprovals > 0 ? ` (${pendingApprovals})` : ''}
+        </button>
+        <button
+          onClick={() => setTab('notifications')}
+          className={`flex-1 px-3 py-2.5 text-xs font-medium transition-colors ${
+            tab === 'notifications' ? 'text-fg-primary border-b-2 border-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'
+          }`}
+        >
+          {t('team:notifications.notifications')}{adjustedUnreadCount > 0 ? ` (${adjustedUnreadCount})` : ''}
+        </button>
+        <button
+          onClick={closePanel}
+          className="px-2 py-2 text-fg-tertiary hover:text-fg-primary transition-colors shrink-0"
+          title={t('common:close')}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M18 6L6 18" /><path d="M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
 
-      {open && createPortal(
-        <div ref={panelRef} className="fixed bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-[9999] flex flex-col overflow-hidden" style={{ top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.maxHeight }}>
-          {/* Tabs + Close */}
-          <div className="flex border-b border-border-default shrink-0">
-            <button
-              onClick={() => setTab('approvals')}
-              className={`flex-1 px-3 py-2.5 text-xs font-medium transition-colors ${
-                tab === 'approvals' ? 'text-fg-primary border-b-2 border-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'
-              }`}
-            >
-              {t('team:notifications.approvals')}{pendingApprovals > 0 ? ` (${pendingApprovals})` : ''}
-            </button>
-            <button
-              onClick={() => setTab('notifications')}
-              className={`flex-1 px-3 py-2.5 text-xs font-medium transition-colors ${
-                tab === 'notifications' ? 'text-fg-primary border-b-2 border-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'
-              }`}
-            >
-              {t('team:notifications.notifications')}{adjustedUnreadCount > 0 ? ` (${adjustedUnreadCount})` : ''}
-            </button>
-            <button
-              onClick={() => setOpen(false)}
-              className="px-2 py-2 text-fg-tertiary hover:text-fg-primary transition-colors shrink-0"
-              title={t('common:close')}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M18 6L6 18" /><path d="M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
+      {/* Actions bar */}
+      {tab === 'notifications' && unreadCount > 0 && (
+        <div className="flex justify-end px-3 py-1.5 border-b border-border-default/50 shrink-0">
+          <button onClick={handleMarkAllRead} className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors">{t('team:notifications.markAllRead')}</button>
+        </div>
+      )}
 
-          {/* Actions bar */}
-          {tab === 'notifications' && unreadCount > 0 && (
-            <div className="flex justify-end px-3 py-1.5 border-b border-border-default/50 shrink-0">
-              <button onClick={handleMarkAllRead} className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors">{t('team:notifications.markAllRead')}</button>
-            </div>
-          )}
-
-          {/* Content */}
-          <div className="flex-1 overflow-y-auto">
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto">
             {tab === 'approvals' && (
               approvals.length === 0 ? (
                 <div className="p-6 text-center text-xs text-fg-tertiary">{t('team:notifications.noApprovals')}</div>
@@ -703,6 +689,179 @@ export function NotificationBell({ collapsed, userId }: Props) {
               )
             )}
           </div>
+    </>
+  );
+
+  if (embeddedMode) {
+    const tabs: Array<'approvals' | 'notifications'> = ['approvals', 'notifications'];
+    const tabIdx = tabs.indexOf(tab);
+
+    const handleSwipe = (() => {
+      let startX = 0;
+      let startY = 0;
+      return {
+        onTouchStart: (e: React.TouchEvent) => { startX = e.touches[0].clientX; startY = e.touches[0].clientY; },
+        onTouchEnd: (e: React.TouchEvent) => {
+          const dx = e.changedTouches[0].clientX - startX;
+          const dy = e.changedTouches[0].clientY - startY;
+          if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+            if (dx < 0 && tabIdx < tabs.length - 1) setTab(tabs[tabIdx + 1]);
+            if (dx > 0 && tabIdx > 0) setTab(tabs[tabIdx - 1]);
+          }
+        },
+      };
+    })();
+
+    return (
+      <div className="flex flex-col h-full overflow-hidden">
+        {/* Tabs */}
+        <div className="flex border-b border-border-default shrink-0">
+          {tabs.map((t_id) => (
+            <button
+              key={t_id}
+              onClick={() => setTab(t_id)}
+              className={`flex-1 px-3 py-3 text-sm font-medium transition-colors ${
+                tab === t_id ? 'text-fg-primary border-b-2 border-brand-500' : 'text-fg-tertiary'
+              }`}
+            >
+              {t_id === 'approvals'
+                ? <>{t('team:notifications.approvals')}{pendingApprovals > 0 ? ` (${pendingApprovals})` : ''}</>
+                : <>{t('team:notifications.notifications')}{adjustedUnreadCount > 0 ? ` (${adjustedUnreadCount})` : ''}</>
+              }
+            </button>
+          ))}
+        </div>
+
+        {/* Actions bar */}
+        {tab === 'notifications' && unreadCount > 0 && (
+          <div className="flex justify-end px-3 py-1.5 border-b border-border-default/50 shrink-0">
+            <button onClick={handleMarkAllRead} className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors">{t('team:notifications.markAllRead')}</button>
+          </div>
+        )}
+
+        {/* Swipeable content */}
+        <div className="flex-1 overflow-hidden relative" {...handleSwipe}>
+          <div
+            className="flex h-full transition-transform duration-300 ease-out"
+            style={{ transform: `translateX(-${tabIdx * 100}%)` }}
+          >
+            <div className="w-full shrink-0 h-full overflow-y-auto scrollbar-thin">
+              {approvals.length === 0 ? (
+                <div className="p-6 text-center text-xs text-fg-tertiary">{t('team:notifications.noApprovals')}</div>
+              ) : (
+                <div className="divide-y divide-border-default/50">
+                  {pendingList.map(a => {
+                    const cmd = a.details?.command as string | undefined;
+                    const descClean = cmd ? a.description.replace(/\s*Command:.*$/, '') : a.description;
+                    return (
+                      <div key={a.id} className="px-3 py-3 space-y-2.5">
+                        <div className="cursor-pointer hover:bg-surface-overlay/50 -mx-3 -mt-3 px-3 pt-3 pb-1 rounded-t-md transition-colors" onClick={() => navigateForApproval(a)}>
+                          <div className="flex items-start gap-2">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-500 mt-0.5 shrink-0"><path d={TYPE_ICON.approval_request} /></svg>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                {approvalTypeLabel(a) && <span className="text-[10px] text-amber-500 font-medium shrink-0">{approvalTypeLabel(a)}</span>}
+                                <span className="text-xs text-fg-primary font-medium truncate">{a.title}</span>
+                                <span className="text-[10px] text-fg-tertiary shrink-0">{timeAgo(a.requestedAt, t)}</span>
+                              </div>
+                              <div className="text-[11px] text-fg-tertiary mt-0.5">{a.agentName}</div>
+                            </div>
+                          </div>
+                          <div className="mt-2.5 max-h-48 overflow-y-auto text-[11px] text-fg-secondary leading-relaxed">
+                            <MarkdownMessage content={descClean} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px]" />
+                          </div>
+                          {cmd && <pre className="text-[11px] text-fg-primary bg-surface-overlay border border-border-default rounded-md px-2.5 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono leading-relaxed mt-2">{cmd}</pre>}
+                        </div>
+                        <div className="flex gap-2">
+                          <button disabled={responding === a.id} onClick={() => handleApprovalResponse(a.id, true, undefined, 'approve')} className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 transition-colors">{t('common:approve')}</button>
+                          <button disabled={responding === a.id} onClick={() => handleApprovalResponse(a.id, false, undefined, 'reject')} className="flex-1 px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay disabled:opacity-50 transition-colors">{t('common:reject')}</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {historyList.length > 0 && (
+                    <>
+                      {pendingList.length > 0 && <div className="px-3 py-1.5 text-[10px] font-medium text-fg-tertiary uppercase tracking-wider bg-surface-overlay/30">{t('team:notifications.approvalHistory')}</div>}
+                      {historyList.slice(0, 50).map(a => (
+                        <button key={a.id} onClick={() => navigateForApproval(a)} className="w-full text-left px-3 py-2.5 hover:bg-surface-overlay/50 transition-colors">
+                          <div className="flex items-center gap-2">
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${a.status === 'approved' ? 'bg-green-500' : a.status === 'cancelled' || a.status === 'expired' ? 'bg-gray-400' : 'bg-red-500'}`} />
+                            <span className="text-xs text-fg-secondary truncate flex-1">{a.title}</span>
+                            <span className={`text-[10px] font-medium shrink-0 ${a.status === 'approved' ? 'text-green-500' : a.status === 'cancelled' || a.status === 'expired' ? 'text-fg-muted' : 'text-red-500'}`}>{t(`common:status.${a.status}`, { defaultValue: a.status })}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-0.5 pl-3.5">
+                            <span className="text-[10px] text-fg-muted truncate">{approvalSourceLabel(a)}</span>
+                            <span className="text-[10px] text-fg-muted shrink-0">·</span>
+                            <span className="text-[10px] text-fg-muted shrink-0">{timeAgo(a.respondedAt ?? a.requestedAt, t)}</span>
+                          </div>
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="w-full shrink-0 h-full overflow-y-auto scrollbar-thin">
+              {displayNotifications.length === 0 ? (
+                <div className="p-6 text-center text-xs text-fg-tertiary">{t('team:notifications.noNotifications')}</div>
+              ) : (
+                <div className="divide-y divide-border-default/50">
+                  {displayNotifications.slice(0, 50).map(n => {
+                    const typeColor = TYPE_COLOR[n.type] ?? 'text-fg-tertiary';
+                    return (
+                      <button key={n.id} onClick={() => handleNotificationClick(n)} className={`w-full text-left px-3 py-2.5 flex gap-2.5 transition-colors ${n.read ? 'opacity-50 hover:opacity-70' : 'hover:bg-surface-overlay'}`}>
+                        <div className="shrink-0 mt-0.5">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={typeColor}><path d={TYPE_ICON[n.type] ?? TYPE_ICON.system} /></svg>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            {!n.read && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_DOT[n.priority] ?? PRIORITY_DOT.normal}`} />}
+                            <span className="text-xs text-fg-primary font-medium truncate">{n.title}</span>
+                          </div>
+                          <div className="text-[11px] text-fg-tertiary mt-0.5 max-h-32 overflow-y-auto">
+                            <MarkdownMessage content={n.body} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px] [&_p]:text-fg-tertiary" />
+                          </div>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span className="text-[10px] text-fg-muted">{timeAgo(n.createdAt, t)}</span>
+                            {actionHint(n, t) && <span className={`text-[10px] font-medium ${typeColor}`}>{actionHint(n, t)}</span>}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onClick={() => { setOpen(!open); if (!open) fetchData(); }}
+        className={`relative flex items-center justify-center rounded-md transition-colors ${
+          collapsed ? 'w-8 h-8' : 'w-7 h-7'
+        } ${open ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-overlay'}`}
+        title={t('team:notifications.bellTitle')}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+          <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+        </svg>
+        {badgeCount > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
+            {badgeCount > 99 ? t('common:badgeOverLimit') : badgeCount}
+          </span>
+        )}
+      </button>
+
+      {open && createPortal(
+        <div ref={panelRef} className="fixed bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-[9999] flex flex-col overflow-hidden" style={{ top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.maxHeight }}>
+          {panelContent}
         </div>,
         document.body
       )}

@@ -4223,6 +4223,16 @@ EXPLANATION_END`;
           name: t.name,
           description: t.description,
         }));
+        const virtualToolNames = new Set(toolList.map(t => t.name));
+        const VIRTUAL_TOOLS: Array<{ name: string; description: string }> = [
+          { name: 'discover_tools', description: 'Discover and activate additional tools and skills available to this agent' },
+          { name: 'notify_user', description: 'Send a notification to a human team member (appears in chat + notification bell)' },
+          { name: 'request_user_approval', description: 'Request a decision or approval from a human (blocks until response)' },
+          { name: 'recall_activity', description: 'Query your own execution history and past activity logs' },
+        ];
+        for (const vt of VIRTUAL_TOOLS) {
+          if (!virtualToolNames.has(vt.name)) toolList.push(vt);
+        }
         const hb = (
           agent as unknown as { heartbeat: { getStatus(): { running: boolean; uptimeMs: number; intervalMs: number; initialDelayMs: number } } }
         ).heartbeat;
@@ -9626,9 +9636,13 @@ EXPLANATION_END`;
     const totalTokenCost = agentRanking.reduce((s, a) => s + a.tokenUsage.cost, 0);
     const totalInteractions = agentRanking.reduce((s, a) => s + a.totalInteractions, 0);
 
+    const terminalTaskCount =
+      taskDashboard.statusCounts.completed +
+      taskDashboard.statusCounts.failed +
+      taskDashboard.statusCounts.rejected;
     const taskSuccessRate =
-      taskDashboard.totalTasks > 0
-        ? Math.round((taskDashboard.statusCounts.completed / taskDashboard.totalTasks) * 100)
+      terminalTaskCount > 0
+        ? Math.round((taskDashboard.statusCounts.completed / terminalTaskCount) * 100)
         : 0;
 
     const blockedTasks = taskDashboard.statusCounts.blocked ?? 0;

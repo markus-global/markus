@@ -459,8 +459,8 @@ This ensures that modern models with large output windows are not artificially c
 `ToolSelector.selectTools()` determines which tools appear in each LLM call:
 
 1. **Always-on tools**: Core set always included (e.g., `memory_save`, `memory_search`, `file_read`, `file_write`, `task_create`, `task_list`, `spawn_subagent`, `spawn_subagents`, etc.)
-2. **Manager-only tools**: Added when `isManager=true` (e.g., `task_assign`, `team_status`, `package_list`, `package_install`)
-3. **Hub tools**: Added for agents with building skills — Secretary only (e.g., `hub_search`, `hub_install`)
+2. **Manager-only tools**: Added when `isManager=true` (e.g., `task_assign`, `team_status`, `delegate_message`)
+3. **Package tools**: Available to all agents, activated by keyword (e.g., `package_list`, `package_install`, `hub_search`, `hub_install`)
 4. **Task-execution tools**: Added when `isTaskExecution=true` (e.g., `task_submit_review`, `subtask_create`)
 5. **Recently used tools**: Tools used in recent calls are re-included to maintain continuity
 6. **Activated tools**: Tools the agent explicitly activated via `discover_tools`

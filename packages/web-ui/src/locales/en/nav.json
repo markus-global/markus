@@ -6,6 +6,7 @@
   "builder": "Builder",
   "deliverables": "Deliverables",
   "reports": "Reports",
+  "notifications": "Notifications",
   "settings": "Settings",
   "sections": {
     "workspace": "WORKSPACE",

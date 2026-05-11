@@ -6,6 +6,7 @@
   "builder": "创建",
   "deliverables": "交付",
   "reports": "报告",
+  "notifications": "通知",
   "settings": "设置",
   "sections": {
     "workspace": "工作区",

@@ -48,7 +48,7 @@ const TOOL_GROUPS: ToolGroup[] = [
     name: 'manager',
     keywords: ['team', 'delegate', 'status', 'manage', 'assign', 'route',
       '团队', '管理', '委派', '分配', '路由'],
-    toolNames: ['team_list', 'team_status', 'delegate_message', 'package_list', 'package_install'],
+    toolNames: ['team_list', 'team_status', 'delegate_message'],
   },
   {
     name: 'deliverables',
@@ -58,10 +58,10 @@ const TOOL_GROUPS: ToolGroup[] = [
     toolNames: ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'],
   },
   {
-    name: 'builder',
-    keywords: ['builder', 'artifact', 'deploy', 'skill', 'package', 'hub',
-      '部署', '工件', '技能包'],
-    toolNames: ['builder_install', 'builder_list'],
+    name: 'packages',
+    keywords: ['builder', 'artifact', 'deploy', 'skill', 'package', 'hub', 'hire', 'install agent', 'install team',
+      '部署', '工件', '技能包', '招聘', '安装'],
+    toolNames: ['package_list', 'package_install', 'hub_search', 'hub_install'],
   },
 ];
 
@@ -109,10 +109,11 @@ export class ToolSelector {
     }
 
     if (opts.isManager) {
-      const managerGroup = this.groups.find(g => g.name === 'manager');
-      if (managerGroup) {
-        for (const name of managerGroup.toolNames) {
-          if (opts.allTools.has(name)) selected.add(name);
+      for (const group of this.groups) {
+        if (group.name === 'manager' || group.name === 'packages') {
+          for (const name of group.toolNames) {
+            if (opts.allTools.has(name)) selected.add(name);
+          }
         }
       }
     }

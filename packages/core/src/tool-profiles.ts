@@ -21,6 +21,7 @@ const TOOL_GROUPS: Record<string, string[]> = {
   'group:requirements': ['requirement_propose', 'requirement_list', 'requirement_get', 'requirement_update', 'requirement_update_status', 'requirement_resubmit', 'requirement_comment'],
   'group:project': ['list_projects', 'get_project', 'create_project', 'update_project', 'project_info', 'deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'],
   'group:manager': ['team_list', 'team_status', 'delegate_message', 'team_update', 'agent_update', 'task_check_duplicates', 'task_cleanup_duplicates', 'task_board_health'],
+  'group:packages': ['package_list', 'package_install', 'hub_search', 'hub_install'],
 };
 
 /**

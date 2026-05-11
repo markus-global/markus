@@ -27,7 +27,9 @@
   "agentFocus": {
     "title": "智能体焦点",
     "totalQueued": "共 {{count}} 项排队",
-    "working": "工作中..."
+    "working": "工作中...",
+    "heartbeatCheckIn": "心跳巡检",
+    "heartbeatSkip": "心跳已跳过（空闲）"
   },
   "teamOverview": {
     "title": "团队概览",
@@ -49,6 +51,7 @@
     "title": "待审核",
     "review": "去审核 →",
     "proposedBy": "由 {{author}} 提出 · {{priority}}",
+    "proposedBy2": "由 {{author}} 提出",
     "agentProposed": "智能体提出了 {{count}} 条需求 — 请审核以授权执行。",
     "agent": "智能体",
     "user": "用户"
@@ -59,6 +62,15 @@
   "topPerformers": {
     "title": "最佳表现智能体",
     "tasksCompleted": "已完成 {{count}} 个任务"
+  },
+  "ranking": {
+    "title": "智能体排行榜",
+    "subtitle": "共 {{count}} 个智能体",
+    "agent": "智能体",
+    "health": "健康分",
+    "tasks": "任务",
+    "errorRate": "错误率",
+    "noData": "暂无智能体数据。"
   },
   "systemHealth": {
     "title": "系统健康",
