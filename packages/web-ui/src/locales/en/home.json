@@ -38,7 +38,8 @@
   },
   "taskOverview": {
     "title": "Task Overview",
-    "subtitle": "{{total}} tasks total"
+    "subtitle": "{{total}} tasks total",
+    "stuckBlocked": "{{count}} task(s) blocked without pending dependencies — may need attention"
   },
   "teamStatus": {
     "title": "Team Status",

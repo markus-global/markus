@@ -296,6 +296,8 @@
     "offline": "离线",
     "paused": "已暂停",
     "filePreviewLoading": "加载中…",
+    "emptyDirectory": "空目录",
+    "openInFinder": "在文件管理器中打开",
     "requirementDetailDescription": "描述",
     "requirementNoDescription": "暂无描述",
     "createdByLabel": "创建者",

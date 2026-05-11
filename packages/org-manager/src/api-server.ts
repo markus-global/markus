@@ -8371,6 +8371,25 @@ EXPLANATION_END`;
         }
 
         const stat = statSync(resolved);
+        if (stat.isDirectory()) {
+          const { readdirSync } = await import('node:fs');
+          const { join, extname: extDir } = await import('node:path');
+          const entries = readdirSync(resolved, { withFileTypes: true })
+            .filter(e => !e.name.startsWith('.'))
+            .map(e => {
+              const full = join(resolved, e.name);
+              const isDir = e.isDirectory();
+              let size: number | undefined;
+              try { if (!isDir) size = statSync(full).size; } catch { /* skip */ }
+              return { name: e.name, path: full, isDirectory: isDir, size, ext: isDir ? '' : extDir(e.name).toLowerCase() };
+            })
+            .sort((a, b) => {
+              if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+              return a.name.localeCompare(b.name);
+            });
+          this.json(res, 200, { type: 'directory', name: resolved.split('/').pop(), path: resolved, entries });
+          return;
+        }
         if (!stat.isFile()) {
           this.json(res, 400, { error: 'Path is not a file' });
           return;
@@ -9667,6 +9686,7 @@ EXPLANATION_END`;
         statusCounts: taskDashboard.statusCounts,
         successRate: taskSuccessRate,
         blockedCount: blockedTasks,
+        stuckBlockedCount: taskDashboard.stuckBlockedCount,
         averageCompletionTimeMs: taskDashboard.averageCompletionTimeMs,
         recentActivity: taskDashboard.recentActivity.slice(0, 10),
       },

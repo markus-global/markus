@@ -296,6 +296,8 @@
     "offline": "Offline",
     "paused": "Paused",
     "filePreviewLoading": "Loading...",
+    "emptyDirectory": "Empty directory",
+    "openInFinder": "Open in file browser",
     "requirementDetailDescription": "Description",
     "requirementNoDescription": "No description",
     "createdByLabel": "Created by",
