@@ -1,5 +1,27 @@
 # Release Log
 
+## v0.6.7
+
+统一安装工具体系；Package Tools 延迟绑定修复；Dashboard UX 改进（成功率修正、部署弹窗、排名、移动端导航）；工具分类优化。
+
+### Refactoring
+
+- **统一安装工具** — 移除旧版 builder_install / builder_list，替换为统一的 package tools，所有 Agent 均可使用安装能力
+
+### Bug Fixes
+
+- **修复 Package Tools 不可用** — 延迟绑定 package tools 注册时机，确保在服务装配前完成注册；修复非 Manager Agent 无法访问 package tools 的问题
+- **修复 no-submit 重试竞态** — 修复任务提交重试与无提交场景的竞态条件
+- **修复 Dashboard 成功率计算** — 修正成功率统计逻辑，新增部署弹窗、Agent 排名展示，完善 i18n 翻译，优化移动端导航
+- **修复工具分类展示** — Agent Profile 工具分类分组优化，MCP Hub 工具归入 Packages & Hub 类别
+- **修复 manager-tools 测试** — 更新测试适配 PackageToolsContext 延迟绑定改动
+
+### Stats
+
+- 30 files changed, +947 / −553 lines
+
+---
+
 ## v0.6.6
 
 Dashboard 重设计；Markdown 本地图片渲染；Midnight/Mono 主题替换；MCP 浏览器断连自动重连；定时任务与 Mailbox 执行触发保护；大量 UI 与稳定性修复。
