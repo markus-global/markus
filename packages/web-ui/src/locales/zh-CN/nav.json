@@ -9,6 +9,7 @@
   "notifications": "通知",
   "settings": "设置",
   "sections": {
+    "quick": "",
     "workspace": "工作区",
     "build": "资产",
     "system": "系统"

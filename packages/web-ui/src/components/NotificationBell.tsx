@@ -12,6 +12,10 @@ interface Props {
   userId?: string;
   embeddedMode?: boolean;
   onClose?: () => void;
+  sidebarMode?: boolean;
+  isActive?: boolean;
+  label?: string;
+  iconPath?: string;
 }
 
 const PRIORITY_DOT: Record<string, string> = {
@@ -107,7 +111,7 @@ function playNotificationSound() {
   } catch { /* audio not available */ }
 }
 
-export function NotificationBell({ collapsed, userId, embeddedMode, onClose }: Props) {
+export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sidebarMode, isActive, label, iconPath }: Props) {
   const { t } = useTranslation(['team', 'common']);
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<'approvals' | 'notifications'>('approvals');
@@ -835,6 +839,44 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose }: P
           </div>
         </div>
       </div>
+    );
+  }
+
+  if (sidebarMode) {
+    const d = iconPath || 'M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9 M13.73 21a2 2 0 0 1-3.46 0';
+    return (
+      <>
+        <button
+          ref={btnRef}
+          onClick={() => { setOpen(!open); if (!open) fetchData(); }}
+          title={collapsed ? (label || t('team:notifications.bellTitle')) : undefined}
+          className={`w-full flex items-center ${collapsed ? 'flex-col justify-center px-1 py-1.5 gap-0.5' : 'gap-3 px-3 py-[7px]'} rounded-xl text-[13px] mb-0.5 transition-all relative ${
+            open || isActive
+              ? 'bg-brand-600 text-white shadow-sm shadow-brand-900/30 font-medium'
+              : 'text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary'
+          }`}
+        >
+          <svg width={collapsed ? 16 : 18} height={collapsed ? 16 : 18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+            <path d={d} />
+          </svg>
+          {collapsed
+            ? <span className="text-[9px] leading-tight truncate w-full text-center">{label}</span>
+            : <span className="truncate">{label}</span>
+          }
+          {badgeCount > 0 && (
+            <span className={`absolute ${collapsed ? 'top-0.5 right-1' : 'top-1 left-[22px]'} min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center leading-none`}>
+              {badgeCount > 99 ? t('common:badgeOverLimit') : badgeCount}
+            </span>
+          )}
+        </button>
+
+        {open && createPortal(
+          <div ref={panelRef} className="fixed bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-[9999] flex flex-col overflow-hidden" style={{ top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.maxHeight }}>
+            {panelContent}
+          </div>,
+          document.body
+        )}
+      </>
     );
   }
 

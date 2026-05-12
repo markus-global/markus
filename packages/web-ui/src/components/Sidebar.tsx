@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { type PageId, PAGE_ICONS, SIDEBAR_NAV, SIDEBAR_SECTIONS } from '../routes.ts';
+import { type PageId, PAGE, PAGE_ICONS, SIDEBAR_NAV, SIDEBAR_SECTIONS } from '../routes.ts';
 import { api, type AuthUser } from '../api.ts';
 import { NotificationBell } from './NotificationBell.tsx';
 import { Avatar, AvatarUpload } from './Avatar.tsx';
@@ -182,63 +182,61 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, onUserUpd
   return (
     <aside className="h-dvh bg-surface-secondary flex flex-col shrink-0 overflow-hidden border-r border-border-subtle">
       <div className={`flex items-center ${collapsed ? 'px-2 py-3.5 justify-center' : 'px-4 h-14 justify-between'}`}>
-        {collapsed ? (
-          <div className="flex flex-col items-center gap-2">
-            <button onClick={onToggleCollapse} title={t('sidebar.expandSidebar')} className="group">
-              <img src="/logo.png" alt="Markus" className="w-8 h-8 rounded-lg group-hover:ring-2 group-hover:ring-brand-500/40 transition-all" />
-            </button>
-            <NotificationBell collapsed userId={authUser?.id} />
-          </div>
-        ) : (
-          <>
-            <button onClick={onToggleCollapse} className="flex items-center gap-2.5 min-w-0 group" title={t('sidebar.collapseSidebar')}>
-              <img src="/logo.png" alt="Markus" className="w-8 h-8 rounded-lg shadow-md shadow-black/30 shrink-0 group-hover:ring-2 group-hover:ring-brand-500/40 transition-all" />
-              <span className="text-[15px] font-bold tracking-tight text-fg-primary whitespace-nowrap">Markus</span>
-            </button>
-            <div className="flex items-center gap-1 shrink-0">
-              <NotificationBell userId={authUser?.id} />
-              <button
-                onClick={onToggleCollapse}
-                className="text-fg-tertiary hover:text-fg-secondary transition-colors p-1 rounded-md hover:bg-surface-overlay"
-                title={t('sidebar.collapseSidebar')}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="11 17 6 12 11 7" /><polyline points="18 17 13 12 18 7" /></svg>
-              </button>
-            </div>
-          </>
-        )}
+        <button onClick={onToggleCollapse} title={collapsed ? t('sidebar.expandSidebar') : t('sidebar.collapseSidebar')} className="flex items-center gap-2.5 min-w-0 group">
+          <img src="/logo.png" alt="Markus" className="w-8 h-8 rounded-lg shadow-md shadow-black/30 shrink-0 group-hover:ring-2 group-hover:ring-brand-500/40 transition-all" />
+          {!collapsed && <span className="text-[15px] font-bold tracking-tight text-fg-primary whitespace-nowrap">Markus</span>}
+        </button>
       </div>
-      <nav className={`${collapsed ? 'p-1.5' : 'px-3 py-2'} flex-1 overflow-y-auto scrollbar-thin`}>
-        {SIDEBAR_SECTIONS.map((section, si) => (
-          <div key={section.key}>
-            <div className={si > 0 ? 'mt-4' : ''}>
-              {!collapsed && (
-                <div className="px-3 py-1.5 mb-1 text-[10px] font-semibold text-fg-muted uppercase tracking-[0.1em]">
-                  {t(`sections.${section.key}`)}
-                </div>
-              )}
-              {collapsed && si > 0 && <div className="my-3 mx-2 border-t border-border-subtle" />}
-              {SIDEBAR_NAV.filter(i => i.section === section.key).map((item) => {
-                const isActive = currentPage === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    onClick={() => onNavigate(item.id)}
-                    title={collapsed ? t(item.id) : undefined}
-                    className={`w-full flex items-center ${collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-[7px]'} rounded-xl text-[13px] mb-0.5 transition-all ${
-                      isActive
-                        ? 'bg-brand-600 text-white shadow-sm shadow-brand-900/30 font-medium'
-                        : 'text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary'
-                    }`}
-                  >
-                    <Icon d={PAGE_ICONS[item.id] ?? ''} />
-                    {!collapsed && <span className="truncate">{t(item.id)}</span>}
-                  </button>
-                );
-              })}
+      <nav className={`${collapsed ? 'p-1' : 'px-3 py-2'} flex-1 overflow-y-auto scrollbar-thin`}>
+        {SIDEBAR_SECTIONS.map((section, si) => {
+          const sectionLabel = t(`sections.${section.key}`);
+          return (
+            <div key={section.key}>
+              <div className={si > 0 ? 'mt-3' : ''}>
+                {!collapsed && sectionLabel && (
+                  <div className="px-3 py-1.5 mb-1 text-[10px] font-semibold text-fg-muted uppercase tracking-[0.1em]">
+                    {sectionLabel}
+                  </div>
+                )}
+                {collapsed && si > 0 && <div className="my-2 mx-2 border-t border-border-subtle" />}
+                {SIDEBAR_NAV.filter(i => i.section === section.key).map((item) => {
+                  if (item.id === PAGE.NOTIFICATIONS) {
+                    return (
+                      <NotificationBell
+                        key={item.id}
+                        sidebarMode
+                        collapsed={collapsed}
+                        userId={authUser?.id}
+                        label={t(item.id)}
+                        iconPath={PAGE_ICONS[item.id]}
+                        isActive={currentPage === item.id}
+                      />
+                    );
+                  }
+                  const isActive = currentPage === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => onNavigate(item.id)}
+                      title={collapsed ? t(item.id) : undefined}
+                      className={`w-full flex items-center ${collapsed ? 'flex-col justify-center px-1 py-1.5 gap-0.5' : 'gap-3 px-3 py-[7px]'} rounded-xl text-[13px] mb-0.5 transition-all ${
+                        isActive
+                          ? 'bg-brand-600 text-white shadow-sm shadow-brand-900/30 font-medium'
+                          : 'text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary'
+                      }`}
+                    >
+                      <Icon d={PAGE_ICONS[item.id] ?? ''} size={collapsed ? 16 : 18} />
+                      {collapsed
+                        ? <span className="text-[9px] leading-tight truncate w-full text-center">{t(item.id)}</span>
+                        : <span className="truncate">{t(item.id)}</span>
+                      }
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </nav>
       <UserMenu authUser={authUser} collapsed={collapsed} onLogout={handleLogout} onUserUpdated={onUserUpdated} />
       {!collapsed && <div className="px-4 pb-2 text-[10px] text-fg-muted">v{__APP_VERSION__}</div>}

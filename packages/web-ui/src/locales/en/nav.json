@@ -9,6 +9,7 @@
   "notifications": "Notifications",
   "settings": "Settings",
   "sections": {
+    "quick": "",
     "workspace": "WORKSPACE",
     "build": "BUILD",
     "system": "SYSTEM"

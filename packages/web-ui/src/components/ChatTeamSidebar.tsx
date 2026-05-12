@@ -589,26 +589,26 @@ export function ChatTeamSidebar({
             const pos = clampMenuPos(e);
             setAgentMenu({ agentId: a.id, teamId, ...pos });
           }}
-          className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs transition-colors select-none ${
+          className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs transition-colors select-none text-fg-primary ${
             isMobile ? '' : 'touch-none'
           } ${
-            selected ? 'bg-brand-600/20 text-brand-500' : 'text-fg-secondary hover:bg-surface-elevated'
+            selected ? 'bg-brand-600/15' : 'hover:bg-white/[0.08]'
           }`}
         >
           <Avatar
             name={a.name}
             avatarUrl={a.avatarUrl}
-            size={24}
-            bgClass={selected ? 'bg-brand-600' : 'bg-surface-overlay text-fg-secondary'}
+            size={28}
+            bgClass="bg-surface-overlay text-fg-primary"
           />
           <div className="flex-1 min-w-0 text-left">
             <div className="flex items-center gap-1">
-              <span className="truncate font-medium text-[11px] leading-tight">{a.name}</span>
-              {showRole && <span className="text-[9px] text-fg-tertiary shrink-0 truncate max-w-[60px]">({a.role})</span>}
-              {isManager && <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" className="text-amber-600 shrink-0"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>}
-              {isExt && <span className="text-[8px] px-1 py-0 rounded bg-brand-500/20 text-brand-500 font-medium shrink-0 leading-relaxed">EXT</span>}
+              <span className="truncate font-medium text-[12px] leading-tight">{a.name}</span>
+              {showRole && <span className="text-[9px] text-fg-secondary shrink-0 truncate max-w-[80px]">({a.role})</span>}
+              {isManager && <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="text-amber-500 shrink-0"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>}
+              {isExt && <span className="text-[8px] px-1 py-0 rounded bg-brand-500/20 text-brand-400 font-medium shrink-0 leading-relaxed">EXT</span>}
             </div>
-            <div className="truncate text-[10px] leading-tight mt-0.5 text-fg-tertiary">
+            <div className="truncate text-[10px] leading-tight mt-0.5 text-fg-secondary">
               {subtitle || '\u00A0'}
             </div>
           </div>
@@ -672,21 +672,19 @@ export function ChatTeamSidebar({
               const pos = clampMenuPos(e);
               setTeamMenu({ teamId: tid, ...pos });
             }}
-            className={`flex-1 flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition-colors min-w-0 ${
+            className={`flex-1 flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs transition-colors min-w-0 text-fg-primary ${
               isGcActive
-                ? 'bg-brand-600/20 text-brand-500'
-                : 'text-fg-secondary hover:bg-surface-elevated'
+                ? 'bg-brand-600/15'
+                : 'hover:bg-white/[0.08]'
             }`}
           >
-            <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
-              isGcActive ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-secondary'
-            }`}>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+            <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-surface-overlay text-fg-primary">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
             </div>
             <div className="flex-1 min-w-0 text-left">
               {editingTeam === tid ? (
                 <input
-                  className="bg-transparent border-b border-brand-500 text-fg-secondary text-[11px] font-medium outline-none w-full"
+                  className="bg-transparent border-b border-brand-500 text-fg-primary text-[12px] font-medium outline-none w-full"
                   value={editTeamName}
                   onChange={e => setEditTeamName(e.target.value)}
                   onBlur={() => handleRenameTeam(tid)}
@@ -695,16 +693,16 @@ export function ChatTeamSidebar({
                   autoFocus
                 />
               ) : (
-                <span className="truncate font-medium text-[11px] leading-tight block">{label}</span>
+                <span className="truncate font-medium text-[12px] leading-tight block">{label}</span>
               )}
-              <div className="text-[10px] text-fg-tertiary leading-tight mt-0.5">{t('chat.members_other', { count: agentList.length })}</div>
+              <div className="text-[10px] text-fg-secondary leading-tight mt-0.5">{t('chat.members_other', { count: agentList.length })}</div>
             </div>
           </button>
 
           {/* Expand / collapse toggle */}
           <button
             onClick={() => toggleTeam(tid)}
-            className="w-7 h-7 flex items-center justify-center text-fg-secondary hover:text-fg-primary rounded-md hover:bg-surface-overlay transition-colors shrink-0"
+            className="w-7 h-7 flex items-center justify-center text-fg-muted hover:text-fg-primary rounded-md hover:bg-white/[0.08] transition-colors shrink-0"
             title={isCollapsed ? t('common:showMore') : t('common:close')}
           >
             <svg
@@ -719,7 +717,7 @@ export function ChatTeamSidebar({
           {isAdmin && team && (
             <button
               onClick={e => { e.stopPropagation(); if (teamMenu?.teamId === tid) { setTeamMenu(null); } else { const pos = clampMenuPos(e); setTeamMenu({ teamId: tid, ...pos }); } }}
-              className="w-7 h-7 flex items-center justify-center text-fg-secondary hover:text-fg-primary rounded-md hover:bg-surface-overlay transition-colors shrink-0"
+              className="w-7 h-7 flex items-center justify-center text-fg-muted hover:text-fg-primary rounded-md hover:bg-white/[0.08] transition-colors shrink-0"
               title={t('chat.moreOptions')}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1" /><circle cx="12" cy="5" r="1" /><circle cx="12" cy="19" r="1" /></svg>
@@ -865,28 +863,28 @@ export function ChatTeamSidebar({
 
           {/* People — shown first, flat list */}
           <div className="mb-2">
-            <p className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1.5 px-2">{t('chat.people')}</p>
+            <p className="text-[10px] font-semibold text-fg-muted uppercase tracking-wider mb-1.5 px-2.5">{t('chat.people')}</p>
 
             {authUser && (
               <button
                 onClick={() => onSelectDm(authUser.id)}
-                className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
+                className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
                   chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId)
-                    ? 'bg-brand-600/20 text-brand-500'
-                    : 'text-fg-secondary hover:bg-surface-elevated'
+                    ? 'bg-brand-600/15'
+                    : 'hover:bg-white/[0.08]'
                 }`}
               >
                 <Avatar
                   name={authUser.name}
                   avatarUrl={authUser.avatarUrl}
-                  size={24}
-                  bgClass={chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId) ? 'bg-brand-600' : 'bg-brand-500/15 text-brand-500'}
+                  size={28}
+                  bgClass="bg-brand-500/15 text-brand-400"
                 />
                 <div className="flex-1 min-w-0 text-left">
-                  <div className="truncate font-medium text-[11px] leading-tight">{authUser.name}</div>
-                  <div className="text-fg-tertiary truncate text-[10px] leading-tight mt-0.5">{t('chat.myNotes')}</div>
+                  <div className="truncate font-medium text-[12px] leading-tight">{authUser.name}</div>
+                  <div className="text-fg-secondary truncate text-[10px] leading-tight mt-0.5">{t('chat.myNotes')}</div>
                 </div>
-                <span className="text-fg-tertiary shrink-0"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg></span>
+                <span className="text-fg-secondary shrink-0"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg></span>
               </button>
             )}
 
@@ -900,23 +898,23 @@ export function ChatTeamSidebar({
                   const pos = clampMenuPos(e);
                   setHumanMenu({ userId: h.id, ...pos });
                 }}
-                className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
+                className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
                   chatMode === 'dm' && activeDmUserId === h.id
-                    ? 'bg-green-500/10 text-green-600'
-                    : 'text-fg-secondary hover:bg-surface-elevated'
+                    ? 'bg-green-500/15'
+                    : 'hover:bg-white/[0.08]'
                 }`}
               >
                 <Avatar
                   name={h.name}
                   avatarUrl={h.avatarUrl}
-                  size={24}
-                  bgClass={chatMode === 'dm' && activeDmUserId === h.id ? 'bg-green-600' : 'bg-green-500/10 text-green-600'}
+                  size={28}
+                  bgClass="bg-green-500/10 text-green-500"
                 />
                 <div className="flex-1 min-w-0 text-left">
-                  <div className="truncate font-medium text-[11px] leading-tight">{h.name}</div>
-                  <div className="text-fg-tertiary truncate text-[10px] leading-tight mt-0.5">{h.email || h.role}</div>
+                  <div className="truncate font-medium text-[12px] leading-tight">{h.name}</div>
+                  <div className="text-fg-secondary truncate text-[10px] leading-tight mt-0.5">{h.email || h.role}</div>
                 </div>
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
+                <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />
               </button>
             ))}
           </div>
@@ -924,7 +922,7 @@ export function ChatTeamSidebar({
           {/* Custom group chats */}
           {groupChatsByTeam.custom.length > 0 && (
             <div className="mb-2">
-              <p className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 px-2">{t('chat.groups')}</p>
+              <p className="text-[10px] font-semibold text-fg-muted uppercase tracking-wider mb-1 px-2.5">{t('chat.groups')}</p>
               {groupChatsByTeam.custom.map(gc => {
                 const isActive = chatMode === 'channel' && activeChannel === gc.channelKey;
                 return (
@@ -936,18 +934,16 @@ export function ChatTeamSidebar({
                       const pos = clampMenuPos(e);
                       setGcMenu({ gcId: gc.id, ...pos });
                     }}
-                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
-                      isActive ? 'bg-brand-600/20 text-brand-500' : 'text-fg-secondary hover:bg-surface-elevated'
+                    className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
+                      isActive ? 'bg-brand-600/15' : 'hover:bg-white/[0.08]'
                     }`}
                   >
-                    <div className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 ${
-                      isActive ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-secondary'
-                    }`}>
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+                    <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 bg-surface-overlay text-fg-primary">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
                     </div>
                     <div className="flex-1 min-w-0 text-left">
-                      <span className="truncate font-medium text-[11px] leading-tight block">{gc.name}</span>
-                      <div className="text-[10px] text-fg-tertiary leading-tight mt-0.5">{t('chat.members_other', { count: gc.memberCount ?? 0 })}</div>
+                      <span className="truncate font-medium text-[12px] leading-tight block">{gc.name}</span>
+                      <div className="text-[10px] text-fg-secondary leading-tight mt-0.5">{t('chat.members_other', { count: gc.memberCount ?? 0 })}</div>
                     </div>
                   </button>
                 );
@@ -978,23 +974,21 @@ export function ChatTeamSidebar({
             <button
               key={gc.id}
               onClick={() => onSelectChannel(gc.channelKey)}
-              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
+              className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
                 chatMode === 'channel' && activeChannel === gc.channelKey
-                  ? 'bg-brand-600/20 text-brand-500'
-                  : 'text-fg-secondary hover:bg-surface-elevated'
+                  ? 'bg-brand-600/15'
+                  : 'hover:bg-white/[0.08]'
               }`}
             >
-              <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
-                chatMode === 'channel' && activeChannel === gc.channelKey ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-secondary'
-              }`}>
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+              <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-surface-overlay text-fg-primary">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
               </div>
               <div className="flex-1 min-w-0 text-left">
-                <span className="truncate font-medium text-[11px] leading-tight block">{gc.name}</span>
-                <div className="text-[10px] text-fg-tertiary leading-tight mt-0.5">{t('chat.groupChat')}</div>
+                <span className="truncate font-medium text-[12px] leading-tight block">{gc.name}</span>
+                <div className="text-[10px] text-fg-secondary leading-tight mt-0.5">{t('chat.groupChat')}</div>
               </div>
               {gc.memberCount !== undefined && gc.memberCount > 0 && (
-                <span className="text-[9px] text-fg-tertiary shrink-0">{gc.memberCount}</span>
+                <span className="text-[9px] text-fg-secondary shrink-0">{gc.memberCount}</span>
               )}
             </button>
           ))}

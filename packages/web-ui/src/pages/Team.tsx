@@ -723,9 +723,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   // Resizable chat left sidebar
   const chatSidebar = useResizablePanel({
     side: 'left',
-    defaultWidth: 224,
-    minWidth: 160,
-    maxWidth: 360,
+    defaultWidth: 400,
+    minWidth: 340,
+    maxWidth: 500,
     storageKey: 'markus_chat_sidebar',
   });
 
