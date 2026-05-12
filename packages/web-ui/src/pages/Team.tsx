@@ -2022,19 +2022,19 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         // remains visible) while we recover the reply from the DB.
         await pollForReply(5, 3000);
       }
-    }
 
-    // Only clean up if this invocation is still the active sender.
-    // When a newer send() has taken over (user interrupted), abortControllerRef
-    // already points to the new controller — skip cleanup to avoid killing
-    // the new stream's state.
-    if (abortControllerRef.current === abortCtrl || abortControllerRef.current === null) {
-      abortControllerRef.current = null;
-      sendingConvs.current.delete(sendKey);
-      actBuffers.current.delete(sendKey);
-      if (currentConvKeyRef.current === sendKey) {
-        setSending(false);
-        setActivities([]);
+      // Only clean up if this invocation is still the active sender.
+      // When a newer send() has taken over (user interrupted), abortControllerRef
+      // already points to the new controller — skip cleanup to avoid killing
+      // the new stream's state.
+      if (abortControllerRef.current === abortCtrl || abortControllerRef.current === null) {
+        abortControllerRef.current = null;
+        sendingConvs.current.delete(sendKey);
+        actBuffers.current.delete(sendKey);
+        if (currentConvKeyRef.current === sendKey) {
+          setSending(false);
+          setActivities([]);
+        }
       }
     }
   };
