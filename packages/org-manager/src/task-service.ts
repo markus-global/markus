@@ -2133,6 +2133,9 @@ export class TaskService {
       ],
       allowFreeform: true,
     }).then(result => {
+      const current = this.tasks.get(task.id);
+      if (!current || current.status !== 'review') return;
+
       if (result.approved) {
         this.updateTaskStatus(task.id, 'completed', task.reviewerId, false, false, 'human', 'Review approved');
       } else {
