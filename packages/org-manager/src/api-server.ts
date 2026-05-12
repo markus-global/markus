@@ -6443,14 +6443,6 @@ EXPLANATION_END`;
         } catch { /* agent not loaded */ }
       }
 
-      // Supplement with billing service data if available (for current-session records)
-      const billingSummary = this.billingService?.getUsageSummary(orgId);
-      if (billingSummary) {
-        llmTokens = Math.max(llmTokens, billingSummary.llmTokens);
-        toolCalls = Math.max(toolCalls, billingSummary.toolCalls);
-        messages = Math.max(messages, billingSummary.messages);
-      }
-
       this.json(res, 200, {
         usage: {
           orgId,
@@ -6458,7 +6450,7 @@ EXPLANATION_END`;
           llmTokens,
           toolCalls,
           messages,
-          storageBytes: billingSummary?.storageBytes ?? 0,
+          storageBytes: this.billingService?.getUsageSummary(orgId)?.storageBytes ?? 0,
         },
         plan,
       });
@@ -6487,6 +6479,7 @@ EXPLANATION_END`;
             toolCalls: stats.toolCalls,
             messages: stats.requestsToday,
             estimatedCost: stats.estimatedCost,
+            costToday: stats.costToday,
           };
         } catch {
           return {
@@ -6502,6 +6495,7 @@ EXPLANATION_END`;
             toolCalls: 0,
             messages: 0,
             estimatedCost: 0,
+            costToday: 0,
           };
         }
       });

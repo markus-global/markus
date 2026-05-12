@@ -13,7 +13,7 @@
     "thisMonth": "本月"
   },
   "usage": {
-    "llmTokens": "LLM Token（本月）",
+    "llmTokens": "LLM Token（累计）",
     "toolCalls": "工具调用（今天）",
     "messages": "消息（今天）",
     "storage": "存储"
@@ -30,8 +30,7 @@
     "title": "费用概览",
     "estCostAllTime": "预估费用（累计）",
     "tokensToday": "今日 Token",
-    "tokensPeriod": "Token（{{period}}）",
-    "costPeriod": "费用（{{period}}）",
+    "costToday": "今日费用",
     "totalTokens": "Token 总计",
     "estimatedCost": "预估费用",
     "trend": "趋势"

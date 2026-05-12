@@ -804,6 +804,7 @@ export interface AgentUsageInfo {
   toolCalls: number;
   messages: number;
   estimatedCost: number;
+  costToday: number;
 }
 
 export const api = {
