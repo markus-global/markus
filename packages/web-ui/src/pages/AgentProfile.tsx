@@ -12,11 +12,11 @@ import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 
-interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string; authUser?: AuthUser }
+interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string; authUser?: AuthUser; headless?: boolean; activeTab?: ProfileTab }
 
-type ProfileTab = 'overview' | 'mind' | 'tools' | 'skills' | 'memory' | 'heartbeat' | 'files';
+export type ProfileTab = 'overview' | 'mind' | 'tools' | 'skills' | 'memory' | 'heartbeat' | 'files';
 
-const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
+export const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
   { key: 'overview', icon: '▦' },
   { key: 'mind', icon: '🔮' },
   { key: 'files', icon: '📄' },
@@ -53,11 +53,12 @@ function fmtNum(n: number): string {
   return n.toLocaleString();
 }
 
-export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack, highlightMailboxId, authUser }: Props) {
+export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack, highlightMailboxId, authUser, headless, activeTab: externalTab }: Props) {
   const { t } = useTranslation(['agent', 'common']);
   const isMobile = useIsMobile();
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const [tab, setTab] = useState<ProfileTab>(defaultTab ?? 'overview');
+  const effectiveTab = headless && externalTab ? externalTab : tab;
   const [externalInfo, setExternalInfo] = useState<ExternalAgentInfo | null>(null);
   const tabs = useMemo(() => TAB_DEF.map(tabDef => ({ ...tabDef, label: t(`agent:tabs.${tabDef.key}`) })), [t]);
   const profileTabsList = useMemo(() => tabs.map(tabRow => ({ id: tabRow.key })), [tabs]);
@@ -91,6 +92,22 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
 
   const statusDot = STATUS_DOT[agent.state.status] ?? 'bg-gray-500';
   const canManageAgents = authUser?.role === 'owner' || authUser?.role === 'admin';
+
+  if (headless) {
+    return (
+      <div className="flex-1 overflow-y-auto bg-surface-primary">
+        <div className="p-5">
+          {effectiveTab === 'overview' && <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />}
+          {effectiveTab === 'mind' && <MindTab agentId={agentId} highlightId={highlightMailboxId} />}
+          {effectiveTab === 'files' && <FilesTab agentId={agentId} />}
+          {effectiveTab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}
+          {effectiveTab === 'skills' && <SkillsTab agent={agent} />}
+          {effectiveTab === 'memory' && <MemoryTab agentId={agentId} />}
+          {effectiveTab === 'heartbeat' && <HeartbeatTab agentId={agentId} initialData={agent.heartbeat} />}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 overflow-y-auto bg-surface-primary">

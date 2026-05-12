@@ -37,6 +37,8 @@ interface ChatTeamSidebarProps {
   onSelectAgent: (agentId: string) => void;
   onSelectChannel: (channelKey: string) => void;
   onSelectDm: (userId: string) => void;
+  onSelectTeam?: (teamId: string) => void;
+  selectedTeamId?: string | null;
   onRefreshTeams: () => void;
   onRefreshAgents: () => void;
   onRefreshHumans?: () => void;
@@ -184,7 +186,7 @@ function CreateGroupChatModal({ agents, humans, authUser, onClose, onCreate }: {
 export function ChatTeamSidebar({
   authUser, agents, teams, humans, tasks, externalAgents, groupChats,
   chatMode, selectedAgent, activeChannel, activeDmUserId,
-  onSelectAgent, onSelectChannel, onSelectDm,
+  onSelectAgent, onSelectChannel, onSelectDm, onSelectTeam, selectedTeamId,
   onRefreshTeams, onRefreshAgents, onRefreshHumans, onRefreshGroupChats, onViewProfile,
   onManageGroupMembers,
   width, onResizeStart, hidden,
@@ -539,8 +541,6 @@ export function ChatTeamSidebar({
     return { byTeam: map, ungrouped: ug };
   }, [agents, teamMap]);
 
-  const teamIds = teams.filter(t => agentsByTeam.byTeam.has(t.id) || t.members?.length > 0).map(t => t.id);
-
   const toggleTeam = (tid: string) => setCollapsedTeams(prev => {
     const next = new Set(prev);
     if (next.has(tid)) next.delete(tid); else next.add(tid);
@@ -642,7 +642,84 @@ export function ChatTeamSidebar({
     );
   };
 
-  // ── Team section renderer ────────────────────────────────────────────────
+  // ── Team row renderer (L1: simple clickable row, no nested agents) ────────
+
+  const renderTeamRow = (tid: string, team: TeamInfo | null, memberCount: number, label: string) => {
+    const isDropTarget = isDragging && dragOverTeam === tid && dragAgent?.fromTeamId !== tid;
+    const isHighlighted = highlightTeamId === tid;
+    const isSelected = selectedTeamId === tid;
+
+    return (
+      <div
+        key={tid}
+        data-team-id={tid}
+        className={`mb-0.5 rounded-lg transition-all duration-500 ${isDropTarget ? 'ring-1 ring-brand-500/50 bg-brand-500/5' : ''} ${isHighlighted ? 'ring-2 ring-brand-500 bg-brand-500/10' : ''}`}
+        onPointerEnter={() => { if (isDragging) setDragOverTeam(tid); }}
+        onPointerLeave={() => { if (isDragging && dragOverTeam === tid) setDragOverTeam(null); }}
+      >
+        <div className="group/teamhdr flex items-center gap-0.5">
+          <button
+            onClick={() => {
+              if (onSelectTeam && tid !== '_ungrouped') onSelectTeam(tid);
+            }}
+            onContextMenu={e => {
+              if (!isAdmin || !team) return;
+              e.preventDefault();
+              const pos = clampMenuPos(e);
+              setTeamMenu({ teamId: tid, ...pos });
+            }}
+            className={`flex-1 flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs transition-colors min-w-0 text-fg-primary ${
+              isSelected
+                ? 'bg-brand-600/15'
+                : 'hover:bg-white/[0.08]'
+            }`}
+          >
+            <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-surface-overlay text-fg-primary">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+            </div>
+            <div className="flex-1 min-w-0 text-left">
+              {editingTeam === tid ? (
+                <input
+                  className="bg-transparent border-b border-brand-500 text-fg-primary text-[12px] font-medium outline-none w-full"
+                  value={editTeamName}
+                  onChange={e => setEditTeamName(e.target.value)}
+                  onBlur={() => handleRenameTeam(tid)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleRenameTeam(tid); if (e.key === 'Escape') setEditingTeam(null); }}
+                  onClick={e => e.stopPropagation()}
+                  autoFocus
+                />
+              ) : (
+                <span className="truncate font-medium text-[12px] leading-tight block">{label}</span>
+              )}
+              <div className="text-[10px] text-fg-secondary leading-tight mt-0.5">{t('chat.members_other', { count: memberCount })}</div>
+            </div>
+            <svg
+              className="w-3.5 h-3.5 text-fg-muted shrink-0"
+              fill="currentColor" viewBox="0 0 20 20"
+            >
+              <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
+            </svg>
+          </button>
+
+          {isAdmin && team && (
+            <button
+              onClick={e => { e.stopPropagation(); if (teamMenu?.teamId === tid) { setTeamMenu(null); } else { const pos = clampMenuPos(e); setTeamMenu({ teamId: tid, ...pos }); } }}
+              className="w-7 h-7 flex items-center justify-center text-fg-muted hover:text-fg-primary rounded-md hover:bg-white/[0.08] transition-colors shrink-0"
+              title={t('chat.moreOptions')}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1" /><circle cx="12" cy="5" r="1" /><circle cx="12" cy="19" r="1" /></svg>
+            </button>
+          )}
+        </div>
+
+        {isDropTarget && isDragging && (
+          <div className="text-[9px] text-brand-500 px-4 py-0.5 animate-pulse">{t('chat.dropHere')}</div>
+        )}
+      </div>
+    );
+  };
+
+  // ── Team section renderer (mobile: original flat layout with nested agents) ──
 
   const renderTeamSection = (tid: string, team: TeamInfo | null, agentList: AgentInfo[], label: string) => {
     const isCollapsed = collapsedTeams.has(tid);
@@ -659,7 +736,6 @@ export function ChatTeamSidebar({
         onPointerEnter={() => { if (isDragging) setDragOverTeam(tid); }}
         onPointerLeave={() => { if (isDragging && dragOverTeam === tid) setDragOverTeam(null); }}
       >
-        {/* Team header: click name to enter group chat, separate expand/collapse + menu buttons */}
         <div className="group/teamhdr flex items-center gap-0.5">
           <button
             onClick={() => {
@@ -699,7 +775,6 @@ export function ChatTeamSidebar({
             </div>
           </button>
 
-          {/* Expand / collapse toggle */}
           <button
             onClick={() => toggleTeam(tid)}
             className="w-7 h-7 flex items-center justify-center text-fg-muted hover:text-fg-primary rounded-md hover:bg-white/[0.08] transition-colors shrink-0"
@@ -713,7 +788,6 @@ export function ChatTeamSidebar({
             </svg>
           </button>
 
-          {/* More options menu */}
           {isAdmin && team && (
             <button
               onClick={e => { e.stopPropagation(); if (teamMenu?.teamId === tid) { setTeamMenu(null); } else { const pos = clampMenuPos(e); setTeamMenu({ teamId: tid, ...pos }); } }}
@@ -993,21 +1067,42 @@ export function ChatTeamSidebar({
             </button>
           ))}
 
-          {/* Teams with agents or members */}
-          {teams.map(t => {
-            const agentList = agentsByTeam.byTeam.get(t.id) ?? [];
-            if (agentList.length === 0 && (!t.members || t.members.length === 0)) return null;
-            return renderTeamSection(t.id, t, agentList, t.name);
-          })}
-
-          {/* Empty teams (no agents and no members) */}
-          {teams.filter(t => {
-            const agentList = agentsByTeam.byTeam.get(t.id) ?? [];
-            return agentList.length === 0 && (!t.members || t.members.length === 0);
-          }).map(t => renderTeamSection(t.id, t, [], t.name))}
-
-          {/* Ungrouped agents */}
-          {agentsByTeam.ungrouped.length > 0 && renderTeamSection('_ungrouped', null, agentsByTeam.ungrouped, t('chat.other'))}
+          {isMobile ? (
+            <>
+              {/* Mobile: original flat layout with nested agents */}
+              {teams.map(tm => {
+                const agentList = agentsByTeam.byTeam.get(tm.id) ?? [];
+                if (agentList.length === 0 && (!tm.members || tm.members.length === 0)) return null;
+                return renderTeamSection(tm.id, tm, agentList, tm.name);
+              })}
+              {teams.filter(tm => {
+                const agentList = agentsByTeam.byTeam.get(tm.id) ?? [];
+                return agentList.length === 0 && (!tm.members || tm.members.length === 0);
+              }).map(tm => renderTeamSection(tm.id, tm, [], tm.name))}
+              {agentsByTeam.ungrouped.length > 0 && renderTeamSection('_ungrouped', null, agentsByTeam.ungrouped, t('chat.other'))}
+            </>
+          ) : (
+            <>
+              {/* Desktop L1: ungrouped agents listed individually above teams */}
+              {agentsByTeam.ungrouped.length > 0 && (
+                <div className="mb-2">
+                  <p className="text-[10px] font-semibold text-fg-muted uppercase tracking-wider mb-1.5 px-2.5">{t('chat.agents')}</p>
+                  {agentsByTeam.ungrouped.map(a => renderAgentItem(a))}
+                </div>
+              )}
+              {/* Desktop L1: simple clickable team rows */}
+              {teams.length > 0 && (
+                <div className="mb-2">
+                  <p className="text-[10px] font-semibold text-fg-muted uppercase tracking-wider mb-1.5 px-2.5">{t('chat.teams')}</p>
+                  {teams.map(tm => {
+                    const agentList = agentsByTeam.byTeam.get(tm.id) ?? [];
+                    const memberCount = tm.members?.length || agentList.length;
+                    return renderTeamRow(tm.id, tm, memberCount, tm.name);
+                  })}
+                </div>
+              )}
+            </>
+          )}
 
           {/* No teams — flat agent list */}
           {teams.length === 0 && agents.length > 0 && agents.map(a => renderAgentItem(a))}
