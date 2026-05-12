@@ -5,6 +5,7 @@ import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, attachSubagentLogsToEntries, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { ContentRenderer } from '../components/ContentRenderer.tsx';
 import { Avatar } from '../components/Avatar.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
@@ -1472,7 +1473,7 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
 type DirEntry = { name: string; path: string; isDirectory: boolean; size?: number; ext: string };
 type PreviewData = { type: string; name: string; content: string; mimeType?: string; entries?: DirEntry[]; path?: string };
 
-const PREVIEWABLE_EXTS = new Set(['.md', '.markdown', '.txt', '.json', '.yaml', '.yml', '.toml', '.csv', '.xml', '.html', '.css', '.js', '.ts', '.jsx', '.tsx', '.py', '.sh', '.log', '.env', '.cfg', '.ini', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg']);
+const PREVIEWABLE_EXTS = new Set(['.md', '.markdown', '.txt', '.json', '.yaml', '.yml', '.toml', '.csv', '.xml', '.html', '.htm', '.css', '.js', '.ts', '.jsx', '.tsx', '.py', '.sh', '.log', '.env', '.cfg', '.ini', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg']);
 
 function fmtSize(bytes?: number): string {
   if (bytes == null) return '';
@@ -1593,16 +1594,12 @@ function FilePreviewModal({ filePath: initialPath, onClose }: { filePath: string
           {/* File preview */}
           {data && data.type !== 'directory' && (
             <div className="p-5">
-              {data.type === 'image' && (
+              {data.type === 'image' ? (
                 <div className="flex justify-center">
                   <img src={`data:${data.mimeType};base64,${data.content}`} alt={data.name} className="max-w-full max-h-[60vh] rounded-lg" />
                 </div>
-              )}
-              {data.type === 'markdown' && (
-                <MarkdownMessage content={data.content} className="text-sm text-fg-secondary leading-relaxed" />
-              )}
-              {data.type === 'text' && (
-                <pre className="text-xs text-fg-secondary font-mono whitespace-pre-wrap break-words bg-surface-primary/50 rounded-lg p-4 leading-relaxed">{data.content}</pre>
+              ) : (
+                <ContentRenderer content={data.content} format={data.type === 'text' ? 'text' : data.type} className="text-sm text-fg-secondary leading-relaxed" />
               )}
             </div>
           )}

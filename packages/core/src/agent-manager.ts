@@ -434,6 +434,7 @@ export class AgentManager {
           title: opts.title,
           summary: opts.summary,
           reference: opts.reference,
+          format: opts.format,
           tags,
           agentId,
           projectId,

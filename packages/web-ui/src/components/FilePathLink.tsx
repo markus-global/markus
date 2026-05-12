@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { api } from '../api.ts';
 
 const LazyMarkdownMessage = lazy(() => import('./MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage })));
+const LazyContentRenderer = lazy(() => import('./ContentRenderer.tsx').then(m => ({ default: m.ContentRenderer })));
 
 // ─── Modal stack for nested preview modals ───────────────────────────────────
 
@@ -187,18 +188,15 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
               <p className="text-xs text-fg-tertiary">{error}</p>
             </div>
           )}
-          {!loading && !error && fileType === 'markdown' && (
-            <Suspense fallback={<div className="text-xs text-fg-tertiary">Loading…</div>}>
-              <LazyMarkdownMessage content={content} className="text-sm" />
-            </Suspense>
-          )}
           {!loading && !error && fileType === 'image' && (
             <div className="flex justify-center">
               <img src={`data:image/png;base64,${content}`} alt={displayName} className="max-w-full rounded" />
             </div>
           )}
-          {!loading && !error && fileType === 'text' && (
-            <pre className="text-xs text-fg-secondary font-mono whitespace-pre-wrap break-all leading-relaxed">{content}</pre>
+          {!loading && !error && fileType !== 'image' && (
+            <Suspense fallback={<div className="text-xs text-fg-tertiary">Loading…</div>}>
+              <LazyContentRenderer content={content} format={fileType === 'text' ? 'text' : fileType} className="text-sm" />
+            </Suspense>
           )}
         </div>
       </div>
@@ -214,21 +212,21 @@ export function FilePathLink({ path: filePath }: { path: string }) {
   const [previewPath, setPreviewPath] = useState<string | null>(null);
 
   const exists = info?.exists ?? false;
-  const isMarkdown = info?.type === 'markdown';
+  const isPreviewable = info?.type === 'markdown' || info?.type === 'html' || info?.type === 'json' || info?.type === 'text';
 
   const handleClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     if (!exists) return;
-    if (isMarkdown) {
+    if (isPreviewable) {
       setPreviewPath(filePath);
     } else {
       api.files.reveal(filePath);
     }
-  }, [exists, isMarkdown, filePath]);
+  }, [exists, isPreviewable, filePath]);
 
   const iconCls = 'inline w-3 h-3 align-[-0.125em]';
-  const fileIcon = isMarkdown
+  const fileIcon = isPreviewable
     ? <svg className={iconCls} viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" /></svg>
     : <svg className={iconCls} viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" /></svg>;
 
@@ -249,7 +247,7 @@ export function FilePathLink({ path: filePath }: { path: string }) {
       <code
         className="bg-brand-500/10 px-1.5 py-0.5 rounded text-xs font-mono text-brand-500 cursor-pointer hover:bg-brand-500/20 transition-colors border border-brand-500/20 hover:border-brand-500/40 break-all"
         onClick={handleClick}
-        title={isMarkdown ? 'Click to preview' : 'Click to reveal in file explorer'}
+        title={isPreviewable ? 'Click to preview' : 'Click to reveal in file explorer'}
         role="button"
         tabIndex={0}
       ><span className="whitespace-nowrap">{fileIcon}{filePath.charAt(0)}</span>{filePath.slice(1)}</code>

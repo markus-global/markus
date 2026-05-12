@@ -276,6 +276,7 @@ CREATE TABLE IF NOT EXISTS deliverables (
   title TEXT NOT NULL,
   summary TEXT NOT NULL DEFAULT '',
   reference TEXT NOT NULL DEFAULT '',
+  format TEXT,
   tags TEXT NOT NULL DEFAULT '[]',
   status TEXT NOT NULL DEFAULT 'active',
   task_id TEXT,
@@ -640,6 +641,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'approvals', column: 'target_user_id', sql: 'ALTER TABLE approvals ADD COLUMN target_user_id TEXT' },
     { table: 'users', column: 'deleted_at', sql: 'ALTER TABLE users ADD COLUMN deleted_at TEXT' },
     { table: 'agents', column: 'deleted_at', sql: 'ALTER TABLE agents ADD COLUMN deleted_at TEXT' },
+    { table: 'deliverables', column: 'format', sql: 'ALTER TABLE deliverables ADD COLUMN format TEXT' },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -3263,6 +3265,7 @@ export class SqliteDeliverableRepo {
 
   async create(data: {
     id: string; type: string; title: string; summary: string; reference?: string;
+    format?: string;
     tags?: string[]; status?: string; taskId?: string; agentId?: string;
     projectId?: string; requirementId?: string;
     diffStats?: Record<string, number>; testResults?: Record<string, number>;
@@ -3270,12 +3273,13 @@ export class SqliteDeliverableRepo {
   }) {
     const n = now();
     this.db.prepare(`
-      INSERT INTO deliverables (id, type, title, summary, reference, tags, status,
+      INSERT INTO deliverables (id, type, title, summary, reference, format, tags, status,
         task_id, agent_id, project_id, requirement_id, diff_stats, test_results,
         artifact_type, artifact_data, access_count, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
     `).run(
       data.id, data.type, data.title, data.summary, data.reference ?? '',
+      data.format ?? null,
       toJson(data.tags ?? []), data.status ?? 'active',
       data.taskId ?? null, data.agentId ?? null, data.projectId ?? null,
       data.requirementId ?? null,
@@ -3316,6 +3320,7 @@ export class SqliteDeliverableRepo {
     if (patch.status !== undefined) { sets.push('status = ?'); vals.push(patch.status as SQLInputValue); }
     if (patch.tags !== undefined) { sets.push('tags = ?'); vals.push(toJson(patch.tags)); }
     if (patch.reference !== undefined) { sets.push('reference = ?'); vals.push(patch.reference as SQLInputValue); }
+    if (patch.format !== undefined) { sets.push('format = ?'); vals.push(patch.format as SQLInputValue); }
     if (patch.type !== undefined) { sets.push('type = ?'); vals.push(patch.type as SQLInputValue); }
     if (patch.artifactType !== undefined) { sets.push('artifact_type = ?'); vals.push(patch.artifactType as SQLInputValue); }
     if (patch.artifactData !== undefined) { sets.push('artifact_data = ?'); vals.push(toJson(patch.artifactData)); }
@@ -3355,6 +3360,7 @@ export class SqliteDeliverableRepo {
       title: r['title'] as string,
       summary: r['summary'] as string,
       reference: r['reference'] as string,
+      format: (r['format'] as string) ?? null,
       tags: fromJson<string[]>(r['tags'] as string) ?? [],
       status: r['status'] as string,
       taskId: r['task_id'] as string | null,

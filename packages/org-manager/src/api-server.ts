@@ -2924,6 +2924,7 @@ export class APIServer {
           title: body['title'] as string,
           summary: body['summary'] as string,
           reference: body['reference'] as string,
+          format: body['format'] as string | undefined,
           tags: body['tags'] as string[],
           taskId: body['taskId'] as string,
           agentId: body['agentId'] as string,
@@ -2948,6 +2949,7 @@ export class APIServer {
           title: body['title'] as string | undefined,
           summary: body['summary'] as string | undefined,
           reference: body['reference'] as string | undefined,
+          format: body['format'] as string | undefined,
           tags: body['tags'] as string[] | undefined,
           status: body['status'] as any,
           type: body['type'] as any,
@@ -4611,6 +4613,7 @@ EXPLANATION_END`;
           title: body['title'] as string,
           summary: body['summary'] as string ?? body['content'] as string,
           reference: body['reference'] as string,
+          format: body['format'] as string | undefined,
           tags: body['tags'] as string[],
           agentId: token.markusAgentId,
           projectId: body['projectId'] as string,
@@ -8312,6 +8315,8 @@ EXPLANATION_END`;
 
         const results: Record<string, { exists: boolean; isFile: boolean; type: string }> = {};
         const mdExts = ['.md', '.markdown'];
+        const htmlExts = ['.html', '.htm'];
+        const jsonExts = ['.json'];
         const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'];
 
         for (const p of paths.slice(0, 50)) {
@@ -8327,6 +8332,8 @@ EXPLANATION_END`;
             const ext = extname(resolved).toLowerCase();
             let type = 'text';
             if (mdExts.includes(ext)) type = 'markdown';
+            else if (htmlExts.includes(ext)) type = 'html';
+            else if (jsonExts.includes(ext)) type = 'json';
             else if (imageExts.includes(ext)) type = 'image';
             else if (!isFile) type = 'directory';
             results[p] = { exists: true, isFile, type };
@@ -8409,8 +8416,16 @@ EXPLANATION_END`;
         } else {
           const content = readFileSync(resolved, 'utf-8');
           const mdExts = ['.md', '.markdown'];
+          const htmlExts = ['.html', '.htm'];
+          const jsonExts = ['.json'];
+          const csvExts = ['.csv', '.tsv'];
+          let fileType = 'text';
+          if (mdExts.includes(ext)) fileType = 'markdown';
+          else if (htmlExts.includes(ext)) fileType = 'html';
+          else if (jsonExts.includes(ext)) fileType = 'json';
+          else if (csvExts.includes(ext)) fileType = 'csv';
           this.json(res, 200, {
-            type: mdExts.includes(ext) ? 'markdown' : 'text',
+            type: fileType,
             name: resolved.split('/').pop(),
             content,
           });

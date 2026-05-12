@@ -230,6 +230,7 @@ export interface DeliverableInfo {
   title: string;
   summary: string;
   reference: string;
+  format?: string;
   tags: string[];
   status: 'active' | 'verified' | 'outdated';
   taskId?: string;
@@ -532,6 +533,7 @@ export interface TaskInfo {
     type: string;
     reference: string;
     summary: string;
+    format?: string;
   }>;
   projectId?: string;
   requirementId?: string;

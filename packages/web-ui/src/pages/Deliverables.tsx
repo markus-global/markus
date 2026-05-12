@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, wsClient, type DeliverableInfo, type ProjectInfo, type AgentInfo, type AuthUser } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { ContentRenderer, resolveFormat } from '../components/ContentRenderer.tsx';
 import { copyPlainText } from '../components/markdown-copy.ts';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
 import { navBus } from '../navBus.ts';
@@ -88,6 +89,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
 
   // File preview
   const [previewContent, setPreviewContent] = useState<string | null>(null);
+  const [previewFormat, setPreviewFormat] = useState<string>('markdown');
   const [previewImage, setPreviewImage] = useState<{ src: string; name: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [showCopyPath, setShowCopyPath] = useState(false);
@@ -282,6 +284,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
         setPreviewImage({ src: `data:${resp.mimeType};base64,${resp.content}`, name: resp.name });
       } else {
         setPreviewContent(resp.content);
+        setPreviewFormat(resolveFormat({ format: d.format, reference: d.reference, content: resp.content }));
       }
     } catch {
       setPreviewContent(null);
@@ -292,6 +295,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
 
   useEffect(() => {
     setPreviewContent(null);
+    setPreviewFormat('markdown');
     setPreviewImage(null);
     setShowCopyPath(false);
     if (selected) loadPreview(selected);
@@ -614,7 +618,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
                     <span className="text-xs text-fg-tertiary">{previewImage.name}</span>
                   </div>
                 ) : previewContent ? (
-                  <MarkdownMessage content={previewContent} className="text-fg-secondary text-sm" />
+                  <ContentRenderer content={previewContent} format={previewFormat} className="text-fg-secondary text-sm" />
                 ) : showCopyPath ? (
                   <div className="space-y-3">
                     <p className="text-sm text-fg-secondary">{t('detail.cannotPreview', { type: selected.type })}</p>

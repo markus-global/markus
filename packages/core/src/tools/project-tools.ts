@@ -34,6 +34,7 @@ export interface DeliverableServiceBridge {
     title: string;
     summary: string;
     reference?: string;
+    format?: string;
     tags?: string[];
     taskId?: string;
     agentId?: string;
@@ -140,6 +141,7 @@ export interface ProjectToolsContext {
     title: string;
     summary: string;
     reference?: string;
+    format?: string;
     tags?: string;
   }) => Promise<{ id: string; type: string; title: string; status: string }>;
   deliverableSearch?: (opts: {
@@ -376,6 +378,10 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   type: 'string',
                   description: 'Path to the file or directory that contains the actual content (must already exist)',
                 },
+                format: {
+                  type: 'string',
+                  description: 'Content format of the deliverable file: markdown, html, text, json, csv, etc. Auto-detected from file extension if omitted.',
+                },
                 tags: { type: 'string', description: 'Comma-separated tags for discoverability' },
               },
               required: ['type', 'title', 'summary'],
@@ -387,6 +393,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   title: args['title'] as string,
                   summary: args['summary'] as string,
                   reference: args['reference'] as string | undefined,
+                  format: args['format'] as string | undefined,
                   tags: args['tags'] as string | undefined,
                 });
                 const resp: Record<string, unknown> = {

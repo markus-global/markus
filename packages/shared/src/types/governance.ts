@@ -49,6 +49,7 @@ export interface TaskDeliverable {
   type: 'branch' | DeliverableType;
   reference: string;
   summary: string;
+  format?: string;
   diffStats?: { filesChanged: number; additions: number; deletions: number };
   testResults?: { passed: number; failed: number; skipped: number };
 }
@@ -65,6 +66,7 @@ export interface Deliverable {
   title: string;
   summary: string;
   reference: string;
+  format?: string;
   tags: string[];
   status: DeliverableStatus;
   taskId?: string;
