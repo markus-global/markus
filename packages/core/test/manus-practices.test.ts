@@ -135,15 +135,15 @@ describe('Manus Best Practices Integration', () => {
           };
         }),
         chatStream: vi.fn(),
-        getActiveModelName: () => 'gpt-4',
+        getActiveModelName: () => 'test-model',
         getActiveModelContextWindow: () => 200000,
         getActiveModelMaxOutput: () => 8000,
         getModelContextWindow: (model: string) => 200000,
         getModelMaxOutput: (model: string) => 8000,
+        getModelCost: () => undefined,
         listProviders: () => ['test'],
         getProvider: () => undefined,
         getDefaultProvider: () => 'test',
-        getActiveModelName: () => 'test-model',
         isCompactionSupported: () => false,
       };
 
@@ -217,15 +217,15 @@ describe('Manus Best Practices Integration', () => {
           };
         }),
         chatStream: vi.fn(),
-        getActiveModelName: () => 'gpt-4',
+        getActiveModelName: () => 'test-model',
         getActiveModelContextWindow: () => 200000,
         getActiveModelMaxOutput: () => 8000,
         getModelContextWindow: (model: string) => 200000,
         getModelMaxOutput: (model: string) => 8000,
+        getModelCost: () => undefined,
         listProviders: () => ['test'],
         getProvider: () => undefined,
         getDefaultProvider: () => 'test',
-        getActiveModelName: () => 'test-model',
         isCompactionSupported: () => false,
       };
 
