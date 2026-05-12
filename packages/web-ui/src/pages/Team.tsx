@@ -2966,7 +2966,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           </div>
         )}
         {!isMobile && isProfileTab(mainTab) && chatMode === 'channel' && activeTeamId && (
-          <div className="flex-1 overflow-y-auto">
+          <div className="flex-1 flex flex-col min-h-0">
             <TeamProfile
               teamId={activeTeamId}
               onBack={() => setMainTab('chat')}

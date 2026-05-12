@@ -83,21 +83,11 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
   }, [teamId, reload, loadFiles]);
 
   useEffect(() => {
-    if (editingAnn && annTextareaRef.current) {
-      const el = annTextareaRef.current;
-      el.style.height = 'auto';
-      el.style.height = Math.max(el.scrollHeight, 120) + 'px';
-      el.focus();
-    }
+    if (editingAnn && annTextareaRef.current) annTextareaRef.current.focus();
   }, [editingAnn]);
 
   useEffect(() => {
-    if (editingNorms && normsTextareaRef.current) {
-      const el = normsTextareaRef.current;
-      el.style.height = 'auto';
-      el.style.height = Math.max(el.scrollHeight, 120) + 'px';
-      el.focus();
-    }
+    if (editingNorms && normsTextareaRef.current) normsTextareaRef.current.focus();
   }, [editingNorms]);
 
   const saveFile = async (filename: string, content: string) => {
@@ -133,10 +123,12 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
   const managerMember = team.members.find(m => m.agentRole === 'manager');
   const onlineCount = teamStatuses.filter(s => s.status !== 'offline').length;
 
+  const isEditingFullscreen = (effectiveTab === 'announcements' && editingAnn) || (effectiveTab === 'norms' && editingNorms);
+
   if (headless) {
     return (
-      <div className="flex-1 overflow-y-auto bg-surface-primary">
-        <div className="p-5">
+      <div className={`flex-1 bg-surface-primary ${isEditingFullscreen ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`}>
+        <div className={`${isEditingFullscreen ? 'flex-1 flex flex-col min-h-0 p-5' : 'p-5'}`}>
           {effectiveTab === 'overview' && (
             <div className="space-y-5">
               <div className="grid grid-cols-2 gap-4">
@@ -257,10 +249,12 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
     );
   }
 
+  const isEditingFullscreenStandalone = (tab === 'announcements' && editingAnn) || (tab === 'norms' && editingNorms);
+
   return (
-    <div className="flex-1 overflow-y-auto bg-surface-primary">
+    <div className={`flex-1 bg-surface-primary ${isEditingFullscreenStandalone ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`}>
       {/* Header */}
-      <div className="px-5 py-3.5 border-b border-border-default bg-surface-secondary sticky top-0 z-10">
+      <div className="px-5 py-3.5 border-b border-border-default bg-surface-secondary sticky top-0 z-10 shrink-0">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-brand-600 text-white flex items-center justify-center text-lg font-bold shrink-0">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -312,7 +306,7 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
         </div>
       </div>
 
-      <div className="p-5">
+      <div className={`${isEditingFullscreenStandalone ? 'flex-1 flex flex-col min-h-0 p-5' : 'p-5'}`}>
         {/* Overview Tab (includes members) */}
         {tab === 'overview' && (
           <div className="space-y-5">
@@ -459,16 +453,11 @@ function MarkdownEditorSection({
 }) {
   if (editing) {
     return (
-      <div className="space-y-3">
+      <div className="flex flex-col h-full min-h-0">
         <textarea
           ref={textareaRef}
           value={draft}
-          onChange={e => {
-            setDraft(e.target.value);
-            const el = e.target;
-            el.style.height = 'auto';
-            el.style.height = Math.max(el.scrollHeight, 120) + 'px';
-          }}
+          onChange={e => setDraft(e.target.value)}
           onBlur={() => {
             if (draft !== content) onSave();
             else setEditing(false);
@@ -476,10 +465,10 @@ function MarkdownEditorSection({
           onKeyDown={e => {
             if (e.key === 'Escape') { e.preventDefault(); setDraft(content); setEditing(false); }
           }}
-          className="w-full bg-transparent border border-brand-500/30 rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none resize-none px-3 py-2 font-mono"
+          className="flex-1 w-full bg-transparent border border-brand-500/30 rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none resize-none px-3 py-2 font-mono"
           placeholder={placeholder}
         />
-        {saving && <div className="text-xs text-fg-tertiary">Saving...</div>}
+        {saving && <div className="text-xs text-fg-tertiary mt-1 shrink-0">Saving...</div>}
       </div>
     );
   }
