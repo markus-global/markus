@@ -76,8 +76,39 @@ describe('ToolLoopDetector', () => {
     expect(result.detected).toBe(false);
   });
 
+  it('should detect sameToolBurst pattern with varying args', () => {
+    const d = new ToolLoopDetector({ enabled: true, historySize: 30, warningThreshold: 3, criticalThreshold: 5, detectors: { genericRepeat: false, pingPong: false, noProgress: false, sameToolBurst: true } });
+
+    // Simulate an agent retrying different shell commands to debug same issue
+    d.record('shell_execute', { command: 'pnpm dev:server' }, 'started pid 1234');
+    d.record('shell_execute', { command: 'lsof -i :3000' }, 'No port 3000');
+    d.record('shell_execute', { command: 'lsof -p 1234 -i -P' }, 'no listening ports');
+    d.record('shell_execute', { command: 'cat server.log' }, 'Error: EADDRINUSE');
+    d.record('shell_execute', { command: 'kill 1234 && pnpm dev:server' }, 'started pid 1235');
+    d.record('shell_execute', { command: 'lsof -i :3000' }, 'No port 3000 (2)');
+    d.record('shell_execute', { command: 'curl localhost:3000' }, 'Connection refused');
+
+    const result = d.check();
+    expect(result.detected).toBe(true);
+    expect(result.pattern).toBe('sameToolBurst');
+    expect(result.severity).toBe('critical');
+  });
+
+  it('should not trigger sameToolBurst when tools are mixed', () => {
+    const d = new ToolLoopDetector({ enabled: true, historySize: 30, warningThreshold: 3, criticalThreshold: 5, detectors: { genericRepeat: false, pingPong: false, noProgress: false, sameToolBurst: true } });
+
+    d.record('shell_execute', { command: 'npm test' }, 'fail');
+    d.record('file_read', { path: 'src/index.ts' }, 'code...');
+    d.record('shell_execute', { command: 'npm test' }, 'fail');
+    d.record('file_edit', { path: 'src/index.ts' }, 'edited');
+    d.record('shell_execute', { command: 'npm test' }, 'pass');
+
+    const result = d.check();
+    expect(result.detected).toBe(false);
+  });
+
   it('should not detect when disabled', () => {
-    const d = new ToolLoopDetector({ enabled: false, historySize: 30, warningThreshold: 3, criticalThreshold: 5, detectors: { genericRepeat: true, pingPong: true, noProgress: true } });
+    const d = new ToolLoopDetector({ enabled: false, historySize: 30, warningThreshold: 3, criticalThreshold: 5, detectors: { genericRepeat: true, pingPong: true, noProgress: true, sameToolBurst: true } });
 
     for (let i = 0; i < 10; i++) {
       d.record('file_read', { path: 'config.json' }, 'same result');

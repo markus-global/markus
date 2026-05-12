@@ -305,12 +305,16 @@ export class ReportService {
 
   private buildCostSummary(scopeId: string, start: Date, end: Date): ReportCostSummary {
     const usage = this.billingService.getUsageSummaryForPeriod(scopeId, start, end);
+    const input = Math.round(usage.llmTokens * 0.7);
+    const output = usage.llmTokens - input;
+    const estimatedCost = (input / 1_000_000) * 3 + (output / 1_000_000) * 15;
+    const cost = Math.round(estimatedCost * 10000) / 10000;
     return {
       totalTokens: usage.llmTokens,
-      totalEstimatedCost: usage.llmTokens * 0.000003,
+      totalEstimatedCost: cost,
       byAgent: [],
       byCategory: [
-        { category: 'llm_tokens', tokens: usage.llmTokens, cost: usage.llmTokens * 0.000003 },
+        { category: 'llm_tokens', tokens: usage.llmTokens, cost },
         { category: 'tool_calls', tokens: 0, cost: 0 },
       ],
       trend: 'stable',

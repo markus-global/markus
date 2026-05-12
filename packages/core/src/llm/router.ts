@@ -981,6 +981,18 @@ export class LLMRouter {
     return provider?.model ?? '';
   }
 
+  getModelCost(providerName?: string): ModelCostConfig | undefined {
+    const name = providerName ?? this.defaultProvider;
+    const provider = this.providers.get(name);
+    if (!provider) return undefined;
+    const custom = this.customModelConfigs.get(name);
+    if (custom?.cost) return custom.cost;
+    const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model && m.provider === name)
+      ?? BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model)
+      ?? this.customModelCatalog.get(name)?.find(m => m.id === provider.model);
+    return catalogEntry?.cost;
+  }
+
   getModelInputTypes(providerName?: string): Array<'text' | 'image'> {
     const name = providerName ?? this.defaultProvider;
     const provider = this.providers.get(name);

@@ -36,10 +36,10 @@ export function App() {
   const theme = useTheme();
   const sidebar = useResizablePanel({
     side: 'left',
-    defaultWidth: 240,
+    defaultWidth: 180,
     minWidth: 180,
     maxWidth: 400,
-    collapsedWidth: 48,
+    collapsedWidth: 64,
     storageKey: 'markus_sidebar',
   });
   const [mountedPages, setMountedPages] = useState<Set<PageId>>(() => new Set([getPageFromHash()]));

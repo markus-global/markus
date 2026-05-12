@@ -763,6 +763,7 @@ export interface OpsDashboard {
     statusCounts: Record<string, number>;
     successRate: number;
     blockedCount: number;
+    stuckBlockedCount?: number;
     averageCompletionTimeMs: number;
     recentActivity: Array<{ taskId: string; title: string; status: string; updatedAt: string }>;
   };
@@ -803,6 +804,7 @@ export interface AgentUsageInfo {
   toolCalls: number;
   messages: number;
   estimatedCost: number;
+  costToday: number;
 }
 
 export const api = {
@@ -917,6 +919,9 @@ export const api = {
                   if (event.sessionId) resultSessionId = event.sessionId;
                   const doneSegments = (event as Record<string, unknown>).segments as StoredSegment[] | undefined;
                   if (doneSegments?.length) resultSegments = doneSegments;
+                  resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments });
+                  reader.cancel().catch(() => {});
+                  return;
                 } else if (event.type === 'error') {
                   const errEvent = event as { type: string; message?: string; error?: string; sessionId?: string };
                   if (errEvent.sessionId) resultSessionId = errEvent.sessionId;

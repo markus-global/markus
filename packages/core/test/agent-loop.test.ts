@@ -36,6 +36,7 @@ function makeMockRouter(chatFn: (...args: unknown[]) => Promise<unknown>) {
     getActiveModelMaxOutput: () => 8000,
     getModelContextWindow: (model: string) => 200000,
     getModelMaxOutput: (model: string) => 8000,
+    getModelCost: () => undefined,
     isCompactionSupported: (model: string) => true,
     listProviders: () => ['test'],
     getProvider: () => undefined,

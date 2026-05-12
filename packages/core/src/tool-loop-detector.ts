@@ -18,6 +18,7 @@ export interface LoopDetectionConfig {
     genericRepeat: boolean;
     pingPong: boolean;
     noProgress: boolean;
+    sameToolBurst: boolean;
   };
 }
 
@@ -37,6 +38,7 @@ const DEFAULT_CONFIG: LoopDetectionConfig = {
     genericRepeat: true,
     pingPong: true,
     noProgress: true,
+    sameToolBurst: true,
   },
 };
 
@@ -92,6 +94,11 @@ export class ToolLoopDetector {
 
     if (this.config.detectors.noProgress) {
       const result = this.detectNoProgress();
+      if (result.detected) return result;
+    }
+
+    if (this.config.detectors.sameToolBurst) {
+      const result = this.detectSameToolBurst();
       if (result.detected) return result;
     }
 
@@ -200,6 +207,43 @@ export class ToolLoopDetector {
       const msg = `Warning: "${recent[recent.length - 1]!.name}" returned identical results ${sameResultStreak} times`;
       log.warn(msg);
       return { detected: true, severity: 'warning', pattern: 'noProgress', message: msg };
+    }
+
+    return noDetection();
+  }
+
+  /**
+   * Detects: a single tool called many times consecutively, even with different
+   * args/results each time. Catches "semantic loops" where the agent retries
+   * variations of the same approach (e.g., different shell commands to debug
+   * the same failing server) without switching strategy.
+   */
+  private detectSameToolBurst(): LoopDetectionResult {
+    if (this.history.length < this.config.warningThreshold) return noDetection();
+
+    const last = this.history[this.history.length - 1]!;
+    let streak = 1;
+    for (let i = this.history.length - 2; i >= 0; i--) {
+      if (this.history[i]!.name === last.name) {
+        streak++;
+      } else {
+        break;
+      }
+    }
+
+    const burstCritical = this.config.criticalThreshold + 2;
+    const burstWarning = this.config.warningThreshold + 2;
+
+    if (streak >= burstCritical) {
+      const msg = `Critical: "${last.name}" called ${streak} times consecutively (with varying arguments) — likely stuck in a retry loop`;
+      log.warn(msg);
+      return { detected: true, severity: 'critical', pattern: 'sameToolBurst', message: msg };
+    }
+
+    if (streak >= burstWarning) {
+      const msg = `Warning: "${last.name}" called ${streak} times consecutively — consider a different approach`;
+      log.warn(msg);
+      return { detected: true, severity: 'warning', pattern: 'sameToolBurst', message: msg };
     }
 
     return noDetection();

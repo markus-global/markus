@@ -38,7 +38,8 @@
   },
   "taskOverview": {
     "title": "任务总览",
-    "subtitle": "共 {{total}} 个任务"
+    "subtitle": "共 {{total}} 个任务",
+    "stuckBlocked": "{{count}} 个任务阻塞但无未完成依赖，可能需要关注"
   },
   "teamStatus": {
     "title": "团队状态",

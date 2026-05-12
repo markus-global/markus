@@ -1469,49 +1469,142 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
 
 // ─── File Preview Modal ─────────────────────────────────────────────────────────
 
-function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: () => void }) {
+type DirEntry = { name: string; path: string; isDirectory: boolean; size?: number; ext: string };
+type PreviewData = { type: string; name: string; content: string; mimeType?: string; entries?: DirEntry[]; path?: string };
+
+const PREVIEWABLE_EXTS = new Set(['.md', '.markdown', '.txt', '.json', '.yaml', '.yml', '.toml', '.csv', '.xml', '.html', '.css', '.js', '.ts', '.jsx', '.tsx', '.py', '.sh', '.log', '.env', '.cfg', '.ini', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg']);
+
+function fmtSize(bytes?: number): string {
+  if (bytes == null) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function FilePreviewModal({ filePath: initialPath, onClose }: { filePath: string; onClose: () => void }) {
   const { t } = useTranslation(['work', 'common']);
-  const [data, setData] = useState<{ type: string; name: string; content: string; mimeType?: string } | null>(null);
+  const [pathStack, setPathStack] = useState<string[]>([initialPath]);
+  const currentPath = pathStack[pathStack.length - 1]!;
+  const [data, setData] = useState<PreviewData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     setLoading(true);
     setError(null);
-    api.files.preview(filePath)
-      .then(d => setData(d))
+    setData(null);
+    api.files.preview(currentPath)
+      .then(d => setData(d as PreviewData))
       .catch(err => setError(String(err)))
       .finally(() => setLoading(false));
-  }, [filePath]);
+  }, [currentPath]);
 
-  const fileName = filePath.split('/').pop() ?? filePath;
+  const navigateTo = (p: string) => setPathStack(prev => [...prev, p]);
+  const goBack = () => setPathStack(prev => prev.length > 1 ? prev.slice(0, -1) : prev);
+  const canGoBack = pathStack.length > 1;
+
+  const openInFinder = (p: string) => {
+    api.files.reveal(p).catch(() => {});
+  };
+
+  const handleEntryClick = (entry: DirEntry) => {
+    if (entry.isDirectory) {
+      navigateTo(entry.path);
+    } else if (PREVIEWABLE_EXTS.has(entry.ext)) {
+      navigateTo(entry.path);
+    } else {
+      openInFinder(entry.path);
+    }
+  };
+
+  const fileName = currentPath.split('/').pop() ?? currentPath;
+  const isDir = data?.type === 'directory';
+
+  const extIcon = (ext: string, isDirectory: boolean) => {
+    if (isDirectory) return '📁';
+    const mdExts = ['.md', '.markdown'];
+    const imgExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'];
+    if (mdExts.includes(ext)) return '📝';
+    if (imgExts.includes(ext)) return '🖼';
+    if (['.json', '.yaml', '.yml', '.toml', '.xml'].includes(ext)) return '⚙';
+    if (['.js', '.ts', '.jsx', '.tsx', '.py', '.sh'].includes(ext)) return '💻';
+    return '📄';
+  };
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60]" onClick={onClose}>
       <div className="bg-surface-secondary border border-border-default rounded-xl w-[720px] max-w-[92vw] max-h-[85vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-3 border-b border-border-default shrink-0">
           <div className="flex items-center gap-2 min-w-0">
-            <svg className="w-4 h-4 text-fg-tertiary shrink-0" viewBox="0 0 16 16" fill="currentColor"><path d="M3 1h7l4 4v10H3V1zm7 1H4v12h10V5.5L10 2z"/><path d="M10 1v4h4" fill="none" stroke="currentColor" strokeWidth="1"/></svg>
+            {canGoBack && (
+              <button onClick={goBack} className="text-fg-tertiary hover:text-fg-primary text-sm shrink-0 p-1 -ml-1 rounded hover:bg-surface-elevated/60 transition-colors" title={t('common:back')}>
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+              </button>
+            )}
+            {isDir
+              ? <svg className="w-4 h-4 text-amber-500 shrink-0" viewBox="0 0 16 16" fill="currentColor"><path d="M1 3.5A1.5 1.5 0 012.5 2h3.879a1.5 1.5 0 011.06.44l.872.87A.5.5 0 008.665 3.5H13.5A1.5 1.5 0 0115 5v8.5a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 011 13.5v-10z"/></svg>
+              : <svg className="w-4 h-4 text-fg-tertiary shrink-0" viewBox="0 0 16 16" fill="currentColor"><path d="M3 1h7l4 4v10H3V1zm7 1H4v12h10V5.5L10 2z"/><path d="M10 1v4h4" fill="none" stroke="currentColor" strokeWidth="1"/></svg>
+            }
             <span className="text-sm font-medium text-fg-primary truncate">{fileName}</span>
+            {isDir && data.entries && <span className="text-[10px] text-fg-tertiary shrink-0">({data.entries.length})</span>}
           </div>
-          <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-lg shrink-0 ml-3">×</button>
+          <div className="flex items-center gap-1 shrink-0 ml-3">
+            <button onClick={() => openInFinder(currentPath)} className="text-fg-tertiary hover:text-fg-primary p-1.5 rounded hover:bg-surface-elevated/60 transition-colors" title={t('work:task.openInFinder')}>
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>
+            </button>
+            <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-lg shrink-0">×</button>
+          </div>
         </div>
         <div className="px-4 py-1 border-b border-border-default/60">
-          <p className="text-[10px] text-fg-tertiary font-mono truncate">{filePath}</p>
+          <p className="text-[10px] text-fg-tertiary font-mono truncate">{currentPath}</p>
         </div>
-        <div className="flex-1 overflow-auto min-h-0 p-5">
+        <div className="flex-1 overflow-auto min-h-0">
           {loading && <div className="text-sm text-fg-tertiary text-center py-8">{t('work:task.filePreviewLoading')}</div>}
           {error && <div className="text-sm text-red-500 text-center py-8">{error}</div>}
-          {data && data.type === 'image' && (
-            <div className="flex justify-center">
-              <img src={`data:${data.mimeType};base64,${data.content}`} alt={data.name} className="max-w-full max-h-[60vh] rounded-lg" />
+
+          {/* Directory listing */}
+          {data?.type === 'directory' && data.entries && (
+            <div className="divide-y divide-border-default/50">
+              {data.entries.length === 0 && (
+                <div className="text-sm text-fg-tertiary text-center py-8">{t('work:task.emptyDirectory')}</div>
+              )}
+              {data.entries.map(entry => (
+                <button
+                  key={entry.path}
+                  onClick={() => handleEntryClick(entry)}
+                  className="w-full flex items-center gap-3 px-5 py-2.5 hover:bg-surface-elevated/40 transition-colors text-left group"
+                >
+                  <span className="text-sm shrink-0">{extIcon(entry.ext, entry.isDirectory)}</span>
+                  <span className="flex-1 min-w-0 truncate text-sm text-fg-primary group-hover:text-brand-400 transition-colors">{entry.name}</span>
+                  {!entry.isDirectory && entry.size != null && (
+                    <span className="text-[10px] text-fg-tertiary shrink-0">{fmtSize(entry.size)}</span>
+                  )}
+                  {entry.isDirectory && (
+                    <svg className="w-3.5 h-3.5 text-fg-tertiary shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
+                  )}
+                  {!entry.isDirectory && !PREVIEWABLE_EXTS.has(entry.ext) && (
+                    <svg className="w-3 h-3 text-fg-tertiary shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>
+                  )}
+                </button>
+              ))}
             </div>
           )}
-          {data && data.type === 'markdown' && (
-            <MarkdownMessage content={data.content} className="text-sm text-fg-secondary leading-relaxed" />
-          )}
-          {data && data.type === 'text' && (
-            <pre className="text-xs text-fg-secondary font-mono whitespace-pre-wrap break-words bg-surface-primary/50 rounded-lg p-4 leading-relaxed">{data.content}</pre>
+
+          {/* File preview */}
+          {data && data.type !== 'directory' && (
+            <div className="p-5">
+              {data.type === 'image' && (
+                <div className="flex justify-center">
+                  <img src={`data:${data.mimeType};base64,${data.content}`} alt={data.name} className="max-w-full max-h-[60vh] rounded-lg" />
+                </div>
+              )}
+              {data.type === 'markdown' && (
+                <MarkdownMessage content={data.content} className="text-sm text-fg-secondary leading-relaxed" />
+              )}
+              {data.type === 'text' && (
+                <pre className="text-xs text-fg-secondary font-mono whitespace-pre-wrap break-words bg-surface-primary/50 rounded-lg p-4 leading-relaxed">{data.content}</pre>
+              )}
+            </div>
           )}
         </div>
       </div>

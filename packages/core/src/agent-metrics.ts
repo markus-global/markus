@@ -33,6 +33,10 @@ export interface AgentMetricsSnapshot {
 
 interface AuditCounters {
   totalTokens: number;
+  promptTokens: number;
+  completionTokens: number;
+  estimatedCost: number;
+  costToday: number;
   requestCount: number;
   toolCalls: number;
   errorCount: number;
@@ -47,7 +51,9 @@ interface AuditCounters {
 
 function freshCounters(): AuditCounters {
   return {
-    totalTokens: 0, requestCount: 0, toolCalls: 0, errorCount: 0,
+    totalTokens: 0, promptTokens: 0, completionTokens: 0,
+    estimatedCost: 0, costToday: 0,
+    requestCount: 0, toolCalls: 0, errorCount: 0,
     totalEvents: 0, totalLlmDurationMs: 0, lastSuccessTimestamp: 0,
     tokensToday: 0, requestsToday: 0, toolCallsToday: 0,
     todayCutoffDate: new Date().toISOString().slice(0, 10),
@@ -97,6 +103,9 @@ export class AgentMetricsCollector {
     type: string;
     action: string;
     tokensUsed?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    cost?: number;
     durationMs?: number;
     success: boolean;
     detail?: string;
@@ -107,6 +116,7 @@ export class AgentMetricsCollector {
       c.tokensToday = 0;
       c.requestsToday = 0;
       c.toolCallsToday = 0;
+      c.costToday = 0;
       c.todayCutoffDate = today;
     }
 
@@ -117,6 +127,12 @@ export class AgentMetricsCollector {
     if (event.type === 'llm_request') {
       const tokens = event.tokensUsed ?? 0;
       c.totalTokens += tokens;
+      c.promptTokens += event.inputTokens ?? 0;
+      c.completionTokens += event.outputTokens ?? 0;
+      if (event.cost) {
+        c.estimatedCost += event.cost;
+        c.costToday += event.cost;
+      }
       c.requestCount++;
       c.tokensToday += tokens;
       c.requestsToday++;
@@ -196,22 +212,35 @@ export class AgentMetricsCollector {
     requestsToday: number;
     toolCallsToday: number;
     estimatedCost: number;
+    costToday: number;
   } {
     const c = this.counters;
-    const input = Math.round(c.totalTokens * 0.7);
-    const output = c.totalTokens - input;
-    const estimatedCost = (input / 1_000_000) * 3 + (output / 1_000_000) * 15;
+    let cost = c.estimatedCost;
+    let costToday = c.costToday;
+
+    // Fallback for pre-migration data without per-call cost tracking
+    if (cost === 0 && c.totalTokens > 0) {
+      const input = Math.round(c.totalTokens * 0.7);
+      const output = c.totalTokens - input;
+      cost = (input / 1_000_000) * 3 + (output / 1_000_000) * 15;
+    }
+    if (costToday === 0 && c.tokensToday > 0) {
+      const input = Math.round(c.tokensToday * 0.7);
+      const output = c.tokensToday - input;
+      costToday = (input / 1_000_000) * 3 + (output / 1_000_000) * 15;
+    }
 
     return {
       totalTokens: c.totalTokens,
-      promptTokens: input,
-      completionTokens: output,
+      promptTokens: c.promptTokens || Math.round(c.totalTokens * 0.7),
+      completionTokens: c.completionTokens || (c.totalTokens - Math.round(c.totalTokens * 0.7)),
       requestCount: c.requestCount,
       toolCalls: c.toolCalls,
       tokensToday: c.tokensToday,
       requestsToday: c.requestsToday,
       toolCallsToday: c.toolCallsToday,
-      estimatedCost: Math.round(estimatedCost * 10000) / 10000,
+      estimatedCost: Math.round(cost * 10000) / 10000,
+      costToday: Math.round(costToday * 10000) / 10000,
     };
   }
 
@@ -245,9 +274,12 @@ export class AgentMetricsCollector {
   }
 
   private computeTokenUsageFromCounters(c: AuditCounters): TokenUsage {
-    const input = Math.round(c.totalTokens * 0.7);
-    const output = c.totalTokens - input;
-    const cost = (input / 1_000_000) * 3 + (output / 1_000_000) * 15;
+    const input = c.promptTokens || Math.round(c.totalTokens * 0.7);
+    const output = c.completionTokens || (c.totalTokens - input);
+    let cost = c.estimatedCost;
+    if (cost === 0 && c.totalTokens > 0) {
+      cost = (input / 1_000_000) * 3 + (output / 1_000_000) * 15;
+    }
     return { input, output, cost: Math.round(cost * 10000) / 10000 };
   }
 

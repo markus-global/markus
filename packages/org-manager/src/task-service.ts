@@ -2133,6 +2133,9 @@ export class TaskService {
       ],
       allowFreeform: true,
     }).then(result => {
+      const current = this.tasks.get(task.id);
+      if (!current || current.status !== 'review') return;
+
       if (result.approved) {
         this.updateTaskStatus(task.id, 'completed', task.reviewerId, false, false, 'human', 'Review approved');
       } else {
@@ -2417,6 +2420,7 @@ export class TaskService {
   getDashboard(orgId?: string): {
     statusCounts: Record<TaskStatus, number>;
     totalTasks: number;
+    stuckBlockedCount: number;
     agentWorkload: Array<{
       agentId: string;
       agentName?: string;
@@ -2442,6 +2446,12 @@ export class TaskService {
       archived: 0,
     };
     for (const t of tasks) statusCounts[t.status]++;
+
+    // Stuck blocked = blocked but all dependencies satisfied (or no dependencies at all).
+    // Normal blocked tasks (waiting on unfinished deps) are expected in DAG workflows.
+    const stuckBlockedCount = tasks.filter(
+      t => t.status === 'blocked' && this.areBlockersSatisfied(t)
+    ).length;
 
     const agentMap = new Map<string, { active: number; completed: number }>();
     for (const t of tasks) {
@@ -2483,6 +2493,7 @@ export class TaskService {
     return {
       statusCounts,
       totalTasks: tasks.length,
+      stuckBlockedCount,
       agentWorkload,
       recentActivity,
       averageCompletionTimeMs,

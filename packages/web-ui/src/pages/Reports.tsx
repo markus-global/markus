@@ -100,6 +100,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
 
   const totalCost = agents.reduce((s, a) => s + a.estimatedCost, 0);
   const totalTokensToday = agents.reduce((s, a) => s + a.tokensUsedToday, 0);
+  const totalCostToday = agents.reduce((s, a) => s + (a.costToday ?? 0), 0);
   const maxAgentTokens = Math.max(1, ...agents.map(a => a.totalTokens));
 
   const handleSort = (col: typeof sortBy) => {
@@ -382,11 +383,13 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
 
         {/* Generate Tab Content */}
         {tab === 'generate' && usageSummary && (
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className={`grid gap-4 ${usageSummary.storageBytes > 0 ? 'grid-cols-2 lg:grid-cols-4' : 'grid-cols-3'}`}>
             <UsageCard label={t('usage.llmTokens')} value={formatNumber(usageSummary.llmTokens)} color="text-brand-500" />
             <UsageCard label={t('usage.toolCalls')} value={formatNumber(usageSummary.toolCalls)} color="text-blue-600" />
             <UsageCard label={t('usage.messages')} value={formatNumber(usageSummary.messages)} color="text-green-600" />
-            <UsageCard label={t('usage.storage')} value={formatBytes(usageSummary.storageBytes)} color="text-amber-600" />
+            {usageSummary.storageBytes > 0 && (
+              <UsageCard label={t('usage.storage')} value={formatBytes(usageSummary.storageBytes)} color="text-amber-600" />
+            )}
           </div>
         )}
 
@@ -418,7 +421,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* Cost Summary */}
             <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
               <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('costOverview.title')}</h3>
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="grid grid-cols-3 gap-4">
                 <div>
                   <div className="text-2xl font-bold text-fg-primary">{formatCost(totalCost)}</div>
                   <div className="text-xs text-fg-tertiary">{t('costOverview.estCostAllTime')}</div>
@@ -427,18 +430,10 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
                   <div className="text-2xl font-bold text-fg-primary">{formatNumber(totalTokensToday)}</div>
                   <div className="text-xs text-fg-tertiary">{t('costOverview.tokensToday')}</div>
                 </div>
-                {report.costSummary && (
-                  <>
-                    <div>
-                      <div className="text-2xl font-bold text-fg-primary">{report.costSummary.totalTokens.toLocaleString()}</div>
-                      <div className="text-xs text-fg-tertiary">{t('costOverview.tokensPeriod', { period: periodLabel[period] })}</div>
-                    </div>
-                    <div>
-                      <div className="text-2xl font-bold text-fg-primary">{formatCost(report.costSummary.totalEstimatedCost)}</div>
-                      <div className="text-xs text-fg-tertiary">{t('costOverview.costPeriod', { period: periodLabel[period] })}</div>
-                    </div>
-                  </>
-                )}
+                <div>
+                  <div className="text-2xl font-bold text-fg-primary">{formatCost(totalCostToday)}</div>
+                  <div className="text-xs text-fg-tertiary">{t('costOverview.costToday')}</div>
+                </div>
               </div>
             </section>
 

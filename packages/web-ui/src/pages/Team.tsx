@@ -723,9 +723,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   // Resizable chat left sidebar
   const chatSidebar = useResizablePanel({
     side: 'left',
-    defaultWidth: 224,
-    minWidth: 160,
-    maxWidth: 360,
+    defaultWidth: 400,
+    minWidth: 340,
+    maxWidth: 500,
     storageKey: 'markus_chat_sidebar',
   });
 
@@ -798,6 +798,27 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     }
     return () => { if (streamingTimerRef.current) clearTimeout(streamingTimerRef.current); };
   }, [sending]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Safety net: if the agent is no longer "working" but `sending` is still true,
+  // the SSE stream may have stalled (done event lost, connection silently dead, etc.).
+  // Force-end the streaming state after a grace period.
+  useEffect(() => {
+    if (!sending || chatMode !== 'direct' || !selectedAgent) return;
+    const agent = agents.find(a => a.id === selectedAgent);
+    if (!agent || agent.status === 'working') return;
+    const timer = setTimeout(() => {
+      if (!sendingConvs.current.has(currentConvKeyRef.current)) return;
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+      const key = currentConvKeyRef.current;
+      sendingConvs.current.delete(key);
+      actBuffers.current.delete(key);
+      setSending(false);
+      setActivities([]);
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [sending, chatMode, selectedAgent, agents]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [activities, setActivities] = useState<ActivityStep[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -2001,15 +2022,20 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         // remains visible) while we recover the reply from the DB.
         await pollForReply(5, 3000);
       }
-    }
 
-    // Clear abort controller and sending state for this conv
-    abortControllerRef.current = null;
-    sendingConvs.current.delete(sendKey);
-    actBuffers.current.delete(sendKey);
-    if (currentConvKeyRef.current === sendKey) {
-      setSending(false);
-      setActivities([]);
+      // Only clean up if this invocation is still the active sender.
+      // When a newer send() has taken over (user interrupted), abortControllerRef
+      // already points to the new controller — skip cleanup to avoid killing
+      // the new stream's state.
+      if (abortControllerRef.current === abortCtrl || abortControllerRef.current === null) {
+        abortControllerRef.current = null;
+        sendingConvs.current.delete(sendKey);
+        actBuffers.current.delete(sendKey);
+        if (currentConvKeyRef.current === sendKey) {
+          setSending(false);
+          setActivities([]);
+        }
+      }
     }
   };
   sendRef.current = send;

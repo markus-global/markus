@@ -13,7 +13,7 @@
     "thisMonth": "This Month"
   },
   "usage": {
-    "llmTokens": "LLM Tokens (this month)",
+    "llmTokens": "LLM Tokens (all time)",
     "toolCalls": "Tool Calls (today)",
     "messages": "Messages (today)",
     "storage": "Storage"
@@ -30,8 +30,7 @@
     "title": "Cost Overview",
     "estCostAllTime": "Est. Cost (all time)",
     "tokensToday": "Tokens Today",
-    "tokensPeriod": "Tokens ({{period}})",
-    "costPeriod": "Cost ({{period}})",
+    "costToday": "Cost Today",
     "totalTokens": "Total Tokens",
     "estimatedCost": "Estimated Cost",
     "trend": "Trend",

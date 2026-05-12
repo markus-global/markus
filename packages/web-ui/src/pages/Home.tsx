@@ -10,13 +10,13 @@ const SHOW_HERO_BANNER = false;
 
 const DONUT_COLORS: Record<string, string> = {
   completed: '#22c55e', in_progress: '#8b5cf6', review: '#3b82f6',
-  pending: '#f59e0b', failed: '#ef4444', blocked: '#f87171',
+  pending: '#f59e0b', failed: '#ef4444', blocked: '#f59e0b',
   rejected: '#fb7185', cancelled: '#6b7280',
 };
 
 const STATUS_COLORS_BG: Record<string, string> = {
   completed: 'bg-green-500', in_progress: 'bg-brand-500', review: 'bg-blue-500',
-  pending: 'bg-amber-500', failed: 'bg-red-500', blocked: 'bg-red-400',
+  pending: 'bg-amber-500', failed: 'bg-red-500', blocked: 'bg-amber-500',
   rejected: 'bg-rose-400', cancelled: 'bg-gray-500',
 };
 
@@ -97,7 +97,15 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
 
   const allRankedAgents = useMemo(() => {
     if (!ops) return [];
-    return [...ops.agentEfficiency].sort((a, b) => b.healthScore - a.healthScore);
+    const rankScore = (a: typeof ops.agentEfficiency[0]) => {
+      const tasks = a.taskMetrics.completed + a.taskMetrics.failed;
+      // Health score is modulated by activity: without actual work,
+      // an agent only gets 30% credit for its health score.
+      // Reaches full credit at 3+ completed/failed tasks.
+      const activityWeight = 0.3 + 0.7 * Math.min(1, tasks / 3);
+      return a.healthScore * activityWeight + a.taskMetrics.completed * 0.5;
+    };
+    return [...ops.agentEfficiency].sort((a, b) => rankScore(b) - rankScore(a));
   }, [ops]);
 
   const completionRate = totalRootTasks > 0 ? Math.round((completed / totalRootTasks) * 100) : 0;
@@ -237,6 +245,13 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                     ))}
                   </div>
                 </div>
+                {ops && (ops.taskKPI.stuckBlockedCount ?? 0) > 0 && (
+                  <div className="mt-3 flex items-center gap-2 px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-xl text-xs text-red-400"
+                    onClick={e => { e.stopPropagation(); navBus.navigate(PAGE.WORK, { filter: 'blocked' }); }}>
+                    <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse shrink-0" />
+                    {t('taskOverview.stuckBlocked', { count: ops.taskKPI.stuckBlockedCount })}
+                  </div>
+                )}
               </div>
             )}
 
@@ -383,7 +398,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                   <HealthRow label={t('systemHealth.successRate')} value={ops.taskKPI.successRate} max={100} suffix="%" />
                   <HealthRow label={t('systemHealth.activeTotal')} value={activeAgents} max={agents.length || 1} suffix={`/${agents.length}`} />
                   <HealthRow label={t('systemHealth.tokenUsage')} value={totalTokens} max={totalTokens || 1} displayValue={fmtNumber(totalTokens)} alwaysGreen />
-                  <HealthRow label={t('systemHealth.workingNow')} value={workingAgents} max={agents.length || 1} suffix={`/${agents.length}`} />
+                  <HealthRow label={t('systemHealth.workingNow')} value={workingAgents} max={agents.length || 1} suffix={`/${agents.length}`} neutral />
                 </div>
 
                 {ops.systemHealth.criticalAgents.length > 0 && (
@@ -621,7 +636,7 @@ function DonutLegendItem({ color, label, count }: { color: string; label: string
 
 const ACTIVITY_ICON_BG: Record<string, string> = {
   completed: 'bg-green-500/15', in_progress: 'bg-brand-500/15', pending: 'bg-amber-500/15',
-  review: 'bg-blue-500/15', failed: 'bg-red-500/15', blocked: 'bg-red-500/15',
+  review: 'bg-blue-500/15', failed: 'bg-red-500/15', blocked: 'bg-amber-500/15',
   rejected: 'bg-red-500/15', cancelled: 'bg-gray-500/15',
 };
 
@@ -629,7 +644,7 @@ function ActivityIcon({ status }: { status: string }) {
   const sz = 12;
   const colorMap: Record<string, string> = {
     completed: '#22c55e', in_progress: '#8b5cf6', pending: '#f59e0b',
-    review: '#3b82f6', failed: '#ef4444', blocked: '#ef4444', rejected: '#ef4444', cancelled: '#6b7280',
+    review: '#3b82f6', failed: '#ef4444', blocked: '#f59e0b', rejected: '#ef4444', cancelled: '#6b7280',
   };
   const color = colorMap[status] ?? '#6b7280';
   return (
@@ -658,12 +673,12 @@ function formatRelativeTime(dateStr: string, t: TFunction): string {
 
 // ─── Health Row ──────────────────────────────────────────────────────────────
 
-function HealthRow({ label, value, max, suffix, displayValue, alwaysGreen }: {
-  label: string; value: number; max: number; suffix?: string; displayValue?: string; alwaysGreen?: boolean;
+function HealthRow({ label, value, max, suffix, displayValue, alwaysGreen, neutral }: {
+  label: string; value: number; max: number; suffix?: string; displayValue?: string; alwaysGreen?: boolean; neutral?: boolean;
 }) {
   const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
-  const barColor = alwaysGreen ? 'bg-brand-500' : pct >= 80 ? 'bg-green-500' : pct >= 50 ? 'bg-amber-500' : 'bg-red-500';
-  const textColor = alwaysGreen ? 'text-brand-400' : pct >= 80 ? 'text-green-500' : pct >= 50 ? 'text-amber-500' : 'text-red-500';
+  const barColor = neutral ? 'bg-blue-500' : alwaysGreen ? 'bg-brand-500' : pct >= 80 ? 'bg-green-500' : pct >= 50 ? 'bg-amber-500' : 'bg-red-500';
+  const textColor = neutral ? 'text-blue-400' : alwaysGreen ? 'text-brand-400' : pct >= 80 ? 'text-green-500' : pct >= 50 ? 'text-amber-500' : 'text-red-500';
 
   return (
     <div>

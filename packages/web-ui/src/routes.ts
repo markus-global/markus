@@ -80,12 +80,14 @@ export const PAGE_ICONS: Record<string, string> = {
 // ── Desktop sidebar structure ───────────────────────────────────────────────
 
 export const SIDEBAR_SECTIONS = [
+  { key: 'quick',     label: 'QUICK' },
   { key: 'workspace', label: 'WORKSPACE' },
   { key: 'build',     label: 'BUILD' },
   { key: 'system',    label: 'SYSTEM' },
 ] as const;
 
 export const SIDEBAR_NAV: Array<{ id: PageId; label: string; section: string }> = [
+  { id: PAGE.NOTIFICATIONS, label: 'Notifications', section: 'quick' },
   { id: PAGE.HOME,         label: 'Home',         section: 'workspace' },
   { id: PAGE.TEAM,         label: 'Team',         section: 'workspace' },
   { id: PAGE.WORK,         label: 'Work',         section: 'workspace' },
