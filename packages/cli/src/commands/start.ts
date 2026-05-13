@@ -53,7 +53,7 @@ import {
 } from '@markus/org-manager';
 import { MessageRouter, FeishuAdapter, WebUIAdapter } from '@markus/comms';
 import { initStartupLogger, startupLog, startupBlank, startupSection, closeStartupLogger, getStartupLogFile } from '../utils/logger.js';
-import { openBrowser } from '../utils/browser.js';
+import { openBrowserAfterHealthCheck } from '../utils/browser.js';
 import { StartupProgress } from '../utils/startupProgress.js';
 
 const log = createLogger('cli');
@@ -1412,14 +1412,11 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   const logFileName = logFile.split('/').pop() ?? logFile;
   const uiUrl = `http://localhost:${apiPort}`;
 
-  // Auto-open browser (skip if NO_BROWSER env var is set)
+  progress.finish(uiUrl);
+
+  // Auto-open browser after health check confirms the server is ready
   if (!process.env['NO_BROWSER'] && webUiDir) {
-    progress.finish(uiUrl);
-    setTimeout(() => {
-      openBrowser(uiUrl);
-    }, 500);
-  } else {
-    progress.finish(uiUrl);
+    openBrowserAfterHealthCheck(uiUrl, `${uiUrl}/api/health`);
   }
 
   // Non-blocking update check — runs after startup, never blocks or throws
