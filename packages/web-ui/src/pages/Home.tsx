@@ -337,7 +337,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                   {agents.filter(a => a.status === 'working').map(a => (
                     <div key={a.id}
                       className="flex items-center gap-2 px-2.5 py-2 rounded-xl bg-surface-elevated/30 hover:bg-surface-elevated/60 cursor-pointer transition-colors"
-                      onClick={() => navBus.navigate(PAGE.TEAM, { agentId: a.id, profileTab: 'mind' })}
+                      onClick={() => navBus.navigate(PAGE.TEAM, { agentId: a.id, profileTab: 'overview' })}
                     >
                       <Avatar name={a.name} avatarUrl={(a as any).avatarUrl} size={22} bgClass="bg-brand-600/40 text-brand-300" />
                       <div className="flex-1 min-w-0">

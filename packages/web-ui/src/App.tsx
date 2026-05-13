@@ -36,8 +36,8 @@ export function App() {
   const theme = useTheme();
   const sidebar = useResizablePanel({
     side: 'left',
-    defaultWidth: 180,
-    minWidth: 180,
+    defaultWidth: 160,
+    minWidth: 140,
     maxWidth: 400,
     collapsedWidth: 64,
     storageKey: 'markus_sidebar',
@@ -163,7 +163,7 @@ export function App() {
         [PAGE.HOME]: <HomePage authUser={currentUser} />,
         [PAGE.TEAM]: <TeamPage authUser={currentUser} />,
         [PAGE.BUILDER]: <MobileBuilderTabs authUser={currentUser} />,
-        [PAGE.SETTINGS]: <MobileSettingsTabs theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} />,
+        [PAGE.SETTINGS]: <MobileSettingsTabs theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} onLogout={() => setAuthUser(null)} onUserUpdated={(u) => setAuthUser(u)} />,
         [PAGE.WORK]: <WorkPage authUser={currentUser} />,
         [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
         [PAGE.NOTIFICATIONS]: <NotificationsPage authUser={currentUser} />,
@@ -172,7 +172,7 @@ export function App() {
     return {
       [PAGE.HOME]: <HomePage authUser={currentUser} />,
       [PAGE.TEAM]: <TeamPage authUser={currentUser} />,
-      [PAGE.SETTINGS]: <Settings theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} />,
+      [PAGE.SETTINGS]: <Settings theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} onLogout={() => setAuthUser(null)} onUserUpdated={(u) => setAuthUser(u)} />,
       [PAGE.STORE]: <StorePage authUser={currentUser} />,
       [PAGE.BUILDER]: <AgentBuilder authUser={currentUser} />,
       [PAGE.WORK]: <WorkPage authUser={currentUser} />,
@@ -263,21 +263,17 @@ export function App() {
               currentPage={page}
               onNavigate={(p) => { navigate(p); setSidebarOpen(false); }}
               authUser={authUser}
-              onLogout={() => setAuthUser(null)}
-              onUserUpdated={(u) => setAuthUser(u)}
               collapsed={sidebar.collapsed}
               onToggleCollapse={sidebar.toggle}
             />
           </div>
 
-          {!sidebar.collapsed && (
-            <div
-              className="w-1 cursor-col-resize shrink-0 group relative z-10"
-              onMouseDown={sidebar.onResizeStart}
-            >
-              <div className="absolute inset-y-0 -left-0.5 -right-0.5 group-hover:bg-brand-500/30 group-active:bg-brand-500/50 transition-colors" />
-            </div>
-          )}
+          <div
+            className={`${sidebar.collapsed ? 'w-px' : 'w-px cursor-col-resize'} bg-border-default shrink-0 group relative z-10`}
+            onMouseDown={sidebar.collapsed ? undefined : sidebar.onResizeStart}
+          >
+            {!sidebar.collapsed && <div className="absolute inset-y-0 -left-1 -right-1 group-hover:bg-brand-500/20 group-active:bg-brand-500/40 transition-colors" />}
+          </div>
         </>
       )}
 

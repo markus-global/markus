@@ -101,17 +101,20 @@ export function TeamDetailPanel({
   return (
     <>
       <div
-        className="bg-surface-secondary/60 border-r border-border-default flex flex-col shrink-0"
+        className="bg-surface-secondary/60 flex flex-col shrink-0"
         style={width != null ? { width } : { width: 260 }}
       >
         {/* Header */}
         <div className="px-3 h-14 flex items-center gap-2 border-b border-border-default shrink-0">
           <button
             onClick={onBack}
-            className="w-7 h-7 flex items-center justify-center text-fg-secondary hover:text-fg-primary rounded-md hover:bg-white/[0.08] transition-colors shrink-0"
+            className="w-8 h-8 flex items-center justify-center rounded-lg bg-brand-500/15 text-brand-500 transition-colors shrink-0"
             title={t('common:back', { defaultValue: 'Back' })}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+              <line x1="9" y1="3" x2="9" y2="21" />
+            </svg>
           </button>
           <div className="flex-1 min-w-0">
             <div className="truncate font-semibold text-sm">{team.name}</div>
@@ -252,10 +255,10 @@ export function TeamDetailPanel({
       {/* Resize handle */}
       {onResizeStart && (
         <div
-          className="w-1 cursor-col-resize shrink-0 group relative"
+          className="w-px bg-border-default cursor-col-resize shrink-0 group relative"
           onMouseDown={onResizeStart}
         >
-          <div className="absolute inset-y-0 -left-0.5 -right-0.5 group-hover:bg-brand-500/30 group-active:bg-brand-500/50 transition-colors" />
+          <div className="absolute inset-y-0 -left-1 -right-1 group-hover:bg-brand-500/20 group-active:bg-brand-500/40 transition-colors" />
         </div>
       )}
 

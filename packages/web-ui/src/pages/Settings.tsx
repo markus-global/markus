@@ -5,6 +5,7 @@ import { THEME_OPTIONS, type ThemeMode } from '../hooks/useTheme.ts';
 import { SUPPORTED_LANGUAGES } from '../i18n/index.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
+import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[] }
@@ -34,8 +35,21 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
-export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void; authUser?: AuthUser } = {}) {
+export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdated }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void; authUser?: AuthUser; onLogout?: () => void; onUserUpdated?: (u: AuthUser) => void } = {}) {
   const { t, i18n } = useTranslation(['settings', 'common']);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [showEditProfile, setShowEditProfile] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) setUserMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [userMenuOpen]);
+
   const [health, setHealth] = useState<{ status: string; version: string; agents: number } | null>(null);
   const [llm, setLlm] = useState<LLMSettings | null>(null);
   const [selectedProvider, setSelectedProvider] = useState('');
@@ -666,8 +680,52 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="px-6 h-14 flex items-center border-b border-border-default bg-surface-secondary">
-        <h2 className="text-lg font-semibold">{t('title')}</h2>
+        <h2 className="text-lg font-semibold flex-1">{t('title')}</h2>
+        {authUser && (
+          <div ref={userMenuRef} className="relative">
+            <button
+              onClick={() => setUserMenuOpen(!userMenuOpen)}
+              className="hover:ring-2 hover:ring-brand-500/50 transition-all rounded-full"
+              title={authUser.name || t('common:userPlaceholder')}
+            >
+              <Avatar name={authUser.name || t('common:userPlaceholder')} avatarUrl={authUser.avatarUrl} size={30} />
+            </button>
+            {userMenuOpen && (
+              <div className="absolute right-0 top-full mt-1 bg-surface-secondary border border-border-default rounded-xl shadow-xl z-50 overflow-hidden" style={{ minWidth: 200 }}>
+                <div className="px-4 py-3 border-b border-border-default">
+                  <div className="text-sm font-medium text-fg-primary">{authUser.name || t('common:userPlaceholder')}</div>
+                  <div className="text-xs text-fg-tertiary mt-0.5">{authUser.email || authUser.role}</div>
+                </div>
+                <div className="py-1">
+                  <button
+                    onClick={() => { setUserMenuOpen(false); setShowEditProfile(true); }}
+                    className="w-full flex items-center gap-2.5 px-4 py-2 text-sm text-fg-secondary hover:bg-surface-overlay transition-colors"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
+                    {t('common:profile.editProfile')}
+                  </button>
+                  {onLogout && (
+                    <button
+                      onClick={() => { setUserMenuOpen(false); onLogout(); }}
+                      className="w-full flex items-center gap-2.5 px-4 py-2 text-sm text-red-500 hover:bg-red-500/10 transition-colors"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
+                      {t('common:signOut', { defaultValue: 'Sign Out' })}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
+      {showEditProfile && authUser && (
+        <EditProfileModal
+          authUser={authUser}
+          onClose={() => setShowEditProfile(false)}
+          onSaved={u => { setShowEditProfile(false); onUserUpdated?.(u); }}
+        />
+      )}
 
       <div className="p-7 space-y-10 max-w-4xl">
 
@@ -2172,6 +2230,60 @@ function OrphanSection({ orphanInfo, dataDir, onPurged, formatBytes: formatBytes
         </button>
       </div>
       {result && <div className="text-xs text-fg-tertiary mt-2">{result}</div>}
+    </div>
+  );
+}
+
+function EditProfileModal({ authUser, onClose, onSaved }: { authUser: AuthUser; onClose: () => void; onSaved: (u: AuthUser) => void }) {
+  const { t } = useTranslation('common');
+  const [name, setName] = useState(authUser.name || '');
+  const [email, setEmail] = useState(authUser.email || '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [avatarUrl, setAvatarUrl] = useState(authUser.avatarUrl);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) { setError(t('profile.nameRequired')); return; }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { setError(t('profile.invalidEmail')); return; }
+    setSaving(true); setError('');
+    try {
+      const { user } = await api.auth.updateProfile(name.trim(), email.trim());
+      onSaved({ ...user, avatarUrl: avatarUrl ?? user.avatarUrl });
+    } catch { setError(t('profile.failedToSave')); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
+      <form onSubmit={submit} className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[400px] shadow-2xl" onClick={e => e.stopPropagation()}>
+        <h3 className="text-base font-semibold mb-5">{t('profile.editProfile')}</h3>
+        <div className="flex justify-center mb-5">
+          <AvatarUpload
+            currentUrl={avatarUrl}
+            name={name}
+            size={72}
+            targetType="user"
+            targetId={authUser.id}
+            onUploaded={url => setAvatarUrl(url)}
+          />
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs text-fg-tertiary font-medium mb-1">{t('profile.name')}</label>
+            <input value={name} onChange={e => setName(e.target.value)} className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none" />
+          </div>
+          <div>
+            <label className="block text-xs text-fg-tertiary font-medium mb-1">{t('profile.email')}</label>
+            <input value={email} onChange={e => setEmail(e.target.value)} type="email" className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none" />
+          </div>
+          {error && <div className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
+        </div>
+        <div className="flex justify-end gap-3 mt-5">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">{t('cancel')}</button>
+          <button type="submit" disabled={saving} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white rounded-lg">{saving ? t('saving') : t('save')}</button>
+        </div>
+      </form>
     </div>
   );
 }

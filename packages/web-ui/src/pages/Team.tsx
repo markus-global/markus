@@ -677,10 +677,10 @@ function AgentMessageBody({
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 type MainTab = 'chat' | 'profile'
-  | 'overview' | 'mind' | 'files' | 'tools' | 'skills' | 'memory' | 'heartbeat'
+  | 'overview' | 'files' | 'tools' | 'skills' | 'memory'
   | 'announcements' | 'norms' | 'settings';
 
-const AGENT_TABS: MainTab[] = ['chat', 'overview', 'mind', 'files', 'tools', 'skills', 'memory', 'heartbeat'];
+const AGENT_TABS: MainTab[] = ['chat', 'overview', 'files', 'tools', 'skills', 'memory'];
 const TEAM_TAB_SET: MainTab[] = ['chat', 'overview', 'announcements', 'norms', 'settings'];
 
 function tabLabel(tab: MainTab, t: TFunction): string {
@@ -779,7 +779,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   // Avatar popover in chat messages
   const [avatarPopover, setAvatarPopover] = useState<{ agentId: string; top: number; left: number } | null>(null);
 
-  const [profileDefaultTab, setProfileDefaultTab] = useState<'overview' | 'mind' | undefined>();
+  const [profileDefaultTab, setProfileDefaultTab] = useState<'overview' | undefined>();
   const [profileHighlightMailboxId, setProfileHighlightMailboxId] = useState<string | undefined>();
 
   // Inline editing for header name/description
@@ -790,7 +790,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const headerNameRef = useRef<HTMLInputElement>(null);
   const headerDescRef = useRef<HTMLInputElement>(null);
 
-  const switchToProfile = useCallback((defaultTab?: 'overview' | 'mind', highlightMailboxId?: string) => {
+  const switchToProfile = useCallback((defaultTab?: 'overview', highlightMailboxId?: string) => {
     setProfileDefaultTab(defaultTab);
     setProfileHighlightMailboxId(highlightMailboxId);
     if (isMobile) {
@@ -808,7 +808,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   }, [switchToProfile]);
   const mainTabSwipe = useSwipeTabs(mainTabsList, mainTab, handleMainTabSwipe);
 
-  const handleViewProfile = useCallback((agentId: string, opts?: { tab?: 'mind'; highlightMailboxId?: string }) => {
+  const handleViewProfile = useCallback((agentId: string, opts?: { tab?: 'overview'; highlightMailboxId?: string }) => {
     setChatMode('direct');
     setSelectedAgent(agentId);
     if (isMobile) enterMobileDetail();
@@ -1033,7 +1033,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       if (resolvePageId(detail.page) === PAGE.TEAM) {
         if (detail.params?.agentId) {
           if (detail.params.profileTab) {
-            handleViewProfile(detail.params.agentId, { tab: detail.params.profileTab as 'mind' });
+            handleViewProfile(detail.params.agentId, { tab: detail.params.profileTab as 'overview' });
           } else {
             setChatMode('direct');
             setSelectedAgent(detail.params.agentId);
@@ -1075,8 +1075,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     if (navAgent) {
       localStorage.removeItem('markus_nav_agentId');
       const pTab = localStorage.getItem('markus_nav_profileTab');
-      if (pTab) { localStorage.removeItem('markus_nav_profileTab'); handleViewProfile(navAgent, { tab: pTab as 'mind' }); }
-      else { setChatMode('direct'); setSelectedAgent(navAgent); }
+      localStorage.removeItem('markus_nav_profileTab');
+      handleViewProfile(navAgent, pTab ? { tab: pTab as 'overview' } : undefined);
     }
     const navDm = localStorage.getItem('markus_nav_dm');
     if (navDm) {
@@ -2443,7 +2443,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
             if (teamGc) { setChatMode('channel'); setActiveChannel(teamGc.channelKey); setMainTab('chat'); setShowMemberPanel(false); }
           }
         }}
-        selectedTeamId={activeTeamId ?? null}
+        selectedTeamId={activeTeamId ?? (chatMode === 'direct' && currentAgent?.teamId ? currentAgent.teamId : null)}
         onRefreshTeams={refreshTeams}
         onRefreshAgents={refreshAgents}
         onRefreshHumans={refreshHumans}
@@ -2600,13 +2600,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
             <div className="flex flex-col">
               {/* Row 1: L2 toggle + avatar + name/desc + action buttons */}
               <div className="flex items-center px-4 h-14 gap-2.5">
-                {/* L2 toggle button (before avatar, for teams and agents with a team) */}
-                {((chatMode === 'channel' && activeTeamId) || (chatMode === 'direct' && currentAgent?.teamId)) && (
+                {/* L2 toggle button (before avatar, hidden when L2 is open — the L2 panel header has the matching close button) */}
+                {!showTeamDetailPanel && ((chatMode === 'channel' && activeTeamId) || (chatMode === 'direct' && currentAgent?.teamId)) && (
                   <button
                     onClick={toggleTeamDetailPanel}
-                    className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 ${
-                      showTeamDetailPanel ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
-                    }`}
+                    className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
                     title="Toggle team panel"
                   >
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -3156,7 +3154,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                 <div
                   key={ta.id}
                   className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg cursor-pointer hover:bg-surface-elevated/60 transition-colors group/think"
-                  onClick={() => handleViewProfile(ta.id, { tab: 'mind' })}
+                  onClick={() => handleViewProfile(ta.id, { tab: 'overview' })}
                 >
                   <div className="relative shrink-0">
                     <Avatar name={ta.name} avatarUrl={ta.avatarUrl} size={28} bgClass="bg-brand-500/15 text-brand-600" />
@@ -3332,7 +3330,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   );
 }
 
-function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; tasks: TaskInfo[]; onViewProfile?: (agentId: string, opts?: { tab?: 'mind' }) => void }) {
+function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; tasks: TaskInfo[]; onViewProfile?: (agentId: string, opts?: { tab?: 'overview' }) => void }) {
   const { t } = useTranslation(['team', 'common']);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -3467,7 +3465,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
             </div>
           )}
           <button
-            onClick={() => { setOpen(false); onViewProfile?.(agent.id, { tab: 'mind' }); }}
+            onClick={() => { setOpen(false); onViewProfile?.(agent.id, { tab: 'overview' }); }}
             className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1.5 transition-colors"
           >
             {t('page.viewMindArrow')}

@@ -841,7 +841,7 @@ export function ChatTeamSidebar({
 
   return (
     <>
-      <div className={`bg-surface-secondary/60 border-r border-border-default flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'}`} style={hidden ? { display: 'none' } : width != null ? { width } : undefined}>
+      <div className={`bg-surface-secondary/60 flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'}`} style={hidden ? { display: 'none' } : width != null ? { width } : undefined}>
         {/* Header with title + pause toggle */}
         <div className="px-4 h-14 flex items-center border-b border-border-default shrink-0">
           <h2 className="text-lg font-semibold">{t('chat.title')}</h2>
@@ -1112,10 +1112,10 @@ export function ChatTeamSidebar({
       {/* Resize handle */}
       {onResizeStart && (
         <div
-          className="w-1 cursor-col-resize shrink-0 group relative"
+          className="w-px bg-border-default cursor-col-resize shrink-0 group relative"
           onMouseDown={onResizeStart}
         >
-          <div className="absolute inset-y-0 -left-0.5 -right-0.5 group-hover:bg-brand-500/30 group-active:bg-brand-500/50 transition-colors" />
+          <div className="absolute inset-y-0 -left-1 -right-1 group-hover:bg-brand-500/20 group-active:bg-brand-500/40 transition-colors" />
         </div>
       )}
 
