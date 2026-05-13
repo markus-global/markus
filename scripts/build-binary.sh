@@ -260,17 +260,26 @@ if [ -f "$MARKUS_DIR/bin/tray.mjs" ]; then
   fi
 fi
 
-# Fallback: start server directly + open browser
+# Fallback: start server directly + open browser after health check
 "$NODE" "$MARKUS_DIR/bin/markus.mjs" start \
   >> "$LOG_DIR/stdout.log" 2>> "$LOG_DIR/stderr.log" &
 SERVER_PID=$!
-sleep 3
-if kill -0 "$SERVER_PID" 2>/dev/null; then
-  open "http://localhost:$PORT"
-else
-  osascript -e 'display dialog "Markus failed to start.\nCheck logs at ~/.markus/logs/" with title "Markus" buttons {"OK"} default button "OK" with icon stop'
-  exit 1
-fi
+
+TRIES=0
+MAX_TRIES=60
+while [ $TRIES -lt $MAX_TRIES ]; do
+  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    osascript -e 'display dialog "Markus failed to start.\nCheck logs at ~/.markus/logs/" with title "Markus" buttons {"OK"} default button "OK" with icon stop'
+    exit 1
+  fi
+  if curl -s --max-time 2 -o /dev/null "http://localhost:$PORT/api/health" 2>/dev/null; then
+    open "http://localhost:$PORT"
+    break
+  fi
+  sleep 0.5
+  TRIES=$((TRIES + 1))
+done
+
 wait "$SERVER_PID"
 LAUNCH_SCRIPT
   chmod +x "$APP_DIR/Contents/MacOS/launch"

@@ -7,6 +7,7 @@
 
 import { spawn, exec, type ChildProcess } from 'node:child_process';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { get as httpGet } from 'node:http';
 import { createConnection } from 'node:net';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -75,6 +76,33 @@ function isPortListening(port: number): Promise<boolean> {
   });
 }
 
+function waitForHealth(url: string, intervalMs = 500, maxMs = 30000): Promise<boolean> {
+  return new Promise((ok) => {
+    const deadline = Date.now() + maxMs;
+    const check = () => {
+      const req = httpGet(url, (res) => {
+        res.resume();
+        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 400) {
+          ok(true);
+        } else if (Date.now() >= deadline) {
+          ok(false);
+        } else {
+          setTimeout(check, intervalMs);
+        }
+      });
+      req.on('error', () => {
+        if (Date.now() >= deadline) {
+          ok(false);
+        } else {
+          setTimeout(check, intervalMs);
+        }
+      });
+      req.setTimeout(2000, () => { req.destroy(); });
+    };
+    check();
+  });
+}
+
 async function startServer(): Promise<void> {
   if (serverRunning) return;
 
@@ -113,10 +141,10 @@ async function startServer(): Promise<void> {
     console.error('Failed to start Markus server:', err.message);
   });
 
-  // Auto-open browser after a short delay
-  setTimeout(() => {
-    if (serverRunning) openBrowser(WEB_UI_URL);
-  }, 3000);
+  // Wait for backend health check before opening browser
+  waitForHealth(`${WEB_UI_URL}/api/health`).then((ok) => {
+    if (ok && serverRunning) openBrowser(WEB_UI_URL);
+  });
 }
 
 function stopServer(): void {
