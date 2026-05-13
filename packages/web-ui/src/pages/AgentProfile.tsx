@@ -123,7 +123,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
 
   return (
     <div className="flex-1 overflow-y-auto bg-surface-primary">
-      <div className="px-5 py-3.5 border-b border-border-default bg-surface-secondary sticky top-0 z-10">
+      <div className="px-5 py-3.5 bg-surface-secondary sticky top-0 z-10">
         <div className="flex items-center gap-3">
           <Avatar name={agent.name} avatarUrl={agent.avatarUrl} size={40} className="rounded-xl" />
           <div className="flex-1 min-w-0">
@@ -282,7 +282,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
         <Card title={t('agent:profilePage.overview.syncContextTitle')}>
           <div className="space-y-1.5">
             {SYNC_CONTEXT_FIELDS.map(f => (
-              <div key={f.field} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
+              <div key={f.field} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated">
                 <span className="font-mono text-[10px] text-brand-500 shrink-0 pt-0.5">{f.field}</span>
                 <span className="text-[10px] text-fg-tertiary">{f.desc}</span>
               </div>
@@ -293,7 +293,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
         <Card title={t('agent:profilePage.overview.gatewayEndpoints')}>
           <div className="space-y-1.5">
             {GATEWAY_ENDPOINTS.map(ep => (
-              <div key={ep.path} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
+              <div key={ep.path} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated">
                 <span className={`text-[10px] font-semibold shrink-0 pt-0.5 ${ep.method === 'POST' ? 'text-amber-600' : 'text-green-600'}`}>{ep.method}</span>
                 <span className="font-mono text-[10px] text-fg-secondary shrink-0 pt-0.5">{ep.path}</span>
                 <span className="text-[10px] text-fg-tertiary ml-auto">{ep.desc}</span>
@@ -313,7 +313,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
   return (
     <div className="space-y-4">
       {/* Compact identity row */}
-      <div className="bg-surface-secondary/60 border border-border-default rounded-xl px-4 py-3 flex flex-wrap items-center gap-x-5 gap-y-1.5">
+      <div className="bg-surface-elevated rounded-xl px-4 py-3 flex flex-wrap items-center gap-x-5 gap-y-1.5">
         <KV label={t('agent:profilePage.overview.labels.roleTemplate')}>{agent.role}</KV>
         <KV label={t('agent:profilePage.overview.labels.agentRole')}>
           <span className={agent.agentRole === 'manager' ? 'text-amber-600' : 'text-blue-600'}>{agent.agentRole === 'manager' ? t('agent:profilePage.roles.managerDisplay') : t('agent:profilePage.roles.workerDisplay')}</span>
@@ -323,7 +323,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
       </div>
 
       {/* Runtime + Usage + Storage in a single compact card */}
-      <div className="bg-surface-secondary/60 border border-border-default rounded-xl px-4 py-3 space-y-3">
+      <div className="bg-surface-elevated rounded-xl px-4 py-3 space-y-3">
         {/* Runtime status row */}
         <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
           <div className="flex items-center gap-1.5">
@@ -611,8 +611,8 @@ function InlineDiff({ agent, template, templateId }: { agent: string; template: 
   }) : lines.map((l, i) => ({ ...l, _idx: i }));
 
   return (
-    <div className="mb-3 border border-border-default rounded-lg overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-1.5 bg-surface-elevated/80 border-b border-border-default">
+    <div className="mb-3 bg-surface-elevated rounded-lg overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-surface-elevated">
         <div className="flex items-center gap-3">
           <span className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">
             {t('agent:profilePage.diff.title', { templateId })}
@@ -906,7 +906,7 @@ function FileMarkdownEditor({ content, editContent, setEditContent, dirty, onSav
   }
   return (
     <div
-      className="group relative cursor-pointer rounded-lg px-4 py-3 bg-surface-elevated/30 border border-border-default hover:border-border-default/80 transition-colors min-h-[200px]"
+      className="group relative cursor-pointer rounded-lg px-4 py-3 bg-surface-elevated hover:bg-surface-overlay transition-colors min-h-[200px]"
       onClick={() => setEditing(true)}
       role="button"
       tabIndex={0}
@@ -992,7 +992,7 @@ function ToolsTab({ tools }: { tools: AgentToolInfo[] }) {
             {g.tools.map(tool => {
               const { displayName, mcpServer } = toolDisplayName(tool.name);
               return (
-                <div key={tool.name} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
+                <div key={tool.name} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-elevated">
                   <div className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
@@ -1673,7 +1673,7 @@ function ActivityLog({ agentId, activityId, isLive = false }: { agentId: string;
 
 function Card({ title, action, children }: { title: React.ReactNode; action?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="bg-surface-secondary/60 border border-border-default rounded-xl p-5">
+    <div className="bg-surface-elevated rounded-xl p-5">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">{title}</h3>
         {action}

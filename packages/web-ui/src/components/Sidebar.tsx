@@ -24,7 +24,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, collapsed, onToggle
   const { t } = useTranslation(['nav', 'common']);
 
   return (
-    <aside className="h-dvh bg-surface-secondary flex flex-col shrink-0 overflow-hidden">
+    <aside className="h-dvh bg-surface-secondary flex flex-col shrink-0 overflow-hidden rounded-r-2xl">
       <div className={`flex items-center ${collapsed ? 'px-2 py-3.5 justify-center' : 'px-4 h-14 justify-between'}`}>
         <button onClick={onToggleCollapse} title={collapsed ? t('sidebar.expandSidebar') : t('sidebar.collapseSidebar')} className="flex items-center gap-2.5 min-w-0 group">
           <img src="/logo.png" alt="Markus" className="w-8 h-8 rounded-lg shadow-md shadow-black/30 shrink-0 group-hover:ring-2 group-hover:ring-brand-500/40 transition-all" />
@@ -42,7 +42,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, collapsed, onToggle
                     {sectionLabel}
                   </div>
                 )}
-                {collapsed && si > 0 && <div className="my-2 mx-2 border-t border-border-subtle" />}
+                {collapsed && si > 0 && <div className="my-3" />}
                 {SIDEBAR_NAV.filter(i => i.section === section.key).map((item) => {
                   if (item.id === PAGE.NOTIFICATIONS) {
                     return (

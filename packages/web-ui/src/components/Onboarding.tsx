@@ -624,7 +624,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
   return (
     <div className="min-h-dvh bg-surface-primary flex items-center justify-center p-4">
       <div className="w-full max-w-lg">
-        <div className="bg-surface-secondary border border-border-default rounded-2xl p-8">
+        <div className="bg-surface-elevated rounded-2xl p-8">
           <div className="flex gap-1.5 mb-8">
             {steps.map((_, i) => (
               <div key={i} className={`h-1 flex-1 rounded-full transition-colors ${i <= step ? 'bg-brand-500' : 'bg-surface-elevated'}`} />

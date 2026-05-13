@@ -1186,7 +1186,7 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
   };
 
   const commentInput = (
-    <div className="border-t border-border-default px-4 py-3 sticky bottom-0 bg-surface-secondary z-10">
+    <div className="border-t border-border-default px-4 py-3 sticky bottom-0 bg-surface-primary z-10">
       {imageAttachments.length > 0 && (
         <div className="flex gap-2 mb-2 flex-wrap">
           {imageAttachments.map((att, i) => (
@@ -1810,7 +1810,7 @@ function TaskDetailPanel({
   const assignedAgent = agents.find(a => a.id === task.assignedAgentId);
 
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-surface-secondary">
+    <div className="flex flex-col h-full overflow-hidden bg-surface-primary shadow-xl shadow-black/8 ring-1 ring-border-default/20">
       {/* Header – status, title & close */}
       <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-3 border-b border-border-default shrink-0">
         <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -1836,7 +1836,7 @@ function TaskDetailPanel({
       </div>
 
         {/* Tabs — fixed at top */}
-        <div className="flex gap-1 px-6 pt-2 pb-0 border-b border-border-default shrink-0 bg-surface-secondary">
+        <div className="flex gap-1 px-6 pt-2 pb-0 shrink-0">
           <button onClick={() => switchTab('details')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'details' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>{t('work:task.detailsTab')}</button>
           <button onClick={() => switchTab('logs')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'logs' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
             {t('work:task.executionLogTab')}
@@ -2654,7 +2654,7 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
       </div>
 
       {/* Status toggle */}
-      <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
+      <div className="bg-surface-elevated rounded-xl p-4">
         <h4 className="text-xs font-semibold text-fg-secondary mb-3">{t('work:project.projectStatusHeading')}</h4>
         <div className="flex gap-2">
           {PROJECT_STATUSES.map(s => (
@@ -2678,7 +2678,7 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
       </div>
 
       {/* Task Statistics */}
-      <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
+      <div className="bg-surface-elevated rounded-xl p-4">
         <h4 className="text-xs font-semibold text-fg-secondary mb-3">{t('work:project.taskOverview')}</h4>
         <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
           <StatCard label={t('work:project.statTotal')} value={stats.total} color="text-fg-primary" />
@@ -2701,7 +2701,7 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
       </div>
 
       {/* Requirement Stats */}
-      <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
+      <div className="bg-surface-elevated rounded-xl p-4">
         <h4 className="text-xs font-semibold text-fg-secondary mb-3">{t('work:project.requirementsHeading')}</h4>
         <div className="grid grid-cols-3 gap-3">
           <StatCard label={t('work:project.statTotal')} value={stats.reqs} color="text-fg-primary" />
@@ -2712,7 +2712,7 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
 
       {/* Agents working on this project */}
       {projAgents.length > 0 && (
-        <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
+        <div className="bg-surface-elevated rounded-xl p-4">
           <h4 className="text-xs font-semibold text-fg-secondary mb-3">{t('work:project.agentsHeading', { count: projAgents.length })}</h4>
           <div className="flex flex-wrap gap-2">
             {projAgents.map(a => {
@@ -2731,7 +2731,7 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
       )}
 
       {/* Repositories */}
-      <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
+      <div className="bg-surface-elevated rounded-xl p-4">
         <div className="flex items-center justify-between mb-3">
           <h4 className="text-xs font-semibold text-fg-secondary">{t('work:project.repositories')}</h4>
           <button onClick={() => setAddRepoOpen(!addRepoOpen)} className="text-[10px] text-brand-500 hover:text-brand-500">
@@ -3181,11 +3181,11 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
   }, [rows, sortMode]);
 
   return (
-    <div className={`flex-1 min-h-0 overflow-auto bg-surface-secondary ${isMobile ? 'overflow-x-hidden w-full' : ''}`}>
+    <div className={`flex-1 min-h-0 overflow-auto bg-surface-primary ${isMobile ? 'overflow-x-hidden w-full' : ''}`}>
       <div className={isMobile ? 'w-full' : 'w-fit min-w-full'}>
       {/* Table header with integrated sort */}
       {!isMobile && (
-      <div className="flex items-center gap-2 px-6 py-2 border-b border-border-default text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider sticky top-0 z-20 bg-surface-secondary">
+      <div className="flex items-center gap-2 px-6 py-2 border-b border-border-default text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider sticky top-0 z-20 bg-surface-primary">
         <div className="w-12 shrink-0 text-fg-muted normal-case font-normal">{rows.length}</div>
         <div className="flex-1 min-w-[200px]">{t('work:task.backlogTitle')}</div>
         <button onClick={() => setSortMode('status')} className={`w-[130px] shrink-0 text-left flex items-center gap-1 transition-colors ${sortMode === 'status' ? 'text-brand-500' : 'hover:text-fg-secondary'}`}>
@@ -3208,7 +3208,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
             return (
               <div key={groupId}>
                 <div
-                  className={`flex items-center gap-2 px-6 py-2 border-l-2 bg-surface-secondary/60 sticky top-0 z-10 ${GROUP_HEADER_CLS[groupId] ?? ''} ${dragOverGroup === groupId ? 'ring-1 ring-brand-500/40' : ''}`}
+                  className={`flex items-center gap-2 px-6 py-2 border-l-2 bg-surface-primary/80 sticky top-0 z-10 ${GROUP_HEADER_CLS[groupId] ?? ''} ${dragOverGroup === groupId ? 'ring-1 ring-brand-500/40' : ''}`}
                   onDragOver={e => onGroupDragOver(e, groupId)}
                   onDragLeave={() => setDragOverGroup(null)}
                   onDrop={e => void onGroupDrop(e, groupId)}
@@ -3905,10 +3905,10 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   const dualDetail = !isMobile && !!(selectedTask && selectedReq);
 
   return (
-    <div ref={workContainerRef} className="flex-1 overflow-hidden flex bg-surface-secondary">
+    <div ref={workContainerRef} className="flex-1 overflow-hidden flex bg-surface-primary">
       {/* ── Task Board + Project Context (left panel) ── */}
       <div
-        className={`${isMobile ? 'flex-1 min-w-0' : hasDetail ? 'shrink-0 min-w-0' : 'flex-1'} overflow-hidden flex flex-col bg-surface-secondary`}
+        className={`${isMobile ? 'flex-1 min-w-0' : hasDetail ? 'shrink-0 min-w-0' : 'flex-1'} overflow-hidden flex flex-col bg-surface-primary`}
         style={isMobile ? (mobileShowDetail ? { display: 'none' } : undefined) : (dualDetail ? { width: 0 } : hasDetail ? { width: `calc(100% - ${detailPanel.width}px - 4px)` } : undefined)}
       >
         {/* Flash */}
@@ -3916,7 +3916,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
         {/* Top bar */}
         {isMobile ? (
-          <div className="border-b border-border-default bg-surface-secondary/80 shrink-0">
+          <div className="shrink-0">
             {/* Mobile Row 1: title + action buttons */}
             <div className="flex items-center gap-2 px-3 h-11">
               {selectedProject ? (
@@ -3939,7 +3939,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
               </div>
             </div>
             {/* Mobile Row 2: view toggle + filter */}
-            <div className="flex items-center gap-2 px-3 h-9 border-t border-border-default/40">
+            <div className="flex items-center gap-2 px-3 h-9">
               <div className="flex items-center border border-border-default/60 rounded-md overflow-hidden shrink-0">
                 {(['backlog', 'kanban', 'dag'] as const).map(v => (
                   <button key={v} onClick={() => setBoardType(v)}
@@ -3967,7 +3967,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
             </div>
           </div>
         ) : (
-        <div className="flex items-center gap-3 px-6 h-14 border-b border-border-default bg-surface-secondary/80 shrink-0">
+        <div className="flex items-center gap-3 px-6 h-14 shrink-0">
           {/* Project title + settings */}
           {selectedProject ? (
             <div className="flex items-center gap-1 shrink-0">
@@ -4020,7 +4020,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
         {/* Project filter bar — desktop only */}
         {!isMobile && projects.length > 1 && !selectedProjectId && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
-          <div className="px-6 py-1.5 border-b border-border-default/60 flex items-center gap-1.5 overflow-x-auto scrollbar-hide shrink-0">
+          <div className="px-6 py-1.5 flex items-center gap-1.5 overflow-x-auto scrollbar-hide shrink-0">
             <button onClick={() => setProjectFilter(new Set())}
               className={`text-[10px] text-fg-tertiary hover:text-fg-secondary px-2 py-1 rounded-md bg-surface-elevated/60 hover:bg-surface-overlay shrink-0 transition-all ${projectFilter.size > 0 ? 'visible opacity-100' : 'invisible opacity-0'}`}>{t('work:task.clear')}</button>
             {sortedProjects.map(p => {
@@ -4042,7 +4042,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
         {/* Agent filter bar — desktop only */}
         {!isMobile && (agents.length > 0 || authUser?.id) && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
-          <div className="px-6 py-1.5 border-b border-border-default/60 flex items-center gap-1.5 overflow-x-auto scrollbar-hide shrink-0">
+          <div className="px-6 py-1.5 flex items-center gap-1.5 overflow-x-auto scrollbar-hide shrink-0">
             <button type="button" onClick={() => { setAgentFilter(new Set()); setMyTasksOnly(false); }}
               className={`text-[10px] text-fg-tertiary hover:text-fg-secondary px-2 py-1 rounded-md bg-surface-elevated/60 hover:bg-surface-overlay shrink-0 transition-all ${agentFilter.size > 0 || myTasksOnly ? 'visible opacity-100' : 'invisible opacity-0'}`}>{t('work:task.clear')}</button>
             {authUser?.id && (
@@ -4136,6 +4136,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
             onDependencyChange={refreshBoard}
             selectedTaskId={selectedTask?.id}
             selectedReqId={selectedReq?.id}
+            hasDetailPanel={hasDetail}
           />
           {isMobile && (
             <button onClick={() => setBoardType('kanban')} className="absolute left-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-brand-500 border border-brand-400/60 shadow-xl shadow-brand-500/30 flex items-center justify-center text-white active:bg-brand-400 backdrop-blur-sm z-10" title={t('work:task.backToKanban')}>
@@ -4287,12 +4288,14 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
       {/* Resize handle — desktop only, when detail is open */}
       {!isMobile && hasDetail && (
-        <div className="w-1 shrink-0 cursor-col-resize bg-border-default/40 hover:bg-brand-500/30 active:bg-brand-500/50 transition-colors" onMouseDown={detailPanel.onResizeStart} />
+        <div className="w-1.5 shrink-0 cursor-col-resize group relative flex items-center justify-center" onMouseDown={detailPanel.onResizeStart}>
+          <div className="w-px h-2/3 border-l border-dashed border-transparent group-hover:border-border-default group-active:border-fg-tertiary transition-colors" />
+        </div>
       )}
 
       {/* Detail panel(s) */}
       {(!isMobile || mobileShowDetail) && hasDetail && (
-        <div className={`${isMobile ? 'flex-1' : dualDetail ? 'flex-1' : 'shrink-0'} overflow-hidden min-w-0 border-l border-border-default flex`}
+        <div className={`${isMobile ? 'flex-1' : dualDetail ? 'flex-1' : 'shrink-0'} overflow-hidden min-w-0 flex`}
           style={isMobile || dualDetail ? undefined : { width: detailPanel.width }}>
           {dualDetail ? (
             <>
@@ -4931,7 +4934,7 @@ function RequirementDetailPanel({
   useEffect(() => { setDescDraft(req.description); setEditingDesc(false); }, [req.id, req.description]);
 
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-surface-secondary">
+    <div className="flex flex-col h-full overflow-hidden bg-surface-primary shadow-xl shadow-black/8 ring-1 ring-border-default/20">
       {/* Header */}
       <div className="flex items-start justify-between gap-4 p-5 pb-0 border-b border-border-default">
         <div className="flex items-center gap-2 flex-1 min-w-0">

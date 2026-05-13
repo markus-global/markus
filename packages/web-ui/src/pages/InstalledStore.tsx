@@ -80,11 +80,11 @@ export function InstalledStore() {
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
-      <div className={`${isMobile ? 'px-4' : 'px-6'} h-14 flex items-center border-b border-border-default bg-surface-secondary shrink-0`}>
+      <div className={`${isMobile ? 'px-4' : 'px-6'} h-14 flex items-center shrink-0`}>
         <h2 className="text-lg font-semibold">{t('installedTab.title')}</h2>
       </div>
 
-      <div className={`flex flex-wrap items-center gap-2 ${isMobile ? 'px-4' : 'px-6'} py-2 border-b border-border-default/50 bg-surface-secondary/50 shrink-0`}>
+      <div className={`flex flex-wrap items-center gap-2 ${isMobile ? 'px-4' : 'px-6'} py-2 shrink-0`}>
         <div className="flex gap-1">
           {(['all', 'agent', 'team', 'skill'] as const).map(f => (
             <button

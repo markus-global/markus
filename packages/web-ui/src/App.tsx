@@ -269,10 +269,10 @@ export function App() {
           </div>
 
           <div
-            className={`${sidebar.collapsed ? 'w-px' : 'w-px cursor-col-resize'} bg-border-default shrink-0 group relative z-10`}
+            className={`${sidebar.collapsed ? 'w-0' : 'w-1.5 cursor-col-resize'} shrink-0 group relative z-10 flex items-center justify-center`}
             onMouseDown={sidebar.collapsed ? undefined : sidebar.onResizeStart}
           >
-            {!sidebar.collapsed && <div className="absolute inset-y-0 -left-1 -right-1 group-hover:bg-brand-500/20 group-active:bg-brand-500/40 transition-colors" />}
+            {!sidebar.collapsed && <div className="w-px h-2/3 border-l border-dashed border-transparent group-hover:border-border-default group-active:border-fg-tertiary transition-colors" />}
           </div>
         </>
       )}

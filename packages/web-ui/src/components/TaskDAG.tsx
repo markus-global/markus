@@ -40,15 +40,17 @@ const PRIORITY_INDICATOR: Record<string, string> = {
   low: 'bg-blue-500',
 };
 
-function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string; selected?: boolean } }) {
-  const { task, agentName, selected } = data;
+function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string; selected?: boolean; direction?: 'TB' | 'LR' } }) {
+  const { task, agentName, selected, direction = 'TB' } = data;
   const colors = STATUS_COLORS[task.status] ?? STATUS_COLORS['pending']!;
   const isSched = task.taskType === 'scheduled' && !!task.scheduleConfig;
   const schedLabel = isSched ? (task.scheduleConfig!.every ? `Every ${task.scheduleConfig!.every}` : task.scheduleConfig!.cron ? 'Cron' : '') : '';
+  const targetPos = direction === 'LR' ? Position.Left : Position.Top;
+  const sourcePos = direction === 'LR' ? Position.Right : Position.Bottom;
 
   return (
     <div className={`rounded-lg border px-3 py-2 min-w-[180px] max-w-[220px] shadow-md backdrop-blur-sm ${isSched ? `${colors.bg} border-blue-500/40 ring-1 ring-blue-500/20` : `${colors.bg} ${colors.border}`} ${selected ? 'ring-2 ring-brand-500 shadow-brand-500/25 shadow-lg' : ''}`}>
-      <Handle type="target" position={Position.Top} className="!bg-border-default !w-2 !h-2" />
+      <Handle type="target" position={targetPos} className="!bg-border-default !w-2 !h-2" />
       <div className="flex items-center gap-1.5 mb-1">
         <span className={`w-2 h-2 rounded-full shrink-0 ${PRIORITY_INDICATOR[task.priority] ?? 'bg-gray-500'}`} />
         <span className={`text-[10px] font-medium uppercase tracking-wider ${colors.text}`}>
@@ -71,7 +73,7 @@ function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string; select
           {task.blockedBy.length} dep{task.blockedBy.length > 1 ? 's' : ''}
         </div>
       )}
-      <Handle type="source" position={Position.Bottom} className="!bg-border-default !w-2 !h-2" />
+      <Handle type="source" position={sourcePos} className="!bg-border-default !w-2 !h-2" />
     </div>
   );
 }
@@ -91,12 +93,14 @@ const REQ_GROUP_MAP: Record<string, string> = {
   rejected: 'done', cancelled: 'done', archived: 'done',
 };
 
-function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: boolean } }) {
-  const { req, selected } = data;
+function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: boolean; direction?: 'TB' | 'LR' } }) {
+  const { req, selected, direction = 'TB' } = data;
   const colors = REQ_STATUS_COLORS[req.status] ?? REQ_STATUS_COLORS['pending']!;
+  const targetPos = direction === 'LR' ? Position.Left : Position.Top;
+  const sourcePos = direction === 'LR' ? Position.Right : Position.Bottom;
   return (
     <div className={`rounded-lg border-2 border-dashed px-3 py-2 min-w-[180px] max-w-[220px] shadow-lg ${colors.bg} ${colors.border} ${selected ? 'ring-2 ring-brand-500 shadow-brand-500/25' : ''}`}>
-      <Handle type="target" position={Position.Top} className="!bg-border-default !w-2 !h-2" />
+      <Handle type="target" position={targetPos} className="!bg-border-default !w-2 !h-2" />
       <div className="flex items-center gap-1.5 mb-1">
         <span className="text-[9px] px-1 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-600">REQ</span>
         <span className={`text-[10px] font-medium uppercase tracking-wider ${colors.text}`}>
@@ -111,7 +115,7 @@ function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: bo
           {req.taskIds.length} task{req.taskIds.length > 1 ? 's' : ''}
         </div>
       )}
-      <Handle type="source" position={Position.Bottom} className="!bg-border-default !w-2 !h-2" />
+      <Handle type="source" position={sourcePos} className="!bg-border-default !w-2 !h-2" />
     </div>
   );
 }
@@ -139,17 +143,35 @@ function useIsLight() { return useSyncExternalStore(subscribeLightMode, isLightS
 const NODE_WIDTH = 200;
 const NODE_HEIGHT = 80;
 
-function layoutSingleComponent(nodes: Node[], edges: Edge[], direction: 'TB' | 'LR' = 'TB'): Node[] {
-  const g = new dagre.graphlib.Graph();
-  g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: direction, nodesep: 40, ranksep: 60 });
-  for (const node of nodes) g.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
-  for (const edge of edges) g.setEdge(edge.source, edge.target);
-  dagre.layout(g);
-  return nodes.map(node => {
-    const pos = g.node(node.id);
-    return { ...node, position: { x: (pos?.x ?? 0) - NODE_WIDTH / 2, y: (pos?.y ?? 0) - NODE_HEIGHT / 2 } };
-  });
+function layoutSingleComponent(nodes: Node[], edges: Edge[], direction: 'TB' | 'LR' = 'TB'): { nodes: Node[]; direction: 'TB' | 'LR' } {
+  const doLayout = (dir: 'TB' | 'LR') => {
+    const g = new dagre.graphlib.Graph();
+    g.setDefaultEdgeLabel(() => ({}));
+    g.setGraph({ rankdir: dir, nodesep: 40, ranksep: 60 });
+    for (const node of nodes) g.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
+    for (const edge of edges) g.setEdge(edge.source, edge.target);
+    dagre.layout(g);
+    return nodes.map(node => {
+      const pos = g.node(node.id);
+      return { ...node, position: { x: (pos?.x ?? 0) - NODE_WIDTH / 2, y: (pos?.y ?? 0) - NODE_HEIGHT / 2 } };
+    });
+  };
+
+  const result = doLayout(direction);
+  if (edges.length > 0 && nodes.length > 4) {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const n of result) {
+      minX = Math.min(minX, n.position.x);
+      maxX = Math.max(maxX, n.position.x + NODE_WIDTH);
+      minY = Math.min(minY, n.position.y);
+      maxY = Math.max(maxY, n.position.y + NODE_HEIGHT);
+    }
+    const w = maxX - minX;
+    const h = maxY - minY;
+    const flipped = direction === 'TB' ? 'LR' : 'TB';
+    if (w > h * 3) return { nodes: doLayout(flipped), direction: flipped };
+  }
+  return { nodes: result, direction };
 }
 
 function findConnectedComponents(nodes: Node[], edges: Edge[]): { nodes: Node[]; edges: Edge[] }[] {
@@ -183,13 +205,15 @@ function findConnectedComponents(nodes: Node[], edges: Edge[]): { nodes: Node[];
   return components;
 }
 
-function layoutNodes(nodes: Node[], edges: Edge[]): Node[] {
-  if (nodes.length === 0) return [];
+function layoutNodes(nodes: Node[], edges: Edge[]): { nodes: Node[]; direction: 'TB' | 'LR' } {
+  if (nodes.length === 0) return { nodes: [], direction: 'TB' };
   const components = findConnectedComponents(nodes, edges);
   if (components.length === 1) return layoutSingleComponent(nodes, edges);
 
+  let resolvedDir: 'TB' | 'LR' = 'TB';
   const laid: { nodes: Node[]; w: number; h: number }[] = components.map(c => {
-    const laidNodes = layoutSingleComponent(c.nodes, c.edges);
+    const { nodes: laidNodes, direction: dir } = layoutSingleComponent(c.nodes, c.edges);
+    resolvedDir = dir;
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const n of laidNodes) {
       minX = Math.min(minX, n.position.x);
@@ -221,7 +245,7 @@ function layoutNodes(nodes: Node[], edges: Edge[]): Node[] {
     curX += comp.w + gap;
     rowHeight = Math.max(rowHeight, comp.h);
   }
-  return result;
+  return { nodes: result, direction: resolvedDir };
 }
 
 function wouldCreateCycle(taskMap: Map<string, TaskInfo>, sourceId: string, targetId: string): boolean {
@@ -251,6 +275,7 @@ interface TaskDAGProps {
   onDependencyChange?: () => void;
   selectedTaskId?: string | null;
   selectedReqId?: string | null;
+  hasDetailPanel?: boolean;
 }
 
 const ALL_STATUSES = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived'] as const;
@@ -266,11 +291,42 @@ const ALL_DAG_GROUP_IDS = new Set(DAG_FILTER_GROUPS.map(g => g.id));
 
 const isArchivedTask = (t: TaskInfo) => t.status === 'archived';
 
-export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onDependencyChange, selectedTaskId, selectedReqId }: TaskDAGProps) {
+function collectTransitiveDeps(nodeId: string, taskMap: Map<string, TaskInfo>, reqMap: Map<string, RequirementInfo>, allTasks: TaskInfo[]): Set<string> {
+  const visited = new Set<string>();
+  const stack = [nodeId];
+  while (stack.length > 0) {
+    const id = stack.pop()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    if (id.startsWith('req-')) {
+      const req = reqMap.get(id.slice(4));
+      if (req) {
+        for (const tid of req.taskIds) stack.push(tid);
+      }
+    } else {
+      const task = taskMap.get(id);
+      if (task?.blockedBy) {
+        for (const dep of task.blockedBy) stack.push(dep);
+      }
+      if (task?.requirementId) {
+        stack.push(`req-${task.requirementId}`);
+      }
+    }
+  }
+  for (const task of allTasks) {
+    if (task.requirementId && visited.has(task.id)) {
+      visited.add(`req-${task.requirementId}`);
+    }
+  }
+  return visited;
+}
+
+export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onDependencyChange, selectedTaskId, selectedReqId, hasDetailPanel }: TaskDAGProps) {
   const isLight = useIsLight();
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Edge | null>(null);
   const [groupFilter, setGroupFilter] = useState<Set<string>>(new Set(ALL_DAG_GROUP_IDS));
+  const [expandedNodeId, setExpandedNodeId] = useState<string | null>(null);
   const [localShowArchived, setLocalShowArchived] = useState(showArchivedProp ?? false);
   const showArchived = showArchivedProp ?? localShowArchived;
   const setShowArchived = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
@@ -350,7 +406,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     style: { stroke: status === 'blocked' ? '#ef4444' : edgeDefault, strokeWidth: 1.5, cursor: 'pointer' },
   }), [edgeDefault]);
 
-  const { initialNodes, initialEdges } = useMemo(() => {
+  const { initialNodes, initialEdges, topLevelIds } = useMemo(() => {
     const rootTasks = tasks.filter(t => allowedStatuses.has(t.status) && (showArchived || !isArchivedTask(t)));
 
     const rawNodes: Node[] = rootTasks.map(task => ({
@@ -418,9 +474,25 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
       }
     }
 
-    const layouted = layoutNodes(rawNodes, rawEdges);
-    return { initialNodes: layouted, initialEdges: rawEdges };
-  }, [tasks, requirements, agentMap, taskMap, makeEdge, allowedStatuses, groupFilter, showArchived, selectedTaskId, selectedReqId]);
+    const dependedUpon = new Set<string>();
+    for (const e of rawEdges) dependedUpon.add(e.target);
+    const topLevel = new Set(rawNodes.filter(n => !dependedUpon.has(n.id)).map(n => n.id));
+
+    let visibleNodes: Node[];
+    let visibleEdges: Edge[];
+    if (!expandedNodeId || !topLevel.has(expandedNodeId)) {
+      visibleNodes = rawNodes.filter(n => topLevel.has(n.id));
+      visibleEdges = [];
+    } else {
+      const visible = collectTransitiveDeps(expandedNodeId, taskMap, reqMap, rootTasks);
+      visibleNodes = rawNodes.filter(n => visible.has(n.id));
+      visibleEdges = rawEdges.filter(e => visible.has(e.source) && visible.has(e.target));
+    }
+
+    const { nodes: layouted, direction: layoutDir } = layoutNodes(visibleNodes, visibleEdges);
+    const withDir: Node[] = layouted.map(n => ({ ...n, data: { ...n.data, direction: layoutDir } }));
+    return { initialNodes: withDir, initialEdges: visibleEdges, topLevelIds: topLevel };
+  }, [tasks, requirements, agentMap, taskMap, reqMap, makeEdge, allowedStatuses, groupFilter, showArchived, selectedTaskId, selectedReqId, expandedNodeId]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
@@ -432,6 +504,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     const prev = prevFilterRef.current;
     if (prev.groupFilter !== groupFilter || prev.showArchived !== showArchived) {
       userHasInteracted.current = false;
+      setExpandedNodeId(null);
       prevFilterRef.current = { groupFilter, showArchived };
     }
   }, [groupFilter, showArchived]);
@@ -446,6 +519,13 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     }
   }, [initialNodes, initialEdges, setNodes, setEdges]);
 
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      rfRef.current?.fitView({ padding: 0.2, duration: 300 });
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [hasDetailPanel]);
+
   const handleMoveEnd = useCallback((_event: MouseEvent | TouchEvent | null) => {
     if (_event) {
       userHasInteracted.current = true;
@@ -453,6 +533,10 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
   }, []);
 
   const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
+    if (topLevelIds.has(node.id)) {
+      userHasInteracted.current = false;
+      setExpandedNodeId(prev => prev === node.id ? null : node.id);
+    }
     if (node.id.startsWith('req-')) {
       const req = reqMap.get(node.id.slice(4));
       if (req && onReqClick) onReqClick(req);
@@ -460,7 +544,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
       const task = taskMap.get(node.id);
       if (task && onTaskClick) onTaskClick(task);
     }
-  }, [taskMap, reqMap, onTaskClick, onReqClick]);
+  }, [taskMap, reqMap, onTaskClick, onReqClick, topLevelIds]);
 
   // Drag from source (blocker) → target (dependent): source blocks target
   const handleConnect = useCallback(async (connection: Connection) => {
@@ -582,7 +666,17 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
             <button onClick={() => { setGroupFilter(new Set(ALL_DAG_GROUP_IDS)); setShowArchived(false); }} className="text-[10px] text-fg-tertiary hover:text-fg-secondary px-1">Reset</button>
           )}
         </div>
-        <div className="text-[10px] text-fg-tertiary select-none">Drag to add dependency · Click edge to remove</div>
+        <div className="text-[10px] text-fg-tertiary select-none flex items-center gap-2">
+          {expandedNodeId ? (
+            <button onClick={() => { userHasInteracted.current = false; setExpandedNodeId(null); }} className="text-brand-500 hover:text-brand-400 transition-colors">
+              ← Back to overview
+            </button>
+          ) : (
+            <span>Click a card to expand dependencies</span>
+          )}
+          <span className="text-fg-tertiary/50">·</span>
+          <span>Drag to link · Click edge to remove</span>
+        </div>
       </div>
 
       {/* Toast */}

@@ -19,7 +19,7 @@ export function MobileSettingsTabs({ theme, onThemeChange, authUser, onLogout, o
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col" onTouchStart={swipe.onTouchStart} onTouchEnd={swipe.onTouchEnd}>
-      <div className="flex border-b border-border-default bg-surface-secondary shrink-0 overflow-x-auto scrollbar-hide">
+      <div className="flex shrink-0 overflow-x-auto scrollbar-hide">
         {tabs.map(tab => (
           <button
             key={tab.id}

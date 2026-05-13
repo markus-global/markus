@@ -890,7 +890,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    const h = Math.min(el.scrollHeight, 120);
+    const h = Math.max(52, Math.min(el.scrollHeight, 120));
     el.style.height = `${h}px`;
     el.style.overflowY = h >= 120 ? 'auto' : 'hidden';
   }, []);
@@ -2491,7 +2491,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       {(!isMobile || showChatOnMobile) && (
       <div className="flex-1 overflow-hidden flex flex-col min-w-0">
         {/* Header */}
-        <div className="border-b border-border-default bg-surface-secondary shrink-0 relative">
+        <div className="shrink-0 relative pb-2">
           {isMobile ? (
             <>
               {/* Mobile Row 1: back + name + status */}
@@ -2726,15 +2726,15 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
               {/* Row 2: Flattened tabs */}
               {activeTabs.length > 1 && (
-                <div className="flex items-center gap-0.5 px-4 overflow-x-auto scrollbar-hide -mb-px">
+                <div className="flex items-center gap-1 px-4 pb-1.5 overflow-x-auto scrollbar-hide">
                   {activeTabs.map(tab => (
                     <button
                       key={tab}
                       onClick={() => setMainTab(tab)}
-                      className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors whitespace-nowrap flex items-center gap-1 ${
+                      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap flex items-center gap-1 ${
                         mainTab === tab
-                          ? 'border-brand-500 text-brand-500'
-                          : 'border-transparent text-fg-tertiary hover:text-fg-secondary'
+                          ? 'bg-brand-500/15 text-brand-500'
+                          : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
                       }`}
                     >
                       <span>{tabIcon(tab)}</span>
@@ -2748,16 +2748,16 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           })()
           )}
 
-          {/* Session tab bar (direct mode, chat tab) */}
-          {chatMode === 'direct' && selectedAgent && mainTab === 'chat' && openSessionTabs.length > 0 && (
-            <div className="flex items-center gap-0 px-3 overflow-x-auto scrollbar-hide border-t border-border-default/50">
+          {/* Session tab bar (direct mode, chat tab) — hide when only 1 session */}
+          {chatMode === 'direct' && selectedAgent && mainTab === 'chat' && openSessionTabs.length > 1 && (
+            <div className="flex items-center gap-0 px-3 overflow-x-auto scrollbar-hide">
               {openSessionTabs.map(s => (
                 <div
                   key={s.id}
-                  className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer border-b-2 transition-colors shrink-0 max-w-[180px] ${
+                  className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer rounded-md transition-colors shrink-0 max-w-[180px] ${
                     s.id === activeSessionId
-                      ? 'border-brand-500 text-brand-500 bg-brand-500/5'
-                      : 'border-transparent text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
+                      ? 'text-brand-500 bg-brand-500/10'
+                      : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
                   }`}
                   onClick={() => {
                     if (s.id === NEW_CHAT_PLACEHOLDER_ID) {
@@ -2801,7 +2801,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               }
             }
             return (
-              <div className="border-b border-border-default bg-surface-secondary/80 px-4 py-3 flex flex-col gap-2">
+              <div className="bg-surface-secondary/80 px-4 py-3 flex flex-col gap-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-fg-secondary">{t('page.members')} ({currentMembers.length})</span>
                   <button onClick={() => setShowMemberPanel(false)} className="text-fg-tertiary hover:text-fg-secondary text-xs">
@@ -3193,7 +3193,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         })()}
 
         {/* Input (only in chat tab) */}
-        <div className={`p-4 border-t border-border-default bg-surface-secondary relative shrink-0 ${mainTab !== 'chat' ? 'hidden' : ''}`} onDrop={handleDrop} onDragOver={handleDragOver}>
+        <div className={`px-4 py-3 relative shrink-0 ${mainTab !== 'chat' ? 'hidden' : ''}`} onDrop={handleDrop} onDragOver={handleDragOver}>
+          <div className="bg-surface-primary rounded-2xl p-3 border border-border-default shadow-lg shadow-black/5">
           {mentionDropdown && filteredAgents.length > 0 && (
             <div className="absolute bottom-full left-4 mb-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden z-10 max-h-48 overflow-y-auto">
               <div className="px-3 py-1.5 text-[10px] text-fg-tertiary font-medium uppercase tracking-wider border-b border-border-default">
@@ -3299,9 +3300,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               onPaste={handlePaste}
               placeholder={placeholder}
               disabled={chatMode === 'direct' && !selectedAgent}
-              rows={1}
-              className="flex-1 px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm focus:border-brand-500 outline-none disabled:opacity-40 transition-colors resize-none overflow-hidden leading-5"
-              style={{ maxHeight: '120px' }}
+              rows={2}
+              className="flex-1 px-4 py-3 bg-transparent rounded-xl text-sm outline-none disabled:opacity-40 transition-colors resize-none overflow-hidden leading-relaxed placeholder:text-fg-tertiary/60"
+              style={{ minHeight: '52px', maxHeight: '120px' }}
             />
             {sending && chatMode !== 'dm' && (
               <button
@@ -3319,8 +3320,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               disabled={(chatMode === 'direct' && !selectedAgent) || (!input.trim() && pendingImages.length === 0)}
               className="px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
             >
-              {t('send')}
+              {t('common:send')}
             </button>
+          </div>
           </div>
         </div>
       </div>

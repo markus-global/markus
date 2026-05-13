@@ -337,9 +337,9 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
   return (
     <div className="flex-1 overflow-hidden flex">
       {/* Left sidebar — always mounted on mobile to preserve scroll position */}
-      <div className={`${isMobile ? 'flex-1 min-w-0' : 'shrink-0'} border-r border-border-default flex flex-col bg-surface-primary`}
+      <div className={`${isMobile ? 'flex-1 min-w-0' : 'shrink-0'} flex flex-col bg-surface-secondary rounded-xl m-1 mr-0`}
         style={isMobile ? (mobileShowDetail ? { display: 'none' } : undefined) : { width: listPanel.width }}>
-        <div className="p-4 border-b border-border-default space-y-3">
+        <div className="p-4 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-fg-secondary">
               {t('title')}{totalCount > 0 && <span className="ml-1.5 text-fg-tertiary font-normal">({totalCount})</span>}
@@ -353,7 +353,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
             className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary focus:border-brand-500 focus:outline-none transition-colors"
           />
           {sharedDir && (
-            <div className="flex items-center gap-2 px-2.5 py-1.5 bg-surface-elevated/50 border border-border-default rounded-lg text-[10px] text-fg-tertiary">
+            <div className="flex items-center gap-2 px-2.5 py-1.5 bg-surface-elevated rounded-lg text-[10px] text-fg-tertiary">
               <span className="truncate font-mono">{sharedDir}</span>
               <button onClick={() => void api.system.openPath(sharedDir)}
                 className="shrink-0 underline hover:text-fg-secondary transition-colors">{t('common:open')}</button>
@@ -480,14 +480,16 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
 
       {/* Resize handle */}
       {!isMobile && (
-        <div className="w-1 shrink-0 cursor-col-resize hover:bg-brand-500/30 active:bg-brand-500/50 transition-colors" onMouseDown={listPanel.onResizeStart} />
+        <div className="w-1.5 shrink-0 cursor-col-resize group relative flex items-center justify-center" onMouseDown={listPanel.onResizeStart}>
+          <div className="w-px h-2/3 border-l border-dashed border-transparent group-hover:border-border-default group-active:border-fg-tertiary transition-colors" />
+        </div>
       )}
 
       {/* Right detail panel */}
       {(!isMobile || mobileShowDetail) && (
       <div className="flex-1 overflow-y-auto min-w-0">
         {isMobile && (
-          <div className="sticky top-0 z-10 bg-surface-secondary border-b border-border-default px-4 py-2.5 flex items-center gap-2">
+          <div className="sticky top-0 z-10 bg-surface-secondary px-4 py-2.5 flex items-center gap-2">
             <button
               onClick={() => history.back()}
               className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1"
@@ -539,7 +541,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
                 )}
               </div>
               {selected.reference && isUrl(selected.reference) && (
-                <div className="flex items-center gap-2 mt-2 bg-surface-secondary/60 border border-border-default rounded-lg px-3 py-2">
+                <div className="flex items-center gap-2 mt-2 bg-surface-elevated rounded-lg px-3 py-2">
                   <a
                     href={selected.reference}
                     target="_blank"
@@ -557,7 +559,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
                 </div>
               )}
               {selected.reference && !isUrl(selected.reference) && (selected.type === 'file' || selected.type === 'directory') && (
-                <div className="flex items-center gap-2 mt-2 bg-surface-secondary/60 border border-border-default rounded-lg px-3 py-2">
+                <div className="flex items-center gap-2 mt-2 bg-surface-elevated rounded-lg px-3 py-2">
                   <button
                     onClick={() => { api.files.reveal(selected.reference).catch(() => flashMsg('error', t('detail.failedToOpenBrowser'))); }}
                     className="text-xs font-mono text-brand-500 hover:text-brand-500 hover:underline truncate flex-1 text-left cursor-pointer"
@@ -585,11 +587,11 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
             {/* Preview area */}
             {selected.artifactType && selected.artifactData ? (
               <div className="space-y-4">
-                <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
+                <div className="bg-surface-elevated rounded-xl p-5">
                   <ArtifactPreview artifact={selected.artifactData} mode={selected.artifactType as BuilderMode} />
                 </div>
                 {selected.reference && (
-                  <div className="px-3 py-2 bg-surface-secondary/50 border border-border-default rounded-lg">
+                  <div className="px-3 py-2 bg-surface-elevated rounded-lg">
                     <span className="text-[10px] text-fg-tertiary uppercase tracking-wider block mb-1">{t('detail.artifactDirectory')}</span>
                     <span className="text-xs text-fg-secondary font-mono break-all">{selected.reference}</span>
                   </div>
@@ -603,13 +605,13 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
                   </button>
                 </div>
                 {selected.summary && (
-                  <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
+                  <div className="bg-surface-elevated rounded-xl p-5">
                     <MarkdownMessage content={selected.summary} className="text-fg-secondary text-sm" />
                   </div>
                 )}
               </div>
             ) : (
-              <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
+              <div className="bg-surface-elevated rounded-xl p-5">
                 {previewLoading ? (
                   <div className="flex items-center gap-2 text-fg-tertiary text-sm"><Spinner /> {t('detail.loadingPreview')}</div>
                 ) : previewImage ? (
@@ -661,7 +663,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
             {(selected.diffStats || selected.testResults) && (
               <div className="flex gap-4 flex-wrap">
                 {selected.diffStats && (
-                  <div className="bg-surface-secondary border border-border-default rounded-lg px-4 py-3 text-xs space-y-1">
+                  <div className="bg-surface-elevated rounded-lg px-4 py-3 text-xs space-y-1">
                     <div className="text-fg-tertiary font-medium">{t('diffStats.title')}</div>
                     <div className="flex gap-3">
                       <span className="text-fg-secondary">{t('diffStats.files', { count: selected.diffStats.filesChanged })}</span>
@@ -671,7 +673,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
                   </div>
                 )}
                 {selected.testResults && (
-                  <div className="bg-surface-secondary border border-border-default rounded-lg px-4 py-3 text-xs space-y-1">
+                  <div className="bg-surface-elevated rounded-lg px-4 py-3 text-xs space-y-1">
                     <div className="text-fg-tertiary font-medium">{t('testResults.title')}</div>
                     <div className="flex gap-3">
                       <span className="text-green-600">{t('testResults.passed', { count: selected.testResults.passed })}</span>

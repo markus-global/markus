@@ -29,7 +29,7 @@ export function BottomNav({ currentPage, onNavigate, userId }: Props) {
   }, [fetchUnread]);
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-50 bg-surface-secondary border-t border-border-default flex items-stretch h-14 safe-area-bottom">
+    <nav className="fixed bottom-0 left-0 right-0 z-50 bg-surface-secondary flex items-stretch h-14 safe-area-bottom">
       {MOBILE_TABS.map(tab => {
         const isActive = tab.group.includes(currentPage);
         const isNotif = tab.id === PAGE.NOTIFICATIONS;

@@ -119,7 +119,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
   return (
     <div className="flex-1 overflow-y-auto scrollbar-thin">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 sm:px-6 lg:px-8 h-14 sm:h-16 border-b border-border-default bg-surface-secondary/50">
+      <div className="flex items-center justify-between px-4 sm:px-6 lg:px-8 h-14 sm:h-16">
         <div className="flex items-center gap-3">
           <div>
             <h2 className="text-base sm:text-lg font-bold">{t('title')}</h2>
@@ -228,7 +228,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
 
             {/* Task Overview — donut + all status legend */}
             {totalRootTasks > 0 && (
-              <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5 cursor-pointer hover:border-border-default/80 transition-colors" onClick={() => navBus.navigate(PAGE.WORK)}>
+              <div className="bg-surface-elevated rounded-2xl p-4 sm:p-5 cursor-pointer hover:bg-surface-overlay transition-colors" onClick={() => navBus.navigate(PAGE.WORK)}>
                 <div className="flex items-center justify-between mb-5">
                   <div>
                     <h3 className="text-sm font-semibold text-fg-primary">{t('taskOverview.title')}</h3>
@@ -257,7 +257,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
 
             {/* Activity Feed */}
             {ops && ops.taskKPI.recentActivity.length > 0 && (
-              <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5">
+              <div className="bg-surface-elevated rounded-2xl p-4 sm:p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold text-fg-primary">{t('recentActivity.title')}</h3>
                   <button onClick={() => navBus.navigate(PAGE.WORK)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
@@ -280,7 +280,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
             )}
 
             {/* Team Overview */}
-            <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5">
+            <div className="bg-surface-elevated rounded-2xl p-4 sm:p-5">
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h3 className="text-sm font-semibold text-fg-primary">{t('teamOverview.title')}</h3>
@@ -325,7 +325,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
           <div className="space-y-5 sm:space-y-6">
             {/* Agent Focus — compact, only when agents working */}
             {workingAgents > 0 && (
-              <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5">
+              <div className="bg-surface-elevated rounded-2xl p-4 sm:p-5">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 rounded-full bg-brand-500 animate-pulse" />
@@ -357,7 +357,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
 
             {/* Top Performing Agents */}
             {topPerformers.length > 0 && (
-              <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5">
+              <div className="bg-surface-elevated rounded-2xl p-4 sm:p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold text-fg-primary">{t('topPerformers.title')}</h3>
                   <button onClick={() => setShowRankingModal(true)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
@@ -384,7 +384,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
 
             {/* System Health + Storage */}
             {ops && (
-              <div className="bg-surface-secondary border border-border-default rounded-2xl p-4 sm:p-5">
+              <div className="bg-surface-elevated rounded-2xl p-4 sm:p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold text-fg-primary">{t('systemHealth.title')}</h3>
                   {ops.systemHealth.overallScore >= 80 && (

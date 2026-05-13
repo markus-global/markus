@@ -101,11 +101,11 @@ export function TeamDetailPanel({
   return (
     <>
       <div
-        className="bg-surface-secondary/60 flex flex-col shrink-0"
+        className="bg-surface-elevated rounded-xl m-1 ml-0 flex flex-col shrink-0"
         style={width != null ? { width } : { width: 260 }}
       >
         {/* Header */}
-        <div className="px-3 h-14 flex items-center gap-2 border-b border-border-default shrink-0">
+        <div className="px-3 h-14 flex items-center gap-2 shrink-0">
           <button
             onClick={onBack}
             className="w-8 h-8 flex items-center justify-center rounded-lg bg-brand-500/15 text-brand-500 transition-colors shrink-0"
@@ -255,10 +255,10 @@ export function TeamDetailPanel({
       {/* Resize handle */}
       {onResizeStart && (
         <div
-          className="w-px bg-border-default cursor-col-resize shrink-0 group relative"
+          className="w-1.5 cursor-col-resize shrink-0 group relative flex items-center justify-center"
           onMouseDown={onResizeStart}
         >
-          <div className="absolute inset-y-0 -left-1 -right-1 group-hover:bg-brand-500/20 group-active:bg-brand-500/40 transition-colors" />
+          <div className="w-px h-2/3 border-l border-dashed border-transparent group-hover:border-border-default group-active:border-fg-tertiary transition-colors" />
         </div>
       )}
 
