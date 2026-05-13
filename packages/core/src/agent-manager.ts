@@ -2071,7 +2071,7 @@ export class AgentManager {
     await agent.stop();
     this.cancelMcpRelease(agentId);
     this.browserSessionManager.cleanupAgent(agentId);
-    await this.mcpManager.disconnectAllForScope(agentId);
+    await this.mcpManager.removeAllForScope(agentId);
   }
 
   async removeAgent(agentId: string, opts?: { purgeFiles?: boolean }): Promise<void> {
@@ -2080,7 +2080,7 @@ export class AgentManager {
       try { await agent.stop(); } catch { /* proceed with removal even if stop fails */ }
       this.cancelMcpRelease(agentId);
       this.browserSessionManager.cleanupAgent(agentId);
-      await this.mcpManager.disconnectAllForScope(agentId);
+      await this.mcpManager.removeAllForScope(agentId);
       this.delegationManager.unregisterAgentCard(agentId);
       this.agents.delete(agentId);
       this.eventBus.emit('agent:removed', { agentId });
