@@ -175,7 +175,11 @@
     "markAllRead": "Mark all read",
     "confirmReject": "Confirm Reject",
     "rejectReasonPlaceholder": "Reason for rejection (optional, Enter to submit)",
-    "freeformPlaceholder": "Or type your own instruction...",
+    "freeformPlaceholder": "Or type your opinion...",
+    "commentPlaceholder": "Add comment (optional)",
+    "needsAdjustment": "Needs Adjustment",
+    "adjustmentPlaceholder": "Describe the adjustments needed...",
+    "confirmAdjustment": "Submit Adjustment",
     "actionHints": {
       "openChat": "Open chat →",
       "viewDetails": "View details →",

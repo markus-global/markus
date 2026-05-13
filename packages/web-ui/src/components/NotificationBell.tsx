@@ -118,8 +118,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const [notifications, setNotifications] = useState<NotificationInfo[]>([]);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
   const [responding, setResponding] = useState<string | null>(null);
-  const [rejectingId, setRejectingId] = useState<string | null>(null);
-  const [rejectComment, setRejectComment] = useState('');
+  const [adjustingId, setAdjustingId] = useState<string | null>(null);
   const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>({});
   const [unreadCount, setUnreadCount] = useState(0);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -362,8 +361,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     try {
       const { approval } = await api.approvals.respond(id, approved, userId, comment, selectedOption);
       setApprovals(prev => prev.map(a => a.id === id ? approval : a));
-      setRejectingId(null);
-      setRejectComment('');
+      setAdjustingId(null);
       setFreeformTexts(prev => { const next = { ...prev }; delete next[id]; return next; });
 
       const relatedNotif = notifications.find(
@@ -515,104 +513,139 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                           <pre className="text-[11px] text-fg-primary bg-surface-overlay border border-border-default rounded-md px-2.5 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono leading-relaxed mt-2">{cmd}</pre>
                         )}
                       </div>
-                      {a.options && a.options.length > 0 ? (
-                        <div className="space-y-1.5">
-                          <div className="flex flex-wrap gap-1.5">
-                            {a.options.map(opt => (
+                      {(() => {
+                        const sub = a.details?.subType as string | undefined;
+                        const isStructured = sub === 'task' || sub === 'requirement' || sub === 'requirement_resubmit';
+                        const hasOptions = a.options && a.options.length > 0;
+                        const txt = (freeformTexts[a.id] ?? '').trim();
+
+                        if (hasOptions) {
+                          return (
+                            <div className="space-y-1.5">
+                              {a.options!.map((opt, idx) => (
+                                <button
+                                  key={opt.id}
+                                  disabled={responding === a.id}
+                                  onClick={() => handleApprovalResponse(a.id, opt.id !== 'reject', txt || undefined, opt.id)}
+                                  className={`w-full px-3 py-2 text-left text-[11px] font-medium rounded-md disabled:opacity-50 transition-colors flex items-center gap-2 ${
+                                    opt.id === 'reject' || opt.id === 'request_changes'
+                                      ? 'border border-border-default text-fg-secondary hover:bg-surface-overlay'
+                                      : 'bg-brand-600 text-white hover:bg-brand-700'
+                                  }`}
+                                  title={opt.description}
+                                >
+                                  <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[10px] font-bold shrink-0">
+                                    {String.fromCharCode(65 + idx)}
+                                  </span>
+                                  {opt.label}
+                                </button>
+                              ))}
+                              <div className="flex gap-1.5 mt-1">
+                                <input
+                                  type="text"
+                                  placeholder={t('team:notifications.freeformPlaceholder')}
+                                  value={freeformTexts[a.id] ?? ''}
+                                  onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
+                                  onKeyDown={e => { if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom'); }}
+                                  className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                                />
+                                <button
+                                  disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
+                                  onClick={() => handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom')}
+                                  className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
+                                >{t('common:send')}</button>
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        if (isStructured) {
+                          return (
+                            <div className="space-y-1.5">
+                              <div className="flex items-center gap-2">
+                                <button
+                                  disabled={responding === a.id}
+                                  onClick={() => handleApprovalResponse(a.id, true, undefined, 'approve')}
+                                  className="px-3 py-1.5 text-[11px] font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+                                >
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+                                  {t('common:approve')}
+                                </button>
+                                <button
+                                  disabled={responding === a.id}
+                                  onClick={() => handleApprovalResponse(a.id, false, undefined, 'reject')}
+                                  className="px-3 py-1.5 text-[11px] font-medium bg-red-600/80 text-white rounded-md hover:bg-red-700 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+                                >
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
+                                  {t('common:reject')}
+                                </button>
+                                {adjustingId !== a.id && (
+                                  <button
+                                    disabled={responding === a.id}
+                                    onClick={() => setAdjustingId(a.id)}
+                                    className="px-3 py-1.5 text-[11px] font-medium border border-amber-500/50 text-amber-500 rounded-md hover:bg-amber-500/10 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+                                  >
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+                                    {t('team:notifications.needsAdjustment')}
+                                  </button>
+                                )}
+                              </div>
+                              {adjustingId === a.id && (
+                                <div className="space-y-1.5">
+                                  <input
+                                    type="text"
+                                    autoFocus
+                                    placeholder={t('team:notifications.adjustmentPlaceholder')}
+                                    value={freeformTexts[a.id] ?? ''}
+                                    onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, false, (freeformTexts[a.id] ?? '').trim(), 'needs_adjustment');
+                                      if (e.key === 'Escape') setAdjustingId(null);
+                                    }}
+                                    className="w-full px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+                                  />
+                                  <div className="flex gap-2">
+                                    <button
+                                      disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
+                                      onClick={() => handleApprovalResponse(a.id, false, (freeformTexts[a.id] ?? '').trim(), 'needs_adjustment')}
+                                      className="px-2.5 py-1.5 text-[11px] font-medium bg-amber-600 text-white rounded-md hover:bg-amber-700 disabled:opacity-50 transition-colors"
+                                    >{t('team:notifications.confirmAdjustment')}</button>
+                                    <button
+                                      onClick={() => setAdjustingId(null)}
+                                      className="px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay transition-colors"
+                                    >{t('common:cancel')}</button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div className="space-y-1.5">
+                            <input
+                              type="text"
+                              placeholder={t('team:notifications.commentPlaceholder')}
+                              value={freeformTexts[a.id] ?? ''}
+                              onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
+                              onKeyDown={e => { if (e.key === 'Enter') handleApprovalResponse(a.id, true, txt || undefined, 'approve'); }}
+                              className="w-full px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                            />
+                            <div className="flex gap-2">
                               <button
-                                key={opt.id}
                                 disabled={responding === a.id}
-                                onClick={() => handleApprovalResponse(a.id, true, undefined, opt.id)}
-                                className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
-                                title={opt.description}
-                              >{opt.label}</button>
-                            ))}
+                                onClick={() => handleApprovalResponse(a.id, true, txt || undefined, 'approve')}
+                                className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 transition-colors"
+                              >{t('common:approve')}</button>
+                              <button
+                                disabled={responding === a.id}
+                                onClick={() => handleApprovalResponse(a.id, false, txt || undefined, 'reject')}
+                                className="flex-1 px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay disabled:opacity-50 transition-colors"
+                              >{t('common:reject')}</button>
+                            </div>
                           </div>
-                          <div className="flex gap-1.5">
-                            <input
-                              type="text"
-                              placeholder={t('team:notifications.freeformPlaceholder')}
-                              value={freeformTexts[a.id] ?? ''}
-                              onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
-                              onKeyDown={e => { if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom'); }}
-                              className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
-                            />
-                            <button
-                              disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
-                              onClick={() => handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom')}
-                              className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
-                            >{t('common:send')}</button>
-                          </div>
-                        </div>
-                      ) : rejectingId === a.id ? (
-                        <div className="space-y-1.5">
-                          <input
-                            type="text"
-                            autoFocus
-                            placeholder={t('team:notifications.rejectReasonPlaceholder')}
-                            value={rejectComment}
-                            onChange={e => setRejectComment(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter') handleApprovalResponse(a.id, false, rejectComment || undefined, 'reject'); if (e.key === 'Escape') { setRejectingId(null); setRejectComment(''); } }}
-                            className="w-full px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-amber-500/50"
-                          />
-                          <div className="flex gap-2">
-                            <button
-                              disabled={responding === a.id}
-                              onClick={() => handleApprovalResponse(a.id, false, rejectComment || undefined, 'reject')}
-                              className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50 transition-colors"
-                            >{t('team:notifications.confirmReject')}</button>
-                            <button
-                              onClick={() => { setRejectingId(null); setRejectComment(''); }}
-                              className="px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay transition-colors"
-                            >{t('common:cancel')}</button>
-                          </div>
-                          <div className="flex gap-1.5 mt-1">
-                            <input
-                              type="text"
-                              placeholder={t('team:notifications.freeformPlaceholder')}
-                              value={freeformTexts[a.id] ?? ''}
-                              onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
-                              onKeyDown={e => { if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom'); }}
-                              className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
-                            />
-                            <button
-                              disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
-                              onClick={() => handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom')}
-                              className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
-                            >{t('common:send')}</button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="space-y-1.5">
-                          <div className="flex gap-2">
-                            <button
-                              disabled={responding === a.id}
-                              onClick={() => handleApprovalResponse(a.id, true, undefined, 'approve')}
-                              className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 transition-colors"
-                            >{t('common:approve')}</button>
-                            <button
-                              disabled={responding === a.id}
-                              onClick={() => { setRejectingId(a.id); setRejectComment(''); }}
-                              className="flex-1 px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay disabled:opacity-50 transition-colors"
-                            >{t('common:reject')}</button>
-                          </div>
-                          <div className="flex gap-1.5">
-                            <input
-                              type="text"
-                              placeholder={t('team:notifications.freeformPlaceholder')}
-                              value={freeformTexts[a.id] ?? ''}
-                              onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
-                              onKeyDown={e => { if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom'); }}
-                              className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
-                            />
-                            <button
-                              disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
-                              onClick={() => handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom')}
-                              className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
-                            >{t('common:send')}</button>
-                          </div>
-                        </div>
-                      )}
+                        );
+                      })()}
                     </div>
                     );
                   })}
@@ -776,10 +809,139 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                           </div>
                           {cmd && <pre className="text-[11px] text-fg-primary bg-surface-overlay border border-border-default rounded-md px-2.5 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono leading-relaxed mt-2">{cmd}</pre>}
                         </div>
-                        <div className="flex gap-2">
-                          <button disabled={responding === a.id} onClick={() => handleApprovalResponse(a.id, true, undefined, 'approve')} className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 transition-colors">{t('common:approve')}</button>
-                          <button disabled={responding === a.id} onClick={() => handleApprovalResponse(a.id, false, undefined, 'reject')} className="flex-1 px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay disabled:opacity-50 transition-colors">{t('common:reject')}</button>
-                        </div>
+                        {(() => {
+                          const sub = a.details?.subType as string | undefined;
+                          const isStructured = sub === 'task' || sub === 'requirement' || sub === 'requirement_resubmit';
+                          const hasOptions = a.options && a.options.length > 0;
+                          const txt = (freeformTexts[a.id] ?? '').trim();
+
+                          if (hasOptions) {
+                            return (
+                              <div className="space-y-1.5">
+                                {a.options!.map((opt, idx) => (
+                                  <button
+                                    key={opt.id}
+                                    disabled={responding === a.id}
+                                    onClick={() => handleApprovalResponse(a.id, opt.id !== 'reject', txt || undefined, opt.id)}
+                                    className={`w-full px-3 py-2 text-left text-[11px] font-medium rounded-md disabled:opacity-50 transition-colors flex items-center gap-2 ${
+                                      opt.id === 'reject' || opt.id === 'request_changes'
+                                        ? 'border border-border-default text-fg-secondary hover:bg-surface-overlay'
+                                        : 'bg-brand-600 text-white hover:bg-brand-700'
+                                    }`}
+                                    title={opt.description}
+                                  >
+                                    <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[10px] font-bold shrink-0">
+                                      {String.fromCharCode(65 + idx)}
+                                    </span>
+                                    {opt.label}
+                                  </button>
+                                ))}
+                                <div className="flex gap-1.5 mt-1">
+                                  <input
+                                    type="text"
+                                    placeholder={t('team:notifications.freeformPlaceholder')}
+                                    value={freeformTexts[a.id] ?? ''}
+                                    onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
+                                    onKeyDown={e => { if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom'); }}
+                                    className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                                  />
+                                  <button
+                                    disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
+                                    onClick={() => handleApprovalResponse(a.id, true, (freeformTexts[a.id] ?? '').trim(), 'custom')}
+                                    className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
+                                  >{t('common:send')}</button>
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          if (isStructured) {
+                            return (
+                              <div className="space-y-1.5">
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    disabled={responding === a.id}
+                                    onClick={() => handleApprovalResponse(a.id, true, undefined, 'approve')}
+                                    className="px-3 py-1.5 text-[11px] font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+                                  >
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+                                    {t('common:approve')}
+                                  </button>
+                                  <button
+                                    disabled={responding === a.id}
+                                    onClick={() => handleApprovalResponse(a.id, false, undefined, 'reject')}
+                                    className="px-3 py-1.5 text-[11px] font-medium bg-red-600/80 text-white rounded-md hover:bg-red-700 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+                                  >
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
+                                    {t('common:reject')}
+                                  </button>
+                                  {adjustingId !== a.id && (
+                                    <button
+                                      disabled={responding === a.id}
+                                      onClick={() => setAdjustingId(a.id)}
+                                      className="px-3 py-1.5 text-[11px] font-medium border border-amber-500/50 text-amber-500 rounded-md hover:bg-amber-500/10 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+                                    >
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+                                      {t('team:notifications.needsAdjustment')}
+                                    </button>
+                                  )}
+                                </div>
+                                {adjustingId === a.id && (
+                                  <div className="space-y-1.5">
+                                    <input
+                                      type="text"
+                                      autoFocus
+                                      placeholder={t('team:notifications.adjustmentPlaceholder')}
+                                      value={freeformTexts[a.id] ?? ''}
+                                      onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
+                                      onKeyDown={e => {
+                                        if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, false, (freeformTexts[a.id] ?? '').trim(), 'needs_adjustment');
+                                        if (e.key === 'Escape') setAdjustingId(null);
+                                      }}
+                                      className="w-full px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+                                    />
+                                    <div className="flex gap-2">
+                                      <button
+                                        disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
+                                        onClick={() => handleApprovalResponse(a.id, false, (freeformTexts[a.id] ?? '').trim(), 'needs_adjustment')}
+                                        className="px-2.5 py-1.5 text-[11px] font-medium bg-amber-600 text-white rounded-md hover:bg-amber-700 disabled:opacity-50 transition-colors"
+                                      >{t('team:notifications.confirmAdjustment')}</button>
+                                      <button
+                                        onClick={() => setAdjustingId(null)}
+                                        className="px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay transition-colors"
+                                      >{t('common:cancel')}</button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div className="space-y-1.5">
+                              <input
+                                type="text"
+                                placeholder={t('team:notifications.commentPlaceholder')}
+                                value={freeformTexts[a.id] ?? ''}
+                                onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
+                                onKeyDown={e => { if (e.key === 'Enter') handleApprovalResponse(a.id, true, txt || undefined, 'approve'); }}
+                                className="w-full px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                              />
+                              <div className="flex gap-2">
+                                <button
+                                  disabled={responding === a.id}
+                                  onClick={() => handleApprovalResponse(a.id, true, txt || undefined, 'approve')}
+                                  className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 transition-colors"
+                                >{t('common:approve')}</button>
+                                <button
+                                  disabled={responding === a.id}
+                                  onClick={() => handleApprovalResponse(a.id, false, txt || undefined, 'reject')}
+                                  className="flex-1 px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay disabled:opacity-50 transition-colors"
+                                >{t('common:reject')}</button>
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
                     );
                   })}
