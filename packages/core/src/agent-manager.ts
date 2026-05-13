@@ -339,6 +339,9 @@ export class AgentManager {
     agentId: string,
     state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
   ) => void;
+  /** Grace timers for releasing scoped MCP processes after agent goes idle */
+  private mcpReleaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private static readonly MCP_IDLE_GRACE_MS = 30_000;
   private activityCallbacks?: {
     onStart: (activity: AgentActivity & { agentId: string }) => void;
     onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
@@ -1363,9 +1366,7 @@ export class AgentManager {
           ah(id, req)
       );
     }
-    if (this.stateChangeHandler) {
-      agent.setStateChangeCallback(this.stateChangeHandler);
-    }
+    agent.setStateChangeCallback(this.buildStateChangeCallback());
     if (this.activityCallbacks) {
       agent.setActivityCallbacks(this.activityCallbacks);
     }
@@ -1994,9 +1995,7 @@ export class AgentManager {
           ah(id, req)
       );
     }
-    if (this.stateChangeHandler) {
-      agent.setStateChangeCallback(this.stateChangeHandler);
-    }
+    agent.setStateChangeCallback(this.buildStateChangeCallback());
     if (this.activityCallbacks) {
       agent.setActivityCallbacks(this.activityCallbacks);
     }
@@ -2070,12 +2069,16 @@ export class AgentManager {
   async stopAgent(agentId: string): Promise<void> {
     const agent = this.getAgent(agentId);
     await agent.stop();
+    this.cancelMcpRelease(agentId);
+    this.browserSessionManager.cleanupAgent(agentId);
+    await this.mcpManager.disconnectAllForScope(agentId);
   }
 
   async removeAgent(agentId: string, opts?: { purgeFiles?: boolean }): Promise<void> {
     const agent = this.agents.get(agentId);
     if (agent) {
       try { await agent.stop(); } catch { /* proceed with removal even if stop fails */ }
+      this.cancelMcpRelease(agentId);
       this.browserSessionManager.cleanupAgent(agentId);
       await this.mcpManager.disconnectAllForScope(agentId);
       this.delegationManager.unregisterAgentCard(agentId);
@@ -2170,19 +2173,58 @@ export class AgentManager {
     }
   }
 
+  /**
+   * Build the combined state-change callback for an agent. Handles:
+   * 1. MCP scoped-process lifecycle (release on idle, cancel release on working)
+   * 2. DelegationManager status sync
+   * 3. External handler forwarding (DB persistence, WS broadcast, etc.)
+   */
+  private buildStateChangeCallback(): (
+    agentId: string,
+    state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
+  ) => void {
+    return (agentId, state) => {
+      if (state.status === 'idle' && state.activeTaskIds.length === 0) {
+        this.scheduleMcpRelease(agentId);
+      } else if (state.status === 'working') {
+        this.cancelMcpRelease(agentId);
+      }
+      this.delegationManager.updateAgentStatus(agentId, state.status);
+      if (this.stateChangeHandler) {
+        this.stateChangeHandler(agentId, state);
+      }
+    };
+  }
+
+  private scheduleMcpRelease(agentId: string): void {
+    if (this.mcpReleaseTimers.has(agentId)) return;
+    const timer = setTimeout(() => {
+      this.mcpReleaseTimers.delete(agentId);
+      this.browserSessionManager.cleanupAgent(agentId);
+      this.mcpManager.disconnectAllForScope(agentId).catch(() => {});
+      log.info(`Released scoped MCP processes for idle agent: ${agentId}`);
+    }, AgentManager.MCP_IDLE_GRACE_MS);
+    timer.unref();
+    this.mcpReleaseTimers.set(agentId, timer);
+  }
+
+  private cancelMcpRelease(agentId: string): void {
+    const timer = this.mcpReleaseTimers.get(agentId);
+    if (timer) {
+      clearTimeout(timer);
+      this.mcpReleaseTimers.delete(agentId);
+    }
+  }
+
   setStateChangeHandler(
     handler: (
       agentId: string,
       state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
     ) => void
   ): void {
-    // Wrap handler to also sync AgentCard status in DelegationManager
-    this.stateChangeHandler = (agentId, state) => {
-      handler(agentId, state);
-      this.delegationManager.updateAgentStatus(agentId, state.status);
-    };
+    this.stateChangeHandler = handler;
     for (const [, agent] of this.agents) {
-      agent.setStateChangeCallback(this.stateChangeHandler);
+      agent.setStateChangeCallback(this.buildStateChangeCallback());
     }
   }
 
@@ -2514,6 +2556,7 @@ export class AgentManager {
         await agent.stop();
       } catch { /* best effort */ }
     }
+    await this.mcpManager.disconnectAll();
     log.info('AgentManager shutdown complete — all metrics flushed');
   }
 

@@ -37,14 +37,48 @@ interface PendingRequest {
  * Uses a per-process line buffer to correctly reassemble JSON-RPC
  * messages that may be split across multiple stdout `data` events.
  */
+/** Default idle timeout: 5 minutes with no tool calls triggers automatic disconnect. */
+const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+
 export class MCPClientManager {
   private servers = new Map<string, { process: ChildProcess; tools: MCPToolDescriptor[] }>();
   private requestId = 0;
   private pendingRequests = new Map<number, PendingRequest>();
   private stdoutBuffers = new Map<ChildProcess, string>();
+  private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private idleTimeoutMs: number = DEFAULT_IDLE_TIMEOUT_MS;
 
   private static scopedKey(name: string, scopeId: string): string {
     return `${name}::${scopeId}`;
+  }
+
+  setIdleTimeout(ms: number): void {
+    this.idleTimeoutMs = ms;
+  }
+
+  private resetIdleTimer(key: string): void {
+    const existing = this.idleTimers.get(key);
+    if (existing) clearTimeout(existing);
+
+    if (this.idleTimeoutMs <= 0) return;
+
+    const timer = setTimeout(() => {
+      this.idleTimers.delete(key);
+      if (this.servers.has(key)) {
+        log.info(`MCP server idle timeout reached, disconnecting: ${key}`);
+        this.disconnectServer(key).catch(() => {});
+      }
+    }, this.idleTimeoutMs);
+    timer.unref();
+    this.idleTimers.set(key, timer);
+  }
+
+  private clearIdleTimer(key: string): void {
+    const timer = this.idleTimers.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      this.idleTimers.delete(key);
+    }
   }
 
   /**
@@ -88,6 +122,7 @@ export class MCPClientManager {
       }
       this.servers.delete(key);
       this.stdoutBuffers.delete(proc);
+      this.clearIdleTimer(key);
       for (const [id, req] of this.pendingRequests) {
         if (req.proc !== proc) continue;
         req.reject(new Error(`MCP server ${displayName} exited (code ${code}) while awaiting ${req.method}`));
@@ -112,6 +147,7 @@ export class MCPClientManager {
       const tools = (toolsResult as { tools?: MCPToolDescriptor[] })?.tools ?? [];
 
       this.servers.set(key, { process: proc, tools });
+      this.resetIdleTimer(key);
       log.info(`MCP server ${displayName} connected with ${tools.length} tools`);
 
       return tools;
@@ -138,6 +174,8 @@ export class MCPClientManager {
   private callToolByKey(key: string, toolName: string, args: Record<string, unknown>): Promise<string> {
     const server = this.servers.get(key);
     if (!server) throw new Error(`MCP server not found: ${key}`);
+
+    this.resetIdleTimer(key);
 
     return this.sendRequest(server.process, 'tools/call', {
       name: toolName,
@@ -194,6 +232,7 @@ export class MCPClientManager {
   async disconnectServer(name: string): Promise<void> {
     const server = this.servers.get(name);
     if (server) {
+      this.clearIdleTimer(name);
       server.process.kill();
       this.servers.delete(name);
       this.stdoutBuffers.delete(server.process);
