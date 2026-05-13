@@ -3,15 +3,25 @@ import type { TaskService } from './task-service.js';
 
 const log = createLogger('scheduled-task-runner');
 
+const MIN_STAGGER_MS = 2 * 60_000;   // 2 minutes
+const MAX_STAGGER_MS = 15 * 60_000;  // 15 minutes
+
 /**
  * Evaluates scheduled tasks and re-creates them when their schedule fires.
  * Runs on a fixed poll interval, checking all scheduled tasks to see if
  * their nextRunAt has passed. When it has, the runner resets the task to
  * pending so the normal task execution flow picks it up again.
+ *
+ * On startup, an initial tick runs immediately to catch any tasks whose
+ * nextRunAt elapsed while the system was down.  To avoid a thundering-herd
+ * when many overdue tasks exist, each overdue task is staggered by a random
+ * delay between MIN_STAGGER_MS and MAX_STAGGER_MS.
  */
 export class ScheduledTaskRunner {
   private timer?: ReturnType<typeof setInterval>;
+  private staggerTimers: ReturnType<typeof setTimeout>[] = [];
   private running = false;
+  private startedAt = 0;
 
   constructor(
     private taskService: TaskService,
@@ -21,6 +31,10 @@ export class ScheduledTaskRunner {
   start(): void {
     if (this.running) return;
     this.running = true;
+    this.startedAt = Date.now();
+
+    this.tick().catch(e => log.error('Initial scheduled task tick failed', { error: String(e) }));
+
     this.timer = setInterval(() => {
       this.tick().catch(e => log.error('Scheduled task tick failed', { error: String(e) }));
     }, this.pollIntervalMs);
@@ -32,6 +46,8 @@ export class ScheduledTaskRunner {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+    for (const t of this.staggerTimers) clearTimeout(t);
+    this.staggerTimers = [];
     this.running = false;
     log.info('ScheduledTaskRunner stopped');
   }
@@ -40,9 +56,18 @@ export class ScheduledTaskRunner {
     return this.running;
   }
 
+  /**
+   * Returns true during the startup grace period (first poll cycle after
+   * start).  Used to stagger overdue tasks instead of firing them all at once.
+   */
+  private isStartupPhase(): boolean {
+    return Date.now() - this.startedAt < this.pollIntervalMs;
+  }
+
   private async tick(): Promise<void> {
     const scheduledTasks = this.taskService.listScheduledTasks();
     const now = Date.now();
+    const startup = this.isStartupPhase();
 
     for (const task of scheduledTasks) {
       if (!task.scheduleConfig) continue;
@@ -61,6 +86,24 @@ export class ScheduledTaskRunner {
       }
 
       if (config.paused) {
+        continue;
+      }
+
+      if (startup && nextRun < this.startedAt) {
+        const delay = MIN_STAGGER_MS + Math.random() * (MAX_STAGGER_MS - MIN_STAGGER_MS);
+        log.info('Staggering overdue scheduled task', {
+          taskId: task.id,
+          title: task.title,
+          overdueBy: `${Math.round((now - nextRun) / 60_000)}m`,
+          firingIn: `${Math.round(delay / 60_000)}m`,
+        });
+        const timer = setTimeout(() => {
+          if (!this.running) return;
+          this.fireScheduledTask(task).catch(e =>
+            log.error('Failed to fire staggered scheduled task', { taskId: task.id, error: String(e) }),
+          );
+        }, delay);
+        this.staggerTimers.push(timer);
         continue;
       }
 
