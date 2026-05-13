@@ -219,6 +219,11 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     }
   }
 
+  // Apply auto-fallback setting
+  if (config.llm.autoFallback === false) {
+    llmRouter.setAutoFallback(false);
+  }
+
   // Load custom models from config
   if (config.llm.customModels) {
     for (const [providerName, models] of Object.entries(config.llm.customModels)) {

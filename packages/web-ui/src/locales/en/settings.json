@@ -54,7 +54,9 @@
     "primaryProvider": "Primary Provider",
     "primaryProviderDesc": "Used for all agent interactions unless overridden",
     "noProviders": "No providers configured",
-    "updated": "Default provider updated to {{name}}"
+    "updated": "Default provider updated to {{name}}",
+    "autoFallback": "Auto-switch Model",
+    "autoFallbackDesc": "When enabled, automatically try other providers/models if the primary one fails. When disabled, only use the selected model — errors will not trigger fallback."
   },
   "modelProviders": {
     "title": "Model Providers & Pricing",

@@ -6760,23 +6760,31 @@ EXPLANATION_END`;
         return;
       }
       const body = await this.readBody(req);
-      const { defaultProvider } = body as { defaultProvider?: string };
-      if (!defaultProvider) {
-        this.json(res, 400, { error: 'defaultProvider is required' });
+      const { defaultProvider, autoFallback } = body as { defaultProvider?: string; autoFallback?: boolean };
+      if (!defaultProvider && autoFallback === undefined) {
+        this.json(res, 400, { error: 'defaultProvider or autoFallback is required' });
         return;
       }
       try {
-        this.llmRouter.setDefaultProvider(defaultProvider);
+        const configUpdates: Record<string, unknown> = {};
+        if (defaultProvider) {
+          this.llmRouter.setDefaultProvider(defaultProvider);
+          configUpdates.defaultProvider = defaultProvider;
+        }
+        if (typeof autoFallback === 'boolean') {
+          this.llmRouter.setAutoFallback(autoFallback);
+          configUpdates.autoFallback = autoFallback;
+        }
         try {
-          saveConfig({ llm: { defaultProvider } } as any, this.markusConfigPath);
+          saveConfig({ llm: configUpdates } as any, this.markusConfigPath);
         } catch (e) {
-          log.warn('Failed to persist defaultProvider to config file', { error: String(e) });
+          log.warn('Failed to persist LLM settings to config file', { error: String(e) });
         }
         this.auditService?.record({
           orgId: 'system',
           type: 'settings_changed',
-          action: 'llm_default_provider',
-          detail: `defaultProvider=${defaultProvider}`,
+          action: 'llm_settings',
+          detail: `${defaultProvider ? `defaultProvider=${defaultProvider}` : ''}${autoFallback !== undefined ? ` autoFallback=${autoFallback}` : ''}`.trim(),
           userId: auth.userId,
           success: true,
         });

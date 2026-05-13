@@ -14,7 +14,7 @@ interface ProviderInfo {
   contextWindow?: number; maxOutputTokens?: number; cost?: ModelCost; models?: ModelDef[];
   authType?: string; oauthConnected?: boolean; oauthAccountId?: string;
 }
-interface LLMSettings { defaultProvider: string; providers: Record<string, ProviderInfo> }
+interface LLMSettings { defaultProvider: string; autoFallback?: boolean; providers: Record<string, ProviderInfo> }
 interface OAuthProvider { name: string; displayName: string }
 interface AuthProfileSafe {
   id: string; provider: string; authType: string; label?: string;
@@ -875,6 +875,31 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
               </div>
             </div>
             {saveMsg && <Msg type={saveMsg.type} text={saveMsg.text} />}
+
+            <div className="flex items-center justify-between border-t border-border-default pt-4">
+              <div>
+                <div className="text-sm font-medium text-fg-primary">{t('defaultProvider.autoFallback')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('defaultProvider.autoFallbackDesc')}</div>
+              </div>
+              <button
+                onClick={async () => {
+                  const newVal = !(llm?.autoFallback ?? true);
+                  try {
+                    const res = await fetch('/api/settings/llm', {
+                      method: 'POST', headers: authHeaders(),
+                      body: JSON.stringify({ autoFallback: newVal }),
+                    });
+                    if (res.ok) {
+                      const data = await res.json() as LLMSettings;
+                      setLlm(data);
+                    }
+                  } catch { /* ignore */ }
+                }}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(llm?.autoFallback ?? true) ? 'bg-green-500' : 'bg-gray-600'}`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${(llm?.autoFallback ?? true) ? 'translate-x-4' : 'translate-x-1'}`} />
+              </button>
+            </div>
           </div>
         </Section>
 

@@ -54,6 +54,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
   const [llmConfigured, setLlmConfigured] = useState(false);
   const [configuredProviders, setConfiguredProviders] = useState<Array<{ name: string; displayName: string; model: string; apiKeyPreview?: string }>>([]);
   const [setupMsg, setSetupMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [autoFallback, setAutoFallback] = useState(true);
   const envDetected = useRef(false);
 
   // Search API key state
@@ -82,6 +83,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
             setConfiguredProviders(active);
           }
         }
+        if (typeof d?.autoFallback === 'boolean') setAutoFallback(d.autoFallback);
       })
       .catch(() => {});
   }, []);
@@ -397,6 +399,28 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
             </div>
           ))}
           <div className="text-xs text-fg-secondary mt-1">{t('llm.configuredHint')}</div>
+
+          <div className="flex items-center justify-between bg-surface-elevated/40 rounded-lg px-4 py-3 mt-3">
+            <div>
+              <div className="text-xs font-medium text-fg-primary">{t('llm.autoFallback')}</div>
+              <div className="text-[11px] text-fg-tertiary mt-0.5">{t('llm.autoFallbackDesc')}</div>
+            </div>
+            <button
+              onClick={async () => {
+                const newVal = !autoFallback;
+                setAutoFallback(newVal);
+                try {
+                  await fetch('/api/settings/llm', {
+                    method: 'POST', headers: authHeaders(),
+                    body: JSON.stringify({ autoFallback: newVal }),
+                  });
+                } catch { setAutoFallback(!newVal); }
+              }}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 ${autoFallback ? 'bg-green-500' : 'bg-gray-600'}`}
+            >
+              <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${autoFallback ? 'translate-x-4' : 'translate-x-1'}`} />
+            </button>
+          </div>
         </div>
       ) : (
         <div className="space-y-4">

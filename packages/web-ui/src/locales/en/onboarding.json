@@ -47,7 +47,9 @@
     "importFailed": "Import failed",
     "skipForNow": "Skip for now",
     "openClawFoundLabel": "Found:",
-    "openClawProviders": "({{count}} providers)"
+    "openClawProviders": "({{count}} providers)",
+    "autoFallback": "Auto-switch model on failure",
+    "autoFallbackDesc": "Try other providers/models if the primary fails"
   },
   "search": {
     "title": "Web Search (Optional)",

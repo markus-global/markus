@@ -29,6 +29,8 @@ export interface MarkusConfig {
     }>>;
     /** Request timeout in ms for all LLM providers (default: 90s) */
     timeoutMs?: number;
+    /** Allow automatic fallback to other providers/models when the primary fails (default: true) */
+    autoFallback?: boolean;
   };
   server: {
     apiPort: number;
