@@ -437,6 +437,9 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   if (config.integrations?.search?.braveApiKey && !process.env['BRAVE_SEARCH_API_KEY']) {
     process.env['BRAVE_SEARCH_API_KEY'] = config.integrations.search.braveApiKey;
   }
+  if (config.integrations?.search?.bochaApiKey && !process.env['BOCHA_API_KEY']) {
+    process.env['BOCHA_API_KEY'] = config.integrations.search.bochaApiKey;
+  }
 
   const apiPort = Number(values['port']) || config.server.apiPort;
 

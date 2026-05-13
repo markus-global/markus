@@ -209,6 +209,23 @@
     "saved": "已保存",
     "failedToSave": "保存失败"
   },
+  "searchApi": {
+    "title": "网络搜索 API 密钥",
+    "description": "配置搜索 API 密钥，让智能体能够搜索网络获取实时信息。优先级：Serper (Google) > Brave > 博查 > DuckDuckGo（免费兜底）。",
+    "serper": "Serper (Google)",
+    "serperHint": "通过 serper.dev 获取 Google 搜索结果",
+    "brave": "Brave Search",
+    "braveHint": "通过 brave.com 提供的隐私搜索",
+    "bocha": "博查 (Bocha)",
+    "bochaHint": "为 AI 优化的中文及全球内容搜索，通过 bochaai.com",
+    "configured": "已配置",
+    "notConfigured": "未配置",
+    "apiKeyPlaceholder": "在此粘贴 API Key...",
+    "saved": "搜索 API 密钥已保存",
+    "failedToSave": "保存搜索 API 密钥失败",
+    "envDetected": "来自环境变量",
+    "freeBackend": "DuckDuckGo 始终可用作免费兜底（无需 API 密钥）。"
+  },
   "browserAutomation": {
     "title": "浏览器自动化",
     "description": "Chrome DevTools 浏览器技能相关设置。智能体使用 Chrome 浏览网页、测试 Web 应用并检查页面。",

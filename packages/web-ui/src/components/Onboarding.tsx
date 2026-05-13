@@ -20,6 +20,7 @@ interface OpenClawPreview { found: boolean; summary: { configPath: string; model
 
 const PROFILE_STEP_ID = 'profile';
 const LLM_STEP_ID = 'llm';
+const SEARCH_STEP_ID = 'search';
 
 export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Props) {
   const { t } = useTranslation(['onboarding', 'common']);
@@ -55,6 +56,14 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
   const [setupMsg, setSetupMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const envDetected = useRef(false);
 
+  // Search API key state
+  const [searchKeys, setSearchKeys] = useState<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } } | null>(null);
+  const [searchForm, setSearchForm] = useState({ serperApiKey: '', braveApiKey: '', bochaApiKey: '' });
+  const [searchSaving, setSearchSaving] = useState(false);
+  const [searchConfigured, setSearchConfigured] = useState(false);
+  const [searchMsg, setSearchMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const searchDetected = useRef(false);
+
   const authHeaders = (): Record<string, string> => ({
     'Content-Type': 'application/json',
     Authorization: `Bearer ${localStorage.getItem('markus_token') ?? ''}`,
@@ -85,6 +94,15 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, llmConfigured, earlyLlmStepIdx]);
+
+  const earlySearchStepIdx = skipProfile ? 3 : 4;
+  useEffect(() => {
+    if (step === earlySearchStepIdx && !searchDetected.current) {
+      searchDetected.current = true;
+      void detectSearchKeys();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, earlySearchStepIdx]);
 
   const detectEnvModels = async () => {
     setEnvLoading(true);
@@ -155,6 +173,45 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
       }
     } catch { setSetupMsg({ type: 'err', text: t('llm.importFailed') }); }
     finally { setOpenclawLoading(false); }
+  };
+
+  const detectSearchKeys = async () => {
+    try {
+      const res = await fetch('/api/settings/search', { headers: authHeaders() });
+      if (res.ok) {
+        const data = await res.json() as typeof searchKeys;
+        setSearchKeys(data);
+        if (data && (data.serper.configured || data.brave.configured || data.bocha.configured)) {
+          setSearchConfigured(true);
+        }
+      }
+    } catch { /* ignore */ }
+  };
+
+  const saveSearchKeys = async () => {
+    const hasAny = searchForm.serperApiKey || searchForm.braveApiKey || searchForm.bochaApiKey;
+    if (!hasAny) return;
+    setSearchSaving(true); setSearchMsg(null);
+    try {
+      const updates: Record<string, string> = {};
+      if (searchForm.serperApiKey) updates.serperApiKey = searchForm.serperApiKey;
+      if (searchForm.braveApiKey) updates.braveApiKey = searchForm.braveApiKey;
+      if (searchForm.bochaApiKey) updates.bochaApiKey = searchForm.bochaApiKey;
+      const res = await fetch('/api/settings/search', {
+        method: 'POST', headers: authHeaders(),
+        body: JSON.stringify(updates),
+      });
+      if (res.ok) {
+        const data = await res.json() as typeof searchKeys;
+        setSearchKeys(data);
+        setSearchConfigured(true);
+        setSearchForm({ serperApiKey: '', braveApiKey: '', bochaApiKey: '' });
+        setSearchMsg({ type: 'ok', text: t('search.saved') });
+      } else {
+        setSearchMsg({ type: 'err', text: t('search.failedToSave') });
+      }
+    } catch { setSearchMsg({ type: 'err', text: t('common:networkError') }); }
+    finally { setSearchSaving(false); }
   };
 
   const saveProfile = async () => {
@@ -414,7 +471,91 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
         </div>
       ),
     },
-    // Step 4: Done
+    // Step 4: Search API Keys
+    {
+      id: SEARCH_STEP_ID,
+      title: t('search.title'),
+      subtitle: t('search.subtitle'),
+      content: searchConfigured ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-green-600 text-sm font-medium mb-1">
+            <span>&#10003;</span>
+            <span>{t('search.saved')}</span>
+          </div>
+          {searchKeys && ([
+            { id: 'serper' as const, label: t('search.serper') },
+            { id: 'brave' as const, label: t('search.brave') },
+            { id: 'bocha' as const, label: t('search.bocha') },
+          ]).filter(item => searchKeys[item.id]?.configured).map(item => (
+            <div key={item.id} className="flex items-center justify-between bg-green-500/10 border border-green-500/30 rounded-lg px-4 py-2.5">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-green-400" />
+                <span className="text-sm text-fg-primary font-medium">{item.label}</span>
+              </div>
+              <code className="text-[10px] text-fg-tertiary">{searchKeys[item.id].preview}</code>
+            </div>
+          ))}
+          <div className="text-xs text-fg-secondary mt-1">{t('search.savedHint')}</div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="text-xs text-fg-secondary">{t('search.description')}</div>
+
+          {searchKeys && (searchKeys.serper.configured || searchKeys.brave.configured || searchKeys.bocha.configured) && (
+            <div className="space-y-2">
+              <div className="text-xs text-fg-secondary uppercase tracking-wider">{t('search.detected')}</div>
+              {([
+                { id: 'serper' as const, label: t('search.serper') },
+                { id: 'brave' as const, label: t('search.brave') },
+                { id: 'bocha' as const, label: t('search.bocha') },
+              ]).filter(item => searchKeys[item.id]?.configured).map(item => (
+                <div key={item.id} className="flex items-center justify-between bg-green-500/10 border border-green-500/30 rounded-lg px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-green-400" />
+                    <span className="text-sm text-fg-primary">{item.label}</span>
+                  </div>
+                  <code className="text-[10px] text-fg-tertiary">{searchKeys[item.id].preview}</code>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="space-y-3">
+            {([
+              { label: t('search.serper'), field: 'serperApiKey' as const },
+              { label: t('search.brave'), field: 'braveApiKey' as const },
+              { label: t('search.bocha'), field: 'bochaApiKey' as const },
+            ]).map(item => (
+              <div key={item.field} className="space-y-1">
+                <label className="text-xs text-fg-tertiary font-medium">{item.label}</label>
+                <input
+                  type="password"
+                  value={searchForm[item.field]}
+                  onChange={e => setSearchForm({ ...searchForm, [item.field]: e.target.value })}
+                  placeholder={t('search.apiKeyPlaceholder')}
+                  className="w-full px-4 py-2 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
+                />
+              </div>
+            ))}
+          </div>
+
+          <button
+            onClick={() => void saveSearchKeys()}
+            disabled={searchSaving || (!searchForm.serperApiKey && !searchForm.braveApiKey && !searchForm.bochaApiKey)}
+            className="w-full px-4 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
+          >
+            {searchSaving ? t('search.saving') : t('search.save')}
+          </button>
+
+          {searchMsg && (
+            <div className={`text-xs px-3 py-2 rounded-lg ${searchMsg.type === 'ok' ? 'bg-green-500/10 text-green-600 border border-green-500/30' : 'bg-red-500/10 text-red-500 border border-red-500/30'}`}>
+              {searchMsg.text}
+            </div>
+          )}
+        </div>
+      ),
+    },
+    // Step 5: Done
     {
       id: 'done',
       title: t('done.title'),
@@ -443,6 +584,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
   const steps = skipProfile ? allSteps.filter(s => s.id !== PROFILE_STEP_ID) : allSteps;
   const profileStepIdx = steps.findIndex(s => s.id === PROFILE_STEP_ID);
   const llmStepIdx = steps.findIndex(s => s.id === LLM_STEP_ID);
+  const searchStepIdx = steps.findIndex(s => s.id === SEARCH_STEP_ID);
 
   const handleNext = () => {
     if (step === profileStepIdx && profileStepIdx >= 0 && !profileSaved) return;
@@ -489,6 +631,11 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
               {llmStepIdx >= 0 && step === llmStepIdx && !llmConfigured && (
                 <button onClick={handleNext} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
                   {t('llm.skipForNow')}
+                </button>
+              )}
+              {searchStepIdx >= 0 && step === searchStepIdx && !searchConfigured && (
+                <button onClick={handleNext} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
+                  {t('search.skipForNow')}
                 </button>
               )}
               <button

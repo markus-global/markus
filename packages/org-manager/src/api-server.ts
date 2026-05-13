@@ -6901,6 +6901,66 @@ EXPLANATION_END`;
       return;
     }
 
+    // Settings — Search API keys
+    if (path === '/api/settings/search' && req.method === 'GET') {
+      const { loadConfig: loadCfg } = await import('@markus/shared');
+      const currentConfig = loadCfg(this.markusConfigPath);
+      const search = currentConfig.integrations?.search ?? {};
+      const mask = (key?: string) => key ? '***' + key.slice(-4) : '';
+      this.json(res, 200, {
+        serper: { configured: !!search.serperApiKey || !!process.env['SERPER_API_KEY'], preview: mask(search.serperApiKey || process.env['SERPER_API_KEY']) },
+        brave: { configured: !!search.braveApiKey || !!process.env['BRAVE_SEARCH_API_KEY'], preview: mask(search.braveApiKey || process.env['BRAVE_SEARCH_API_KEY']) },
+        bocha: { configured: !!search.bochaApiKey || !!process.env['BOCHA_API_KEY'], preview: mask(search.bochaApiKey || process.env['BOCHA_API_KEY']) },
+      });
+      return;
+    }
+
+    if (path === '/api/settings/search' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const updates: Record<string, string | undefined> = {};
+      if (typeof body['serperApiKey'] === 'string') {
+        updates.serperApiKey = body['serperApiKey'] || undefined;
+        if (body['serperApiKey']) process.env['SERPER_API_KEY'] = body['serperApiKey'] as string;
+        else delete process.env['SERPER_API_KEY'];
+      }
+      if (typeof body['braveApiKey'] === 'string') {
+        updates.braveApiKey = body['braveApiKey'] || undefined;
+        if (body['braveApiKey']) process.env['BRAVE_SEARCH_API_KEY'] = body['braveApiKey'] as string;
+        else delete process.env['BRAVE_SEARCH_API_KEY'];
+      }
+      if (typeof body['bochaApiKey'] === 'string') {
+        updates.bochaApiKey = body['bochaApiKey'] || undefined;
+        if (body['bochaApiKey']) process.env['BOCHA_API_KEY'] = body['bochaApiKey'] as string;
+        else delete process.env['BOCHA_API_KEY'];
+      }
+      try {
+        saveConfig({ integrations: { search: updates } } as any, this.markusConfigPath);
+      } catch (e) {
+        log.warn('Failed to persist search settings', { error: String(e) });
+      }
+      this.auditService?.record({
+        orgId: 'system',
+        type: 'settings_changed',
+        action: 'search',
+        detail: 'Search API key settings updated',
+        userId: auth.userId,
+        success: true,
+        metadata: { keys: Object.keys(updates) },
+      });
+      const { loadConfig: loadCfg } = await import('@markus/shared');
+      const currentConfig = loadCfg(this.markusConfigPath);
+      const search = currentConfig.integrations?.search ?? {};
+      const mask = (key?: string) => key ? '***' + key.slice(-4) : '';
+      this.json(res, 200, {
+        serper: { configured: !!search.serperApiKey || !!process.env['SERPER_API_KEY'], preview: mask(search.serperApiKey || process.env['SERPER_API_KEY']) },
+        brave: { configured: !!search.braveApiKey || !!process.env['BRAVE_SEARCH_API_KEY'], preview: mask(search.braveApiKey || process.env['BRAVE_SEARCH_API_KEY']) },
+        bocha: { configured: !!search.bochaApiKey || !!process.env['BOCHA_API_KEY'], preview: mask(search.bochaApiKey || process.env['BOCHA_API_KEY']) },
+      });
+      return;
+    }
+
     if (path === '/api/settings/llm/models' && req.method === 'GET') {
       if (!this.llmRouter) {
         this.json(res, 200, { models: [] });
@@ -9435,6 +9495,7 @@ EXPLANATION_END`;
       exact('/api/settings/llm/models', 'GET'),
       exact('/api/settings/agent', 'GET', 'POST'),
       exact('/api/settings/browser', 'GET', 'POST'),
+      exact('/api/settings/search', 'GET', 'POST'),
       exact('/api/settings/env-models', 'GET', 'POST'),
       exact('/api/settings/detect-ollama', 'GET'),
       exact('/api/settings/export', 'POST'),

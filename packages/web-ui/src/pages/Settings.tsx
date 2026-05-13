@@ -94,6 +94,12 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
   const [browserSaving, setBrowserSaving] = useState(false);
   const [browserMsg, setBrowserMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
+  // Search API key settings
+  const [searchKeys, setSearchKeys] = useState<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } } | null>(null);
+  const [searchForm, setSearchForm] = useState({ serperApiKey: '', braveApiKey: '', bochaApiKey: '' });
+  const [searchSaving, setSearchSaving] = useState(false);
+  const [searchMsg, setSearchMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
   // Storage transparency
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
   const [storageLoading, setStorageLoading] = useState(false);
@@ -158,13 +164,19 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
       .catch(() => {});
   }, []);
 
+  const loadSearchSettings = useCallback(() => {
+    api.settings.getSearch()
+      .then(d => { if (d) setSearchKeys(d); })
+      .catch(() => {});
+  }, []);
+
   const loadStorage = useCallback(() => {
     setStorageLoading(true);
     api.system.storage().then(setStorageInfo).catch(() => {}).finally(() => setStorageLoading(false));
     api.system.orphans().then(setOrphanInfo).catch(() => {});
   }, []);
 
-  useEffect(() => { loadSettings(); loadOAuthProviders(); loadAuthProfiles(); loadAgentSettings(); loadBrowserSettings(); loadStorage(); }, [loadSettings, loadOAuthProviders, loadAuthProfiles, loadAgentSettings, loadBrowserSettings, loadStorage]);
+  useEffect(() => { loadSettings(); loadOAuthProviders(); loadAuthProfiles(); loadAgentSettings(); loadBrowserSettings(); loadSearchSettings(); loadStorage(); }, [loadSettings, loadOAuthProviders, loadAuthProfiles, loadAgentSettings, loadBrowserSettings, loadSearchSettings, loadStorage]);
 
   useEffect(() => {
     const handler = () => loadStorage();
@@ -626,6 +638,23 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
       }
     } catch { /* ignore */ }
     finally { setSwitchingModel(null); }
+  };
+
+  const saveSearchKeys = async () => {
+    const hasAny = searchForm.serperApiKey || searchForm.braveApiKey || searchForm.bochaApiKey;
+    if (!hasAny) return;
+    setSearchSaving(true); setSearchMsg(null);
+    try {
+      const updates: Record<string, string> = {};
+      if (searchForm.serperApiKey) updates.serperApiKey = searchForm.serperApiKey;
+      if (searchForm.braveApiKey) updates.braveApiKey = searchForm.braveApiKey;
+      if (searchForm.bochaApiKey) updates.bochaApiKey = searchForm.bochaApiKey;
+      const d = await api.settings.updateSearch(updates);
+      setSearchKeys(d);
+      setSearchForm({ serperApiKey: '', braveApiKey: '', bochaApiKey: '' });
+      setSearchMsg({ type: 'ok', text: t('searchApi.saved') });
+    } catch { setSearchMsg({ type: 'err', text: t('searchApi.failedToSave') }); }
+    finally { setSearchSaving(false); }
   };
 
   const enabledProviders = llm?.providers
@@ -1602,6 +1631,63 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
             </div>
 
             {browserMsg && <Msg type={browserMsg.type} text={browserMsg.text} />}
+          </div>
+        </Section>
+
+        <Section title={t('searchApi.title')}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-5">
+            <div className="text-xs text-fg-tertiary">{t('searchApi.description')}</div>
+
+            {([
+              { id: 'serper' as const, label: t('searchApi.serper'), hint: t('searchApi.serperHint'), field: 'serperApiKey' as const },
+              { id: 'brave' as const, label: t('searchApi.brave'), hint: t('searchApi.braveHint'), field: 'braveApiKey' as const },
+              { id: 'bocha' as const, label: t('searchApi.bocha'), hint: t('searchApi.bochaHint'), field: 'bochaApiKey' as const },
+            ]).map((item, idx) => (
+              <div key={item.id} className={idx > 0 ? 'border-t border-border-default pt-4' : ''}>
+                <div className="flex items-center justify-between mb-2">
+                  <div>
+                    <div className="text-sm font-medium text-fg-primary">{item.label}</div>
+                    <div className="text-xs text-fg-tertiary mt-0.5">{item.hint}</div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {searchKeys?.[item.id]?.configured && (
+                      <>
+                        <span className="w-2 h-2 rounded-full bg-green-400" />
+                        <span className="text-xs text-green-600">{t('searchApi.configured')}</span>
+                        <code className="text-[10px] text-fg-tertiary">{searchKeys[item.id].preview}</code>
+                      </>
+                    )}
+                    {searchKeys && !searchKeys[item.id]?.configured && (
+                      <>
+                        <span className="w-2 h-2 rounded-full bg-gray-500" />
+                        <span className="text-xs text-fg-tertiary">{t('searchApi.notConfigured')}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <input
+                  type="password"
+                  value={searchForm[item.field]}
+                  onChange={e => setSearchForm({ ...searchForm, [item.field]: e.target.value })}
+                  placeholder={searchKeys?.[item.id]?.configured ? t('modelProviders.apiKeyPlaceholder') : t('searchApi.apiKeyPlaceholder')}
+                  className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none"
+                />
+              </div>
+            ))}
+
+            <div className="text-xs text-fg-tertiary italic">{t('searchApi.freeBackend')}</div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-border-default">
+              {searchMsg && <Msg type={searchMsg.type} text={searchMsg.text} />}
+              {!searchMsg && <div />}
+              <button
+                disabled={searchSaving || (!searchForm.serperApiKey && !searchForm.braveApiKey && !searchForm.bochaApiKey)}
+                onClick={() => void saveSearchKeys()}
+                className="px-4 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+              >
+                {searchSaving ? t('common:saving') : t('common:save')}
+              </button>
+            </div>
           </div>
         </Section>
 

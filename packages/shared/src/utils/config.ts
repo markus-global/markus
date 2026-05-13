@@ -70,7 +70,7 @@ export interface MarkusConfig {
   };
   integrations?: {
     feishu?: { appId?: string; appSecret?: string };
-    search?: { serperApiKey?: string; braveApiKey?: string };
+    search?: { serperApiKey?: string; braveApiKey?: string; bochaApiKey?: string };
     embedding?: { apiKey?: string };
   };
   database?: {

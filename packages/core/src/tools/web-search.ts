@@ -58,7 +58,7 @@ function hasProxy(): boolean {
 
 /**
  * Multi-backend web search tool.
- * Priority: Serper (Google) > Brave Search > DuckDuckGo Lite/HTML fallback.
+ * Priority: Serper (Google) > Brave Search > Bocha > DuckDuckGo Lite/HTML fallback.
  * API keys are read from environment variables.
  */
 export const WebSearchTool: AgentToolHandler = {
@@ -88,6 +88,7 @@ export const WebSearchTool: AgentToolHandler = {
     const backends: Array<{ name: string; fn: typeof searchSerper }> = [
       { name: 'Serper', fn: searchSerper },
       { name: 'Brave', fn: searchBrave },
+      { name: 'Bocha', fn: searchBocha },
       { name: 'DuckDuckGo', fn: searchDuckDuckGo },
     ];
     const errors: Array<{ backend: string; error: string }> = [];
@@ -194,6 +195,48 @@ async function searchBrave(query: string, maxResults: number): Promise<SearchRes
     url: r.url,
     snippet: r.description,
     date: r.page_age,
+  }));
+}
+
+// ── Bocha (博查) backend ────────────────────────────────────────────────────
+
+async function searchBocha(query: string, maxResults: number): Promise<SearchResult[]> {
+  const apiKey = process.env['BOCHA_API_KEY'];
+  if (!apiKey) throw new Error('BOCHA_API_KEY not configured');
+
+  let res: Response;
+  try {
+    res = await proxyFetch('https://api.bochaai.com/v1/web-search', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query, count: maxResults, summary: true }),
+    });
+  } catch (err: unknown) {
+    throw new Error(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+
+  const data = (await res.json()) as {
+    webPages?: {
+      value?: Array<{
+        name: string;
+        url: string;
+        snippet: string;
+        summary?: string;
+        datePublished?: string;
+      }>;
+    };
+  };
+
+  return (data.webPages?.value ?? []).slice(0, maxResults).map(r => ({
+    title: r.name,
+    url: r.url,
+    snippet: r.summary || r.snippet,
+    date: r.datePublished,
   }));
 }
 
