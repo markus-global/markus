@@ -5,6 +5,7 @@ import { THEME_OPTIONS, type ThemeMode } from '../hooks/useTheme.ts';
 import { SUPPORTED_LANGUAGES } from '../i18n/index.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
+import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[] }
@@ -14,7 +15,7 @@ interface ProviderInfo {
   contextWindow?: number; maxOutputTokens?: number; cost?: ModelCost; models?: ModelDef[];
   authType?: string; oauthConnected?: boolean; oauthAccountId?: string;
 }
-interface LLMSettings { defaultProvider: string; providers: Record<string, ProviderInfo> }
+interface LLMSettings { defaultProvider: string; autoFallback?: boolean; providers: Record<string, ProviderInfo> }
 interface OAuthProvider { name: string; displayName: string }
 interface AuthProfileSafe {
   id: string; provider: string; authType: string; label?: string;
@@ -34,8 +35,21 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
-export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void; authUser?: AuthUser } = {}) {
+export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdated }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void; authUser?: AuthUser; onLogout?: () => void; onUserUpdated?: (u: AuthUser) => void } = {}) {
   const { t, i18n } = useTranslation(['settings', 'common']);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [showEditProfile, setShowEditProfile] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) setUserMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [userMenuOpen]);
+
   const [health, setHealth] = useState<{ status: string; version: string; agents: number } | null>(null);
   const [llm, setLlm] = useState<LLMSettings | null>(null);
   const [selectedProvider, setSelectedProvider] = useState('');
@@ -93,6 +107,12 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
   const [browserAutoClose, setBrowserAutoClose] = useState(true);
   const [browserSaving, setBrowserSaving] = useState(false);
   const [browserMsg, setBrowserMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
+  // Search API key settings
+  const [searchKeys, setSearchKeys] = useState<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } } | null>(null);
+  const [searchForm, setSearchForm] = useState({ serperApiKey: '', braveApiKey: '', bochaApiKey: '' });
+  const [searchSaving, setSearchSaving] = useState(false);
+  const [searchMsg, setSearchMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   // Storage transparency
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
@@ -158,13 +178,19 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
       .catch(() => {});
   }, []);
 
+  const loadSearchSettings = useCallback(() => {
+    api.settings.getSearch()
+      .then(d => { if (d) setSearchKeys(d); })
+      .catch(() => {});
+  }, []);
+
   const loadStorage = useCallback(() => {
     setStorageLoading(true);
     api.system.storage().then(setStorageInfo).catch(() => {}).finally(() => setStorageLoading(false));
     api.system.orphans().then(setOrphanInfo).catch(() => {});
   }, []);
 
-  useEffect(() => { loadSettings(); loadOAuthProviders(); loadAuthProfiles(); loadAgentSettings(); loadBrowserSettings(); loadStorage(); }, [loadSettings, loadOAuthProviders, loadAuthProfiles, loadAgentSettings, loadBrowserSettings, loadStorage]);
+  useEffect(() => { loadSettings(); loadOAuthProviders(); loadAuthProfiles(); loadAgentSettings(); loadBrowserSettings(); loadSearchSettings(); loadStorage(); }, [loadSettings, loadOAuthProviders, loadAuthProfiles, loadAgentSettings, loadBrowserSettings, loadSearchSettings, loadStorage]);
 
   useEffect(() => {
     const handler = () => loadStorage();
@@ -628,6 +654,23 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
     finally { setSwitchingModel(null); }
   };
 
+  const saveSearchKeys = async () => {
+    const hasAny = searchForm.serperApiKey || searchForm.braveApiKey || searchForm.bochaApiKey;
+    if (!hasAny) return;
+    setSearchSaving(true); setSearchMsg(null);
+    try {
+      const updates: Record<string, string> = {};
+      if (searchForm.serperApiKey) updates.serperApiKey = searchForm.serperApiKey;
+      if (searchForm.braveApiKey) updates.braveApiKey = searchForm.braveApiKey;
+      if (searchForm.bochaApiKey) updates.bochaApiKey = searchForm.bochaApiKey;
+      const d = await api.settings.updateSearch(updates);
+      setSearchKeys(d);
+      setSearchForm({ serperApiKey: '', braveApiKey: '', bochaApiKey: '' });
+      setSearchMsg({ type: 'ok', text: t('searchApi.saved') });
+    } catch { setSearchMsg({ type: 'err', text: t('searchApi.failedToSave') }); }
+    finally { setSearchSaving(false); }
+  };
+
   const enabledProviders = llm?.providers
     ? Object.entries(llm.providers).filter(([, v]) => v.configured && v.enabled).map(([k]) => k) : [];
 
@@ -636,15 +679,59 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="px-6 h-14 flex items-center border-b border-border-default bg-surface-secondary">
-        <h2 className="text-lg font-semibold">{t('title')}</h2>
-      </div>
+      {showEditProfile && authUser && (
+        <EditProfileModal
+          authUser={authUser}
+          onClose={() => setShowEditProfile(false)}
+          onSaved={u => { setShowEditProfile(false); onUserUpdated?.(u); }}
+        />
+      )}
 
       <div className="p-7 space-y-10 max-w-4xl">
+        <div className="flex items-center">
+          <h2 className="text-lg font-semibold flex-1">{t('title')}</h2>
+          {authUser && (
+            <div ref={userMenuRef} className="relative">
+              <button
+                onClick={() => setUserMenuOpen(!userMenuOpen)}
+                className="hover:ring-2 hover:ring-brand-500/50 transition-all rounded-full"
+                title={authUser.name || t('common:userPlaceholder')}
+              >
+                <Avatar name={authUser.name || t('common:userPlaceholder')} avatarUrl={authUser.avatarUrl} size={30} />
+              </button>
+              {userMenuOpen && (
+                <div className="absolute right-0 top-full mt-1 bg-surface-secondary border border-border-default rounded-xl shadow-xl z-50 overflow-hidden" style={{ minWidth: 200 }}>
+                  <div className="px-4 py-3 border-b border-border-default">
+                    <div className="text-sm font-medium text-fg-primary">{authUser.name || t('common:userPlaceholder')}</div>
+                    <div className="text-xs text-fg-tertiary mt-0.5">{authUser.email || authUser.role}</div>
+                  </div>
+                  <div className="py-1">
+                    <button
+                      onClick={() => { setUserMenuOpen(false); setShowEditProfile(true); }}
+                      className="w-full flex items-center gap-2.5 px-4 py-2 text-sm text-fg-secondary hover:bg-surface-overlay transition-colors"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
+                      {t('common:profile.editProfile')}
+                    </button>
+                    {onLogout && (
+                      <button
+                        onClick={() => { setUserMenuOpen(false); onLogout(); }}
+                        className="w-full flex items-center gap-2.5 px-4 py-2 text-sm text-red-500 hover:bg-red-500/10 transition-colors"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
+                        {t('common:signOut', { defaultValue: 'Sign Out' })}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* ───── Appearance ───── */}
         <Section title={t('appearance.title')}>
-          <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
+          <div className="bg-surface-elevated rounded-xl p-5">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium">{t('appearance.theme')}</div>
@@ -824,7 +911,7 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
 
         {/* ───── Default Provider ───── */}
         <Section title={t('defaultProvider.title')}>
-          <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-medium">{t('defaultProvider.primaryProvider')}</div>
@@ -846,6 +933,31 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
               </div>
             </div>
             {saveMsg && <Msg type={saveMsg.type} text={saveMsg.text} />}
+
+            <div className="flex items-center justify-between border-t border-border-default pt-4">
+              <div>
+                <div className="text-sm font-medium text-fg-primary">{t('defaultProvider.autoFallback')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('defaultProvider.autoFallbackDesc')}</div>
+              </div>
+              <button
+                onClick={async () => {
+                  const newVal = !(llm?.autoFallback ?? true);
+                  try {
+                    const res = await fetch('/api/settings/llm', {
+                      method: 'POST', headers: authHeaders(),
+                      body: JSON.stringify({ autoFallback: newVal }),
+                    });
+                    if (res.ok) {
+                      const data = await res.json() as LLMSettings;
+                      setLlm(data);
+                    }
+                  } catch { /* ignore */ }
+                }}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(llm?.autoFallback ?? true) ? 'bg-green-500' : 'bg-gray-600'}`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${(llm?.autoFallback ?? true) ? 'translate-x-4' : 'translate-x-1'}`} />
+              </button>
+            </div>
           </div>
         </Section>
 
@@ -1263,7 +1375,7 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
 
         {/* ───── Auto-detect & Import ───── */}
         <Section title={t('autoDetect.title')}>
-          <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-5">
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
             <div className="text-sm text-fg-secondary">{t('autoDetect.description')}</div>
 
             {/* — Environment Variables — */}
@@ -1401,7 +1513,7 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
         </Section>
 
         <Section title={t('agentExecution.title')}>
-          <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('agentExecution.maxToolIterations')}</div>
@@ -1437,7 +1549,7 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
         </Section>
 
         <Section title={t('cognitive.title')}>
-          <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
             <div className="text-xs text-fg-tertiary">{t('cognitive.description')}</div>
 
             {/* Enable toggle */}
@@ -1497,7 +1609,7 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
         </Section>
 
         <Section title={t('browserAutomation.title')}>
-          <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-5">
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
             <div className="text-xs text-fg-tertiary">
               {t('browserAutomation.description')}
             </div>
@@ -1605,8 +1717,65 @@ export function Settings({ theme, onThemeChange, authUser }: { theme?: ThemeMode
           </div>
         </Section>
 
+        <Section title={t('searchApi.title')}>
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
+            <div className="text-xs text-fg-tertiary">{t('searchApi.description')}</div>
+
+            {([
+              { id: 'serper' as const, label: t('searchApi.serper'), hint: t('searchApi.serperHint'), field: 'serperApiKey' as const },
+              { id: 'brave' as const, label: t('searchApi.brave'), hint: t('searchApi.braveHint'), field: 'braveApiKey' as const },
+              { id: 'bocha' as const, label: t('searchApi.bocha'), hint: t('searchApi.bochaHint'), field: 'bochaApiKey' as const },
+            ]).map((item, idx) => (
+              <div key={item.id} className={idx > 0 ? 'border-t border-border-default pt-4' : ''}>
+                <div className="flex items-center justify-between mb-2">
+                  <div>
+                    <div className="text-sm font-medium text-fg-primary">{item.label}</div>
+                    <div className="text-xs text-fg-tertiary mt-0.5">{item.hint}</div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {searchKeys?.[item.id]?.configured && (
+                      <>
+                        <span className="w-2 h-2 rounded-full bg-green-400" />
+                        <span className="text-xs text-green-600">{t('searchApi.configured')}</span>
+                        <code className="text-[10px] text-fg-tertiary">{searchKeys[item.id].preview}</code>
+                      </>
+                    )}
+                    {searchKeys && !searchKeys[item.id]?.configured && (
+                      <>
+                        <span className="w-2 h-2 rounded-full bg-gray-500" />
+                        <span className="text-xs text-fg-tertiary">{t('searchApi.notConfigured')}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <input
+                  type="password"
+                  value={searchForm[item.field]}
+                  onChange={e => setSearchForm({ ...searchForm, [item.field]: e.target.value })}
+                  placeholder={searchKeys?.[item.id]?.configured ? t('modelProviders.apiKeyPlaceholder') : t('searchApi.apiKeyPlaceholder')}
+                  className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none"
+                />
+              </div>
+            ))}
+
+            <div className="text-xs text-fg-tertiary italic">{t('searchApi.freeBackend')}</div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-border-default">
+              {searchMsg && <Msg type={searchMsg.type} text={searchMsg.text} />}
+              {!searchMsg && <div />}
+              <button
+                disabled={searchSaving || (!searchForm.serperApiKey && !searchForm.braveApiKey && !searchForm.bochaApiKey)}
+                onClick={() => void saveSearchKeys()}
+                className="px-4 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+              >
+                {searchSaving ? t('common:saving') : t('common:save')}
+              </button>
+            </div>
+          </div>
+        </Section>
+
         <Section title={t('dataStorage.title')}>
-          <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-5">
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
             {storageLoading && !storageInfo && <div className="text-sm text-fg-tertiary">{t('dataStorage.scanning')}</div>}
             {storageInfo && (
               <>
@@ -1791,7 +1960,7 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
 
   return (
     <Section title={t('settings:userManagement.title')}>
-      <div className="bg-surface-secondary border border-border-default rounded-xl overflow-hidden">
+      <div className="bg-surface-elevated rounded-xl overflow-hidden">
         {msg && (
           <div className={`px-4 py-2 text-xs border-b ${msg.type === 'ok' ? 'bg-green-500/10 text-green-600 border-green-500/20' : 'bg-red-500/10 text-red-500 border-red-500/20'}`}>
             {msg.text}
@@ -1924,7 +2093,7 @@ function SetupCard({ step, title, description, active, children }: {
   children?: React.ReactNode;
 }) {
   return (
-    <div className={`rounded-xl border p-4 space-y-3 transition-colors ${active ? 'border-brand-500/60 bg-brand-500/10' : 'border-border-default bg-surface-secondary/60'}`}>
+    <div className={`rounded-xl p-4 space-y-3 transition-colors ${active ? 'ring-1 ring-brand-500/60 bg-brand-500/10' : 'bg-surface-elevated'}`}>
       <div className="flex items-start gap-3">
         <span className="flex-none w-6 h-6 rounded-full bg-surface-overlay flex items-center justify-center text-xs font-bold text-fg-secondary">{step}</span>
         <div className="min-w-0">
@@ -2061,6 +2230,60 @@ function OrphanSection({ orphanInfo, dataDir, onPurged, formatBytes: formatBytes
         </button>
       </div>
       {result && <div className="text-xs text-fg-tertiary mt-2">{result}</div>}
+    </div>
+  );
+}
+
+function EditProfileModal({ authUser, onClose, onSaved }: { authUser: AuthUser; onClose: () => void; onSaved: (u: AuthUser) => void }) {
+  const { t } = useTranslation('common');
+  const [name, setName] = useState(authUser.name || '');
+  const [email, setEmail] = useState(authUser.email || '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [avatarUrl, setAvatarUrl] = useState(authUser.avatarUrl);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) { setError(t('profile.nameRequired')); return; }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { setError(t('profile.invalidEmail')); return; }
+    setSaving(true); setError('');
+    try {
+      const { user } = await api.auth.updateProfile(name.trim(), email.trim());
+      onSaved({ ...user, avatarUrl: avatarUrl ?? user.avatarUrl });
+    } catch { setError(t('profile.failedToSave')); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
+      <form onSubmit={submit} className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[400px] shadow-2xl" onClick={e => e.stopPropagation()}>
+        <h3 className="text-base font-semibold mb-5">{t('profile.editProfile')}</h3>
+        <div className="flex justify-center mb-5">
+          <AvatarUpload
+            currentUrl={avatarUrl}
+            name={name}
+            size={72}
+            targetType="user"
+            targetId={authUser.id}
+            onUploaded={url => setAvatarUrl(url)}
+          />
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs text-fg-tertiary font-medium mb-1">{t('profile.name')}</label>
+            <input value={name} onChange={e => setName(e.target.value)} className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none" />
+          </div>
+          <div>
+            <label className="block text-xs text-fg-tertiary font-medium mb-1">{t('profile.email')}</label>
+            <input value={email} onChange={e => setEmail(e.target.value)} type="email" className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none" />
+          </div>
+          {error && <div className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
+        </div>
+        <div className="flex justify-end gap-3 mt-5">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">{t('cancel')}</button>
+          <button type="submit" disabled={saving} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white rounded-lg">{saving ? t('saving') : t('save')}</button>
+        </div>
+      </form>
     </div>
   );
 }

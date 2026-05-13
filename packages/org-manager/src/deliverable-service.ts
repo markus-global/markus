@@ -27,6 +27,7 @@ export class DeliverableService {
     title: string;
     summary: string;
     reference?: string;
+    format?: string;
     tags?: string[];
     taskId?: string;
     agentId?: string;
@@ -49,6 +50,7 @@ export class DeliverableService {
           summary: opts.summary,
           tags: opts.tags ?? existing.tags,
         };
+        if (opts.format !== undefined) patch.format = opts.format;
         if (opts.artifactType !== undefined) patch.artifactType = opts.artifactType;
         if (opts.artifactData !== undefined) patch.artifactData = opts.artifactData;
         if (opts.diffStats !== undefined) patch.diffStats = opts.diffStats;
@@ -74,6 +76,7 @@ export class DeliverableService {
       title: opts.title,
       summary: opts.summary,
       reference: ref ?? '',
+      format: opts.format,
       tags: opts.tags ?? [],
       status: 'active',
       taskId: opts.taskId,
@@ -95,6 +98,7 @@ export class DeliverableService {
       title: opts.title,
       summary: opts.summary,
       reference: ref ?? '',
+      format: opts.format,
       tags: opts.tags ?? [],
       status: 'active',
       taskId: opts.taskId,
@@ -184,6 +188,7 @@ export class DeliverableService {
     title: string;
     summary: string;
     reference: string;
+    format: string;
     tags: string[];
     status: Deliverable['status'];
     artifactType: Deliverable['artifactType'];
@@ -199,6 +204,7 @@ export class DeliverableService {
     if (data.title !== undefined) d.title = data.title;
     if (data.summary !== undefined) d.summary = data.summary;
     if (data.reference !== undefined) d.reference = data.reference;
+    if (data.format !== undefined) d.format = data.format;
     if (data.tags !== undefined) d.tags = data.tags;
     if (data.status !== undefined) d.status = data.status;
     if (data.artifactType !== undefined) d.artifactType = data.artifactType;
@@ -384,6 +390,7 @@ export class DeliverableService {
     title: string;
     summary: string;
     reference: string;
+    format?: string | null;
     tags: unknown;
     status: string;
     taskId: string | null;
@@ -404,6 +411,7 @@ export class DeliverableService {
       title: r.title,
       summary: r.summary,
       reference: r.reference,
+      format: r.format ?? undefined,
       tags: this.parseTags(r.tags),
       status: r.status as Deliverable['status'],
       taskId: r.taskId ?? undefined,

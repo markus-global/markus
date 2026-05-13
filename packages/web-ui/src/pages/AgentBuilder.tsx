@@ -513,7 +513,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
 
               return (
                 <div key={key} onClick={() => navigateToDetail(art)}
-                  className="group rounded-lg border border-border-default bg-surface-secondary/60 p-4 hover:border-gray-600 transition-all overflow-hidden cursor-pointer">
+                  className="group rounded-lg bg-surface-elevated p-4 hover:bg-surface-overlay transition-all overflow-hidden cursor-pointer">
                   <div className="flex items-start gap-3 min-w-0">
                     {(() => {
                       const artIcon = art.meta.icon as string | undefined;

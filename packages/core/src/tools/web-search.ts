@@ -58,7 +58,7 @@ function hasProxy(): boolean {
 
 /**
  * Multi-backend web search tool.
- * Priority: Serper (Google) > Brave Search > Bing (free) > DuckDuckGo Lite/HTML fallback.
+ * Priority: Serper (Google) > Brave Search > Bocha > DuckDuckGo Lite/HTML fallback.
  * API keys are read from environment variables.
  */
 export const WebSearchTool: AgentToolHandler = {
@@ -88,7 +88,7 @@ export const WebSearchTool: AgentToolHandler = {
     const backends: Array<{ name: string; fn: typeof searchSerper }> = [
       { name: 'Serper', fn: searchSerper },
       { name: 'Brave', fn: searchBrave },
-      { name: 'Bing', fn: searchBing },
+      { name: 'Bocha', fn: searchBocha },
       { name: 'DuckDuckGo', fn: searchDuckDuckGo },
     ];
     const errors: Array<{ backend: string; error: string }> = [];
@@ -198,21 +198,21 @@ async function searchBrave(query: string, maxResults: number): Promise<SearchRes
   }));
 }
 
-// ── Bing (free, no API key) ─────────────────────────────────────────────────
+// ── Bocha (博查) backend ────────────────────────────────────────────────────
 
-const BING_UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+async function searchBocha(query: string, maxResults: number): Promise<SearchResult[]> {
+  const apiKey = process.env['BOCHA_API_KEY'];
+  if (!apiKey) throw new Error('BOCHA_API_KEY not configured');
 
-/**
- * Scrape Bing search results from HTML. No API key required.
- * Follows redirects from www.bing.com to regional endpoints (e.g. cn.bing.com).
- */
-async function searchBing(query: string, maxResults: number): Promise<SearchResult[]> {
-  const encoded = encodeURIComponent(query);
   let res: Response;
   try {
-    res = await proxyFetch(`https://www.bing.com/search?q=${encoded}`, {
-      headers: { 'User-Agent': BING_UA },
+    res = await proxyFetch('https://api.bochaai.com/v1/web-search', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query, count: maxResults, summary: true }),
     });
   } catch (err: unknown) {
     throw new Error(`Network error: ${err instanceof Error ? err.message : String(err)}`);
@@ -220,44 +220,24 @@ async function searchBing(query: string, maxResults: number): Promise<SearchResu
 
   if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
 
-  const html = await res.text();
-  const results = parseBingHtml(html, maxResults);
-  if (results.length === 0) throw new Error('Parsed 0 results from Bing');
-  return results;
-}
+  const data = (await res.json()) as {
+    webPages?: {
+      value?: Array<{
+        name: string;
+        url: string;
+        snippet: string;
+        summary?: string;
+        datePublished?: string;
+      }>;
+    };
+  };
 
-/**
- * Parse Bing search result HTML.
- * Results are in <li class="b_algo"> elements, each containing:
- *   <h2><a href="URL">Title</a></h2>
- *   <p>Snippet text</p>
- */
-function parseBingHtml(html: string, max: number): SearchResult[] {
-  const results: SearchResult[] = [];
-  const algoRegex = /<li[^>]*class="b_algo"[^>]*>([\s\S]*?)<\/li>/g;
-  let match;
-
-  while ((match = algoRegex.exec(html)) !== null) {
-    if (results.length >= max) break;
-
-    const item = match[1]!;
-
-    // Extract URL and title from <a href="...">...</a> inside h2
-    const linkMatch = item.match(/<a[^>]+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i);
-    if (!linkMatch) continue;
-
-    const url = linkMatch[1]!;
-    const title = stripHtml(linkMatch[2]!);
-    if (!url || !title) continue;
-
-    // Extract snippet from first <p> tag
-    const snippetMatch = item.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
-    const snippet = snippetMatch ? stripHtml(snippetMatch[1]!) : '';
-
-    results.push({ title, url, snippet });
-  }
-
-  return results;
+  return (data.webPages?.value ?? []).slice(0, maxResults).map(r => ({
+    title: r.name,
+    url: r.url,
+    snippet: r.summary || r.snippet,
+    date: r.datePublished,
+  }));
 }
 
 // ── DuckDuckGo fallback (no API key) ───────────────────────────────────────

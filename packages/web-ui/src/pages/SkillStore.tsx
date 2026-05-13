@@ -516,7 +516,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
-      <div className={`${isMobile ? 'px-4' : 'px-6'} border-b border-border-default bg-surface-secondary shrink-0`}>
+      <div className={`${isMobile ? 'px-4' : 'px-6'} shrink-0`}>
         <div className="flex items-center h-14">
           <h2 className="text-lg font-semibold">{t('skillStore.title')}</h2>
         </div>
@@ -681,7 +681,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
                 {skillhubSkills.map(skill => {
                   const isInst = installed.some(s => s.name === skill.name || s.name === skill.slug);
                   return (
-                    <div key={skill.slug} className="bg-surface-secondary border border-border-default rounded-xl p-5 hover:border-gray-600 transition-colors">
+                    <div key={skill.slug} className="bg-surface-elevated rounded-xl p-5 hover:bg-surface-overlay transition-colors">
                       <div className="flex items-start justify-between">
                         <div className="flex-1 min-w-0">
                           <div className="font-semibold text-sm truncate">{skill.name}</div>
@@ -772,7 +772,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
               {filteredSkillssh.map(skill => {
                 const isInst = installed.some(s => s.name === skill.name);
                 return (
-                  <div key={`${skill.author}-${skill.name}`} className="bg-surface-secondary border border-border-default rounded-xl p-5 hover:border-gray-600 transition-colors">
+                  <div key={`${skill.author}-${skill.name}`} className="bg-surface-elevated rounded-xl p-5 hover:bg-surface-overlay transition-colors">
                     <div className="flex items-start justify-between">
                       <div className="flex-1 min-w-0">
                         <div className="font-semibold text-sm truncate">{skill.name}</div>

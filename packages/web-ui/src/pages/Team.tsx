@@ -22,8 +22,9 @@ import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { parseMentionNames, renderMentionText } from '../components/CommentInput.tsx';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
-import { AgentProfile } from './AgentProfile.tsx';
-import { TeamProfile } from './TeamProfile.tsx';
+import { TeamDetailPanel } from '../components/TeamDetailPanel.tsx';
+import { AgentProfile, TAB_DEF as AGENT_TAB_DEF, type ProfileTab } from './AgentProfile.tsx';
+import { TeamProfile, TABS as TEAM_TABS, type TeamTab } from './TeamProfile.tsx';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
@@ -675,7 +676,34 @@ function AgentMessageBody({
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-type MainTab = 'chat' | 'profile';
+type MainTab = 'chat' | 'profile'
+  | 'overview' | 'files' | 'tools' | 'skills' | 'memory'
+  | 'announcements' | 'norms' | 'settings';
+
+const AGENT_TABS: MainTab[] = ['chat', 'overview', 'files', 'tools', 'skills', 'memory'];
+const TEAM_TAB_SET: MainTab[] = ['chat', 'overview', 'announcements', 'norms', 'settings'];
+
+function tabLabel(tab: MainTab, t: TFunction): string {
+  if (tab === 'chat') return t('page.chatTitle');
+  const agentDef = AGENT_TAB_DEF.find(d => d.key === tab);
+  if (agentDef) return t(`agent:tabs.${tab}`);
+  const teamDef = TEAM_TABS.find(d => d.key === tab);
+  if (teamDef) return t(teamDef.labelKey);
+  return tab;
+}
+
+function tabIcon(tab: MainTab): string {
+  if (tab === 'chat') return '💬';
+  const agentDef = AGENT_TAB_DEF.find(d => d.key === tab);
+  if (agentDef) return agentDef.icon;
+  const teamDef = TEAM_TABS.find(d => d.key === tab);
+  if (teamDef) return teamDef.icon;
+  return '';
+}
+
+function isProfileTab(tab: MainTab): boolean {
+  return tab !== 'chat';
+}
 
 // ── Hash-based store: the URL is the single source of truth for mobile nav ────
 const _hashSubs = new Set<() => void>();
@@ -709,7 +737,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   useEffect(() => {
     if (!isMobile) return;
     const onPop = () => {
-      if (mainTabRef.current === 'profile') setMainTab('chat');
+      if (isProfileTab(mainTabRef.current)) setMainTab('chat');
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
@@ -723,33 +751,64 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   // Resizable chat left sidebar
   const chatSidebar = useResizablePanel({
     side: 'left',
-    defaultWidth: 400,
-    minWidth: 340,
-    maxWidth: 500,
+    defaultWidth: 280,
+    minWidth: 220,
+    maxWidth: 400,
     storageKey: 'markus_chat_sidebar',
+  });
+
+  // L2: Team detail panel (hidden by default, toggled via header button)
+  const [showTeamDetailPanel, setShowTeamDetailPanel] = useState<boolean>(() => {
+    try { return localStorage.getItem('markus_team_panel_visible') === 'true'; } catch { return false; }
+  });
+  const toggleTeamDetailPanel = useCallback(() => {
+    setShowTeamDetailPanel(prev => {
+      const next = !prev;
+      try { localStorage.setItem('markus_team_panel_visible', String(next)); } catch { /* */ }
+      return next;
+    });
+  }, []);
+  const teamDetailPanel = useResizablePanel({
+    side: 'left',
+    defaultWidth: 260,
+    minWidth: 200,
+    maxWidth: 400,
+    storageKey: 'markus_team_detail_panel',
   });
 
   // Avatar popover in chat messages
   const [avatarPopover, setAvatarPopover] = useState<{ agentId: string; top: number; left: number } | null>(null);
 
-  const [profileDefaultTab, setProfileDefaultTab] = useState<'overview' | 'mind' | undefined>();
+  const [profileDefaultTab, setProfileDefaultTab] = useState<'overview' | undefined>();
   const [profileHighlightMailboxId, setProfileHighlightMailboxId] = useState<string | undefined>();
 
-  const switchToProfile = useCallback((defaultTab?: 'overview' | 'mind', highlightMailboxId?: string) => {
+  // Inline editing for header name/description
+  const [editingHeaderName, setEditingHeaderName] = useState(false);
+  const [headerNameDraft, setHeaderNameDraft] = useState('');
+  const [editingHeaderDesc, setEditingHeaderDesc] = useState(false);
+  const [headerDescDraft, setHeaderDescDraft] = useState('');
+  const headerNameRef = useRef<HTMLInputElement>(null);
+  const headerDescRef = useRef<HTMLInputElement>(null);
+
+  const switchToProfile = useCallback((defaultTab?: 'overview', highlightMailboxId?: string) => {
     setProfileDefaultTab(defaultTab);
     setProfileHighlightMailboxId(highlightMailboxId);
-    setMainTab('profile');
-    if (isMobile) history.pushState({ mobileProfile: true }, '', window.location.hash);
+    if (isMobile) {
+      setMainTab('profile');
+      history.pushState({ mobileProfile: true }, '', window.location.hash);
+    } else {
+      setMainTab(defaultTab ?? 'overview');
+    }
   }, [isMobile]);
 
   const mainTabsList = [{ id: 'chat' as const }, { id: 'profile' as const }];
   const handleMainTabSwipe = useCallback((tab: MainTab) => {
     if (tab === 'profile') switchToProfile();
-    else { if (mainTabRef.current === 'profile') history.back(); else setMainTab('chat'); }
+    else { if (isProfileTab(mainTabRef.current)) history.back(); else setMainTab('chat'); }
   }, [switchToProfile]);
   const mainTabSwipe = useSwipeTabs(mainTabsList, mainTab, handleMainTabSwipe);
 
-  const handleViewProfile = useCallback((agentId: string, opts?: { tab?: 'mind'; highlightMailboxId?: string }) => {
+  const handleViewProfile = useCallback((agentId: string, opts?: { tab?: 'overview'; highlightMailboxId?: string }) => {
     setChatMode('direct');
     setSelectedAgent(agentId);
     if (isMobile) enterMobileDetail();
@@ -831,7 +890,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    const h = Math.min(el.scrollHeight, 120);
+    const h = Math.max(52, Math.min(el.scrollHeight, 120));
     el.style.height = `${h}px`;
     el.style.overflowY = h >= 120 ? 'auto' : 'hidden';
   }, []);
@@ -974,7 +1033,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       if (resolvePageId(detail.page) === PAGE.TEAM) {
         if (detail.params?.agentId) {
           if (detail.params.profileTab) {
-            handleViewProfile(detail.params.agentId, { tab: detail.params.profileTab as 'mind' });
+            handleViewProfile(detail.params.agentId, { tab: detail.params.profileTab as 'overview' });
           } else {
             setChatMode('direct');
             setSelectedAgent(detail.params.agentId);
@@ -1016,8 +1075,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     if (navAgent) {
       localStorage.removeItem('markus_nav_agentId');
       const pTab = localStorage.getItem('markus_nav_profileTab');
-      if (pTab) { localStorage.removeItem('markus_nav_profileTab'); handleViewProfile(navAgent, { tab: pTab as 'mind' }); }
-      else { setChatMode('direct'); setSelectedAgent(navAgent); }
+      localStorage.removeItem('markus_nav_profileTab');
+      handleViewProfile(navAgent, pTab ? { tab: pTab as 'overview' } : undefined);
     }
     const navDm = localStorage.getItem('markus_nav_dm');
     if (navDm) {
@@ -2360,7 +2419,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
   return (
     <div className="flex-1 overflow-hidden flex">
-      {/* ── Left sidebar (ChatTeamSidebar) — always mounted to preserve scroll ── */}
+      {/* ── Left sidebar (ChatTeamSidebar) — L1 ── */}
       <ChatTeamSidebar
         authUser={authUser}
         agents={agents}
@@ -2376,6 +2435,15 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); setShowMemberPanel(false); if (isMobile) enterMobileDetail(); }}
         onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); setShowMemberPanel(false); if (isMobile) enterMobileDetail(); }}
         onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); setShowMemberPanel(false); if (isMobile) enterMobileDetail(); }}
+        onSelectTeam={(teamId) => {
+          const teamGc = groupChats.find(gc => gc.type === 'team' && gc.teamId === teamId);
+          if (isMobile) {
+            if (teamGc) { setChatMode('channel'); setActiveChannel(teamGc.channelKey); setMainTab('chat'); setShowMemberPanel(false); enterMobileDetail(); }
+          } else {
+            if (teamGc) { setChatMode('channel'); setActiveChannel(teamGc.channelKey); setMainTab('chat'); setShowMemberPanel(false); }
+          }
+        }}
+        selectedTeamId={activeTeamId ?? (chatMode === 'direct' && currentAgent?.teamId ? currentAgent.teamId : null)}
         onRefreshTeams={refreshTeams}
         onRefreshAgents={refreshAgents}
         onRefreshHumans={refreshHumans}
@@ -2388,11 +2456,42 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         initialLoading={initialLoading}
       />
 
+      {/* ── L2: Team detail panel (desktop only, toggle-based) ── */}
+      {showTeamDetailPanel && !isMobile && (() => {
+        const l2TeamId = activeTeamId ?? (chatMode === 'direct' ? currentAgent?.teamId : undefined);
+        if (!l2TeamId) return null;
+        const panelTeam = teams.find(t => t.id === l2TeamId);
+        if (!panelTeam) return null;
+        const panelGc = groupChats.find(gc => gc.type === 'team' && gc.teamId === l2TeamId);
+        return (
+          <TeamDetailPanel
+            team={panelTeam}
+            agents={agents}
+            humans={humans}
+            authUser={authUser}
+            groupChat={panelGc}
+            chatMode={chatMode}
+            selectedAgent={selectedAgent}
+            activeChannel={activeChannel}
+            teams={teams}
+            onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); setShowMemberPanel(false); }}
+            onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); setShowMemberPanel(false); }}
+            onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); setShowMemberPanel(false); }}
+            onBack={() => setShowTeamDetailPanel(false)}
+            onViewProfile={handleViewProfile}
+            onRefreshAgents={refreshAgents}
+            onRefreshTeams={refreshTeams}
+            width={teamDetailPanel.width}
+            onResizeStart={teamDetailPanel.onResizeStart}
+          />
+        );
+      })()}
+
       {/* ── Main area ── */}
       {(!isMobile || showChatOnMobile) && (
       <div className="flex-1 overflow-hidden flex flex-col min-w-0">
         {/* Header */}
-        <div className="border-b border-border-default bg-surface-secondary shrink-0 relative">
+        <div className="shrink-0 relative pb-2">
           {isMobile ? (
             <>
               {/* Mobile Row 1: back + name + status */}
@@ -2411,15 +2510,15 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               {/* Mobile Row 2: tabs + actions */}
               <div className="flex items-center px-3 h-9 gap-1 border-t border-border-default/40">
                 <button
-                  onClick={() => { if (mainTab === 'profile') history.back(); else setMainTab('chat'); }}
+                  onClick={() => { if (isProfileTab(mainTab)) history.back(); else setMainTab('chat'); }}
                   className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
                     mainTab === 'chat' ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'
                   }`}
                 >{t('page.chatTitle')}</button>
                 <button
-                  onClick={() => { if (mainTab !== 'profile') switchToProfile(); }}
+                  onClick={() => { if (!isProfileTab(mainTab)) switchToProfile(); }}
                   className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                    mainTab === 'profile' ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'
+                    isProfileTab(mainTab) ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'
                   }`}
                 >{chatMode === 'channel' ? t('page.teamTab') : t('page.profileTab')}</button>
                 <div className="flex-1" />
@@ -2434,7 +2533,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                     {activeGroupChat.members?.length ?? activeGroupChat.memberCount ?? 0}
                   </button>
                 )}
-                {chatMode === 'direct' && mainTab !== 'profile' && (
+                {chatMode === 'direct' && !isProfileTab(mainTab) && (
                   <>
                     <button
                       onClick={newConversation}
@@ -2455,95 +2554,210 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               </div>
             </>
           ) : (
-          /* Desktop: original single-row header */
-          <div className="flex items-center px-6 h-14 gap-3">
-            <span className="font-semibold text-sm truncate">{modeTitle}</span>
-            {chatMode === 'direct' && currentAgent && (
-              <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
-            )}
-            {(chatMode === 'channel' || chatMode === 'dm') && (
-              <span className="text-xs text-fg-tertiary">{t('page.messageCount', { count: messages.length })}</span>
-            )}
-            {chatMode === 'dm' && (
-              <span className="text-xs text-fg-tertiary ml-1">
-                {isSelfDm ? t('page.privateNotepad') : t('page.dmWith', { name: activeDmUser?.name ?? '' })}
-              </span>
-            )}
+          /* Desktop: redesigned header with flattened tabs + inline editing */
+          (() => {
+            const activeTeam = activeTeamId ? teams.find(t => t.id === activeTeamId) : undefined;
+            const activeTabs: MainTab[] =
+              chatMode === 'direct' && selectedAgent ? AGENT_TABS
+              : chatMode === 'channel' && activeTeamId ? TEAM_TAB_SET
+              : ['chat'];
 
-            {((chatMode === 'direct' && selectedAgent) || (chatMode === 'channel' && activeTeamId)) && (
-              <div className="flex items-center gap-0.5 ml-4 -mb-px">
-                <button
-                  onClick={() => setMainTab('chat')}
-                  className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
-                    mainTab === 'chat'
-                      ? 'border-brand-500 text-brand-500'
-                      : 'border-transparent text-fg-tertiary hover:text-fg-secondary'
-                  }`}
-                >
-                  {t('page.chatTitle')}
-                </button>
-                <button
-                  onClick={() => setMainTab('profile')}
-                  className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
-                    mainTab === 'profile'
-                      ? 'border-brand-500 text-brand-500'
-                      : 'border-transparent text-fg-tertiary hover:text-fg-secondary'
-                  }`}
-                >
-                  {chatMode === 'channel' ? t('page.teamTab') : t('page.profileTab')}
-                </button>
-              </div>
-            )}
+            const handleSaveHeaderName = async () => {
+              const trimmed = headerNameDraft.trim();
+              if (!trimmed) { setEditingHeaderName(false); return; }
+              try {
+                if (chatMode === 'direct' && selectedAgent) {
+                  await api.agents.updateConfig(selectedAgent, { name: trimmed });
+                  refreshAgents();
+                } else if (chatMode === 'channel' && activeTeamId) {
+                  await api.teams.update(activeTeamId, { name: trimmed });
+                  refreshTeams();
+                }
+              } catch { /* */ }
+              setEditingHeaderName(false);
+            };
 
-            {/* Right side buttons */}
-            <div className="ml-auto flex items-center gap-2">
-            {chatMode === 'channel' && activeGroupChat?.type === 'custom' && (
-              <button
-                onClick={() => setShowMemberPanel(!showMemberPanel)}
-                className={`text-xs px-2.5 py-1 rounded-md border transition-colors flex items-center gap-1.5 ${
-                  showMemberPanel
-                    ? 'bg-brand-500/15 text-brand-500 border-brand-500/30'
-                    : 'text-fg-secondary hover:text-fg-primary border-border-default hover:bg-surface-elevated'
-                }`}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
-                {activeGroupChat.members?.length ?? activeGroupChat.memberCount ?? 0}
-              </button>
-            )}
-            {chatMode === 'direct' && currentAgent && mainTab !== 'profile' && (
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={newConversation}
-                  className="text-xs text-brand-500 hover:text-brand-500 px-2.5 py-1 rounded-md hover:bg-brand-500/10 border border-brand-500/20 transition-colors flex items-center gap-1"
-                >
-                  {t('page.newChatButton')}
-                </button>
-                <button
-                  ref={historyBtnRef}
-                  onClick={() => setShowSessions(!showSessions)}
-                  className={`p-1.5 rounded-md transition-colors ${showSessions ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
-                  title={t('page.historyTitle')}
-                >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                </button>
+            const handleSaveHeaderDesc = async () => {
+              try {
+                if (chatMode === 'direct' && selectedAgent) {
+                  await api.agents.updateConfig(selectedAgent, { roleDescription: headerDescDraft });
+                  refreshAgents();
+                } else if (chatMode === 'channel' && activeTeamId) {
+                  await api.teams.update(activeTeamId, { description: headerDescDraft });
+                  refreshTeams();
+                }
+              } catch { /* */ }
+              setEditingHeaderDesc(false);
+            };
+
+            const headerName = chatMode === 'direct' ? currentAgent?.name : chatMode === 'channel' ? (activeTeam?.name ?? activeGroupChat?.name) : (activeDmUser?.name ?? '');
+            const headerDesc = chatMode === 'direct' ? (currentAgent?.role || '') : chatMode === 'channel' ? (activeTeam?.description || '') : '';
+            const headerAvatarUrl = chatMode === 'direct' ? currentAgent?.avatarUrl : undefined;
+            const headerAvatarName = headerName || 'U';
+            const showEntityInfo = (chatMode === 'direct' && selectedAgent) || (chatMode === 'channel' && activeTeamId);
+
+            return (
+            <div className="flex flex-col">
+              {/* Row 1: L2 toggle + avatar + name/desc + action buttons */}
+              <div className="flex items-center px-4 h-14 gap-2.5">
+                {/* L2 toggle button (before avatar, hidden when L2 is open — the L2 panel header has the matching close button) */}
+                {!showTeamDetailPanel && ((chatMode === 'channel' && activeTeamId) || (chatMode === 'direct' && currentAgent?.teamId)) && (
+                  <button
+                    onClick={toggleTeamDetailPanel}
+                    className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
+                    title="Toggle team panel"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                      <line x1="9" y1="3" x2="9" y2="21" />
+                    </svg>
+                  </button>
+                )}
+
+                {/* Avatar */}
+                {showEntityInfo && (
+                  chatMode === 'channel' && activeTeamId ? (
+                    <div className="w-9 h-9 rounded-xl bg-brand-600 text-white flex items-center justify-center text-sm font-bold shrink-0">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                    </div>
+                  ) : (
+                    <Avatar name={headerAvatarName} avatarUrl={headerAvatarUrl} size={36} className="rounded-xl shrink-0" />
+                  )
+                )}
+
+                {/* Name & Description (inline editable) */}
+                {showEntityInfo ? (
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      {editingHeaderName ? (
+                        <input
+                          ref={headerNameRef}
+                          value={headerNameDraft}
+                          onChange={e => setHeaderNameDraft(e.target.value)}
+                          onBlur={handleSaveHeaderName}
+                          onKeyDown={e => { if (e.key === 'Enter') handleSaveHeaderName(); if (e.key === 'Escape') setEditingHeaderName(false); }}
+                          className="text-sm font-semibold bg-transparent border-b border-brand-500 outline-none py-0 px-0 min-w-[80px] max-w-[240px]"
+                          autoFocus
+                        />
+                      ) : (
+                        <span
+                          className="text-sm font-semibold truncate cursor-pointer hover:text-brand-500 transition-colors"
+                          onClick={() => { setHeaderNameDraft(headerName ?? ''); setEditingHeaderName(true); }}
+                          title="Click to edit name"
+                        >
+                          {headerName}
+                        </span>
+                      )}
+                      {chatMode === 'direct' && currentAgent && (
+                        <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
+                      )}
+                    </div>
+                    {(chatMode === 'direct' || (chatMode === 'channel' && activeTeamId)) && (
+                      editingHeaderDesc ? (
+                        <input
+                          ref={headerDescRef}
+                          value={headerDescDraft}
+                          onChange={e => setHeaderDescDraft(e.target.value)}
+                          onBlur={handleSaveHeaderDesc}
+                          onKeyDown={e => { if (e.key === 'Enter') handleSaveHeaderDesc(); if (e.key === 'Escape') setEditingHeaderDesc(false); }}
+                          className="text-[11px] text-fg-tertiary bg-transparent border-b border-brand-500/50 outline-none py-0 px-0 w-full max-w-[400px] mt-0.5"
+                          placeholder="Add description..."
+                          autoFocus
+                        />
+                      ) : (
+                        <div
+                          className="text-[11px] text-fg-tertiary truncate cursor-pointer hover:text-fg-secondary transition-colors mt-0.5"
+                          onClick={() => { setHeaderDescDraft(headerDesc); setEditingHeaderDesc(true); }}
+                          title="Click to edit description"
+                        >
+                          {headerDesc || 'No description'}
+                        </div>
+                      )
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex-1 min-w-0 flex items-center gap-2">
+                    <span className="font-semibold text-sm truncate">{modeTitle}</span>
+                    {chatMode === 'dm' && (
+                      <span className="text-xs text-fg-tertiary">
+                        {isSelfDm ? t('page.privateNotepad') : ''}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Right side buttons */}
+                <div className="ml-auto flex items-center gap-2 shrink-0">
+                  {chatMode === 'channel' && activeGroupChat?.type === 'custom' && (
+                    <button
+                      onClick={() => setShowMemberPanel(!showMemberPanel)}
+                      className={`text-xs px-2.5 py-1 rounded-md border transition-colors flex items-center gap-1.5 ${
+                        showMemberPanel
+                          ? 'bg-brand-500/15 text-brand-500 border-brand-500/30'
+                          : 'text-fg-secondary hover:text-fg-primary border-border-default hover:bg-surface-elevated'
+                      }`}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                      {activeGroupChat.members?.length ?? activeGroupChat.memberCount ?? 0}
+                    </button>
+                  )}
+                  {chatMode === 'direct' && currentAgent && mainTab === 'chat' && (
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={newConversation}
+                        className="text-xs text-brand-500 hover:text-brand-500 px-2.5 py-1 rounded-md hover:bg-brand-500/10 border border-brand-500/20 transition-colors flex items-center gap-1"
+                      >
+                        {t('page.newChatButton')}
+                      </button>
+                      <button
+                        ref={historyBtnRef}
+                        onClick={() => setShowSessions(!showSessions)}
+                        className={`p-1.5 rounded-md transition-colors ${showSessions ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
+                        title={t('page.historyTitle')}
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
-            )}
+
+              {/* Row 2: Flattened tabs */}
+              {activeTabs.length > 1 && (
+                <div className="flex items-center gap-1 px-4 pb-1.5 overflow-x-auto scrollbar-hide">
+                  {activeTabs.map(tab => (
+                    <button
+                      key={tab}
+                      onClick={() => setMainTab(tab)}
+                      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap flex items-center gap-1 ${
+                        mainTab === tab
+                          ? 'bg-brand-500/15 text-brand-500'
+                          : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
+                      }`}
+                    >
+                      <span>{tabIcon(tab)}</span>
+                      {tabLabel(tab, t)}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-          </div>
+            );
+          })()
           )}
 
-          {/* Session tab bar (direct mode, chat tab) */}
-          {chatMode === 'direct' && selectedAgent && mainTab === 'chat' && openSessionTabs.length > 0 && (
-            <div className="flex items-center gap-0 px-3 overflow-x-auto scrollbar-hide border-t border-border-default/50">
+          {/* Session tab bar (direct mode, chat tab) — hide when only 1 session */}
+          {chatMode === 'direct' && selectedAgent && mainTab === 'chat' && openSessionTabs.length > 1 && (
+            <div className="flex items-center gap-0 px-3 overflow-x-auto scrollbar-hide">
               {openSessionTabs.map(s => (
                 <div
                   key={s.id}
-                  className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer border-b-2 transition-colors shrink-0 max-w-[180px] ${
+                  className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer rounded-md transition-colors shrink-0 max-w-[180px] ${
                     s.id === activeSessionId
-                      ? 'border-brand-500 text-brand-500 bg-brand-500/5'
-                      : 'border-transparent text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
+                      ? 'text-brand-500 bg-brand-500/10'
+                      : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
                   }`}
                   onClick={() => {
                     if (s.id === NEW_CHAT_PLACEHOLDER_ID) {
@@ -2587,7 +2801,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               }
             }
             return (
-              <div className="border-b border-border-default bg-surface-secondary/80 px-4 py-3 flex flex-col gap-2">
+              <div className="bg-surface-secondary/80 px-4 py-3 flex flex-col gap-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-fg-secondary">{t('page.members')} ({currentMembers.length})</span>
                   <button onClick={() => setShowMemberPanel(false)} className="text-fg-tertiary hover:text-fg-secondary text-xs">
@@ -2710,8 +2924,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           )}
         </div>
 
-        {/* Profile Tab */}
-        {mainTab === 'profile' && chatMode === 'direct' && selectedAgent && (
+        {/* Profile Tab — mobile: legacy full profile, desktop: headless tab content */}
+        {isMobile && mainTab === 'profile' && chatMode === 'direct' && selectedAgent && (
           <div className="flex-1 overflow-y-auto">
             <AgentProfile
               agentId={selectedAgent}
@@ -2719,17 +2933,45 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               inline
               defaultTab={profileDefaultTab}
               highlightMailboxId={profileHighlightMailboxId}
-              onSwipeBack={() => { if (mainTabRef.current === 'profile') history.back(); else setMainTab('chat'); }}
+              onSwipeBack={() => { if (isProfileTab(mainTabRef.current)) history.back(); else setMainTab('chat'); }}
               authUser={authUser}
             />
           </div>
         )}
-        {mainTab === 'profile' && chatMode === 'channel' && activeTeamId && (
+        {isMobile && mainTab === 'profile' && chatMode === 'channel' && activeTeamId && (
           <div className="flex-1 overflow-y-auto" onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
             <TeamProfile
               teamId={activeTeamId}
               onBack={() => setMainTab('chat')}
               inline
+              onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); switchToProfile(); }}
+            />
+          </div>
+        )}
+
+        {/* Desktop: flattened profile tab content (headless mode) */}
+        {!isMobile && isProfileTab(mainTab) && chatMode === 'direct' && selectedAgent && (
+          <div className="flex-1 overflow-y-auto">
+            <AgentProfile
+              agentId={selectedAgent}
+              onBack={() => setMainTab('chat')}
+              inline
+              headless
+              activeTab={mainTab as ProfileTab}
+              highlightMailboxId={profileHighlightMailboxId}
+              authUser={authUser}
+            />
+          </div>
+        )}
+        {!isMobile && isProfileTab(mainTab) && chatMode === 'channel' && activeTeamId && (
+          <div className="flex-1 flex flex-col min-h-0">
+            <TeamProfile
+              teamId={activeTeamId}
+              onBack={() => setMainTab('chat')}
+              inline
+              headless
+              activeTab={mainTab as TeamTab}
+              onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('overview'); if (!showTeamDetailPanel) setShowTeamDetailPanel(true); }}
             />
           </div>
         )}
@@ -2912,7 +3154,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                 <div
                   key={ta.id}
                   className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg cursor-pointer hover:bg-surface-elevated/60 transition-colors group/think"
-                  onClick={() => handleViewProfile(ta.id, { tab: 'mind' })}
+                  onClick={() => handleViewProfile(ta.id, { tab: 'overview' })}
                 >
                   <div className="relative shrink-0">
                     <Avatar name={ta.name} avatarUrl={ta.avatarUrl} size={28} bgClass="bg-brand-500/15 text-brand-600" />
@@ -2951,7 +3193,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         })()}
 
         {/* Input (only in chat tab) */}
-        <div className={`p-4 border-t border-border-default bg-surface-secondary relative shrink-0 ${mainTab !== 'chat' ? 'hidden' : ''}`} onDrop={handleDrop} onDragOver={handleDragOver}>
+        <div className={`px-4 py-3 relative shrink-0 ${mainTab !== 'chat' ? 'hidden' : ''}`} onDrop={handleDrop} onDragOver={handleDragOver}>
+          <div className="bg-surface-primary rounded-2xl p-3 border border-border-default shadow-lg shadow-black/5">
           {mentionDropdown && filteredAgents.length > 0 && (
             <div className="absolute bottom-full left-4 mb-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden z-10 max-h-48 overflow-y-auto">
               <div className="px-3 py-1.5 text-[10px] text-fg-tertiary font-medium uppercase tracking-wider border-b border-border-default">
@@ -3057,9 +3300,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               onPaste={handlePaste}
               placeholder={placeholder}
               disabled={chatMode === 'direct' && !selectedAgent}
-              rows={1}
-              className="flex-1 px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm focus:border-brand-500 outline-none disabled:opacity-40 transition-colors resize-none overflow-hidden leading-5"
-              style={{ maxHeight: '120px' }}
+              rows={2}
+              className="flex-1 px-4 py-3 bg-transparent rounded-xl text-sm outline-none disabled:opacity-40 transition-colors resize-none overflow-hidden leading-relaxed placeholder:text-fg-tertiary/60"
+              style={{ minHeight: '52px', maxHeight: '120px' }}
             />
             {sending && chatMode !== 'dm' && (
               <button
@@ -3077,8 +3320,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               disabled={(chatMode === 'direct' && !selectedAgent) || (!input.trim() && pendingImages.length === 0)}
               className="px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
             >
-              {t('send')}
+              {t('common:send')}
             </button>
+          </div>
           </div>
         </div>
       </div>
@@ -3088,7 +3332,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   );
 }
 
-function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; tasks: TaskInfo[]; onViewProfile?: (agentId: string, opts?: { tab?: 'mind' }) => void }) {
+function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; tasks: TaskInfo[]; onViewProfile?: (agentId: string, opts?: { tab?: 'overview' }) => void }) {
   const { t } = useTranslation(['team', 'common']);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -3223,7 +3467,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
             </div>
           )}
           <button
-            onClick={() => { setOpen(false); onViewProfile?.(agent.id, { tab: 'mind' }); }}
+            onClick={() => { setOpen(false); onViewProfile?.(agent.id, { tab: 'overview' }); }}
             className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1.5 transition-colors"
           >
             {t('page.viewMindArrow')}

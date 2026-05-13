@@ -38,7 +38,19 @@
     "extBadge": "EXT",
     "pauseAllTooltip": "Pause all agents",
     "resumeAllTooltip": "Resume all agents",
-    "failedToCreateTeam": "Failed to create team: {{message}}"
+    "failedToCreateTeam": "Failed to create team: {{message}}",
+    "agents": "Agents",
+    "teams": "Teams"
+  },
+  "teamProfile": {
+    "overview": "Overview",
+    "announcements": "Announcements",
+    "norms": "Norms",
+    "settings": "Settings",
+    "annPlaceholder": "Write team announcements here (Markdown supported)...",
+    "normsPlaceholder": "Define team norms and working agreements (Markdown supported)...",
+    "noAnnouncements": "No announcements yet. Click to add.",
+    "noNorms": "No norms defined yet. Click to add."
   },
   "contextMenu": {
     "renameTeam": "Rename Team",

@@ -8,7 +8,7 @@ import type { AuthUser } from '../api.ts';
 
 type TabId = 'settings' | 'reports';
 
-export function MobileSettingsTabs({ theme, onThemeChange, authUser }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void; authUser?: AuthUser }) {
+export function MobileSettingsTabs({ theme, onThemeChange, authUser, onLogout, onUserUpdated }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void; authUser?: AuthUser; onLogout?: () => void; onUserUpdated?: (u: AuthUser) => void }) {
   const { t } = useTranslation(['nav', 'common']);
   const tabs = useMemo(() => [
     { id: 'settings' as const, label: t('nav:settings') },
@@ -19,7 +19,7 @@ export function MobileSettingsTabs({ theme, onThemeChange, authUser }: { theme?:
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col" onTouchStart={swipe.onTouchStart} onTouchEnd={swipe.onTouchEnd}>
-      <div className="flex border-b border-border-default bg-surface-secondary shrink-0 overflow-x-auto scrollbar-hide">
+      <div className="flex shrink-0 overflow-x-auto scrollbar-hide">
         {tabs.map(tab => (
           <button
             key={tab.id}
@@ -35,7 +35,7 @@ export function MobileSettingsTabs({ theme, onThemeChange, authUser }: { theme?:
         ))}
       </div>
       <div className="flex-1 overflow-hidden flex flex-col">
-        {activeTab === 'settings' && <Settings theme={theme} onThemeChange={onThemeChange} authUser={authUser} />}
+        {activeTab === 'settings' && <Settings theme={theme} onThemeChange={onThemeChange} authUser={authUser} onLogout={onLogout} onUserUpdated={onUserUpdated} />}
         {activeTab === 'reports' && <ReportsPage authUser={authUser} />}
       </div>
     </div>

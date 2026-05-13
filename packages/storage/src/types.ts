@@ -80,6 +80,7 @@ export interface DeliverableRow {
   title: string;
   summary: string;
   reference: string;
+  format: string | null;
   tags: string[];
   status: string;
   taskId: string | null;

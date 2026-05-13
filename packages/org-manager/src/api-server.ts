@@ -2924,6 +2924,7 @@ export class APIServer {
           title: body['title'] as string,
           summary: body['summary'] as string,
           reference: body['reference'] as string,
+          format: body['format'] as string | undefined,
           tags: body['tags'] as string[],
           taskId: body['taskId'] as string,
           agentId: body['agentId'] as string,
@@ -2948,6 +2949,7 @@ export class APIServer {
           title: body['title'] as string | undefined,
           summary: body['summary'] as string | undefined,
           reference: body['reference'] as string | undefined,
+          format: body['format'] as string | undefined,
           tags: body['tags'] as string[] | undefined,
           status: body['status'] as any,
           type: body['type'] as any,
@@ -4611,6 +4613,7 @@ EXPLANATION_END`;
           title: body['title'] as string,
           summary: body['summary'] as string ?? body['content'] as string,
           reference: body['reference'] as string,
+          format: body['format'] as string | undefined,
           tags: body['tags'] as string[],
           agentId: token.markusAgentId,
           projectId: body['projectId'] as string,
@@ -6757,23 +6760,31 @@ EXPLANATION_END`;
         return;
       }
       const body = await this.readBody(req);
-      const { defaultProvider } = body as { defaultProvider?: string };
-      if (!defaultProvider) {
-        this.json(res, 400, { error: 'defaultProvider is required' });
+      const { defaultProvider, autoFallback } = body as { defaultProvider?: string; autoFallback?: boolean };
+      if (!defaultProvider && autoFallback === undefined) {
+        this.json(res, 400, { error: 'defaultProvider or autoFallback is required' });
         return;
       }
       try {
-        this.llmRouter.setDefaultProvider(defaultProvider);
+        const configUpdates: Record<string, unknown> = {};
+        if (defaultProvider) {
+          this.llmRouter.setDefaultProvider(defaultProvider);
+          configUpdates.defaultProvider = defaultProvider;
+        }
+        if (typeof autoFallback === 'boolean') {
+          this.llmRouter.setAutoFallback(autoFallback);
+          configUpdates.autoFallback = autoFallback;
+        }
         try {
-          saveConfig({ llm: { defaultProvider } } as any, this.markusConfigPath);
+          saveConfig({ llm: configUpdates } as any, this.markusConfigPath);
         } catch (e) {
-          log.warn('Failed to persist defaultProvider to config file', { error: String(e) });
+          log.warn('Failed to persist LLM settings to config file', { error: String(e) });
         }
         this.auditService?.record({
           orgId: 'system',
           type: 'settings_changed',
-          action: 'llm_default_provider',
-          detail: `defaultProvider=${defaultProvider}`,
+          action: 'llm_settings',
+          detail: `${defaultProvider ? `defaultProvider=${defaultProvider}` : ''}${autoFallback !== undefined ? ` autoFallback=${autoFallback}` : ''}`.trim(),
           userId: auth.userId,
           success: true,
         });
@@ -6894,6 +6905,66 @@ EXPLANATION_END`;
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
+      });
+      return;
+    }
+
+    // Settings — Search API keys
+    if (path === '/api/settings/search' && req.method === 'GET') {
+      const { loadConfig: loadCfg } = await import('@markus/shared');
+      const currentConfig = loadCfg(this.markusConfigPath);
+      const search = currentConfig.integrations?.search ?? {};
+      const mask = (key?: string) => key ? '***' + key.slice(-4) : '';
+      this.json(res, 200, {
+        serper: { configured: !!search.serperApiKey || !!process.env['SERPER_API_KEY'], preview: mask(search.serperApiKey || process.env['SERPER_API_KEY']) },
+        brave: { configured: !!search.braveApiKey || !!process.env['BRAVE_SEARCH_API_KEY'], preview: mask(search.braveApiKey || process.env['BRAVE_SEARCH_API_KEY']) },
+        bocha: { configured: !!search.bochaApiKey || !!process.env['BOCHA_API_KEY'], preview: mask(search.bochaApiKey || process.env['BOCHA_API_KEY']) },
+      });
+      return;
+    }
+
+    if (path === '/api/settings/search' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const updates: Record<string, string | undefined> = {};
+      if (typeof body['serperApiKey'] === 'string') {
+        updates.serperApiKey = body['serperApiKey'] || undefined;
+        if (body['serperApiKey']) process.env['SERPER_API_KEY'] = body['serperApiKey'] as string;
+        else delete process.env['SERPER_API_KEY'];
+      }
+      if (typeof body['braveApiKey'] === 'string') {
+        updates.braveApiKey = body['braveApiKey'] || undefined;
+        if (body['braveApiKey']) process.env['BRAVE_SEARCH_API_KEY'] = body['braveApiKey'] as string;
+        else delete process.env['BRAVE_SEARCH_API_KEY'];
+      }
+      if (typeof body['bochaApiKey'] === 'string') {
+        updates.bochaApiKey = body['bochaApiKey'] || undefined;
+        if (body['bochaApiKey']) process.env['BOCHA_API_KEY'] = body['bochaApiKey'] as string;
+        else delete process.env['BOCHA_API_KEY'];
+      }
+      try {
+        saveConfig({ integrations: { search: updates } } as any, this.markusConfigPath);
+      } catch (e) {
+        log.warn('Failed to persist search settings', { error: String(e) });
+      }
+      this.auditService?.record({
+        orgId: 'system',
+        type: 'settings_changed',
+        action: 'search',
+        detail: 'Search API key settings updated',
+        userId: auth.userId,
+        success: true,
+        metadata: { keys: Object.keys(updates) },
+      });
+      const { loadConfig: loadCfg } = await import('@markus/shared');
+      const currentConfig = loadCfg(this.markusConfigPath);
+      const search = currentConfig.integrations?.search ?? {};
+      const mask = (key?: string) => key ? '***' + key.slice(-4) : '';
+      this.json(res, 200, {
+        serper: { configured: !!search.serperApiKey || !!process.env['SERPER_API_KEY'], preview: mask(search.serperApiKey || process.env['SERPER_API_KEY']) },
+        brave: { configured: !!search.braveApiKey || !!process.env['BRAVE_SEARCH_API_KEY'], preview: mask(search.braveApiKey || process.env['BRAVE_SEARCH_API_KEY']) },
+        bocha: { configured: !!search.bochaApiKey || !!process.env['BOCHA_API_KEY'], preview: mask(search.bochaApiKey || process.env['BOCHA_API_KEY']) },
       });
       return;
     }
@@ -8312,6 +8383,8 @@ EXPLANATION_END`;
 
         const results: Record<string, { exists: boolean; isFile: boolean; type: string }> = {};
         const mdExts = ['.md', '.markdown'];
+        const htmlExts = ['.html', '.htm'];
+        const jsonExts = ['.json'];
         const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'];
 
         for (const p of paths.slice(0, 50)) {
@@ -8327,6 +8400,8 @@ EXPLANATION_END`;
             const ext = extname(resolved).toLowerCase();
             let type = 'text';
             if (mdExts.includes(ext)) type = 'markdown';
+            else if (htmlExts.includes(ext)) type = 'html';
+            else if (jsonExts.includes(ext)) type = 'json';
             else if (imageExts.includes(ext)) type = 'image';
             else if (!isFile) type = 'directory';
             results[p] = { exists: true, isFile, type };
@@ -8409,8 +8484,16 @@ EXPLANATION_END`;
         } else {
           const content = readFileSync(resolved, 'utf-8');
           const mdExts = ['.md', '.markdown'];
+          const htmlExts = ['.html', '.htm'];
+          const jsonExts = ['.json'];
+          const csvExts = ['.csv', '.tsv'];
+          let fileType = 'text';
+          if (mdExts.includes(ext)) fileType = 'markdown';
+          else if (htmlExts.includes(ext)) fileType = 'html';
+          else if (jsonExts.includes(ext)) fileType = 'json';
+          else if (csvExts.includes(ext)) fileType = 'csv';
           this.json(res, 200, {
-            type: mdExts.includes(ext) ? 'markdown' : 'text',
+            type: fileType,
             name: resolved.split('/').pop(),
             content,
           });
@@ -9420,6 +9503,7 @@ EXPLANATION_END`;
       exact('/api/settings/llm/models', 'GET'),
       exact('/api/settings/agent', 'GET', 'POST'),
       exact('/api/settings/browser', 'GET', 'POST'),
+      exact('/api/settings/search', 'GET', 'POST'),
       exact('/api/settings/env-models', 'GET', 'POST'),
       exact('/api/settings/detect-ollama', 'GET'),
       exact('/api/settings/export', 'POST'),

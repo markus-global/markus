@@ -70,6 +70,7 @@ export class LLMRouter {
   private autoSelect = false;
   private providerTiers: ProviderTier[] = [];
   private fallbackOrder: string[] = [];
+  private _autoFallback = true;
   /** Health tracked per model: key = "providerName:modelId" */
   private modelHealth = new Map<string, ModelHealth>();
   /** Provider-level degradation for non-retryable (auth/billing) errors */
@@ -420,6 +421,9 @@ export class LLMRouter {
     this.fallbackOrder = order.filter(n => this.providers.has(n));
   }
 
+  get autoFallback(): boolean { return this._autoFallback; }
+  setAutoFallback(enabled: boolean): void { this._autoFallback = enabled; }
+
   static assessComplexity(request: LLMRequest): ComplexityLevel {
     const totalChars = request.messages.reduce((s, m) => s + getTextContent(m.content).length, 0);
     const toolCount = request.tools?.length ?? 0;
@@ -485,6 +489,7 @@ export class LLMRouter {
   }
 
   private getFallbacks(primary: string): string[] {
+    if (!this._autoFallback) return [];
     const order = this.fallbackOrder.length > 0
       ? this.fallbackOrder
       : [...this.providers.keys()];
@@ -623,8 +628,8 @@ export class LLMRouter {
       lastError = error;
       log.error(`LLM request failed for ${primary}:${provider.model}`, { error: String(error) });
 
-      // Try alternate models on the same provider
-      if (!LLMRouter.isNonRetryableError(error)) {
+      // Try alternate models on the same provider (only when auto-fallback is enabled)
+      if (this._autoFallback && !LLMRouter.isNonRetryableError(error)) {
         const altModel = this.findHealthyModel(primary);
         if (altModel && altModel !== provider.model) {
           log.info(`Trying alternate model ${altModel} on ${primary}`);
@@ -727,8 +732,8 @@ export class LLMRouter {
       }
       log.error(`LLM stream request failed for ${primary}:${provider.model}`, { error: String(error) });
 
-      // Try alternate models on the same provider
-      if (!LLMRouter.isNonRetryableError(error)) {
+      // Try alternate models on the same provider (only when auto-fallback is enabled)
+      if (this._autoFallback && !LLMRouter.isNonRetryableError(error)) {
         const altModel = this.findHealthyModel(primary);
         if (altModel && altModel !== provider.model) {
           log.info(`Stream: trying alternate model ${altModel} on ${primary}`);
@@ -872,7 +877,7 @@ export class LLMRouter {
       }
     }
 
-    return { defaultProvider: this.defaultProvider, providers };
+    return { defaultProvider: this.defaultProvider, autoFallback: this._autoFallback, providers };
   }
 
   updateProviderModelConfig(providerName: string, config: { contextWindow?: number; maxOutputTokens?: number; cost?: ModelCostConfig }): void {

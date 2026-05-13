@@ -84,7 +84,7 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
   if (isMobile) {
     return (
       <div className="flex-1 overflow-hidden flex flex-col" onTouchStart={swipe.onTouchStart} onTouchEnd={swipe.onTouchEnd}>
-        <div className="flex border-b border-border-default bg-surface-secondary shrink-0">
+        <div className="flex shrink-0">
           {tabs.map(tab => (
             <button
               key={tab.id}
@@ -108,8 +108,8 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
 
   return (
     <div className="flex-1 overflow-hidden flex flex-row">
-      <nav className="w-48 shrink-0 border-r border-border-default bg-surface-secondary/50 flex flex-col py-4 px-2 gap-1">
-        <div className="px-3 pb-3 mb-1 border-b border-border-default/50">
+      <nav className="w-48 shrink-0 bg-surface-secondary rounded-xl m-1 mr-0 flex flex-col py-4 px-2 gap-1">
+        <div className="px-3 pb-3 mb-1">
           <h2 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('title')}</h2>
         </div>
         {tabs.map(tab => (

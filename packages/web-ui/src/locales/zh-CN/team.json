@@ -38,7 +38,19 @@
     "extBadge": "外部",
     "pauseAllTooltip": "暂停所有智能体",
     "resumeAllTooltip": "恢复所有智能体",
-    "failedToCreateTeam": "创建团队失败：{{message}}"
+    "failedToCreateTeam": "创建团队失败：{{message}}",
+    "agents": "智能体",
+    "teams": "团队"
+  },
+  "teamProfile": {
+    "overview": "概览",
+    "announcements": "公告",
+    "norms": "规范",
+    "settings": "设置",
+    "annPlaceholder": "在此编写团队公告（支持 Markdown）...",
+    "normsPlaceholder": "定义团队规范和工作协议（支持 Markdown）...",
+    "noAnnouncements": "暂无公告，点击添加。",
+    "noNorms": "暂未定义规范，点击添加。"
   },
   "contextMenu": {
     "renameTeam": "重命名团队",

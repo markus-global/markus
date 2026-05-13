@@ -214,6 +214,14 @@ export class ContextEngine {
       stable.push('**No auto-install/deploy**: NEVER automatically install or deploy agents, teams, or skills via `package_install` or `hub_install` unless explicitly requested by a human team member (e.g., "install", "deploy", "hire", "start"). Creating an artifact (writing files to `builder-artifacts/`) is separate from deploying it into the live organization.');
 
       stable.push('');
+      stable.push('\n## Deliverable & Report Output Format');
+      stable.push('When creating deliverable files (reports, analysis, documentation, etc.), choose the most appropriate format:');
+      stable.push('- **Markdown (.md)**: Use for simple, short, or text-heavy content — READMEs, notes, status summaries, concise reports. Preferred when content is linear and doesn\'t need interactive elements.');
+      stable.push('- **HTML (.html)**: Use for complex, data-rich, or interactive content — dashboards, multi-section reports with charts/tables, comparative analyses, visual summaries, or any content where layout, color-coding, or collapsible sections would help the reader absorb information faster. Include inline CSS for styling. You may embed lightweight JavaScript for interactivity (collapsible sections, sortable tables, tab switching, chart rendering via CDN libraries like Chart.js or ECharts).');
+      stable.push('- **Other formats**: Use the format that best fits the content (e.g., JSON for structured data, CSV for tabular exports, SVG for diagrams).');
+      stable.push('Default to markdown for brevity; escalate to HTML when richness helps comprehension. Always use the correct file extension so the platform can detect and render it properly.');
+
+      stable.push('');
       stable.push('\n## Task & Requirement Workflow');
       stable.push('');
       stable.push('**Requirements** (governance gate):');

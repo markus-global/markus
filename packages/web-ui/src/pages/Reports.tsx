@@ -142,7 +142,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
 
         {/* Report History Tab */}
         {tab === 'history' && !selectedReport && (
-          <section className="bg-surface-secondary border border-border-default rounded-xl overflow-hidden">
+          <section className="bg-surface-elevated rounded-xl overflow-hidden">
             {historyReports.length === 0 ? (
               <div className="p-8 text-center text-fg-tertiary text-sm">{t('noReportsYet')}</div>
             ) : (
@@ -183,7 +183,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
 
             {/* Metrics Overview — always shown */}
             {selectedReport.metrics && (
-              <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
+              <section className="bg-surface-elevated rounded-xl p-5">
                 <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('taskMetrics.title')}</h3>
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                   <MetricCard label={t('taskMetrics.completed')} value={selectedReport.metrics.tasksCompleted} color="text-green-600" />
@@ -197,7 +197,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
 
             {/* Cost Summary */}
             {selectedReport.costSummary && (
-              <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
+              <section className="bg-surface-elevated rounded-xl p-5">
                 <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('costOverview.title')}</h3>
                 <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
                   <div>
@@ -230,7 +230,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
 
             {/* Task Summary */}
             {selectedReport.taskSummary && (
-              <section className="bg-surface-secondary border border-border-default rounded-xl p-5 overflow-hidden">
+              <section className="bg-surface-elevated rounded-xl p-5 overflow-hidden">
                 <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('taskSummary.title')}</h3>
                 <div className="space-y-4 min-w-0">
                   {selectedReport.taskSummary.completed.length > 0 && (
@@ -251,7 +251,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
 
             {/* Highlights */}
             {selectedReport.highlights && selectedReport.highlights.length > 0 && (
-              <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
+              <section className="bg-surface-elevated rounded-xl p-5">
                 <h3 className="text-xs font-semibold text-fg-secondary mb-2">{t('highlights')}</h3>
                 <ul className="list-disc list-inside space-y-1 text-sm text-fg-secondary">
                   {selectedReport.highlights.map((h, i) => <li key={i}>{h}</li>)}
@@ -271,7 +271,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
 
             {/* Plan approval */}
             {selectedReport.plan && (
-              <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
+              <section className="bg-surface-elevated rounded-xl p-5">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-xs font-semibold text-fg-secondary">
                     {t('upcomingPlan.title')}
@@ -330,13 +330,13 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
 
             {/* No data fallback */}
             {!selectedReport.metrics && !selectedReport.taskSummary && !selectedReport.costSummary && (
-              <section className="bg-surface-secondary border border-border-default rounded-xl p-8 text-center">
+              <section className="bg-surface-elevated rounded-xl p-8 text-center">
                 <p className="text-sm text-fg-tertiary">{t('noDetailedMetrics')}</p>
               </section>
             )}
 
             {/* Feedback */}
-            <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
+            <section className="bg-surface-elevated rounded-xl p-5">
               <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('feedback.title', { count: feedback.length })}</h3>
               {feedback.length > 0 && (
                 <div className="space-y-2 mb-4">
@@ -406,7 +406,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
 
             {/* Task Metrics */}
             {report.metrics && (
-              <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
+              <section className="bg-surface-elevated rounded-xl p-5">
                 <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('taskMetrics.title')}</h3>
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                   <MetricCard label={t('taskMetrics.completed')} value={report.metrics.tasksCompleted} color="text-green-600" />
@@ -419,7 +419,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             )}
 
             {/* Cost Summary */}
-            <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
+            <section className="bg-surface-elevated rounded-xl p-5">
               <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('costOverview.title')}</h3>
               <div className="grid grid-cols-3 gap-4">
                 <div>
@@ -439,7 +439,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
 
             {/* Task Summary */}
             {report.taskSummary && (
-              <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
+              <section className="bg-surface-elevated rounded-xl p-5">
                 <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('taskSummary.title')}</h3>
                 <div className="space-y-4">
                   {report.taskSummary.completed.length > 0 && (
@@ -462,7 +462,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
 
         {/* Per-Agent Breakdown */}
         {tab === 'generate' && (
-        <section className="bg-surface-secondary border border-border-default rounded-xl overflow-hidden">
+        <section className="bg-surface-elevated rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-border-default">
             <h3 className="text-sm font-semibold text-fg-secondary">{t('perAgentUsage.title')}</h3>
           </div>
@@ -545,7 +545,7 @@ function TaskSection({ title, color, items }: { title: string; color: string; it
 
 function UsageCard({ label, value, color }: { label: string; value: string; color: string }) {
   return (
-    <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
+    <div className="bg-surface-elevated rounded-xl p-5">
       <div className="text-sm text-fg-secondary mb-2">{label}</div>
       <div className={`text-2xl font-bold ${color}`}>{value}</div>
     </div>

@@ -54,7 +54,9 @@
     "primaryProvider": "主提供商",
     "primaryProviderDesc": "除非另行指定，否则用于所有智能体交互",
     "noProviders": "尚未配置提供商",
-    "updated": "默认提供商已更新为 {{name}}"
+    "updated": "默认提供商已更新为 {{name}}",
+    "autoFallback": "自动切换模型",
+    "autoFallbackDesc": "启用后，当主模型出错时自动尝试其他提供商/模型。禁用后，仅使用所选模型 — 出错时不会自动切换。"
   },
   "modelProviders": {
     "title": "模型提供商与定价",
@@ -208,6 +210,23 @@
     "depthD3": "完整管线 + 事后评估",
     "saved": "已保存",
     "failedToSave": "保存失败"
+  },
+  "searchApi": {
+    "title": "网络搜索 API 密钥",
+    "description": "配置搜索 API 密钥，让智能体能够搜索网络获取实时信息。优先级：Serper (Google) > Brave > 博查 > DuckDuckGo（免费兜底）。",
+    "serper": "Serper (Google)",
+    "serperHint": "通过 serper.dev 获取 Google 搜索结果",
+    "brave": "Brave Search",
+    "braveHint": "通过 brave.com 提供的隐私搜索",
+    "bocha": "博查 (Bocha)",
+    "bochaHint": "为 AI 优化的中文及全球内容搜索，通过 bochaai.com",
+    "configured": "已配置",
+    "notConfigured": "未配置",
+    "apiKeyPlaceholder": "在此粘贴 API Key...",
+    "saved": "搜索 API 密钥已保存",
+    "failedToSave": "保存搜索 API 密钥失败",
+    "envDetected": "来自环境变量",
+    "freeBackend": "DuckDuckGo 始终可用作免费兜底（无需 API 密钥）。"
   },
   "browserAutomation": {
     "title": "浏览器自动化",

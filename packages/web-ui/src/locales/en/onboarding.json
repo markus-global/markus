@@ -47,7 +47,26 @@
     "importFailed": "Import failed",
     "skipForNow": "Skip for now",
     "openClawFoundLabel": "Found:",
-    "openClawProviders": "({{count}} providers)"
+    "openClawProviders": "({{count}} providers)",
+    "autoFallback": "Auto-switch model on failure",
+    "autoFallbackDesc": "Try other providers/models if the primary fails"
+  },
+  "search": {
+    "title": "Web Search (Optional)",
+    "subtitle": "Give agents the ability to search the web",
+    "description": "Configure at least one search API key to enable agents to find real-time information. DuckDuckGo is always available as a free fallback.",
+    "serper": "Serper (Google)",
+    "brave": "Brave Search",
+    "bocha": "Bocha (博查)",
+    "apiKeyPlaceholder": "Paste API Key...",
+    "save": "Save Search Keys",
+    "saving": "Saving...",
+    "saved": "Search API keys configured",
+    "savedHint": "You can manage search API keys anytime in Settings.",
+    "failedToSave": "Failed to save",
+    "detectingKeys": "Detecting search API keys...",
+    "detected": "Detected from environment variables:",
+    "skipForNow": "Skip for now"
   },
   "profile": {
     "title": "Set Up Your Profile",

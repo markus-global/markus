@@ -917,52 +917,30 @@ export class OrganizationService {
   }
 
   /**
-   * Seed a default team ("My Team") for a fresh organization.
-   * Creates the team, adds the owner as a human member, and hires a Secretary agent
-   * as the team manager. Skips if any teams already exist for the org.
+   * Seed a Secretary agent for a fresh organization.
+   * The Secretary is hired without a team — users create teams explicitly.
+   * Skips if any agents already exist for the org.
    */
-  async seedDefaultTeam(orgId: string, ownerUserId: string): Promise<void> {
-    const existing = this.listTeams(orgId);
-    if (existing.length > 0) return; // Already has teams — nothing to seed
+  async seedDefaultTeam(orgId: string, _ownerUserId: string): Promise<void> {
+    const existingAgents = this.agentManager.listAgents();
+    if (existingAgents.length > 0) return; // Already has agents — nothing to seed
 
-    log.info('Seeding default team for org', { orgId });
+    log.info('Seeding Secretary agent for org', { orgId });
 
     try {
-      // Create the default team
-      const team = await this.createTeam(
-        orgId,
-        'My Team',
-        'Your primary team — you and your personal AI Secretary.'
-      );
-
-      // Add the owner as a human member
-      const owner = this.humans.get(ownerUserId);
-      if (owner) {
-        this.addMemberToTeam(team.id, ownerUserId, 'human');
-      }
-
-      // Hire a Secretary agent as manager of this team, with all building skills
       const secretary = await this.hireAgent({
         name: 'Secretary',
         roleName: 'secretary',
         orgId,
-        teamId: team.id,
-        agentRole: 'manager',
+        agentRole: 'worker',
         skills: ['agent-building', 'team-building', 'skill-building'],
       });
 
-      // Set the secretary as the team manager
-      await this.updateTeam(team.id, {
-        managerId: secretary.id,
-        managerType: 'agent',
-      });
-
-      log.info('Default team seeded', {
-        teamId: team.id,
+      log.info('Secretary agent seeded', {
         secretaryId: secretary.id,
       });
     } catch (error) {
-      log.warn('Failed to seed default team', { error: String(error) });
+      log.warn('Failed to seed Secretary agent', { error: String(error) });
     }
   }
 

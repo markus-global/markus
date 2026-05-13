@@ -6,7 +6,7 @@ export function NotificationsPage({ authUser }: { authUser?: { id: string; name:
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="flex items-center px-4 h-14 border-b border-border-default bg-surface-secondary/50">
+      <div className="flex items-center px-4 h-14">
         <h2 className="text-base font-bold">{t('notifications')}</h2>
       </div>
       <div className="flex-1 overflow-hidden">

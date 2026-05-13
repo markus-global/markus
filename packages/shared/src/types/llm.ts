@@ -81,6 +81,7 @@ export interface EnhancedProviderSettings {
 
 export interface EnhancedLLMSettings {
   defaultProvider: string;
+  autoFallback?: boolean;
   providers: Record<string, EnhancedProviderSettings>;
 }
 

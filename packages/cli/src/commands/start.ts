@@ -219,6 +219,11 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     }
   }
 
+  // Apply auto-fallback setting
+  if (config.llm.autoFallback === false) {
+    llmRouter.setAutoFallback(false);
+  }
+
   // Load custom models from config
   if (config.llm.customModels) {
     for (const [providerName, models] of Object.entries(config.llm.customModels)) {
@@ -436,6 +441,9 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   }
   if (config.integrations?.search?.braveApiKey && !process.env['BRAVE_SEARCH_API_KEY']) {
     process.env['BRAVE_SEARCH_API_KEY'] = config.integrations.search.braveApiKey;
+  }
+  if (config.integrations?.search?.bochaApiKey && !process.env['BOCHA_API_KEY']) {
+    process.env['BOCHA_API_KEY'] = config.integrations.search.bochaApiKey;
   }
 
   const apiPort = Number(values['port']) || config.server.apiPort;

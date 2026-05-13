@@ -47,7 +47,26 @@
     "importFailed": "导入失败",
     "skipForNow": "暂时跳过",
     "openClawFoundLabel": "已找到：",
-    "openClawProviders": "（{{count}} 个提供商）"
+    "openClawProviders": "（{{count}} 个提供商）",
+    "autoFallback": "模型出错时自动切换",
+    "autoFallbackDesc": "主模型失败时自动尝试其他提供商/模型"
+  },
+  "search": {
+    "title": "网络搜索（可选）",
+    "subtitle": "赋予智能体搜索网络的能力",
+    "description": "配置至少一个搜索 API 密钥，让智能体能够获取实时信息。DuckDuckGo 始终可用作免费兜底。",
+    "serper": "Serper (Google)",
+    "brave": "Brave Search",
+    "bocha": "博查 (Bocha)",
+    "apiKeyPlaceholder": "粘贴 API Key...",
+    "save": "保存搜索密钥",
+    "saving": "保存中...",
+    "saved": "搜索 API 密钥已配置",
+    "savedHint": "可随时在设置中管理搜索 API 密钥。",
+    "failedToSave": "保存失败",
+    "detectingKeys": "正在检测搜索 API 密钥...",
+    "detected": "从环境变量检测到：",
+    "skipForNow": "暂时跳过"
   },
   "profile": {
     "title": "设置个人资料",

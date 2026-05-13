@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { api, wsClient, hubApi, kebab } from '../api.ts';
@@ -12,18 +12,18 @@ import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 
-interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string; authUser?: AuthUser }
+const LazyMarkdownMessage = lazy(() => import('../components/MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage })));
 
-type ProfileTab = 'overview' | 'mind' | 'tools' | 'skills' | 'memory' | 'heartbeat' | 'files';
+interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string; authUser?: AuthUser; headless?: boolean; activeTab?: ProfileTab }
 
-const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
+export type ProfileTab = 'overview' | 'tools' | 'skills' | 'memory' | 'files';
+
+export const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
   { key: 'overview', icon: '▦' },
-  { key: 'mind', icon: '🔮' },
   { key: 'files', icon: '📄' },
   { key: 'tools', icon: '⚒' },
   { key: 'skills', icon: '◆' },
   { key: 'memory', icon: '🧠' },
-  { key: 'heartbeat', icon: '♡' },
 ];
 
 function taskStatusLabel(status: string, t: TFunction): string {
@@ -53,11 +53,12 @@ function fmtNum(n: number): string {
   return n.toLocaleString();
 }
 
-export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack, highlightMailboxId, authUser }: Props) {
+export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack, highlightMailboxId, authUser, headless, activeTab: externalTab }: Props) {
   const { t } = useTranslation(['agent', 'common']);
   const isMobile = useIsMobile();
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const [tab, setTab] = useState<ProfileTab>(defaultTab ?? 'overview');
+  const effectiveTab = headless && externalTab ? externalTab : tab;
   const [externalInfo, setExternalInfo] = useState<ExternalAgentInfo | null>(null);
   const tabs = useMemo(() => TAB_DEF.map(tabDef => ({ ...tabDef, label: t(`agent:tabs.${tabDef.key}`) })), [t]);
   const profileTabsList = useMemo(() => tabs.map(tabRow => ({ id: tabRow.key })), [tabs]);
@@ -92,9 +93,37 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
   const statusDot = STATUS_DOT[agent.state.status] ?? 'bg-gray-500';
   const canManageAgents = authUser?.role === 'owner' || authUser?.role === 'admin';
 
+  if (headless) {
+    return (
+      <div className="flex-1 overflow-y-auto bg-surface-primary">
+        <div className="p-5">
+          {effectiveTab === 'overview' && (
+            <>
+              <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
+              <div className="mt-6">
+                <MindTab agentId={agentId} highlightId={highlightMailboxId} />
+              </div>
+            </>
+          )}
+          {effectiveTab === 'files' && <FilesTab agentId={agentId} />}
+          {effectiveTab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}
+          {effectiveTab === 'skills' && <SkillsTab agent={agent} />}
+          {effectiveTab === 'memory' && (
+            <>
+              <HeartbeatTab agentId={agentId} initialData={agent.heartbeat} />
+              <div className="mt-6">
+                <MemoryTab agentId={agentId} />
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 overflow-y-auto bg-surface-primary">
-      <div className="px-5 py-3.5 border-b border-border-default bg-surface-secondary sticky top-0 z-10">
+      <div className="px-5 py-3.5 bg-surface-secondary sticky top-0 z-10">
         <div className="flex items-center gap-3">
           <Avatar name={agent.name} avatarUrl={agent.avatarUrl} size={40} className="rounded-xl" />
           <div className="flex-1 min-w-0">
@@ -145,13 +174,25 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
         </div>
       </div>
       <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
-        {tab === 'overview' && <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />}
-        {tab === 'mind' && <MindTab agentId={agentId} highlightId={highlightMailboxId} />}
+        {tab === 'overview' && (
+          <>
+            <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
+            <div className="mt-6">
+              <MindTab agentId={agentId} highlightId={highlightMailboxId} />
+            </div>
+          </>
+        )}
         {tab === 'files' && <FilesTab agentId={agentId} />}
         {tab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}
         {tab === 'skills' && <SkillsTab agent={agent} />}
-        {tab === 'memory' && <MemoryTab agentId={agentId} />}
-        {tab === 'heartbeat' && <HeartbeatTab agentId={agentId} initialData={agent.heartbeat} />}
+        {tab === 'memory' && (
+          <>
+            <HeartbeatTab agentId={agentId} initialData={agent.heartbeat} />
+            <div className="mt-6">
+              <MemoryTab agentId={agentId} />
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -160,28 +201,14 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
 function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { agent: AgentDetail; onUpdate: () => void; externalInfo?: ExternalAgentInfo | null; t: TFunction; canManageAgents: boolean }) {
-  const [editName, setEditName] = useState(agent.name);
-  const [editRole, setEditRole] = useState(agent.agentRole);
-  const [editModelMode, setEditModelMode] = useState<'default' | 'custom'>((agent.config?.llmConfig as Record<string, unknown>)?.modelMode as 'default' | 'custom' ?? 'default');
-  const [editModel, setEditModel] = useState(agent.config?.llmConfig.primary ?? '');
-  const [editFallback, setEditFallback] = useState(agent.config?.llmConfig.fallback ?? '');
-  const [saving, setSaving] = useState(false);
-  const [providers, setProviders] = useState<Record<string, { model: string; configured: boolean }>>({});
-  const [defaultProvider, setDefaultProvider] = useState('');
-  const [recentTasks, setRecentTasks] = useState<TaskInfo[]>([]);
   const [usageInfo, setUsageInfo] = useState<AgentUsageInfo | null>(null);
-  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const [recentActivities, setRecentActivities] = useState<ActivitySummary[]>([]);
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
   const [agentStorage, setAgentStorage] = useState<StorageAgentItem | null>(null);
   const [agentDataDir, setAgentDataDir] = useState('');
+  const [activeTasks, setActiveTasks] = useState<TaskInfo[]>([]);
 
   useEffect(() => {
-    api.settings.getLlm().then(d => {
-      setProviders(d.providers);
-      setDefaultProvider(d.defaultProvider);
-    }).catch(() => {});
-    api.tasks.list({ assignedAgentId: agent.id }).then(d => setRecentTasks(d.tasks.slice(0, 5))).catch(() => {});
     api.usage.agents().then(d => {
       const info = d.agents.find(a => a.agentId === agent.id);
       if (info) setUsageInfo(info);
@@ -192,56 +219,17 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
       const match = info.agents.find(a => a.id === agent.id);
       if (match) setAgentStorage(match);
     }).catch(() => {});
-  }, [agent.id]);
-
-  useEffect(() => {
-    setEditName(agent.name);
-    setEditRole(agent.agentRole);
-    setEditModelMode((agent.config?.llmConfig as Record<string, unknown>)?.modelMode as 'default' | 'custom' ?? 'default');
-    setEditModel(agent.config?.llmConfig.primary ?? '');
-    setEditFallback(agent.config?.llmConfig.fallback ?? '');
-  }, [agent.name, agent.agentRole, agent.config?.llmConfig]);
-
-  const configuredModels = Object.entries(providers).filter(([, v]) => v.configured).map(([k]) => k);
-  const currentModelMode = ((agent.config?.llmConfig as Record<string, unknown>)?.modelMode as string) ?? 'default';
-
-  const identityDirty = canManageAgents && (editName !== agent.name || editRole !== agent.agentRole);
-  const llmDirty = canManageAgents && (
-    editModelMode !== currentModelMode
-    || (editModelMode === 'custom' && editModel !== (agent.config?.llmConfig.primary ?? ''))
-    || editFallback !== (agent.config?.llmConfig.fallback ?? '')
-  );
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      await api.agents.updateConfig(agent.id, {
-        name: editName, agentRole: editRole,
-        llmConfig: {
-          modelMode: editModelMode,
-          primary: editModelMode === 'custom' ? editModel : defaultProvider,
-          fallback: editFallback || undefined,
-        },
-      });
-      onUpdate();
-    } catch { /* */ }
-    setSaving(false);
-  };
-
-  const discardChanges = () => {
-    setEditName(agent.name);
-    setEditRole(agent.agentRole);
-    setEditModelMode((agent.config?.llmConfig as Record<string, unknown>)?.modelMode as 'default' | 'custom' ?? 'default');
-    setEditModel(agent.config?.llmConfig.primary ?? '');
-    setEditFallback(agent.config?.llmConfig.fallback ?? '');
-  };
+    if (agent.state.activeTaskIds?.length) {
+      api.tasks.list({ assignedAgentId: agent.id }).then(d => {
+        setActiveTasks(d.tasks.filter(t => agent.state.activeTaskIds?.includes(t.id)));
+      }).catch(() => {});
+    }
+  }, [agent.id, agent.state.activeTaskIds]);
 
   const toggleAgent = () => {
     if (agent.state.status === 'offline') api.agents.start(agent.id).then(onUpdate);
     else api.agents.stop(agent.id).then(onUpdate);
   };
-
-  const TASK_DOT: Record<string, string> = { pending: 'bg-gray-400', assigned: 'bg-blue-400', in_progress: 'bg-brand-400', completed: 'bg-green-400', failed: 'bg-red-400', cancelled: 'bg-gray-600' };
 
   const GATEWAY_ENDPOINTS = useMemo(() => [
     { method: 'POST' as const, path: '/api/gateway/sync', desc: t('agent:profilePage.gateway.sync') },
@@ -274,7 +262,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
         </Card>
 
         <Card title={t('agent:profilePage.overview.connectionStatus')}>
-          <div className="grid grid-cols-4 gap-4">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
             <StatBox label={t('agent:profilePage.overview.labels.connection')} value={externalInfo.connected ? t('common:status.online') : t('common:status.offline')} color={externalInfo.connected ? 'green' : 'gray'} />
             <StatBox label={t('agent:profilePage.overview.labels.platform')} value={t('agent:profilePage.overview.openClaw')} />
             <StatBox label={t('agent:profilePage.overview.labels.activeTasks')} value={String(agent.state.activeTaskIds?.length ?? 0)} />
@@ -294,7 +282,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
         <Card title={t('agent:profilePage.overview.syncContextTitle')}>
           <div className="space-y-1.5">
             {SYNC_CONTEXT_FIELDS.map(f => (
-              <div key={f.field} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
+              <div key={f.field} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated">
                 <span className="font-mono text-[10px] text-brand-500 shrink-0 pt-0.5">{f.field}</span>
                 <span className="text-[10px] text-fg-tertiary">{f.desc}</span>
               </div>
@@ -305,7 +293,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
         <Card title={t('agent:profilePage.overview.gatewayEndpoints')}>
           <div className="space-y-1.5">
             {GATEWAY_ENDPOINTS.map(ep => (
-              <div key={ep.path} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
+              <div key={ep.path} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated">
                 <span className={`text-[10px] font-semibold shrink-0 pt-0.5 ${ep.method === 'POST' ? 'text-amber-600' : 'text-green-600'}`}>{ep.method}</span>
                 <span className="font-mono text-[10px] text-fg-secondary shrink-0 pt-0.5">{ep.path}</span>
                 <span className="text-[10px] text-fg-tertiary ml-auto">{ep.desc}</span>
@@ -314,19 +302,6 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
           </div>
         </Card>
 
-        {recentTasks.length > 0 && (
-          <Card title={t('agent:profilePage.overview.recentTasks')} action={<button onClick={() => navBus.navigate(PAGE.WORK)} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:viewAll')}</button>}>
-            <div className="divide-y divide-gray-800/50 -mx-5">
-              {recentTasks.map(task => (
-                <div key={task.id} className="flex items-center gap-2.5 px-5 py-2.5">
-                  <span className={`w-2 h-2 rounded-full shrink-0 ${TASK_DOT[task.status] ?? 'bg-gray-500'}`} />
-                  <span className="text-xs text-fg-secondary flex-1 truncate">{task.title}</span>
-                  <span className="text-[10px] text-fg-tertiary capitalize shrink-0">{taskStatusLabel(task.status, t)}</span>
-                </div>
-              ))}
-            </div>
-          </Card>
-        )}
       </div>
     );
   }
@@ -337,64 +312,39 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
 
   return (
     <div className="space-y-4">
-      <Card title={t('agent:profilePage.overview.identity')} action={
-        !canManageAgents || !identityDirty ? null
-          : <div className="flex gap-2">
-              <button onClick={discardChanges} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:cancel')}</button>
-              <button onClick={save} disabled={saving} className="text-xs text-brand-500 hover:text-brand-500">{saving ? t('common:saving') : t('common:save')}</button>
-            </div>
-      }>
-        <div className="flex items-start gap-4 mb-3">
-          {canManageAgents ? (
-          <AvatarUpload
-            currentUrl={agent.avatarUrl}
-            name={agent.name}
-            size={48}
-            targetType="agent"
-            targetId={agent.id}
-            onUploaded={() => onUpdate()}
-          />
-          ) : (
-          <Avatar name={agent.name} avatarUrl={agent.avatarUrl} size={48} className="rounded-xl" />
-          )}
-          <div className="flex-1 min-w-0 pt-1">
-            {canManageAgents ? (
-              <input value={editName} onChange={e => setEditName(e.target.value)}
-                className="text-sm font-medium text-fg-primary bg-transparent border-0 border-b border-transparent hover:border-border-default focus:border-brand-500 outline-none w-full px-0 py-0 transition-colors" />
-            ) : (
-              <div className="text-sm font-medium text-fg-primary">{agent.name}</div>
-            )}
-            <div className="text-xs text-fg-tertiary mt-0.5">{agent.role} · {agent.agentRole ?? t('agent:profilePage.roles.worker')}</div>
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-          <KV label={t('agent:profilePage.overview.labels.name')}>{canManageAgents ? <input className="input-sm" value={editName} onChange={e => setEditName(e.target.value)} /> : agent.name}</KV>
-          <KV label={t('agent:profilePage.overview.labels.agentRole')}>
-            {canManageAgents
-              ? <div className="flex gap-1.5">{(['worker', 'manager'] as const).map(r => (
-                  <button key={r} onClick={() => setEditRole(r)} className={`px-2 py-1 text-[10px] rounded border transition-colors capitalize ${editRole === r ? (r === 'manager' ? 'bg-amber-500/15 text-amber-600 border-amber-500/30' : 'bg-blue-500/15 text-blue-600 border-blue-500/30') : 'bg-surface-elevated text-fg-tertiary border-border-default'}`}>{r}</button>
-                ))}</div>
-              : <span className={agent.agentRole === 'manager' ? 'text-amber-600' : 'text-blue-600'}>{agent.agentRole === 'manager' ? t('agent:profilePage.roles.managerDisplay') : t('agent:profilePage.roles.workerDisplay')}</span>}
-          </KV>
-          <KV label={t('agent:profilePage.overview.labels.roleTemplate')}>{agent.role}</KV>
-          <KV label={t('agent:profilePage.overview.labels.agentId')} mono>{agent.id}</KV>
-          <KV label={t('agent:profilePage.overview.labels.organization')}>{agent.config?.orgId ?? 'default'}</KV>
-          <KV label={t('agent:profilePage.overview.labels.created')}>{agent.config?.createdAt ? new Date(agent.config.createdAt).toLocaleDateString() : t('agent:profilePage.emDash')}</KV>
-        </div>
-      </Card>
+      {/* Compact identity row */}
+      <div className="bg-surface-elevated rounded-xl px-4 py-3 flex flex-wrap items-center gap-x-5 gap-y-1.5">
+        <KV label={t('agent:profilePage.overview.labels.roleTemplate')}>{agent.role}</KV>
+        <KV label={t('agent:profilePage.overview.labels.agentRole')}>
+          <span className={agent.agentRole === 'manager' ? 'text-amber-600' : 'text-blue-600'}>{agent.agentRole === 'manager' ? t('agent:profilePage.roles.managerDisplay') : t('agent:profilePage.roles.workerDisplay')}</span>
+        </KV>
+        <KV label={t('agent:profilePage.overview.labels.agentId')} mono>{agent.id}</KV>
+        <KV label={t('agent:profilePage.overview.labels.created')}>{agent.config?.createdAt ? new Date(agent.config.createdAt).toLocaleDateString() : t('agent:profilePage.emDash')}</KV>
+      </div>
 
-      <Card title={t('agent:profilePage.overview.runtimeStatus')}>
-        <div className="grid grid-cols-4 gap-4">
-          <StatBox label={t('agent:profilePage.overview.labels.status')} value={agentRuntimeStatusLabel(agent.state.status, t)} color={agent.state.status === 'idle' ? 'green' : agent.state.status === 'working' ? 'blue' : agent.state.status === 'error' ? 'red' : 'gray'} />
-          <StatBox label={t('agent:profilePage.overview.labels.tokensToday')} value={String(agent.state.tokensUsedToday)} />
-          <StatBox label={t('agent:profilePage.overview.labels.activeTasks')} value={String(agent.state.activeTaskIds?.length ?? 0)} />
+      {/* Runtime + Usage + Storage in a single compact card */}
+      <div className="bg-surface-elevated rounded-xl px-4 py-3 space-y-3">
+        {/* Runtime status row */}
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+          <div className="flex items-center gap-1.5">
+            <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[agent.state.status] || 'bg-gray-500'}`} />
+            <span className={`text-sm font-semibold ${agent.state.status === 'idle' ? 'text-green-500' : agent.state.status === 'working' ? 'text-blue-400' : agent.state.status === 'error' ? 'text-red-400' : 'text-fg-secondary'}`}>
+              {agentRuntimeStatusLabel(agent.state.status, t)}
+            </span>
+          </div>
+          <StatBox label={t('agent:profilePage.overview.labels.tokensToday')} value={fmtNum(agent.state.tokensUsedToday)} />
+          <StatBox label={t('agent:profilePage.overview.labels.activeTasks')} value={String(activeN)} color={activeN > 0 ? 'blue' : undefined} />
           <StatBox label={t('agent:profilePage.overview.labels.lastHeartbeat')} value={agent.state.lastHeartbeat ? new Date(agent.state.lastHeartbeat).toLocaleTimeString() : t('agent:profilePage.never')} />
+          {canManageAgents && (
+            <button onClick={toggleAgent} className="ml-auto px-3 py-1 text-xs border border-border-default rounded-lg hover:border-brand-500 transition-colors shrink-0">
+              {agent.state.status === 'offline' ? t('agent:profilePage.overview.startAgent') : t('agent:profilePage.overview.stopAgent')}
+            </button>
+          )}
         </div>
 
         {agent.state.status === 'error' && (
-          <div className="mt-3 bg-red-500/10 border border-red-500/20 rounded-lg p-3">
-            <div className="flex items-center gap-2 mb-1.5">
-              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+          <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+            <div className="flex items-center gap-2 mb-1">
               <span className="text-xs font-medium text-red-500">{t('agent:profilePage.overview.errorDetails')}</span>
               {agent.state.lastErrorAt && <span className="text-[10px] text-red-500/50 ml-auto">{new Date(agent.state.lastErrorAt).toLocaleString()}</span>}
             </div>
@@ -406,28 +356,21 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
 
         {agent.state.status !== 'error' && agent.state.lastError && agent.state.lastErrorAt
           && (Date.now() - new Date(agent.state.lastErrorAt).getTime()) < 30 * 60 * 1000 && (
-          <div className="mt-3 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
-            <div className="flex items-center gap-2 mb-1.5">
-              <span className="w-2 h-2 rounded-full bg-amber-400" />
+          <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
+            <div className="flex items-center gap-2 mb-1">
               <span className="text-xs font-medium text-amber-600">{t('agent:profilePage.overview.recentError')}</span>
               <span className="text-[10px] text-amber-500/50 ml-auto">{new Date(agent.state.lastErrorAt).toLocaleString()}</span>
             </div>
             <pre className="text-[11px] text-amber-600/80 leading-relaxed whitespace-pre-wrap break-all font-mono bg-amber-500/5 rounded p-2">
               {agent.state.lastError}
             </pre>
-            <div className="text-[10px] text-fg-tertiary mt-1.5">{t('agent:profilePage.overview.errorRecovered')}</div>
           </div>
         )}
 
         {agent.state.status === 'working' && activeN > 0 && (
-          <div className="mt-3 bg-brand-500/10 border border-brand-500/20 rounded-lg p-3">
-            <div className="flex items-center gap-2 mb-1.5">
-              <span className="w-2 h-2 rounded-full bg-brand-400 animate-pulse" />
-              <span className="text-xs font-medium text-brand-500">{t('agent:profilePage.overview.currentlyWorking')}</span>
-              <span className="text-[10px] text-brand-500/50 ml-auto">{t('agent:profilePage.overview.activeTasksCount', { count: activeN })}</span>
-            </div>
+          <div className="bg-brand-500/10 border border-brand-500/20 rounded-lg p-2.5">
             <div className="space-y-1">
-              {recentTasks.filter(task => agent.state.activeTaskIds?.includes(task.id)).map(task => (
+              {activeTasks.map(task => (
                 <div key={task.id} className="flex items-center gap-2 text-[11px]">
                   <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse shrink-0" />
                   <span className="text-fg-secondary truncate flex-1">{task.title}</span>
@@ -438,126 +381,36 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
           </div>
         )}
 
-        {canManageAgents && (
-        <div className="flex gap-2 mt-4 pt-3 border-t border-border-default/50">
-          <button onClick={toggleAgent} className="px-3 py-1.5 text-xs border border-border-default rounded-lg hover:border-brand-500 transition-colors">
-            {agent.state.status === 'offline' ? t('agent:profilePage.overview.startAgent') : t('agent:profilePage.overview.stopAgent')}
-          </button>
-        </div>
-        )}
-      </Card>
-
-      {usageInfo && (
-        <Card title={t('agent:profilePage.overview.usage')}>
-          <div className="grid grid-cols-3 gap-4">
-            <StatBox label={t('agent:profilePage.overview.labels.totalTokens')} value={fmtNum(usageInfo.totalTokens)} />
-            <StatBox label={t('agent:profilePage.overview.labels.requests')} value={String(usageInfo.requestCount)} />
-            <StatBox label={t('agent:profilePage.overview.labels.toolCalls')} value={String(usageInfo.toolCalls)} />
-            <StatBox label={t('agent:profilePage.overview.labels.promptTokens')} value={fmtNum(usageInfo.promptTokens)} />
-            <StatBox label={t('agent:profilePage.overview.labels.completionTokens')} value={fmtNum(usageInfo.completionTokens)} />
-            <StatBox label={t('agent:profilePage.overview.labels.estCost')} value={`$${usageInfo.estimatedCost < 0.01 ? usageInfo.estimatedCost.toFixed(4) : usageInfo.estimatedCost.toFixed(2)}`} />
-          </div>
-        </Card>
-      )}
-
-      {agentStorage && (
-        <Card title={t('agent:profilePage.overview.storage')} action={
-          <button onClick={() => void api.system.openPath(agentDataDir)}
-            className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('agent:profilePage.overview.openFolder')}</button>
-        }>
-          <div className="flex items-baseline gap-2 mb-3">
-            <span className="text-lg font-bold text-fg-primary">{fmtBytesLocal(agentStorage.size)}</span>
-            <span className="text-xs text-fg-tertiary font-mono truncate">{agentDataDir}</span>
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            {agentStorage.subItems.filter(s => s.size > 0).map(sub => (
-              <StatBox key={sub.name} label={sub.name} value={fmtBytesLocal(sub.size)} />
-            ))}
-          </div>
-        </Card>
-      )}
-
-      <Card title={t('agent:profilePage.overview.llmConfiguration')} action={
-        !canManageAgents || !llmDirty ? null
-          : <div className="flex gap-2">
-              <button onClick={discardChanges} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:cancel')}</button>
-              <button onClick={save} disabled={saving} className="text-xs text-brand-500 hover:text-brand-500">{saving ? t('common:saving') : t('common:save')}</button>
+        {/* Usage row */}
+        {usageInfo && (
+          <>
+            <div className="border-t border-border-default/40" />
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+              <StatBox label={t('agent:profilePage.overview.labels.totalTokens')} value={fmtNum(usageInfo.totalTokens)} />
+              <StatBox label={t('agent:profilePage.overview.labels.requests')} value={String(usageInfo.requestCount)} />
+              <StatBox label={t('agent:profilePage.overview.labels.toolCalls')} value={String(usageInfo.toolCalls)} />
+              <StatBox label={t('agent:profilePage.overview.labels.promptTokens')} value={fmtNum(usageInfo.promptTokens)} />
+              <StatBox label={t('agent:profilePage.overview.labels.completionTokens')} value={fmtNum(usageInfo.completionTokens)} />
+              <StatBox label={t('agent:profilePage.overview.labels.estCost')} value={`$${usageInfo.estimatedCost < 0.01 ? usageInfo.estimatedCost.toFixed(4) : usageInfo.estimatedCost.toFixed(2)}`} />
             </div>
-      }>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-            <KV label={t('agent:profilePage.overview.labels.modelMode')}>
-              {canManageAgents
-                ? <div className="flex gap-1.5">
-                    {(['default', 'custom'] as const).map(m => (
-                      <button key={m} onClick={() => setEditModelMode(m)}
-                        className={`px-2.5 py-1 text-[10px] rounded border transition-colors capitalize ${
-                          editModelMode === m
-                            ? (m === 'default' ? 'bg-brand-500/15 text-brand-500 border-brand-500/30' : 'bg-amber-500/15 text-amber-600 border-amber-500/30')
-                            : 'bg-surface-elevated text-fg-tertiary border-border-default'
-                        }`}
-                      >{m === 'default' ? t('agent:profilePage.overview.systemDefault') : t('agent:profilePage.overview.custom')}</button>
-                    ))}
-                  </div>
-                : <span className={`text-xs ${currentModelMode === 'custom' ? 'text-amber-600' : 'text-brand-500'}`}>
-                    {currentModelMode === 'custom' ? t('agent:profilePage.overview.customShort') : t('agent:profilePage.overview.systemDefaultShort')}
-                  </span>}
-            </KV>
-            <KV label={t('agent:profilePage.overview.labels.primaryModel')}>
-              {canManageAgents
-                ? editModelMode === 'custom'
-                  ? <select className="input-sm" value={editModel} onChange={e => setEditModel(e.target.value)}>
-                      {configuredModels.map(m => <option key={m} value={m}>{m} ({providers[m]?.model})</option>)}
-                      {!configuredModels.includes(editModel) && editModel && <option value={editModel}>{editModel}</option>}
-                    </select>
-                  : <span className="text-xs text-fg-secondary italic">{t('agent:profilePage.overview.followsSystemDefault', { provider: defaultProvider || '...' })}</span>
-                : <span className="font-mono text-xs">
-                    {currentModelMode === 'custom'
-                      ? (agent.config?.llmConfig.primary ?? t('agent:profilePage.emDash'))
-                      : <span className="text-fg-secondary">{defaultProvider || agent.config?.llmConfig.primary || t('agent:profilePage.emDash')} <span className="text-fg-tertiary">{t('agent:profilePage.overview.systemDefaultParen')}</span></span>}
-                  </span>}
-            </KV>
-            <KV label={t('agent:profilePage.overview.labels.fallback')}>
-              {canManageAgents
-                ? <select className="input-sm" value={editFallback} onChange={e => setEditFallback(e.target.value)}>
-                    <option value="">{t('agent:profilePage.overview.noneOption')}</option>
-                    {configuredModels.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                : <span className="font-mono text-xs">{agent.config?.llmConfig.fallback ?? t('agent:profilePage.overview.noneOption')}</span>}
-            </KV>
-            <KV label={t('agent:profilePage.overview.labels.maxTokensRequest')}>{agent.config?.llmConfig.maxTokensPerRequest ?? t('agent:profilePage.overview.defaultValue')}</KV>
-            <KV label={t('agent:profilePage.overview.labels.maxTokensDay')}>{agent.config?.llmConfig.maxTokensPerDay ?? t('agent:profilePage.overview.unlimited')}</KV>
-          </div>
-        </Card>
+          </>
+        )}
 
-      {/* Recent Tasks */}
-      {recentTasks.length > 0 && (
-        <Card title={t('agent:profilePage.overview.recentTasks')} action={<button onClick={() => navBus.navigate(PAGE.WORK)} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:viewAll')}</button>}>
-          <div className="divide-y divide-gray-800/50 -mx-5">
-            {recentTasks.map(task => {
-              const isExpanded = expandedTaskId === task.id;
-              const hasLogs = ['in_progress', 'failed', 'completed', 'review'].includes(task.status);
-              return (
-                <div key={task.id}>
-                  <button
-                    onClick={() => hasLogs ? setExpandedTaskId(isExpanded ? null : task.id) : undefined}
-                    className={`w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors ${hasLogs ? 'hover:bg-surface-elevated/40 cursor-pointer' : 'cursor-default'}`}
-                  >
-                    <span className={`w-2 h-2 rounded-full shrink-0 ${TASK_DOT[task.status] ?? 'bg-gray-500'}`} />
-                    <span className="text-xs text-fg-secondary flex-1 truncate">{task.title}</span>
-                    <span className="text-[10px] text-fg-tertiary capitalize shrink-0">{taskStatusLabel(task.status, t)}</span>
-                    {hasLogs && <span className="text-fg-tertiary text-[10px]">{isExpanded ? '▲' : '▼'}</span>}
-                  </button>
-                  {isExpanded && (
-                    <div className="border-t border-border-default/60 bg-surface-primary/40">
-                      <TaskLog taskId={task.id} isLive={task.status === 'in_progress'} />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </Card>
-      )}
+        {/* Storage row */}
+        {agentStorage && (
+          <>
+            <div className="border-t border-border-default/40" />
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+              <StatBox label={t('agent:profilePage.overview.storage')} value={fmtBytesLocal(agentStorage.size)} />
+              {agentStorage.subItems.filter(s => s.size > 0).map(sub => (
+                <StatBox key={sub.name} label={sub.name} value={fmtBytesLocal(sub.size)} />
+              ))}
+              <button onClick={() => void api.system.openPath(agentDataDir)}
+                className="text-[10px] text-fg-tertiary hover:text-fg-secondary ml-auto">{t('agent:profilePage.overview.openFolder')} →</button>
+            </div>
+          </>
+        )}
+      </div>
 
       {/* Recent Heartbeats */}
       {hbCount > 0 && (
@@ -758,8 +611,8 @@ function InlineDiff({ agent, template, templateId }: { agent: string; template: 
   }) : lines.map((l, i) => ({ ...l, _idx: i }));
 
   return (
-    <div className="mb-3 border border-border-default rounded-lg overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-1.5 bg-surface-elevated/80 border-b border-border-default">
+    <div className="mb-3 bg-surface-elevated rounded-lg overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-surface-elevated">
         <div className="flex items-center gap-3">
           <span className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">
             {t('agent:profilePage.diff.title', { templateId })}
@@ -984,10 +837,7 @@ function FilesTab({ agentId }: { agentId: string }) {
                     title={t('agent:profilePage.filesTab.undoMergeTitle')}
                   >{t('agent:profilePage.filesTab.undoMerge')}</button>
                 )}
-                {dirty && <span className="text-[10px] text-amber-600">{t('agent:profilePage.filesTab.unsaved')}</span>}
-                <button onClick={saveFile} disabled={saving || !dirty}
-                  className={`px-3 py-1 text-xs rounded-lg transition-colors ${dirty ? 'bg-brand-600 hover:bg-brand-500 text-white' : 'bg-surface-elevated text-fg-tertiary cursor-default'}`}
-                >{saving ? t('common:saving') : t('common:save')}</button>
+                {saving && <span className="text-[10px] text-fg-tertiary">{t('common:saving')}</span>}
               </div>
             </div>
 
@@ -1005,11 +855,12 @@ function FilesTab({ agentId }: { agentId: string }) {
               </div>
             )}
 
-            <textarea
-              value={editContent}
-              onChange={e => { setEditContent(e.target.value); setDirty(true); }}
-              className="w-full min-h-[60vh] bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-fg-secondary leading-relaxed resize-y focus:border-brand-500 outline-none"
-              spellCheck={false}
+            <FileMarkdownEditor
+              content={files.find(f => f.name === selected)?.content ?? ''}
+              editContent={editContent}
+              setEditContent={(v) => { setEditContent(v); setDirty(true); }}
+              dirty={dirty}
+              onSave={saveFile}
             />
             {selected === 'ROLE.md' && (
               <div className="text-[10px] text-fg-tertiary mt-2">{t('agent:profilePage.filesTab.roleMdHint')}</div>
@@ -1019,6 +870,58 @@ function FilesTab({ agentId }: { agentId: string }) {
 
         {files.length === 0 && <Empty text={t('agent:profilePage.filesTab.noConfigFiles')} />}
       </Card>
+    </div>
+  );
+}
+
+function FileMarkdownEditor({ content, editContent, setEditContent, dirty, onSave }: {
+  content: string;
+  editContent: string;
+  setEditContent: (v: string) => void;
+  dirty: boolean;
+  onSave: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => { if (editing) textareaRef.current?.focus(); }, [editing]);
+
+  useEffect(() => { setEditing(false); }, [content]);
+
+  if (editing || dirty) {
+    return (
+      <textarea
+        ref={textareaRef}
+        value={editContent}
+        onChange={e => setEditContent(e.target.value)}
+        onBlur={() => {
+          if (editContent !== content) onSave();
+          setEditing(false);
+        }}
+        onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); setEditContent(content); setEditing(false); } }}
+        className="w-full min-h-[60vh] bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-fg-secondary leading-relaxed resize-y focus:border-brand-500 outline-none"
+        spellCheck={false}
+      />
+    );
+  }
+  return (
+    <div
+      className="group relative cursor-pointer rounded-lg px-4 py-3 bg-surface-elevated hover:bg-surface-overlay transition-colors min-h-[200px]"
+      onClick={() => setEditing(true)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={e => { if (e.key === 'Enter') setEditing(true); }}
+    >
+      <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] text-fg-tertiary bg-surface-secondary/80 px-2 py-0.5 rounded">
+        Click to edit
+      </div>
+      {editContent.trim() ? (
+        <Suspense fallback={<div className="text-xs text-fg-tertiary">Loading…</div>}>
+          <LazyMarkdownMessage content={editContent} className="text-sm text-fg-secondary leading-relaxed" />
+        </Suspense>
+      ) : (
+        <div className="text-sm text-fg-tertiary italic py-4 text-center">Empty</div>
+      )}
     </div>
   );
 }
@@ -1089,7 +992,7 @@ function ToolsTab({ tools }: { tools: AgentToolInfo[] }) {
             {g.tools.map(tool => {
               const { displayName, mcpServer } = toolDisplayName(tool.name);
               return (
-                <div key={tool.name} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
+                <div key={tool.name} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-elevated">
                   <div className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
@@ -1770,7 +1673,7 @@ function ActivityLog({ agentId, activityId, isLive = false }: { agentId: string;
 
 function Card({ title, action, children }: { title: React.ReactNode; action?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="bg-surface-secondary/60 border border-border-default rounded-xl p-5">
+    <div className="bg-surface-elevated rounded-xl p-5">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">{title}</h3>
         {action}
@@ -1785,8 +1688,8 @@ function KV({ label, mono, children }: { label: string; mono?: boolean; children
 }
 
 function StatBox({ label, value, color }: { label: string; value: string; color?: string }) {
-  const c = color === 'green' ? 'text-green-600' : color === 'blue' ? 'text-blue-500' : color === 'indigo' ? 'text-brand-500' : color === 'red' ? 'text-red-500' : 'text-fg-secondary';
-  return (<div className="text-center"><div className={`text-lg font-semibold ${c}`}>{value}</div><div className="text-[10px] text-fg-tertiary mt-0.5">{label}</div></div>);
+  const c = color === 'green' ? 'text-green-500' : color === 'blue' ? 'text-blue-400' : color === 'indigo' ? 'text-brand-500' : color === 'red' ? 'text-red-400' : 'text-fg-secondary';
+  return (<div className="flex items-baseline gap-1.5"><span className={`text-sm font-semibold ${c}`}>{value}</span><span className="text-[10px] text-fg-tertiary">{label}</span></div>);
 }
 
 function Empty({ text }: { text: string }) {
