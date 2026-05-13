@@ -145,17 +145,17 @@ const mdComponents = {
   hr: () => <hr className="border-border-default my-3" />,
   table: ({ children }: { children?: React.ReactNode }) => (
     <div className="overflow-x-auto my-2">
-      <table className="min-w-full text-xs border-collapse border border-border-default">{children}</table>
+      <table className="min-w-full text-sm border-collapse border border-border-default">{children}</table>
     </div>
   ),
-  thead: ({ children }: { children?: React.ReactNode }) => <thead className="bg-surface-elevated">{children}</thead>,
+  thead: ({ children }: { children?: React.ReactNode }) => <thead className="bg-surface-secondary">{children}</thead>,
   tbody: ({ children }: { children?: React.ReactNode }) => <tbody className="divide-y divide-border-default">{children}</tbody>,
   tr: ({ children }: { children?: React.ReactNode }) => <tr className="hover:bg-surface-elevated/50 transition-colors">{children}</tr>,
   th: ({ children }: { children?: React.ReactNode }) => (
-    <th className="px-3 py-1.5 text-left text-xs font-semibold text-fg-secondary border border-border-default">{children}</th>
+    <th className="px-3 py-2 text-left text-sm font-semibold text-fg-primary border border-border-default">{children}</th>
   ),
   td: ({ children }: { children?: React.ReactNode }) => (
-    <td className="px-3 py-1.5 text-xs text-fg-secondary border border-border-default">{children}</td>
+    <td className="px-3 py-2 text-sm text-fg-primary border border-border-default">{children}</td>
   ),
 };
 

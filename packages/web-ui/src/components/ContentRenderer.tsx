@@ -101,6 +101,13 @@ function HtmlPreview({ content, className }: { content: string; className?: stri
 
   const themedContent = useMemo(() => {
     if (/<html[\s>]/i.test(content)) return content;
+    const isDark = !document.documentElement.classList.contains('light') &&
+      (document.documentElement.classList.contains('dark') ||
+       document.documentElement.classList.contains('cyberpunk') ||
+       !window.matchMedia('(prefers-color-scheme: light)').matches);
+    const colors = isDark
+      ? { text: '#e4e4e7', bg: 'transparent', border: '#3f3f46', thBg: 'rgba(63,63,70,0.5)', link: '#818cf8', codeBg: 'rgba(63,63,70,0.5)', preBg: 'rgba(24,24,27,0.8)', heading: '#fafafa' }
+      : { text: '#1c1c1e', bg: 'transparent', border: '#d1d5db', thBg: 'rgba(0,0,0,0.04)', link: '#4f46e5', codeBg: 'rgba(0,0,0,0.05)', preBg: 'rgba(0,0,0,0.03)', heading: '#111827' };
     return `<!DOCTYPE html>
 <html>
 <head>
@@ -110,17 +117,17 @@ function HtmlPreview({ content, className }: { content: string; className?: stri
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     margin: 0; padding: 16px;
-    color: #e4e4e7; background: transparent;
+    color: ${colors.text}; background: ${colors.bg};
     line-height: 1.6;
   }
   table { border-collapse: collapse; width: 100%; margin: 8px 0; }
-  th, td { border: 1px solid #3f3f46; padding: 6px 10px; text-align: left; }
-  th { background: rgba(63,63,70,0.5); font-weight: 600; }
-  a { color: #818cf8; }
-  code { background: rgba(63,63,70,0.5); padding: 2px 4px; border-radius: 3px; font-size: 0.9em; }
-  pre { background: rgba(24,24,27,0.8); padding: 12px; border-radius: 6px; overflow-x: auto; }
+  th, td { border: 1px solid ${colors.border}; padding: 6px 10px; text-align: left; }
+  th { background: ${colors.thBg}; font-weight: 600; }
+  a { color: ${colors.link}; }
+  code { background: ${colors.codeBg}; padding: 2px 4px; border-radius: 3px; font-size: 0.9em; }
+  pre { background: ${colors.preBg}; padding: 12px; border-radius: 6px; overflow-x: auto; }
   img { max-width: 100%; height: auto; }
-  h1, h2, h3, h4, h5, h6 { color: #fafafa; }
+  h1, h2, h3, h4, h5, h6 { color: ${colors.heading}; }
 </style>
 </head>
 <body>${content}</body>
