@@ -506,7 +506,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                             <div className="text-[11px] text-fg-tertiary mt-0.5">{a.agentName}</div>
                           </div>
                         </div>
-                        <div className="mt-2.5 max-h-48 overflow-y-auto text-[11px] text-fg-secondary leading-relaxed">
+                        <div className="mt-2.5 text-[11px] text-fg-secondary leading-relaxed">
                           <MarkdownMessage content={descClean} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px]" />
                         </div>
                         {cmd && (
@@ -710,7 +710,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                           {!n.read && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_DOT[n.priority] ?? PRIORITY_DOT.normal}`} />}
                           <span className="text-xs text-fg-primary font-medium truncate">{n.title}</span>
                         </div>
-                        <div className="text-[11px] text-fg-tertiary mt-0.5 max-h-32 overflow-y-auto">
+                        <div className="text-[11px] text-fg-tertiary mt-0.5 ">
                           <MarkdownMessage content={n.body} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px] [&_p]:text-fg-tertiary" />
                         </div>
                         <div className="flex items-center gap-2 mt-0.5">
@@ -807,7 +807,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                               <div className="text-[11px] text-fg-tertiary mt-0.5">{a.agentName}</div>
                             </div>
                           </div>
-                          <div className="mt-2.5 max-h-48 overflow-y-auto text-[11px] text-fg-secondary leading-relaxed">
+                          <div className="mt-2.5 text-[11px] text-fg-secondary leading-relaxed">
                             <MarkdownMessage content={descClean} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px]" />
                           </div>
                           {cmd && <pre className="text-[11px] text-fg-primary bg-surface-overlay border border-border-default rounded-md px-2.5 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono leading-relaxed mt-2">{cmd}</pre>}
@@ -987,7 +987,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                             {!n.read && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_DOT[n.priority] ?? PRIORITY_DOT.normal}`} />}
                             <span className="text-xs text-fg-primary font-medium truncate">{n.title}</span>
                           </div>
-                          <div className="text-[11px] text-fg-tertiary mt-0.5 max-h-32 overflow-y-auto">
+                          <div className="text-[11px] text-fg-tertiary mt-0.5 ">
                             <MarkdownMessage content={n.body} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px] [&_p]:text-fg-tertiary" />
                           </div>
                           <div className="flex items-center gap-2 mt-0.5">
