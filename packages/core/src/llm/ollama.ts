@@ -1,4 +1,4 @@
-import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, getTextContent } from '@markus/shared';
+import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, getTextContent, sanitizeForLLM } from '@markus/shared';
 import type { LLMProviderInterface } from './provider.js';
 
 interface OllamaMessage {
@@ -186,7 +186,7 @@ export class OllamaProvider implements LLMProviderInterface {
   private convertMessages(messages: LLMMessage[]): OllamaMessage[] {
     return messages.map(m => {
       if (m.role === 'tool') {
-        return { role: 'tool' as const, content: getTextContent(m.content) };
+        return { role: 'tool' as const, content: sanitizeForLLM(getTextContent(m.content)) };
       }
       if (m.toolCalls?.length) {
         return {

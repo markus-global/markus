@@ -3,6 +3,7 @@ import type { AgentScenario } from './agent.js';
 import {
   createLogger,
   getTextContent,
+  safeSlice,
   type LLMMessage,
   type RoleTemplate,
   type IdentityContext,
@@ -1305,19 +1306,19 @@ export class ContextEngine {
 
         const headSize = Math.min(Math.floor(effectiveCap * 0.65), isResearch ? 4000 : 1500);
         const tailSize = Math.min(Math.floor(effectiveCap * 0.25), isResearch ? 1500 : 800);
-        const head = text.slice(0, headSize);
-        const tail = text.slice(-tailSize);
-        const omitted = text.length - headSize - tailSize;
+        const head = safeSlice(text, 0, headSize);
+        const tail = safeSlice(text, text.length - tailSize);
+        const omitted = text.length - head.length - tail.length;
         return {
           ...m,
-          content: `[Tool result compacted: showing ${headSize} head + ${tailSize} tail of ${text.length} chars.]\n${head}\n[... ${omitted} chars omitted ...]\n${tail}`,
+          content: `[Tool result compacted: showing ${head.length} head + ${tail.length} tail of ${text.length} chars.]\n${head}\n[... ${omitted} chars omitted ...]\n${tail}`,
         };
       }
       if (Array.isArray(m.content)) return m;
       return {
         ...m,
         content:
-          text.slice(0, maxChars) + `\n\n[... content trimmed from ${text.length} chars]`,
+          safeSlice(text, 0, maxChars) + `\n\n[... content trimmed from ${text.length} chars]`,
       };
     });
   }

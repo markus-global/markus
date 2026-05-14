@@ -1,4 +1,4 @@
-import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent } from '@markus/shared';
+import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent, sanitizeForLLM } from '@markus/shared';
 import type { LLMProviderInterface } from './provider.js';
 
 interface AnthropicAPIMessage {
@@ -267,7 +267,7 @@ export class AnthropicProvider implements LLMProviderInterface {
             {
               type: 'tool_result' as const,
               tool_use_id: m.toolCallId ?? '',
-              content: getTextContent(m.content),
+              content: sanitizeForLLM(getTextContent(m.content)),
             },
           ],
         };

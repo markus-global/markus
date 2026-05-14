@@ -397,6 +397,17 @@ export const SHELL_TIMEOUT_DEFAULT_MS = 60_000;
  *  Prevents commands from hanging indefinitely (e.g. interactive git rebase). */
 export const SHELL_TIMEOUT_MAX_MS = 300_000;
 
+/** Maximum concurrent persistent shell sessions per agent. */
+export const SHELL_MAX_SESSIONS_PER_AGENT = 3;
+
+/** Idle timeout (ms) before a persistent shell session is reaped.
+ *  10 minutes of no activity → session is killed and removed. */
+export const SHELL_SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;
+
+/** Output buffer cap (bytes) per persistent shell session. Oldest output is
+ *  discarded when exceeded to prevent unbounded memory growth. */
+export const SHELL_SESSION_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
+
 // ─── Human-Approval Wait ─────────────────────────────────────────────────────
 
 /** Backstop timeout (ms) for mailbox items that are blocking on human approval.

@@ -37,6 +37,7 @@ import {
   DELIBERATION_ALLOWED_TOOLS,
   TRIAGE_ITEM_CONTENT_CHARS,
   PRIORITY_LABELS,
+  safeSlice,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -1625,7 +1626,7 @@ export class Agent {
       const filepath = join(offloadDir, filename);
       writeFileSync(filepath, result);
 
-      const preview = result.slice(0, previewSize);
+      const preview = safeSlice(result, 0, previewSize);
       const lineCount = result.split('\n').length;
       return [
         `[FULL output (${result.length} chars, ${lineCount} lines) saved to: ${filepath}]`,
@@ -1634,11 +1635,11 @@ export class Agent {
         ``,
         preview,
         ``,
-        `[... remaining ${result.length - previewSize} chars in file ...]`,
+        `[... remaining ${result.length - preview.length} chars in file ...]`,
       ].join('\n');
     } catch {
       const fallbackSize = isBrowserTool ? 30_000 : 8_000;
-      return result.slice(0, fallbackSize) + `\n\n[... output truncated at ${fallbackSize} of ${result.length} total chars due to file-save failure ...]`;
+      return safeSlice(result, 0, fallbackSize) + `\n\n[... output truncated at ${fallbackSize} of ${result.length} total chars due to file-save failure ...]`;
     }
   }
 

@@ -48,10 +48,29 @@ interface FileInfo {
   type: string;
 }
 
+const FILE_CACHE_MAX = 500;
 const fileCache = new Map<string, FileInfo>();
 const pendingPaths = new Set<string>();
 const subscribers = new Map<string, Set<() => void>>();
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function evictOldestEntries() {
+  if (fileCache.size <= FILE_CACHE_MAX) return;
+  const toRemove = fileCache.size - FILE_CACHE_MAX;
+  const iter = fileCache.keys();
+  for (let i = 0; i < toRemove; i++) {
+    const { value, done } = iter.next();
+    if (done) break;
+    fileCache.delete(value);
+  }
+}
+
+function cacheSet(path: string, info: FileInfo) {
+  // Move to end (most recently used) by re-inserting
+  fileCache.delete(path);
+  fileCache.set(path, info);
+  evictOldestEntries();
+}
 
 function notifyPath(path: string) {
   const subs = subscribers.get(path);
@@ -66,12 +85,12 @@ function flush() {
 
   api.files.check(batch).then(({ results }) => {
     for (const [p, info] of Object.entries(results)) {
-      fileCache.set(p, info);
+      cacheSet(p, info);
       notifyPath(p);
     }
   }).catch(() => {
     for (const p of batch) {
-      fileCache.set(p, { exists: false, isFile: false, type: 'unknown' });
+      cacheSet(p, { exists: false, isFile: false, type: 'unknown' });
       notifyPath(p);
     }
   });

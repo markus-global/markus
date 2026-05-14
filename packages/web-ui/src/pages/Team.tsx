@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   api, wsClient,
   type AgentInfo, type AgentToolEvent, type StreamCommitEvent, type HumanUserInfo, type ExternalAgentInfo,
@@ -1020,10 +1021,29 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     mode === 'dm'      ? `dm:${dmUserId ?? ''}` :
     (agent || '_direct');
 
+  const MAX_MESSAGES_PER_CONV = 500;
+  const MAX_BUFFERED_CONVERSATIONS = 5;
+
   /** Write to a conversation's message buffer and refresh display if currently viewing it */
   const updateConvMsgs = useCallback((key: string, updater: (prev: ChatMsg[]) => ChatMsg[]) => {
-    const next = updater(msgBuffers.current.get(key) ?? []);
+    let next = updater(msgBuffers.current.get(key) ?? []);
+    if (next.length > MAX_MESSAGES_PER_CONV) {
+      next = next.slice(-MAX_MESSAGES_PER_CONV);
+    }
     msgBuffers.current.set(key, next);
+    // Evict oldest conversation buffers when too many are cached
+    if (msgBuffers.current.size > MAX_BUFFERED_CONVERSATIONS) {
+      const keys = [...msgBuffers.current.keys()];
+      const toEvict = keys
+        .filter(k => k !== key && k !== currentConvKeyRef.current)
+        .slice(0, keys.length - MAX_BUFFERED_CONVERSATIONS);
+      for (const k of toEvict) {
+        msgBuffers.current.delete(k);
+        actBuffers.current.delete(k);
+        sessionTabsBuffer.current.delete(k);
+        activeSessionBuffer.current.delete(k);
+      }
+    }
     if (currentConvKeyRef.current === key) setMessages(next);
   }, []);
 
@@ -1326,7 +1346,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         const newMsgs = result.messages.map(m => channelMsgToChat(m, authUser?.id));
         skipScrollRef.current = true;
         setMessages(prev => {
-          const combined = [...newMsgs, ...prev];
+          let combined = [...newMsgs, ...prev];
+          if (combined.length > MAX_MESSAGES_PER_CONV) combined = combined.slice(-MAX_MESSAGES_PER_CONV);
           msgBuffers.current.set(convKey, combined);
           return combined;
         });
@@ -1337,7 +1358,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         const newMsgs = result.messages.map(dbMsgToChat);
         skipScrollRef.current = true;
         setMessages(prev => {
-          const combined = [...newMsgs, ...prev];
+          let combined = [...newMsgs, ...prev];
+          if (combined.length > MAX_MESSAGES_PER_CONV) combined = combined.slice(-MAX_MESSAGES_PER_CONV);
           msgBuffers.current.set(convKey, combined);
           return combined;
         });
