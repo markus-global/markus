@@ -690,10 +690,13 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                   {displayNotifications.slice(0, 50).map(n => {
                     const typeColor = TYPE_COLOR[n.type] ?? 'text-fg-tertiary';
                     return (
-                    <button
+                    <div
                       key={n.id}
+                      role="button"
+                      tabIndex={0}
                       onClick={() => handleNotificationClick(n)}
-                      className={`w-full text-left px-3 py-2.5 flex gap-2.5 transition-colors ${
+                      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleNotificationClick(n); } }}
+                      className={`w-full text-left px-3 py-2.5 flex gap-2.5 transition-colors cursor-pointer ${
                         n.read ? 'opacity-50 hover:opacity-70' : 'hover:bg-surface-overlay'
                       }`}
                     >
@@ -719,7 +722,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                           )}
                         </div>
                       </div>
-                    </button>
+                    </div>
                     );
                   })}
                 </div>
