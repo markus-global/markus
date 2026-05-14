@@ -175,7 +175,11 @@
     "markAllRead": "全部标为已读",
     "confirmReject": "确认拒绝",
     "rejectReasonPlaceholder": "拒绝原因（可选，按 Enter 提交）",
-    "freeformPlaceholder": "或输入你的自定义指令…",
+    "freeformPlaceholder": "或输入你的意见…",
+    "commentPlaceholder": "附加意见（可选）",
+    "needsAdjustment": "需调整",
+    "adjustmentPlaceholder": "请输入调整建议…",
+    "confirmAdjustment": "提交调整建议",
     "actionHints": {
       "openChat": "打开聊天 →",
       "viewDetails": "查看详情 →",

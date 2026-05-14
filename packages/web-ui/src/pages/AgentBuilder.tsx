@@ -349,7 +349,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className={`max-w-4xl ${isMobile ? 'px-4 py-5' : 'px-6 py-10'}`}>
+      <div className={`max-w-4xl mx-auto w-full ${isMobile ? 'px-4 py-5' : 'px-6 py-10'}`}>
         {/* Builder prompts → navigate to Secretary */}
         <div className="mb-10">
           <h1 className="text-2xl font-bold text-fg-primary">{t('title')}</h1>

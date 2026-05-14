@@ -79,28 +79,43 @@ export function resolveFormat(opts: {
 
 function HtmlPreview({ content, className }: { content: string; className?: string }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [height, setHeight] = useState(400);
+  const [height, setHeight] = useState<number | null>(null);
 
   useEffect(() => {
-    const iframe = iframeRef.current;
-    if (!iframe) return;
-
-    const onLoad = () => {
-      try {
-        const doc = iframe.contentDocument;
-        if (doc) {
-          const h = doc.documentElement.scrollHeight;
-          if (h > 0) setHeight(Math.min(h + 16, 3000));
-        }
-      } catch { /* cross-origin — keep default height */ }
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type === '__htmlpreview_height' && typeof e.data.height === 'number') {
+        setHeight(e.data.height);
+      }
     };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
 
-    iframe.addEventListener('load', onLoad);
-    return () => iframe.removeEventListener('load', onLoad);
-  }, [content]);
+  const heightScript = `<script>
+(function(){
+  function send(){
+    var h = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+    if(h>0) parent.postMessage({type:'__htmlpreview_height',height:h},'*');
+  }
+  if(document.readyState==='complete') send();
+  else window.addEventListener('load',send);
+  new ResizeObserver(send).observe(document.body);
+})();
+</script>`;
+  const sizeFixStyle = '<style>html,body{overflow:hidden!important;height:auto!important;}</style>';
 
   const themedContent = useMemo(() => {
-    if (/<html[\s>]/i.test(content)) return content;
+    const inject = sizeFixStyle + heightScript;
+    if (/<html[\s>]/i.test(content)) {
+      let result = content;
+      if (/<\/body>/i.test(result))
+        result = result.replace(/<\/body>/i, `${inject}</body>`);
+      else if (/<\/html>/i.test(result))
+        result = result.replace(/<\/html>/i, `${inject}</html>`);
+      else
+        result = result + inject;
+      return result;
+    }
     const isDark = !document.documentElement.classList.contains('light') &&
       (document.documentElement.classList.contains('dark') ||
        document.documentElement.classList.contains('cyberpunk') ||
@@ -119,6 +134,7 @@ function HtmlPreview({ content, className }: { content: string; className?: stri
     margin: 0; padding: 16px;
     color: ${colors.text}; background: ${colors.bg};
     line-height: 1.6;
+    overflow: hidden;
   }
   table { border-collapse: collapse; width: 100%; margin: 8px 0; }
   th, td { border: 1px solid ${colors.border}; padding: 6px 10px; text-align: left; }
@@ -130,7 +146,7 @@ function HtmlPreview({ content, className }: { content: string; className?: stri
   h1, h2, h3, h4, h5, h6 { color: ${colors.heading}; }
 </style>
 </head>
-<body>${content}</body>
+<body>${content}${heightScript}</body>
 </html>`;
   }, [content]);
 
@@ -142,7 +158,8 @@ function HtmlPreview({ content, className }: { content: string; className?: stri
       className={className}
       style={{
         width: '100%',
-        height: `${height}px`,
+        height: height != null ? `${height}px` : 'auto',
+        minHeight: height == null ? '200px' : undefined,
         border: 'none',
         borderRadius: '8px',
         background: 'transparent',

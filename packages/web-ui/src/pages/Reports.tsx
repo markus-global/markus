@@ -116,7 +116,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-5xl p-6 space-y-6">
+      <div className="max-w-5xl mx-auto w-full p-6 space-y-6">
         {/* Header with tabs */}
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-4 flex-wrap">

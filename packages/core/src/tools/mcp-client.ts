@@ -42,6 +42,7 @@ const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 export class MCPClientManager {
   private servers = new Map<string, { process: ChildProcess; tools: MCPToolDescriptor[] }>();
+  private serverConfigs = new Map<string, { displayName: string; config: MCPServerConfig }>();
   private requestId = 0;
   private pendingRequests = new Map<number, PendingRequest>();
   private stdoutBuffers = new Map<ChildProcess, string>();
@@ -92,6 +93,7 @@ export class MCPClientManager {
       return existing.tools;
     }
 
+    this.serverConfigs.set(key, { displayName, config });
     log.info(`Connecting to MCP server: ${displayName}`, { command: config.command, key });
 
     const proc = spawn(config.command, config.args ?? [], {
@@ -171,20 +173,28 @@ export class MCPClientManager {
     return this.connectByKey(key, `${name}[${scopeId}]`, config);
   }
 
-  private callToolByKey(key: string, toolName: string, args: Record<string, unknown>): Promise<string> {
-    const server = this.servers.get(key);
-    if (!server) throw new Error(`MCP server not found: ${key}`);
+  private async callToolByKey(key: string, toolName: string, args: Record<string, unknown>): Promise<string> {
+    let server = this.servers.get(key);
+
+    if (!server) {
+      const saved = this.serverConfigs.get(key);
+      if (saved) {
+        log.info(`MCP server ${key} not running, auto-reconnecting...`);
+        await this.connectByKey(key, saved.displayName, saved.config);
+        server = this.servers.get(key);
+      }
+      if (!server) throw new Error(`MCP server not found: ${key}`);
+    }
 
     this.resetIdleTimer(key);
 
-    return this.sendRequest(server.process, 'tools/call', {
+    const result = await this.sendRequest(server.process, 'tools/call', {
       name: toolName,
       arguments: args,
-    }).then((result) => {
-      const content = (result as { content?: Array<{ text?: string }> })?.content;
-      if (content?.[0]?.text) return content[0].text;
-      return JSON.stringify(result);
     });
+    const content = (result as { content?: Array<{ text?: string }> })?.content;
+    if (content?.[0]?.text) return content[0].text;
+    return JSON.stringify(result);
   }
 
   async callTool(serverName: string, toolName: string, args: Record<string, unknown>): Promise<string> {
@@ -248,6 +258,7 @@ export class MCPClientManager {
   /**
    * Disconnect all scoped server instances belonging to a given scope (e.g. agent).
    * Shared (non-scoped) servers are not affected.
+   * The server configs are retained so the server can auto-reconnect on next tool call.
    */
   async disconnectAllForScope(scopeId: string): Promise<void> {
     const suffix = `::${scopeId}`;
@@ -258,10 +269,29 @@ export class MCPClientManager {
     }
   }
 
+  /**
+   * Permanently disconnect and forget all scoped servers for a scope.
+   * Used when an agent is removed and will never reconnect.
+   */
+  async removeAllForScope(scopeId: string): Promise<void> {
+    const suffix = `::${scopeId}`;
+    for (const key of [...this.servers.keys()]) {
+      if (key.endsWith(suffix)) {
+        await this.disconnectServer(key);
+      }
+    }
+    for (const key of [...this.serverConfigs.keys()]) {
+      if (key.endsWith(suffix)) {
+        this.serverConfigs.delete(key);
+      }
+    }
+  }
+
   async disconnectAll(): Promise<void> {
     for (const name of [...this.servers.keys()]) {
       await this.disconnectServer(name);
     }
+    this.serverConfigs.clear();
   }
 
   /**
