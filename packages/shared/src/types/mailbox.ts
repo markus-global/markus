@@ -144,8 +144,10 @@ export type DecisionType =
 
 export interface TriageContext {
   agentName: string;
+  agentRole?: string;
   recentMainSessionMessages: Array<{ role: string; content: string }>;
   recentActivitySummaries: string[];
+  activeTaskIds?: string[];
 }
 
 export interface TriageResult {
@@ -153,6 +155,15 @@ export interface TriageResult {
   deferItemIds: string[];
   dropItemIds: string[];
   reasoning: string;
+}
+
+export interface DeliberationResult {
+  processItemId: string;
+  deferItemIds: string[];
+  dropItemIds: string[];
+  inlineCompletedIds: string[];
+  reasoning: string;
+  situationalAwareness?: string;
 }
 
 export interface AttentionDecision {

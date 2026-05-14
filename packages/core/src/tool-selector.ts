@@ -200,6 +200,7 @@ export class ToolSelector {
           body: { type: 'string', description: 'Full message content. Be thorough — this is what the recipient reads in chat.' },
           priority: { type: 'string', enum: ['low', 'normal', 'high', 'urgent'], description: 'Default: normal' },
           related_task_id: { type: 'string', description: 'If related to a task, include the task ID for deep-linking' },
+          target_user_id: { type: 'string', description: 'User ID to send the message to. If omitted, sends to the user you are currently interacting with (or the team owner).' },
         },
         required: ['title', 'body'],
       },
@@ -247,6 +248,23 @@ export class ToolSelector {
           limit: { type: 'number', description: 'Max results for "list" (default 5, max 20).' },
         },
         required: ['operation'],
+      },
+    });
+
+    pushUnique({
+      name: 'complete_deliberation',
+      description: 'Finalize your mailbox deliberation. Declare which item to process next, which to defer/drop, and which you handled inline. Only available in deliberation mode.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          process_item_id: { type: 'string', description: 'ID of the mailbox item to process in full next' },
+          defer_item_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of items to defer for later' },
+          drop_item_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of stale/redundant items to drop' },
+          inline_completed_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of items you already handled inline during this deliberation (e.g., sent a notification, posted a comment)' },
+          reasoning: { type: 'string', description: '1-2 sentence explanation of your decision' },
+          situational_awareness: { type: 'string', description: 'Your current understanding of the situation — injected into future prompts for continuity' },
+        },
+        required: ['process_item_id', 'reasoning'],
       },
     });
 

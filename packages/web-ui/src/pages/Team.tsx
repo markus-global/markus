@@ -100,6 +100,10 @@ function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
   if (m.metadata?.images?.length) {
     base.images = m.metadata.images;
   }
+  if (m.metadata?.notifyUser) {
+    if (m.metadata.taskId) base.taskId = m.metadata.taskId;
+    if (m.metadata.requirementId) base.requirementId = m.metadata.requirementId;
+  }
   if (m.metadata?.activityLog) {
     base.isActivityLog = true;
     base.activityType = m.metadata.activityType;
@@ -1035,6 +1039,47 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   useEffect(() => { localStorage.setItem('markus_chat_agent', selectedAgent); }, [selectedAgent]);
   useEffect(() => { localStorage.setItem('markus_chat_channel', activeChannel); }, [activeChannel]);
 
+  // ── Per-agent unread notification counts + auto-read ────────────────────────
+  const [unreadByAgent, setUnreadByAgent] = useState<Map<string, number>>(new Map());
+  const unreadIdsByAgent = useRef<Map<string, string[]>>(new Map());
+  const refreshUnreadCounts = useCallback(async () => {
+    try {
+      const { notifications } = await api.notifications.list(authUser?.id, true);
+      const counts = new Map<string, number>();
+      const ids = new Map<string, string[]>();
+      for (const n of notifications) {
+        const agentId = (n.metadata?.agentId as string) || undefined;
+        if (agentId) {
+          counts.set(agentId, (counts.get(agentId) ?? 0) + 1);
+          const list = ids.get(agentId) ?? [];
+          list.push(n.id);
+          ids.set(agentId, list);
+        }
+      }
+      setUnreadByAgent(counts);
+      unreadIdsByAgent.current = ids;
+    } catch { /* */ }
+  }, [authUser?.id]);
+
+  const markAgentNotificationsRead = useCallback(async (agentId: string) => {
+    const ids = unreadIdsByAgent.current.get(agentId);
+    if (!ids || ids.length === 0) return;
+    unreadIdsByAgent.current.delete(agentId);
+    setUnreadByAgent(prev => {
+      const next = new Map(prev);
+      next.delete(agentId);
+      return next;
+    });
+    await Promise.all(ids.map(id => api.notifications.markRead(id).catch(() => {})));
+    window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
+  }, []);
+
+  useEffect(() => {
+    if (chatMode === 'direct' && selectedAgent) {
+      markAgentNotificationsRead(selectedAgent);
+    }
+  }, [chatMode, selectedAgent, markAgentNotificationsRead]);
+
   // ── Data loading ─────────────────────────────────────────────────────────────
   const refreshAgents = useCallback(() => api.agents.list().then(d => setAgents(d.agents)).catch(() => {}), []);
   const refreshTeams = useCallback(() => api.teams.list().then(d => setTeams(d.teams)).catch(() => {}), []);
@@ -1049,6 +1094,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       refreshTeams(),
     ]).finally(() => setInitialLoading(false));
     refreshHumans();
+    refreshUnreadCounts();
     api.tasks.list().then(d => setTasks(d.tasks)).catch(() => {});
     api.externalAgents.list().then(d => setExternalAgents(d.agents)).catch(() => {});
     refreshGroupChats();
@@ -1061,10 +1107,12 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     const unsubGroupUpdate = wsClient.on('chat:group_updated', refreshGroupChats);
     const unsubGroupDelete = wsClient.on('chat:group_deleted', refreshGroupChats);
     const onDataChanged = () => { refreshAgents(); refreshTeams(); refreshHumans(); };
+    const onNotifChanged = () => { refreshUnreadCounts(); };
     window.addEventListener('markus:data-changed', onDataChanged);
-    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeam(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); window.removeEventListener('markus:data-changed', onDataChanged); };
+    window.addEventListener('markus:notifications-changed', onNotifChanged);
+    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeam(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); window.removeEventListener('markus:data-changed', onDataChanged); window.removeEventListener('markus:notifications-changed', onNotifChanged); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshHumans]);
+  }, [refreshHumans, refreshUnreadCounts]);
 
   // Check for nav params (e.g., navigated here from AgentProfile or Team redirect)
   useEffect(() => {
@@ -1527,30 +1575,31 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
       const isActivity = !!meta.activityLog || message.startsWith('[ACTIVITY:');
 
-      // Append to display if we're viewing this agent's direct chat
-      if (chatMode === 'direct' && selectedAgent === agentId) {
-        const newMsg: ChatMsg = {
-          id: `proactive_${Date.now()}`,
-          sender: 'agent',
-          text: message,
-          time: new Date().toLocaleTimeString(),
-          agentName,
-          agentId,
-          ...(isActivity ? {
-            isActivityLog: true,
-            activityType: meta.activityType as string | undefined,
-            outcome: meta.outcome as string | undefined,
-            mailboxItemId: meta.mailboxItemId as string | undefined,
-            taskId: meta.taskId as string | undefined,
-            requirementId: meta.requirementId as string | undefined,
-          } : {}),
-        };
-        const key = makeConvKey('direct', agentId, activeChannel, activeDmUserId);
-        updateConvMsgs(key, prev => [...prev, newMsg]);
-      }
+      // Always buffer the message for this agent's conversation so it's
+      // visible when the user switches to that agent (not just when already viewing)
+      const newMsg: ChatMsg = {
+        id: `proactive_${Date.now()}`,
+        sender: 'agent',
+        text: message,
+        time: new Date().toLocaleTimeString(),
+        agentName,
+        agentId,
+        ...(isActivity ? {
+          isActivityLog: true,
+          activityType: meta.activityType as string | undefined,
+          outcome: meta.outcome as string | undefined,
+          mailboxItemId: meta.mailboxItemId as string | undefined,
+          taskId: meta.taskId as string | undefined,
+          requirementId: meta.requirementId as string | undefined,
+        } : {}),
+        ...(!isActivity && meta.taskId ? { taskId: meta.taskId as string } : {}),
+        ...(!isActivity && meta.requirementId ? { requirementId: meta.requirementId as string } : {}),
+      };
+      const key = makeConvKey('direct', agentId, '', '');
+      updateConvMsgs(key, prev => [...prev, newMsg]);
     });
     return unsub;
-  }, [chatMode, selectedAgent, activeChannel, activeDmUserId, activeSessionId, updateConvMsgs, t]);
+  }, [updateConvMsgs, t]);
 
   // ── Task helpers ─────────────────────────────────────────────────────────────
   const linkedTask = tasks.find(t => t.id === linkedTaskId);
@@ -2490,6 +2539,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         onRefreshGroupChats={refreshGroupChats}
         onViewProfile={handleViewProfile}
         onManageGroupMembers={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); setShowMemberPanel(true); if (isMobile) enterMobileDetail(); }}
+        unreadByAgent={unreadByAgent}
         width={isMobile ? undefined : chatSidebar.width}
         onResizeStart={isMobile ? undefined : chatSidebar.onResizeStart}
         hidden={isMobile && mobileShowChat}
@@ -2522,6 +2572,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
             onViewProfile={handleViewProfile}
             onRefreshAgents={refreshAgents}
             onRefreshTeams={refreshTeams}
+            unreadByAgent={unreadByAgent}
             width={teamDetailPanel.width}
             onResizeStart={teamDetailPanel.onResizeStart}
           />
@@ -2555,6 +2606,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                 onViewProfile={(agentId) => { handleViewProfile(agentId); setL2Floating(false); }}
                 onRefreshAgents={refreshAgents}
                 onRefreshTeams={refreshTeams}
+                unreadByAgent={unreadByAgent}
                 width={teamDetailPanel.width}
               />
             </div>

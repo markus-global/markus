@@ -21,6 +21,7 @@ import {
   type DecisionType,
   type AgentMindState,
   type TriageResult,
+  type DeliberationResult,
   type CognitiveConfig,
   type CognitiveStimulus,
   type CognitiveAgentContext,
@@ -32,6 +33,10 @@ import {
   COMPLETION_MARKER,
   TRIAGE_CONTEXT_MESSAGES_MAX,
   TRIAGE_CONTEXT_MSG_CHARS,
+  DELIBERATION_MAX_TOOL_ITERATIONS,
+  DELIBERATION_ALLOWED_TOOLS,
+  TRIAGE_ITEM_CONTENT_CHARS,
+  PRIORITY_LABELS,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -186,7 +191,7 @@ export interface AgentOptions {
   cognitive?: CognitiveConfig;
 }
 
-export type AgentScenario = 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review' | 'requirement_action';
+export type AgentScenario = 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review' | 'requirement_action' | 'deliberation';
 
 interface HandleMessageOptions {
   sessionId?: string;
@@ -243,6 +248,7 @@ export class Agent {
   private semanticSearch?: SemanticMemorySearch;
   private currentSessionId?: string;
   private currentInteractingUserId?: string;
+  private pendingDeliberationResult?: DeliberationResult;
   private dbSessionMap = new Map<string, string>();
   private orgContext?: OrgContext;
   private contextMdPath?: string;
@@ -770,6 +776,13 @@ export class Agent {
     return this.attentionController;
   }
 
+  /** Retrieve and clear the pending deliberation result (set by complete_deliberation tool). */
+  consumeDeliberationResult(): DeliberationResult | undefined {
+    const result = this.pendingDeliberationResult;
+    this.pendingDeliberationResult = undefined;
+    return result;
+  }
+
   /**
    * Check yield point during task execution — called between LLM turns.
    * Returns decision info so the tool loop can act on preemption or merges.
@@ -831,11 +844,18 @@ export class Agent {
         // Include active task IDs for situational awareness
         const activeTaskIds = Array.from(this.activeTasks);
 
-        return { agentName: this.config.name, recentMainSessionMessages: messages, recentActivitySummaries: activities, activeTaskIds };
+        return { agentName: this.config.name, agentRole: this.role.name, recentMainSessionMessages: messages, recentActivitySummaries: activities, activeTaskIds };
       },
       onTriageCompleted: (result) => {
         if (!result) return;
         this.updateCognition(result);
+      },
+      performDeliberation: async (headItem: MailboxItem, allItems: MailboxItem[]) => {
+        return this.performDeliberation(headItem, allItems);
+      },
+      onDeliberationCompleted: (result) => {
+        if (!result) return;
+        this.updateCognitionFromDeliberation(result);
       },
     };
   }
@@ -974,7 +994,7 @@ export class Agent {
           if (extra.actionRequired) {
             const reqId = item.payload.requirementId ?? 'unknown';
             const reply = await this.handleMessage(
-              item.payload.content + markerSuffix,
+              item.payload.content + COMPLETION_MARKER_INSTRUCTION,
               item.metadata?.senderId,
               senderInfo,
               buildHandleOpts({ sessionId: `requirement_${reqId}_${ts}`, scenario: 'requirement_action' }),
@@ -992,7 +1012,7 @@ export class Agent {
         case 'requirement_comment': {
           const reqId = item.payload.requirementId ?? 'unknown';
           const reply = await this.handleMessage(
-            item.payload.content + markerSuffix,
+            item.payload.content + COMPLETION_MARKER_INSTRUCTION,
             item.metadata?.senderId,
             senderInfo,
             buildHandleOpts({ sessionId: `comment_${reqId}_${ts}`, scenario: 'comment_response' }),
@@ -1010,7 +1030,7 @@ export class Agent {
           } else {
             const commentTaskId = taskId ?? 'unknown';
             await this.handleMessage(
-              item.payload.content + markerSuffix,
+              item.payload.content + COMPLETION_MARKER_INSTRUCTION,
               item.metadata?.senderId,
               senderInfo,
               buildHandleOpts({ sessionId: `comment_${commentTaskId}_${ts}`, scenario: 'comment_response' }),
@@ -1875,6 +1895,110 @@ export class Agent {
     this.currentCognition = lines.join('\n');
   }
 
+  private updateCognitionFromDeliberation(result: DeliberationResult): void {
+    if (result.situationalAwareness) {
+      this.currentCognition = `## Current Situational Awareness (deliberation)\n${result.situationalAwareness}`;
+    } else {
+      const lines: string[] = [];
+      lines.push('## Current Situational Awareness (deliberation)');
+      lines.push(`Decision: Processing item [${result.processItemId}]`);
+      if (result.inlineCompletedIds.length > 0) {
+        lines.push(`Handled ${result.inlineCompletedIds.length} item(s) inline`);
+      }
+      if (result.deferItemIds.length > 0) {
+        lines.push(`Deferred ${result.deferItemIds.length} item(s)`);
+      }
+      if (result.dropItemIds.length > 0) {
+        lines.push(`Dropped ${result.dropItemIds.length} item(s)`);
+      }
+      lines.push(`Reasoning: ${result.reasoning}`);
+      this.currentCognition = lines.join('\n');
+    }
+  }
+
+  /**
+   * Full-session deliberation: the agent deliberates over all queued items as itself,
+   * with access to its full tool set (filtered to deliberation-safe tools).
+   */
+  private async performDeliberation(headItem: MailboxItem, allItems: MailboxItem[]): Promise<DeliberationResult | null> {
+
+    const formatAge = (ms: number): string => {
+      if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+      if (ms < 3_600_000) return `${Math.round(ms / 60_000)}min`;
+      return `${(ms / 3_600_000).toFixed(1)}h`;
+    };
+
+    const formatItem = (item: MailboxItem, idx: number) => {
+      const pri = PRIORITY_LABELS?.[item.priority] ?? `p${item.priority}`;
+      const ageMs = Date.now() - new Date(item.queuedAt).getTime();
+      const contentPreview = item.payload.content
+        ? `\n    content: "${item.payload.content.slice(0, TRIAGE_ITEM_CONTENT_CHARS)}"`
+        : '';
+      return [
+        `[${idx + 1}] id="${item.id}"`,
+        `    type=${item.sourceType}  priority=${pri}  age=${formatAge(ageMs)}`,
+        `    summary: "${item.payload.summary}"`,
+        item.payload.taskId ? `    taskId: ${item.payload.taskId}` : null,
+        item.metadata?.senderName ? `    from: ${item.metadata.senderName} (${item.metadata?.senderRole ?? 'unknown'})` : null,
+        contentPreview || null,
+      ].filter(Boolean).join('\n');
+    };
+
+    const itemsSection = allItems.map(formatItem).join('\n\n');
+
+    const deliberationPrompt = [
+      '[DELIBERATION MODE]',
+      '',
+      `You have ${allItems.length} items in your mailbox that need attention. Before diving into work, take a moment to deliberate.`,
+      '',
+      '## Your Mailbox',
+      itemsSection,
+      '',
+      '## What You Can Do',
+      '1. **Gather context**: Use recall_activity, task_get, memory_search to understand the full picture.',
+      '2. **Handle simple items inline**: For trivial acknowledgments, quick replies, or status notifications, handle them now using notify_user, task_comment, or agent_send_message. Mark them as inline_completed in your final decision.',
+      '3. **Choose your focus**: Decide which complex item deserves your full attention next.',
+      '4. **Defer or drop**: Explicitly defer items for later or drop stale/redundant ones.',
+      '',
+      'When ready, call `complete_deliberation` with your decision.',
+    ].join('\n');
+
+    this.pendingDeliberationResult = undefined;
+
+    try {
+      const allowedTools = new Set(DELIBERATION_ALLOWED_TOOLS as unknown as string[]);
+      await this.handleMessage(
+        deliberationPrompt,
+        undefined,
+        undefined,
+        {
+          sessionId: `deliberation_${this.id}_${Date.now()}`,
+          scenario: 'deliberation',
+          maxToolIterations: DELIBERATION_MAX_TOOL_ITERATIONS,
+          allowedTools,
+        },
+      );
+
+      const result = this.consumeDeliberationResult();
+      if (result) {
+        log.info('Deliberation completed', {
+          agentId: this.id,
+          processItemId: result.processItemId,
+          inlineCompleted: result.inlineCompletedIds.length,
+          deferred: result.deferItemIds.length,
+          dropped: result.dropItemIds.length,
+        });
+        return result;
+      }
+
+      log.warn('Deliberation session ended without complete_deliberation call', { agentId: this.id });
+      return null;
+    } catch (err) {
+      log.warn('Deliberation failed', { agentId: this.id, error: String(err) });
+      return null;
+    }
+  }
+
   private getDynamicContext(): string | undefined {
     const parts = [...this.dynamicContextProviders.values()].map(p => p()).filter(Boolean);
     for (const [name, instructions] of this.activatedSkillInstructions) {
@@ -2504,6 +2628,7 @@ export class Agent {
       let toolIterations = 0;
       const effectiveMaxIter = options?.maxToolIterations ?? this._maxToolIterations;
       const commentToolUsed = new Set<string>();
+      const requirementActionToolUsed = new Set<string>();
 
       while (
         (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
@@ -2620,6 +2745,10 @@ export class Agent {
             this.loopDetector.record(tc.name, tc.arguments ?? {}, toolResults[i]?.content ?? '');
             if (tc.name === 'task_comment' || tc.name === 'requirement_comment') {
               commentToolUsed.add(tc.name);
+            }
+            const REQ_ACTION_TOOLS = ['requirement_update_status', 'requirement_comment', 'task_create', 'notify_user', 'request_user_approval'];
+            if (REQ_ACTION_TOOLS.includes(tc.name)) {
+              requirementActionToolUsed.add(tc.name);
             }
           }
           const loopCheck = this.loopDetector.check();
@@ -2812,6 +2941,108 @@ export class Agent {
               systemCacheSegments,
             }, this.getEffectiveProvider()),
             'Chat LLM comment-reminder-final',
+          );
+        }
+      }
+
+      // Safeguard: if agent finishes requirement_action without calling any
+      // action tool, remind it and give one more chance.
+      if (scenario === 'requirement_action' && requirementActionToolUsed.size === 0
+        && toolIterations < effectiveMaxIter) {
+        this.memory.appendMessage(sessionId, {
+          role: 'assistant',
+          content: response.content,
+          toolCalls: response.toolCalls,
+          reasoningContent: response.reasoningContent,
+        });
+        this.memory.appendMessage(sessionId, {
+          role: 'user',
+          content: '[SYSTEM] You are about to end your turn WITHOUT taking any action. In requirement_action mode your text output is NOT visible to anyone. You MUST call at least one action tool: requirement_update_status, requirement_comment, task_create, or notify_user. Call requirement_get first if you need context, then take action.',
+        });
+
+        const reminderMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+        const preparedReminder = await this.contextEngine.prepareMessages({
+          systemPrompt,
+          sessionMessages: reminderMessages,
+          memory: this.memory,
+          sessionId,
+          agentId: this.id,
+          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          toolDefinitions: llmTools,
+          systemCacheSegments,
+        });
+
+        response = await this.withNetworkRetry(
+          () => this.llmRouter.chat({
+            messages: preparedReminder.messages,
+            tools: llmTools.length > 0 ? llmTools : undefined,
+            metadata: this.getLLMMetadata(sessionId),
+            compaction: useCompaction,
+            systemCacheSegments,
+          }, this.getEffectiveProvider()),
+          'Chat LLM requirement-action-reminder',
+        );
+
+        if (response.finishReason === 'tool_use' && response.toolCalls?.length) {
+          const currentActId = this.state.currentActivity?.id;
+          this.memory.appendMessage(sessionId, {
+            role: 'assistant',
+            content: response.content,
+            toolCalls: response.toolCalls,
+            reasoningContent: response.reasoningContent,
+          });
+          const toolResults = await Promise.all(
+            response.toolCalls.map(async tc => {
+              const toolStart = Date.now();
+              if (currentActId) {
+                this.emitActivityLog(currentActId, 'tool_start', tc.name, { arguments: tc.arguments });
+              }
+              try {
+                let result = await this.executeTool(tc, undefined, sessionId);
+                result = this.offloadLargeResult(tc.name, result);
+                if (currentActId) {
+                  this.emitActivityLog(currentActId, 'tool_end', tc.name, {
+                    durationMs: Date.now() - toolStart,
+                    success: !isErrorResult(result),
+                    arguments: tc.arguments,
+                    result,
+                  });
+                }
+                return { toolCallId: tc.id, content: result, error: false };
+              } catch (toolErr) {
+                if (currentActId) {
+                  this.emitActivityLog(currentActId, 'error', `Tool ${tc.name} failed: ${String(toolErr)}`);
+                }
+                return { toolCallId: tc.id, content: `Error: ${String(toolErr)}`, error: true };
+              }
+            })
+          );
+          for (const tr of toolResults) {
+            this.memory.appendMessage(sessionId, { role: 'tool', content: tr.content, toolCallId: tr.toolCallId });
+          }
+
+          const finalMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+          const preparedFinal = await this.contextEngine.prepareMessages({
+            systemPrompt,
+            sessionMessages: finalMessages,
+            memory: this.memory,
+            sessionId,
+            agentId: this.id,
+            modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+            modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+            toolDefinitions: llmTools,
+            systemCacheSegments,
+          });
+          response = await this.withNetworkRetry(
+            () => this.llmRouter.chat({
+              messages: preparedFinal.messages,
+              tools: llmTools.length > 0 ? llmTools : undefined,
+              metadata: this.getLLMMetadata(sessionId),
+              compaction: useCompaction,
+              systemCacheSegments,
+            }, this.getEffectiveProvider()),
+            'Chat LLM requirement-action-reminder-final',
           );
         }
       }
@@ -4568,9 +4799,17 @@ export class Agent {
         const explicitTaskId = toolCall.arguments.related_task_id as string | undefined;
         const taskId = explicitTaskId ?? this.getCurrentTaskId();
         const requirementId = this.getCurrentRequirementId();
+        const explicitTargetUser = toolCall.arguments.target_user_id as string | undefined;
 
-        // Write full message into in-memory session (as regular message, not activityLog)
-        const formattedMsg = `**${title}**\n\n${body}`;
+        // Write full message into in-memory session with embedded context
+        const contextParts: string[] = [];
+        if (taskId) contextParts.push(`task_id=${taskId}`);
+        if (requirementId) contextParts.push(`requirement_id=${requirementId}`);
+        if (priority && priority !== 'normal') contextParts.push(`priority=${priority}`);
+        const contextSuffix = contextParts.length > 0
+          ? `\n\n<!-- notify_context: ${contextParts.join(', ')} -->`
+          : '';
+        const formattedMsg = `**${title}**\n\n${body}${contextSuffix}`;
         if (this.currentSessionId) {
           this.memory.appendMessage(this.currentSessionId, {
             role: 'assistant',
@@ -4586,7 +4825,7 @@ export class Agent {
         this.eventBus.emit('agent:notify-user', {
           agentId: this.id,
           sessionId: this.currentSessionId,
-          targetUserId: this.currentInteractingUserId,
+          targetUserId: explicitTargetUser ?? this.currentInteractingUserId,
           title,
           body,
           priority,
@@ -4643,6 +4882,23 @@ export class Agent {
       } catch (err) {
         return JSON.stringify({ status: 'error', message: `Failed to get user approval: ${String(err)}` });
       }
+    }
+
+    // Handle complete_deliberation: captures the structured decision from deliberation mode
+    if (toolCall.name === 'complete_deliberation') {
+      const processItemId = toolCall.arguments.process_item_id as string;
+      if (!processItemId) {
+        return JSON.stringify({ status: 'error', message: 'process_item_id is required' });
+      }
+      this.pendingDeliberationResult = {
+        processItemId,
+        deferItemIds: (toolCall.arguments.defer_item_ids as string[]) ?? [],
+        dropItemIds: (toolCall.arguments.drop_item_ids as string[]) ?? [],
+        inlineCompletedIds: (toolCall.arguments.inline_completed_ids as string[]) ?? [],
+        reasoning: (toolCall.arguments.reasoning as string) ?? '',
+        situationalAwareness: toolCall.arguments.situational_awareness as string | undefined,
+      };
+      return JSON.stringify({ status: 'ok', message: 'Deliberation decision recorded. Proceeding to focused processing.' });
     }
 
     // Enforce agent profile tool restrictions

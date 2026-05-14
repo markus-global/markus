@@ -635,6 +635,8 @@ export class ContextEngine {
         lines.push('**After creating tasks, STOP.** Do NOT execute the task work yourself. The task runs in its own isolated context after user approval. Reply with a summary of created tasks, assignees, and dependency structure. Tell the requester to review and approve.');
         lines.push('');
         lines.push('Keep responses concise and human-friendly. The user should not see raw tool outputs or complex operations.');
+        lines.push('');
+        lines.push('**Notification context**: Previous messages in this session may contain `<!-- notify_context: ... -->` metadata comments from your earlier `notify_user` calls. These embed `task_id`, `requirement_id`, and `priority` references. When the human replies to such a message, use these references to retrieve full context (e.g. via `recall_activity`, `search_tasks`) before responding.');
         break;
 
       case 'task_execution':
@@ -768,6 +770,42 @@ export class ContextEngine {
         lines.push('Your ONLY job is to review the memory entries provided in the user message and output a JSON consolidation plan.');
         lines.push('Do NOT call any tools. Do NOT take any actions. Do NOT discuss tasks or projects.');
         lines.push('Respond with ONLY the JSON object as specified in the user message.');
+        break;
+
+      case 'deliberation':
+        lines.push('You are in **deliberation mode** — reviewing your mailbox before committing to work.');
+        lines.push('');
+        lines.push('**Purpose**: You have multiple pending items. Take a moment to understand the full picture before deciding what to focus on.');
+        lines.push('');
+        lines.push('**What you can do**:');
+        lines.push('1. **Gather context**: Call tools like recall_activity, task_get, memory_search to understand history and commitments.');
+        lines.push('2. **Handle simple items inline**: For trivial acknowledgments or quick notifications, use notify_user, task_comment, or agent_send_message now. Mark them as inline_completed in your final decision.');
+        lines.push('3. **Choose your focus**: Decide which complex item deserves your full attention next.');
+        lines.push('4. **Defer or drop**: Explicitly defer items for later or drop stale/redundant ones.');
+        lines.push('');
+        lines.push('**Rules**:');
+        lines.push('- Human messages and comments are ALWAYS highest priority.');
+        lines.push('- Consider your active tasks, pending commitments, and recent conversation context.');
+        lines.push('- Stale informational items (old heartbeats, status updates) should be dropped aggressively.');
+        lines.push('- When done, you MUST call the `complete_deliberation` tool with your decision.');
+        lines.push('');
+        lines.push('**Communication channel**: Your text output is NOT visible to anyone. Only tool calls have effect. To reach humans, use `notify_user`. To reach agents, use `agent_send_message`.');
+        break;
+
+      case 'requirement_action':
+        lines.push('You are processing a **requirement update that requires action** (e.g., all tasks completed and requirement needs review, or a human approved/rejected your proposed requirement).');
+        lines.push('');
+        lines.push('**Communication channel**: Your text output is **NOT visible** to any human or agent. You MUST use tools to take action and communicate. Simply writing text and ending your turn accomplishes nothing.');
+        lines.push('');
+        lines.push('**Required actions** — you MUST do at least one of the following:');
+        lines.push('1. **Update requirement status**: `requirement_update_status` to mark the requirement as completed, or keep it active if more work is needed.');
+        lines.push('2. **Create follow-up tasks**: `task_create` with the `requirement_id` if additional work is needed to fulfill the requirement.');
+        lines.push('3. **Post a comment**: `requirement_comment` to leave notes or reasoning visible in the requirement thread.');
+        lines.push('4. **Notify a human**: `notify_user` if the requirement outcome needs human attention or decision.');
+        lines.push('');
+        lines.push('**MANDATORY**: Before deciding, call `requirement_get` to understand the full current state of the requirement, including linked tasks, status, and comments.');
+        lines.push('');
+        lines.push('**CRITICAL**: You MUST call at least one action tool before finishing. Do NOT just output text — it will be lost.');
         break;
     }
 

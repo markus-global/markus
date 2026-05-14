@@ -23,6 +23,8 @@ interface TeamDetailPanelProps {
   onViewProfile: (agentId: string) => void;
   onRefreshAgents: () => void;
   onRefreshTeams: () => void;
+  /** Per-agent unread notification count (agentId → count) */
+  unreadByAgent?: Map<string, number>;
   width?: number;
   onResizeStart?: (e: React.MouseEvent) => void;
 }
@@ -33,6 +35,7 @@ export function TeamDetailPanel({
   teams,
   onSelectAgent, onSelectChannel, onSelectDm, onBack, onViewProfile,
   onRefreshAgents, onRefreshTeams,
+  unreadByAgent,
   width, onResizeStart,
 }: TeamDetailPanelProps) {
   const { t } = useTranslation(['team', 'common']);
@@ -198,6 +201,9 @@ export function TeamDetailPanel({
                         {a.role || '\u00A0'}
                       </div>
                     </div>
+                    {(unreadByAgent?.get(a.id) ?? 0) > 0 && (
+                      <span className="min-w-[16px] h-[16px] flex items-center justify-center text-[9px] font-semibold text-white bg-red-500 rounded-full px-1 leading-none shrink-0">{unreadByAgent!.get(a.id)}</span>
+                    )}
                     <span
                       title={a.status}
                       onClick={e => { e.stopPropagation(); onViewProfile(a.id); }}

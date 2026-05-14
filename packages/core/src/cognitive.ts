@@ -49,6 +49,7 @@ const SCENARIO_DEPTH_MAP: Record<string, CognitiveDepth> = {
   a2a: CognitiveDepth.D1_Reactive,
   comment_response: CognitiveDepth.D1_Reactive,
   review: CognitiveDepth.D1_Reactive,
+  requirement_action: CognitiveDepth.D1_Reactive,
   task_execution: CognitiveDepth.D2_Deliberative,
 };
 

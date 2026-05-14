@@ -693,16 +693,31 @@ Proactive messages that appear in the agent's chat **and** the user's notificati
     title: string,     // Short headline (1 line)
     body: string,      // Full message content (visible in chat)
     priority: 'low' | 'normal' | 'high' | 'urgent',  // optional, default 'normal'
-    related_task_id?: string  // deep-link to task if applicable
+    related_task_id?: string,  // deep-link to task if applicable
+    target_user_id?: string    // target specific user (defaults to currentInteractingUserId)
   }
 }
 ```
 
 **When to use**: Status updates, task completion notices, FYI messages, findings, alerts — any proactive communication where the user may want to reply.
 
-**Flow**: `agent.executeTool('notify_user')` → `memory.appendMessage()` (full `**title**\n\nbody` as regular assistant message) → `eventBus.emit('agent:notify-user')` → `start.ts` handler: `chatSessionRepo.appendMessage()` (no `activityLog` metadata) + `ws.broadcastProactiveMessage()` + `hitlService.notify()`
+**Flow**: `agent.executeTool('notify_user')` → builds formatted message with embedded context → `memory.appendMessage()` (in-memory session) → `eventBus.emit('agent:notify-user')` → `start.ts` handler: `chatSessionRepo.appendMessage()` (with `notifyUser` metadata) + `ws.broadcastProactiveMessage()` (with metadata) + `hitlService.notify()`
 
 **Notification routing**: With `related_task_id` → `actionType: 'navigate'` to Work page. Without task → `actionType: 'open_chat'` with `sessionId` to agent's chat.
+
+#### Message Metadata & Context Embedding
+
+Every `notify_user` message is persisted with **two layers of context**:
+
+1. **DB metadata** (`metadata` column): `{ notifyUser: true, priority, taskId?, requirementId? }` — used by the frontend to display context links and badges.
+
+2. **Embedded context comment** (appended to message content): `<!-- notify_context: task_id=xxx, requirement_id=yyy -->` — survives through `restoreSessionFromHistory()` (which only reads `role` + `content`), ensuring the agent retains context about what it notified the user about when the user replies.
+
+The agent's `chat` scenario system prompt instructs it to parse these `notify_context` references and use tools like `recall_activity` or `search_tasks` to retrieve full context before responding to user follow-ups.
+
+#### Real-time Visibility
+
+All `notify_user` messages are buffered in the frontend for every agent conversation immediately upon WebSocket receipt — regardless of whether the user is currently viewing that agent's chat. This ensures messages are visible as soon as the user navigates to the agent, without requiring a page reload.
 
 ### 13.2 `request_user_approval` — Blocking Decision Request
 
@@ -964,7 +979,7 @@ Examples:
 
 Activity log entries (marked with `activityLog: true` metadata) are hidden from the chat interface and visible only in the Agent Profile Mind tab. This reduces noise in the chat while keeping full traceability in the agent's profile.
 
-**Exception — `notify_user` and escalation**: These messages bypass `injectActivityToMainSession` entirely and are instead injected as regular chat messages (no `activityLog` metadata) via their own `agent:notify-user` and `agent:escalation` event handlers. They render as normal agent chat bubbles, allowing users to see and reply to them directly.
+**Exception — `notify_user` and escalation**: These messages bypass `injectActivityToMainSession` entirely and are instead injected as regular chat messages via their own `agent:notify-user` and `agent:escalation` event handlers. `notify_user` messages carry `{ notifyUser: true, priority, taskId?, requirementId? }` metadata (not `activityLog`), and their content includes an embedded `<!-- notify_context -->` comment with task/requirement references. They render as normal agent chat bubbles, allowing users to see and reply to them directly. The embedded context ensures the agent retains awareness of the notification's origin when processing the user's reply.
 
 When the user opens an agent's chat, the frontend loads sessions via `getSessionsByAgent()`, which returns the main session first (sorted by `is_main DESC`). The main session's messages include both user conversations and notify/escalation messages, displayed chronologically.
 
@@ -991,81 +1006,122 @@ This differs from enqueue-time dedup (which only merges same-type comments):
 
 The headItem is temporarily put back into the queue so it participates in consolidation, then re-dequeued.
 
-### Fast Path vs Deep Path
+### Three-Tier Cognitive Model
 
-- **Fast path** (queue depth = 0 after consolidation): No triage needed — process the single item immediately.
-- **Deep path** (queue depth > 0): The `TriageJudge` LLM callback is invoked with all candidate items, recent conversation context, and recent activity summaries.
+The triage system implements a three-tier cognitive model inspired by Dual Process Theory (Kahneman, 2011):
+
+- **Tier 0 (Reflexive / System 1)**: Queue depth = 0 after consolidation, or priorities clearly separate items → no LLM call needed. Process immediately.
+- **Tier 1 (Quick Classification / System 1+)**: Interrupt arrives during focused work, heuristic says "continue" but LLM may disagree → single LLM call returning one word (`continue`/`preempt`/`cancel`/`merge`/`defer`).
+- **Tier 2 (Full Deliberation / System 2)**: Multiple items with overlapping priorities AND `performDeliberation` configured → full agent session with complete tool access and memory.
 
 ### Triage Flow
 
 ```
 dequeueAsync() → headItem
   │
-  ├─ queue empty? → FAST PATH: record 'pick' → process(headItem)
+  ├─ queue empty? → TIER 0: record 'pick' → process(headItem)
   │
   └─ queue non-empty?
        ├─ CONSOLIDATION: putBack(headItem) → consolidateByEntity() → dequeue()
        │    (items sharing same taskId/requirementId merged cross-type)
        │
-       ├─ queue empty after consolidation? → FAST PATH
+       ├─ queue empty after consolidation? → TIER 0
        │
-       └─ triageJudge configured?
-            → performTriage(headItem)
-                 ├─ Build prompt (all candidates + agent context + item content)
-                 ├─ [Optional] Mini tool loop: LLM calls read-only tools
-                 │    (task_list, task_get, requirement_list, etc.) up to
-                 │    TRIAGE_MAX_TOOL_ITERATIONS times to gather context
-                 ├─ TriageJudge returns JSON: { processItemId, deferItemIds, dropItemIds, reasoning }
-                 ├─ Validate IDs against candidate set
-                 ├─ If chosen ≠ headItem: putBack(headItem), dequeueById(chosen)
-                 ├─ Apply defer/drop decisions
-                 ├─ Notify delegate → updateCognition
-                 ├─ Emit 'attention:triage' → WS → frontend
-                 └─ Record 'triage' decision
+       └─ priorities clearly separate? → TIER 0
+       │
+       └─ ambiguous priorities AND (performDeliberation OR triageJudge)?
+            │
+            ├─ performDeliberation available?
+            │    → TIER 2: Full-session deliberation (scenario='deliberation')
+            │         ├─ Agent deliberates AS ITSELF with full identity
+            │         ├─ Access to memory, recall_activity, task tools
+            │         ├─ Can handle simple items INLINE (notify, comment, message)
+            │         ├─ Calls complete_deliberation tool with decision
+            │         ├─ Apply inline-completed / defer / drop / choose
+            │         └─ Cognition updated with situational awareness
+            │
+            └─ triageJudge only (fallback)?
+                 → Mini triage loop (up to TRIAGE_MAX_TOOL_ITERATIONS rounds)
+                      ├─ Build prompt with candidates + context
+                      ├─ LLM calls read-only tools to gather context
+                      ├─ Returns JSON: { processItemId, deferItemIds, dropItemIds }
+                      └─ Apply decisions
 ```
 
-### Triage Context Budget
+### Full-Session Deliberation (Tier 2)
 
-The triage prompt is intentionally **generous** — tens of thousands of tokens are acceptable because accurate triage decisions save far more cost downstream. Context includes:
-- **20 recent messages** (up to 2000 chars each) from the agent's main session
-- **Full payload.content** (up to 3000 chars) for each candidate item, not just the summary
-- **Active task IDs** for the agent's current workload
-- **Recent activity summaries** and **recent decisions**
+When `delegate.performDeliberation` is available (always in production), the attention controller delegates triage to a full agent session:
 
-### Read-Only Tool Access
+1. The agent receives all queued items formatted as a `[DELIBERATION MODE]` prompt.
+2. It uses `handleMessage()` with `scenario: 'deliberation'` — the same code path as chat/task but with restricted tool access (`DELIBERATION_ALLOWED_TOOLS`).
+3. The agent deliberates **as itself** (full system prompt, identity, memory access).
+4. It can handle simple items **inline** (e.g., send a quick notification, post a comment).
+5. It calls `complete_deliberation` with its structured decision.
+6. The attention controller applies the decision: mark inline items completed, defer/drop others, choose the focus item.
 
-When `triageChatFn` and `triageToolHandlers` are configured, `performTriage` runs a mini tool loop before the final JSON decision. The LLM can invoke read-only tools defined by `TRIAGE_ALLOWED_TOOLS` (`task_list`, `task_get`, `requirement_list`, `requirement_get`, `list_projects`, `team_list`) up to `TRIAGE_MAX_TOOL_ITERATIONS` (default 3) times. This lets the triage LLM understand current workload, task dependencies, and team state before deciding priority.
+**Deliberation is atomic**: yield points are suppressed during deliberation (new mail sets the interrupt signal but is not evaluated until deliberation completes).
+
+### Tool Access During Deliberation
+
+Defined by `DELIBERATION_ALLOWED_TOOLS` in `@markus/shared`:
+
+| Category | Tools |
+|----------|-------|
+| Context gathering | `task_list`, `task_get`, `requirement_list`, `requirement_get`, `list_projects`, `team_list`, `team_status`, `recall_activity`, `memory_search`, `memory_search_longterm` |
+| Inline communication | `notify_user`, `task_comment`, `requirement_comment`, `agent_send_message`, `agent_send_group_message`, `agent_create_group_chat`, `agent_list_group_chats` |
+| Decision output | `complete_deliberation` |
+
+**Excluded**: `task_create`, `task_update`, `requirement_propose`, code/shell tools, `spawn_subagent`. These are heavy side-effect tools that belong in the processing phase.
+
+### DeliberationResult
+
+```typescript
+interface DeliberationResult {
+  processItemId: string;       // Item to focus on next
+  deferItemIds: string[];      // Postpone for later
+  dropItemIds: string[];       // Discard (stale/redundant)
+  inlineCompletedIds: string[]; // Already handled during deliberation
+  reasoning: string;
+  situationalAwareness?: string; // Agent-authored metacognitive summary
+}
+```
 
 ### Cognition Injection
 
-The triage reasoning becomes the agent's **persistent situational awareness** — stored as `currentCognition` and injected into all subsequent LLM system prompts via `getDynamicContext()`. This ensures the agent maintains behavioral consistency across different processing contexts (chat, task execution, A2A communication).
+The deliberation reasoning (or `situationalAwareness` if provided) becomes the agent's **persistent situational awareness** — stored as `currentCognition` and injected into all subsequent LLM system prompts via `getDynamicContext()`. When `situationalAwareness` is provided, it represents a richer metacognitive output authored by the agent itself.
 
 ```
-TriageResult.reasoning
-  → Agent.updateCognition()
-    → this.currentCognition = "## Current Situational Awareness ..."
+DeliberationResult.situationalAwareness (or .reasoning)
+  → Agent.updateCognitionFromDeliberation()
+    → this.currentCognition = "## Current Situational Awareness (deliberation) ..."
       → getDynamicContext() includes currentCognition
         → injected into every LLM call's system prompt
 ```
+
+### Mini Triage Loop (Fallback)
+
+When `performDeliberation` is unavailable, the system falls back to the legacy mini triage loop:
+- Triage LLM uses the agent's name and role in its system prompt.
+- Can call tools from `TRIAGE_ALLOWED_TOOLS` (including `recall_activity`, `memory_search`, `memory_search_longterm`) up to `TRIAGE_MAX_TOOL_ITERATIONS` (6) rounds.
+- Returns a structured JSON decision (same as `TriageResult`).
 
 ### Key Methods
 
 | Method | Location | Purpose |
 |--------|----------|---------|
-| `consolidateByEntity()` | `mailbox.ts` | Merges items sharing same taskId/requirementId (cross-type) |
-| `performTriage()` | `attention.ts` | Builds prompt, calls TriageJudge, parses/validates result |
+| `performDeliberation()` | `agent.ts` | Full-session deliberation via handleMessage(scenario='deliberation') |
+| `applyDeliberationResult()` | `attention.ts` | Applies inline/defer/drop/choose from deliberation |
+| `complete_deliberation` (tool) | `agent.ts` executeTool | Captures structured decision during deliberation |
+| `applyTriageResult()` | `attention.ts` | Applies defer/drop/choose from mini triage (fallback) |
+| `performTriage()` | `attention.ts` | Mini triage loop (fallback path) |
 | `buildTriagePrompt()` | `attention.ts` | Constructs the triage prompt with candidates + context |
-| `putBack()` | `mailbox.ts` | Returns a dequeued item to queue (no retryCount increment) |
-| `dequeueById()` | `mailbox.ts` | Dequeues a specific item by ID (for triage swap) |
-| `updateCognition()` | `agent.ts` | Converts TriageResult into situational awareness text |
-| `getTriageContext()` | `agent.ts` (delegate) | Provides agent name, recent messages, recent activity, active task IDs |
-| `resurfaceDue()` | `mailbox.ts` | Resurfaces deferred items whose `deferredUntil` has passed or is unset |
-| `deferDequeued()` | `mailbox.ts` | Defers an item already removed from the queue (used when preempted mid-processing) |
-| `evaluateWithLLMFallback()` | `attention.ts` | Heuristic-first interrupt decision with optional LLM fallback for ambiguous cases |
+| `consolidateByEntity()` | `mailbox.ts` | Merges items sharing same taskId/requirementId (cross-type) |
+| `updateCognitionFromDeliberation()` | `agent.ts` | Converts DeliberationResult into situational awareness |
+| `evaluateWithLLMFallback()` | `attention.ts` | Heuristic-first interrupt decision with optional LLM fallback |
 
 ### Triage Prompt Identity
 
-The triage prompt uses first-person perspective: "You are {agentName}." The agent deliberates **as itself**, not as an external "attention manager." This is consistent with the agent's self-identity across all LLM interactions.
+Both deliberation (Tier 2) and the mini triage loop (fallback) use first-person perspective: "You are {agentName}." The agent deliberates **as itself** with its role context, not as an external "attention manager."
 
 ---
 
@@ -1087,7 +1143,110 @@ Deferred mailbox items are automatically resurfaced when the agent is idle:
 
 Agents do NOT need to take action on these notifications — they serve as episodic memory and triage decision context. Agents should NOT send A2A messages to duplicate what the side-effect system already does.
 
-## 24. Future Work
+## 24. Cognitive Science Foundation
 
+The three-tier triage model (§21) is grounded in established cognitive science:
+
+| Theory | Application in Markus |
+|--------|----------------------|
+| **Dual Process Theory** (Kahneman, 2011) | Tier 0/1 = System 1 (fast, automatic); Tier 2 = System 2 (slow, deliberative) |
+| **Situational Awareness** (Endsley, 1995) | Full deliberation achieves Level 2+3 SA (comprehension + projection) via memory access |
+| **Working Memory / Episodic Buffer** (Baddeley, 2000) | `recall_activity` and `memory_search` serve as the episodic buffer linking current stimuli to long-term memory |
+| **Metacognition** (Flavell, 1979) | `situationalAwareness` field in `DeliberationResult` enables agent self-monitoring |
+| **Prospective Memory** (Einstein & McDaniel, 2005) | During deliberation, agents can check pending commitments and proactively notify users |
+| **Cognitive Load Theory** (Sweller, 1988) | Unified identity in deliberation eliminates task-switching cost between "triage assistant" and "agent self" |
+
+### Design Rationale
+
+- **Why not always use Tier 2?** Cost and latency. Tier 2 deliberation costs 5-15K tokens vs 0 for Tier 0. It only fires when there is genuine ambiguity (multiple items with overlapping priorities after consolidation).
+- **Why allow inline handling?** Cognitive science shows humans handle simple items (quick email replies) during triage rather than queuing them separately. This reduces total cognitive load and latency.
+- **Why suppress yield points during deliberation?** Deliberation is a metacognitive process — interrupting it would break the agent's reasoning coherence (analogous to interrupting someone mid-thought during planning).
+- **Why inject situational awareness into future prompts?** This implements **metacognitive regulation** — the agent's self-authored summary of its situation persists across processing contexts, maintaining behavioral consistency.
+
+---
+
+## 25. Proactive Messaging Capabilities
+
+### Can agents proactively send messages?
+
+**Yes.** Agents can initiate communication across multiple channels, including targeted user notifications.
+
+### 25.1 User DM (1:1 Chat)
+
+**Tool**: `notify_user`
+
+| Capability | Status |
+|-----------|--------|
+| Send proactive message to user | **Yes** — appears in agent's main chat session |
+| Message shows in chat UI | **Yes** — as regular assistant message (not hidden as activity log) |
+| User can reply in chat | **Yes** — reply triggers `human_chat` mailbox item |
+| Notification bell | **Yes** — `HITLService.notify()` creates persistent notification |
+| Target specific user by ID | **Yes** — `target_user_id` parameter (optional) |
+| Fallback when no target specified | Uses `currentInteractingUserId` (last human who chatted), then team owner |
+| Initiate first-ever conversation with user | **Yes** — via `target_user_id` during deliberation or heartbeat |
+
+**Flow**:
+```
+Agent calls notify_user(title, body, target_user_id?)
+  → Build context suffix: <!-- notify_context: task_id=xxx, requirement_id=yyy -->
+  → memory.appendMessage(formattedMsg + contextSuffix) — in-memory session
+  → eventBus.emit('agent:notify-user', { targetUserId, taskId, requirementId, ... })
+  → start.ts handler:
+      → chatSessionRepo.getOrCreateMainSession(agentId, targetUserId ?? ownerId)
+      → chatSessionRepo.appendMessage(msg, metadata: { notifyUser, priority, taskId, requirementId })
+      → ws.broadcastProactiveMessage(metadata: { notifyUser, taskId, requirementId }) — scoped to target user
+      → hitlService.notify() — notification bell entry
+```
+
+**Context preservation**: When the user replies to a notification, `restoreSessionFromHistory()` loads the message content (including the `<!-- notify_context -->` comment). The agent's `chat` scenario prompt instructs it to use these references to retrieve full context before responding.
+
+### 25.2 Group Chat
+
+**Tool**: `agent_send_group_message`
+
+| Capability | Status |
+|-----------|--------|
+| Send message to team group | **Yes** — `channel_key: "group:<teamId>"` |
+| Send message to custom group | **Yes** — `channel_key: "group:custom:<id>"` |
+| Message visible to all channel members | **Yes** — persisted + WebSocket broadcast |
+| Triggers other agents in channel | **Yes** — enqueues `a2a_message` to peer agents |
+| Create new group chat | **Yes** — `agent_create_group_chat` tool |
+| Available during deliberation | **Yes** — in `DELIBERATION_ALLOWED_TOOLS` |
+
+### 25.3 Agent-to-Agent (A2A)
+
+| Tool | Capability |
+|------|-----------|
+| `agent_send_message` | Direct message to another agent |
+| `agent_broadcast_status` | Status update to all colleagues |
+| `agent_delegate_task` | Formal task delegation with protocol |
+
+### 25.4 Proactive Messaging During Deliberation
+
+During full-session deliberation (Tier 2), agents can handle simple items inline by calling communication tools directly:
+
+```
+Deliberation session starts (5 items queued)
+  → Agent calls memory_search to check commitments
+  → Agent calls notify_user(target_user_id="usr_alice", ...) — handles item #3 inline
+  → Agent calls task_comment(...) — handles item #5 inline
+  → Agent calls complete_deliberation({
+      process_item_id: "item_1",
+      inline_completed_ids: ["item_3", "item_5"],
+      defer_item_ids: ["item_4"],
+      drop_item_ids: ["item_2"],
+      reasoning: "Item 1 is an urgent review request; handled notifications inline"
+    })
+```
+
+This collapses what would have been 5 separate triage+process cycles into a single deliberation + 1 processing cycle.
+
+---
+
+## 26. Future Work
+
+- **Proactive messaging scheduler**: Allow agents to schedule future messages (e.g., "remind user about this review tomorrow") using time-based prospective memory.
 - **Cross-agent priority coordination**: Allow a manager agent to influence subordinate agents' mailbox priorities.
 - **Decision pattern learning**: Use long-term decision history to adaptively tune heuristic thresholds.
+- **Deliberation cost optimization**: Implement adaptive deliberation depth — use cheaper models or shorter budgets for simple multi-item scenarios, full budget only for genuinely complex triage.
+- **Recursive deliberation**: Allow deliberation to trigger sub-deliberation for complex multi-step planning (with depth limits).

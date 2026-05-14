@@ -45,6 +45,8 @@ interface ChatTeamSidebarProps {
   onRefreshGroupChats: () => void;
   onViewProfile: (agentId: string) => void;
   onManageGroupMembers?: (channelKey: string) => void;
+  /** Per-agent unread notification count (agentId → count) */
+  unreadByAgent?: Map<string, number>;
   width?: number;
   onResizeStart?: (e: React.MouseEvent) => void;
   hidden?: boolean;
@@ -189,6 +191,7 @@ export function ChatTeamSidebar({
   onSelectAgent, onSelectChannel, onSelectDm, onSelectTeam, selectedTeamId,
   onRefreshTeams, onRefreshAgents, onRefreshHumans, onRefreshGroupChats, onViewProfile,
   onManageGroupMembers,
+  unreadByAgent,
   width, onResizeStart, hidden,
   initialLoading,
 }: ChatTeamSidebarProps) {
@@ -613,6 +616,9 @@ export function ChatTeamSidebar({
             </div>
           </div>
           <span className="flex items-center gap-1.5 shrink-0">
+            {(unreadByAgent?.get(a.id) ?? 0) > 0 && (
+              <span className="min-w-[16px] h-[16px] flex items-center justify-center text-[9px] font-semibold text-white bg-red-500 rounded-full px-1 leading-none">{unreadByAgent!.get(a.id)}</span>
+            )}
             {a.mailboxDepth != null && a.mailboxDepth > 0 && (
               <span className="text-[8px] text-fg-tertiary bg-surface-overlay rounded-full px-1 leading-relaxed">{a.mailboxDepth}</span>
             )}
@@ -648,6 +654,7 @@ export function ChatTeamSidebar({
     const isDropTarget = isDragging && dragOverTeam === tid && dragAgent?.fromTeamId !== tid;
     const isHighlighted = highlightTeamId === tid;
     const isSelected = selectedTeamId === tid;
+    const teamUnread = unreadByAgent ? (agentsByTeam.byTeam.get(tid) ?? []).reduce((sum, a) => sum + (unreadByAgent.get(a.id) ?? 0), 0) : 0;
 
     return (
       <div
@@ -693,6 +700,9 @@ export function ChatTeamSidebar({
               )}
               <div className="text-[10px] text-fg-secondary leading-tight mt-0.5">{t('chat.members_other', { count: memberCount })}</div>
             </div>
+            {teamUnread > 0 && (
+              <span className="min-w-[16px] h-[16px] flex items-center justify-center text-[9px] font-semibold text-white bg-red-500 rounded-full px-1 leading-none shrink-0">{teamUnread}</span>
+            )}
             <svg
               className="w-3.5 h-3.5 text-fg-muted shrink-0"
               fill="currentColor" viewBox="0 0 20 20"
@@ -727,6 +737,7 @@ export function ChatTeamSidebar({
     const teamGc = tid !== '_ungrouped' ? (groupChatsByTeam.byTeam.get(tid) ?? [])[0] : undefined;
     const isGcActive = teamGc && chatMode === 'channel' && activeChannel === teamGc.channelKey;
     const isHighlighted = highlightTeamId === tid;
+    const sectionUnread = unreadByAgent ? agentList.reduce((sum, a) => sum + (unreadByAgent.get(a.id) ?? 0), 0) : 0;
 
     return (
       <div
@@ -773,6 +784,9 @@ export function ChatTeamSidebar({
               )}
               <div className="text-[10px] text-fg-secondary leading-tight mt-0.5">{t('chat.members_other', { count: agentList.length })}</div>
             </div>
+            {sectionUnread > 0 && (
+              <span className="min-w-[16px] h-[16px] flex items-center justify-center text-[9px] font-semibold text-white bg-red-500 rounded-full px-1 leading-none shrink-0">{sectionUnread}</span>
+            )}
           </button>
 
           <button
