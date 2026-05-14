@@ -761,13 +761,6 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const [showTeamDetailPanel, setShowTeamDetailPanel] = useState<boolean>(() => {
     try { return localStorage.getItem('markus_team_panel_visible') === 'true'; } catch { return false; }
   });
-  const toggleTeamDetailPanel = useCallback(() => {
-    setShowTeamDetailPanel(prev => {
-      const next = !prev;
-      try { localStorage.setItem('markus_team_panel_visible', String(next)); } catch { /* */ }
-      return next;
-    });
-  }, []);
   const teamDetailPanel = useResizablePanel({
     side: 'left',
     defaultWidth: 260,
@@ -775,6 +768,53 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     maxWidth: 400,
     storageKey: 'markus_team_detail_panel',
   });
+
+  // Track whether there's enough space for inline L2 (chat area >= 400px)
+  const teamContainerRef = useRef<HTMLDivElement>(null);
+  const [l2SpaceTight, setL2SpaceTight] = useState(false);
+  const [l2Floating, setL2Floating] = useState(false);
+
+  const toggleTeamDetailPanel = useCallback(() => {
+    if (l2SpaceTight) {
+      setL2Floating(prev => !prev);
+    } else {
+      setShowTeamDetailPanel(prev => {
+        const next = !prev;
+        try { localStorage.setItem('markus_team_panel_visible', String(next)); } catch { /* */ }
+        return next;
+      });
+    }
+  }, [l2SpaceTight]);
+
+  useEffect(() => {
+    if (isMobile) return;
+    const el = teamContainerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      if (!entry) return;
+      const containerW = entry.contentRect.width;
+      const chatAreaIfL2 = containerW - chatSidebar.width - teamDetailPanel.width;
+      const tight = chatAreaIfL2 < 400;
+      setL2SpaceTight(tight);
+      if (tight && showTeamDetailPanel) {
+        setShowTeamDetailPanel(false);
+        try { localStorage.setItem('markus_team_panel_visible', 'false'); } catch { /* */ }
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [isMobile, chatSidebar.width, teamDetailPanel.width, showTeamDetailPanel]);
+
+  useEffect(() => {
+    if (!l2Floating) return;
+    const close = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('[data-l2-floating]')) return;
+      setL2Floating(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [l2Floating]);
 
   // Avatar popover in chat messages
   const [avatarPopover, setAvatarPopover] = useState<{ agentId: string; top: number; left: number } | null>(null);
@@ -2418,7 +2458,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const showChatOnMobile = isMobile && mobileShowChat;
 
   return (
-    <div className="flex-1 overflow-hidden flex">
+    <div ref={teamContainerRef} className="flex-1 overflow-hidden flex relative">
       {/* ── Left sidebar (ChatTeamSidebar) — L1 ── */}
       <ChatTeamSidebar
         authUser={authUser}
@@ -2456,8 +2496,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         initialLoading={initialLoading}
       />
 
-      {/* ── L2: Team detail panel (desktop only, toggle-based) ── */}
-      {showTeamDetailPanel && !isMobile && (() => {
+      {/* ── L2: Team detail panel (desktop only) ── */}
+      {/* Inline mode: when space allows */}
+      {showTeamDetailPanel && !l2SpaceTight && !isMobile && (() => {
         const l2TeamId = activeTeamId ?? (chatMode === 'direct' ? currentAgent?.teamId : undefined);
         if (!l2TeamId) return null;
         const panelTeam = teams.find(t => t.id === l2TeamId);
@@ -2486,10 +2527,44 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           />
         );
       })()}
+      {/* Floating mode: when space is tight, show as overlay */}
+      {l2Floating && !isMobile && (() => {
+        const l2TeamId = activeTeamId ?? (chatMode === 'direct' ? currentAgent?.teamId : undefined);
+        if (!l2TeamId) return null;
+        const panelTeam = teams.find(t => t.id === l2TeamId);
+        if (!panelTeam) return null;
+        const panelGc = groupChats.find(gc => gc.type === 'team' && gc.teamId === l2TeamId);
+        return (
+          <div data-l2-floating className="absolute z-30 inset-0" style={{ left: chatSidebar.width + 6 }}>
+            <div className="absolute inset-0 bg-black/20" onClick={() => setL2Floating(false)} />
+            <div className="relative h-full" style={{ width: teamDetailPanel.width + 8 }}>
+              <TeamDetailPanel
+                team={panelTeam}
+                agents={agents}
+                humans={humans}
+                authUser={authUser}
+                groupChat={panelGc}
+                chatMode={chatMode}
+                selectedAgent={selectedAgent}
+                activeChannel={activeChannel}
+                teams={teams}
+                onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); setShowMemberPanel(false); setL2Floating(false); }}
+                onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); setShowMemberPanel(false); setL2Floating(false); }}
+                onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); setShowMemberPanel(false); setL2Floating(false); }}
+                onBack={() => setL2Floating(false)}
+                onViewProfile={(agentId) => { handleViewProfile(agentId); setL2Floating(false); }}
+                onRefreshAgents={refreshAgents}
+                onRefreshTeams={refreshTeams}
+                width={teamDetailPanel.width}
+              />
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Main area ── */}
       {(!isMobile || showChatOnMobile) && (
-      <div className="flex-1 overflow-hidden flex flex-col min-w-0">
+      <div className={`flex-1 overflow-hidden flex flex-col ${isMobile ? 'min-w-0' : 'min-w-[400px]'}`}>
         {/* Header */}
         <div className="shrink-0 relative pb-2">
           {isMobile ? (
@@ -2600,11 +2675,13 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
             <div className="flex flex-col">
               {/* Row 1: L2 toggle + avatar + name/desc + action buttons */}
               <div className="flex items-center px-4 h-14 gap-2.5">
-                {/* L2 toggle button (before avatar, hidden when L2 is open — the L2 panel header has the matching close button) */}
-                {!showTeamDetailPanel && ((chatMode === 'channel' && activeTeamId) || (chatMode === 'direct' && currentAgent?.teamId)) && (
+                {/* L2 toggle button — shown when inline L2 is closed, or in tight mode to toggle floating */}
+                {(!showTeamDetailPanel || l2SpaceTight) && ((chatMode === 'channel' && activeTeamId) || (chatMode === 'direct' && currentAgent?.teamId)) && (
                   <button
                     onClick={toggleTeamDetailPanel}
-                    className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
+                    className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 ${
+                      l2Floating ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
+                    }`}
                     title="Toggle team panel"
                   >
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2971,7 +3048,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               inline
               headless
               activeTab={mainTab as TeamTab}
-              onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('overview'); if (!showTeamDetailPanel) setShowTeamDetailPanel(true); }}
+              onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('overview'); if (!showTeamDetailPanel && !l2SpaceTight) setShowTeamDetailPanel(true); }}
             />
           </div>
         )}

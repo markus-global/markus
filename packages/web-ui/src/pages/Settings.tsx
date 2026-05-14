@@ -687,7 +687,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         />
       )}
 
-      <div className="p-7 space-y-10 max-w-4xl">
+      <div className="p-7 space-y-10 max-w-4xl mx-auto w-full">
         <div className="flex items-center">
           <h2 className="text-lg font-semibold flex-1">{t('title')}</h2>
           {authUser && (

@@ -1852,10 +1852,10 @@ function TaskDetailPanel({
 
         {/* Scrollable content area */}
         <div className="flex-1 min-h-0 relative">
-        <div ref={scrollContainerRef} className="h-full overflow-y-auto" onTouchStart={detailSwipe.onTouchStart} onTouchEnd={detailSwipe.onTouchEnd}>
+        <div ref={scrollContainerRef} className="h-full overflow-y-auto overflow-x-hidden" onTouchStart={detailSwipe.onTouchStart} onTouchEnd={detailSwipe.onTouchEnd}>
 
           {activeTab === 'logs' && (
-            <div className="overflow-x-clip min-w-0 min-h-full">
+            <div className="min-w-0 min-h-full">
               {runError && (
                 <div className="mx-4 mt-3 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-500">
                   <span className="font-medium">{t('work:task.failedToStart')}</span> {runError}
