@@ -69,6 +69,17 @@ export interface MarkusConfig {
     remoteDebuggingPort?: number;
     /** Automatically close agent-owned tabs when the task completes (default: true) */
     autoCloseTabs?: boolean;
+    /** MCP process pool settings for chrome-devtools */
+    pool?: {
+      /** Enable pool mode (default: true when remoteDebuggingPort is set) */
+      enabled?: boolean;
+      /** Minimum (hot-standby) processes to keep alive (default: 3) */
+      minSize?: number;
+      /** Soft max size. 0 = unlimited. Exceeding logs a warning (default: 0) */
+      maxSize?: number;
+      /** Idle time in ms before surplus processes are killed (default: 300000 = 5 min) */
+      shrinkAfterMs?: number;
+    };
   };
   integrations?: {
     feishu?: { appId?: string; appSecret?: string };

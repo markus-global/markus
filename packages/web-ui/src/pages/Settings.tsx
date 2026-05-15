@@ -105,6 +105,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [browserBringToFront, setBrowserBringToFront] = useState(false);
   const [browserRemotePort, setBrowserRemotePort] = useState(0);
   const [browserAutoClose, setBrowserAutoClose] = useState(true);
+  const [browserPoolMinSize, setBrowserPoolMinSize] = useState(3);
+  const [browserPoolShrinkMin, setBrowserPoolShrinkMin] = useState(5);
   const [browserSaving, setBrowserSaving] = useState(false);
   const [browserMsg, setBrowserMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
@@ -173,6 +175,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           setBrowserBringToFront(d.bringToFront ?? false);
           setBrowserRemotePort(d.remoteDebuggingPort ?? 0);
           setBrowserAutoClose(d.autoCloseTabs ?? true);
+          setBrowserPoolMinSize(d.pool?.minSize ?? 3);
+          setBrowserPoolShrinkMin(Math.round((d.pool?.shrinkAfterMs ?? 300000) / 60000));
         }
       })
       .catch(() => {});
@@ -1702,6 +1706,81 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                             ? t('browserAutomation.usingPort', { port: d.remoteDebuggingPort })
                             : t('browserAutomation.usingAutoConnect'),
                         });
+                      } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
+                      setBrowserSaving(false);
+                    }}
+                    className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                  >
+                    {browserSaving ? t('common:saving') : t('common:save')}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Process Pool */}
+            <div className="border-t border-border-default pt-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.poolSize')}</div>
+                  <div className="text-xs text-fg-tertiary mt-0.5">
+                    {t('browserAutomation.poolSizeDesc')}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={1}
+                    max={20}
+                    value={browserPoolMinSize}
+                    onChange={e => { setBrowserPoolMinSize(Number(e.target.value)); setBrowserMsg(null); }}
+                    className="w-20 px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary text-right"
+                  />
+                  <button
+                    disabled={browserSaving}
+                    onClick={async () => {
+                      setBrowserSaving(true); setBrowserMsg(null);
+                      try {
+                        const d = await api.settings.updateBrowser({ pool: { minSize: browserPoolMinSize } });
+                        setBrowserPoolMinSize(d.pool?.minSize ?? 3);
+                        setBrowserMsg({ type: 'ok', text: t('agentExecution.saved') });
+                      } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
+                      setBrowserSaving(false);
+                    }}
+                    className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                  >
+                    {browserSaving ? t('common:saving') : t('common:save')}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Pool Shrink Timeout */}
+            <div className="border-t border-border-default pt-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.shrinkAfter')}</div>
+                  <div className="text-xs text-fg-tertiary mt-0.5">
+                    {t('browserAutomation.shrinkAfterDesc')}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={1}
+                    max={60}
+                    value={browserPoolShrinkMin}
+                    onChange={e => { setBrowserPoolShrinkMin(Number(e.target.value)); setBrowserMsg(null); }}
+                    className="w-20 px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary text-right"
+                  />
+                  <span className="text-xs text-fg-tertiary">{t('browserAutomation.minutes')}</span>
+                  <button
+                    disabled={browserSaving}
+                    onClick={async () => {
+                      setBrowserSaving(true); setBrowserMsg(null);
+                      try {
+                        const d = await api.settings.updateBrowser({ pool: { shrinkAfterMs: browserPoolShrinkMin * 60000 } });
+                        setBrowserPoolShrinkMin(Math.round((d.pool?.shrinkAfterMs ?? 300000) / 60000));
+                        setBrowserMsg({ type: 'ok', text: t('agentExecution.saved') });
                       } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
                       setBrowserSaving(false);
                     }}

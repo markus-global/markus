@@ -6860,6 +6860,11 @@ EXPLANATION_END`;
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
+        pool: {
+          minSize: browser.pool?.minSize ?? 3,
+          maxSize: browser.pool?.maxSize ?? 0,
+          shrinkAfterMs: browser.pool?.shrinkAfterMs ?? 300000,
+        },
       });
       return;
     }
@@ -6872,6 +6877,14 @@ EXPLANATION_END`;
       if (typeof body['bringToFront'] === 'boolean') updates.bringToFront = body['bringToFront'];
       if (typeof body['remoteDebuggingPort'] === 'number') updates.remoteDebuggingPort = body['remoteDebuggingPort'];
       if (typeof body['autoCloseTabs'] === 'boolean') updates.autoCloseTabs = body['autoCloseTabs'];
+      if (body['pool'] && typeof body['pool'] === 'object') {
+        const poolBody = body['pool'] as Record<string, unknown>;
+        const poolUpdates: Record<string, unknown> = {};
+        if (typeof poolBody['minSize'] === 'number') poolUpdates.minSize = Math.max(0, Math.round(poolBody['minSize']));
+        if (typeof poolBody['maxSize'] === 'number') poolUpdates.maxSize = Math.max(0, Math.round(poolBody['maxSize']));
+        if (typeof poolBody['shrinkAfterMs'] === 'number') poolUpdates.shrinkAfterMs = Math.max(0, Math.round(poolBody['shrinkAfterMs']));
+        if (Object.keys(poolUpdates).length > 0) updates.pool = poolUpdates;
+      }
       try {
         saveConfig({ browser: updates } as any, this.markusConfigPath);
         const am = this.orgService.getAgentManager();
@@ -6905,6 +6918,11 @@ EXPLANATION_END`;
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
+        pool: {
+          minSize: browser.pool?.minSize ?? 3,
+          maxSize: browser.pool?.maxSize ?? 0,
+          shrinkAfterMs: browser.pool?.shrinkAfterMs ?? 300000,
+        },
       });
       return;
     }

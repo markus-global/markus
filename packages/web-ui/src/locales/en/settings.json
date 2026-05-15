@@ -242,7 +242,12 @@
     "tabsForeground": "Tabs will be brought to foreground",
     "tabsBackground": "Tabs will stay in background",
     "usingPort": "Using persistent connection on port {{port}} (no more permission dialogs)",
-    "usingAutoConnect": "Using auto-connect mode (permission dialog required on each connection)"
+    "usingAutoConnect": "Using auto-connect mode (permission dialog required on each connection)",
+    "poolSize": "Process Pool Size",
+    "poolSizeDesc": "Number of browser MCP processes kept alive for fast agent access. Agents acquire a process from the pool instead of spawning a new one each time.",
+    "shrinkAfter": "Pool Shrink Timeout",
+    "shrinkAfterDesc": "How long an idle surplus process stays alive before being reclaimed. Processes beyond the pool size are removed after this timeout.",
+    "minutes": "min"
   },
   "dataStorage": {
     "title": "Data & Storage",

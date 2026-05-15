@@ -22,6 +22,7 @@ import { RoleLoader } from './role-loader.js';
 import { EventBus } from './events.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { MCPClientManager } from './tools/mcp-client.js';
+import { MCPPool, type MCPPoolConfig } from './tools/mcp-pool.js';
 import { BrowserSessionManager } from './tools/browser-session.js';
 import { createManagerTools, createPackageTools } from './tools/manager.js';
 import { createA2ATools, type A2AContext } from './tools/a2a.js';
@@ -299,6 +300,7 @@ export class AgentManager {
   private dataDir: string;
   private sharedDataDir?: string;
   private mcpManager: MCPClientManager;
+  private mcpPool?: MCPPool;
   private browserSessionManager: BrowserSessionManager;
   private remoteDebuggingPort = 0;
   private globalSecurityPolicy?: SecurityPolicy;
@@ -586,6 +588,27 @@ export class AgentManager {
   }
 
   /**
+   * Initialize the MCP process pool for chrome-devtools.
+   * Must be called after setBrowserRemoteDebuggingPort so --browserUrl is used.
+   */
+  async initMcpPool(opts: { minSize?: number; maxSize?: number; shrinkAfterMs?: number }, serverConfig: { command: string; args?: string[]; env?: Record<string, string> }): Promise<void> {
+    const enriched = this.enrichChromeDevtoolsConfig('chrome-devtools', serverConfig);
+    const poolConfig: MCPPoolConfig = {
+      minSize: opts.minSize ?? 3,
+      maxSize: opts.maxSize ?? 0,
+      shrinkAfterMs: opts.shrinkAfterMs ?? 300_000,
+      serverConfig: enriched,
+    };
+    this.mcpPool = new MCPPool(poolConfig);
+    await this.mcpPool.warmUp();
+    log.info('MCP pool initialized', { minSize: poolConfig.minSize, maxSize: poolConfig.maxSize });
+  }
+
+  getMcpPool(): MCPPool | undefined {
+    return this.mcpPool;
+  }
+
+  /**
    * When remoteDebuggingPort is configured, replace --autoConnect with
    * --browserUrl so that the chrome-devtools MCP server reuses a persistent
    * debugging connection instead of requesting a new permission each time.
@@ -860,12 +883,15 @@ export class AgentManager {
       for (const skillName of config.skills) {
         const skill = this.skillRegistry.get(skillName);
         if (skill?.manifest.mcpServers) {
-          const isolated = skill.manifest.isolation === 'per-agent';
+          const isolation = skill.manifest.isolation ?? 'shared';
           for (const [serverName, rawServerConfig] of Object.entries(skill.manifest.mcpServers)) {
             try {
-              const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
               let mcpTools: AgentToolHandler[];
-              if (isolated) {
+              if (isolation === 'pooled' && this.mcpPool) {
+                mcpTools = this.mcpPool.getToolHandlers(id, serverName);
+                mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, id);
+              } else if (isolation === 'per-agent' || (isolation === 'pooled' && !this.mcpPool)) {
+                const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
                 await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                 mcpTools = this.mcpManager.getToolHandlersScoped(serverName, id);
                 mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, id);
@@ -874,6 +900,7 @@ export class AgentManager {
                   await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                 });
               } else {
+                const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
                 await this.mcpManager.connectServer(serverName, serverConfig);
                 mcpTools = this.mcpManager.getToolHandlers(serverName);
               }
@@ -884,7 +911,7 @@ export class AgentManager {
               }
               agent.activateTools(toolNames);
               log.info(`Skill ${skillName} MCP server ${serverName} connected for agent ${id}`, {
-                toolCount: mcpTools.length, isolated,
+                toolCount: mcpTools.length, isolation,
               });
             } catch (error) {
               log.warn(`Failed to connect skill ${skillName} MCP server ${serverName} for agent ${id}`, {
@@ -900,18 +927,21 @@ export class AgentManager {
     agent.setSkillMcpActivator(async (skillName, mcpServers) => {
       let tools: AgentToolHandler[] = [];
       const skill = this.skillRegistry?.get(skillName);
-      const isolated = skill?.manifest.isolation === 'per-agent';
+      const isolation = skill?.manifest.isolation ?? 'shared';
       for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
-        const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
-        if (isolated) {
+        if (isolation === 'pooled' && this.mcpPool) {
+          tools.push(...this.mcpPool.getToolHandlers(id, serverName));
+        } else if (isolation === 'per-agent' || (isolation === 'pooled' && !this.mcpPool)) {
+          const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
           await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
           tools.push(...this.mcpManager.getToolHandlersScoped(serverName, id));
         } else {
+          const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
           await this.mcpManager.connectServer(serverName, srvConfig);
           tools.push(...this.mcpManager.getToolHandlers(serverName));
         }
       }
-      if (isolated) {
+      if (isolation === 'per-agent' || (isolation === 'pooled' && !this.mcpPool)) {
         tools = this.browserSessionManager.wrapToolHandlers(tools, id);
         for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
           const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
@@ -920,6 +950,8 @@ export class AgentManager {
             await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
           });
         }
+      } else if (isolation === 'pooled' && this.mcpPool) {
+        tools = this.browserSessionManager.wrapToolHandlers(tools, id);
       }
       return tools;
     });
@@ -1550,13 +1582,16 @@ export class AgentManager {
       for (const skillName of config.skills) {
         const skill = this.skillRegistry.get(skillName);
         if (skill?.manifest.mcpServers) {
-          const isolated = skill.manifest.isolation === 'per-agent';
+          const isolation = skill.manifest.isolation ?? 'shared';
           for (const [serverName, rawServerConfig] of Object.entries(skill.manifest.mcpServers)) {
             mcpConnections.push((async () => {
               try {
-                const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
                 let mcpTools: AgentToolHandler[];
-                if (isolated) {
+                if (isolation === 'pooled' && this.mcpPool) {
+                  mcpTools = this.mcpPool.getToolHandlers(id, serverName);
+                  mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, id);
+                } else if (isolation === 'per-agent' || (isolation === 'pooled' && !this.mcpPool)) {
+                  const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
                   await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                   mcpTools = this.mcpManager.getToolHandlersScoped(serverName, id);
                   mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, id);
@@ -1565,6 +1600,7 @@ export class AgentManager {
                     await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                   });
                 } else {
+                  const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
                   await this.mcpManager.connectServer(serverName, serverConfig);
                   mcpTools = this.mcpManager.getToolHandlers(serverName);
                 }
@@ -1575,7 +1611,7 @@ export class AgentManager {
                 }
                 agent.activateTools(toolNames);
                 log.info(`Skill ${skillName} MCP server ${serverName} restored for agent ${id}`, {
-                  toolCount: mcpTools.length, isolated,
+                  toolCount: mcpTools.length, isolation,
                 });
               } catch (error) {
                 log.warn(`Failed to restore skill ${skillName} MCP server ${serverName} for agent ${id}`, {
@@ -1593,18 +1629,21 @@ export class AgentManager {
     agent.setSkillMcpActivator(async (skillName, mcpServers) => {
       let tools: AgentToolHandler[] = [];
       const skill = this.skillRegistry?.get(skillName);
-      const isolated = skill?.manifest.isolation === 'per-agent';
+      const isolation = skill?.manifest.isolation ?? 'shared';
       for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
-        const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
-        if (isolated) {
+        if (isolation === 'pooled' && this.mcpPool) {
+          tools.push(...this.mcpPool.getToolHandlers(id, serverName));
+        } else if (isolation === 'per-agent' || (isolation === 'pooled' && !this.mcpPool)) {
+          const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
           await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
           tools.push(...this.mcpManager.getToolHandlersScoped(serverName, id));
         } else {
+          const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
           await this.mcpManager.connectServer(serverName, srvConfig);
           tools.push(...this.mcpManager.getToolHandlers(serverName));
         }
       }
-      if (isolated) {
+      if (isolation === 'per-agent' || (isolation === 'pooled' && !this.mcpPool)) {
         tools = this.browserSessionManager.wrapToolHandlers(tools, id);
         for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
           const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
@@ -1613,6 +1652,8 @@ export class AgentManager {
             await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
           });
         }
+      } else if (isolation === 'pooled' && this.mcpPool) {
+        tools = this.browserSessionManager.wrapToolHandlers(tools, id);
       }
       return tools;
     });
@@ -2201,8 +2242,13 @@ export class AgentManager {
     const timer = setTimeout(() => {
       this.mcpReleaseTimers.delete(agentId);
       this.browserSessionManager.cleanupAgent(agentId);
-      this.mcpManager.disconnectAllForScope(agentId).catch(() => {});
-      log.info(`Released scoped MCP processes for idle agent: ${agentId}`);
+      if (this.mcpPool?.isAgentLeased(agentId)) {
+        this.mcpPool.release(agentId);
+        log.info(`Released pooled MCP process for idle agent: ${agentId}`);
+      } else {
+        this.mcpManager.disconnectAllForScope(agentId).catch(() => {});
+        log.info(`Released scoped MCP processes for idle agent: ${agentId}`);
+      }
     }, AgentManager.MCP_IDLE_GRACE_MS);
     timer.unref();
     this.mcpReleaseTimers.set(agentId, timer);
@@ -2559,6 +2605,9 @@ export class AgentManager {
       try {
         await agent.stop();
       } catch { /* best effort */ }
+    }
+    if (this.mcpPool) {
+      await this.mcpPool.shutdown();
     }
     await this.mcpManager.disconnectAll();
     log.info('AgentManager shutdown complete — all metrics flushed');
