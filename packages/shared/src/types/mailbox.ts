@@ -138,6 +138,7 @@ export type DecisionType =
   | 'merge'
   | 'delegate'
   | 'drop'
+  | 'complete'
   | 'triage';
 
 // ─── Triage Types ──────────────────────────────────────────────────────────
@@ -154,6 +155,7 @@ export interface TriageResult {
   processItemId: string;
   deferItemIds: string[];
   dropItemIds: string[];
+  inlineCompletedIds?: string[];
   reasoning: string;
 }
 
@@ -218,6 +220,7 @@ export interface AgentMindState {
     processedItemId: string;
     deferredItemIds: string[];
     droppedItemIds: string[];
+    inlineCompletedIds: string[];
     timestamp: string;
   };
 }

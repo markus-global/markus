@@ -346,6 +346,7 @@
       "processingItem": "Processing: {{id}}…",
       "deferred": "Deferred: {{count}}",
       "dropped": "Dropped: {{count}}",
+      "inlineCompleted": "Inline Completed: {{count}}",
       "mailboxHistory": "Mailbox History",
       "noHistory": "No mailbox history yet",
       "loadEarlier": "Load Earlier...",

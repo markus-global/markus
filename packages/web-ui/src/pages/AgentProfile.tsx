@@ -2062,6 +2062,9 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
             {mind.lastTriage.droppedItemIds.length > 0 && (
               <span className="px-1.5 py-0.5 rounded bg-red-500/10 text-red-400">{t('agent:profilePage.mind.dropped', { count: mind.lastTriage.droppedItemIds.length })}</span>
             )}
+            {(mind.lastTriage.inlineCompletedIds?.length ?? 0) > 0 && (
+              <span className="px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">{t('agent:profilePage.mind.inlineCompleted', { count: mind.lastTriage.inlineCompletedIds!.length })}</span>
+            )}
           </div>
         </section>
       )}

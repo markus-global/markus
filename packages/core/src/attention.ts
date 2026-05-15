@@ -1020,14 +1020,14 @@ export class AttentionController {
       return false;
     };
 
-    // Mark inline-completed items
+    // Mark inline-completed items (these were handled during deliberation, NOT discarded)
     for (const completedId of result.inlineCompletedIds) {
       if (isProtected(completedId)) continue;
       if (completedId === currentItem.id) continue;
       const completedItem = queueSnapshot.find(i => i.id === completedId);
-      this.mailbox.drop(completedId);
+      this.mailbox.complete(completedId);
       if (completedItem) {
-        this.recordDecision('drop', completedItem, 'Handled inline during deliberation');
+        this.recordDecision('complete', completedItem, 'Handled inline during deliberation');
       }
     }
 
@@ -1057,7 +1057,8 @@ export class AttentionController {
     const triageEquivalent: TriageResult = {
       processItemId: result.processItemId,
       deferItemIds: result.deferItemIds,
-      dropItemIds: [...result.dropItemIds, ...result.inlineCompletedIds],
+      dropItemIds: result.dropItemIds,
+      inlineCompletedIds: result.inlineCompletedIds,
       reasoning: result.reasoning,
     };
     this.lastTriageResult = { ...triageEquivalent, timestamp: new Date().toISOString() };
@@ -1218,6 +1219,7 @@ export class AttentionController {
         processedItemId: this.lastTriageResult.processItemId,
         deferredItemIds: this.lastTriageResult.deferItemIds,
         droppedItemIds: this.lastTriageResult.dropItemIds,
+        inlineCompletedIds: this.lastTriageResult.inlineCompletedIds ?? [],
         timestamp: this.lastTriageResult.timestamp,
       } : undefined,
     };

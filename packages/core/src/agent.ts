@@ -1966,6 +1966,10 @@ export class Agent {
 
     this.pendingDeliberationResult = undefined;
 
+    // Link deliberation activity to head item so it appears in mailbox history
+    const prevMailboxItemId = this.processingMailboxItemId;
+    this.processingMailboxItemId = headItem.id;
+
     try {
       const allowedTools = new Set(DELIBERATION_ALLOWED_TOOLS as unknown as string[]);
       await this.handleMessage(
@@ -1989,6 +1993,23 @@ export class Agent {
           deferred: result.deferItemIds.length,
           dropped: result.dropItemIds.length,
         });
+
+        // Create brief activity records for inline-completed items so they are
+        // visible in the mailbox history (the actual tool calls are in the
+        // deliberation activity linked to the head item).
+        for (const completedId of result.inlineCompletedIds) {
+          const completedItem = allItems.find(i => i.id === completedId);
+          if (!completedItem) continue;
+          const inlineActId = this.startActivity('inline_deliberation',
+            `Handled inline: ${completedItem.payload.summary.slice(0, 80)}`,
+            { mailboxItemId: completedId },
+          );
+          this.emitActivityLog(inlineActId, 'text',
+            `This item was handled inline during deliberation. Reasoning: ${result.reasoning}`,
+          );
+          this.endActivity(inlineActId);
+        }
+
         return result;
       }
 
@@ -1997,6 +2018,8 @@ export class Agent {
     } catch (err) {
       log.warn('Deliberation failed', { agentId: this.id, error: String(err) });
       return null;
+    } finally {
+      this.processingMailboxItemId = prevMailboxItemId;
     }
   }
 
@@ -4419,6 +4442,7 @@ export class Agent {
               continue;
             }
             emit('tool_start', tc.name, { arguments: tc.arguments });
+            this.emitActivityLog(actId, 'tool_start', tc.name, { arguments: tc.arguments });
             const toolStart = Date.now();
             try {
               let result = await this.executeTool(tc, undefined, sessionId);
@@ -4426,11 +4450,13 @@ export class Agent {
               const isErr = isErrorResult(result);
               const durationMs = Date.now() - toolStart;
               emit('tool_end', tc.name, { success: !isErr, durationMs, arguments: tc.arguments, result });
+              this.emitActivityLog(actId, 'tool_end', tc.name, { durationMs, success: !isErr, arguments: tc.arguments, result });
               this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: !isErr });
               this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
             } catch (toolErr) {
               const durationMs = Date.now() - toolStart;
               emit('tool_end', tc.name, { success: false, durationMs, arguments: tc.arguments, error: String(toolErr) });
+              this.emitActivityLog(actId, 'tool_end', tc.name, { durationMs, success: false, arguments: tc.arguments, error: String(toolErr) });
               this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: false });
               this.memory.appendMessage(sessionId, { role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
             }
@@ -4466,6 +4492,9 @@ export class Agent {
       flushText();
       const rawReply = sanitizeLLMReply(response.content);
       const displayReply = stripCompletionMarker(rawReply);
+      if (displayReply.trim()) {
+        this.emitActivityLog(actId, 'text', displayReply);
+      }
       this.memory.appendMessage(sessionId, { role: 'assistant', content: displayReply, reasoningContent: response.reasoningContent });
       return rawReply;
     } catch (error) {
