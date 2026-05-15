@@ -70,6 +70,21 @@ interface ChatMsg {
   mailboxItemId?: string;
   taskId?: string;
   requirementId?: string;
+  /** Proactive notification from agent */
+  isNotification?: boolean;
+  notifyPriority?: string;
+}
+
+const NOTIFY_CONTEXT_RE = /\n*<!-- notify_context:.*?-->/g;
+
+function stripNotifyContext(text: string): { cleaned: string; priority?: string } {
+  const match = text.match(/<!-- notify_context:([^>]*?)-->/);
+  let priority: string | undefined;
+  if (match) {
+    const priMatch = match[1].match(/priority=(\w+)/);
+    if (priMatch) priority = priMatch[1];
+  }
+  return { cleaned: text.replace(NOTIFY_CONTEXT_RE, '').trimEnd(), priority };
 }
 
 type ChatMode = 'channel' | 'direct' | 'dm';
@@ -102,8 +117,17 @@ function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
     base.images = m.metadata.images;
   }
   if (m.metadata?.notifyUser) {
+    base.isNotification = true;
+    base.notifyPriority = (m.metadata as Record<string, unknown>).priority as string | undefined;
     if (m.metadata.taskId) base.taskId = m.metadata.taskId;
     if (m.metadata.requirementId) base.requirementId = m.metadata.requirementId;
+  }
+  // Strip embedded notify_context HTML comments from display
+  if (base.text.includes('<!-- notify_context:')) {
+    const { cleaned, priority } = stripNotifyContext(base.text);
+    base.text = cleaned;
+    if (priority && !base.notifyPriority) base.notifyPriority = priority;
+    base.isNotification = true;
   }
   if (m.metadata?.activityLog) {
     base.isActivityLog = true;
@@ -169,6 +193,23 @@ function channelMsgToChat(m: ChannelMessageInfo, authUserId?: string): ChatMsg {
 
 function agentInitials(name: string) {
   return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+}
+
+function NotificationBadge({ priority }: { priority?: string }) {
+  const isHigh = priority === 'high' || priority === 'critical';
+  return (
+    <div className={`inline-flex items-center gap-1 mt-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium ${
+      isHigh
+        ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20'
+        : 'bg-brand-500/10 text-brand-400 border border-brand-500/20'
+    }`}>
+      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+      </svg>
+      <span>Notification{priority && priority !== 'normal' ? ` · ${priority}` : ''}</span>
+    </div>
+  );
 }
 
 function ChatAgentLink({ name, agentId, agents, onViewProfile }: { name: string; agentId?: string; agents: AgentInfo[]; onViewProfile?: (agentId: string) => void }) {
@@ -1597,15 +1638,20 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
       const isActivity = !!meta.activityLog || message.startsWith('[ACTIVITY:');
 
+      // Strip notify_context HTML comments from real-time messages
+      const { cleaned: displayMessage, priority: parsedPriority } = stripNotifyContext(message);
+      const isNotify = !!meta.notifyUser || displayMessage !== message;
+
       // Always buffer the message for this agent's conversation so it's
       // visible when the user switches to that agent (not just when already viewing)
       const newMsg: ChatMsg = {
         id: `proactive_${Date.now()}`,
         sender: 'agent',
-        text: message,
+        text: displayMessage,
         time: new Date().toLocaleTimeString(),
         agentName,
         agentId,
+        ...(isNotify ? { isNotification: true, notifyPriority: (meta.priority as string) ?? parsedPriority } : {}),
         ...(isActivity ? {
           isActivityLog: true,
           activityType: meta.activityType as string | undefined,
@@ -3212,6 +3258,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                             {renderMentionText(msg.text, agents)}
                           </div>
                       }
+                      {msg.isNotification && (
+                        <NotificationBadge priority={msg.notifyPriority} />
+                      )}
                     </div>
                     <div className={`transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'}`}>
                       <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onResume={handleResume} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
@@ -3292,6 +3341,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                               })}
                             />
                         }
+                        {msg.isNotification && (
+                          <NotificationBadge priority={msg.notifyPriority} />
+                        )}
                       </div>
                       {showActions && (
                         <div className={`transition-opacity ${msg.isStopped || isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'}`}>
