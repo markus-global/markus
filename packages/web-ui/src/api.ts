@@ -54,7 +54,7 @@ export interface ChatMessageInfo {
   agentId: string;
   role: string;
   content: string;
-  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string } | null;
+  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean } | null;
   tokensUsed: number;
   createdAt: string;
 }
