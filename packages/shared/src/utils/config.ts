@@ -65,7 +65,9 @@ export interface MarkusConfig {
   browser?: {
     /** Bring Chrome tabs/windows to foreground when agent navigates (default: false) */
     bringToFront?: boolean;
-    /** Remote debugging port for persistent Chrome connection (avoids repeated permission dialogs). Set to e.g. 9222 to enable. */
+    /** Connection mode: 'dedicated' auto-launches a Chrome instance (no permission dialogs); 'autoConnect' uses the user's running Chrome (dialogs required). Default: 'dedicated' */
+    connectionMode?: 'dedicated' | 'autoConnect';
+    /** Remote debugging port for dedicated mode (default: 9222). Rarely needs changing. */
     remoteDebuggingPort?: number;
     /** Automatically close agent-owned tabs when the task completes (default: true) */
     autoCloseTabs?: boolean;

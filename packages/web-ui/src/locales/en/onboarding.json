@@ -90,6 +90,16 @@
       "saveFailed": "Failed to save profile. Please try again."
     }
   },
+  "browser": {
+    "title": "Browser Automation",
+    "subtitle": "Agents use Chrome to browse websites, test apps, and inspect pages",
+    "checking": "Checking Chrome installation...",
+    "installed": "Chrome Detected",
+    "installedDesc": "Browser automation is ready. Agents will use a dedicated Chrome instance with zero permission dialogs.",
+    "notInstalled": "Chrome Not Found",
+    "notInstalledDesc": "Browser automation requires Google Chrome. Install it to enable agents to browse, test web apps, and take screenshots. You can still use Markus without it — just skip this step.",
+    "downloadChrome": "Download Chrome"
+  },
   "done": {
     "title": "You're All Set",
     "subtitle": "Start building your AI workforce",

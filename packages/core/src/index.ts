@@ -1,5 +1,6 @@
 export { Agent } from './agent.js';
 export type { AgentToolHandler, ApprovalCallback, TaskProjectContext } from './agent.js';
+export { ChromeLauncher, detectChromePath, isChromeInstalled } from './tools/chrome-launcher.js';
 export { ToolHookRegistry, auditLogHook, generateIdempotencyKey } from './tool-hooks.js';
 export type { ToolHook, ToolHookContext, BeforeToolResult, AfterToolResult } from './tool-hooks.js';
 export { startSpan, trace, setTracingProvider } from './tracing.js';

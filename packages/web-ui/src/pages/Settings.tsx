@@ -103,7 +103,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   // Browser automation settings
   const [browserBringToFront, setBrowserBringToFront] = useState(false);
-  const [browserRemotePort, setBrowserRemotePort] = useState(0);
+  const [browserConnectionMode, setBrowserConnectionMode] = useState<'dedicated' | 'autoConnect'>('dedicated');
+  const [browserRemotePort, setBrowserRemotePort] = useState(9222);
   const [browserAutoClose, setBrowserAutoClose] = useState(true);
   const [browserPoolMinSize, setBrowserPoolMinSize] = useState(3);
   const [browserPoolShrinkMin, setBrowserPoolShrinkMin] = useState(5);
@@ -173,7 +174,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
       .then(d => {
         if (d) {
           setBrowserBringToFront(d.bringToFront ?? false);
-          setBrowserRemotePort(d.remoteDebuggingPort ?? 0);
+          setBrowserConnectionMode(d.connectionMode ?? 'dedicated');
+          setBrowserRemotePort(d.remoteDebuggingPort ?? 9222);
           setBrowserAutoClose(d.autoCloseTabs ?? true);
           setBrowserPoolMinSize(d.pool?.minSize ?? 3);
           setBrowserPoolShrinkMin(Math.round((d.pool?.shrinkAfterMs ?? 300000) / 60000));
@@ -1616,6 +1618,47 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
             <div className="text-xs text-fg-tertiary">
               {t('browserAutomation.description')}
+            </div>
+
+            {/* Connection Mode */}
+            <div>
+              <div className="text-sm font-medium text-fg-primary mb-2">{t('browserAutomation.connectionMode')}</div>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  disabled={browserSaving}
+                  onClick={async () => {
+                    if (browserConnectionMode === 'dedicated') return;
+                    setBrowserConnectionMode('dedicated');
+                    setBrowserSaving(true); setBrowserMsg(null);
+                    try {
+                      await api.settings.updateBrowser({ connectionMode: 'dedicated' });
+                      setBrowserMsg({ type: 'ok', text: t('browserAutomation.restartRequired') });
+                    } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); setBrowserConnectionMode('autoConnect'); }
+                    setBrowserSaving(false);
+                  }}
+                  className={`px-3 py-3 rounded-lg border text-left transition-colors ${browserConnectionMode === 'dedicated' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-fg-tertiary'} ${browserSaving ? 'opacity-50' : ''}`}
+                >
+                  <div className={`text-sm font-medium ${browserConnectionMode === 'dedicated' ? 'text-brand-500' : 'text-fg-primary'}`}>{t('browserAutomation.dedicatedMode')}</div>
+                  <div className="text-xs text-fg-tertiary mt-1">{t('browserAutomation.dedicatedModeDesc')}</div>
+                </button>
+                <button
+                  disabled={browserSaving}
+                  onClick={async () => {
+                    if (browserConnectionMode === 'autoConnect') return;
+                    setBrowserConnectionMode('autoConnect');
+                    setBrowserSaving(true); setBrowserMsg(null);
+                    try {
+                      await api.settings.updateBrowser({ connectionMode: 'autoConnect' });
+                      setBrowserMsg({ type: 'ok', text: t('browserAutomation.restartRequired') });
+                    } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); setBrowserConnectionMode('dedicated'); }
+                    setBrowserSaving(false);
+                  }}
+                  className={`px-3 py-3 rounded-lg border text-left transition-colors ${browserConnectionMode === 'autoConnect' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-fg-tertiary'} ${browserSaving ? 'opacity-50' : ''}`}
+                >
+                  <div className={`text-sm font-medium ${browserConnectionMode === 'autoConnect' ? 'text-brand-500' : 'text-fg-primary'}`}>{t('browserAutomation.autoConnectMode')}</div>
+                  <div className="text-xs text-fg-tertiary mt-1">{t('browserAutomation.autoConnectModeDesc')}</div>
+                </button>
+              </div>
             </div>
 
             {/* Bring to Front toggle */}

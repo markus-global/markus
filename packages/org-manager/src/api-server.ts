@@ -25,6 +25,7 @@ import {
   type HandbookProject,
   discoverSkillsInDir,
   WELL_KNOWN_SKILL_DIRS,
+  isChromeInstalled,
   type AgentManager,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
@@ -6852,13 +6853,20 @@ EXPLANATION_END`;
     }
 
     // Settings — Browser automation
+    if (path === '/api/settings/browser/check' && req.method === 'GET') {
+      const result = isChromeInstalled();
+      this.json(res, 200, { chromeInstalled: result.installed, chromePath: result.path });
+      return;
+    }
+
     if (path === '/api/settings/browser' && req.method === 'GET') {
       const { loadConfig: loadCfg } = await import('@markus/shared');
       const currentConfig = loadCfg(this.markusConfigPath);
       const browser = currentConfig.browser ?? {};
       this.json(res, 200, {
         bringToFront: browser.bringToFront ?? false,
-        remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
+        connectionMode: browser.connectionMode ?? 'dedicated',
+        remoteDebuggingPort: browser.remoteDebuggingPort ?? 9222,
         autoCloseTabs: browser.autoCloseTabs ?? true,
         pool: {
           minSize: browser.pool?.minSize ?? 3,
@@ -6875,6 +6883,7 @@ EXPLANATION_END`;
       const body = await this.readBody(req);
       const updates: Record<string, unknown> = {};
       if (typeof body['bringToFront'] === 'boolean') updates.bringToFront = body['bringToFront'];
+      if (body['connectionMode'] === 'dedicated' || body['connectionMode'] === 'autoConnect') updates.connectionMode = body['connectionMode'];
       if (typeof body['remoteDebuggingPort'] === 'number') updates.remoteDebuggingPort = body['remoteDebuggingPort'];
       if (typeof body['autoCloseTabs'] === 'boolean') updates.autoCloseTabs = body['autoCloseTabs'];
       if (body['pool'] && typeof body['pool'] === 'object') {
@@ -6916,7 +6925,8 @@ EXPLANATION_END`;
       const browser = currentConfig.browser ?? {};
       this.json(res, 200, {
         bringToFront: browser.bringToFront ?? false,
-        remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
+        connectionMode: browser.connectionMode ?? 'dedicated',
+        remoteDebuggingPort: browser.remoteDebuggingPort ?? 9222,
         autoCloseTabs: browser.autoCloseTabs ?? true,
         pool: {
           minSize: browser.pool?.minSize ?? 3,
@@ -9521,6 +9531,7 @@ EXPLANATION_END`;
       exact('/api/settings/llm/models', 'GET'),
       exact('/api/settings/agent', 'GET', 'POST'),
       exact('/api/settings/browser', 'GET', 'POST'),
+      exact('/api/settings/browser/check', 'GET'),
       exact('/api/settings/search', 'GET', 'POST'),
       exact('/api/settings/env-models', 'GET', 'POST'),
       exact('/api/settings/detect-ollama', 'GET'),

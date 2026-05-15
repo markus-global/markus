@@ -1164,9 +1164,10 @@ export const api = {
     getAgent: () => request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent'),
     updateAgent: (settings: { maxToolIterations?: number; cognitive?: { enabled?: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }) =>
       request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent', { method: 'POST', body: JSON.stringify(settings) }),
-    getBrowser: () => request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; pool?: { minSize?: number; maxSize?: number; shrinkAfterMs?: number } }>('/settings/browser'),
-    updateBrowser: (settings: { bringToFront?: boolean; remoteDebuggingPort?: number; autoCloseTabs?: boolean; pool?: { minSize?: number; maxSize?: number; shrinkAfterMs?: number } }) =>
-      request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; pool?: { minSize?: number; maxSize?: number; shrinkAfterMs?: number } }>('/settings/browser', { method: 'POST', body: JSON.stringify(settings) }),
+    getBrowser: () => request<{ bringToFront: boolean; connectionMode?: 'dedicated' | 'autoConnect'; remoteDebuggingPort: number; autoCloseTabs: boolean; pool?: { minSize?: number; maxSize?: number; shrinkAfterMs?: number } }>('/settings/browser'),
+    updateBrowser: (settings: { bringToFront?: boolean; connectionMode?: 'dedicated' | 'autoConnect'; remoteDebuggingPort?: number; autoCloseTabs?: boolean; pool?: { minSize?: number; maxSize?: number; shrinkAfterMs?: number } }) =>
+      request<{ bringToFront: boolean; connectionMode?: 'dedicated' | 'autoConnect'; remoteDebuggingPort: number; autoCloseTabs: boolean; pool?: { minSize?: number; maxSize?: number; shrinkAfterMs?: number } }>('/settings/browser', { method: 'POST', body: JSON.stringify(settings) }),
+    checkBrowser: () => request<{ chromeInstalled: boolean; chromePath?: string }>('/settings/browser/check'),
     getSearch: () => request<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search'),
     updateSearch: (keys: { serperApiKey?: string; braveApiKey?: string; bochaApiKey?: string }) =>
       request<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search', { method: 'POST', body: JSON.stringify(keys) }),
