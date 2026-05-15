@@ -68,11 +68,13 @@ export class MCPPool {
 
   async warmUp(): Promise<void> {
     const toSpawn = Math.max(0, this.config.minSize - this.entries.length);
-    const promises: Promise<void>[] = [];
-    for (let i = 0; i < toSpawn; i++) {
-      promises.push(this.spawnEntry().then(() => {}));
+    const results = await Promise.allSettled(
+      Array.from({ length: toSpawn }, () => this.spawnEntry())
+    );
+    const failed = results.filter(r => r.status === 'rejected').length;
+    if (failed > 0) {
+      log.warn(`MCPPool warmUp: ${failed}/${toSpawn} processes failed to start`);
     }
-    await Promise.all(promises);
     log.info(`MCPPool warmed up with ${this.entries.length} processes`);
   }
 

@@ -306,8 +306,8 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     agentManager.setBrowserRemoteDebuggingPort(config.browser.remoteDebuggingPort);
   }
 
-  // Initialize MCP process pool for chrome-devtools when remote debugging is configured
-  const poolEnabled = config.browser?.pool?.enabled !== false && (config.browser?.remoteDebuggingPort ?? 0) > 0;
+  // Initialize MCP process pool for chrome-devtools
+  const poolEnabled = config.browser?.pool?.enabled !== false;
   if (poolEnabled) {
     try {
       await agentManager.initMcpPool(

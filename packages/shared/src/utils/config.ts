@@ -71,7 +71,7 @@ export interface MarkusConfig {
     autoCloseTabs?: boolean;
     /** MCP process pool settings for chrome-devtools */
     pool?: {
-      /** Enable pool mode (default: true when remoteDebuggingPort is set) */
+      /** Enable pool mode (default: true) */
       enabled?: boolean;
       /** Minimum (hot-standby) processes to keep alive (default: 3) */
       minSize?: number;
