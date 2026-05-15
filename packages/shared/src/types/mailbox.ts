@@ -138,21 +138,34 @@ export type DecisionType =
   | 'merge'
   | 'delegate'
   | 'drop'
+  | 'complete'
   | 'triage';
 
 // ─── Triage Types ──────────────────────────────────────────────────────────
 
 export interface TriageContext {
   agentName: string;
+  agentRole?: string;
   recentMainSessionMessages: Array<{ role: string; content: string }>;
   recentActivitySummaries: string[];
+  activeTaskIds?: string[];
 }
 
 export interface TriageResult {
   processItemId: string;
   deferItemIds: string[];
   dropItemIds: string[];
+  inlineCompletedIds?: string[];
   reasoning: string;
+}
+
+export interface DeliberationResult {
+  processItemId: string;
+  deferItemIds: string[];
+  dropItemIds: string[];
+  inlineCompletedIds: string[];
+  reasoning: string;
+  situationalAwareness?: string;
 }
 
 export interface AttentionDecision {
@@ -207,6 +220,7 @@ export interface AgentMindState {
     processedItemId: string;
     deferredItemIds: string[];
     droppedItemIds: string[];
+    inlineCompletedIds: string[];
     timestamp: string;
   };
 }

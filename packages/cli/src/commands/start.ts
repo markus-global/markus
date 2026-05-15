@@ -743,13 +743,30 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         const sessionUserId = targetUserId || defaultSessionUserId;
         const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId, sessionUserId);
         const agent = agentManager.getAgent(agentId);
-        const formattedMsg = `**${title}**\n\n${body}`;
+        const contextParts: string[] = [];
+        if (taskId) contextParts.push(`task_id=${taskId}`);
+        if (requirementId) contextParts.push(`requirement_id=${requirementId}`);
+        if (priority && priority !== 'normal') contextParts.push(`priority=${priority}`);
+        const contextSuffix = contextParts.length > 0
+          ? `\n\n<!-- notify_context: ${contextParts.join(', ')} -->`
+          : '';
+        const formattedMsg = `**${title}**\n\n${body}${contextSuffix}`;
+        const msgMetadata: Record<string, unknown> = {
+          notifyUser: true,
+          priority: priority ?? 'normal',
+          ...(taskId ? { taskId } : {}),
+          ...(requirementId ? { requirementId } : {}),
+        };
         const msg = storage.chatSessionRepo.appendMessage(
-          mainSession.id, agentId, 'assistant', formattedMsg, 0, {},
+          mainSession.id, agentId, 'assistant', formattedMsg, 0, msgMetadata,
         );
         storage.chatSessionRepo.updateLastMessage(mainSession.id);
         ws.broadcastProactiveMessage(agentId, agent.config.name, mainSession.id, msg.id, formattedMsg, {
           isMainSession: true,
+          notifyUser: true,
+          priority: priority ?? 'normal',
+          taskId,
+          requirementId,
         }, sessionUserId);
         const hasTask = !!taskId;
         hitlService.notify({
@@ -1130,7 +1147,8 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
             } catch (e) { log.warn('Failed to persist decision', { id: decision.id, error: String(e) }); }
           },
         });
-        // Wire TriageJudge — uses the agent's configured LLM provider
+        // Wire TriageJudge — used as fallback when full-session deliberation
+        // (delegate.performDeliberation) is not triggered or returns null.
         const triageProvider = agent.config.llmConfig?.modelMode === 'custom'
           ? agent.config.llmConfig.primary : undefined;
         agent.getAttentionController().setTriageJudge(async (prompt: string) => {
@@ -1162,7 +1180,10 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
           return valid.includes(raw as DecisionType) ? (raw as DecisionType) : 'continue';
         });
 
-        // Wire triage chat function (for mini tool loop during triage)
+        // Wire triage chat function (fallback mini tool loop, used when
+        // performDeliberation is not available or deliberation is disabled).
+        // The attention controller prefers full-session deliberation via
+        // delegate.performDeliberation when available.
         agent.getAttentionController().setTriageChatFn(async (messages, tools) => {
           const llmTools = tools?.map(t => ({
             name: t.name,

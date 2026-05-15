@@ -317,16 +317,42 @@ export const TRIAGE_STALE_DROP_TYPES: readonly string[] = [
 ];
 
 /** Max tool-use iterations allowed during triage deliberation.
- *  Enough to gather context (task_list, task_get, etc.) but not enough
- *  to do real work. */
-export const TRIAGE_MAX_TOOL_ITERATIONS = 3;
+ *  6 rounds is sufficient for memory recall + task/requirement lookups
+ *  while remaining bounded. */
+export const TRIAGE_MAX_TOOL_ITERATIONS = 6;
 
 /** Read-only tools allowed during triage deliberation.
  *  These let the triage LLM understand current workload, task dependencies,
- *  and team state before deciding priority. */
+ *  team state, and episodic memory before deciding priority. */
 export const TRIAGE_ALLOWED_TOOLS: readonly string[] = [
   'task_list', 'task_get', 'requirement_list', 'requirement_get',
   'list_projects', 'team_list',
+  'recall_activity', 'memory_search', 'memory_search_longterm',
+];
+
+// ─── Deliberation (Full-Session Triage) Limits ──────────────────────────────
+// These control the full-session deliberation mode that replaces the mini triage
+// loop when deep reasoning is needed.
+
+/** Max tool-use iterations allowed during full-session deliberation.
+ *  10 rounds allows memory recall, multi-entity lookups, inline handling of
+ *  simple items, and final decision output. */
+export const DELIBERATION_MAX_TOOL_ITERATIONS = 10;
+
+/** Tools allowed during deliberation. Includes read-only context tools plus
+ *  lightweight communication tools for inline handling of simple items.
+ *  Excludes task creation, code execution, and other heavy side-effect tools. */
+export const DELIBERATION_ALLOWED_TOOLS: readonly string[] = [
+  // Context gathering (read-only)
+  'task_list', 'task_get', 'requirement_list', 'requirement_get',
+  'list_projects', 'team_list', 'team_status',
+  'recall_activity', 'memory_search', 'memory_search_longterm',
+  // Inline action (lightweight communication)
+  'notify_user', 'task_comment', 'requirement_comment',
+  'agent_send_message', 'agent_send_group_message',
+  'agent_create_group_chat', 'agent_list_group_chats',
+  // Decision output
+  'complete_deliberation',
 ];
 
 // ─── Subagent Limits ────────────────────────────────────────────────────────
@@ -370,6 +396,17 @@ export const SHELL_TIMEOUT_DEFAULT_MS = 60_000;
  *  5 minutes caps even explicitly requested long-running operations.
  *  Prevents commands from hanging indefinitely (e.g. interactive git rebase). */
 export const SHELL_TIMEOUT_MAX_MS = 300_000;
+
+/** Maximum concurrent persistent shell sessions per agent. */
+export const SHELL_MAX_SESSIONS_PER_AGENT = 3;
+
+/** Idle timeout (ms) before a persistent shell session is reaped.
+ *  10 minutes of no activity → session is killed and removed. */
+export const SHELL_SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;
+
+/** Output buffer cap (bytes) per persistent shell session. Oldest output is
+ *  discarded when exceeded to prevent unbounded memory growth. */
+export const SHELL_SESSION_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 
 // ─── Human-Approval Wait ─────────────────────────────────────────────────────
 

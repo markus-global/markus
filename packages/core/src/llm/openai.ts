@@ -1,4 +1,4 @@
-import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent } from '@markus/shared';
+import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent, sanitizeForLLM } from '@markus/shared';
 import type { LLMProviderInterface } from './provider.js';
 
 interface OpenAIMessage {
@@ -129,7 +129,7 @@ export class OpenAIProvider implements LLMProviderInterface {
       if (m.role === 'tool') {
         return {
           role: 'tool' as const,
-          content: getTextContent(m.content),
+          content: sanitizeForLLM(getTextContent(m.content)),
           tool_call_id: m.toolCallId ?? '',
         };
       }

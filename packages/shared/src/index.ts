@@ -19,3 +19,4 @@ export * from './models.js';
 export * from './version.js';
 export * from './update-checker.js';
 export * from './limits.js';
+export * from './sanitize.js';

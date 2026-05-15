@@ -1810,7 +1810,7 @@ function TaskDetailPanel({
   const assignedAgent = agents.find(a => a.id === task.assignedAgentId);
 
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-surface-primary shadow-xl shadow-black/8 ring-1 ring-border-default/20">
+    <div className="flex flex-col w-full h-full overflow-hidden bg-surface-primary shadow-xl shadow-black/8 ring-1 ring-border-default/20">
       {/* Header – status, title & close */}
       <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-3 border-b border-border-default shrink-0">
         <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -2266,7 +2266,7 @@ function TaskDetailPanel({
         {scrollState !== 'none' && scrollState !== 'top' && (
           <button
             onClick={() => scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
-            className="absolute bottom-20 right-4 md:bottom-14 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
+            className="absolute bottom-36 right-4 md:bottom-28 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
             title={t('work:task.scrollToTop')}
           >
             <svg className="w-6 h-6 md:w-4 md:h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M14.77 12.79a.75.75 0 01-1.06-.02L10 8.832l-3.71 3.938a.75.75 0 11-1.08-1.04l4.25-4.5a.75.75 0 011.08 0l4.25 4.5a.75.75 0 01-.02 1.06z" clipRule="evenodd" /></svg>
@@ -2275,7 +2275,7 @@ function TaskDetailPanel({
         {scrollState !== 'none' && scrollState !== 'bottom' && (
           <button
             onClick={() => { const el = scrollContainerRef.current; if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }}
-            className="absolute bottom-6 right-4 md:bottom-4 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
+            className="absolute bottom-22 right-4 md:bottom-18 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
             title={t('work:task.scrollToBottom')}
           >
             <svg className="w-6 h-6 md:w-4 md:h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
@@ -4934,7 +4934,7 @@ function RequirementDetailPanel({
   useEffect(() => { setDescDraft(req.description); setEditingDesc(false); }, [req.id, req.description]);
 
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-surface-primary shadow-xl shadow-black/8 ring-1 ring-border-default/20">
+    <div className="flex flex-col w-full h-full overflow-hidden bg-surface-primary shadow-xl shadow-black/8 ring-1 ring-border-default/20">
       {/* Header */}
       <div className="flex items-start justify-between gap-4 p-5 pb-0 border-b border-border-default">
         <div className="flex items-center gap-2 flex-1 min-w-0">

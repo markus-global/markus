@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process';
 import { resolve, normalize, sep } from 'node:path';
-import { SHELL_TIMEOUT_DEFAULT_MS, SHELL_TIMEOUT_MAX_MS, type PathAccessPolicy } from '@markus/shared';
+import { SHELL_TIMEOUT_DEFAULT_MS, SHELL_TIMEOUT_MAX_MS, sanitizeForLLM, type PathAccessPolicy } from '@markus/shared';
 import type { AgentToolHandler, ToolOutputCallback } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
+import { getShellSessionManager } from './shell-session.js';
 
 export interface ShellAgentMeta {
   agentId: string;
@@ -107,6 +108,10 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
           type: 'number',
           description: `Timeout in milliseconds (default: ${SHELL_TIMEOUT_DEFAULT_MS}, max: ${SHELL_TIMEOUT_MAX_MS})`,
         },
+        session_id: {
+          type: 'string',
+          description: 'Reuse a persistent shell session by name. State (cwd, env vars, shell variables) persists across calls with the same session_id. Omit to use the default session.',
+        },
       },
       required: ['command'],
     },
@@ -170,13 +175,56 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
       }
 
       const finalCommand = injectGitCommitMeta(command, agentMeta);
+      const sessionId = args['session_id'] as string | undefined;
 
+      // ── Persistent session path ──────────────────────────────────────
+      // When an agentId is available, route through the session manager.
+      // This keeps shell state (cwd, env) across calls.
+      if (agentMeta?.agentId) {
+        try {
+          const mgr = getShellSessionManager();
+          const result = await mgr.execute(agentMeta.agentId, finalCommand, {
+            sessionId: sessionId ? `${agentMeta.agentId}:${sessionId}` : undefined,
+            cwd: effectiveCwd ?? undefined,
+            timeoutMs,
+            onOutput: onOutput ? (chunk) => onOutput(sanitizeForLLM(chunk)) : undefined,
+          });
+
+          const stdout = sanitizeForLLM(result.stdout);
+          if (result.exitCode !== 0) {
+            return JSON.stringify({
+              status: 'error',
+              error: `Process exited with code ${result.exitCode}`,
+              exitCode: result.exitCode,
+              stdout: stdout.slice(0, 4000),
+            });
+          }
+          return JSON.stringify({
+            status: 'success',
+            stdout: stdout.trim() || undefined,
+          });
+        } catch {
+          // Fall through to one-shot spawn if session manager fails
+        }
+      }
+
+      // ── One-shot spawn fallback ──────────────────────────────────────
       return new Promise<string>((resolve) => {
+        let settled = false;
+        const settle = (result: string) => {
+          if (settled) return;
+          settled = true;
+          resolve(result);
+        };
+
         const child = spawn('sh', ['-c', finalCommand], {
           cwd: effectiveCwd ?? undefined,
           stdio: ['ignore', 'pipe', 'pipe'],
+          detached: true,
           env: { ...process.env },
         });
+        // Don't let the detached child prevent Node from exiting
+        child.unref();
 
         let stdout = '';
         let stderr = '';
@@ -185,8 +233,23 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
 
         const timeout = setTimeout(() => {
           killed = true;
-          child.kill('SIGTERM');
-          setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 2000);
+          // Kill the entire process group (shell + any children it spawned)
+          try { process.kill(-child.pid!, 'SIGTERM'); } catch { /* already dead */ }
+          setTimeout(() => {
+            try { process.kill(-child.pid!, 'SIGKILL'); } catch { /* already dead */ }
+            // Force-destroy stdio streams so the `close` event fires even when
+            // grandchild processes still hold inherited pipe file descriptors.
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            // Guarantee the promise settles even if `close` never fires.
+            settle(JSON.stringify({
+              status: 'error',
+              error: `Command timed out after ${timeoutMs}ms`,
+              exitCode: null,
+              stdout: sanitizeForLLM(stdout).slice(0, 4000),
+              stderr: sanitizeForLLM(stderr).slice(0, 4000),
+            }));
+          }, 2000);
         }, timeoutMs);
 
         // Throttle streaming output to avoid flooding the SSE connection
@@ -226,27 +289,30 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
           clearTimeout(timeout);
           if (flushTimer) { clearTimeout(flushTimer); flushOutput(); }
 
+          const cleanOut = sanitizeForLLM(stdout);
+          const cleanErr = sanitizeForLLM(stderr);
+
           if (killed) {
-            resolve(JSON.stringify({
+            settle(JSON.stringify({
               status: 'error',
               error: `Command timed out after ${timeoutMs}ms`,
               exitCode: code,
-              stdout: stdout.slice(0, 4000),
-              stderr: stderr.slice(0, 4000),
+              stdout: cleanOut.slice(0, 4000),
+              stderr: cleanErr.slice(0, 4000),
             }));
           } else if (code !== 0) {
-            resolve(JSON.stringify({
+            settle(JSON.stringify({
               status: 'error',
-              error: stderr.trim() || `Process exited with code ${code}`,
+              error: cleanErr.trim() || `Process exited with code ${code}`,
               exitCode: code,
-              stdout: stdout.slice(0, 4000),
-              stderr: stderr.slice(0, 4000),
+              stdout: cleanOut.slice(0, 4000),
+              stderr: cleanErr.slice(0, 4000),
             }));
           } else {
-            resolve(JSON.stringify({
+            settle(JSON.stringify({
               status: 'success',
-              stdout: stdout.trim() || undefined,
-              stderr: stderr.trim() || undefined,
+              stdout: cleanOut.trim() || undefined,
+              stderr: cleanErr.trim() || undefined,
             }));
           }
         });
@@ -254,11 +320,11 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
         child.on('error', (err) => {
           clearTimeout(timeout);
           if (flushTimer) { clearTimeout(flushTimer); flushOutput(); }
-          resolve(JSON.stringify({
+          settle(JSON.stringify({
             status: 'error',
             error: err.message,
-            stdout: stdout.slice(0, 4000),
-            stderr: stderr.slice(0, 4000),
+            stdout: sanitizeForLLM(stdout).slice(0, 4000),
+            stderr: sanitizeForLLM(stderr).slice(0, 4000),
           }));
         });
       });

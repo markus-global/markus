@@ -346,6 +346,7 @@
       "processingItem": "处理中：{{id}}…",
       "deferred": "已推迟：{{count}}",
       "dropped": "已丢弃：{{count}}",
+      "inlineCompleted": "内联完成：{{count}}",
       "mailboxHistory": "邮箱历史",
       "noHistory": "暂无邮箱历史",
       "loadEarlier": "加载更早…",

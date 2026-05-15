@@ -1,4 +1,4 @@
-import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent } from '@markus/shared';
+import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent, sanitizeForLLM } from '@markus/shared';
 import type { LLMProviderInterface } from './provider.js';
 
 type GeminiPart =
@@ -233,7 +233,7 @@ export class GoogleProvider implements LLMProviderInterface {
           parts: [{
             functionResponse: {
               name: msg.toolCallId ?? 'unknown',
-              response: { result: getTextContent(msg.content) },
+              response: { result: sanitizeForLLM(getTextContent(msg.content)) },
             },
           }],
         });

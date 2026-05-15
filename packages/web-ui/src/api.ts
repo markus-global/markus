@@ -395,6 +395,7 @@ export interface AgentMindState {
     processedItemId: string;
     deferredItemIds: string[];
     droppedItemIds: string[];
+    inlineCompletedIds?: string[];
     timestamp: string;
   };
 }

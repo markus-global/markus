@@ -11,6 +11,7 @@ import {
   type AgentMindState,
   type TriageContext,
   type TriageResult,
+  type DeliberationResult,
   MailboxPriorityLevel,
   MAILBOX_TYPE_REGISTRY,
   MAILBOX_ITEM_MAX_RETRIES,
@@ -92,6 +93,9 @@ export interface AttentionDelegate {
   ): Promise<DecisionType>;
   getTriageContext?(): Promise<TriageContext>;
   onTriageCompleted?(result: TriageResult | null): void;
+  /** Full-session deliberation: the agent reasons over all queued items as itself. */
+  performDeliberation?(headItem: MailboxItem, allItems: MailboxItem[]): Promise<DeliberationResult | null>;
+  onDeliberationCompleted?(result: DeliberationResult | null): void;
 }
 
 export interface DecisionPersistence {
@@ -149,6 +153,8 @@ export class AttentionController {
   private triageToolHandlers?: Map<string, { name: string; description: string; inputSchema: Record<string, unknown>; execute: (args: Record<string, unknown>) => Promise<string> }>;
   private triageChatFn?: TriageChatFn;
   private lastTriageResult?: TriageResult & { timestamp: string };
+  /** True while a full-session deliberation is in progress (suppresses yield points). */
+  private isDeliberating = false;
   /** Tracks whether the last yield-point decision was 'cancel' vs 'preempt'. */
   private lastYieldDecision?: DecisionType;
   private unsubscribeNewItem?: () => void;
@@ -329,50 +335,27 @@ export class AttentionController {
       // 1. Multiple distinct items remain after consolidation
       // 2. Priority alone can't decide — the head item shares its priority
       //    with at least one other queued item (ambiguous ordering)
-      // 3. A TriageJudge is configured
+      // 3. A TriageJudge OR delegate.performDeliberation is configured
       // When priorities clearly separate items, the priority queue already
       // produces the right order — no LLM call needed.
       let triaged = false;
-      if (this.mailbox.depth > 0 && this.triageJudge && this.needsLLMTriage(item)) {
-        const triageResult = await this.performTriage(item);
-        if (triageResult) {
-          triaged = true;
-          if (triageResult.processItemId !== item.id) {
-            this.mailbox.putBack(item);
-            const chosen = this.mailbox.dequeueById(triageResult.processItemId);
-            if (chosen) {
-              item = chosen;
-            } else {
-              const redequeued = this.mailbox.dequeueById(item.id);
-              if (redequeued) item = redequeued;
-            }
+      if (this.mailbox.depth > 0 && this.needsLLMTriage(item) && (this.delegate?.performDeliberation || this.triageJudge)) {
+        // Prefer full-session deliberation over mini triage loop
+        if (this.delegate?.performDeliberation) {
+          const allItems = [item, ...this.mailbox.getQueuedItems()];
+          this.isDeliberating = true;
+          const deliberationResult = await this.delegate.performDeliberation(item, allItems);
+          this.isDeliberating = false;
+          if (deliberationResult) {
+            triaged = true;
+            item = this.applyDeliberationResult(item, deliberationResult);
           }
-          // Guard items that must never be dropped/deferred by triage.
-          const queueSnapshot = this.mailbox.getQueuedItems();
-          const isProtected = (id: string) => {
-            const it = queueSnapshot.find(i => i.id === id);
-            if (!it) return false;
-            if (it.sourceType === 'human_chat') return true;
-            if (it.payload.extra?.triggerExecution) return true;
-            return false;
-          };
-
-          for (const deferId of triageResult.deferItemIds) {
-            if (isProtected(deferId)) continue;
-            this.mailbox.defer(deferId);
+        } else {
+          const triageResult = await this.performTriage(item);
+          if (triageResult) {
+            triaged = true;
+            item = this.applyTriageResult(item, triageResult);
           }
-          for (const dropId of triageResult.dropItemIds) {
-            if (isProtected(dropId)) continue;
-            this.mailbox.drop(dropId);
-          }
-          this.lastTriageResult = { ...triageResult, timestamp: new Date().toISOString() };
-          this.delegate?.onTriageCompleted?.(triageResult);
-          this.eventBus.emit('attention:triage', {
-            agentId: this.agentId,
-            triage: this.lastTriageResult,
-          });
-          const triageDecision = this.recordDecision('triage', item, triageResult.reasoning);
-          this.delegate?.onDecisionMade(triageDecision);
         }
       }
 
@@ -574,6 +557,11 @@ export class AttentionController {
     item?: MailboxItem;
     reasoning?: string;
   }> {
+    // Deliberation is atomic — no interrupts evaluated until it completes
+    if (this.isDeliberating) {
+      return { decision: 'continue' };
+    }
+
     if (!this.interruptSignal || !this.currentFocus) {
       return { decision: 'continue' };
     }
@@ -887,8 +875,10 @@ export class AttentionController {
           description: t.description,
           inputSchema: t.inputSchema,
         }));
+        const triageAgentName = ctx?.agentName ?? 'Agent';
+        const triageRoleHint = ctx?.agentRole ? ` Your role: ${ctx.agentRole}.` : '';
         const messages: Array<{ role: string; content: string; toolCalls?: any[]; toolCallId?: string; reasoningContent?: string }> = [
-          { role: 'system', content: 'You are a mailbox triage assistant. You may call read-only tools to gather context before making your decision. When ready, output ONLY a single JSON object — no explanation, no markdown fences, no <think> tags. Start your response with {' },
+          { role: 'system', content: `You are ${triageAgentName}, deliberating over your mailbox.${triageRoleHint} You may call tools to gather context before making your decision. When ready, output ONLY a single JSON object — no explanation, no markdown fences, no <think> tags. Start your response with {` },
           { role: 'user', content: prompt },
         ];
 
@@ -968,6 +958,120 @@ export class AttentionController {
     }
   }
 
+  /**
+   * Apply a TriageResult to the mailbox: reorder, defer, drop items.
+   * Returns the item to process next.
+   */
+  private applyTriageResult(currentItem: MailboxItem, triageResult: TriageResult): MailboxItem {
+    let item = currentItem;
+    if (triageResult.processItemId !== item.id) {
+      this.mailbox.putBack(item);
+      const chosen = this.mailbox.dequeueById(triageResult.processItemId);
+      if (chosen) {
+        item = chosen;
+      } else {
+        const redequeued = this.mailbox.dequeueById(currentItem.id);
+        if (redequeued) item = redequeued;
+      }
+    }
+
+    const queueSnapshot = this.mailbox.getQueuedItems();
+    const isProtected = (id: string) => {
+      const it = queueSnapshot.find(i => i.id === id);
+      if (!it) return false;
+      if (it.sourceType === 'human_chat') return true;
+      if (it.payload.extra?.triggerExecution) return true;
+      return false;
+    };
+
+    for (const deferId of triageResult.deferItemIds) {
+      if (isProtected(deferId)) continue;
+      this.mailbox.defer(deferId);
+    }
+    for (const dropId of triageResult.dropItemIds) {
+      if (isProtected(dropId)) continue;
+      this.mailbox.drop(dropId);
+    }
+
+    this.lastTriageResult = { ...triageResult, timestamp: new Date().toISOString() };
+    this.delegate?.onTriageCompleted?.(triageResult);
+    this.eventBus.emit('attention:triage', {
+      agentId: this.agentId,
+      triage: this.lastTriageResult,
+    });
+    const triageDecision = this.recordDecision('triage', item, triageResult.reasoning);
+    this.delegate?.onDecisionMade(triageDecision);
+    return item;
+  }
+
+  /**
+   * Apply a DeliberationResult to the mailbox: handle inline completions, reorder, defer, drop.
+   * Returns the item to process next.
+   */
+  private applyDeliberationResult(currentItem: MailboxItem, result: DeliberationResult): MailboxItem {
+    let item = currentItem;
+
+    const queueSnapshot = this.mailbox.getQueuedItems();
+    const isProtected = (id: string) => {
+      const it = queueSnapshot.find(i => i.id === id);
+      if (!it) return false;
+      if (it.sourceType === 'human_chat') return true;
+      if (it.payload.extra?.triggerExecution) return true;
+      return false;
+    };
+
+    // Mark inline-completed items (these were handled during deliberation, NOT discarded)
+    for (const completedId of result.inlineCompletedIds) {
+      if (isProtected(completedId)) continue;
+      if (completedId === currentItem.id) continue;
+      const completedItem = queueSnapshot.find(i => i.id === completedId);
+      this.mailbox.complete(completedId);
+      if (completedItem) {
+        this.recordDecision('complete', completedItem, 'Handled inline during deliberation');
+      }
+    }
+
+    // Select the chosen item to process
+    if (result.processItemId !== item.id) {
+      this.mailbox.putBack(item);
+      const chosen = this.mailbox.dequeueById(result.processItemId);
+      if (chosen) {
+        item = chosen;
+      } else {
+        const redequeued = this.mailbox.dequeueById(currentItem.id);
+        if (redequeued) item = redequeued;
+      }
+    }
+
+    // Defer and drop
+    for (const deferId of result.deferItemIds) {
+      if (isProtected(deferId)) continue;
+      this.mailbox.defer(deferId);
+    }
+    for (const dropId of result.dropItemIds) {
+      if (isProtected(dropId)) continue;
+      this.mailbox.drop(dropId);
+    }
+
+    // Emit events and update cognition
+    const triageEquivalent: TriageResult = {
+      processItemId: result.processItemId,
+      deferItemIds: result.deferItemIds,
+      dropItemIds: result.dropItemIds,
+      inlineCompletedIds: result.inlineCompletedIds,
+      reasoning: result.reasoning,
+    };
+    this.lastTriageResult = { ...triageEquivalent, timestamp: new Date().toISOString() };
+    this.delegate?.onDeliberationCompleted?.(result);
+    this.eventBus.emit('attention:triage', {
+      agentId: this.agentId,
+      triage: this.lastTriageResult,
+    });
+    const triageDecision = this.recordDecision('triage', item, `[deliberation] ${result.reasoning}`);
+    this.delegate?.onDecisionMade(triageDecision);
+    return item;
+  }
+
   private buildTriagePrompt(headItem: MailboxItem, ctx?: TriageContext): string {
     const agentName = ctx?.agentName ?? 'Agent';
     const queuedItems = this.mailbox.getQueuedItems();
@@ -1026,8 +1130,8 @@ export class AttentionController {
       `  - ${d.decisionType}: ${d.reasoning}`
     ).join('\n') || '  (none)';
 
-    const activeTasksSection = (ctx as any)?.activeTaskIds?.length
-      ? `  Active tasks: ${(ctx as any).activeTaskIds.join(', ')}`
+    const activeTasksSection = ctx?.activeTaskIds?.length
+      ? `  Active tasks: ${ctx.activeTaskIds.join(', ')}`
       : '  (no active tasks)';
 
     return [
@@ -1115,6 +1219,7 @@ export class AttentionController {
         processedItemId: this.lastTriageResult.processItemId,
         deferredItemIds: this.lastTriageResult.deferItemIds,
         droppedItemIds: this.lastTriageResult.dropItemIds,
+        inlineCompletedIds: this.lastTriageResult.inlineCompletedIds ?? [],
         timestamp: this.lastTriageResult.timestamp,
       } : undefined,
     };

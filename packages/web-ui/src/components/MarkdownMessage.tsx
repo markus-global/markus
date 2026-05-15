@@ -1,4 +1,4 @@
-import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import { useMemo, useState, useRef, useEffect, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
@@ -343,7 +343,7 @@ function CopyMenu({ content, contentRef }: { content: string; contentRef: React.
 
 // ─── MarkdownMessage ─────────────────────────────────────────────────────────
 
-export function MarkdownMessage({ content, className = '', onMentionClick, knownNames, basePath }: Props) {
+export const MarkdownMessage = memo(function MarkdownMessage({ content, className = '', onMentionClick, knownNames, basePath }: Props) {
   const { thinking, rest } = extractThinkBlocks(content);
   const contentRef = useRef<HTMLDivElement>(null);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
@@ -420,4 +420,4 @@ export function MarkdownMessage({ content, className = '', onMentionClick, known
       {previewSrc && <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />}
     </div>
   );
-}
+}, (prev, next) => prev.content === next.content && prev.className === next.className && prev.basePath === next.basePath);

@@ -31,7 +31,7 @@ export interface ChannelBinding {
   role: 'member' | 'observer';
 }
 
-export type AgentActivityType = 'task' | 'heartbeat' | 'chat' | 'a2a' | 'internal' | 'respond_in_session';
+export type AgentActivityType = 'task' | 'heartbeat' | 'chat' | 'a2a' | 'internal' | 'respond_in_session' | 'inline_deliberation';
 
 export interface AgentActivity {
   /** Unique ID for this activity session */
