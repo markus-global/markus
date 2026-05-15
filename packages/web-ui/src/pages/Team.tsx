@@ -3138,7 +3138,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               <span className="text-xs text-fg-tertiary">{t('page.loadingEarlierMessages')}</span>
             </div>
           )}
-          <div ref={chatScrollRef} className={`flex-1 overflow-y-auto space-y-3 ${isMobile ? 'p-2.5' : 'p-5'}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
+          <div ref={chatScrollRef} className={`flex-1 overflow-y-auto space-y-3 ${isMobile ? 'p-2.5' : 'p-5 2xl:pr-[280px]'}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
 
           {messages.length === 0 && !sending && (
             <div className="flex flex-col items-center justify-center h-full text-fg-tertiary text-sm space-y-2">
@@ -3223,29 +3223,35 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                 const isPending = isLastPending && i === messages.length - 1;
                 const isStreamingMsg = isPending && sending;
                 const showStreamingBubble = (isLastVisualStreaming && i === messages.length - 1) || isStreamingMsg;
-                // Always show actions for stopped/error messages, otherwise only when not streaming
                 const showActions = !isStreamingMsg || msg.isStopped;
 
-                // Activity log entries are visible in the Agent Profile Mind tab;
-                // hide them from the chat to reduce noise.
                 if (msg.isActivityLog) return null;
 
                 return (
-                  <div key={msg.id} id={`msg-${msg.id}`} className={`group/msg flex transition-colors rounded-lg ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={[
-                      isMobile ? 'max-w-[95%]' : 'max-w-[85%]',
-                      msg.sender === 'agent' ? (isMobile ? 'min-w-[200px]' : 'min-w-[280px]') : '',
-                    ].join(' ')}>
-                      <div className="text-xs text-fg-tertiary mb-1">
-                        {msg.sender === 'user'
-                          ? currentUserName
-                          : <ChatAgentLink
-                              name={msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? t('page.fallbackAgent') : t('page.fallbackAgent'))}
-                              agentId={msg.agentId ?? (chatMode === 'direct' ? currentAgent?.id : undefined)}
-                              agents={agents}
-                              onViewProfile={handleViewProfile}
-                            />
-                        } · {msg.time}
+                  <div key={msg.id} id={`msg-${msg.id}`} className="group/msg flex gap-3 transition-colors rounded-lg">
+                    <div className="shrink-0">
+                      <Avatar
+                        name={msg.sender === 'user' ? currentUserName : (msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? t('page.fallbackAgent') : t('page.fallbackAgent')))}
+                        avatarUrl={msg.sender === 'user' ? authUser?.avatarUrl : (agents.find(a => a.id === (msg.agentId ?? (chatMode === 'direct' ? currentAgent?.id : undefined)))?.avatarUrl)}
+                        size={32}
+                        bgClass={msg.sender === 'user' ? 'bg-brand-600' : 'bg-brand-500/15 text-brand-600'}
+                        className="rounded-lg"
+                      />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-sm font-medium text-fg-primary">
+                          {msg.sender === 'user'
+                            ? currentUserName
+                            : <ChatAgentLink
+                                name={msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? t('page.fallbackAgent') : t('page.fallbackAgent'))}
+                                agentId={msg.agentId ?? (chatMode === 'direct' ? currentAgent?.id : undefined)}
+                                agents={agents}
+                                onViewProfile={handleViewProfile}
+                              />
+                          }
+                        </span>
+                        <span className="text-xs text-fg-tertiary">{msg.time}</span>
                       </div>
                       {msg.replyToId && msg.replyToSender && (
                         <button
@@ -3253,30 +3259,28 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                             const el = document.getElementById(`msg-${msg.replyToId}`);
                             if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.classList.add('bg-brand-500/10'); setTimeout(() => el.classList.remove('bg-brand-500/10'), 1500); }
                           }}
-                          className="flex items-center gap-1.5 mb-1 pl-2 py-0.5 border-l-2 border-brand-500/40 text-[10px] text-fg-tertiary hover:text-fg-secondary transition-colors cursor-pointer"
+                          className="flex items-center gap-1.5 mt-0.5 mb-1 pl-2 py-0.5 border-l-2 border-brand-500/40 text-xs text-fg-tertiary hover:text-fg-secondary transition-colors cursor-pointer"
                         >
                           <span className="font-medium text-brand-500">{msg.replyToSender}</span>
-                          <span className="truncate max-w-[200px]">{msg.replyToText ?? '...'}</span>
+                          <span className="truncate max-w-[250px]">{msg.replyToText ?? '...'}</span>
                         </button>
                       )}
-                      <div className={`rounded-2xl text-sm ${isMobile ? 'px-3 py-2' : 'px-4 py-3'} ${
-                        msg.sender === 'user'
-                          ? 'bg-brand-600 text-white rounded-br-sm'
-                          : msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
-                            ? 'bg-surface-chat-bubble text-fg-primary rounded-bl-sm border-b-2 border-red-500/60'
-                            : 'bg-surface-chat-bubble text-fg-primary rounded-bl-sm'
+                      <div className={`mt-0.5 ${
+                        msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
+                          ? 'px-3 py-2 rounded-lg border-b-2 border-red-500/60'
+                          : ''
                       } ${showStreamingBubble && msg.sender === 'agent' ? 'streaming-bubble' : ''}`}>
                         {msg.sender === 'user'
-                          ? <>
+                          ? <div className="text-sm text-fg-secondary whitespace-pre-wrap">
                               {msg.images && msg.images.length > 0 && (
-                                <div className="flex flex-wrap gap-1.5 mb-2">
+                                <div className="flex flex-wrap gap-1.5 mb-1">
                                   {msg.images.map((src, idx) => (
                                     <img key={idx} src={src} alt="" className="max-w-[200px] max-h-[150px] rounded-lg object-cover cursor-pointer hover:opacity-80 transition-opacity" onClick={() => window.open(src, '_blank')} />
                                   ))}
                                 </div>
                               )}
-                              {msg.text && <span className="whitespace-pre-wrap leading-relaxed">{renderMentionText(msg.text, agents)}</span>}
-                            </>
+                              {msg.text && <span className="leading-relaxed">{renderMentionText(msg.text, agents)}</span>}
+                            </div>
                           : <AgentMessageBody
                               msg={msg}
                               isStreaming={isStreamingMsg}
@@ -3290,7 +3294,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                         }
                       </div>
                       {showActions && (
-                        <div className={`transition-opacity ${msg.isStopped || isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'} ${msg.sender === 'user' ? 'flex justify-end' : ''}`}>
+                        <div className={`transition-opacity ${msg.isStopped || isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'}`}>
                           <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onResume={handleResume} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
                         </div>
                       )}
@@ -3344,8 +3348,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         })()}
 
         {/* Input (only in chat tab) */}
-        <div className={`px-4 py-3 relative shrink-0 ${mainTab !== 'chat' ? 'hidden' : ''}`} onDrop={handleDrop} onDragOver={handleDragOver}>
-          <div className="bg-surface-primary rounded-2xl p-3 border border-border-default shadow-lg shadow-black/5">
+        <div className={`${isMobile ? 'px-3 py-2' : 'px-5 py-3 2xl:pr-[280px]'} relative shrink-0 ${mainTab !== 'chat' ? 'hidden' : ''}`} onDrop={handleDrop} onDragOver={handleDragOver}>
+          <div className={`bg-surface-primary border border-border-default shadow-lg shadow-black/5 ${isMobile ? 'rounded-2xl p-3' : 'rounded-2xl p-3 max-w-3xl'}`}>
           {mentionDropdown && filteredAgents.length > 0 && (
             <div className="absolute bottom-full left-4 mb-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden z-10 max-h-48 overflow-y-auto">
               <div className="px-3 py-1.5 text-[10px] text-fg-tertiary font-medium uppercase tracking-wider border-b border-border-default">
