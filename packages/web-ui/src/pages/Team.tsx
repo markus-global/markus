@@ -840,16 +840,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       if (!entry) return;
       const containerW = entry.contentRect.width;
       const chatAreaIfL2 = containerW - chatSidebar.width - teamDetailPanel.width;
-      const tight = chatAreaIfL2 < 400;
-      setL2SpaceTight(tight);
-      if (tight && showTeamDetailPanel) {
-        setShowTeamDetailPanel(false);
-        try { localStorage.setItem('markus_team_panel_visible', 'false'); } catch { /* */ }
-      }
+      setL2SpaceTight(chatAreaIfL2 < 400);
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [isMobile, chatSidebar.width, teamDetailPanel.width, showTeamDetailPanel]);
+  }, [isMobile, chatSidebar.width, teamDetailPanel.width]);
 
   useEffect(() => {
     if (!l2Floating) return;
@@ -2597,7 +2592,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           if (isMobile) {
             if (teamGc) { setChatMode('channel'); setActiveChannel(teamGc.channelKey); setMainTab('chat'); setShowMemberPanel(false); enterMobileDetail(); }
           } else {
-            if (teamGc) { setChatMode('channel'); setActiveChannel(teamGc.channelKey); setMainTab('chat'); setShowMemberPanel(false); }
+            if (teamGc) { setChatMode('channel'); setActiveChannel(teamGc.channelKey); setMainTab('chat'); setShowMemberPanel(false); if (!showTeamDetailPanel && !l2SpaceTight) setShowTeamDetailPanel(true); }
           }
         }}
         selectedTeamId={activeTeamId ?? (chatMode === 'direct' && currentAgent?.teamId ? currentAgent.teamId : null)}
