@@ -47,13 +47,6 @@ async function proxyFetch(url: string | URL, init?: RequestInit): Promise<Respon
   return fetch(url, opts as RequestInit);
 }
 
-function hasProxy(): boolean {
-  return !!(
-    process.env['HTTPS_PROXY'] || process.env['HTTP_PROXY'] ||
-    process.env['https_proxy'] || process.env['http_proxy']
-  );
-}
-
 // ── Tool definition ────────────────────────────────────────────────────────
 
 /**
@@ -108,16 +101,11 @@ export const WebSearchTool: AgentToolHandler = {
 
     const hasNetworkErr = errors.some(e => e.error.includes('Network error') || e.error.includes('timed out'));
     const hints: string[] = [];
-    if (hasNetworkErr && !hasProxy()) {
+    if (hasNetworkErr) {
       hints.push(
-        'All network requests failed and no HTTP proxy is configured. ' +
-        'If you are behind a firewall or in a restricted network, set HTTPS_PROXY (e.g. export HTTPS_PROXY=http://127.0.0.1:7890).',
-      );
-    }
-    if (hasNetworkErr && hasProxy()) {
-      hints.push(
-        `HTTP proxy is configured (${process.env['HTTPS_PROXY'] || process.env['HTTP_PROXY'] || process.env['https_proxy'] || process.env['http_proxy']}), ` +
-        'but network requests still failed. Verify the proxy is reachable and allows outbound HTTPS.',
+        'All search backends failed due to network issues. ' +
+        'You can try using the web_fetch tool to fetch a search engine page directly (e.g. https://www.google.com/search?q=YOUR_QUERY or https://www.bing.com/search?q=YOUR_QUERY), ' +
+        'or use the browser tool to perform the search interactively.',
       );
     }
 
