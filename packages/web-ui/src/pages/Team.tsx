@@ -3236,10 +3236,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                         <span className="truncate max-w-[250px]">{msg.replyToText ?? '...'}</span>
                       </button>
                     )}
-                    <div className={msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
-                      ? 'mt-0.5 px-3 py-2 rounded-lg border-b-2 border-red-500/60'
-                      : 'mt-0.5'
-                    }>
+                    <div className={`mt-0.5 ${msg.sender === 'agent' ? 'bg-surface-chat-bubble rounded-2xl px-3.5 py-2.5' : ''} ${
+                      msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
+                        ? 'border-b-2 border-red-500/60'
+                        : ''
+                    }`}>
                       {msg.sender === 'agent'
                         ? <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" />
                         : <div className="text-sm text-fg-secondary whitespace-pre-wrap">
@@ -3309,9 +3310,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                           <span className="truncate max-w-[250px]">{msg.replyToText ?? '...'}</span>
                         </button>
                       )}
-                      <div className={`mt-0.5 ${
+                      <div className={`mt-0.5 ${msg.sender === 'agent' ? 'bg-surface-chat-bubble rounded-2xl px-3.5 py-2.5' : ''} ${
                         msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
-                          ? 'px-3 py-2 rounded-lg border-b-2 border-red-500/60'
+                          ? 'border-b-2 border-red-500/60'
                           : ''
                       } ${showStreamingBubble && msg.sender === 'agent' ? 'streaming-bubble' : ''}`}>
                         {msg.sender === 'user'
