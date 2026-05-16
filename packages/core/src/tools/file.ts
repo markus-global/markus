@@ -52,7 +52,10 @@ export function createFileReadTool(security?: SecurityGuard, workspacePath?: str
     },
 
     async execute(args: Record<string, unknown>): Promise<string> {
-      const rawPath = args['path'] as string;
+      const rawPath = args['path'] as string | undefined;
+      if (!rawPath || typeof rawPath !== 'string') {
+        return JSON.stringify({ status: 'error', error: 'path is required and must be a non-empty string' });
+      }
       const { resolved: path } = resolveAndCheckAccess(rawPath, workspacePath, policy);
 
       const offset = (args['offset'] as number | undefined) ?? 1;

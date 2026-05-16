@@ -1,16 +1,16 @@
 # Agent Memory System
 
-Architecture and data flows for the Markus agent memory system, based on Tulving's cognitive classification.
+Architecture and data flows for the Markus agent memory system, grounded in Tulving-style procedural / semantic / episodic persistence plus an explicit **working memory** layer for situational scratchpad state.
 
 ## 1. Design Principles
 
-1. **Tulving's three systems**: Semantic (what you know), Episodic (what happened), Procedural (how to do things).
-2. **File-first for cognition**: Agent's working memory (sessions, knowledge) lives on the file system — human-readable and portable.
+1. **Tulving mapping + working memory**: Persistent layers align with Tulving-style cognition — **Procedural** (ROLE.md), **Semantic** (MEMORY.md + memories.json), **Episodic** (sessions + activities). **Working memory** is the fourth explicit layer: volatile, agent-managed keyed entries (in-memory on the agent), always injected into the system prompt — it replaces the former `currentCognition` string for situational awareness.
+2. **File-first for durable cognition**: Sessions and long-term stores (MEMORY.md, memories.json, ROLE.md) live on the file system — human-readable and portable. Volatile **working memory** (see **Working Memory** under Four-Layer Architecture) stays in-process only.
 3. **SQLite for history**: Activity history lives in SQLite — indexed, searchable, and queryable via tools.
 4. **Context is currency**: Every byte in the LLM prompt competes for limited context window. Retrieval must maximize signal-to-noise.
 5. **Agent autonomy**: Agents decide what to remember (`memory_save`), what to distill (`memory_update_longterm`), and how to evolve (ROLE.md edits).
 
-## 2. Three-Layer Architecture
+## 2. Four-Layer Architecture
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
@@ -31,11 +31,31 @@ Architecture and data flows for the Markus agent memory system, based on Tulving
 │  Past episodes:   SQLite agent_activities (searchable history)│
 │  Code: MemoryStore (sessions) + SqliteActivityRepo            │
 │  Tools: recall_activity (list / search / get)                 │
+├───────────────────────────────────────────────────────────────┤
+│  Working Memory — volatile situational scratchpad             │
+│  In-memory Map on Agent; always in prompt as ## Working Memory │
+│  Tools: update_working_memory, clear_working_memory           │
+│  Code: Agent (Map + eviction), tools in mailbox-tools          │
 └───────────────────────────────────────────────────────────────┘
 
 Not memory (never read back by agent):
   daily-logs/*.md — audit trail for humans only
 ```
+
+### Working Memory (Volatile, Agent-Managed)
+
+- **Store**: In-memory `Map<string, {text, updatedAt}>` on the Agent instance
+- **Scope**: Injected into every system prompt as `## Working Memory`
+- **Lifecycle**: Persists while agent process runs; lost on restart
+- **Agent control**: `update_working_memory(key, content)` / `clear_working_memory(key?)`
+- **System writes**: Triage → key `"triage-decision"`, deliberation → key `"deliberation"`
+- **Limits**: Max 10 entries, 4000 chars each; oldest evicted when full
+- **Relationship to other layers**:
+  - More volatile than `memories.json` (no disk persistence) but always in prompt
+  - For durable observations, use `memory_save` → `memories.json`
+  - For curated knowledge, use `memory_update_longterm` → `MEMORY.md`
+  - Working memory replaces the former `currentCognition` string, giving the agent
+    explicit control over its situational awareness lifecycle
 
 ### Code Location
 
@@ -49,6 +69,8 @@ Not memory (never read back by agent):
 | Procedural (enhanced) | `EnhancedRoleLoader` | `packages/core/src/enhanced-role-loader.ts` |
 | Semantic tools | `memory_save`, etc. | `packages/core/src/tools/memory.ts` |
 | Vector search | `SemanticMemorySearch` | `packages/core/src/memory/semantic-search.ts` |
+| Working memory | `Agent.workingMemory`, prompt injection | `packages/core/src/agent.ts` |
+| Working memory tools | `update_working_memory`, `clear_working_memory` | `packages/core/src/tools/mailbox-tools.ts` |
 
 ---
 

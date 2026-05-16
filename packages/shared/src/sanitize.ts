@@ -7,6 +7,8 @@
  * which reject malformed `\x` / `\u` escape sequences in request bodies.
  */
 
+import type { LLMMessage, LLMContentPart } from './types/llm.js';
+
 const ANSI_CSI = /\x1b\[[0-9;]*[a-zA-Z]/g;
 const ANSI_OSC = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
 const ANSI_OTHER = /\x1b[^[\]].?/g;
@@ -28,6 +30,36 @@ export function sanitizeForLLM(text: string): string {
     .replace(C1_CONTROL, '')
     .replace(LONE_HIGH_SURROGATE, '\uFFFD')
     .replace(LONE_LOW_SURROGATE, '\uFFFD');
+}
+
+/**
+ * Sanitize ALL text content in an LLMMessage array before it reaches a
+ * provider's JSON serialization.  This is the single choke-point that
+ * prevents ANSI escapes, control characters, and lone surrogates from
+ * causing API 400 errors (notably DeepSeek's "unexpected end of hex escape").
+ *
+ * Returns a shallow copy — original messages are not mutated.
+ */
+export function sanitizeLLMMessages(messages: LLMMessage[]): LLMMessage[] {
+  return messages.map(m => {
+    const cleaned: LLMMessage = { ...m };
+
+    if (typeof cleaned.content === 'string') {
+      cleaned.content = sanitizeForLLM(cleaned.content);
+    } else if (Array.isArray(cleaned.content)) {
+      cleaned.content = cleaned.content.map((part: LLMContentPart) =>
+        part.type === 'text'
+          ? { type: 'text' as const, text: sanitizeForLLM(part.text) }
+          : part,
+      );
+    }
+
+    if (cleaned.reasoningContent) {
+      cleaned.reasoningContent = sanitizeForLLM(cleaned.reasoningContent);
+    }
+
+    return cleaned;
+  });
 }
 
 /**

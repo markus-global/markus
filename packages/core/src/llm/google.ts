@@ -1,4 +1,4 @@
-import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent, sanitizeForLLM } from '@markus/shared';
+import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
 import type { LLMProviderInterface } from './provider.js';
 
 type GeminiPart =
@@ -217,7 +217,8 @@ export class GoogleProvider implements LLMProviderInterface {
     return result;
   }
 
-  private convertMessages(messages: LLMMessage[]): { contents: GeminiContent[]; systemInstruction?: string } {
+  private convertMessages(rawMessages: LLMMessage[]): { contents: GeminiContent[]; systemInstruction?: string } {
+    const messages = sanitizeLLMMessages(rawMessages);
     let systemInstruction: string | undefined;
     const contents: GeminiContent[] = [];
 

@@ -1,4 +1,4 @@
-import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent, sanitizeForLLM } from '@markus/shared';
+import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
 import type { LLMProviderInterface } from './provider.js';
 
 interface AnthropicAPIMessage {
@@ -63,7 +63,7 @@ export class AnthropicProvider implements LLMProviderInterface {
     };
 
     if (systemMsg) {
-      body['system'] = this.buildSystemContent(getTextContent(systemMsg.content), request.systemCacheSegments);
+      body['system'] = this.buildSystemContent(sanitizeForLLM(getTextContent(systemMsg.content)), request.systemCacheSegments);
     }
     if (request.temperature !== undefined) body['temperature'] = request.temperature;
     if (request.stopSequences?.length) body['stop_sequences'] = request.stopSequences;
@@ -108,7 +108,7 @@ export class AnthropicProvider implements LLMProviderInterface {
       stream: true,
     };
     if (systemMsg) {
-      body['system'] = this.buildSystemContent(getTextContent(systemMsg.content), request.systemCacheSegments);
+      body['system'] = this.buildSystemContent(sanitizeForLLM(getTextContent(systemMsg.content)), request.systemCacheSegments);
     }
     if (request.temperature !== undefined) body['temperature'] = request.temperature;
     if (request.stopSequences?.length) body['stop_sequences'] = request.stopSequences;
@@ -258,7 +258,8 @@ export class AnthropicProvider implements LLMProviderInterface {
     return blocks;
   }
 
-  private convertMessages(messages: LLMMessage[]): AnthropicAPIMessage[] {
+  private convertMessages(rawMessages: LLMMessage[]): AnthropicAPIMessage[] {
+    const messages = sanitizeLLMMessages(rawMessages);
     return messages.map((m) => {
       if (m.role === 'tool') {
         return {

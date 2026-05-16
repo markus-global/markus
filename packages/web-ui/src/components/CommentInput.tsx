@@ -161,7 +161,7 @@ export function parseMentionNames(text: string): string[] {
 export function renderMentionText(
   text: string,
   agents: AgentInfo[],
-  onMentionClick?: (agent: AgentInfo) => void,
+  onMentionClick?: (agent: AgentInfo, event: React.MouseEvent) => void,
 ): React.ReactNode[] {
   const parts: React.ReactNode[] = [];
   let key = 0;
@@ -190,7 +190,7 @@ export function renderMentionText(
           <span
             key={key++}
             className={`text-brand-500 font-medium ${onMentionClick && agent ? 'cursor-pointer hover:underline' : ''}`}
-            onClick={onMentionClick && agent ? () => onMentionClick(agent) : undefined}
+            onClick={onMentionClick && agent ? (e: React.MouseEvent) => onMentionClick(agent, e) : undefined}
             title={agent ? `${agent.name} (${agent.role})` : undefined}
           >
             @{bracketed}
@@ -211,7 +211,7 @@ export function renderMentionText(
         <span
           key={key++}
           className={`text-brand-500 font-medium ${onMentionClick && agent ? 'cursor-pointer hover:underline' : ''}`}
-          onClick={onMentionClick && agent ? () => onMentionClick(agent) : undefined}
+          onClick={onMentionClick && agent ? (e: React.MouseEvent) => onMentionClick(agent, e) : undefined}
           title={agent ? `${agent.name} (${agent.role})` : undefined}
         >
           @{fullMatch}
@@ -231,7 +231,7 @@ export function renderMentionText(
         <span
           key={key++}
           className={`text-brand-500 font-medium ${onMentionClick && agent ? 'cursor-pointer hover:underline' : ''}`}
-          onClick={onMentionClick && agent ? () => onMentionClick(agent) : undefined}
+          onClick={onMentionClick && agent ? (e: React.MouseEvent) => onMentionClick(agent, e) : undefined}
           title={agent ? `${agent.name} (${agent.role})` : undefined}
         >
           @{name}

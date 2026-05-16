@@ -268,6 +268,36 @@ export class ToolSelector {
       },
     });
 
+    // check_mailbox / defer / drop / prioritize are available via DELIBERATION_ALLOWED_TOOLS
+    // only — they are NOT always-on during normal processing to prevent the agent
+    // from getting distracted by the full backlog instead of focusing on the
+    // current item.
+
+    pushUnique({
+      name: 'update_working_memory',
+      description: 'Upsert a keyed entry in your working memory. Use to track priorities, context, decisions.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: 'Label for this entry' },
+          content: { type: 'string', description: 'The content to store' },
+        },
+        required: ['key', 'content'],
+      },
+    });
+
+    pushUnique({
+      name: 'clear_working_memory',
+      description: 'Remove a working memory entry by key, or clear all entries.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: 'Key to clear. Omit to clear all.' },
+          all: { type: 'boolean', description: 'Set true to clear all entries' },
+        },
+      },
+    });
+
     log.debug('Tool selection complete', {
       total: opts.allTools.size,
       selected: result.length,

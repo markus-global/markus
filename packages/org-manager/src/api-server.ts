@@ -945,9 +945,40 @@ export class APIServer {
       prefixLines.push('   a) Has another agent already given a substantively similar answer? If yes → [NO_RESPONSE]');
       prefixLines.push('   b) Does your response add UNIQUE expertise or information? If no → [NO_RESPONSE]');
       prefixLines.push('   c) Check channel history — duplicate or "me too" responses waste everyone\'s time.');
-      prefixLines.push('6. @MENTION DISCIPLINE: Only @mention another agent when you have a SPECIFIC QUESTION requiring their expertise.');
-      prefixLines.push('7. REPLY CLARITY: Use `reply_to_message_id` in `agent_send_group_message` to link your reply to the specific message you\'re responding to. When addressing multiple messages, @mention each agent and quote the relevant part. This is critical for conversation clarity.');
+      prefixLines.push('6. @MENTION — CRITICAL ROUTING MECHANISM:');
+      prefixLines.push('   The @ symbol controls message routing. You MUST use it correctly:');
+      prefixLines.push('   - WITH @: `@Name` or `@[Full Name]` → the named agent receives a direct notification and is expected to respond.');
+      prefixLines.push('   - WITHOUT @: Writing a name without @ (e.g., "Bilahari, confirmed") does NOT notify anyone — it is just text.');
+      prefixLines.push('   - FORMAT: `@Name` for single-word names, `@[Name With Spaces]` for multi-word names (e.g., `@[Sam Altman]`).');
+      prefixLines.push('   - You can @mention MULTIPLE agents in one message to address several people at once (e.g., "@Bilahari your SLOC data is ready. @[Dmitry Medvedev] please verify the sanctions overlay.").');
+      prefixLines.push('   - @mentions can appear ANYWHERE in the message — beginning, middle, or end. Place each @mention naturally next to the content directed at that person.');
+      prefixLines.push('   - Only @mention agents who need to take action or whose expertise you need. Do NOT @mention just to acknowledge, agree, or be polite.');
+      // Build member roster with correct @ format
+      if (chainCtx?.allAgentIds) {
+        const rosterLines = ['   TEAM MEMBERS (use exact format for @mentions):'];
+        for (const aid of chainCtx.allAgentIds) {
+          try {
+            const a = agentManager.getAgent(aid);
+            const name = a.config.name;
+            const fmt = name.includes(' ') ? `@[${name}]` : `@${name}`;
+            rosterLines.push(`     ${fmt}${aid === agentId ? ' (you)' : ''}`);
+          } catch { /* skip */ }
+        }
+        prefixLines.push(rosterLines.join('\n'));
+      }
+      prefixLines.push('7. REPLY IN GROUP: Always reply in the group chat using `agent_send_group_message`. Do NOT use `agent_send_message` for private replies unless the other party explicitly requests a private conversation. Use `reply_to_message_id` to link your reply to the message you\'re responding to.');
       prefixLines.push('8. If the provided context is insufficient, use `recall_context` (scope="channel") to fetch earlier messages before responding. For task/requirement details use `task_get`/`requirement_get`. Do NOT guess about prior discussion.');
+      prefixLines.push('');
+      prefixLines.push('GROUP CHAT PROCESSING CHECKLIST:');
+      prefixLines.push('Before responding, walk through these steps:');
+      prefixLines.push('- [ ] Am I @mentioned or is this an open message? If directed at someone else → `[NO_RESPONSE]`.');
+      prefixLines.push('- [ ] `recall_context` (scope=channel) — has someone already answered? If yes → `[NO_RESPONSE]`.');
+      prefixLines.push('- [ ] Does my role/expertise add UNIQUE value here? If no → `[NO_RESPONSE]`.');
+      prefixLines.push('- [ ] Draft my reply. Is it concise and actionable? Remove filler.');
+      prefixLines.push('- [ ] @mention specific agents if I need their input — use correct format (`@Name` or `@[Full Name]`).');
+      prefixLines.push('- [ ] Use `reply_to_message_id` to thread my response to the right message.');
+      prefixLines.push('- [ ] Use `agent_send_group_message` — NOT `agent_send_message`.');
+      prefixLines.push('- [ ] Final check: does my response contain NEW information? If not → `[NO_RESPONSE]`.');
       if (isTargeted && !thisAgentIsTarget && !isA2A) {
         prefixLines.push('9. REMINDER: This message is directed at ' + [...targetNames].join(', ') + '. You are ' + agentName + '. Respond ONLY with [NO_RESPONSE].');
       }
@@ -965,7 +996,6 @@ export class APIServer {
           scenario: isA2A ? 'a2a' : undefined,
           channelContext,
           toolEventCollector: toolEvents,
-          waitForReply: isA2A ? true : undefined,
         }
       );
 
@@ -987,14 +1017,39 @@ export class APIServer {
         }
       };
 
-      if (!reply || !reply.trim() || reply.includes('[NO_RESPONSE]')) {
+      if (!reply || !reply.trim() || /\[NO_RESPONSE\b/i.test(reply)) {
         emitNoResponse();
         return;
       }
 
       const { thinking, clean: rawClean } = extractThinkBlocks(reply);
-      const cleanReply = rawClean.replace(/\[NO_RESPONSE\]/gi, '').trim();
+      // Strip [NO_RESPONSE] and its variants: [NO_RESPONSE — ...], [NO_RESPONSE: ...], etc.
+      const noResponseStripped = rawClean.replace(/\[NO_RESPONSE[^\]]*\]/gi, '').trim();
+      // If the entire message was a NO_RESPONSE block (even without closing bracket), suppress
+      if (/^\[NO_RESPONSE\b/i.test(rawClean.trim())) {
+        emitNoResponse();
+        return;
+      }
+      // Catch creative "no response" phrasings the LLM invents instead of [NO_RESPONSE]:
+      // e.g. "[context check — no response needed]", "[no response necessary]", "[silent]"
+      const NO_RESPONSE_CREATIVE_RE = /^\[(?:context check|no response|silent|listening|observing|monitoring|watching|noting|acknowledged?)[^\]]*\]$/i;
+      if (NO_RESPONSE_CREATIVE_RE.test(rawClean.trim())) {
+        log.info('Suppressed creative no-response variant', { agentId, original: rawClean.trim().slice(0, 100) });
+        emitNoResponse();
+        return;
+      }
+      // Strip lines that look like raw tool invocations leaked into the reply.
+      // Two patterns:
+      //   1. Known Markus tool names — slash is optional (agent may write "recall_context" or "/recall_context")
+      //   2. Generic slash commands from other platforms — slash is REQUIRED to avoid false positives
+      //      (e.g. "/history 30" is a command, but "List the points" is normal text)
+      const KNOWN_TOOL_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|update_working_memory|clear_working_memory|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
+      const SLASH_CMD_RE = /^\s*\/(?:history|help|status|list|search|get|set|info|ping|who|whois|me|join|leave|invite|kick|ban|mute|unmute|clear|purge|poll|remind|note|todo|roll|flip|ask)\b/i;
+      const cleanReply = noResponseStripped.split('\n')
+        .filter(line => !KNOWN_TOOL_RE.test(line) && !SLASH_CMD_RE.test(line))
+        .join('\n').trim();
       if (!cleanReply) {
+        log.warn('Suppressed raw tool command leak', { agentId, original: noResponseStripped.slice(0, 200) });
         emitNoResponse();
         return;
       }
@@ -3594,6 +3649,9 @@ export class APIServer {
           });
         }
 
+        const statusCounts = this.storage?.mailboxRepo?.getStatusCounts(agentId) ?? {};
+        const sourceTypeCounts = this.storage?.mailboxRepo?.getSourceTypeCounts(agentId) ?? {};
+
         this.json(res, 200, {
           queued: queued.map(i => ({
             id: i.id,
@@ -3604,6 +3662,8 @@ export class APIServer {
             queuedAt: i.queuedAt,
           })),
           queueDepth: queued.length,
+          statusCounts,
+          sourceTypeCounts,
           history,
         });
       } catch {

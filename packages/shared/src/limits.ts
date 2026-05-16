@@ -271,6 +271,13 @@ export const WATCHDOG_DRIFT_THRESHOLD_MS = 60_000;
 // Triage runs when multiple queued items compete for attention and priority
 // alone cannot decide the order.
 
+/** Queue depth threshold that unconditionally triggers deliberation.
+ *  When the mailbox has at least this many items, deliberation runs even
+ *  if priority ordering is unambiguous.  The batch-handling capabilities
+ *  of deliberation (inline completion, dropping stale items) pay for the
+ *  LLM cost when the backlog is this large. */
+export const TRIAGE_BACKLOG_THRESHOLD = 2;
+
 /** Max candidate items included in the triage LLM prompt.
  *  Items beyond this count are omitted from the prompt (but still in the
  *  queue).  50 items × ~5 lines each ≈ 250 lines — substantial context
@@ -334,11 +341,6 @@ export const TRIAGE_ALLOWED_TOOLS: readonly string[] = [
 // These control the full-session deliberation mode that replaces the mini triage
 // loop when deep reasoning is needed.
 
-/** Max tool-use iterations allowed during full-session deliberation.
- *  10 rounds allows memory recall, multi-entity lookups, inline handling of
- *  simple items, and final decision output. */
-export const DELIBERATION_MAX_TOOL_ITERATIONS = 10;
-
 /** Tools allowed during deliberation. Includes read-only context tools plus
  *  lightweight communication tools for inline handling of simple items.
  *  Excludes task creation, code execution, and other heavy side-effect tools. */
@@ -347,6 +349,10 @@ export const DELIBERATION_ALLOWED_TOOLS: readonly string[] = [
   'task_list', 'task_get', 'requirement_list', 'requirement_get',
   'list_projects', 'team_list', 'team_status',
   'recall_activity', 'memory_search', 'memory_search_longterm',
+  // Mailbox management
+  'check_mailbox', 'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item',
+  // Working memory
+  'update_working_memory', 'clear_working_memory',
   // Inline action (lightweight communication)
   'notify_user', 'task_comment', 'requirement_comment',
   'agent_send_message', 'agent_send_group_message',
@@ -354,6 +360,14 @@ export const DELIBERATION_ALLOWED_TOOLS: readonly string[] = [
   // Decision output
   'complete_deliberation',
 ];
+
+// ─── Working Memory Limits ──────────────────────────────────────────────────
+
+/** Maximum number of keyed entries in the agent's working memory Map. */
+export const WORKING_MEMORY_MAX_ENTRIES = 10;
+
+/** Maximum characters per working memory entry value. */
+export const WORKING_MEMORY_MAX_CHARS = 4000;
 
 // ─── Subagent Limits ────────────────────────────────────────────────────────
 // These control subagent execution behavior and progress preview truncation.

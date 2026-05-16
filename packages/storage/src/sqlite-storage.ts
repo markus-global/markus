@@ -3737,6 +3737,24 @@ export class SqliteMailboxRepo {
     return row ? this.mapRow(row) : undefined;
   }
 
+  getStatusCounts(agentId: string): Record<string, number> {
+    const rows = this.db
+      .prepare('SELECT status, COUNT(*) as cnt FROM mailbox_items WHERE agent_id = ? GROUP BY status')
+      .all(agentId) as Array<{ status: string; cnt: number }>;
+    const counts: Record<string, number> = {};
+    for (const r of rows) counts[r.status] = r.cnt;
+    return counts;
+  }
+
+  getSourceTypeCounts(agentId: string): Record<string, number> {
+    const rows = this.db
+      .prepare('SELECT source_type, COUNT(*) as cnt FROM mailbox_items WHERE agent_id = ? GROUP BY source_type')
+      .all(agentId) as Array<{ source_type: string; cnt: number }>;
+    const counts: Record<string, number> = {};
+    for (const r of rows) counts[r.source_type] = r.cnt;
+    return counts;
+  }
+
   getHistory(agentId: string, opts?: { limit?: number; offset?: number; sourceTypes?: string[]; status?: string }): MailboxItemRow[] {
     const conditions = ['agent_id = ?'];
     const params: (string | number)[] = [agentId];

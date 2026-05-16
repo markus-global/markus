@@ -105,7 +105,10 @@ Contains the core behavioral instructions, personality, and domain expertise.
 Source: `getDynamicContext()` — three sources:
 1. **Registered providers**: Callback functions set via `registerDynamicContextProvider()`.
 2. **Activated skill instructions**: When an agent calls `discover_tools` to activate a skill, its instructions are wrapped in `<skill name="...">...</skill>` tags and injected here.
-3. **Triage cognition**: When the mailbox triage system produces a decision, the reasoning is stored as `currentCognition` and injected here as "Current Situational Awareness." This gives the agent persistent awareness of its latest prioritization decision across all LLM calls (chat, task execution, A2A, etc.).
+3. **Working Memory**: Agent-managed situational awareness stored as a keyed Map.
+   Each entry has a key, content, and update timestamp. Rendered as
+   `## Working Memory` with age labels. Controlled by `update_working_memory` /
+   `clear_working_memory` tools. System events (triage, deliberation) also auto-write entries.
 
 #### Identity Section (§3)
 Source: `buildIdentitySection()`.  
@@ -135,6 +138,9 @@ Every LLM call passes through the mailbox, so this section is always populated. 
 - **Recent decisions**: Last 3-5 attention decisions (continue/preempt/cancel/merge/defer) with reasoning. The `preempt` decision means current work was **paused** (deferred for later resumption); the `cancel` decision means current work was **permanently stopped**.
 - **Merged content**: If a `merge` decision injected additional context (e.g., a comment on the current task), it appears here.
 
+In addition to the passive `## Your Attention State` section, agents can query
+their mailbox on demand using `check_mailbox` in any scenario.
+
 **Triage context budget** is generous — up to 20 recent messages × 2000 chars each, plus full item content (3000 chars per candidate) and the agent's active task list. Tens of thousands of tokens are acceptable for triage because accurate prioritization decisions save far more cost downstream. The triage LLM can also invoke a curated set of **read-only tools** (`task_list`, `task_get`, `requirement_list`, `requirement_get`, `list_projects`, `team_list`) to gather additional context before deciding. These are controlled by `TRIAGE_ALLOWED_TOOLS` and `TRIAGE_MAX_TOOL_ITERATIONS` in `limits.ts`.
 
 **Task status notifications** are purely informational — the system's side-effect mechanism handles all actions (execution start/cancel, reviewer notification, dependency unblocking). Agents are instructed not to send redundant A2A messages for routine status changes.
@@ -143,7 +149,7 @@ All 12 mailbox item types (`human_chat`, `task_status_update`, `session_reply`, 
 
 #### Scenario Section (§23)
 Source: `buildScenarioSection()`.  
-Seven distinct instruction sets depending on `scenario` parameter. Each scenario is slim and references the global Task Workflow (§18) and Tool Usage Rules (§21) rather than re-explaining them. Each scenario includes a **Communication channel** paragraph that specifies output visibility and appropriate tools:
+Eight distinct instruction sets depending on `scenario` parameter. Each scenario is slim and references the global Task Workflow (§18) and Tool Usage Rules (§21) rather than re-explaining them. Each scenario includes a **Communication channel** paragraph that specifies output visibility and appropriate tools:
 
 | Scenario | Key Instructions | Output Visibility | Communication Tools |
 |----------|-----------------|-------------------|-------------------|
@@ -152,6 +158,7 @@ Seven distinct instruction sets depending on `scenario` parameter. Each scenario
 | `heartbeat` | Brief check-in: review tasks, retry failures, self-evolution. | **Not visible** to anyone | `notify_user` (only way to reach humans); `agent_send_message` for agents |
 | `a2a` | Coordination only. Concise, structured. Complex work → `task_create`. | Visible to **peer agent** only | Reply directly; `notify_user` to escalate to humans |
 | `comment_response` | Context-first protocol. Batch awareness (handle bundled comments as one). Use `reply_to_comment_id` for structural quoting. Convergence check before replying. | **Not directly visible** | `task_comment` / `requirement_comment` for thread (with `reply_to_comment_id`); `notify_user` if urgent |
+| `deliberation` | Multiple mailbox items — assess before committing. Use `check_mailbox` for full queue inspection; `defer_mailbox_item` / `drop_mailbox_item` for queue management; `update_working_memory` to record situational assessment; finish with `complete_deliberation`. | **Not visible** | Inline handling via deliberation whitelist (`notify_user`, `task_comment`, `agent_send_message`, etc.) |
 | `review` | Evaluate deliverable quality against acceptance criteria. | **Not directly visible** | `task_update` for verdict; `notify_user` optionally |
 | `memory_consolidation` | Internal memory management. Purely private. | **Not visible**; internal only | No communication tools needed |
 
@@ -460,14 +467,17 @@ This ensures that modern models with large output windows are not artificially c
 
 `ToolSelector.selectTools()` determines which tools appear in each LLM call:
 
-1. **Always-on tools**: Core set always included (e.g., `memory_save`, `memory_search`, `file_read`, `file_write`, `task_create`, `task_list`, `spawn_subagent`, `spawn_subagents`, etc.)
+1. **Always-on tools**: Core set always included (e.g., `memory_save`, `memory_search`, `file_read`, `file_write`, `task_create`, `task_list`, `spawn_subagent`, `spawn_subagents`, `check_mailbox`, `update_working_memory`, `clear_working_memory`, etc.)
 2. **Manager-only tools**: Added when `isManager=true` (e.g., `task_assign`, `team_status`, `delegate_message`)
 3. **Package tools**: Available to all agents, activated by keyword (e.g., `package_list`, `package_install`, `hub_search`, `hub_install`)
 4. **Task-execution tools**: Added when `isTaskExecution=true` (e.g., `task_submit_review`, `subtask_create`)
 5. **Recently used tools**: Tools used in recent calls are re-included to maintain continuity
-6. **Activated tools**: Tools the agent explicitly activated via `discover_tools`
-7. **Skill-provided tools**: MCP tools from activated skills
-8. **`discover_tools` meta-tool**: Always present, enabling agents to list/activate/install skills at runtime
+6. **Mailbox management tools**: `defer_mailbox_item`, `drop_mailbox_item`,
+   `prioritize_mailbox_item` — registered for all agents, available during
+   deliberation and focused processing.
+7. **Activated tools**: Tools the agent explicitly activated via `discover_tools`
+8. **Skill-provided tools**: MCP tools from activated skills
+9. **`discover_tools` meta-tool**: Always present, enabling agents to list/activate/install skills at runtime
 
 ### 7.1 Agent/Team Creation & Deployment
 

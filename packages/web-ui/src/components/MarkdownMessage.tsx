@@ -350,27 +350,23 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
 
   const processedRest = useMemo(() => {
     let t = normalizeMathDelimiters(rest);
-    if (onMentionClick) t = preprocessMentions(t, knownNames);
+    t = preprocessMentions(t, knownNames);
     return t;
-  }, [rest, onMentionClick, knownNames]);
+  }, [rest, knownNames]);
 
   const components = useMemo(() => {
-    const base: Record<string, React.ComponentType<any>> = {
+    return {
       ...mdComponents,
       img: ({ src, alt }: { src?: string; alt?: string }) => (
         <MarkdownImage src={src ?? ''} alt={alt} onPreview={setPreviewSrc} basePath={basePath} />
       ),
-    };
-    if (!onMentionClick) return base;
-    return {
-      ...base,
       a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
         if (href?.startsWith(MENTION_PREFIX)) {
           const name = decodeURIComponent(href.slice(MENTION_PREFIX.length));
           return (
             <span
-              className="text-brand-500 font-medium cursor-pointer hover:underline"
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onMentionClick(name, e); }}
+              className={`text-brand-500 font-medium${onMentionClick ? ' cursor-pointer hover:underline' : ''}`}
+              onClick={onMentionClick ? (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); onMentionClick(name, e); } : undefined}
               title={name}
             >
               {children}
@@ -420,4 +416,9 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
       {previewSrc && <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />}
     </div>
   );
-}, (prev, next) => prev.content === next.content && prev.className === next.className && prev.basePath === next.basePath);
+}, (prev, next) =>
+  prev.content === next.content
+  && prev.className === next.className
+  && prev.basePath === next.basePath
+  && prev.onMentionClick === next.onMentionClick
+  && prev.knownNames === next.knownNames);

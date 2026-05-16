@@ -29,6 +29,7 @@ import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
 import { createProjectTools, type ProjectServiceBridge, type KnowledgeServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext } from './tools/project-tools.js';
 import { createMemoryTools } from './tools/memory.js';
+import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
 import { createSettingsTools } from './tools/settings.js';
 import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
@@ -1003,6 +1004,20 @@ export class AgentManager {
       agent.registerTool(tool);
     }
 
+    // Mailbox + working memory tools — every agent can inspect/manage queue and cognition
+    const attnCtrl = agent.getAttentionController();
+    const mailboxToolCtx: MailboxToolContext = {
+      agentId: id,
+      getMindState: () => attnCtrl.getMindState(),
+      deferItem: (itemId, reason, ms) => attnCtrl.deferItem(itemId, reason, ms),
+      dropItem: (itemId, reason) => attnCtrl.dropItem(itemId, reason),
+      prioritizeItem: (itemId, p) => attnCtrl.prioritizeItem(itemId, p),
+      updateWorkingMemory: (key, content) => agent.updateWorkingMemory(key, content),
+      clearWorkingMemory: (key) => agent.clearWorkingMemory(key),
+      getWorkingMemorySnapshot: () => agent.getWorkingMemorySnapshot(),
+    };
+    for (const tool of createMailboxTools(mailboxToolCtx)) agent.registerTool(tool);
+
     // Recall tool — agents can query their own execution history
     if (this.recallCallbacks) {
       agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));
@@ -1694,6 +1709,20 @@ export class AgentManager {
     })) {
       agent.registerTool(tool);
     }
+
+    // Mailbox + working memory tools
+    const attnCtrl2 = agent.getAttentionController();
+    const mailboxToolCtx2: MailboxToolContext = {
+      agentId: id,
+      getMindState: () => attnCtrl2.getMindState(),
+      deferItem: (itemId, reason, ms) => attnCtrl2.deferItem(itemId, reason, ms),
+      dropItem: (itemId, reason) => attnCtrl2.dropItem(itemId, reason),
+      prioritizeItem: (itemId, p) => attnCtrl2.prioritizeItem(itemId, p),
+      updateWorkingMemory: (key, content) => agent.updateWorkingMemory(key, content),
+      clearWorkingMemory: (key) => agent.clearWorkingMemory(key),
+      getWorkingMemorySnapshot: () => agent.getWorkingMemorySnapshot(),
+    };
+    for (const tool of createMailboxTools(mailboxToolCtx2)) agent.registerTool(tool);
 
     if (this.recallCallbacks) {
       agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));

@@ -33,7 +33,6 @@ import {
   COMPLETION_MARKER,
   TRIAGE_CONTEXT_MESSAGES_MAX,
   TRIAGE_CONTEXT_MSG_CHARS,
-  DELIBERATION_MAX_TOOL_ITERATIONS,
   DELIBERATION_ALLOWED_TOOLS,
   TRIAGE_ITEM_CONTENT_CHARS,
   PRIORITY_LABELS,
@@ -293,8 +292,10 @@ export class Agent {
   private processingMailboxItemId?: string;
   /** Last activity type injected into main session — used to collapse consecutive duplicates like heartbeats. */
   private lastInjectedActivityType?: string;
-  /** Persistent situational awareness from the latest triage deliberation. */
-  private currentCognition?: string;
+  /** Agent-managed working memory: keyed entries with timestamps. Replaces former currentCognition. */
+  private workingMemory: Map<string, { text: string; updatedAt: number }> = new Map();
+  private static readonly WORKING_MEMORY_MAX_ENTRIES = 10;
+  private static readonly WORKING_MEMORY_MAX_CHARS = 4000;
   /** Cognitive Preparation Pipeline instance (null when CPP is disabled) */
   private cognitivePrep?: CognitivePreparation;
   /** Ring buffer of recent activity summaries for triage context. */
@@ -1893,15 +1894,17 @@ export class Agent {
       lines.push(`Dropped ${result.dropItemIds.length} item(s)`);
     }
     lines.push(`Reasoning: ${result.reasoning}`);
-    this.currentCognition = lines.join('\n');
+    this.workingMemory.set('triage-decision', {
+      text: lines.join('\n'),
+      updatedAt: Date.now(),
+    });
   }
 
   private updateCognitionFromDeliberation(result: DeliberationResult): void {
+    const lines: string[] = [];
     if (result.situationalAwareness) {
-      this.currentCognition = `## Current Situational Awareness (deliberation)\n${result.situationalAwareness}`;
+      lines.push(result.situationalAwareness);
     } else {
-      const lines: string[] = [];
-      lines.push('## Current Situational Awareness (deliberation)');
       lines.push(`Decision: Processing item [${result.processItemId}]`);
       if (result.inlineCompletedIds.length > 0) {
         lines.push(`Handled ${result.inlineCompletedIds.length} item(s) inline`);
@@ -1913,8 +1916,11 @@ export class Agent {
         lines.push(`Dropped ${result.dropItemIds.length} item(s)`);
       }
       lines.push(`Reasoning: ${result.reasoning}`);
-      this.currentCognition = lines.join('\n');
     }
+    this.workingMemory.set('deliberation', {
+      text: lines.join('\n'),
+      updatedAt: Date.now(),
+    });
   }
 
   /**
@@ -1950,20 +1956,26 @@ export class Agent {
     const deliberationPrompt = [
       '[DELIBERATION MODE]',
       '',
-      `You have ${allItems.length} items in your mailbox that need attention. Before diving into work, take a moment to deliberate.`,
+      `You have ${allItems.length} items in your mailbox. Review and decide what to focus on.`,
       '',
       '## Your Mailbox',
       itemsSection,
       '',
-      '## What You Can Do',
-      '1. **Gather context**: Use recall_activity, task_get, memory_search to understand the full picture.',
-      '2. **Handle simple items inline**: For trivial acknowledgments, quick replies, or status notifications, handle them now using notify_user, task_comment, or agent_send_message. Mark them as inline_completed in your final decision.',
-      '3. **Choose your focus**: Decide which complex item deserves your full attention next.',
-      '4. **Defer or drop**: Explicitly defer items for later or drop stale/redundant ones.',
+      '## Available Actions',
+      '1. **Inspect**: `check_mailbox` to refresh your queue view.',
+      '2. **Gather context**: `recall_activity`, `task_get`, `memory_search` for background.',
+      '3. **Manage queue**: `defer_mailbox_item` to postpone, `drop_mailbox_item` to discard stale items.',
+      '4. **Handle inline**: `notify_user`, `task_comment`, `agent_send_message` for trivial replies. Mark as inline_completed.',
+      '5. **Save awareness**: `update_working_memory` to record your assessment for future calls.',
+      '6. **Decide**: `complete_deliberation` with your final focus decision.',
       '',
-      '**Efficiency tip**: Items sharing the same taskId/requirementId can be handled with a single task_get + one consolidated reply. Use reply_to_comment_id to reference the key comment. Batch them as inline_completed.',
+      '## Guidelines',
+      '- Human messages (priority 0) always take precedence.',
+      '- Items sharing a taskId/requirementId/channel → batch handle with one context lookup.',
+      '- Drop old informational items (heartbeats, status updates) aggressively.',
+      '- Your working memory persists across processing cycles — use it for continuity.',
       '',
-      'When ready, call `complete_deliberation` with your decision.',
+      'When ready, call `complete_deliberation`.',
     ].join('\n');
 
     this.pendingDeliberationResult = undefined;
@@ -1981,7 +1993,6 @@ export class Agent {
         {
           sessionId: `deliberation_${this.id}_${Date.now()}`,
           scenario: 'deliberation',
-          maxToolIterations: DELIBERATION_MAX_TOOL_ITERATIONS,
           allowedTools,
         },
       );
@@ -2030,8 +2041,20 @@ export class Agent {
     for (const [name, instructions] of this.activatedSkillInstructions) {
       parts.push(`<skill name="${name}">\n${instructions}\n</skill>`);
     }
-    if (this.currentCognition) {
-      parts.push(this.currentCognition);
+    if (this.workingMemory.size > 0) {
+      const wmLines = ['## Working Memory'];
+      wmLines.push('Your self-maintained situational awareness. Update or clear entries via tools as needed.');
+      wmLines.push('');
+      for (const [key, entry] of this.workingMemory) {
+        const ageMs = Date.now() - entry.updatedAt;
+        const ageLabel = ageMs < 60_000 ? `${Math.round(ageMs / 1000)}s ago`
+          : ageMs < 3_600_000 ? `${Math.round(ageMs / 60_000)}min ago`
+          : `${(ageMs / 3_600_000).toFixed(1)}h ago`;
+        wmLines.push(`### ${key} (${ageLabel})`);
+        wmLines.push(entry.text);
+        wmLines.push('');
+      }
+      parts.push(wmLines.join('\n'));
     }
     return parts.length > 0 ? parts.join('\n\n') : undefined;
   }
@@ -2061,7 +2084,12 @@ export class Agent {
       roleDescription: this.role.systemPrompt.slice(0, 300),
       status: this.state.status,
       currentTask: this.currentTaskId,
-      recentActivity: this.recentActivityRing.slice(-5),
+      recentActivity: [
+        ...this.recentActivityRing.slice(-5),
+        ...(this.workingMemory.size > 0
+          ? [`[working_memory] ${this.workingMemory.size} entries: ${[...this.workingMemory.keys()].join(', ')}`]
+          : []),
+      ],
     };
 
     const tasks = this.tasksFetcher?.();
@@ -2790,14 +2818,24 @@ export class Agent {
             }
           }
 
-          // Early preemption check after parallel tools complete — skip next
-          // LLM call and reach the yield point faster when an interrupt arrived
-          // during tool execution.
+          // Early preemption check after parallel tools complete — if an
+          // interrupt arrived during tool execution, skip the next LLM call and
+          // go straight to the yield point. Do NOT break out of the while-loop
+          // here: breaking exits without a preemption marker, causing the item
+          // to be marked completed instead of deferred.
           if (isPreemptable && this.attentionController.hasInterruptPending()) {
-            log.info('Interrupt arrived during parallel tool execution, breaking early', {
+            log.info('Interrupt arrived during parallel tool execution, skipping to yield point', {
               agentId: this.id, scenario,
             });
-            break;
+            const earlyYield = await this.checkAttentionYieldPoint();
+            if (earlyYield.decision === 'preempt' || earlyYield.decision === 'cancel') {
+              const marker = earlyYield.decision === 'cancel' ? '[cancelled]' : '[preempted]';
+              log.info(`handleMessage ${earlyYield.decision} by higher-priority item (early)`, {
+                agentId: this.id, scenario,
+                preemptedBy: earlyYield.item?.sourceType,
+              });
+              return marker;
+            }
           }
         }
 
@@ -4434,6 +4472,7 @@ export class Agent {
             reasoningContent: response.reasoningContent,
           });
 
+          let risInterruptedDuringTools = false;
           for (const tc of response.toolCalls!) {
             if (this.attentionController.hasInterruptPending()) {
               this.memory.appendMessage(sessionId, {
@@ -4441,6 +4480,7 @@ export class Agent {
                 content: '[Tool skipped — preempted by higher-priority item]',
                 toolCallId: tc.id,
               });
+              risInterruptedDuringTools = true;
               continue;
             }
             emit('tool_start', tc.name, { arguments: tc.arguments });
@@ -4463,6 +4503,23 @@ export class Agent {
               this.memory.appendMessage(sessionId, { role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
             }
           }
+        }
+
+        // Attention yield point — respondInSession is preemptable.
+        const risYield = await this.checkAttentionYieldPoint();
+        if (risYield.decision === 'preempt' || risYield.decision === 'cancel') {
+          const marker = risYield.decision === 'cancel' ? '[cancelled]' : '[preempted]';
+          log.info(`respondInSession ${risYield.decision} by higher-priority item`, {
+            agentId: this.id, sessionId,
+            preemptedBy: risYield.item?.sourceType,
+          });
+          return marker;
+        }
+        if (risYield.decision === 'merge' && risYield.item) {
+          this.memory.appendMessage(sessionId, {
+            role: 'user',
+            content: `[LIVE UPDATE] ${risYield.item.payload.summary}\n\n${risYield.item.payload.content}`,
+          });
         }
 
         const preparedCont = await this.contextEngine.prepareMessages({
@@ -4536,6 +4593,34 @@ export class Agent {
       type,
       content,
     });
+  }
+
+  updateWorkingMemory(key: string, content: string): { status: string; key: string; evicted?: string } {
+    let evicted: string | undefined;
+    if (this.workingMemory.size >= Agent.WORKING_MEMORY_MAX_ENTRIES && !this.workingMemory.has(key)) {
+      let oldestKey: string | undefined;
+      let oldestTime = Infinity;
+      for (const [k, v] of this.workingMemory) {
+        if (v.updatedAt < oldestTime) { oldestTime = v.updatedAt; oldestKey = k; }
+      }
+      if (oldestKey) { this.workingMemory.delete(oldestKey); evicted = oldestKey; }
+    }
+    const truncated = content.slice(0, Agent.WORKING_MEMORY_MAX_CHARS);
+    this.workingMemory.set(key, { text: truncated, updatedAt: Date.now() });
+    return { status: 'updated', key, ...(evicted ? { evicted } : {}) };
+  }
+
+  clearWorkingMemory(key?: string): { status: string; cleared: number } {
+    if (key) {
+      return { status: 'cleared', cleared: this.workingMemory.delete(key) ? 1 : 0 };
+    }
+    const count = this.workingMemory.size;
+    this.workingMemory.clear();
+    return { status: 'cleared', cleared: count };
+  }
+
+  getWorkingMemorySnapshot(): Array<{ key: string; text: string; updatedAt: number }> {
+    return [...this.workingMemory.entries()].map(([key, v]) => ({ key, ...v }));
   }
 
   registerTool(handler: AgentToolHandler): void {

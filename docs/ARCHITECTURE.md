@@ -104,6 +104,14 @@ Key components:
 - **Deferred Item Auto-Resume** — Items deferred by preemption or explicit deferral are automatically resurfaced when the agent is idle (`resurfaceDue()`)
 - **Triage with Read-Only Tools** — When multiple items compete for attention, the triage LLM can invoke a curated set of read-only tools (`task_list`, `task_get`, `requirement_list`, etc.) to gather context before deciding priority
 
+Agents now have tools to actively manage their mailbox queue and working memory:
+
+- `check_mailbox` (read-only inspection, all scenarios)
+- `defer_mailbox_item` / `drop_mailbox_item` (queue management)
+- `update_working_memory` / `clear_working_memory` (cognition management)
+
+This shifts from system-driven to agent-driven cognition. The deliberation threshold is lowered to 2 items, making agent-driven triage the norm.
+
 External callers use the mailbox API exclusively:
 - `agent.sendMessage()` — Awaitable chat/notification
 - `agent.sendMessageStream()` — Streaming chat (SSE)
@@ -130,6 +138,8 @@ Stimulus → Triage (what to focus on)
             Phase 4: Assembly   — merge stable + prepared context
          → Main LLM Call (with rich, curated context)
 ```
+
+The **Appraisal** phase reads from the agent's explicit working memory (`workingMemory`), not only persona and transient runtime state.
 
 Four cognitive depth levels control how much preparation happens:
 - **D0 Reflexive**: No preparation (heartbeat OK, acks)
@@ -166,13 +176,14 @@ Organization (Org)
 
 ### 3.4 Memory and Knowledge System
 
-**Agent memory (three layers, based on Tulving's classification):**
+**Agent memory (four layers, based on Tulving's classification plus explicit working memory):**
 
 | Layer | Storage | Role |
 |-------|---------|------|
 | **Procedural** | `role/ROLE.md` + skills | How the agent operates. Identity, behavioral rules. |
 | **Semantic** | `MEMORY.md` + `memories.json` | What the agent knows. Agent-organized knowledge. |
 | **Episodic** | `sessions/*.json` (current) + SQLite `agent_activities` (past) | What happened. Current conversation + searchable activity history. |
+| **Working Memory** | `workingMemory` Map | Volatile, agent-managed, keyed entries (update/clear via tools). Replaces the former system-only `currentCognition`. |
 
 The agent retrieves past episodes via the `recall_activity` tool (keyword search on summary/keywords). Daily logs (`daily-logs/`) are a write-only audit trail for humans — never read back into prompts.
 

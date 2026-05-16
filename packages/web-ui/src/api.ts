@@ -438,6 +438,8 @@ export interface EnrichedMailboxItem {
 export interface AgentMailboxResponse {
   queued: Array<{ id: string; sourceType: string; priority: number; status: string; summary: string; queuedAt: string }>;
   queueDepth: number;
+  statusCounts?: Record<string, number>;
+  sourceTypeCounts?: Record<string, number>;
   history: EnrichedMailboxItem[];
 }
 

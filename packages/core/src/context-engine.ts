@@ -618,6 +618,73 @@ export class ContextEngine {
       lines.push(`**Merged context** (absorbed into current work):\n${ctx.mergedContent.slice(0, SYSTEM_MAILBOX_MERGED_CHARS)}`);
     }
 
+    if (ctx.topQueued && ctx.topQueued.length > 0) {
+      lines.push('');
+      lines.push('## Message Processing Checklists');
+      lines.push('');
+      lines.push('### When Deliberating (multiple queued items)');
+      lines.push('1. **Scan**: Read all items — identify human messages, urgent items, stale items.');
+      lines.push('2. **Clean**: `drop_mailbox_item` for stale informational items (old heartbeats, outdated status updates, superseded notifications).');
+      lines.push('3. **Group**: Items sharing a taskId / requirementId / channel → plan to handle together.');
+      lines.push('4. **Inline**: Handle trivial items now (quick ack via `notify_user`, one-line `task_comment`). Mark as inline_completed.');
+      lines.push('5. **Assess**: `update_working_memory` with your situational summary — priorities, blockers, what you plan to do.');
+      lines.push('6. **Focus**: `complete_deliberation` — choose the most important remaining item.');
+      lines.push('');
+      lines.push('### Per-Type Processing');
+      lines.push('');
+      lines.push('**human_chat** (priority 0 — always process first):');
+      lines.push('- [ ] Read the full message carefully.');
+      lines.push('- [ ] Check working memory for ongoing conversation context.');
+      lines.push('- [ ] Respond directly — concise, human-friendly.');
+      lines.push('- [ ] If it requires substantial work → create a task, do NOT do the work inline.');
+      lines.push('- [ ] Update working memory if the situation changed.');
+      lines.push('');
+      lines.push('**a2a_message** (agent-to-agent):');
+      lines.push('- [ ] Who sent it? What do they need?');
+      lines.push('- [ ] Is your specific expertise required?');
+      lines.push('- [ ] Has another agent already answered? (`recall_context` if group chat)');
+      lines.push('- [ ] If not relevant to you → no response needed.');
+      lines.push('- [ ] If relevant → respond concisely with facts.');
+      lines.push('- [ ] Only @mention others if you genuinely need their specific expertise.');
+      lines.push('');
+      lines.push('**task_comment / requirement_comment**:');
+      lines.push('- [ ] Fetch full context first: `task_get` or `requirement_get`.');
+      lines.push('- [ ] Read ALL prior comments — understand the thread.');
+      lines.push('- [ ] Is the comment directed at you? Does it change your work?');
+      lines.push('- [ ] Reply with `reply_to_comment_id`. One consolidated reply if multiple comments.');
+      lines.push('- [ ] Does your reply add NEW information? If not → `[NO_REPLY_NEEDED]`.');
+      lines.push('');
+      lines.push('**task_status_update** (usually informational):');
+      lines.push('- [ ] Does this affect your current work or priorities?');
+      lines.push('- [ ] Does it unblock something you were waiting for?');
+      lines.push('- [ ] Usually no response needed — absorb into awareness.');
+      lines.push('- [ ] If it changes your priorities → `update_working_memory`.');
+      lines.push('');
+      lines.push('**review_request**:');
+      lines.push('- [ ] Call `task_get` — read task description, deliverables, notes.');
+      lines.push('- [ ] `file_read` all deliverable files. `git diff` if there is a task branch.');
+      lines.push('- [ ] Verify: does the work meet the requirements?');
+      lines.push('- [ ] `task_update` to approve (status=completed) or request revision (status=in_progress with feedback).');
+      lines.push('');
+      lines.push('**heartbeat**:');
+      lines.push('- [ ] Check for tasks in `review` status where you are reviewer — these block the team.');
+      lines.push('- [ ] Check for `failed` tasks to retry.');
+      lines.push('- [ ] Record lessons learned via `memory_save`.');
+      lines.push('- [ ] If nothing needs attention → HEARTBEAT_OK.');
+      lines.push('');
+      lines.push('### Working Memory Guidelines');
+      lines.push('- **Save**: current priorities, ongoing context, key decisions, blockers.');
+      lines.push('- **Update**: when situation changes — new task, resolved blocker, shifted priority.');
+      lines.push('- **Clear**: when a task completes, when context becomes irrelevant.');
+      lines.push('- **Do NOT save**: raw message content, large data — use `memory_save` for durable observations.');
+      lines.push('');
+      lines.push('### Mailbox Management Guidelines');
+      lines.push('- **Defer**: items you will handle later (not stale, just lower priority now). Optional: set defer_minutes.');
+      lines.push('- **Drop**: stale heartbeats, redundant status updates, superseded notifications, items already handled.');
+      lines.push('- **Never defer/drop**: human messages — the system prevents this.');
+      lines.push('- **Batch**: multiple comments on the same task → one `task_get` + one consolidated reply.');
+    }
+
     return lines.join('\n');
   }
 
@@ -797,22 +864,22 @@ export class ContextEngine {
       case 'deliberation':
         lines.push('You are in **deliberation mode** — reviewing your mailbox before committing to work.');
         lines.push('');
-        lines.push('**Purpose**: You have multiple pending items. Take a moment to understand the full picture before deciding what to focus on.');
+        lines.push('**Purpose**: You have multiple pending items. Assess the full picture before deciding.');
         lines.push('');
         lines.push('**What you can do**:');
-        lines.push('1. **Gather context**: Call tools like recall_activity, task_get, memory_search to understand history and commitments.');
-        lines.push('2. **Handle simple items inline**: For trivial acknowledgments or quick notifications, use notify_user, task_comment, or agent_send_message now. Mark them as inline_completed in your final decision.');
-        lines.push('3. **Choose your focus**: Decide which complex item deserves your full attention next.');
-        lines.push('4. **Defer or drop**: Explicitly defer items for later or drop stale/redundant ones.');
+        lines.push('1. **Inspect queue**: `check_mailbox` — see your full mailbox at any time.');
+        lines.push('2. **Gather context**: `recall_activity`, `task_get`, `memory_search` — understand history.');
+        lines.push('3. **Manage queue**: `defer_mailbox_item` — postpone items; `drop_mailbox_item` — discard stale ones.');
+        lines.push('4. **Handle inline**: `notify_user`, `task_comment`, `agent_send_message` — handle trivial items now.');
+        lines.push('5. **Record awareness**: `update_working_memory` — persist your situational assessment.');
         lines.push('');
         lines.push('**Rules**:');
         lines.push('- Human messages and comments are ALWAYS highest priority.');
-        lines.push('- Consider your active tasks, pending commitments, and recent conversation context.');
         lines.push('- Stale informational items (old heartbeats, status updates) should be dropped aggressively.');
-        lines.push('- **Batch comment responses**: If multiple items relate to the SAME task/requirement, handle as ONE batch — call task_get once, then post ONE consolidated reply with reply_to_comment_id pointing to the most important comment. Mark all items as inline_completed.');
-        lines.push('- When done, you MUST call the `complete_deliberation` tool with your decision.');
+        lines.push('- **Batch related items**: Multiple items for the same task/requirement → handle with ONE context lookup + ONE reply. Mark all as inline_completed.');
+        lines.push('- When done, call `complete_deliberation` with your decision.');
         lines.push('');
-        lines.push('**Communication channel**: Your text output is NOT visible to anyone. Only tool calls have effect. To reach humans, use `notify_user`. To reach agents, use `agent_send_message`.');
+        lines.push('**Communication channel**: Your text output is NOT visible to anyone. Only tool calls have effect.');
         break;
 
       case 'requirement_action':

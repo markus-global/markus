@@ -231,15 +231,34 @@ export class AgentMailbox {
       'requirement',
     );
 
+    // Group by channel: merge a2a_messages from the same group chat so the
+    // agent reads them as one conversation thread instead of N separate items.
+    // Skip items already grouped by task/requirement above.
+    removed += this.consolidateGroup(
+      (item) => {
+        if (item.sourceType !== 'a2a_message') return undefined;
+        if (item.payload.taskId || item.metadata?.taskId) return undefined;
+        if (item.payload.requirementId) return undefined;
+        return item.payload.extra?.channelKey as string | undefined;
+      },
+      'channel',
+      { skipProtectedCheck: true },
+    );
+
     if (removed > 0) {
       log.info('Pre-triage consolidation', { agentId: this.agentId, merged: removed });
     }
     return removed;
   }
 
+  private static readonly CONSOLIDATION_PROTECTED_TYPES: ReadonlySet<MailboxItemType> = new Set([
+    'human_chat',
+  ]);
+
   private consolidateGroup(
     getKey: (item: MailboxItem) => string | undefined,
     _groupType: string,
+    opts?: { skipProtectedCheck?: boolean },
   ): number {
     let removed = 0;
     const seen = new Map<string, number>();
@@ -248,6 +267,7 @@ export class AgentMailbox {
       const item = this.queue[i];
       if (item.status !== 'queued') continue;
       if (item.payload.extra?.triggerExecution) continue;
+      if (!opts?.skipProtectedCheck && AgentMailbox.CONSOLIDATION_PROTECTED_TYPES.has(item.sourceType)) continue;
 
       const key = getKey(item);
       if (!key) continue;
@@ -540,6 +560,20 @@ export class AgentMailbox {
     item.startedAt = new Date().toISOString();
     this.persistence?.updateStatus(item.id, 'processing', { startedAt: item.startedAt });
     return item;
+  }
+
+  getById(itemId: string): MailboxItem | undefined {
+    return this.queue.find(i => i.id === itemId);
+  }
+
+  updatePriority(itemId: string, newPriority: number): boolean {
+    const idx = this.queue.findIndex(i => i.id === itemId);
+    if (idx < 0) return false;
+    const item = this.queue.splice(idx, 1)[0]!;
+    item.priority = newPriority as MailboxPriority;
+    this.insertSorted(item);
+    this.persistence?.save(item);
+    return true;
   }
 
   /**

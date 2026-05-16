@@ -111,12 +111,12 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
     },
     ...(ctx.sendGroupMessage ? [{
       name: 'agent_send_group_message',
-      description: 'Send a message to a group chat channel (e.g., a team group chat). Messages are visible to all members. Use reply_to_message_id to create a visual reply link to a specific message.',
+      description: 'Send a message to a group chat channel. Use @Name or @[Full Name] in the message text to notify specific agents (this controls routing — without @, the message is just a broadcast). Use reply_to_message_id to create a visual reply link.',
       inputSchema: {
         type: 'object',
         properties: {
           channel_key: { type: 'string', description: 'The group chat channel key (e.g., "group:<teamId>")' },
-          message: { type: 'string', description: 'The message to send' },
+          message: { type: 'string', description: 'The message to send. Use @Name or @[Full Name] to direct the message to specific agents.' },
           reply_to_message_id: { type: 'string', description: 'Optional. The ID of a specific channel message you are replying to. Creates a visual reply link in the chat UI.' },
         },
         required: ['channel_key', 'message'],
@@ -202,7 +202,11 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
         required: ['scope'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
-        const scope = args['scope'] as string;
+        // Infer scope from provided arguments when the LLM omits it
+        let scope = args['scope'] as string | undefined;
+        if (!scope && args['channel_key']) {
+          scope = 'channel';
+        }
 
         if (scope === 'channel') {
           const channelKey = args['channel_key'] as string;

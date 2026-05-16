@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -595,11 +595,15 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
 
 function AgentMessageBody({
   msg, isStreaming, liveActivities, onViewModeChange,
+  onMentionClick,
+  knownNames,
 }: {
   msg: ChatMsg;
   isStreaming: boolean;
   liveActivities: import('../components/ActivityIndicator.tsx').ActivityStep[];
   onViewModeChange?: (mode: 'compact' | 'full') => void;
+  onMentionClick?: (name: string, event: ReactMouseEvent) => void;
+  knownNames?: string[];
 }) {
   const { t } = useTranslation(['team', 'common']);
   const segments = msg.segments;
@@ -678,7 +682,7 @@ function AgentMessageBody({
         )}
 
         {viewMode === 'compact' && displayText && (
-          <MarkdownMessage content={displayText} />
+          <MarkdownMessage content={displayText} onMentionClick={onMentionClick} knownNames={knownNames} />
         )}
 
         {isStopped && (
@@ -709,7 +713,7 @@ function AgentMessageBody({
           persistent={!isStreaming && hasActivities}
         />
       )}
-      {legacyText ? <MarkdownMessage content={legacyText} /> : null}
+      {legacyText ? <MarkdownMessage content={legacyText} onMentionClick={onMentionClick} knownNames={knownNames} /> : null}
       {isStopped && (
         <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
           <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
@@ -897,6 +901,14 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     setAvatarPopover(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isMobile, enterMobileDetail, switchToProfile]);
+
+  const handleMentionClick = useCallback((name: string, event: ReactMouseEvent) => {
+    const agent = agents.find(a => a.name.toLowerCase() === name.toLowerCase());
+    if (agent) {
+      const rect = (event.target as HTMLElement).getBoundingClientRect();
+      setAvatarPopover({ agentId: agent.id, top: rect.bottom, left: rect.left });
+    }
+  }, [agents]);
 
   // Mode & target
   const [chatMode, setChatMode] = useState<ChatMode>(
@@ -3242,7 +3254,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                         : ''
                     }`}>
                       {msg.sender === 'agent'
-                        ? <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" />
+                        ? <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" onMentionClick={handleMentionClick} knownNames={agents.map(a => a.name)} />
                         : <div className="text-sm text-fg-secondary whitespace-pre-wrap">
                             {msg.images && msg.images.length > 0 && (
                               <div className="flex flex-wrap gap-1.5 mb-1">
@@ -3251,7 +3263,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                                 ))}
                               </div>
                             )}
-                            {renderMentionText(msg.text, agents)}
+                            {renderMentionText(msg.text, agents, (agent, e) => {
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              setAvatarPopover({ agentId: agent.id, top: rect.bottom, left: rect.left });
+                            })}
                           </div>
                       }
                       {msg.isNotification && (
@@ -3324,7 +3339,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                                   ))}
                                 </div>
                               )}
-                              {msg.text && <span className="leading-relaxed">{renderMentionText(msg.text, agents)}</span>}
+                              {msg.text && <span className="leading-relaxed">{renderMentionText(msg.text, agents, (agent, e) => {
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                setAvatarPopover({ agentId: agent.id, top: rect.bottom, left: rect.left });
+                              })}</span>}
                             </div>
                           : <AgentMessageBody
                               msg={msg}
@@ -3335,6 +3353,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                                 if (mode === 'full') next.add(msg.id); else next.delete(msg.id);
                                 return next;
                               })}
+                              onMentionClick={handleMentionClick}
+                              knownNames={agents.map(a => a.name)}
                             />
                         }
                         {msg.isNotification && (
