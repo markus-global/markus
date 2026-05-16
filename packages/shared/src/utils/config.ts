@@ -65,23 +65,10 @@ export interface MarkusConfig {
   browser?: {
     /** Bring Chrome tabs/windows to foreground when agent navigates (default: false) */
     bringToFront?: boolean;
-    /** Connection mode: 'dedicated' auto-launches a Chrome instance (no permission dialogs); 'autoConnect' uses the user's running Chrome (dialogs required). Default: 'dedicated' */
-    connectionMode?: 'dedicated' | 'autoConnect';
-    /** Remote debugging port for dedicated mode (default: 9222). Rarely needs changing. */
+    /** Remote debugging port for persistent Chrome connection (avoids repeated permission dialogs). Set to e.g. 9222 to enable. */
     remoteDebuggingPort?: number;
     /** Automatically close agent-owned tabs when the task completes (default: true) */
     autoCloseTabs?: boolean;
-    /** MCP process pool settings for chrome-devtools */
-    pool?: {
-      /** Enable pool mode (default: true) */
-      enabled?: boolean;
-      /** Minimum (hot-standby) processes to keep alive (default: 3) */
-      minSize?: number;
-      /** Soft max size. 0 = unlimited. Exceeding logs a warning (default: 0) */
-      maxSize?: number;
-      /** Idle time in ms before surplus processes are killed (default: 300000 = 5 min) */
-      shrinkAfterMs?: number;
-    };
   };
   integrations?: {
     feishu?: { appId?: string; appSecret?: string };

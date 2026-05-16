@@ -21,7 +21,6 @@ interface OpenClawPreview { found: boolean; summary: { configPath: string; model
 const PROFILE_STEP_ID = 'profile';
 const LLM_STEP_ID = 'llm';
 const SEARCH_STEP_ID = 'search';
-const BROWSER_STEP_ID = 'browser';
 
 export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Props) {
   const { t } = useTranslation(['onboarding', 'common']);
@@ -66,11 +65,6 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
   const [searchMsg, setSearchMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const searchDetected = useRef(false);
 
-  // Chrome detection state
-  const [chromeInstalled, setChromeInstalled] = useState<boolean | null>(null);
-  const [chromeChecking, setChromeChecking] = useState(false);
-  const chromeDetected = useRef(false);
-
   const authHeaders = (): Record<string, string> => ({
     'Content-Type': 'application/json',
     Authorization: `Bearer ${localStorage.getItem('markus_token') ?? ''}`,
@@ -111,27 +105,6 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, earlySearchStepIdx]);
-
-  const earlyBrowserStepIdx = skipProfile ? 4 : 5;
-  useEffect(() => {
-    if (step === earlyBrowserStepIdx && !chromeDetected.current) {
-      chromeDetected.current = true;
-      void checkChrome();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, earlyBrowserStepIdx]);
-
-  const checkChrome = async () => {
-    setChromeChecking(true);
-    try {
-      const res = await fetch('/api/settings/browser/check', { headers: authHeaders() });
-      if (res.ok) {
-        const data = await res.json() as { chromeInstalled: boolean };
-        setChromeInstalled(data.chromeInstalled);
-      }
-    } catch { /* ignore */ }
-    finally { setChromeChecking(false); }
-  };
 
   const detectEnvModels = async () => {
     setEnvLoading(true);
@@ -601,45 +574,6 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
           {searchMsg && (
             <div className={`text-xs px-3 py-2 rounded-lg ${searchMsg.type === 'ok' ? 'bg-green-500/10 text-green-600 border border-green-500/30' : 'bg-red-500/10 text-red-500 border border-red-500/30'}`}>
               {searchMsg.text}
-            </div>
-          )}
-        </div>
-      ),
-    },
-    // Step: Browser check
-    {
-      id: BROWSER_STEP_ID,
-      title: t('browser.title'),
-      subtitle: t('browser.subtitle'),
-      content: (
-        <div className="space-y-4">
-          {chromeChecking && (
-            <div className="text-sm text-fg-tertiary">{t('browser.checking')}</div>
-          )}
-          {chromeInstalled === true && (
-            <div className="flex items-center gap-3 bg-green-500/10 border border-green-500/30 rounded-xl p-4">
-              <span className="text-green-500 text-lg">&#x2713;</span>
-              <div>
-                <div className="text-sm font-medium text-fg-primary">{t('browser.installed')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('browser.installedDesc')}</div>
-              </div>
-            </div>
-          )}
-          {chromeInstalled === false && (
-            <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 space-y-3">
-              <div className="flex items-center gap-3">
-                <span className="text-amber-500 text-lg">&#x26A0;</span>
-                <div className="text-sm font-medium text-fg-primary">{t('browser.notInstalled')}</div>
-              </div>
-              <div className="text-xs text-fg-tertiary">{t('browser.notInstalledDesc')}</div>
-              <a
-                href="https://www.google.com/chrome/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-block px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition-colors"
-              >
-                {t('browser.downloadChrome')}
-              </a>
             </div>
           )}
         </div>

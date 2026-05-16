@@ -25,7 +25,6 @@ import {
   type HandbookProject,
   discoverSkillsInDir,
   WELL_KNOWN_SKILL_DIRS,
-  isChromeInstalled,
   type AgentManager,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
@@ -6864,26 +6863,14 @@ EXPLANATION_END`;
     }
 
     // Settings — Browser automation
-    if (path === '/api/settings/browser/check' && req.method === 'GET') {
-      const result = isChromeInstalled();
-      this.json(res, 200, { chromeInstalled: result.installed, chromePath: result.path });
-      return;
-    }
-
     if (path === '/api/settings/browser' && req.method === 'GET') {
       const { loadConfig: loadCfg } = await import('@markus/shared');
       const currentConfig = loadCfg(this.markusConfigPath);
       const browser = currentConfig.browser ?? {};
       this.json(res, 200, {
         bringToFront: browser.bringToFront ?? false,
-        connectionMode: browser.connectionMode ?? 'dedicated',
-        remoteDebuggingPort: browser.remoteDebuggingPort ?? 9222,
+        remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
-        pool: {
-          minSize: browser.pool?.minSize ?? 3,
-          maxSize: browser.pool?.maxSize ?? 0,
-          shrinkAfterMs: browser.pool?.shrinkAfterMs ?? 300000,
-        },
       });
       return;
     }
@@ -6894,17 +6881,8 @@ EXPLANATION_END`;
       const body = await this.readBody(req);
       const updates: Record<string, unknown> = {};
       if (typeof body['bringToFront'] === 'boolean') updates.bringToFront = body['bringToFront'];
-      if (body['connectionMode'] === 'dedicated' || body['connectionMode'] === 'autoConnect') updates.connectionMode = body['connectionMode'];
       if (typeof body['remoteDebuggingPort'] === 'number') updates.remoteDebuggingPort = body['remoteDebuggingPort'];
       if (typeof body['autoCloseTabs'] === 'boolean') updates.autoCloseTabs = body['autoCloseTabs'];
-      if (body['pool'] && typeof body['pool'] === 'object') {
-        const poolBody = body['pool'] as Record<string, unknown>;
-        const poolUpdates: Record<string, unknown> = {};
-        if (typeof poolBody['minSize'] === 'number') poolUpdates.minSize = Math.max(0, Math.round(poolBody['minSize']));
-        if (typeof poolBody['maxSize'] === 'number') poolUpdates.maxSize = Math.max(0, Math.round(poolBody['maxSize']));
-        if (typeof poolBody['shrinkAfterMs'] === 'number') poolUpdates.shrinkAfterMs = Math.max(0, Math.round(poolBody['shrinkAfterMs']));
-        if (Object.keys(poolUpdates).length > 0) updates.pool = poolUpdates;
-      }
       try {
         saveConfig({ browser: updates } as any, this.markusConfigPath);
         const am = this.orgService.getAgentManager();
@@ -6936,14 +6914,8 @@ EXPLANATION_END`;
       const browser = currentConfig.browser ?? {};
       this.json(res, 200, {
         bringToFront: browser.bringToFront ?? false,
-        connectionMode: browser.connectionMode ?? 'dedicated',
-        remoteDebuggingPort: browser.remoteDebuggingPort ?? 9222,
+        remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
-        pool: {
-          minSize: browser.pool?.minSize ?? 3,
-          maxSize: browser.pool?.maxSize ?? 0,
-          shrinkAfterMs: browser.pool?.shrinkAfterMs ?? 300000,
-        },
       });
       return;
     }

@@ -242,18 +242,7 @@
     "tabsForeground": "Tabs will be brought to foreground",
     "tabsBackground": "Tabs will stay in background",
     "usingPort": "Using persistent connection on port {{port}} (no more permission dialogs)",
-    "usingAutoConnect": "Using auto-connect mode (permission dialog required on each connection)",
-    "connectionMode": "Connection Mode",
-    "dedicatedMode": "Dedicated Instance (Recommended)",
-    "dedicatedModeDesc": "Auto-launches a dedicated Chrome instance. Zero permission dialogs. Website sessions are isolated from your daily browser.",
-    "autoConnectMode": "Auto Connect",
-    "autoConnectModeDesc": "Connects to your running Chrome. Access existing login sessions, but requires permission approval each time.",
-    "restartRequired": "Saved. Restart Markus for changes to take effect.",
-    "poolSize": "Process Pool Size",
-    "poolSizeDesc": "Number of browser MCP processes kept alive for fast agent access. Agents acquire a process from the pool instead of spawning a new one each time.",
-    "shrinkAfter": "Pool Shrink Timeout",
-    "shrinkAfterDesc": "How long an idle surplus process stays alive before being reclaimed. Processes beyond the pool size are removed after this timeout.",
-    "minutes": "min"
+    "usingAutoConnect": "Using auto-connect mode (permission dialog required on each connection)"
   },
   "dataStorage": {
     "title": "Data & Storage",

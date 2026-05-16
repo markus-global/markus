@@ -306,23 +306,6 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     agentManager.setBrowserRemoteDebuggingPort(config.browser.remoteDebuggingPort);
   }
 
-  // Initialize MCP process pool for chrome-devtools
-  const poolEnabled = config.browser?.pool?.enabled !== false;
-  if (poolEnabled) {
-    try {
-      await agentManager.initMcpPool(
-        {
-          minSize: config.browser?.pool?.minSize ?? 3,
-          maxSize: config.browser?.pool?.maxSize ?? 0,
-          shrinkAfterMs: config.browser?.pool?.shrinkAfterMs ?? 300_000,
-        },
-        { command: 'npx', args: ['-y', 'chrome-devtools-mcp@latest', '--autoConnect'] },
-      );
-    } catch (err) {
-      log.warn('Failed to initialize MCP pool, falling back to per-agent mode', { error: String(err) });
-    }
-  }
-
   taskService.setAgentManager(agentManager);
 
   const orgService = new OrganizationService(agentManager, roleLoader, storage ?? undefined);

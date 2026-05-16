@@ -90,16 +90,6 @@
       "saveFailed": "保存资料失败，请重试。"
     }
   },
-  "browser": {
-    "title": "浏览器自动化",
-    "subtitle": "智能体使用 Chrome 浏览网页、测试应用、检查页面",
-    "checking": "正在检测 Chrome 安装...",
-    "installed": "已检测到 Chrome",
-    "installedDesc": "浏览器自动化已就绪。智能体将使用专属 Chrome 实例，零权限弹窗。",
-    "notInstalled": "未检测到 Chrome",
-    "notInstalledDesc": "浏览器自动化需要 Google Chrome。安装后智能体即可浏览网页、测试 Web 应用和截图。没有 Chrome 也可以使用 Markus，跳过此步即可。",
-    "downloadChrome": "下载 Chrome"
-  },
   "done": {
     "title": "一切就绪",
     "subtitle": "开始搭建你的 AI 团队",

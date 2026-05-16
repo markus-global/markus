@@ -242,18 +242,7 @@
     "tabsForeground": "标签页将置于前台",
     "tabsBackground": "标签页将保留在后台",
     "usingPort": "正在使用端口 {{port}} 的持久连接（不再出现权限对话框）",
-    "usingAutoConnect": "正在使用自动连接模式（每次连接都需要权限对话框）",
-    "connectionMode": "连接模式",
-    "dedicatedMode": "独立实例（推荐）",
-    "dedicatedModeDesc": "自动启动专属 Chrome 实例，零权限弹窗。网站登录态独立于日常浏览器。",
-    "autoConnectMode": "自动连接",
-    "autoConnectModeDesc": "连接当前正在使用的 Chrome，可访问已登录网站，但每次连接需确认权限。",
-    "restartRequired": "已保存，重启 Markus 后生效。",
-    "poolSize": "进程池大小",
-    "poolSizeDesc": "常驻的浏览器 MCP 进程数量。智能体从池中获取进程而非每次新建，减少资源开销和 Chrome 权限弹窗。",
-    "shrinkAfter": "空闲回收时间",
-    "shrinkAfterDesc": "超出池大小的多余空闲进程在此时间后自动回收销毁。池内进程不受影响。",
-    "minutes": "分钟"
+    "usingAutoConnect": "正在使用自动连接模式（每次连接都需要权限对话框）"
   },
   "dataStorage": {
     "title": "数据与存储",
