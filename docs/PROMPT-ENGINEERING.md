@@ -151,7 +151,7 @@ Seven distinct instruction sets depending on `scenario` parameter. Each scenario
 | `task_execution` | Isolated session. Decompose → execute → `task_submit_review`. | Visible in **task execution logs** (Work page) | `notify_user` for critical updates; `agent_send_message` for agents |
 | `heartbeat` | Brief check-in: review tasks, retry failures, self-evolution. | **Not visible** to anyone | `notify_user` (only way to reach humans); `agent_send_message` for agents |
 | `a2a` | Coordination only. Concise, structured. Complex work → `task_create`. | Visible to **peer agent** only | Reply directly; `notify_user` to escalate to humans |
-| `comment_response` | Context-first protocol. Only comment when adding new information. | **Not directly visible** | `task_comment` / `requirement_comment` for thread; `notify_user` if urgent |
+| `comment_response` | Context-first protocol. Batch awareness (handle bundled comments as one). Use `reply_to_comment_id` for structural quoting. Convergence check before replying. | **Not directly visible** | `task_comment` / `requirement_comment` for thread (with `reply_to_comment_id`); `notify_user` if urgent |
 | `review` | Evaluate deliverable quality against acceptance criteria. | **Not directly visible** | `task_update` for verdict; `notify_user` optionally |
 | `memory_consolidation` | Internal memory management. Purely private. | **Not visible**; internal only | No communication tools needed |
 
@@ -391,7 +391,9 @@ The sender's identity is injected via `senderIdentity` in `buildSystemPrompt`. C
 Group chat messages (to `group:<teamId>` channels) are broadcast to ALL team members simultaneously via `processGroupChatReply()` in `api-server.ts`. Each agent processes the message independently with `scenario: 'chat'`. A group chat prefix is injected before the user message with rules:
 - Only respond if your role/expertise is specifically relevant
 - Check channel history — do not repeat what another agent already said
-- Prefer `[NO_RESPONSE]` when in doubt — silence is better than noise
+- **DEFAULT IS SILENCE**: Before responding, check (a) has another agent already given a similar answer? (b) does your response add unique expertise? If no → `[NO_RESPONSE]`
+- **@mention discipline**: Only @mention another agent when you have a specific question requiring their expertise
+- **Reply clarity**: Use `reply_to_message_id` in `agent_send_group_message` to link replies to specific messages for conversation clarity
 - Be concise — multi-party conversation, short actionable responses only
 
 Empty or `[NO_RESPONSE]` replies are silently discarded (not persisted or broadcast).

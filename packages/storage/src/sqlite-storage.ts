@@ -642,6 +642,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'users', column: 'deleted_at', sql: 'ALTER TABLE users ADD COLUMN deleted_at TEXT' },
     { table: 'agents', column: 'deleted_at', sql: 'ALTER TABLE agents ADD COLUMN deleted_at TEXT' },
     { table: 'deliverables', column: 'format', sql: 'ALTER TABLE deliverables ADD COLUMN format TEXT' },
+    { table: 'task_comments', column: 'reply_to_id', sql: 'ALTER TABLE task_comments ADD COLUMN reply_to_id TEXT' },
+    { table: 'requirement_comments', column: 'reply_to_id', sql: 'ALTER TABLE requirement_comments ADD COLUMN reply_to_id TEXT' },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -1655,14 +1657,15 @@ export class SqliteTaskCommentRepo {
     attachments?: unknown[];
     mentions?: string[];
     activityId?: string;
+    replyToId?: string;
   }) {
     const id = generateId('tc');
     const ts = now();
     this.db
       .prepare(
-        'INSERT INTO task_comments (id, task_id, author_id, author_name, author_type, content, attachments, mentions, activity_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO task_comments (id, task_id, author_id, author_name, author_type, content, attachments, mentions, activity_id, reply_to_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
-      .run(id, data.taskId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), data.activityId ?? null, ts);
+      .run(id, data.taskId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), data.activityId ?? null, data.replyToId ?? null, ts);
     return {
       id,
       taskId: data.taskId,
@@ -1673,6 +1676,7 @@ export class SqliteTaskCommentRepo {
       attachments: data.attachments ?? [],
       mentions: data.mentions ?? [],
       activityId: data.activityId,
+      replyToId: data.replyToId,
       createdAt: new Date(ts),
     };
   }
@@ -1680,7 +1684,11 @@ export class SqliteTaskCommentRepo {
   getByTask(taskId: string) {
     return (
       this.db
-        .prepare('SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC')
+        .prepare(
+          `SELECT c.*, r.author_name AS reply_to_author, SUBSTR(r.content, 1, 120) AS reply_to_content
+           FROM task_comments c LEFT JOIN task_comments r ON c.reply_to_id = r.id
+           WHERE c.task_id = ? ORDER BY c.created_at ASC`
+        )
         .all(taskId) as Record<string, unknown>[]
     ).map(r => ({
       id: r['id'] as string,
@@ -1692,6 +1700,9 @@ export class SqliteTaskCommentRepo {
       attachments: fromJson(r['attachments'] as string),
       mentions: (fromJson(r['mentions'] as string) ?? []) as string[],
       activityId: r['activity_id'] as string | undefined,
+      replyToId: (r['reply_to_id'] as string) ?? undefined,
+      replyToAuthor: (r['reply_to_author'] as string) ?? undefined,
+      replyToContent: (r['reply_to_content'] as string) ?? undefined,
       createdAt: toDate(r['created_at'] as string)!,
     }));
   }
@@ -1713,14 +1724,15 @@ export class SqliteRequirementCommentRepo {
     attachments?: unknown[];
     mentions?: string[];
     activityId?: string;
+    replyToId?: string;
   }) {
     const id = generateId('rc');
     const ts = now();
     this.db
       .prepare(
-        'INSERT INTO requirement_comments (id, requirement_id, author_id, author_name, author_type, content, attachments, mentions, activity_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO requirement_comments (id, requirement_id, author_id, author_name, author_type, content, attachments, mentions, activity_id, reply_to_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
-      .run(id, data.requirementId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), data.activityId ?? null, ts);
+      .run(id, data.requirementId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), data.activityId ?? null, data.replyToId ?? null, ts);
     return {
       id,
       requirementId: data.requirementId,
@@ -1731,6 +1743,7 @@ export class SqliteRequirementCommentRepo {
       attachments: data.attachments ?? [],
       mentions: data.mentions ?? [],
       activityId: data.activityId,
+      replyToId: data.replyToId,
       createdAt: new Date(ts),
     };
   }
@@ -1738,7 +1751,11 @@ export class SqliteRequirementCommentRepo {
   getByRequirement(requirementId: string) {
     return (
       this.db
-        .prepare('SELECT * FROM requirement_comments WHERE requirement_id = ? ORDER BY created_at ASC')
+        .prepare(
+          `SELECT c.*, r.author_name AS reply_to_author, SUBSTR(r.content, 1, 120) AS reply_to_content
+           FROM requirement_comments c LEFT JOIN requirement_comments r ON c.reply_to_id = r.id
+           WHERE c.requirement_id = ? ORDER BY c.created_at ASC`
+        )
         .all(requirementId) as Record<string, unknown>[]
     ).map(r => ({
       id: r['id'] as string,
@@ -1750,6 +1767,9 @@ export class SqliteRequirementCommentRepo {
       attachments: fromJson(r['attachments'] as string),
       mentions: (fromJson(r['mentions'] as string) ?? []) as string[],
       activityId: r['activity_id'] as string | undefined,
+      replyToId: (r['reply_to_id'] as string) ?? undefined,
+      replyToAuthor: (r['reply_to_author'] as string) ?? undefined,
+      replyToContent: (r['reply_to_content'] as string) ?? undefined,
       createdAt: toDate(r['created_at'] as string)!,
     }));
   }

@@ -61,6 +61,8 @@ All requests require authentication via one of:
 | POST | `/api/tasks/:id/schedule/run-now` | Trigger an immediate run of a scheduled task |
 | PUT | `/api/tasks/:id/schedule` | Update schedule configuration `{ every?, cron?, maxRuns?, timezone? }` |
 | GET | `/api/tasks/:id/dependent-count` | Count tasks blocked by this task |
+| POST | `/api/tasks/:id/comments` | Post a comment on a task. Body: `{ content, mentions?, authorId?, authorType?, replyTo? }`. `replyTo` is a comment ID for structural reply linking. |
+| POST | `/api/requirements/:id/comments` | Post a comment on a requirement. Body: `{ content, mentions?, authorId?, authorType?, replyTo? }`. `replyTo` is a comment ID for structural reply linking. |
 
 ---
 
@@ -204,7 +206,9 @@ All requests require authentication via one of:
 | `task:create` | Server → Client | New task created |
 | `requirement:created` | Server → Client | New requirement proposed |
 | `chat` | Server → Client | Agent message in channel |
-| `chat:message` | Server → Client | Channel/DM/group message (targeted to members) |
+| `task:comment` | Server → Client | New task comment (includes `replyTo`, `replyToAuthor`, `replyToContent` for reply-linked comments) |
+| `requirement:comment` | Server → Client | New requirement comment (includes `replyTo`, `replyToAuthor`, `replyToContent`) |
+| `chat:message` | Server → Client | Channel/DM/group message (targeted to members; includes `replyToId`, `replyToSender`, `replyToText` for reply-linked messages) |
 | `chat:proactive_message` | Server → Client | Agent activity log or proactive message |
 | `chat:group_created` | Server → Client | Group chat created |
 | `chat:group_updated` | Server → Client | Group chat membership changed |

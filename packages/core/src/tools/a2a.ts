@@ -10,10 +10,10 @@ export interface A2AContext {
   listColleagues: () => Array<{ id: string; name: string; role: string; status: string; skills?: string[]; teamId?: string; teamName?: string; agentRole?: string }>;
   sendMessage: (targetId: string, message: string, fromId: string, fromName: string, priority?: number, waitForReply?: boolean) => Promise<string>;
   delegateTask?: (targetId: string, delegation: TaskDelegation) => Promise<DelegationResult>;
-  sendGroupMessage?: (channelKey: string, message: string, senderId: string, senderName: string) => Promise<string>;
+  sendGroupMessage?: (channelKey: string, message: string, senderId: string, senderName: string, replyToId?: string) => Promise<string>;
   createGroupChat?: (name: string, memberIds: string[]) => Promise<{ id: string; name: string }>;
   listGroupChats?: () => Promise<Array<{ id: string; name: string; type: string; channelKey: string }>>;
-  getChannelMessages?: (channelKey: string, limit: number, before?: string) => Promise<{ messages: Array<{ senderName: string; senderType: string; text: string; createdAt: string }>; hasMore: boolean }>;
+  getChannelMessages?: (channelKey: string, limit: number, before?: string) => Promise<{ messages: Array<{ id?: string; senderName: string; senderType: string; text: string; replyToId?: string; replyToSender?: string; replyToText?: string; createdAt: string }>; hasMore: boolean }>;
 }
 
 export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
@@ -111,20 +111,22 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
     },
     ...(ctx.sendGroupMessage ? [{
       name: 'agent_send_group_message',
-      description: 'Send a message to a group chat channel (e.g., a team group chat). Messages are visible to all members.',
+      description: 'Send a message to a group chat channel (e.g., a team group chat). Messages are visible to all members. Use reply_to_message_id to create a visual reply link to a specific message.',
       inputSchema: {
         type: 'object',
         properties: {
           channel_key: { type: 'string', description: 'The group chat channel key (e.g., "group:<teamId>")' },
           message: { type: 'string', description: 'The message to send' },
+          reply_to_message_id: { type: 'string', description: 'Optional. The ID of a specific channel message you are replying to. Creates a visual reply link in the chat UI.' },
         },
         required: ['channel_key', 'message'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         const channelKey = args['channel_key'] as string;
         const message = args['message'] as string;
+        const replyToId = args['reply_to_message_id'] as string | undefined;
         try {
-          const result = await ctx.sendGroupMessage!(channelKey, message, ctx.selfId, ctx.selfName);
+          const result = await ctx.sendGroupMessage!(channelKey, message, ctx.selfId, ctx.selfName, replyToId);
           return JSON.stringify({ status: 'sent', result });
         } catch (err) {
           return JSON.stringify({ status: 'error', error: String(err) });
@@ -211,9 +213,12 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
           const before = args['before'] as string | undefined;
           try {
             const result = await ctx.getChannelMessages!(channelKey, limit, before);
-            const formatted = result.messages.map(m =>
-              `[${m.createdAt}] ${m.senderType === 'agent' ? `[agent] ${m.senderName}` : `[human] ${m.senderName}`}: ${m.text.slice(0, 2000)}`
-            );
+            const formatted = result.messages.map(m => {
+              const prefix = m.id ? `[${m.id}]` : '';
+              const sender = m.senderType === 'agent' ? `[agent] ${m.senderName}` : `[human] ${m.senderName}`;
+              const replyInfo = m.replyToId ? ` (replying to ${m.replyToId}${m.replyToSender ? ` by ${m.replyToSender}` : ''})` : '';
+              return `${prefix}[${m.createdAt}] ${sender}${replyInfo}: ${m.text.slice(0, 2000)}`;
+            });
             return JSON.stringify({
               messages: formatted,
               count: result.messages.length,

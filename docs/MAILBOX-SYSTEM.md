@@ -163,6 +163,10 @@ Only after completing these steps does the agent formulate its reply. This preve
 
 The notification text sent to agents also includes explicit MANDATORY instructions reinforcing this protocol.
 
+**Structural reply-to**: Both `task_comment` and `requirement_comment` tools support a `reply_to_comment_id` parameter that creates a structural link to the parent comment. The `task_comments` and `requirement_comments` tables have a `reply_to_id` column; when queried, a LEFT JOIN returns the parent comment's author and content snippet (`replyToAuthor`, `replyToContent`). The notification payload also injects an agent streak count (consecutive agent-only comments) to help agents decide whether further replies are warranted.
+
+**Batch awareness**: The `comment_response` scenario prompt instructs agents to handle multiple bundled comments (separated by `---`) as a single consolidated reply, using `reply_to_comment_id` for the most important one and quoting others inline.
+
 Priorities can be overridden per-item when enqueuing.
 
 ### 3.6 Review Comment Cascade Suppression

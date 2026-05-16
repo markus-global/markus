@@ -164,11 +164,11 @@ export interface AgentTaskContext {
     updates?: { title?: string; description?: string; priority?: string; tags?: string[] }
   ) => Promise<{ id: string; title: string; status: string }>;
   /** Get structured comments on a task */
-  getTaskComments?: (taskId: string) => Promise<Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }>>;
-  /** Post a structured comment on a task (with @mention support) */
-  postTaskComment?: (taskId: string, content: string, mentions?: string[], activityId?: string) => Promise<{ id: string }>;
-  /** Post a structured comment on a requirement (with @mention support) */
-  postRequirementComment?: (requirementId: string, content: string, mentions?: string[], activityId?: string) => Promise<{ id: string }>;
+  getTaskComments?: (taskId: string) => Promise<Array<{ id: string; authorId: string; authorName: string; content: string; replyToId?: string; replyToAuthor?: string; replyToContent?: string; createdAt: string }>>;
+  /** Post a structured comment on a task (with @mention and reply-to support) */
+  postTaskComment?: (taskId: string, content: string, mentions?: string[], activityId?: string, replyToId?: string) => Promise<{ id: string }>;
+  /** Post a structured comment on a requirement (with @mention and reply-to support) */
+  postRequirementComment?: (requirementId: string, content: string, mentions?: string[], activityId?: string, replyToId?: string) => Promise<{ id: string }>;
   /** Returns the ID of the agent's currently executing activity (for traceability) */
   getCurrentActivityId?: () => string | undefined;
   /** Get status transition history for a task or requirement */
@@ -1369,7 +1369,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             description: [
               'Post a structured comment on a task. Use this for discussion, questions, feedback, or coordination with other agents and humans.',
               'Supports @mentions — include agent IDs in the mentions array to notify them.',
-              'Mentioned agents will receive your comment and can reply.',
+              'Supports reply_to_comment_id — set it to a comment ID (from task_get) to create a structural reply link visible in the UI.',
               'Use this instead of task_note when you want interactive dialogue rather than a one-way progress log.',
             ].join(' '),
             inputSchema: {
@@ -1382,6 +1382,10 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   items: { type: 'string' },
                   description: 'Array of agent IDs to notify about this comment. Use agent_list_colleagues to find IDs.',
                 },
+                reply_to_comment_id: {
+                  type: 'string',
+                  description: 'Optional. The ID of a specific comment you are replying to (from task_get comments). Creates a structural reply link visible in the UI.',
+                },
               },
               required: ['task_id', 'content'],
             },
@@ -1393,12 +1397,13 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   return JSON.stringify({ status: 'error', error: 'content is required and must be a non-empty string' });
                 }
                 const mentions = (args['mentions'] as string[] | undefined) ?? [];
+                const replyToId = args['reply_to_comment_id'] as string | undefined;
                 const activityId = ctx.getCurrentActivityId?.();
-                const result = await ctx.postTaskComment!(taskId, content, mentions, activityId);
+                const result = await ctx.postTaskComment!(taskId, content, mentions, activityId, replyToId);
                 return JSON.stringify({
                   status: 'success',
                   commentId: result.id,
-                  message: `Comment posted on task ${taskId}${mentions.length > 0 ? ` (notified ${mentions.length} agent(s))` : ''}`,
+                  message: `Comment posted on task ${taskId}${mentions.length > 0 ? ` (notified ${mentions.length} agent(s))` : ''}${replyToId ? ` (replying to ${replyToId})` : ''}`,
                 });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
@@ -1414,8 +1419,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             name: 'requirement_comment',
             description: [
               'Post a comment on a requirement for discussion, clarification, or status updates.',
-              'Supports @mentions to notify other agents. Use this to coordinate on requirement planning,',
-              'ask questions about scope, or provide updates on progress.',
+              'Supports @mentions to notify other agents. Supports reply_to_comment_id to create a structural reply link.',
+              'Use this to coordinate on requirement planning, ask questions about scope, or provide updates on progress.',
             ].join(' '),
             inputSchema: {
               type: 'object',
@@ -1426,6 +1431,10 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   type: 'array',
                   items: { type: 'string' },
                   description: 'Array of agent IDs to notify about this comment',
+                },
+                reply_to_comment_id: {
+                  type: 'string',
+                  description: 'Optional. The ID of a specific comment you are replying to (from requirement_get comments). Creates a structural reply link visible in the UI.',
                 },
               },
               required: ['requirement_id', 'content'],
@@ -1438,12 +1447,13 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   return JSON.stringify({ status: 'error', error: 'content is required and must be a non-empty string' });
                 }
                 const mentions = (args['mentions'] as string[] | undefined) ?? [];
+                const replyToId = args['reply_to_comment_id'] as string | undefined;
                 const activityId = ctx.getCurrentActivityId?.();
-                const result = await ctx.postRequirementComment!(requirementId, content, mentions, activityId);
+                const result = await ctx.postRequirementComment!(requirementId, content, mentions, activityId, replyToId);
                 return JSON.stringify({
                   status: 'success',
                   commentId: result.id,
-                  message: `Comment posted on requirement ${requirementId}${mentions.length > 0 ? ` (notified ${mentions.length} agent(s))` : ''}`,
+                  message: `Comment posted on requirement ${requirementId}${mentions.length > 0 ? ` (notified ${mentions.length} agent(s))` : ''}${replyToId ? ` (replying to ${replyToId})` : ''}`,
                 });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });

@@ -423,11 +423,17 @@ chat_sessions (id, agent_id, user_id, title, is_main, created_at, last_message_a
 chat_messages (id, session_id, agent_id, role, content, metadata, tokens_used, created_at)
 
 -- Channel messages (DM, group chat, team channels)
-channel_messages (id, org_id, channel, sender_id, sender_type, sender_name, text, mentions, created_at)
+channel_messages (id, org_id, channel, sender_id, sender_type, sender_name, text, mentions, reply_to_id, created_at)
 
 -- Group chats (custom groups with managed membership)
 group_chats (id, org_id, name, channel_key, creator_id, creator_name, created_at, updated_at)
 group_chat_members (id, group_chat_id, user_id, user_type, user_name, role, joined_at)
+
+-- Task comments (threaded discussion on tasks)
+task_comments (id, task_id, author_id, author_name, author_type, content, attachments, mentions, activity_id, reply_to_id, created_at)
+
+-- Requirement comments (threaded discussion on requirements)
+requirement_comments (id, requirement_id, author_id, author_name, author_type, content, attachments, mentions, activity_id, reply_to_id, created_at)
 
 -- Tasks (extended)
 tasks (id, org_id, title, description, status, priority, assigned_agent_id, subtasks,

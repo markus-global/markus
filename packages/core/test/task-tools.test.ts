@@ -413,7 +413,7 @@ describe('comment tools', () => {
       mentions: ['agt_other'],
     }));
     expect(result.status).toBe('success');
-    expect(ctx.postTaskComment).toHaveBeenCalledWith('tsk_001', 'Looks good!', ['agt_other'], 'act_001');
+    expect(ctx.postTaskComment).toHaveBeenCalledWith('tsk_001', 'Looks good!', ['agt_other'], 'act_001', undefined);
   });
 
   it('rejects empty comment content', async () => {

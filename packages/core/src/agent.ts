@@ -1961,6 +1961,8 @@ export class Agent {
       '3. **Choose your focus**: Decide which complex item deserves your full attention next.',
       '4. **Defer or drop**: Explicitly defer items for later or drop stale/redundant ones.',
       '',
+      '**Efficiency tip**: Items sharing the same taskId/requirementId can be handled with a single task_get + one consolidated reply. Use reply_to_comment_id to reference the key comment. Batch them as inline_completed.',
+      '',
       'When ready, call `complete_deliberation` with your decision.',
     ].join('\n');
 

@@ -689,6 +689,12 @@ export class ContextEngine {
           lines.push('- To reach a **human**, use `notify_user`.');
           lines.push('- To reach a **different agent**, use `agent_send_message`.');
           lines.push('- If no response is needed, just process the information silently (e.g., update your state, create tasks, take notes).');
+          lines.push('');
+          lines.push('**One-way notification etiquette**: The sender is NOT waiting. Only act if:');
+          lines.push('- The message contains a direct question or request for you');
+          lines.push('- The information changes your current work priorities');
+          lines.push('- You have critical corrections to share');
+          lines.push('Otherwise, absorb silently and continue your current work.');
         }
         lines.push('');
         lines.push('**Communication rules:**');
@@ -736,12 +742,27 @@ export class ContextEngine {
         lines.push('');
         lines.push('If you finish without doing either of the above, the system will automatically retry your turn — your text output alone is NEVER sufficient.');
         lines.push('');
-        lines.push('**When to use `[NO_REPLY_NEEDED]` — do NOT reply when:**');
-        lines.push('- The comment is just an acknowledgment ("Got it", "Will do", "Thanks", "Agreed")');
-        lines.push('- Both parties have reached agreement or the discussion is resolved');
-        lines.push('- Your reply would only be "Sounds good", "Agreed", or similar zero-information response');
-        lines.push('- The comment does not ask a question, request action, or contain information you need to correct');
-        lines.push('- **Principle**: only comment when your reply adds **new information** or requests a **decision**. Avoid comment ping-pong.');
+        lines.push('**Batch awareness**: You may receive MULTIPLE comments bundled together (separated by `---`).');
+        lines.push('This happens when several comments arrived while you were busy. Read ALL of them first,');
+        lines.push('then post ONE consolidated reply that addresses everything — do NOT reply to each separately.');
+        lines.push('');
+        lines.push('**Structured reply format**: When replying to comments:');
+        lines.push('- Use the `reply_to_comment_id` parameter in `task_comment`/`requirement_comment` to link your reply');
+        lines.push('  to the specific comment you are responding to. Get comment IDs from `task_get`/`requirement_get`.');
+        lines.push('- When addressing multiple agents, use @AgentName to indicate which part addresses whom.');
+        lines.push('  Example: "@Alice: Regarding your question about the API — ... @Bob: The test failure is caused by ..."');
+        lines.push('- For batch replies to multiple comments, pick the most important one as `reply_to_comment_id`,');
+        lines.push('  and reference others by quoting: \'> [re: tc_xxx by @Bob]: "quote..." — your response\'');
+        lines.push('- Include all addressed agent IDs in the `mentions` array for proper notifications.');
+        lines.push('');
+        lines.push('**When to use `[NO_REPLY_NEEDED]` — convergence check:**');
+        lines.push('- Does your reply contain NEW INFORMATION, a CONCRETE ACTION, or a SPECIFIC QUESTION? If none → [NO_REPLY_NEEDED]');
+        lines.push('- If the last 2+ comments are agents acknowledging or restating without new substance → [NO_REPLY_NEEDED]');
+        lines.push('- If you and another agent exchanged views and neither has new data → [NO_REPLY_NEEDED]');
+        lines.push('');
+        lines.push('**Not a valid reason to reply:** "Got it" / "Will do" / "Agreed" / restating what was said / asking already-answered questions.');
+        lines.push('');
+        lines.push('**Principle**: Agent discussion is welcome — but each message must move the conversation forward.');
         break;
 
       case 'review':
@@ -788,6 +809,7 @@ export class ContextEngine {
         lines.push('- Human messages and comments are ALWAYS highest priority.');
         lines.push('- Consider your active tasks, pending commitments, and recent conversation context.');
         lines.push('- Stale informational items (old heartbeats, status updates) should be dropped aggressively.');
+        lines.push('- **Batch comment responses**: If multiple items relate to the SAME task/requirement, handle as ONE batch — call task_get once, then post ONE consolidated reply with reply_to_comment_id pointing to the most important comment. Mark all items as inline_completed.');
         lines.push('- When done, you MUST call the `complete_deliberation` tool with your decision.');
         lines.push('');
         lines.push('**Communication channel**: Your text output is NOT visible to anyone. Only tool calls have effect. To reach humans, use `notify_user`. To reach agents, use `agent_send_message`.');

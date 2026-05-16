@@ -207,7 +207,9 @@ When a task enters `review` status (via `updateTaskStatus`), the system automati
 
 ## 6. Comment & Notification Rules
 
-Comments on tasks and requirements trigger agent notifications via the agent's **mailbox**. Notifications are enqueued as `task_comment` or `requirement_update` mailbox items. The system ensures **each agent receives at most one notification per comment**, regardless of how many rules match. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for details on the mailbox architecture.
+Comments on tasks and requirements trigger agent notifications via the agent's **mailbox**. Notifications are enqueued as `task_comment` or `requirement_comment` mailbox items. The system ensures **each agent receives at most one notification per comment**, regardless of how many rules match. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for details on the mailbox architecture.
+
+**Structural reply-to**: Comment notifications include `replyToId` linking to a parent comment. The notification payload also includes an agent streak count (consecutive agent-only comments without human input) to help agents self-moderate reply frequency.
 
 ### 6.1 Task Comment Notifications
 

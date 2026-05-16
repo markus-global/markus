@@ -27,7 +27,6 @@ import {
   ExternalAgentGateway,
   type GatewayStore,
   type ExternalAgentRegistration,
-  ChromeLauncher,
 } from '@markus/core';
 import {
   OrganizationService,
@@ -303,20 +302,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (config.browser?.autoCloseTabs !== undefined) {
     agentManager.setBrowserAutoCloseTabs(config.browser.autoCloseTabs);
   }
-  // Browser connection mode: 'dedicated' auto-launches Chrome; 'autoConnect' uses user's browser
-  const connectionMode = config.browser?.connectionMode ?? 'dedicated';
-  const debugPort = config.browser?.remoteDebuggingPort ?? 9222;
-  let chromeLauncher: ChromeLauncher | undefined;
-
-  if (connectionMode === 'dedicated') {
-    chromeLauncher = new ChromeLauncher({ port: debugPort });
-    const result = await chromeLauncher.launch();
-    if ('error' in result) {
-      log.warn('Cannot launch Chrome dedicated instance, falling back to autoConnect mode', { error: result.error });
-    } else {
-      agentManager.setBrowserRemoteDebuggingPort(result.port);
-    }
-  } else if (config.browser?.remoteDebuggingPort) {
+  if (config.browser?.remoteDebuggingPort) {
     agentManager.setBrowserRemoteDebuggingPort(config.browser.remoteDebuggingPort);
   }
 
@@ -369,7 +355,6 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     billingService,
     auditService,
     bootstrapOwnerId,
-    chromeLauncher,
   };
 }
 
@@ -490,7 +475,6 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     billingService,
     auditService,
     bootstrapOwnerId,
-    chromeLauncher,
   } = await createServices(config);
   progress.complete(3, 'SQLite storage initialised');
   progress.complete(4, `services ready: agent manager, task service, api server on :${apiPort}`);
@@ -1500,7 +1484,6 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     scheduledTaskRunner.stop();
     apiServer.stop();
     agentManager.shutdown()
-      .then(() => chromeLauncher?.shutdown())
       .then(() => messageRouter.disconnectAll())
       .then(() => process.exit(0))
       .catch(() => process.exit(1));

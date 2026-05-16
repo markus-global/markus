@@ -219,7 +219,8 @@ export class APIServer {
         channelKey: string,
         message: string,
         senderId: string,
-        senderName: string
+        senderName: string,
+        replyToId?: string
       ) => {
         const cleanText = stripInternalBlocks(message);
         const orgId = 'default';
@@ -234,6 +235,7 @@ export class APIServer {
             senderType: 'agent',
             senderName,
             text: cleanText,
+            replyToId,
           });
           persistedMsgId = saved.id;
         }
@@ -370,9 +372,13 @@ export class APIServer {
         const result = this.storage.channelMessageRepo.getMessages(channelKey, limit, before);
         return {
           messages: result.messages.map((m: ChannelMsg) => ({
+            id: m.id,
             senderName: m.senderName,
             senderType: m.senderType,
             text: stripInternalBlocks(m.text),
+            replyToId: m.replyToId,
+            replyToSender: m.replyToSender,
+            replyToText: m.replyToText,
             createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : String(m.createdAt),
           })),
           hasMore: result.hasMore,
@@ -936,10 +942,15 @@ export class APIServer {
       } else {
         prefixLines.push('4. When you accept a work assignment, verify a task has been created for it (`task_list`). If the coordinator did not create one, remind them or create it yourself with the correct `assigned_agent_id`. Do NOT make promises without task tracking.');
       }
-      prefixLines.push('5. DEFAULT IS SILENCE. When in doubt, respond with exactly: [NO_RESPONSE]');
-      prefixLines.push('6. If the provided context is insufficient, use `recall_context` (scope="channel") to fetch earlier messages before responding. For task/requirement details use `task_get`/`requirement_get`. Do NOT guess about prior discussion.');
+      prefixLines.push('5. DEFAULT IS SILENCE. Before responding, answer these questions:');
+      prefixLines.push('   a) Has another agent already given a substantively similar answer? If yes → [NO_RESPONSE]');
+      prefixLines.push('   b) Does your response add UNIQUE expertise or information? If no → [NO_RESPONSE]');
+      prefixLines.push('   c) Check channel history — duplicate or "me too" responses waste everyone\'s time.');
+      prefixLines.push('6. @MENTION DISCIPLINE: Only @mention another agent when you have a SPECIFIC QUESTION requiring their expertise.');
+      prefixLines.push('7. REPLY CLARITY: Use `reply_to_message_id` in `agent_send_group_message` to link your reply to the specific message you\'re responding to. When addressing multiple messages, @mention each agent and quote the relevant part. This is critical for conversation clarity.');
+      prefixLines.push('8. If the provided context is insufficient, use `recall_context` (scope="channel") to fetch earlier messages before responding. For task/requirement details use `task_get`/`requirement_get`. Do NOT guess about prior discussion.');
       if (isTargeted && !thisAgentIsTarget && !isA2A) {
-        prefixLines.push('7. REMINDER: This message is directed at ' + [...targetNames].join(', ') + '. You are ' + agentName + '. Respond ONLY with [NO_RESPONSE].');
+        prefixLines.push('9. REMINDER: This message is directed at ' + [...targetNames].join(', ') + '. You are ' + agentName + '. Respond ONLY with [NO_RESPONSE].');
       }
 
       prefixLines.push('---', '');
@@ -3363,7 +3374,7 @@ export class APIServer {
           taskId, authorId, authorName,
           body['content'] as string,
           mentions, undefined,
-          { authorType: (body['authorType'] as string) ?? 'human', attachments: body['attachments'] as unknown[] | undefined },
+          { authorType: (body['authorType'] as string) ?? 'human', attachments: body['attachments'] as unknown[] | undefined, replyToId: body['replyTo'] as string | undefined },
         );
         this.json(res, 201, { comment: result.comment });
       } catch (err) {
@@ -8851,7 +8862,7 @@ EXPLANATION_END`;
           reqId, authorId, authorName,
           body['content'] as string,
           mentions, undefined,
-          { authorType: (body['authorType'] as string) ?? 'human', attachments: body['attachments'] as unknown[] | undefined },
+          { authorType: (body['authorType'] as string) ?? 'human', attachments: body['attachments'] as unknown[] | undefined, replyToId: body['replyTo'] as string | undefined },
         );
         this.json(res, 201, { comment: result.comment });
       } catch (err) {

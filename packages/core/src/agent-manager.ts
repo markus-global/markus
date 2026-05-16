@@ -231,10 +231,10 @@ export interface TaskServiceBridge {
   findDuplicateTasks?(orgId: string): Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
   cleanupDuplicateTasks?(orgId: string): { cancelledIds: string[]; count: number };
   getTaskBoardHealth?(orgId: string): Record<string, unknown>;
-  postTaskComment?(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string; comment?: Record<string, unknown> }>;
-  postRequirementComment?(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string; comment?: Record<string, unknown> }>;
-  getRequirementComments?(requirementId: string): Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }>;
-  getTaskComments?(taskId: string): Promise<Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }>>;
+  postTaskComment?(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { replyToId?: string }): Promise<{ id: string; comment?: Record<string, unknown> }>;
+  postRequirementComment?(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { replyToId?: string }): Promise<{ id: string; comment?: Record<string, unknown> }>;
+  getRequirementComments?(requirementId: string): Array<{ id: string; authorId: string; authorName: string; content: string; replyToId?: string; replyToAuthor?: string; replyToContent?: string; createdAt: string }>;
+  getTaskComments?(taskId: string): Promise<Array<{ id: string; authorId: string; authorName: string; content: string; replyToId?: string; replyToAuthor?: string; replyToContent?: string; createdAt: string }>>;
   getTaskStatusHistory?(taskId: string, limit?: number): unknown[];
   updateScheduleFields?(taskId: string, fields: { every?: string; cron?: string; maxRuns?: number; timezone?: string }): Promise<{ id: string; title: string; status: string }>;
 }
@@ -364,7 +364,8 @@ export class AgentManager {
       channelKey: string,
       message: string,
       senderId: string,
-      senderName: string
+      senderName: string,
+      replyToId?: string
     ) => Promise<string>;
     createGroupChat: (
       name: string,
@@ -379,7 +380,7 @@ export class AgentManager {
       channelKey: string,
       limit: number,
       before?: string
-    ) => Promise<{ messages: Array<{ senderName: string; senderType: string; text: string; createdAt: string }>; hasMore: boolean }>;
+    ) => Promise<{ messages: Array<{ id?: string; senderName: string; senderType: string; text: string; replyToId?: string; replyToSender?: string; replyToText?: string; createdAt: string }>; hasMore: boolean }>;
   };
 
   private buildKnowledgeCallbacks(agentId: string, orgId: string): Pick<
@@ -1207,10 +1208,10 @@ export class AgentManager {
           ? async (taskId) => ts.getTaskComments!(taskId)
           : undefined,
         postTaskComment: ts.postTaskComment
-          ? async (taskId, content, mentions, activityId) => ts.postTaskComment!(taskId, id, config.name, content, mentions, activityId)
+          ? async (taskId, content, mentions, activityId, replyToId?) => ts.postTaskComment!(taskId, id, config.name, content, mentions, activityId, { replyToId })
           : undefined,
         postRequirementComment: ts.postRequirementComment
-          ? async (reqId, content, mentions, activityId) => ts.postRequirementComment!(reqId, id, config.name, content, mentions, activityId)
+          ? async (reqId, content, mentions, activityId, replyToId?) => ts.postRequirementComment!(reqId, id, config.name, content, mentions, activityId, { replyToId })
           : undefined,
         getCurrentActivityId: () => agent.getCurrentActivityId(),
         getStatusHistory: ts.getTaskStatusHistory
@@ -1877,10 +1878,10 @@ export class AgentManager {
           ? async (taskId) => ts.getTaskComments!(taskId)
           : undefined,
         postTaskComment: ts.postTaskComment
-          ? async (taskId, content, mentions) => ts.postTaskComment!(taskId, id, config.name, content, mentions)
+          ? async (taskId, content, mentions, _activityId?, replyToId?) => ts.postTaskComment!(taskId, id, config.name, content, mentions, undefined, { replyToId })
           : undefined,
         postRequirementComment: ts.postRequirementComment
-          ? async (reqId, content, mentions) => ts.postRequirementComment!(reqId, id, config.name, content, mentions)
+          ? async (reqId, content, mentions, _activityId?, replyToId?) => ts.postRequirementComment!(reqId, id, config.name, content, mentions, undefined, { replyToId })
           : undefined,
         getStatusHistory: ts.getTaskStatusHistory
           ? async (entityType, entityId) => {

@@ -12,11 +12,7 @@ export function openBrowser(url: string): void {
 
   const sys = platform();
   const cmd = sys === 'darwin' ? `open "${url}"` : sys === 'win32' ? `start "" "${url}"` : `xdg-open "${url}"`;
-  exec(cmd, (err) => {
-    if (err) {
-      // Browser open failure is non-fatal, silently ignore.
-    }
-  });
+  exec(cmd, () => {});
 }
 
 /**
