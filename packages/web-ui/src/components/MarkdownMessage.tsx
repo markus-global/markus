@@ -10,6 +10,9 @@ import 'katex/dist/katex.min.css';
 import { FilePathLink, looksLikeFilePath } from './FilePathLink.tsx';
 import { copyPlainText, copyAsHtml } from './markdown-copy.ts';
 
+const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkBreaks] as const;
+const REHYPE_PLUGINS = [[rehypeKatex, { strict: 'ignore' }]] as const;
+
 interface Props {
   content: string;
   className?: string;
@@ -400,7 +403,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
                 </summary>
                 <div className="px-3 pb-3 border-t border-border-default/50">
                   <div className="mt-2 pl-3 border-l-2 border-brand-500/40 text-xs text-fg-secondary leading-relaxed">
-                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} rehypePlugins={[rehypeKatex]} components={mdComponents}>
+                    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={mdComponents}>
                       {normalizeMathDelimiters(full)}
                     </ReactMarkdown>
                   </div>
@@ -408,7 +411,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
               </details>
             );
           })()}
-          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} rehypePlugins={[rehypeKatex]} components={components}>
+          <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components}>
             {processedRest}
           </ReactMarkdown>
         </div>
@@ -421,4 +424,11 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
   && prev.className === next.className
   && prev.basePath === next.basePath
   && prev.onMentionClick === next.onMentionClick
-  && prev.knownNames === next.knownNames);
+  && arraysShallowEqual(prev.knownNames, next.knownNames));
+
+function arraysShallowEqual(a?: string[], b?: string[]): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) return false; }
+  return true;
+}

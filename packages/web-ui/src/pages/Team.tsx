@@ -933,6 +933,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     }
   }, [agents]);
 
+  const agentNames = useMemo(() => agents.map(a => a.name), [agents]);
+
   // Mode & target
   const [chatMode, setChatMode] = useState<ChatMode>(
     () => initialAgentId ? 'direct' : ((localStorage.getItem('markus_chat_mode') as ChatMode | null) ?? 'direct')
@@ -3283,7 +3285,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                         : ''
                     }`}>
                       {msg.sender === 'agent'
-                        ? <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" onMentionClick={handleMentionClick} knownNames={agents.map(a => a.name)} />
+                        ? <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" onMentionClick={handleMentionClick} knownNames={agentNames} />
                         : <div className="text-sm text-fg-secondary whitespace-pre-wrap">
                             {msg.images && msg.images.length > 0 && (
                               <div className="flex flex-wrap gap-1.5 mb-1">
@@ -3383,7 +3385,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                                 return next;
                               })}
                               onMentionClick={handleMentionClick}
-                              knownNames={agents.map(a => a.name)}
+                              knownNames={agentNames}
                             />
                         }
                         {msg.isNotification && (

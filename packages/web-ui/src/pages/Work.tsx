@@ -637,6 +637,8 @@ function CommentBubble({ comment, agents, onReply }: {
     }
   }, [agents]);
 
+  const agentNames = useMemo(() => agents.map(a => a.name), [agents]);
+
   const handleAvatarClick = useCallback((e: React.MouseEvent) => {
     const agent = agents.find(a => a.name.toLowerCase() === comment.authorName.toLowerCase());
     if (agent) {
@@ -716,7 +718,7 @@ function CommentBubble({ comment, agents, onReply }: {
             <span className="truncate max-w-[200px]">{comment.replyToContent ?? '...'}</span>
           </button>
         )}
-        <MarkdownMessage content={comment.content} className="text-xs text-fg-primary" onMentionClick={handleMentionClick} knownNames={agents.map(a => a.name)} />
+        <MarkdownMessage content={comment.content} className="text-xs text-fg-primary" onMentionClick={handleMentionClick} knownNames={agentNames} />
         {comment.attachments?.map((att, i) => (
           att.type === 'image' ? <img key={i} src={att.url} alt={att.name} className="mt-1 max-w-[200px] rounded" /> : null
         ))}
