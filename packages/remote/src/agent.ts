@@ -43,6 +43,13 @@ export interface RemoteAccessConfig {
   jwtSecret?: string;
 }
 
+export interface RemotePeerInfo {
+  peerId: string;
+  transport: 'p2p' | 'relay' | 'connecting';
+  connectedAt: number;
+  lastActiveAt: number;
+}
+
 export interface RemoteAccessStatus {
   enabled: boolean;
   connected: boolean;
@@ -51,6 +58,7 @@ export interface RemoteAccessStatus {
   remoteUrl: string | null;
   signalUrl: string | null;
   peerCount: number;
+  peers: RemotePeerInfo[];
 }
 
 interface TurnServer {
@@ -72,6 +80,8 @@ interface PeerSession {
   dc: DataChannel | null;
   pendingChunks: Map<string, Buffer[]>;
   markusToken: string | null;
+  connectedAt: number;
+  lastActiveAt: number;
 }
 
 export class RemoteAccessAgent {
@@ -183,6 +193,22 @@ export class RemoteAccessAgent {
       else state = 'registering';
     }
 
+    const peers: RemotePeerInfo[] = [];
+    for (const [peerId, session] of this.peers) {
+      let transport: 'p2p' | 'relay' | 'connecting' = 'connecting';
+      if (session.dc && session.dc.isOpen()) {
+        transport = 'p2p';
+      } else if (wsOpen) {
+        transport = 'relay';
+      }
+      peers.push({
+        peerId,
+        transport,
+        connectedAt: session.connectedAt,
+        lastActiveAt: session.lastActiveAt,
+      });
+    }
+
     return {
       enabled: !this.destroyed,
       connected: wsOpen,
@@ -191,6 +217,7 @@ export class RemoteAccessAgent {
       remoteUrl: this.registration?.remoteUrl ?? null,
       signalUrl: this.registration?.signalUrl ?? null,
       peerCount: this.peers.size,
+      peers,
     };
   }
 
@@ -393,7 +420,8 @@ export class RemoteAccessAgent {
       iceServers,
     } satisfies RtcConfig);
 
-    const session: PeerSession = { pc, dc: null, pendingChunks: new Map(), markusToken: null };
+    const now = Date.now();
+    const session: PeerSession = { pc, dc: null, pendingChunks: new Map(), markusToken: null, connectedAt: now, lastActiveAt: now };
     this.peers.set(peerId, session);
 
     pc.onStateChange((state: string) => {
@@ -448,6 +476,9 @@ export class RemoteAccessAgent {
   // ── DataChannel Message Handling (HTTP/WS proxy) ─────────────────────────
 
   private handleDataChannelMessage(peerId: string, raw: string): void {
+    const session = this.peers.get(peerId);
+    if (session) session.lastActiveAt = Date.now();
+
     try {
       const msg = JSON.parse(raw);
       const type = msg.type as string;

@@ -291,7 +291,10 @@
     "qrCode": "QR Code",
     "scanQr": "Scan with your phone camera to connect",
     "enableFailed": "Failed to enable remote access",
-    "disableFailed": "Failed to disable remote access"
+    "disableFailed": "Failed to disable remote access",
+    "connectedPeers": "Connected Peers",
+    "connectedSince": "Connected since {{time}}",
+    "peerConnecting": "Connecting"
   },
   "userManagement": {
     "title": "User Management",

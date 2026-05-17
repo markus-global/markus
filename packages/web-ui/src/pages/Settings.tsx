@@ -2451,6 +2451,41 @@ function RemoteAccessSection() {
               <div className="p-2 rounded-lg bg-red-500/10 text-red-500 text-sm">{error}</div>
             )}
 
+            {/* Connected Peers List */}
+            {status?.enabled && status.peers && status.peers.length > 0 && (
+              <div className="p-4 rounded-lg bg-surface-elevated border border-border-default space-y-2">
+                <label className="text-xs text-content-tertiary uppercase tracking-wider">
+                  {t('settings:remoteAccess.connectedPeers')}
+                </label>
+                <div className="space-y-2 mt-1">
+                  {status.peers.map((peer) => (
+                    <div key={peer.peerId} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-inset">
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${
+                        peer.transport === 'p2p' ? 'bg-green-500' : peer.transport === 'relay' ? 'bg-blue-500' : 'bg-amber-500 animate-pulse'
+                      }`} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-mono text-content-primary truncate">
+                          {peer.peerId.slice(0, 8)}...
+                        </div>
+                        <div className="text-xs text-content-tertiary">
+                          {t('settings:remoteAccess.connectedSince', { time: new Date(peer.connectedAt).toLocaleTimeString() })}
+                        </div>
+                      </div>
+                      <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${
+                        peer.transport === 'p2p'
+                          ? 'bg-green-500/10 text-green-600 dark:text-green-400'
+                          : peer.transport === 'relay'
+                            ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                            : 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                      }`}>
+                        {peer.transport === 'p2p' ? 'P2P' : peer.transport === 'relay' ? 'Relay' : t('settings:remoteAccess.peerConnecting')}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Remote URL + QR Code */}
             {status?.enabled && status.remoteUrl && (
               <div className="p-4 rounded-lg bg-surface-elevated border border-border-default space-y-3">

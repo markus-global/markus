@@ -326,6 +326,13 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export interface RemotePeerInfo {
+  peerId: string;
+  transport: 'p2p' | 'relay' | 'connecting';
+  connectedAt: number;
+  lastActiveAt: number;
+}
+
 export interface RemoteStatus {
   enabled: boolean;
   connected: boolean;
@@ -334,6 +341,7 @@ export interface RemoteStatus {
   remoteUrl: string | null;
   signalUrl: string | null;
   peerCount: number;
+  peers: RemotePeerInfo[];
 }
 
 export type AgentActivityType = 'task' | 'heartbeat' | 'chat' | 'a2a' | 'internal' | 'respond_in_session';

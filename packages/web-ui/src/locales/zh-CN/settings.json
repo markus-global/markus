@@ -291,7 +291,10 @@
     "qrCode": "二维码",
     "scanQr": "用手机相机扫描以连接",
     "enableFailed": "启用远程访问失败",
-    "disableFailed": "禁用远程访问失败"
+    "disableFailed": "禁用远程访问失败",
+    "connectedPeers": "已连接的设备",
+    "connectedSince": "连接于 {{time}}",
+    "peerConnecting": "连接中"
   },
   "userManagement": {
     "title": "用户管理",
