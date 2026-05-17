@@ -1,4 +1,4 @@
-import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent, sanitizeForLLM } from '@markus/shared';
+import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
 import type { LLMProviderInterface } from './provider.js';
 
 interface OpenAIMessage {
@@ -120,7 +120,9 @@ export class OpenAIProvider implements LLMProviderInterface {
     }
   }
 
-  private convertMessages(messages: LLMMessage[]): OpenAIMessage[] {
+  private convertMessages(rawMessages: LLMMessage[]): OpenAIMessage[] {
+    const messages = sanitizeLLMMessages(rawMessages);
+
     // DeepSeek thinking models require reasoning_content on ALL assistant messages.
     // Old session messages may lack this field; backfill with empty string to avoid 400 errors.
     const backfillReasoning = this.name === 'deepseek';

@@ -1094,6 +1094,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
             catch (e) { log.warn('Failed to update mailbox status', { itemId, error: String(e) }); }
           },
           markStaleProcessingAsDropped: (aid: string) => mbRepo.markStaleProcessingAsDropped(aid),
+          markStaleProcessingAsCompleted: (aid: string) => mbRepo.markStaleProcessingAsCompleted(aid),
           loadQueued: (aid: string) => {
             const rows = mbRepo.getByAgent(aid, { status: 'queued' });
             return rows.map((r: any) => ({
@@ -1151,12 +1152,15 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         // (delegate.performDeliberation) is not triggered or returns null.
         const triageProvider = agent.config.llmConfig?.modelMode === 'custom'
           ? agent.config.llmConfig.primary : undefined;
+        const triageSystemPrompt = 'You are a mailbox triage assistant. Output ONLY a single JSON object — no explanation, no markdown fences, no <think> tags. Start your response with {';
+        const triageCacheSegments = [{ content: triageSystemPrompt, cacheBreakpoint: true }];
         agent.getAttentionController().setTriageJudge(async (prompt: string) => {
           const response = await llmRouter.chat({
             messages: [
-              { role: 'system', content: 'You are a mailbox triage assistant. Output ONLY a single JSON object — no explanation, no markdown fences, no <think> tags. Start your response with {' },
+              { role: 'system', content: triageSystemPrompt },
               { role: 'user', content: prompt },
             ],
+            systemCacheSegments: triageCacheSegments,
             temperature: TRIAGE_TEMPERATURE,
             maxTokens: TRIAGE_MAX_TOKENS,
           }, triageProvider);
@@ -1166,12 +1170,15 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         // Wire LLM interrupt judge — evaluates whether to preempt current
         // work when a new message arrives (e.g. "stop publishing", "pause that task").
         // Only called when heuristics return 'continue' for ambiguous cases.
+        const interruptSystemPrompt = 'You are an attention interrupt judge. Decide whether to interrupt current work for a new incoming message. Reply with ONLY one word: continue, preempt, cancel, merge, or defer. Use "preempt" to pause (resume later) and "cancel" to permanently stop current work.';
+        const interruptCacheSegments = [{ content: interruptSystemPrompt, cacheBreakpoint: true }];
         agent.getAttentionController().setLLMJudge(async (prompt: string) => {
           const response = await llmRouter.chat({
             messages: [
-              { role: 'system', content: 'You are an attention interrupt judge. Decide whether to interrupt current work for a new incoming message. Reply with ONLY one word: continue, preempt, cancel, merge, or defer. Use "preempt" to pause (resume later) and "cancel" to permanently stop current work.' },
+              { role: 'system', content: interruptSystemPrompt },
               { role: 'user', content: prompt },
             ],
+            systemCacheSegments: interruptCacheSegments,
             temperature: 0.1,
             maxTokens: 32,
           }, triageProvider);
@@ -1260,14 +1267,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // Wire agent activity logs to WS broadcast
   agentManager.getEventBus().on('agent:activity_log', (event: unknown) => {
     const ws = apiServer.getWSBroadcaster();
-    const ts = new Date().toISOString();
-    ws.broadcast({ type: 'agent:activity_log', payload: event, timestamp: ts });
-    const e = event as Record<string, unknown>;
-    ws.broadcastExecutionLog({
-      sourceType: 'activity', sourceId: e.activityId ?? '', agentId: e.agentId ?? '',
-      seq: e.seq ?? 0, type: e.type ?? 'status', content: e.content ?? '',
-      metadata: e.metadata, createdAt: e.createdAt ?? ts,
-    });
+    ws.broadcast({ type: 'agent:activity_log', payload: event, timestamp: new Date().toISOString() });
   });
 
   // Wire mailbox & attention events to WS broadcast

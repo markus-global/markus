@@ -10,6 +10,11 @@ import 'katex/dist/katex.min.css';
 import { FilePathLink, looksLikeFilePath } from './FilePathLink.tsx';
 import { copyPlainText, copyAsHtml } from './markdown-copy.ts';
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const REMARK_PLUGINS: any[] = [remarkGfm, remarkMath, remarkBreaks];
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const REHYPE_PLUGINS: any[] = [[rehypeKatex, { strict: 'ignore' }]];
+
 interface Props {
   content: string;
   className?: string;
@@ -350,27 +355,23 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
 
   const processedRest = useMemo(() => {
     let t = normalizeMathDelimiters(rest);
-    if (onMentionClick) t = preprocessMentions(t, knownNames);
+    t = preprocessMentions(t, knownNames);
     return t;
-  }, [rest, onMentionClick, knownNames]);
+  }, [rest, knownNames]);
 
   const components = useMemo(() => {
-    const base: Record<string, React.ComponentType<any>> = {
+    return {
       ...mdComponents,
       img: ({ src, alt }: { src?: string; alt?: string }) => (
         <MarkdownImage src={src ?? ''} alt={alt} onPreview={setPreviewSrc} basePath={basePath} />
       ),
-    };
-    if (!onMentionClick) return base;
-    return {
-      ...base,
       a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
         if (href?.startsWith(MENTION_PREFIX)) {
           const name = decodeURIComponent(href.slice(MENTION_PREFIX.length));
           return (
             <span
-              className="text-brand-500 font-medium cursor-pointer hover:underline"
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onMentionClick(name, e); }}
+              className={`text-brand-500 font-medium${onMentionClick ? ' cursor-pointer hover:underline' : ''}`}
+              onClick={onMentionClick ? (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); onMentionClick(name, e); } : undefined}
               title={name}
             >
               {children}
@@ -404,7 +405,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
                 </summary>
                 <div className="px-3 pb-3 border-t border-border-default/50">
                   <div className="mt-2 pl-3 border-l-2 border-brand-500/40 text-xs text-fg-secondary leading-relaxed">
-                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} rehypePlugins={[rehypeKatex]} components={mdComponents}>
+                    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={mdComponents}>
                       {normalizeMathDelimiters(full)}
                     </ReactMarkdown>
                   </div>
@@ -412,7 +413,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
               </details>
             );
           })()}
-          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} rehypePlugins={[rehypeKatex]} components={components}>
+          <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components}>
             {processedRest}
           </ReactMarkdown>
         </div>
@@ -420,4 +421,16 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
       {previewSrc && <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />}
     </div>
   );
-}, (prev, next) => prev.content === next.content && prev.className === next.className && prev.basePath === next.basePath);
+}, (prev, next) =>
+  prev.content === next.content
+  && prev.className === next.className
+  && prev.basePath === next.basePath
+  && prev.onMentionClick === next.onMentionClick
+  && arraysShallowEqual(prev.knownNames, next.knownNames));
+
+function arraysShallowEqual(a?: string[], b?: string[]): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) return false; }
+  return true;
+}

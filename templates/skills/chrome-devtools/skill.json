@@ -16,7 +16,7 @@
   "skill": {
     "skillFile": "SKILL.md",
     "requiredPermissions": ["browser", "network"],
-    "isolation": "per-agent",
+    "isolation": "pooled",
     "mcpServers": {
       "chrome-devtools": {
         "command": "npx",

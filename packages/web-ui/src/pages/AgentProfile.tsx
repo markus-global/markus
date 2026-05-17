@@ -1417,16 +1417,17 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
   const [triggerMsg, setTriggerMsg] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
-    api.agents.getHeartbeat(agentId).then(setData).catch(() => {});
-    api.agents.getRecentActivities(agentId).then(d => {
-      setRecentRuns(d.activities.filter(a => a.type === 'heartbeat'));
-    }).catch(() => {});
+    return Promise.all([
+      api.agents.getHeartbeat(agentId).then(setData).catch(() => {}),
+      api.agents.getRecentActivities(agentId).then(d => {
+        setRecentRuns(d.activities.filter(a => a.type === 'heartbeat'));
+      }).catch(() => {}),
+    ]);
   }, [agentId]);
 
   useEffect(() => {
     setLoading(true);
-    refresh();
-    setLoading(false);
+    refresh().finally(() => setLoading(false));
   }, [refresh]);
 
   // Auto-refresh when agent activity changes (heartbeat completes)
@@ -1732,6 +1733,13 @@ const MAILBOX_TYPE_ICONS: Record<string, string> = {
 
 const CATEGORY_FILTER_KEYS = ['all', 'interaction', 'task', 'notification', 'system'] as const;
 
+const CATEGORY_SOURCE_TYPES: Record<string, string[]> = {
+  interaction: ['human_chat', 'a2a_message', 'mention'],
+  task: ['task_status_update', 'task_comment', 'requirement_comment', 'review_request', 'session_reply'],
+  notification: ['requirement_update'],
+  system: ['system_event', 'heartbeat', 'daily_report', 'memory_consolidation'],
+};
+
 const STATUS_COLORS: Record<string, string> = {
   completed: 'bg-green-500', processing: 'bg-blue-400 animate-pulse',
   deferred: 'bg-purple-400', merged: 'bg-cyan-400', queued: 'bg-amber-400', dropped: 'bg-red-500',
@@ -1978,8 +1986,11 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
   }, [highlightedId, loading, mailbox, hasMore, agentId]);
 
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const refresh = (evt: { payload?: unknown }) => {
-      if ((evt.payload as { agentId?: string })?.agentId === agentId) load(false);
+      if ((evt.payload as { agentId?: string })?.agentId !== agentId) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { timer = null; load(false); }, 500);
     };
     const unsubs = [
       wsClient.on('agent:mailbox', refresh),
@@ -1989,7 +2000,7 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
       wsClient.on('agent:update', refresh),
       wsClient.on('agent:triage', refresh),
     ];
-    return () => unsubs.forEach(u => u());
+    return () => { if (timer) clearTimeout(timer); unsubs.forEach(u => u()); };
   }, [agentId, load]);
 
   if (loading && !mind) return <div className="text-fg-tertiary text-sm animate-pulse">{t('agent:profilePage.mind.loading')}</div>;
@@ -2074,15 +2085,21 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
         <div className="flex items-center gap-2 mb-2">
           <h3 className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">{t('agent:profilePage.mind.mailboxHistory')}</h3>
           <div className="flex gap-1 ml-auto flex-wrap">
-            {CATEGORY_FILTER_KEYS.map(key => (
-              <button key={key} onClick={() => setCatFilter(key)}
-                className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors ${
-                  catFilter === key
-                    ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
-                    : 'bg-surface-2 border-border-subtle text-fg-secondary hover:bg-surface-3'
-                }`}
-              >{t(`agent:profilePage.mind.categoryFilters.${key}`)}</button>
-            ))}
+            {CATEGORY_FILTER_KEYS.map(key => {
+              const stc = mailbox?.sourceTypeCounts;
+              const catCount = key === 'all'
+                ? (stc ? Object.values(stc).reduce((a, b) => a + b, 0) : undefined)
+                : (stc ? (CATEGORY_SOURCE_TYPES[key] ?? []).reduce((s, t2) => s + (stc[t2] ?? 0), 0) : undefined);
+              return (
+                <button key={key} onClick={() => setCatFilter(key)}
+                  className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors ${
+                    catFilter === key
+                      ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
+                      : 'bg-surface-2 border-border-subtle text-fg-secondary hover:bg-surface-3'
+                  }`}
+                >{t(`agent:profilePage.mind.categoryFilters.${key}`)}{catCount != null && catCount > 0 && <span className="ml-1 opacity-60">{catCount}</span>}</button>
+              );
+            })}
           </div>
         </div>
         <div className="flex gap-1 mb-2 flex-wrap">
@@ -2094,15 +2111,21 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
             { key: 'merged', dot: 'bg-cyan-400' },
             { key: 'deferred', dot: 'bg-purple-400' },
             { key: 'dropped', dot: 'bg-red-500' },
-          ].map(f => (
-            <button key={f.key} onClick={() => setStatusFilter(f.key)}
-              className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors flex items-center gap-1 ${
-                statusFilter === f.key
-                  ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
-                  : 'bg-surface-2 border-border-subtle text-fg-secondary hover:bg-surface-3'
-              }`}
-            >{f.dot && <span className={`w-1.5 h-1.5 rounded-full ${f.dot}`} />}{t(`agent:profilePage.mind.statusFilters.${f.key}`)}</button>
-          ))}
+          ].map(f => {
+            const sc = mailbox?.statusCounts;
+            const cnt = f.key === 'all'
+              ? (sc ? Object.values(sc).reduce((a, b) => a + b, 0) : undefined)
+              : sc?.[f.key];
+            return (
+              <button key={f.key} onClick={() => setStatusFilter(f.key)}
+                className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors flex items-center gap-1 ${
+                  statusFilter === f.key
+                    ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
+                    : 'bg-surface-2 border-border-subtle text-fg-secondary hover:bg-surface-3'
+                }`}
+              >{f.dot && <span className={`w-1.5 h-1.5 rounded-full ${f.dot}`} />}{t(`agent:profilePage.mind.statusFilters.${f.key}`)}{cnt != null && cnt > 0 && <span className="ml-1 opacity-60">{cnt}</span>}</button>
+            );
+          })}
         </div>
 
         {(!mailbox?.history || mailbox.history.length === 0) && !loading && (

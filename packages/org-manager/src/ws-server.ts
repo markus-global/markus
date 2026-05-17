@@ -10,11 +10,20 @@ export interface WSEvent {
   timestamp: string;
 }
 
+const COALESCE_INTERVAL_MS = 200;
+const COALESCE_EVENT_TYPES = new Set([
+  'agent:update', 'agent:attention', 'agent:focus',
+  'agent:mailbox', 'agent:decision', 'agent:triage',
+]);
+
 export class WSBroadcaster {
   private wss?: WebSocketServer;
   private clients = new Set<WebSocket>();
   /** Connections that identified with ?userId= (targeted events, e.g. notifications) */
   private userConnections = new Map<string, Set<WebSocket>>();
+  /** Pending coalesced events keyed by `${type}:${agentId}` — only latest kept */
+  private pendingCoalesced = new Map<string, WSEvent>();
+  private coalesceTimer: ReturnType<typeof setTimeout> | null = null;
 
   attach(server: Server): void {
     this.wss = new WebSocketServer({ server, path: '/ws' });
@@ -97,6 +106,31 @@ export class WSBroadcaster {
   }
 
   broadcast(event: WSEvent): void {
+    const payload = event.payload as Record<string, unknown> | undefined;
+    const agentId = payload?.['agentId'] as string | undefined;
+
+    if (agentId && COALESCE_EVENT_TYPES.has(event.type)) {
+      const key = `${event.type}:${agentId}`;
+      this.pendingCoalesced.set(key, event);
+      if (!this.coalesceTimer) {
+        this.coalesceTimer = setTimeout(() => this.flushCoalesced(), COALESCE_INTERVAL_MS);
+      }
+      return;
+    }
+
+    this.broadcastImmediate(event);
+  }
+
+  private flushCoalesced(): void {
+    this.coalesceTimer = null;
+    const events = [...this.pendingCoalesced.values()];
+    this.pendingCoalesced.clear();
+    for (const event of events) {
+      this.broadcastImmediate(event);
+    }
+  }
+
+  private broadcastImmediate(event: WSEvent): void {
     const data = JSON.stringify(event);
     for (const ws of this.clients) {
       if (ws.readyState === WebSocket.OPEN) {

@@ -67,6 +67,7 @@ export interface TaskQueueOptions {
  * 支持优先级队列、并发控制、任务状态跟踪
  */
 export class TaskQueue {
+  private static readonly MAX_COMPLETED = 200;
   private queue: QueuedTask[] = [];
   private runningTasks: Map<string, QueuedTask> = new Map();
   private completedTasks: Map<string, QueuedTask> = new Map();
@@ -83,6 +84,16 @@ export class TaskQueue {
   constructor(private options: TaskQueueOptions) {
     if (options.autoStart !== false) {
       this.start();
+    }
+  }
+
+  private trimCompletedTasks(): void {
+    if (this.completedTasks.size <= TaskQueue.MAX_COMPLETED) return;
+    const excess = this.completedTasks.size - TaskQueue.MAX_COMPLETED;
+    const iter = this.completedTasks.keys();
+    for (let i = 0; i < excess; i++) {
+      const key = iter.next().value;
+      if (key) this.completedTasks.delete(key);
     }
   }
 
@@ -184,6 +195,7 @@ export class TaskQueue {
         this.stats.running--;
         this.stats.cancelled++;
         this.completedTasks.set(task.id, task);
+        this.trimCompletedTasks();
         this.runningTasks.delete(task.id);
         return;
       }
@@ -199,6 +211,7 @@ export class TaskQueue {
       this.stats.running--;
       this.stats.completed++;
       this.completedTasks.set(task.id, task);
+      this.trimCompletedTasks();
       this.runningTasks.delete(task.id);
 
       // 触发完成回调
@@ -217,6 +230,7 @@ export class TaskQueue {
       this.stats.running--;
       this.stats.failed++;
       this.completedTasks.set(task.id, task);
+      this.trimCompletedTasks();
       this.runningTasks.delete(task.id);
 
       // 触发错误回调
@@ -271,6 +285,7 @@ export class TaskQueue {
       this.stats.pending--;
       this.stats.cancelled++;
       this.completedTasks.set(taskId, task);
+      this.trimCompletedTasks();
       return true;
     }
 
@@ -339,6 +354,7 @@ export class TaskQueue {
       this.stats.cancelled++;
       this.completedTasks.set(task.id, task);
     }
+    this.trimCompletedTasks();
     this.queue = [];
   }
 

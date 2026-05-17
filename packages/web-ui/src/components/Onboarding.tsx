@@ -579,7 +579,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
         </div>
       ),
     },
-    // Step 5: Done
+    // Step: Done
     {
       id: 'done',
       title: t('done.title'),

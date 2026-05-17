@@ -5,7 +5,7 @@
  * Non-component utilities (types, converters, helpers) live in execution-utils.ts
  * to keep this file components-only for Vite HMR Fast Refresh compatibility.
  */
-import { useState, useRef, useEffect, useCallback, memo } from 'react';
+import { useState, useRef, useEffect, useCallback, memo, useMemo } from 'react';
 import { api, wsClient, type TaskLogEntry } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
@@ -48,10 +48,34 @@ export function ThinkingDots({ label = 'Thinking' }: { label?: string }) {
 
 // ─── StreamingText ────────────────────────────────────────────────────────────
 
+const STREAM_THROTTLE_MS = 150;
+
 export function StreamingText({ content, className }: { content: string; className?: string }) {
+  const [throttled, setThrottled] = useState(content);
+  const lastUpdate = useRef(0);
+  const pending = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const now = Date.now();
+    const elapsed = now - lastUpdate.current;
+    if (elapsed >= STREAM_THROTTLE_MS) {
+      lastUpdate.current = now;
+      setThrottled(content);
+    } else if (!pending.current) {
+      pending.current = setTimeout(() => {
+        lastUpdate.current = Date.now();
+        pending.current = null;
+        setThrottled(content);
+      }, STREAM_THROTTLE_MS - elapsed);
+    }
+    return () => { if (pending.current) { clearTimeout(pending.current); pending.current = null; } };
+  }, [content]);
+
+  const displayContent = useMemo(() => throttled, [throttled]);
+
   return (
     <div className="bg-surface-elevated/50 rounded-lg px-3 py-2.5 my-1 min-w-0 overflow-hidden">
-      <MarkdownMessage content={content} className={className ?? 'text-sm text-fg-secondary break-words'} />
+      <MarkdownMessage content={displayContent} className={className ?? 'text-sm text-fg-secondary break-words'} />
       <span className="inline-block w-0.5 h-4 bg-brand-400 animate-pulse ml-0.5 align-middle" />
     </div>
   );

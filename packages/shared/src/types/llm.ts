@@ -116,6 +116,10 @@ export interface LLMMessage {
   toolCalls?: LLMToolCall[];
   /** Provider-specific reasoning/thinking content (e.g. DeepSeek reasoning_content) that must be round-tripped. */
   reasoningContent?: string;
+  /** Hint for providers that support explicit cache breakpoints (e.g. Anthropic).
+   *  When true, the provider should mark this message as a cache boundary so that
+   *  all preceding messages form a cacheable prefix. */
+  cacheBreakpoint?: boolean;
 }
 
 /** Extract plain text from a message's content (ignoring image parts). */
@@ -145,6 +149,8 @@ export interface LLMResponse {
   usage: {
     inputTokens: number;
     outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
   };
   finishReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence';
   /** Anthropic compaction summary (present when compaction triggers) */

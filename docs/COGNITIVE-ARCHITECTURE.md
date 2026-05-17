@@ -16,6 +16,8 @@ The cognitive architecture introduces System 2 via the **Cognitive Preparation P
 
 **Working Memory Model (Baddeley, 2000)**. Baddeley's model includes a Central Executive that controls attention and coordinates subsidiary systems, plus an Episodic Buffer that integrates information from different sources into a coherent representation. Without CPP, `ContextEngine.buildSystemPrompt()` acts as a passive buffer -- it dumps everything mechanically. CPP introduces an active Central Executive (the Appraisal phase) that decides what to load, and the Assembly phase acts as the Episodic Buffer.
 
+The system now implements Baddeley's model more explicitly. The agent has an explicit `workingMemory` store (keyed entries with timestamps), where the agent itself acts as the Central Executive — deciding what to retain, update, or expire via `update_working_memory` / `clear_working_memory` tools.
+
 **Metacognition (Flavell, 1979)**. Metacognition is "thinking about thinking" -- the ability to assess one's own knowledge state and regulate cognitive processes accordingly. Without CPP, agents have no metacognitive capability: they cannot assess "do I know enough to answer this?" before responding. The Appraisal phase adds metacognition: the agent evaluates its own readiness and plans what additional context it needs.
 
 **Levels of Processing (Craik & Lockhart, 1972)**. Deep processing (meaning, connections, implications) produces better memory and understanding than shallow processing (surface features). Basic memory retrieval is shallow: keyword matching, substring search, or raw recency. The Reflection phase adds deep processing: the agent considers patterns, implications, and connections between retrieved information.
@@ -314,7 +316,7 @@ AttentionController          Cognitive Preparation Pipeline
    reasoning)                   reflection)
 ```
 
-The triage `reasoning` (currently stored as `currentCognition`) feeds into the Appraisal phase as part of the agent's current state. This preserves the existing triage investment while extending it.
+The triage reasoning (stored as a keyed entry in the agent's working memory via `workingMemory.set('triage-decision', ...)`) feeds into the Appraisal phase as part of the agent's current state. Working memory entries, including their age, are visible to CPP via the `recentActivity` field in `CognitiveAgentContext`. This preserves the existing triage investment while extending it.
 
 ### 4.2 Relationship to Memory System
 

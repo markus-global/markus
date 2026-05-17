@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, memo } from 'react';
 import { type PageId, PAGE, resolvePageId, getPageFromHash, MOBILE_REDIRECTS } from './routes.ts';
 import { HomePage } from './pages/Home.tsx';
 import { TeamPage } from './pages/Team.tsx';
@@ -23,6 +23,26 @@ import { useTheme } from './hooks/useTheme.ts';
 import { useIsMobile } from './hooks/useIsMobile.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 import { useTranslation } from 'react-i18next';
+
+const PageSlot = memo(function PageSlot({
+  id, activePage, children,
+}: {
+  id: PageId;
+  activePage: PageId;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex-1 overflow-hidden flex flex-col" style={{ display: id === activePage ? 'flex' : 'none' }}>
+      {children}
+    </div>
+  );
+}, (prev, next) => {
+  const wasVisible = prev.id === prev.activePage;
+  const isVisible = next.id === next.activePage;
+  if (wasVisible !== isVisible) return false;
+  if (isVisible) return prev.children === next.children;
+  return true;
+});
 
 // Preserve sub-path hashes (e.g. #team/d) across page switches
 const _savedPageHashes: Record<string, string> = {};
@@ -301,13 +321,9 @@ export function App() {
         <main className="flex-1 overflow-hidden flex flex-col">
           {(Object.keys(pageElements) as PageId[]).map(id => (
             mountedPages.has(id) ? (
-              <div
-                key={id}
-                className="flex-1 overflow-hidden flex flex-col"
-                style={{ display: id === page ? 'flex' : 'none' }}
-              >
+              <PageSlot key={id} id={id} activePage={page}>
                 {pageElements[id]}
-              </div>
+              </PageSlot>
             ) : null
           ))}
         </main>

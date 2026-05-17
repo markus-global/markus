@@ -1,4 +1,4 @@
-import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent, sanitizeForLLM } from '@markus/shared';
+import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
 import type { LLMProviderInterface } from './provider.js';
 
 interface AnthropicAPIMessage {
@@ -16,6 +16,7 @@ interface AnthropicContentBlock {
   content?: string;
   source?: { type: 'base64'; media_type: string; data: string };
   summary?: string;
+  cache_control?: { type: string };
 }
 
 interface AnthropicToolDef {
@@ -26,7 +27,12 @@ interface AnthropicToolDef {
 
 interface AnthropicResponse {
   content: AnthropicContentBlock[];
-  usage: { input_tokens: number; output_tokens: number };
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
   stop_reason: string;
 }
 
@@ -63,7 +69,7 @@ export class AnthropicProvider implements LLMProviderInterface {
     };
 
     if (systemMsg) {
-      body['system'] = this.buildSystemContent(getTextContent(systemMsg.content), request.systemCacheSegments);
+      body['system'] = this.buildSystemContent(sanitizeForLLM(getTextContent(systemMsg.content)), request.systemCacheSegments);
     }
     if (request.temperature !== undefined) body['temperature'] = request.temperature;
     if (request.stopSequences?.length) body['stop_sequences'] = request.stopSequences;
@@ -108,7 +114,7 @@ export class AnthropicProvider implements LLMProviderInterface {
       stream: true,
     };
     if (systemMsg) {
-      body['system'] = this.buildSystemContent(getTextContent(systemMsg.content), request.systemCacheSegments);
+      body['system'] = this.buildSystemContent(sanitizeForLLM(getTextContent(systemMsg.content)), request.systemCacheSegments);
     }
     if (request.temperature !== undefined) body['temperature'] = request.temperature;
     if (request.stopSequences?.length) body['stop_sequences'] = request.stopSequences;
@@ -148,6 +154,8 @@ export class AnthropicProvider implements LLMProviderInterface {
     let finishReason: LLMResponse['finishReason'] = 'end_turn';
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheReadTokens: number | undefined;
+    let cacheWriteTokens: number | undefined;
 
     const reader = res.body?.getReader();
     if (!reader) throw new Error('No response body reader');
@@ -174,12 +182,14 @@ export class AnthropicProvider implements LLMProviderInterface {
             content_block?: { type?: string; id?: string; name?: string };
             index?: number;
             usage?: { input_tokens?: number; output_tokens?: number };
-            message?: { usage?: { input_tokens?: number; output_tokens?: number } };
+            message?: { usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
           };
 
           switch (event.type) {
             case 'message_start':
               inputTokens = event.message?.usage?.input_tokens ?? 0;
+              if (event.message?.usage?.cache_read_input_tokens) cacheReadTokens = event.message.usage.cache_read_input_tokens;
+              if (event.message?.usage?.cache_creation_input_tokens) cacheWriteTokens = event.message.usage.cache_creation_input_tokens;
               break;
             case 'content_block_start':
               if (event.content_block?.type === 'tool_use') {
@@ -220,7 +230,7 @@ export class AnthropicProvider implements LLMProviderInterface {
 
     clearTimeout(timeout);
 
-    const usage = { inputTokens, outputTokens };
+    const usage = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
     onEvent({ type: 'message_end', usage, finishReason });
 
     const parsedToolCalls = toolCalls
@@ -258,19 +268,19 @@ export class AnthropicProvider implements LLMProviderInterface {
     return blocks;
   }
 
-  private convertMessages(messages: LLMMessage[]): AnthropicAPIMessage[] {
+  private convertMessages(rawMessages: LLMMessage[]): AnthropicAPIMessage[] {
+    const messages = sanitizeLLMMessages(rawMessages);
     return messages.map((m) => {
+      const wantCache = !!(m as LLMMessage).cacheBreakpoint;
+
       if (m.role === 'tool') {
-        return {
-          role: 'user' as const,
-          content: [
-            {
-              type: 'tool_result' as const,
-              tool_use_id: m.toolCallId ?? '',
-              content: sanitizeForLLM(getTextContent(m.content)),
-            },
-          ],
+        const block: AnthropicContentBlock = {
+          type: 'tool_result' as const,
+          tool_use_id: m.toolCallId ?? '',
+          content: sanitizeForLLM(getTextContent(m.content)),
         };
+        if (wantCache) block.cache_control = { type: 'ephemeral' };
+        return { role: 'user' as const, content: [block] };
       }
 
       if (m.toolCalls?.length) {
@@ -285,13 +295,27 @@ export class AnthropicProvider implements LLMProviderInterface {
             input: tc.arguments,
           });
         }
+        if (wantCache && blocks.length > 0) {
+          blocks[blocks.length - 1].cache_control = { type: 'ephemeral' };
+        }
         return { role: 'assistant' as const, content: blocks };
       }
 
       if (Array.isArray(m.content)) {
+        const parts = this.convertContentParts(m.content);
+        if (wantCache && parts.length > 0) {
+          (parts[parts.length - 1] as AnthropicContentBlock).cache_control = { type: 'ephemeral' };
+        }
         return {
           role: (m.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
-          content: this.convertContentParts(m.content),
+          content: parts,
+        };
+      }
+
+      if (wantCache) {
+        return {
+          role: (m.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
+          content: [{ type: 'text' as const, text: m.content as string, cache_control: { type: 'ephemeral' } }],
         };
       }
 
@@ -366,6 +390,8 @@ export class AnthropicProvider implements LLMProviderInterface {
       usage: {
         inputTokens: data.usage.input_tokens,
         outputTokens: data.usage.output_tokens,
+        cacheReadTokens: data.usage.cache_read_input_tokens,
+        cacheWriteTokens: data.usage.cache_creation_input_tokens,
       },
       finishReason: finishMap[data.stop_reason] ?? 'end_turn',
       compactionContent,

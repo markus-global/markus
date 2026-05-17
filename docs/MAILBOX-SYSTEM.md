@@ -163,6 +163,10 @@ Only after completing these steps does the agent formulate its reply. This preve
 
 The notification text sent to agents also includes explicit MANDATORY instructions reinforcing this protocol.
 
+**Structural reply-to**: Both `task_comment` and `requirement_comment` tools support a `reply_to_comment_id` parameter that creates a structural link to the parent comment. The `task_comments` and `requirement_comments` tables have a `reply_to_id` column; when queried, a LEFT JOIN returns the parent comment's author and content snippet (`replyToAuthor`, `replyToContent`). The notification payload also injects an agent streak count (consecutive agent-only comments) to help agents decide whether further replies are warranted.
+
+**Batch awareness**: The `comment_response` scenario prompt instructs agents to handle multiple bundled comments (separated by `---`) as a single consolidated reply, using `reply_to_comment_id` for the most important one and quoting others inline.
+
 Priorities can be overridden per-item when enqueuing.
 
 ### 3.6 Review Comment Cascade Suppression
@@ -1038,7 +1042,7 @@ dequeueAsync() → headItem
             │         ├─ Can handle simple items INLINE (notify, comment, message)
             │         ├─ Calls complete_deliberation tool with decision
             │         ├─ Apply inline-completed / defer / drop / choose
-            │         └─ Cognition updated with situational awareness
+            │         └─ Working memory updated (`deliberation` key from situational awareness)
             │
             └─ triageJudge only (fallback)?
                  → Mini triage loop (up to TRIAGE_MAX_TOOL_ITERATIONS rounds)
@@ -1069,9 +1073,31 @@ Defined by `DELIBERATION_ALLOWED_TOOLS` in `@markus/shared`:
 |----------|-------|
 | Context gathering | `task_list`, `task_get`, `requirement_list`, `requirement_get`, `list_projects`, `team_list`, `team_status`, `recall_activity`, `memory_search`, `memory_search_longterm` |
 | Inline communication | `notify_user`, `task_comment`, `requirement_comment`, `agent_send_message`, `agent_send_group_message`, `agent_create_group_chat`, `agent_list_group_chats` |
+| Mailbox management | `check_mailbox`, `defer_mailbox_item`, `drop_mailbox_item`, `prioritize_mailbox_item` |
+| Working memory | `update_working_memory`, `clear_working_memory` |
 | Decision output | `complete_deliberation` |
 
 **Excluded**: `task_create`, `task_update`, `requirement_propose`, code/shell tools, `spawn_subagent`. These are heavy side-effect tools that belong in the processing phase.
+
+### Agent Mailbox Management Tools
+
+In addition to the batch decision via `complete_deliberation`, agents can manage
+individual mailbox items using dedicated tools:
+
+| Tool | Available In | Purpose |
+|------|-------------|---------|
+| `check_mailbox` | All scenarios | Read-only queue inspection |
+| `defer_mailbox_item` | Deliberation + focused processing | Postpone an item |
+| `drop_mailbox_item` | Deliberation + focused processing | Discard stale item |
+| `prioritize_mailbox_item` | Deliberation only | Re-prioritize item |
+| `update_working_memory` | All scenarios | Update situational awareness |
+| `clear_working_memory` | All scenarios | Clear stale awareness |
+
+**Safety**: `human_chat` items are protected — they cannot be deferred, dropped,
+or reprioritized by tool calls.
+
+**Relationship to `complete_deliberation`**: The individual tools take immediate
+effect. `complete_deliberation` handles remaining items in bulk. They are additive.
 
 ### DeliberationResult
 
@@ -1086,17 +1112,21 @@ interface DeliberationResult {
 }
 ```
 
-### Cognition Injection
+### Working Memory Injection
 
-The deliberation reasoning (or `situationalAwareness` if provided) becomes the agent's **persistent situational awareness** — stored as `currentCognition` and injected into all subsequent LLM system prompts via `getDynamicContext()`. When `situationalAwareness` is provided, it represents a richer metacognitive output authored by the agent itself.
+The agent maintains a **keyed working memory store** (`workingMemory` Map) that
+replaces the former `currentCognition` string. Each entry has:
+- A key (agent-chosen label, e.g., "deliberation", "task-priorities")
+- Content text
+- Update timestamp
 
-```
-DeliberationResult.situationalAwareness (or .reasoning)
-  → Agent.updateCognitionFromDeliberation()
-    → this.currentCognition = "## Current Situational Awareness (deliberation) ..."
-      → getDynamicContext() includes currentCognition
-        → injected into every LLM call's system prompt
-```
+Working memory is populated from three sources:
+1. **Deliberation**: `situationalAwareness` → key `"deliberation"`
+2. **Triage**: reasoning → key `"triage-decision"`
+3. **Agent tools**: `update_working_memory` / `clear_working_memory`
+
+All entries are injected into every system prompt as `## Working Memory` with
+age labels per entry. The agent decides what to keep, update, or expire.
 
 ### Mini Triage Loop (Fallback)
 
@@ -1116,7 +1146,7 @@ When `performDeliberation` is unavailable, the system falls back to the legacy m
 | `performTriage()` | `attention.ts` | Mini triage loop (fallback path) |
 | `buildTriagePrompt()` | `attention.ts` | Constructs the triage prompt with candidates + context |
 | `consolidateByEntity()` | `mailbox.ts` | Merges items sharing same taskId/requirementId (cross-type) |
-| `updateCognitionFromDeliberation()` | `agent.ts` | Converts DeliberationResult into situational awareness |
+| `updateCognitionFromDeliberation()` | `agent.ts` | Writes deliberation `situationalAwareness` into `workingMemory` under key `"deliberation"` |
 | `evaluateWithLLMFallback()` | `attention.ts` | Heuristic-first interrupt decision with optional LLM fallback |
 
 ### Triage Prompt Identity
@@ -1158,10 +1188,13 @@ The three-tier triage model (§21) is grounded in established cognitive science:
 
 ### Design Rationale
 
-- **Why not always use Tier 2?** Cost and latency. Tier 2 deliberation costs 5-15K tokens vs 0 for Tier 0. It only fires when there is genuine ambiguity (multiple items with overlapping priorities after consolidation).
+- **Why not always use Tier 2?** Cost and latency. Tier 2 deliberation costs 5-15K tokens vs 0 for Tier 0. Now with `TRIAGE_BACKLOG_THRESHOLD = 2`, deliberation fires whenever 2+ items are queued (non-user head). The cost increase is acceptable because:
+  - (a) most single-item processing still takes the fast path,
+  - (b) deliberation with 2-3 items is much cheaper than with 5+, and
+  - (c) the agent can now use `drop_mailbox_item` during deliberation to clean up before committing to expensive processing.
 - **Why allow inline handling?** Cognitive science shows humans handle simple items (quick email replies) during triage rather than queuing them separately. This reduces total cognitive load and latency.
 - **Why suppress yield points during deliberation?** Deliberation is a metacognitive process — interrupting it would break the agent's reasoning coherence (analogous to interrupting someone mid-thought during planning).
-- **Why inject situational awareness into future prompts?** This implements **metacognitive regulation** — the agent's self-authored summary of its situation persists across processing contexts, maintaining behavioral consistency.
+- **Why inject working memory into future prompts?** This implements **metacognitive regulation** — keyed summaries (deliberation, triage, agent-authored entries) persist across processing contexts, maintaining behavioral consistency.
 
 ---
 
@@ -1249,4 +1282,6 @@ This collapses what would have been 5 separate triage+process cycles into a sing
 - **Cross-agent priority coordination**: Allow a manager agent to influence subordinate agents' mailbox priorities.
 - **Decision pattern learning**: Use long-term decision history to adaptively tune heuristic thresholds.
 - **Deliberation cost optimization**: Implement adaptive deliberation depth — use cheaper models or shorter budgets for simple multi-item scenarios, full budget only for genuinely complex triage.
+- **Working memory persistence**: Persist keyed working memory across agent restarts (currently volatile).
+- **Adaptive deliberation model selection**: Use cheaper models for simple 2-item queues; reserve fuller budgets for genuinely complex triage.
 - **Recursive deliberation**: Allow deliberation to trigger sub-deliberation for complex multi-step planning (with depth limits).

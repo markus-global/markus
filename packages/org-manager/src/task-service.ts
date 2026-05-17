@@ -193,7 +193,7 @@ export class TaskService {
   }
 
   /** Post a structured comment on a task. Called from both agent tools and HTTP API. */
-  async postTaskComment(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[] }): Promise<{ id: string; comment: Record<string, unknown> }> {
+  async postTaskComment(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string }): Promise<{ id: string; comment: Record<string, unknown> }> {
     if (!this.taskCommentRepo) throw new Error('Task comment repo not available');
     const comment = await this.taskCommentRepo.add({
       taskId,
@@ -204,7 +204,23 @@ export class TaskService {
       attachments: opts?.attachments,
       mentions: mentions ?? [],
       activityId,
+      replyToId: opts?.replyToId,
     });
+
+    // Compute reply-to context for WS broadcast (denormalized for frontend)
+    let replyToAuthor: string | undefined;
+    let replyToContent: string | undefined;
+    if (opts?.replyToId && this.taskCommentRepo) {
+      try {
+        const allComments = await this.taskCommentRepo.getByTask(taskId);
+        const parent = allComments.find(c => c.id === opts.replyToId);
+        if (parent) {
+          replyToAuthor = parent.authorName;
+          replyToContent = parent.content.slice(0, 120);
+        }
+      } catch { /* best-effort */ }
+    }
+
     this.ws?.broadcast({
       type: 'task:comment',
       payload: {
@@ -218,6 +234,9 @@ export class TaskService {
           content: comment.content,
           attachments: comment.attachments,
           mentions: comment.mentions,
+          replyTo: comment.replyToId,
+          replyToAuthor,
+          replyToContent,
           createdAt: comment.createdAt instanceof Date ? comment.createdAt.toISOString() : comment.createdAt,
         },
       },
@@ -241,17 +260,37 @@ export class TaskService {
         && !!task.reviewerId
         && authorId === task.reviewerId;
 
-      const buildNotifContent = (reason: string) => [
-        `${reason} on task "${taskTitle}" (ID: ${taskId}, status: ${taskStatus}).`,
-        ``,
-        `Comment from ${authorName}: ${content}`,
-        ``,
-        `**MANDATORY before replying**: You MUST first understand the full context:`,
-        `1. Call \`task_get\` with task ID "${taskId}" to see the complete task state, description, and all comments`,
-        `2. Read ALL previous comments on this task to understand the conversation thread`,
-        `3. Only THEN formulate your response using \`task_comment\``,
-        `Do NOT reply based solely on the comment above — you need the full picture.`,
-      ].join('\n');
+      // Count consecutive agent-only comments for streak awareness
+      let agentStreak = 0;
+      if (this.taskCommentRepo) {
+        try {
+          const existingComments = await this.taskCommentRepo.getByTask(taskId);
+          for (let i = existingComments.length - 1; i >= 0; i--) {
+            if (existingComments[i].authorType === 'agent') agentStreak++;
+            else break;
+          }
+        } catch { /* best-effort */ }
+      }
+
+      const buildNotifContent = (reason: string) => {
+        const lines = [
+          `${reason} on task "${taskTitle}" (ID: ${taskId}, status: ${taskStatus}).`,
+          ``,
+          `Comment from ${authorName}: ${content}`,
+        ];
+        if (agentStreak >= 2) {
+          lines.push(``);
+          lines.push(`Thread activity: ${agentStreak} consecutive agent comments on this task (no human input in between).`);
+          lines.push(`Consider whether your reply adds genuinely new information. If the discussion is going in circles, output [NO_REPLY_NEEDED] and let results speak.`);
+        }
+        lines.push(``);
+        lines.push(`**MANDATORY before replying**: You MUST first understand the full context:`);
+        lines.push(`1. Call \`task_get\` with task ID "${taskId}" to see the complete task state, description, and all comments`);
+        lines.push(`2. Read ALL previous comments on this task to understand the conversation thread`);
+        lines.push(`3. Only THEN formulate your response using \`task_comment\``);
+        lines.push(`Do NOT reply based solely on the comment above — you need the full picture.`);
+        return lines.join('\n');
+      };
 
       const isHuman = opts?.authorType === 'human';
       const enqueueFor = (agentId: string, type: 'task_comment' | 'mention', reason: string) => {
@@ -304,13 +343,16 @@ export class TaskService {
       authorId: comment.authorId, authorName: comment.authorName, authorType: comment.authorType,
       content: comment.content, attachments: comment.attachments, mentions: comment.mentions,
       activityId: comment.activityId,
+      replyTo: comment.replyToId,
+      replyToAuthor,
+      replyToContent,
       createdAt: comment.createdAt instanceof Date ? comment.createdAt.toISOString() : comment.createdAt,
     };
     return { id: comment.id, comment: serialized };
   }
 
   /** Post a structured comment on a requirement. Called from both agent tools and HTTP API. */
-  async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[] }): Promise<{ id: string; comment: Record<string, unknown> }> {
+  async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string }): Promise<{ id: string; comment: Record<string, unknown> }> {
     if (!this.requirementCommentRepo) throw new Error('Requirement comment repo not available');
     const comment = await this.requirementCommentRepo.add({
       requirementId,
@@ -321,7 +363,23 @@ export class TaskService {
       attachments: opts?.attachments,
       mentions: mentions ?? [],
       activityId,
+      replyToId: opts?.replyToId,
     });
+
+    // Compute reply-to context for WS broadcast
+    let replyToAuthor: string | undefined;
+    let replyToContent: string | undefined;
+    if (opts?.replyToId && this.requirementCommentRepo) {
+      try {
+        const allComments = this.requirementCommentRepo.getByRequirement(requirementId);
+        const parent = allComments.find(c => c.id === opts.replyToId);
+        if (parent) {
+          replyToAuthor = parent.authorName;
+          replyToContent = parent.content.slice(0, 120);
+        }
+      } catch { /* best-effort */ }
+    }
+
     this.ws?.broadcast({
       type: 'requirement:comment',
       payload: {
@@ -335,6 +393,9 @@ export class TaskService {
           content: comment.content,
           attachments: comment.attachments,
           mentions: comment.mentions,
+          replyTo: comment.replyToId,
+          replyToAuthor,
+          replyToContent,
           createdAt: comment.createdAt instanceof Date ? comment.createdAt.toISOString() : comment.createdAt,
         },
       },
@@ -347,17 +408,37 @@ export class TaskService {
       const reqStatus = req?.status ?? 'unknown';
       const notified = new Set<string>();
 
-      const buildNotifContent = (reason: string) => [
-        `${reason} on requirement "${reqTitle}" (ID: ${requirementId}, status: ${reqStatus}).`,
-        ``,
-        `Comment from ${authorName}: ${content}`,
-        ``,
-        `**MANDATORY before replying**: You MUST first understand the full context:`,
-        `1. Call \`requirement_get\` with requirement_id "${requirementId}" to see the full description, linked tasks, and all comments`,
-        `2. Read ALL previous comments to understand the conversation thread`,
-        `3. Only THEN formulate your response using \`requirement_comment\``,
-        `Do NOT reply based solely on the comment above — you need the full picture.`,
-      ].join('\n');
+      // Count consecutive agent-only comments for streak awareness
+      let agentStreak = 0;
+      if (this.requirementCommentRepo) {
+        try {
+          const existingComments = this.requirementCommentRepo.getByRequirement(requirementId);
+          for (let i = existingComments.length - 1; i >= 0; i--) {
+            if (existingComments[i].authorType === 'agent') agentStreak++;
+            else break;
+          }
+        } catch { /* best-effort */ }
+      }
+
+      const buildNotifContent = (reason: string) => {
+        const lines = [
+          `${reason} on requirement "${reqTitle}" (ID: ${requirementId}, status: ${reqStatus}).`,
+          ``,
+          `Comment from ${authorName}: ${content}`,
+        ];
+        if (agentStreak >= 2) {
+          lines.push(``);
+          lines.push(`Thread activity: ${agentStreak} consecutive agent comments on this requirement (no human input in between).`);
+          lines.push(`Consider whether your reply adds genuinely new information. If the discussion is going in circles, output [NO_REPLY_NEEDED] and let results speak.`);
+        }
+        lines.push(``);
+        lines.push(`**MANDATORY before replying**: You MUST first understand the full context:`);
+        lines.push(`1. Call \`requirement_get\` with requirement_id "${requirementId}" to see the full description, linked tasks, and all comments`);
+        lines.push(`2. Read ALL previous comments to understand the conversation thread`);
+        lines.push(`3. Only THEN formulate your response using \`requirement_comment\``);
+        lines.push(`Do NOT reply based solely on the comment above — you need the full picture.`);
+        return lines.join('\n');
+      };
 
       const isHumanReq = opts?.authorType === 'human';
       const enqueueFor = (agentId: string, type: 'requirement_comment' | 'mention', reason: string) => {
@@ -399,30 +480,41 @@ export class TaskService {
       authorId: comment.authorId, authorName: comment.authorName, authorType: comment.authorType,
       content: comment.content, attachments: comment.attachments, mentions: comment.mentions,
       activityId: comment.activityId,
+      replyTo: comment.replyToId,
+      replyToAuthor,
+      replyToContent,
       createdAt: comment.createdAt instanceof Date ? comment.createdAt.toISOString() : comment.createdAt,
     };
     return { id: comment.id, comment: serialized };
   }
 
-  getRequirementComments(requirementId: string): Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }> {
+  getRequirementComments(requirementId: string): Array<{ id: string; authorId: string; authorName: string; authorType?: string; content: string; replyToId?: string; replyToAuthor?: string; replyToContent?: string; createdAt: string }> {
     if (!this.requirementCommentRepo) return [];
     return this.requirementCommentRepo.getByRequirement(requirementId).map(c => ({
       id: c.id,
       authorId: c.authorId,
       authorName: c.authorName,
+      authorType: c.authorType,
       content: c.content,
+      replyToId: c.replyToId,
+      replyToAuthor: c.replyToAuthor,
+      replyToContent: c.replyToContent,
       createdAt: c.createdAt instanceof Date ? c.createdAt.toISOString() : String(c.createdAt),
     }));
   }
 
-  async getTaskComments(taskId: string): Promise<Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }>> {
+  async getTaskComments(taskId: string): Promise<Array<{ id: string; authorId: string; authorName: string; authorType?: string; content: string; replyToId?: string; replyToAuthor?: string; replyToContent?: string; createdAt: string }>> {
     if (!this.taskCommentRepo) return [];
     const rows = await this.taskCommentRepo.getByTask(taskId);
     return rows.map(c => ({
       id: c.id,
       authorId: c.authorId,
       authorName: c.authorName,
+      authorType: c.authorType,
       content: c.content,
+      replyToId: c.replyToId,
+      replyToAuthor: c.replyToAuthor,
+      replyToContent: c.replyToContent,
       createdAt: c.createdAt instanceof Date ? c.createdAt.toISOString() : String(c.createdAt),
     }));
   }

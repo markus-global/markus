@@ -18,6 +18,7 @@ import {
   SYSTEM_DELIVERABLE_PREVIEW_CHARS,
   SYSTEM_MAILBOX_MERGED_CHARS,
   SYSTEM_MAILBOX_ITEM_PREVIEW_CHARS,
+  CHANNEL_CONTEXT_MESSAGES,
 } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
@@ -260,7 +261,7 @@ export class ContextEngine {
     }
 
     const scenario = opts.scenario ?? 'chat';
-    stable.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply }));
+    stable.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply, isManager: opts.isTeamManager }));
 
     // ═══════════════════════════════════════════════════════════════════════
     // TIER 2 — SEMI-STABLE
@@ -546,16 +547,6 @@ export class ContextEngine {
       }
     }
 
-    if (!isDream) {
-      dynamic.push('\n## Tool Usage Rules');
-      dynamic.push('**File editing discipline**: You MUST use `file_write` and `file_edit` for all file creation and modification. NEVER use `shell_execute` with `cat`, `echo`, `printf`, `tee`, pipes (`|`), output redirection (`>`, `>>`), heredocs (`<<`), or `sed`/`awk` to write or modify files — these bypass file access controls. `shell_execute` is for running commands (build, test, git, etc.), not for writing files.');
-      dynamic.push('**Large file writing**: NEVER write a document >200 lines in a single `file_write` call. Write section by section: `file_write` the first section, then `file_edit` to append each subsequent section.');
-      dynamic.push('**Error handling**: If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action.');
-      dynamic.push('**Subagent delegation**: For heavy subtasks needing many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
-      dynamic.push('**Built-in tools over CLI**: ALWAYS prefer built-in tools (`task_create`, `task_assign`, `package_install`, `agent_send_message`, `memory_save`, etc.) over running `markus` CLI commands via `shell_execute`. The CLI is for human operators — agents must use their native tool interface. Only fall back to CLI if no built-in tool exists for the operation.');
-      dynamic.push('**No auto-install/deploy**: NEVER automatically install or deploy agents, teams, or skills via `package_install` or `hub_install` unless explicitly requested by a human team member (e.g., "install", "deploy", "hire", "start"). Creating an artifact (writing files to `builder-artifacts/`) is separate from deploying it into the live organization.');
-    }
-
     // Timestamp at the end of the system prompt preserves KV-cache for the
     // stable prefix (identity, role, policies, memory) which rarely changes.
     const now = new Date();
@@ -618,10 +609,77 @@ export class ContextEngine {
       lines.push(`**Merged context** (absorbed into current work):\n${ctx.mergedContent.slice(0, SYSTEM_MAILBOX_MERGED_CHARS)}`);
     }
 
+    if (ctx.topQueued && ctx.topQueued.length > 0) {
+      lines.push('');
+      lines.push('## Message Processing Checklists');
+      lines.push('');
+      lines.push('### When Deliberating (multiple queued items)');
+      lines.push('1. **Scan**: Read all items — identify human messages, urgent items, stale items.');
+      lines.push('2. **Clean**: `drop_mailbox_item` for stale informational items (old heartbeats, outdated status updates, superseded notifications).');
+      lines.push('3. **Group**: Items sharing a taskId / requirementId / channel → plan to handle together.');
+      lines.push('4. **Inline**: Handle trivial items now (quick ack via `notify_user`, one-line `task_comment`). Mark as inline_completed.');
+      lines.push('5. **Assess**: `update_working_memory` with your situational summary — priorities, blockers, what you plan to do.');
+      lines.push('6. **Focus**: `complete_deliberation` — choose the most important remaining item.');
+      lines.push('');
+      lines.push('### Per-Type Processing');
+      lines.push('');
+      lines.push('**human_chat** (priority 0 — always process first):');
+      lines.push('- [ ] Read the full message carefully.');
+      lines.push('- [ ] Check working memory for ongoing conversation context.');
+      lines.push('- [ ] Respond directly — concise, human-friendly.');
+      lines.push('- [ ] If it requires substantial work → create a task, do NOT do the work inline.');
+      lines.push('- [ ] Update working memory if the situation changed.');
+      lines.push('');
+      lines.push('**a2a_message** (agent-to-agent):');
+      lines.push('- [ ] Who sent it? What do they need?');
+      lines.push('- [ ] Is your specific expertise required?');
+      lines.push('- [ ] Has another agent already answered? (`recall_context` if group chat)');
+      lines.push('- [ ] If not relevant to you → no response needed.');
+      lines.push('- [ ] If relevant → respond concisely with facts.');
+      lines.push('- [ ] Only @mention others if you genuinely need their specific expertise.');
+      lines.push('');
+      lines.push('**task_comment / requirement_comment**:');
+      lines.push('- [ ] Fetch full context first: `task_get` or `requirement_get`.');
+      lines.push('- [ ] Read ALL prior comments — understand the thread.');
+      lines.push('- [ ] Is the comment directed at you? Does it change your work?');
+      lines.push('- [ ] Reply with `reply_to_comment_id`. One consolidated reply if multiple comments.');
+      lines.push('- [ ] Does your reply add NEW information? If not → `[NO_REPLY_NEEDED]`.');
+      lines.push('');
+      lines.push('**task_status_update** (usually informational):');
+      lines.push('- [ ] Does this affect your current work or priorities?');
+      lines.push('- [ ] Does it unblock something you were waiting for?');
+      lines.push('- [ ] Usually no response needed — absorb into awareness.');
+      lines.push('- [ ] If it changes your priorities → `update_working_memory`.');
+      lines.push('');
+      lines.push('**review_request**:');
+      lines.push('- [ ] Call `task_get` — read task description, deliverables, notes.');
+      lines.push('- [ ] `file_read` all deliverable files. `git diff` if there is a task branch.');
+      lines.push('- [ ] Verify: does the work meet the requirements?');
+      lines.push('- [ ] `task_update` to approve (status=completed) or request revision (status=in_progress with feedback).');
+      lines.push('');
+      lines.push('**heartbeat**:');
+      lines.push('- [ ] Check for tasks in `review` status where you are reviewer — these block the team.');
+      lines.push('- [ ] Check for `failed` tasks to retry.');
+      lines.push('- [ ] Record lessons learned via `memory_save`.');
+      lines.push('- [ ] If nothing needs attention → HEARTBEAT_OK.');
+      lines.push('');
+      lines.push('### Working Memory Guidelines');
+      lines.push('- **Save**: current priorities, ongoing context, key decisions, blockers.');
+      lines.push('- **Update**: when situation changes — new task, resolved blocker, shifted priority.');
+      lines.push('- **Clear**: when a task completes, when context becomes irrelevant.');
+      lines.push('- **Do NOT save**: raw message content, large data — use `memory_save` for durable observations.');
+      lines.push('');
+      lines.push('### Mailbox Management Guidelines');
+      lines.push('- **Defer**: items you will handle later (not stale, just lower priority now). Optional: set defer_minutes.');
+      lines.push('- **Drop**: stale heartbeats, redundant status updates, superseded notifications, items already handled.');
+      lines.push('- **Never defer/drop**: human messages — the system prevents this.');
+      lines.push('- **Batch**: multiple comments on the same task → one `task_get` + one consolidated reply.');
+    }
+
     return lines.join('\n');
   }
 
-  private buildScenarioSection(scenario: AgentScenario, extra?: { a2aWaitForReply?: boolean }): string {
+  private buildScenarioSection(scenario: AgentScenario, extra?: { a2aWaitForReply?: boolean; isManager?: boolean }): string {
     const lines: string[] = ['\n## Current Interaction Mode'];
 
     switch (scenario) {
@@ -689,6 +747,12 @@ export class ContextEngine {
           lines.push('- To reach a **human**, use `notify_user`.');
           lines.push('- To reach a **different agent**, use `agent_send_message`.');
           lines.push('- If no response is needed, just process the information silently (e.g., update your state, create tasks, take notes).');
+          lines.push('');
+          lines.push('**One-way notification etiquette**: The sender is NOT waiting. Only act if:');
+          lines.push('- The message contains a direct question or request for you');
+          lines.push('- The information changes your current work priorities');
+          lines.push('- You have critical corrections to share');
+          lines.push('Otherwise, absorb silently and continue your current work.');
         }
         lines.push('');
         lines.push('**Communication rules:**');
@@ -705,6 +769,46 @@ export class ContextEngine {
         lines.push('- If you cannot help, explain why and suggest who can');
         break;
       }
+
+      case 'group_chat':
+        lines.push('You are in a **team group chat channel**. Multiple agents and humans share this channel.');
+        lines.push('');
+        lines.push('**Communication channel**: Your text output is sent to the group chat. All team members can see it. To reach a human privately, use `notify_user`. To reach a specific agent privately, use `agent_send_message`.');
+        lines.push('');
+        lines.push('**Rules for ALL group chat messages:**');
+        lines.push('1. Check channel history — if another agent already answered, do NOT repeat.');
+        lines.push('2. Only respond if your specific role/expertise is directly relevant.');
+        lines.push('3. Be concise — short, actionable responses only.');
+        if (extra?.isManager) {
+          lines.push('4. When assigning work to agents, you MUST use `task_create` to formalize each assignment as a tracked task. Verbal delegation without a task is NOT allowed — oral promises are meaningless without task tracking. Every commitment must have a corresponding task.');
+        } else {
+          lines.push('4. When you accept a work assignment, verify a task has been created for it (`task_list`). If the coordinator did not create one, remind them or create it yourself with the correct `assigned_agent_id`. Do NOT make promises without task tracking.');
+        }
+        lines.push('5. DEFAULT IS SILENCE. Before responding, answer these questions:');
+        lines.push('   a) Has another agent already given a substantively similar answer? If yes → [NO_RESPONSE]');
+        lines.push('   b) Does your response add UNIQUE expertise or information? If no → [NO_RESPONSE]');
+        lines.push('   c) Check channel history — duplicate or "me too" responses waste everyone\'s time.');
+        lines.push('6. @MENTION — CRITICAL ROUTING MECHANISM:');
+        lines.push('   The @ symbol controls message routing. You MUST use it correctly:');
+        lines.push('   - WITH @: `@Name` or `@[Full Name]` → the named agent receives a direct notification and is expected to respond.');
+        lines.push('   - WITHOUT @: Writing a name without @ (e.g., "Alice, confirmed") does NOT notify anyone — it is just text.');
+        lines.push('   - FORMAT: `@Name` for single-word names, `@[Name With Spaces]` for multi-word names (e.g., `@[Sam Altman]`).');
+        lines.push('   - You can @mention MULTIPLE agents in one message to address several people at once.');
+        lines.push('   - @mentions can appear ANYWHERE in the message — beginning, middle, or end. Place each @mention naturally next to the content directed at that person.');
+        lines.push('   - Only @mention agents who need to take action or whose expertise you need. Do NOT @mention just to acknowledge, agree, or be polite.');
+        lines.push('7. REPLY IN GROUP: Always reply in the group chat using `agent_send_group_message`. Do NOT use `agent_send_message` for private replies unless the other party explicitly requests a private conversation. Use `reply_to_message_id` to link your reply to the message you\'re responding to.');
+        lines.push(`8. Your context already includes ~${CHANNEL_CONTEXT_MESSAGES} recent messages. For OLDER messages beyond that window, use recall_context(scope="channel"). For task/requirement details use task_get/requirement_get. Do NOT guess about prior discussion.`);
+        lines.push('');
+        lines.push('**GROUP CHAT PROCESSING CHECKLIST** (walk through before every response):');
+        lines.push('- [ ] Am I @mentioned or is this an open message? If directed at someone else → `[NO_RESPONSE]`.');
+        lines.push('- [ ] Check the channel messages in your context — has someone already answered? If yes → `[NO_RESPONSE]`.');
+        lines.push('- [ ] Does my role/expertise add UNIQUE value here? If no → `[NO_RESPONSE]`.');
+        lines.push('- [ ] Draft my reply. Is it concise and actionable? Remove filler.');
+        lines.push('- [ ] @mention specific agents if I need their input — use correct format (`@Name` or `@[Full Name]`).');
+        lines.push('- [ ] Use `reply_to_message_id` to thread my response to the right message.');
+        lines.push('- [ ] Use `agent_send_group_message` — NOT `agent_send_message`.');
+        lines.push('- [ ] Final check: does my response contain NEW information? If not → `[NO_RESPONSE]`.');
+        break;
 
       case 'comment_response':
         lines.push('You are responding to a **comment on a task or requirement**. You MUST follow the context-first protocol below.');
@@ -736,12 +840,27 @@ export class ContextEngine {
         lines.push('');
         lines.push('If you finish without doing either of the above, the system will automatically retry your turn — your text output alone is NEVER sufficient.');
         lines.push('');
-        lines.push('**When to use `[NO_REPLY_NEEDED]` — do NOT reply when:**');
-        lines.push('- The comment is just an acknowledgment ("Got it", "Will do", "Thanks", "Agreed")');
-        lines.push('- Both parties have reached agreement or the discussion is resolved');
-        lines.push('- Your reply would only be "Sounds good", "Agreed", or similar zero-information response');
-        lines.push('- The comment does not ask a question, request action, or contain information you need to correct');
-        lines.push('- **Principle**: only comment when your reply adds **new information** or requests a **decision**. Avoid comment ping-pong.');
+        lines.push('**Batch awareness**: You may receive MULTIPLE comments bundled together (separated by `---`).');
+        lines.push('This happens when several comments arrived while you were busy. Read ALL of them first,');
+        lines.push('then post ONE consolidated reply that addresses everything — do NOT reply to each separately.');
+        lines.push('');
+        lines.push('**Structured reply format**: When replying to comments:');
+        lines.push('- Use the `reply_to_comment_id` parameter in `task_comment`/`requirement_comment` to link your reply');
+        lines.push('  to the specific comment you are responding to. Get comment IDs from `task_get`/`requirement_get`.');
+        lines.push('- When addressing multiple agents, use @AgentName to indicate which part addresses whom.');
+        lines.push('  Example: "@Alice: Regarding your question about the API — ... @Bob: The test failure is caused by ..."');
+        lines.push('- For batch replies to multiple comments, pick the most important one as `reply_to_comment_id`,');
+        lines.push('  and reference others by quoting: \'> [re: tc_xxx by @Bob]: "quote..." — your response\'');
+        lines.push('- Include all addressed agent IDs in the `mentions` array for proper notifications.');
+        lines.push('');
+        lines.push('**When to use `[NO_REPLY_NEEDED]` — convergence check:**');
+        lines.push('- Does your reply contain NEW INFORMATION, a CONCRETE ACTION, or a SPECIFIC QUESTION? If none → [NO_REPLY_NEEDED]');
+        lines.push('- If the last 2+ comments are agents acknowledging or restating without new substance → [NO_REPLY_NEEDED]');
+        lines.push('- If you and another agent exchanged views and neither has new data → [NO_REPLY_NEEDED]');
+        lines.push('');
+        lines.push('**Not a valid reason to reply:** "Got it" / "Will do" / "Agreed" / restating what was said / asking already-answered questions.');
+        lines.push('');
+        lines.push('**Principle**: Agent discussion is welcome — but each message must move the conversation forward.');
         break;
 
       case 'review':
@@ -776,21 +895,22 @@ export class ContextEngine {
       case 'deliberation':
         lines.push('You are in **deliberation mode** — reviewing your mailbox before committing to work.');
         lines.push('');
-        lines.push('**Purpose**: You have multiple pending items. Take a moment to understand the full picture before deciding what to focus on.');
+        lines.push('**Purpose**: You have multiple pending items. Assess the full picture before deciding.');
         lines.push('');
         lines.push('**What you can do**:');
-        lines.push('1. **Gather context**: Call tools like recall_activity, task_get, memory_search to understand history and commitments.');
-        lines.push('2. **Handle simple items inline**: For trivial acknowledgments or quick notifications, use notify_user, task_comment, or agent_send_message now. Mark them as inline_completed in your final decision.');
-        lines.push('3. **Choose your focus**: Decide which complex item deserves your full attention next.');
-        lines.push('4. **Defer or drop**: Explicitly defer items for later or drop stale/redundant ones.');
+        lines.push('1. **Inspect queue**: `check_mailbox` — see your full mailbox at any time.');
+        lines.push('2. **Gather context**: `recall_activity`, `task_get`, `memory_search` — understand history.');
+        lines.push('3. **Manage queue**: `defer_mailbox_item` — postpone items; `drop_mailbox_item` — discard stale ones.');
+        lines.push('4. **Handle inline**: `notify_user`, `task_comment`, `agent_send_message` — handle trivial items now.');
+        lines.push('5. **Record awareness**: `update_working_memory` — persist your situational assessment.');
         lines.push('');
         lines.push('**Rules**:');
         lines.push('- Human messages and comments are ALWAYS highest priority.');
-        lines.push('- Consider your active tasks, pending commitments, and recent conversation context.');
         lines.push('- Stale informational items (old heartbeats, status updates) should be dropped aggressively.');
-        lines.push('- When done, you MUST call the `complete_deliberation` tool with your decision.');
+        lines.push('- **Batch related items**: Multiple items for the same task/requirement → handle with ONE context lookup + ONE reply. Mark all as inline_completed.');
+        lines.push('- When done, call `complete_deliberation` with your decision.');
         lines.push('');
-        lines.push('**Communication channel**: Your text output is NOT visible to anyone. Only tool calls have effect. To reach humans, use `notify_user`. To reach agents, use `agent_send_message`.');
+        lines.push('**Communication channel**: Your text output is NOT visible to anyone. Only tool calls have effect.');
         break;
 
       case 'requirement_action':
@@ -1072,6 +1192,14 @@ export class ContextEngine {
 
     if (usagePercent > 80) {
       log.warn('Context usage above 80%', { usagePercent: usagePercent.toFixed(1), totalUsed, effectiveBudget });
+    }
+
+    // Mark a cache breakpoint at the boundary between older history and
+    // the current turn so providers (e.g. Anthropic) can cache the stable
+    // conversation prefix independently from new messages.
+    const turnStart = this.findCurrentTurnStart(messages);
+    if (turnStart > 0) {
+      messages[turnStart - 1] = { ...messages[turnStart - 1], cacheBreakpoint: true };
     }
 
     return {

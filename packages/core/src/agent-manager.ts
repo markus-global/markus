@@ -29,6 +29,7 @@ import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
 import { createProjectTools, type ProjectServiceBridge, type KnowledgeServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext } from './tools/project-tools.js';
 import { createMemoryTools } from './tools/memory.js';
+import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
 import { createSettingsTools } from './tools/settings.js';
 import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
@@ -230,10 +231,10 @@ export interface TaskServiceBridge {
   findDuplicateTasks?(orgId: string): Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
   cleanupDuplicateTasks?(orgId: string): { cancelledIds: string[]; count: number };
   getTaskBoardHealth?(orgId: string): Record<string, unknown>;
-  postTaskComment?(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string; comment?: Record<string, unknown> }>;
-  postRequirementComment?(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string; comment?: Record<string, unknown> }>;
-  getRequirementComments?(requirementId: string): Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }>;
-  getTaskComments?(taskId: string): Promise<Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }>>;
+  postTaskComment?(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { replyToId?: string }): Promise<{ id: string; comment?: Record<string, unknown> }>;
+  postRequirementComment?(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { replyToId?: string }): Promise<{ id: string; comment?: Record<string, unknown> }>;
+  getRequirementComments?(requirementId: string): Array<{ id: string; authorId: string; authorName: string; content: string; replyToId?: string; replyToAuthor?: string; replyToContent?: string; createdAt: string }>;
+  getTaskComments?(taskId: string): Promise<Array<{ id: string; authorId: string; authorName: string; content: string; replyToId?: string; replyToAuthor?: string; replyToContent?: string; createdAt: string }>>;
   getTaskStatusHistory?(taskId: string, limit?: number): unknown[];
   updateScheduleFields?(taskId: string, fields: { every?: string; cron?: string; maxRuns?: number; timezone?: string }): Promise<{ id: string; title: string; status: string }>;
 }
@@ -362,7 +363,8 @@ export class AgentManager {
       channelKey: string,
       message: string,
       senderId: string,
-      senderName: string
+      senderName: string,
+      replyToId?: string
     ) => Promise<string>;
     createGroupChat: (
       name: string,
@@ -377,7 +379,7 @@ export class AgentManager {
       channelKey: string,
       limit: number,
       before?: string
-    ) => Promise<{ messages: Array<{ senderName: string; senderType: string; text: string; createdAt: string }>; hasMore: boolean }>;
+    ) => Promise<{ messages: Array<{ id?: string; senderName: string; senderType: string; text: string; replyToId?: string; replyToSender?: string; replyToText?: string; createdAt: string }>; hasMore: boolean }>;
   };
 
   private buildKnowledgeCallbacks(agentId: string, orgId: string): Pick<
@@ -860,12 +862,12 @@ export class AgentManager {
       for (const skillName of config.skills) {
         const skill = this.skillRegistry.get(skillName);
         if (skill?.manifest.mcpServers) {
-          const isolated = skill.manifest.isolation === 'per-agent';
+          const isolation = skill.manifest.isolation ?? 'shared';
           for (const [serverName, rawServerConfig] of Object.entries(skill.manifest.mcpServers)) {
             try {
-              const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
               let mcpTools: AgentToolHandler[];
-              if (isolated) {
+              if (isolation === 'per-agent' || isolation === 'pooled') {
+                const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
                 await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                 mcpTools = this.mcpManager.getToolHandlersScoped(serverName, id);
                 mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, id);
@@ -874,6 +876,7 @@ export class AgentManager {
                   await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                 });
               } else {
+                const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
                 await this.mcpManager.connectServer(serverName, serverConfig);
                 mcpTools = this.mcpManager.getToolHandlers(serverName);
               }
@@ -884,7 +887,7 @@ export class AgentManager {
               }
               agent.activateTools(toolNames);
               log.info(`Skill ${skillName} MCP server ${serverName} connected for agent ${id}`, {
-                toolCount: mcpTools.length, isolated,
+                toolCount: mcpTools.length, isolation,
               });
             } catch (error) {
               log.warn(`Failed to connect skill ${skillName} MCP server ${serverName} for agent ${id}`, {
@@ -900,18 +903,19 @@ export class AgentManager {
     agent.setSkillMcpActivator(async (skillName, mcpServers) => {
       let tools: AgentToolHandler[] = [];
       const skill = this.skillRegistry?.get(skillName);
-      const isolated = skill?.manifest.isolation === 'per-agent';
+      const isolation = skill?.manifest.isolation ?? 'shared';
       for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
-        const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
-        if (isolated) {
+        if (isolation === 'per-agent' || isolation === 'pooled') {
+          const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
           await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
           tools.push(...this.mcpManager.getToolHandlersScoped(serverName, id));
         } else {
+          const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
           await this.mcpManager.connectServer(serverName, srvConfig);
           tools.push(...this.mcpManager.getToolHandlers(serverName));
         }
       }
-      if (isolated) {
+      if (isolation === 'per-agent' || isolation === 'pooled') {
         tools = this.browserSessionManager.wrapToolHandlers(tools, id);
         for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
           const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
@@ -999,6 +1003,20 @@ export class AgentManager {
     })) {
       agent.registerTool(tool);
     }
+
+    // Mailbox + working memory tools — every agent can inspect/manage queue and cognition
+    const attnCtrl = agent.getAttentionController();
+    const mailboxToolCtx: MailboxToolContext = {
+      agentId: id,
+      getMindState: () => attnCtrl.getMindState(),
+      deferItem: (itemId, reason, ms) => attnCtrl.deferItem(itemId, reason, ms),
+      dropItem: (itemId, reason) => attnCtrl.dropItem(itemId, reason),
+      prioritizeItem: (itemId, p) => attnCtrl.prioritizeItem(itemId, p),
+      updateWorkingMemory: (key, content) => agent.updateWorkingMemory(key, content),
+      clearWorkingMemory: (key) => agent.clearWorkingMemory(key),
+      getWorkingMemorySnapshot: () => agent.getWorkingMemorySnapshot(),
+    };
+    for (const tool of createMailboxTools(mailboxToolCtx)) agent.registerTool(tool);
 
     // Recall tool — agents can query their own execution history
     if (this.recallCallbacks) {
@@ -1175,10 +1193,10 @@ export class AgentManager {
           ? async (taskId) => ts.getTaskComments!(taskId)
           : undefined,
         postTaskComment: ts.postTaskComment
-          ? async (taskId, content, mentions, activityId) => ts.postTaskComment!(taskId, id, config.name, content, mentions, activityId)
+          ? async (taskId, content, mentions, activityId, replyToId?) => ts.postTaskComment!(taskId, id, config.name, content, mentions, activityId, { replyToId })
           : undefined,
         postRequirementComment: ts.postRequirementComment
-          ? async (reqId, content, mentions, activityId) => ts.postRequirementComment!(reqId, id, config.name, content, mentions, activityId)
+          ? async (reqId, content, mentions, activityId, replyToId?) => ts.postRequirementComment!(reqId, id, config.name, content, mentions, activityId, { replyToId })
           : undefined,
         getCurrentActivityId: () => agent.getCurrentActivityId(),
         getStatusHistory: ts.getTaskStatusHistory
@@ -1550,13 +1568,13 @@ export class AgentManager {
       for (const skillName of config.skills) {
         const skill = this.skillRegistry.get(skillName);
         if (skill?.manifest.mcpServers) {
-          const isolated = skill.manifest.isolation === 'per-agent';
+          const isolation = skill.manifest.isolation ?? 'shared';
           for (const [serverName, rawServerConfig] of Object.entries(skill.manifest.mcpServers)) {
             mcpConnections.push((async () => {
               try {
-                const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
                 let mcpTools: AgentToolHandler[];
-                if (isolated) {
+                if (isolation === 'per-agent' || isolation === 'pooled') {
+                  const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
                   await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                   mcpTools = this.mcpManager.getToolHandlersScoped(serverName, id);
                   mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, id);
@@ -1565,6 +1583,7 @@ export class AgentManager {
                     await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                   });
                 } else {
+                  const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
                   await this.mcpManager.connectServer(serverName, serverConfig);
                   mcpTools = this.mcpManager.getToolHandlers(serverName);
                 }
@@ -1575,7 +1594,7 @@ export class AgentManager {
                 }
                 agent.activateTools(toolNames);
                 log.info(`Skill ${skillName} MCP server ${serverName} restored for agent ${id}`, {
-                  toolCount: mcpTools.length, isolated,
+                  toolCount: mcpTools.length, isolation,
                 });
               } catch (error) {
                 log.warn(`Failed to restore skill ${skillName} MCP server ${serverName} for agent ${id}`, {
@@ -1593,18 +1612,19 @@ export class AgentManager {
     agent.setSkillMcpActivator(async (skillName, mcpServers) => {
       let tools: AgentToolHandler[] = [];
       const skill = this.skillRegistry?.get(skillName);
-      const isolated = skill?.manifest.isolation === 'per-agent';
+      const isolation = skill?.manifest.isolation ?? 'shared';
       for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
-        const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
-        if (isolated) {
+        if (isolation === 'per-agent' || isolation === 'pooled') {
+          const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
           await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
           tools.push(...this.mcpManager.getToolHandlersScoped(serverName, id));
         } else {
+          const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
           await this.mcpManager.connectServer(serverName, srvConfig);
           tools.push(...this.mcpManager.getToolHandlers(serverName));
         }
       }
-      if (isolated) {
+      if (isolation === 'per-agent' || isolation === 'pooled') {
         tools = this.browserSessionManager.wrapToolHandlers(tools, id);
         for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
           const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
@@ -1689,6 +1709,20 @@ export class AgentManager {
     })) {
       agent.registerTool(tool);
     }
+
+    // Mailbox + working memory tools
+    const attnCtrl2 = agent.getAttentionController();
+    const mailboxToolCtx2: MailboxToolContext = {
+      agentId: id,
+      getMindState: () => attnCtrl2.getMindState(),
+      deferItem: (itemId, reason, ms) => attnCtrl2.deferItem(itemId, reason, ms),
+      dropItem: (itemId, reason) => attnCtrl2.dropItem(itemId, reason),
+      prioritizeItem: (itemId, p) => attnCtrl2.prioritizeItem(itemId, p),
+      updateWorkingMemory: (key, content) => agent.updateWorkingMemory(key, content),
+      clearWorkingMemory: (key) => agent.clearWorkingMemory(key),
+      getWorkingMemorySnapshot: () => agent.getWorkingMemorySnapshot(),
+    };
+    for (const tool of createMailboxTools(mailboxToolCtx2)) agent.registerTool(tool);
 
     if (this.recallCallbacks) {
       agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));
@@ -1836,10 +1870,10 @@ export class AgentManager {
           ? async (taskId) => ts.getTaskComments!(taskId)
           : undefined,
         postTaskComment: ts.postTaskComment
-          ? async (taskId, content, mentions) => ts.postTaskComment!(taskId, id, config.name, content, mentions)
+          ? async (taskId, content, mentions, _activityId?, replyToId?) => ts.postTaskComment!(taskId, id, config.name, content, mentions, undefined, { replyToId })
           : undefined,
         postRequirementComment: ts.postRequirementComment
-          ? async (reqId, content, mentions) => ts.postRequirementComment!(reqId, id, config.name, content, mentions)
+          ? async (reqId, content, mentions, _activityId?, replyToId?) => ts.postRequirementComment!(reqId, id, config.name, content, mentions, undefined, { replyToId })
           : undefined,
         getStatusHistory: ts.getTaskStatusHistory
           ? async (entityType, entityId) => {
@@ -2696,6 +2730,8 @@ export class AgentManager {
   private announcements: SystemAnnouncement[] = [];
 
   broadcastAnnouncement(announcement: SystemAnnouncement): void {
+    const now = new Date().toISOString();
+    this.announcements = this.announcements.filter(a => !a.expiresAt || a.expiresAt > now);
     this.announcements.push(announcement);
 
     for (const [, agent] of this.agents) {

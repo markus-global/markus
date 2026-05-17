@@ -3,7 +3,7 @@ import { join, resolve, dirname } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, kebab, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, kebab, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -218,9 +218,41 @@ export class APIServer {
         channelKey: string,
         message: string,
         senderId: string,
-        senderName: string
+        senderName: string,
+        replyToId?: string
       ) => {
-        const cleanText = stripInternalBlocks(message);
+        let cleanText = stripInternalBlocks(message);
+
+        // Reject NO_RESPONSE variants — agent should simply not call this tool.
+        const NO_RESPONSE_RE = /\[NO[_\s-]?RESPONSE[^\]]*\]/i;
+        const NO_RESPONSE_CREATIVE_RE = /^\[(?:context check|no response|silent|listening|observing|monitoring|watching|noting|acknowledged?)[^\]]*\]$/i;
+        if (NO_RESPONSE_RE.test(cleanText.trim()) || NO_RESPONSE_CREATIVE_RE.test(cleanText.trim())) {
+          throw new Error(
+            'Message blocked: you sent a [NO_RESPONSE] variant via agent_send_group_message. ' +
+            'If you have nothing to say, simply do NOT call this tool. ' +
+            '[NO_RESPONSE] is only valid as a direct reply, not as a tool call argument.'
+          );
+        }
+
+        // Reject raw tool commands and slash commands — agent should use the actual tool.
+        const TOOL_CMD_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|update_working_memory|clear_working_memory|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
+        const SLASH_CMD_RE = /^\s*\/(?:history|help|status|list|search|get|set|info|ping|who|whois|me|join|leave|invite|kick|ban|mute|unmute|clear|purge|poll|remind|note|todo|roll|flip|ask)\b/i;
+        const blockedLines = cleanText.split('\n').filter(line => TOOL_CMD_RE.test(line) || SLASH_CMD_RE.test(line));
+        if (blockedLines.length > 0) {
+          cleanText = cleanText.split('\n')
+            .filter(line => !TOOL_CMD_RE.test(line) && !SLASH_CMD_RE.test(line))
+            .join('\n').trim();
+          if (!cleanText) {
+            throw new Error(
+              `Message blocked: "${blockedLines[0].trim()}" is not a valid chat message. ` +
+              'Slash commands like /history do not exist. ' +
+              'To fetch channel history, use the recall_context tool with scope="channel". ' +
+              'To interact with tasks, use task_get/task_list. ' +
+              'Do NOT send tool names or slash commands as chat messages.'
+            );
+          }
+        }
+
         const orgId = 'default';
 
         // Persist agent message
@@ -233,6 +265,7 @@ export class APIServer {
             senderType: 'agent',
             senderName,
             text: cleanText,
+            replyToId,
           });
           persistedMsgId = saved.id;
         }
@@ -286,7 +319,7 @@ export class APIServer {
             let channelContext: Array<{ role: string; content: string }> = [];
             if (this.storage) {
               try {
-                const recent = await this.storage.channelMessageRepo.getMessages(channelKey, 80);
+                const recent = await this.storage.channelMessageRepo.getMessages(channelKey, CHANNEL_CONTEXT_MESSAGES);
                 channelContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
                   role: m.senderType === 'agent' ? 'assistant' : 'user',
                   content: m.senderType === 'agent' ? stripInternalBlocks(m.text) : `[${m.senderName}]: ${m.text}`,
@@ -369,9 +402,13 @@ export class APIServer {
         const result = this.storage.channelMessageRepo.getMessages(channelKey, limit, before);
         return {
           messages: result.messages.map((m: ChannelMsg) => ({
+            id: m.id,
             senderName: m.senderName,
             senderType: m.senderType,
             text: stripInternalBlocks(m.text),
+            replyToId: m.replyToId,
+            replyToSender: m.replyToSender,
+            replyToText: m.replyToText,
             createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : String(m.createdAt),
           })),
           hasMore: result.hasMore,
@@ -758,6 +795,20 @@ export class APIServer {
   /** Per-channel cooldown tracker: channel → agentId → last reply timestamp */
   private a2aCooldowns = new Map<string, Map<string, number>>();
 
+  private cleanStaleCooldowns(): void {
+    const now = Date.now();
+    for (const [channel, agentMap] of this.a2aCooldowns) {
+      for (const [agentId, lastReply] of agentMap) {
+        if (now - lastReply > APIServer.A2A_COOLDOWN_MS * 2) {
+          agentMap.delete(agentId);
+        }
+      }
+      if (agentMap.size === 0) {
+        this.a2aCooldowns.delete(channel);
+      }
+    }
+  }
+
   /** Extract @mentions from agent reply text. Returns agent names found.
    *  Handles multi-word names (e.g. "Ryan 莱恩") by checking known names after each @ sign.
    *  Also matches partial names: "@Sofia" matches "Sofia 索菲亚" if "Sofia" is a token in the name. */
@@ -895,6 +946,7 @@ export class APIServer {
 
       const prefixLines = [
         `[GROUP CHAT — ${teamSize} team members | You are: ${agentName}]`,
+        `[CHANNEL] channel_key="${channel}" — You already have the most recent ~${CHANNEL_CONTEXT_MESSAGES} messages in your context.`,
         '',
       ];
 
@@ -925,20 +977,25 @@ export class APIServer {
         prefixLines.push('This is an open group message (no specific @mention or reply target).');
       }
 
-      prefixLines.push('');
-      prefixLines.push('Rules for ALL group chat messages:');
-      prefixLines.push('1. Check channel history — if another agent already answered, do NOT repeat.');
-      prefixLines.push('2. Only respond if your specific role/expertise is directly relevant.');
-      prefixLines.push('3. Be concise — short, actionable responses only.');
-      if (agent.config.agentRole === 'manager') {
-        prefixLines.push('4. When assigning work to agents, you MUST use `task_create` to formalize each assignment as a tracked task. Verbal delegation without a task is NOT allowed — oral promises are meaningless without task tracking. Every commitment must have a corresponding task.');
-      } else {
-        prefixLines.push('4. When you accept a work assignment, verify a task has been created for it (`task_list`). If the coordinator did not create one, remind them or create it yourself with the correct `assigned_agent_id`. Do NOT make promises without task tracking.');
+      // Static group chat rules (silence-by-default, @mention routing, processing
+      // checklist) are now in the system prompt via scenario='group_chat'.
+      // Only per-message variable parts remain here.
+      if (chainCtx?.allAgentIds) {
+        prefixLines.push('');
+        const rosterLines = ['TEAM MEMBERS (use exact format for @mentions):'];
+        for (const aid of chainCtx.allAgentIds) {
+          try {
+            const a = agentManager.getAgent(aid);
+            const name = a.config.name;
+            const fmt = name.includes(' ') ? `@[${name}]` : `@${name}`;
+            rosterLines.push(`  ${fmt}${aid === agentId ? ' (you)' : ''}`);
+          } catch { /* skip */ }
+        }
+        prefixLines.push(rosterLines.join('\n'));
       }
-      prefixLines.push('5. DEFAULT IS SILENCE. When in doubt, respond with exactly: [NO_RESPONSE]');
-      prefixLines.push('6. If the provided context is insufficient, use `recall_context` (scope="channel") to fetch earlier messages before responding. For task/requirement details use `task_get`/`requirement_get`. Do NOT guess about prior discussion.');
       if (isTargeted && !thisAgentIsTarget && !isA2A) {
-        prefixLines.push('7. REMINDER: This message is directed at ' + [...targetNames].join(', ') + '. You are ' + agentName + '. Respond ONLY with [NO_RESPONSE].');
+        prefixLines.push('');
+        prefixLines.push('REMINDER: This message is directed at ' + [...targetNames].join(', ') + '. You are ' + agentName + '. Respond ONLY with [NO_RESPONSE].');
       }
 
       prefixLines.push('---', '');
@@ -951,10 +1008,11 @@ export class APIServer {
         senderInfo,
         {
           sourceType: isA2A ? 'a2a_message' : 'human_chat',
-          scenario: isA2A ? 'a2a' : undefined,
+          scenario: isA2A ? 'a2a' : 'group_chat',
           channelContext,
+          channelKey: channel,
+          directMention: thisAgentIsTarget,
           toolEventCollector: toolEvents,
-          waitForReply: isA2A ? true : undefined,
         }
       );
 
@@ -976,14 +1034,39 @@ export class APIServer {
         }
       };
 
-      if (!reply || !reply.trim() || reply.includes('[NO_RESPONSE]')) {
+      if (!reply || !reply.trim() || /\[NO_RESPONSE\b/i.test(reply)) {
         emitNoResponse();
         return;
       }
 
       const { thinking, clean: rawClean } = extractThinkBlocks(reply);
-      const cleanReply = rawClean.replace(/\[NO_RESPONSE\]/gi, '').trim();
+      // Strip [NO_RESPONSE] and its variants: [NO_RESPONSE — ...], [NO_RESPONSE: ...], etc.
+      const noResponseStripped = rawClean.replace(/\[NO_RESPONSE[^\]]*\]/gi, '').trim();
+      // If the entire message was a NO_RESPONSE block (even without closing bracket), suppress
+      if (/^\[NO_RESPONSE\b/i.test(rawClean.trim())) {
+        emitNoResponse();
+        return;
+      }
+      // Catch creative "no response" phrasings the LLM invents instead of [NO_RESPONSE]:
+      // e.g. "[context check — no response needed]", "[no response necessary]", "[silent]"
+      const NO_RESPONSE_CREATIVE_RE = /^\[(?:context check|no response|silent|listening|observing|monitoring|watching|noting|acknowledged?)[^\]]*\]$/i;
+      if (NO_RESPONSE_CREATIVE_RE.test(rawClean.trim())) {
+        log.info('Suppressed creative no-response variant', { agentId, original: rawClean.trim().slice(0, 100) });
+        emitNoResponse();
+        return;
+      }
+      // Strip lines that look like raw tool invocations leaked into the reply.
+      // Two patterns:
+      //   1. Known Markus tool names — slash is optional (agent may write "recall_context" or "/recall_context")
+      //   2. Generic slash commands from other platforms — slash is REQUIRED to avoid false positives
+      //      (e.g. "/history 30" is a command, but "List the points" is normal text)
+      const KNOWN_TOOL_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|update_working_memory|clear_working_memory|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
+      const SLASH_CMD_RE = /^\s*\/(?:history|help|status|list|search|get|set|info|ping|who|whois|me|join|leave|invite|kick|ban|mute|unmute|clear|purge|poll|remind|note|todo|roll|flip|ask)\b/i;
+      const cleanReply = noResponseStripped.split('\n')
+        .filter(line => !KNOWN_TOOL_RE.test(line) && !SLASH_CMD_RE.test(line))
+        .join('\n').trim();
       if (!cleanReply) {
+        log.warn('Suppressed raw tool command leak', { agentId, original: noResponseStripped.slice(0, 200) });
         emitNoResponse();
         return;
       }
@@ -1101,9 +1184,22 @@ export class APIServer {
     teamSize: number,
     chainCtx: { roundId: string; depth: number; respondedAgents: Set<string>; allAgentIds: string[] },
   ): Promise<void> {
-    // Layer 1: depth limit
+    this.cleanStaleCooldowns();
+
+    // Layer 1: depth limit — deliver to mailbox without chain capability
     if (chainCtx.depth > APIServer.A2A_MAX_DEPTH) {
-      log.info('A2A chain depth limit reached', { channel, depth: chainCtx.depth, roundId: chainCtx.roundId });
+      log.info('A2A chain depth limit — delivering to mailbox without chain', { channel, depth: chainCtx.depth, roundId: chainCtx.roundId });
+      for (const targetName of mentionedNames) {
+        const targetId = nameMap.get(targetName);
+        if (!targetId) continue;
+        try {
+          agentManager.getAgent(targetId).enqueueToMailbox('a2a_message', {
+            summary: `@mention from ${fromAgentName} (chain depth limit)`,
+            content: `[From @${fromAgentName}]: ${fromText}`,
+            extra: { senderId: fromAgentId, senderName: fromAgentName, channelKey: channel, directMention: true, throttled: true },
+          }, { metadata: { senderId: fromAgentId, senderName: fromAgentName, senderRole: 'agent' } });
+        } catch { /* agent may not exist */ }
+      }
       return;
     }
 
@@ -1117,7 +1213,7 @@ export class APIServer {
     let channelContext: Array<{ role: string; content: string }> = [];
     if (this.storage) {
       try {
-        const recent = await this.storage.channelMessageRepo.getMessages(channel, 80);
+        const recent = await this.storage.channelMessageRepo.getMessages(channel, CHANNEL_CONTEXT_MESSAGES);
         channelContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
           role: m.senderType === 'agent' ? 'assistant' : 'user',
           content: m.senderType === 'agent'
@@ -1131,16 +1227,30 @@ export class APIServer {
       const targetId = nameMap.get(targetName);
       if (!targetId) continue;
 
-      // Layer 2: per-round dedup
+      // Layer 2: per-round dedup — deliver to mailbox without chain capability
       if (chainCtx.respondedAgents.has(targetId)) {
-        log.info('A2A skipping (already responded this round)', { targetName, roundId: chainCtx.roundId });
+        log.info('A2A throttled (already responded) — delivering to mailbox', { targetName, roundId: chainCtx.roundId });
+        try {
+          agentManager.getAgent(targetId).enqueueToMailbox('a2a_message', {
+            summary: `@mention from ${fromAgentName} (round dedup)`,
+            content: `[From @${fromAgentName}]: ${fromText}`,
+            extra: { senderId: fromAgentId, senderName: fromAgentName, channelKey: channel, directMention: true, throttled: true },
+          }, { metadata: { senderId: fromAgentId, senderName: fromAgentName, senderRole: 'agent' } });
+        } catch { /* agent may not exist */ }
         continue;
       }
 
-      // Layer 3: cooldown window
+      // Layer 3: cooldown window — deliver to mailbox without chain capability
       const lastReply = channelCooldowns.get(targetId) ?? 0;
       if (now - lastReply < APIServer.A2A_COOLDOWN_MS) {
-        log.info('A2A skipping (cooldown)', { targetName, channel, cooldownRemaining: APIServer.A2A_COOLDOWN_MS - (now - lastReply) });
+        log.info('A2A throttled (cooldown) — delivering to mailbox', { targetName, channel, cooldownRemaining: APIServer.A2A_COOLDOWN_MS - (now - lastReply) });
+        try {
+          agentManager.getAgent(targetId).enqueueToMailbox('a2a_message', {
+            summary: `@mention from ${fromAgentName} (cooldown)`,
+            content: `[From @${fromAgentName}]: ${fromText}`,
+            extra: { senderId: fromAgentId, senderName: fromAgentName, channelKey: channel, directMention: true, throttled: true },
+          }, { metadata: { senderId: fromAgentId, senderName: fromAgentName, senderRole: 'agent' } });
+        } catch { /* agent may not exist */ }
         continue;
       }
       channelCooldowns.set(targetId, now);
@@ -1881,7 +1991,7 @@ export class APIServer {
       const buildChannelContext = async (): Promise<Array<{ role: string; content: string }>> => {
         if (!this.storage) return [];
         try {
-          const recent = await this.storage.channelMessageRepo.getMessages(channel, 80);
+          const recent = await this.storage.channelMessageRepo.getMessages(channel, CHANNEL_CONTEXT_MESSAGES);
           return (recent.messages ?? []).map((m: ChannelMsg) => ({
             role: m.senderType === 'agent' ? 'assistant' : 'user',
             content: m.senderType === 'agent'
@@ -2569,11 +2679,30 @@ export class APIServer {
       const orgId = url.searchParams.get('orgId') ?? 'default';
       const teams = this.orgService.listTeamsWithMembers(orgId);
       const ungrouped = this.orgService.listUngroupedMembers(orgId);
+      const allMembers = [
+        ...teams.flatMap(t => (t.members as unknown as Record<string, unknown>[])),
+        ...(ungrouped as unknown as Record<string, unknown>[]),
+      ];
+      const agentIds = [...new Set(allMembers.filter(m => m.type === 'agent').map(m => m.id as string))];
+      const userIds = [...new Set(allMembers.filter(m => m.type !== 'agent').map(m => m.id as string))];
+
+      const avatarMap = new Map<string, string>();
+      if (this.storage?.agentRepo) {
+        for (const id of agentIds) {
+          const a = this.storage.agentRepo.findById(id);
+          if (a?.avatarUrl) avatarMap.set(id, a.avatarUrl);
+        }
+      }
+      if (this.storage?.userRepo) {
+        for (const id of userIds) {
+          const u = this.storage.userRepo.findById(id);
+          if (u?.avatarUrl) avatarMap.set(id, u.avatarUrl);
+        }
+      }
+
       const enrichMember = (m: Record<string, unknown>) => {
-        const avatarUrl = m.type === 'agent'
-          ? this.storage?.agentRepo.findById(m.id as string)?.avatarUrl
-          : this.storage?.userRepo.findById(m.id as string)?.avatarUrl;
-        return avatarUrl ? { ...m, avatarUrl } : m;
+        const av = avatarMap.get(m.id as string);
+        return av ? { ...m, avatarUrl: av } : m;
       };
       const enrichedTeams = teams.map(t => ({ ...t, members: (t.members as unknown as Record<string, unknown>[]).map(enrichMember) }));
       const enrichedUngrouped = (ungrouped as unknown as Record<string, unknown>[]).map(enrichMember);
@@ -3362,7 +3491,7 @@ export class APIServer {
           taskId, authorId, authorName,
           body['content'] as string,
           mentions, undefined,
-          { authorType: (body['authorType'] as string) ?? 'human', attachments: body['attachments'] as unknown[] | undefined },
+          { authorType: (body['authorType'] as string) ?? 'human', attachments: body['attachments'] as unknown[] | undefined, replyToId: body['replyTo'] as string | undefined },
         );
         this.json(res, 201, { comment: result.comment });
       } catch (err) {
@@ -3561,27 +3690,35 @@ export class APIServer {
         let history: Array<Record<string, unknown>> = [];
         if (this.storage?.mailboxRepo) {
           const raw = this.storage.mailboxRepo.getHistory(agentId, { limit, offset, sourceTypes, status });
+          const itemIds = raw.map((item: { id: string }) => item.id);
+
+          const decisionsMap = this.storage?.decisionRepo
+            ? this.storage.decisionRepo.getByMailboxItemIds(itemIds)
+            : new Map<string, unknown[]>();
+          const activitiesMap = this.storage?.activityRepo
+            ? this.storage.activityRepo.getByMailboxItemIds(itemIds)
+            : new Map<string, unknown>();
+
           history = raw.map((item: { id: string; [k: string]: unknown }) => {
             const enriched: Record<string, unknown> = { ...item };
-            if (this.storage?.decisionRepo) {
-              enriched.decisions = this.storage.decisionRepo.getByMailboxItemId(item.id);
-            }
-            if (this.storage?.activityRepo) {
-              const act = this.storage.activityRepo.getByMailboxItemId(item.id);
-              enriched.activity = act ? {
-                id: act.id,
-                type: act.type,
-                label: act.label,
-                startedAt: act.startedAt,
-                endedAt: act.endedAt,
-                totalTokens: act.totalTokens,
-                totalTools: act.totalTools,
-                success: act.success,
-              } : null;
-            }
+            enriched.decisions = decisionsMap.get(item.id) ?? [];
+            const act = activitiesMap.get(item.id) as Record<string, unknown> | undefined;
+            enriched.activity = act ? {
+              id: act.id,
+              type: act.type,
+              label: act.label,
+              startedAt: act.startedAt,
+              endedAt: act.endedAt,
+              totalTokens: act.totalTokens,
+              totalTools: act.totalTools,
+              success: act.success,
+            } : null;
             return enriched;
           });
         }
+
+        const statusCounts = this.storage?.mailboxRepo?.getStatusCounts(agentId) ?? {};
+        const sourceTypeCounts = this.storage?.mailboxRepo?.getSourceTypeCounts(agentId) ?? {};
 
         this.json(res, 200, {
           queued: queued.map(i => ({
@@ -3593,6 +3730,8 @@ export class APIServer {
             queuedAt: i.queuedAt,
           })),
           queueDepth: queued.length,
+          statusCounts,
+          sourceTypeCounts,
           history,
         });
       } catch {
@@ -8823,7 +8962,7 @@ EXPLANATION_END`;
           reqId, authorId, authorName,
           body['content'] as string,
           mentions, undefined,
-          { authorType: (body['authorType'] as string) ?? 'human', attachments: body['attachments'] as unknown[] | undefined },
+          { authorType: (body['authorType'] as string) ?? 'human', attachments: body['attachments'] as unknown[] | undefined, replyToId: body['replyTo'] as string | undefined },
         );
         this.json(res, 201, { comment: result.comment });
       } catch (err) {
@@ -9503,6 +9642,7 @@ EXPLANATION_END`;
       exact('/api/settings/llm/models', 'GET'),
       exact('/api/settings/agent', 'GET', 'POST'),
       exact('/api/settings/browser', 'GET', 'POST'),
+      exact('/api/settings/browser/check', 'GET'),
       exact('/api/settings/search', 'GET', 'POST'),
       exact('/api/settings/env-models', 'GET', 'POST'),
       exact('/api/settings/detect-ollama', 'GET'),

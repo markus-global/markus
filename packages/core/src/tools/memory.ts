@@ -44,14 +44,19 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
       async execute(args: Record<string, unknown>): Promise<string> {
         const content = args['content'] as string;
         const type = (args['type'] as MemoryEntry['type']) ?? 'fact';
-        const tags = args['tags'] as string | undefined;
+        const rawTags = args['tags'];
+        const tagArray = Array.isArray(rawTags)
+          ? rawTags.map(String)
+          : typeof rawTags === 'string'
+            ? rawTags.split(',').map(t => t.trim())
+            : undefined;
 
         const entry: MemoryEntry = {
           id: `mem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           timestamp: new Date().toISOString(),
           type,
           content,
-          metadata: tags ? { tags: tags.split(',').map(t => t.trim()) } : undefined,
+          metadata: tagArray?.length ? { tags: tagArray.filter(Boolean) } : undefined,
         };
 
         ctx.memory.addEntry(entry);

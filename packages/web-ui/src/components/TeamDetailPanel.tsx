@@ -73,8 +73,8 @@ export function TeamDetailPanel({
   useEffect(() => {
     if (!agentMenu) return;
     const handler = () => setAgentMenu(null);
-    setTimeout(() => document.addEventListener('click', handler), 0);
-    return () => document.removeEventListener('click', handler);
+    const timer = setTimeout(() => document.addEventListener('click', handler), 0);
+    return () => { clearTimeout(timer); document.removeEventListener('click', handler); };
   }, [agentMenu]);
 
   const handleStartStop = useCallback(async (agentId: string, status: string) => {

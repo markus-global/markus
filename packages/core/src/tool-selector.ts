@@ -42,7 +42,8 @@ const TOOL_GROUPS: ToolGroup[] = [
     keywords: ['delegate', 'broadcast', 'group', 'channel', 'chat',
       '委派', '广播', '群聊', '频道', '群组'],
     toolNames: ['agent_broadcast_status', 'agent_delegate_task',
-      'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats'],
+      'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats',
+      'recall_context'],
   },
   {
     name: 'manager',
@@ -265,6 +266,36 @@ export class ToolSelector {
           situational_awareness: { type: 'string', description: 'Your current understanding of the situation — injected into future prompts for continuity' },
         },
         required: ['process_item_id', 'reasoning'],
+      },
+    });
+
+    // check_mailbox / defer / drop / prioritize are available via DELIBERATION_ALLOWED_TOOLS
+    // only — they are NOT always-on during normal processing to prevent the agent
+    // from getting distracted by the full backlog instead of focusing on the
+    // current item.
+
+    pushUnique({
+      name: 'update_working_memory',
+      description: 'Upsert a keyed entry in your working memory. Use to track priorities, context, decisions.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: 'Label for this entry' },
+          content: { type: 'string', description: 'The content to store' },
+        },
+        required: ['key', 'content'],
+      },
+    });
+
+    pushUnique({
+      name: 'clear_working_memory',
+      description: 'Remove a working memory entry by key, or clear all entries.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: 'Key to clear. Omit to clear all.' },
+          all: { type: 'boolean', description: 'Set true to clear all entries' },
+        },
       },
     });
 

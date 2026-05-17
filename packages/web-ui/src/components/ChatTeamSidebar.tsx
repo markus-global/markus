@@ -360,22 +360,23 @@ export function ChatTeamSidebar({
   }, [refreshUngrouped]);
 
   useEffect(() => {
-    const unsub = wsClient.on('*', refreshUngrouped);
-    return unsub;
+    const unsub1 = wsClient.on('team:update', refreshUngrouped);
+    const unsub2 = wsClient.on('agent:removed', refreshUngrouped);
+    return () => { unsub1(); unsub2(); };
   }, [refreshUngrouped]);
 
   // Close menus on outside click
   useEffect(() => {
     if (!teamMenu && !agentMenu && !humanMenu && !actionMenu && !gcMenu) return;
-    const handler = (e: MouseEvent) => {
+    const handler = () => {
       setTeamMenu(null);
       setAgentMenu(null);
       setHumanMenu(null);
       setGcMenu(null);
       setActionMenu(false);
     };
-    setTimeout(() => document.addEventListener('click', handler), 0);
-    return () => document.removeEventListener('click', handler);
+    const timer = setTimeout(() => document.addEventListener('click', handler), 0);
+    return () => { clearTimeout(timer); document.removeEventListener('click', handler); };
   }, [teamMenu, agentMenu, humanMenu, actionMenu, gcMenu]);
 
   // ── Team actions ──────────────────────────────────────────────────────────

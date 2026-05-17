@@ -25,6 +25,7 @@ import {
   TRIAGE_ITEM_CONTENT_CHARS,
   TRIAGE_MAX_TOOL_ITERATIONS,
   TRIAGE_ALLOWED_TOOLS,
+  TRIAGE_BACKLOG_THRESHOLD,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
 import type { AgentMailbox } from './mailbox.js';
@@ -58,12 +59,6 @@ export function detectAbnormalCompletion(
   // Intentional preemption (pause) or cancellation by the attention controller
   // — a higher-priority item arrived and this one was interrupted on purpose.
   if (reply === '[preempted]' || reply === '[cancelled]') return undefined;
-
-  // User-facing interactions: the response (even if partial) was already
-  // delivered to the caller.  Requeuing would re-process the identical
-  // message and generate a different reply — never desirable.
-  const isUserFacing = item.sourceType === 'human_chat' || item.sourceType === 'a2a_message';
-  if (isUserFacing) return undefined;
 
   if (reply === undefined || reply === '') {
     return 'empty reply from LLM-invoking item';
@@ -166,6 +161,9 @@ export class AttentionController {
 
   private static readonly MAX_RECENT_DECISIONS = 50;
 
+  /** True while the runLoop's while-body is executing; false after the loop exits. */
+  private loopAlive = false;
+
   constructor(
     agentId: string,
     mailbox: AgentMailbox,
@@ -205,12 +203,29 @@ export class AttentionController {
     );
 
     this.startWatchdog();
+    this.launchLoop();
+    log.info('Attention controller started', { agentId: this.agentId });
+  }
+
+  /**
+   * Launch (or re-launch) the runLoop with auto-restart on unexpected exit.
+   * If the loop exits while `this.running` is true, it restarts after a
+   * brief delay — defense-in-depth against exceptions that escape the
+   * outer try-catch inside the loop body.
+   */
+  private launchLoop(): void {
     this.loopPromise = this.runLoop().catch(err => {
       if (this.running) {
-        log.error('Attention loop crashed unexpectedly', { agentId: this.agentId, error: String(err) });
+        log.error('Attention loop exited unexpectedly — restarting in 2 s', {
+          agentId: this.agentId,
+          error: String(err),
+          stack: (err as Error)?.stack,
+        });
+        setTimeout(() => {
+          if (this.running) this.launchLoop();
+        }, 2000);
       }
     });
-    log.info('Attention controller started', { agentId: this.agentId });
   }
 
   /**
@@ -247,6 +262,35 @@ export class AttentionController {
           processingForSec: processingFor,
         });
       }
+
+      // Self-heal: if the loop died while we're still supposed to be running,
+      // restart it.  The outer try-catch + launchLoop auto-restart should
+      // prevent this, but this is a last-resort safety net.
+      if (this.running && !this.loopAlive) {
+        log.error('Watchdog: attention loop is dead — restarting', {
+          agentId: this.agentId,
+          state: this.state,
+          queueDepth: this.mailbox.depth,
+        });
+        this.launchLoop();
+      }
+
+      // Self-heal: if nothing is being processed in memory but the DB has
+      // items stuck in 'processing' status, mark them as completed.
+      // This catches edge cases where complete()/requeue()/defer() failed
+      // silently or the process was interrupted between activity end and
+      // status update.
+      if (this.running && !this.currentFocus && this.state === 'idle') {
+        try {
+          const cleaned = this.mailbox.cleanStaleProcessing();
+          if (cleaned > 0) {
+            log.warn('Watchdog: cleaned stale processing items from DB', {
+              agentId: this.agentId,
+              cleaned,
+            });
+          }
+        } catch { /* best-effort */ }
+      }
     }, WATCHDOG_INTERVAL_MS);
 
     if (this.watchdogTimer && typeof this.watchdogTimer === 'object' && 'unref' in this.watchdogTimer) {
@@ -270,101 +314,170 @@ export class AttentionController {
    * deliberation to decide which item to process first.
    */
   private async runLoop(): Promise<void> {
-    while (this.running) {
-      this.setState('idle');
-      this.currentFocus = undefined;
-      this.delegate?.onFocusChanged(undefined);
+    this.loopAlive = true;
+    try {
+      while (this.running) {
+        try {
+          this.setState('idle');
+          this.currentFocus = undefined;
+          this.delegate?.onFocusChanged(undefined);
 
-      // Resurface deferred items that are due before waiting for new work
-      try { this.mailbox.resurfaceDue(); } catch { /* best-effort */ }
+          // Resurface deferred items that are due before waiting for new work
+          try { this.mailbox.resurfaceDue(); } catch { /* best-effort */ }
 
-      let item: MailboxItem;
-      try {
-        item = await this.mailbox.dequeueAsync();
-      } catch {
-        // MailboxCancelledError (or any error) while not running → clean exit
-        if (!this.running) break;
-        continue;
-      }
-
-      if (!this.running) {
-        // Re-enqueue so non-interactive items are not lost on shutdown.
-        // User-facing chats are NOT re-enqueued: their SSE/promise
-        // callbacks are stale after restart, and replaying them would
-        // duplicate the message in the session.  The user can resend.
-        if (item.sourceType !== 'human_chat' && item.sourceType !== 'a2a_message') {
+          let item: MailboxItem;
           try {
-            this.mailbox.enqueue(item.sourceType, item.payload, {
-              priority: item.priority,
-              metadata: item.metadata,
-            });
+            item = await this.mailbox.dequeueAsync();
+          } catch {
+            // MailboxCancelledError (or any error) while not running → clean exit
+            if (!this.running) break;
+            continue;
+          }
+
+          if (!this.running) {
+            // Re-enqueue so items are not lost on shutdown.
+            // human_chat is NOT re-enqueued: its SSE stream is stale after
+            // restart and replaying would duplicate the response. The user
+            // can resend.
+            // Direct a2a_message with a live responsePromise is also dropped
+            // (the promise is stale after restart). Group chat a2a_messages
+            // (no responsePromise) ARE re-enqueued to avoid silent message loss.
+            const hasLiveCallback = item.sourceType === 'a2a_message' && !!item.metadata?.responsePromise;
+            if (item.sourceType !== 'human_chat' && !hasLiveCallback) {
+              try {
+                this.mailbox.enqueue(item.sourceType, item.payload, {
+                  priority: item.priority,
+                  metadata: item.metadata,
+                });
+              } catch (err) {
+                log.warn('Failed to re-enqueue item on shutdown', { itemId: item.id, error: String(err) });
+              }
+            }
+            break;
+          }
+
+          // Everything from triage through processing is wrapped in try-catch
+          // so a single failure never kills the loop permanently.  On crash the
+          // dequeued item is requeued and processing continues with the next item.
+          try {
+            // Mark as deciding so onNewMail sets interrupt signals for urgent items
+            // (state was 'idle' during dequeueAsync; without this, human_chat arriving
+            // during pre-triage or deliberation would be silently ignored).
+            this.setState('deciding');
+
+            // Fast-path: user messages (human_chat) are always highest priority —
+            // skip pre-triage cleanup and deliberation to process them immediately.
+            const isUserMessage = AttentionController.USER_INTERACTION_TYPES.has(item.sourceType);
+
+            // Pre-triage cleanup: drop stale informational items, then consolidate
+            // items sharing the same task/requirement into single rich-context items.
+            if (this.mailbox.depth > 0 && !isUserMessage) {
+              this.mailbox.putBack(item);
+
+              // 1. Purge stale informational items (old heartbeats, status updates, etc.)
+              const purged = this.mailbox.purgeStaleItems();
+              if (purged > 0) {
+                log.info('Pre-triage stale purge', { agentId: this.agentId, purged });
+              }
+
+              // 2. Consolidate items by entity (task/requirement)
+              const consolidated = this.mailbox.consolidateByEntity();
+              const reHead = this.mailbox.dequeue();
+              if (reHead) {
+                item = reHead;
+              }
+              if (consolidated > 0) {
+                log.info('Pre-triage consolidation reduced queue', {
+                  agentId: this.agentId,
+                  merged: consolidated,
+                  remainingDepth: this.mailbox.depth,
+                });
+              }
+            }
+
+            // Triage: LLM deliberation is only needed when:
+            // 1. Multiple distinct items remain after consolidation
+            // 2. Priority alone can't decide — the head item shares its priority
+            //    with at least one other queued item (ambiguous ordering)
+            // 3. A TriageJudge OR delegate.performDeliberation is configured
+            // When priorities clearly separate items, the priority queue already
+            // produces the right order — no LLM call needed.
+            let triaged = false;
+            let deliberationAttempted = false;
+            if (this.mailbox.depth > 0 && !isUserMessage && this.needsLLMTriage(item) && (this.delegate?.performDeliberation || this.triageJudge)) {
+              // Prefer full-session deliberation over mini triage loop
+              if (this.delegate?.performDeliberation) {
+                deliberationAttempted = true;
+                const allItems = [item, ...this.mailbox.getQueuedItems()];
+                this.isDeliberating = true;
+                try {
+                  const deliberationResult = await this.delegate.performDeliberation(item, allItems);
+                  if (deliberationResult) {
+                    triaged = true;
+                    item = this.applyDeliberationResult(item, deliberationResult);
+                  }
+                } finally {
+                  this.isDeliberating = false;
+                }
+              } else {
+                deliberationAttempted = true;
+                const triageResult = await this.performTriage(item);
+                if (triageResult) {
+                  triaged = true;
+                  item = this.applyTriageResult(item, triageResult);
+                }
+              }
+            }
+
+            if (!triaged) {
+              if (deliberationAttempted) {
+                log.warn('Deliberation failed — falling back to head-item processing', {
+                  agentId: this.agentId,
+                  itemId: item.id,
+                  type: item.sourceType,
+                  queueDepth: this.mailbox.depth,
+                });
+              }
+              const decision = this.recordDecision('pick', item, `Idle, processing ${item.sourceType}`);
+              this.delegate?.onDecisionMade(decision);
+            }
+
+            await this.processFocusedItem(item);
           } catch (err) {
-            log.warn('Failed to re-enqueue item on shutdown', { itemId: item.id, error: String(err) });
+            log.error('Attention loop iteration failed — requeueing item and continuing', {
+              agentId: this.agentId,
+              itemId: item.id,
+              type: item.sourceType,
+              error: String(err),
+            });
+            this.isDeliberating = false;
+            this.currentFocus = undefined;
+            this.interruptSignal = false;
+            this.pendingInterruptItem = undefined;
+            this.lastYieldDecision = undefined;
+            try { this.mailbox.requeue(item); } catch { /* item may already be back in queue */ }
           }
-        }
-        break;
-      }
-
-      // Pre-triage cleanup: drop stale informational items, then consolidate
-      // items sharing the same task/requirement into single rich-context items.
-      if (this.mailbox.depth > 0) {
-        this.mailbox.putBack(item);
-
-        // 1. Purge stale informational items (old heartbeats, status updates, etc.)
-        const purged = this.mailbox.purgeStaleItems();
-        if (purged > 0) {
-          log.info('Pre-triage stale purge', { agentId: this.agentId, purged });
-        }
-
-        // 2. Consolidate items by entity (task/requirement)
-        const consolidated = this.mailbox.consolidateByEntity();
-        const reHead = this.mailbox.dequeue();
-        if (reHead) {
-          item = reHead;
-        }
-        if (consolidated > 0) {
-          log.info('Pre-triage consolidation reduced queue', {
+        } catch (outerErr) {
+          // Outermost safety net: catches exceptions from setState('idle'),
+          // onFocusChanged(undefined), or any other path not covered by the
+          // inner try-catch blocks.  Without this, a single throw from an
+          // eventBus listener or delegate callback kills the loop permanently.
+          log.error('Attention loop: unhandled error at iteration boundary — recovering', {
             agentId: this.agentId,
-            merged: consolidated,
-            remainingDepth: this.mailbox.depth,
+            error: String(outerErr),
+            stack: (outerErr as Error)?.stack,
           });
-        }
-      }
-
-      // Triage: LLM deliberation is only needed when:
-      // 1. Multiple distinct items remain after consolidation
-      // 2. Priority alone can't decide — the head item shares its priority
-      //    with at least one other queued item (ambiguous ordering)
-      // 3. A TriageJudge OR delegate.performDeliberation is configured
-      // When priorities clearly separate items, the priority queue already
-      // produces the right order — no LLM call needed.
-      let triaged = false;
-      if (this.mailbox.depth > 0 && this.needsLLMTriage(item) && (this.delegate?.performDeliberation || this.triageJudge)) {
-        // Prefer full-session deliberation over mini triage loop
-        if (this.delegate?.performDeliberation) {
-          const allItems = [item, ...this.mailbox.getQueuedItems()];
-          this.isDeliberating = true;
-          const deliberationResult = await this.delegate.performDeliberation(item, allItems);
           this.isDeliberating = false;
-          if (deliberationResult) {
-            triaged = true;
-            item = this.applyDeliberationResult(item, deliberationResult);
-          }
-        } else {
-          const triageResult = await this.performTriage(item);
-          if (triageResult) {
-            triaged = true;
-            item = this.applyTriageResult(item, triageResult);
-          }
+          this.currentFocus = undefined;
+          this.interruptSignal = false;
+          this.pendingInterruptItem = undefined;
+          this.lastYieldDecision = undefined;
+          // Brief delay to prevent tight error loops on persistent failures
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
       }
-
-      if (!triaged) {
-        const decision = this.recordDecision('pick', item, `Idle, processing ${item.sourceType}`);
-        this.delegate?.onDecisionMade(decision);
-      }
-
-      await this.processFocusedItem(item);
+    } finally {
+      this.loopAlive = false;
     }
   }
 
@@ -422,8 +535,10 @@ export class AttentionController {
 
     this.processingStartedAt = undefined;
 
+    let statusResolved = false;
     if (timedOut) {
       this.mailbox.requeue(item);
+      statusResolved = true;
     } else if (reply === '[cancelled]' || this.lastYieldDecision === 'cancel') {
       // Permanently cancelled by an explicit cancel decision — the new incoming
       // message contradicts or revokes this work.  Drop the item; it will NOT
@@ -434,6 +549,7 @@ export class AttentionController {
         type: item.sourceType,
       });
       this.mailbox.complete(item.id);
+      statusResolved = true;
     } else if (reply === '[preempted]' || this.lastYieldDecision === 'preempt') {
       // Paused by a higher-priority item — defer so it can be resumed later.
       // The session context is preserved by sessionId in the payload, so when
@@ -444,6 +560,7 @@ export class AttentionController {
         type: item.sourceType,
       });
       this.mailbox.deferDequeued(item);
+      statusResolved = true;
     } else if (!this.running) {
       // Agent was stopped/paused during processing — requeue so the item
       // is not lost and will be picked up when the agent resumes.
@@ -453,6 +570,7 @@ export class AttentionController {
         type: item.sourceType,
       });
       this.mailbox.requeue(item);
+      statusResolved = true;
     } else {
       const abnormalReason = detectAbnormalCompletion(reply, item);
       const retries = item.retryCount ?? 0;
@@ -478,6 +596,20 @@ export class AttentionController {
         }
         this.mailbox.complete(item.id);
       }
+      statusResolved = true;
+    }
+
+    // Safety net: if no branch above resolved the item status (should never
+    // happen, but guards against future code changes), force-complete so the
+    // item doesn't stay stuck as 'processing' in the DB forever.
+    if (!statusResolved) {
+      log.error('processFocusedItem: no status branch matched — force-completing', {
+        agentId: this.agentId,
+        itemId: item.id,
+        type: item.sourceType,
+        reply: typeof reply === 'string' ? reply.slice(0, 100) : String(reply),
+      });
+      this.mailbox.complete(item.id);
     }
 
     this.currentFocus = undefined;
@@ -496,7 +628,7 @@ export class AttentionController {
       return;
     }
 
-    if (this.state === 'focused') {
+    if (this.state === 'focused' || this.state === 'deciding') {
       this.interruptSignal = true;
       const peeked = this.mailbox.peek();
       if (peeked) {
@@ -557,9 +689,15 @@ export class AttentionController {
     item?: MailboxItem;
     reasoning?: string;
   }> {
-    // Deliberation is atomic — no interrupts evaluated until it completes
+    // Deliberation is mostly atomic, but critical user messages (human_chat)
+    // must still be able to preempt — users should never wait for deliberation.
     if (this.isDeliberating) {
-      return { decision: 'continue' };
+      if (!this.interruptSignal) return { decision: 'continue' };
+      const peeked = this.pendingInterruptItem ?? this.mailbox.peek();
+      if (!peeked || !AttentionController.USER_INTERACTION_TYPES.has(peeked.sourceType)) {
+        return { decision: 'continue' };
+      }
+      // Fall through to evaluate the user interrupt normally
     }
 
     if (!this.interruptSignal || !this.currentFocus) {
@@ -830,24 +968,21 @@ export class AttentionController {
   /**
    * Determine whether LLM triage is actually needed.
    *
-   * Priority queue already handles the clear cases:
-   * - headItem is p0 (Critical) and all queued items are p1+ → just process head
-   * - headItem has a strictly lower priority number than all queued items → process head
-   *
-   * LLM triage is needed when:
-   * - Multiple items at the same priority level as head (ambiguous ordering)
-   * - Or queued items contain a higher-priority item than head (shouldn't happen
-   *   with correct priority queue, but defensive check)
+   * Triggers deliberation in two scenarios (first match wins):
+   * 1. Backlog: queue depth >= TRIAGE_BACKLOG_THRESHOLD (currently 2) — agent
+   *    uses mailbox tools to defer/drop/prioritize before committing to work.
+   * 2. Priority ambiguity: queued items at the same or higher priority as
+   *    head — priority queue alone can't decide the right order.
+   * (Never for human_chat — always processed immediately in FIFO order.)
    */
   private needsLLMTriage(headItem: MailboxItem): boolean {
-    // User chat messages are processed strictly in FIFO order — no triage.
-    // The priority queue already surfaced this item; just handle it.
     if (headItem.sourceType === 'human_chat') return false;
 
     const queued = this.mailbox.getQueuedItems();
     if (queued.length === 0) return false;
 
-    // If any queued item has the same or higher priority as head, LLM should decide
+    if (queued.length >= TRIAGE_BACKLOG_THRESHOLD) return true;
+
     const samePriorityCount = queued.filter(i => i.priority <= headItem.priority).length;
     return samePriorityCount > 0;
   }
@@ -981,6 +1116,7 @@ export class AttentionController {
       if (!it) return false;
       if (it.sourceType === 'human_chat') return true;
       if (it.payload.extra?.triggerExecution) return true;
+      if (it.payload.extra?.directMention) return true;
       return false;
     };
 
@@ -1017,13 +1153,18 @@ export class AttentionController {
       if (!it) return false;
       if (it.sourceType === 'human_chat') return true;
       if (it.payload.extra?.triggerExecution) return true;
+      if (it.payload.extra?.directMention) return true;
       return false;
     };
 
-    // Mark inline-completed items (these were handled during deliberation, NOT discarded)
+    // Mark inline-completed items (these were handled during deliberation, NOT discarded).
+    // Never complete the item chosen for full processing — if the LLM
+    // inconsistently lists it in both inlineCompletedIds and processItemId,
+    // the full-processing decision wins.
     for (const completedId of result.inlineCompletedIds) {
       if (isProtected(completedId)) continue;
       if (completedId === currentItem.id) continue;
+      if (completedId === result.processItemId) continue;
       const completedItem = queueSnapshot.find(i => i.id === completedId);
       this.mailbox.complete(completedId);
       if (completedItem) {
@@ -1038,6 +1179,11 @@ export class AttentionController {
       if (chosen) {
         item = chosen;
       } else {
+        log.warn('Deliberation chose item that is no longer in queue, falling back to head', {
+          agentId: this.agentId,
+          chosenId: result.processItemId,
+          fallbackId: currentItem.id,
+        });
         const redequeued = this.mailbox.dequeueById(currentItem.id);
         if (redequeued) item = redequeued;
       }
@@ -1158,6 +1304,7 @@ export class AttentionController {
       '',
       '## Rules',
       '- Human messages (human_chat) and human comments are ALWAYS highest priority — process them first.',
+      '- Agent messages with direct @mentions (a2a_message where you were explicitly mentioned) should be treated like human messages — NEVER drop them. They represent explicit requests for your input.',
       '- Task status updates (task_status_update) come in two flavours: **execution triggers** (priority 1, carry execution context) that MUST be processed — never drop or defer them; and **informational** ones that the system already handled. Informational updates serve as decision context, not work items.',
       '- **Time decay**: Items older than 1 hour are increasingly stale. Multiple status updates about the same task — only the latest matters. Aggressively DROP old informational items (heartbeats, old status updates, memory consolidation) that no longer provide actionable context.',
       '- **Task grouping**: When multiple items reference the same taskId, consider them together. Drop redundant/superseded items for the same task — only keep the most recent or most actionable one.',
@@ -1223,6 +1370,32 @@ export class AttentionController {
         timestamp: this.lastTriageResult.timestamp,
       } : undefined,
     };
+  }
+
+  deferItem(itemId: string, reason: string, deferUntilMs?: number): boolean {
+    const item = this.mailbox.getById(itemId);
+    if (!item || item.status !== 'queued') return false;
+    if (item.sourceType === 'human_chat') return false;
+    this.mailbox.defer(itemId, deferUntilMs ? new Date(Date.now() + deferUntilMs).toISOString() : undefined);
+    const decision = this.recordDecision('defer', item, reason);
+    this.delegate?.onDecisionMade(decision);
+    return true;
+  }
+
+  dropItem(itemId: string, reason: string): boolean {
+    const item = this.mailbox.getById(itemId);
+    if (!item || item.status !== 'queued') return false;
+    if (item.sourceType === 'human_chat') return false;
+    this.mailbox.drop(itemId);
+    const decision = this.recordDecision('drop', item, reason);
+    this.delegate?.onDecisionMade(decision);
+    return true;
+  }
+
+  prioritizeItem(itemId: string, newPriority: number): boolean {
+    const item = this.mailbox.getById(itemId);
+    if (!item || item.sourceType === 'human_chat') return false;
+    return this.mailbox.updatePriority(itemId, newPriority);
   }
 
   hasInterruptPending(): boolean {

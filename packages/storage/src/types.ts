@@ -58,6 +58,9 @@ export interface TaskCommentRow {
   attachments: unknown;
   mentions: string[];
   activityId?: string | null;
+  replyToId?: string;
+  replyToAuthor?: string;
+  replyToContent?: string;
   createdAt: Date;
 }
 
@@ -71,6 +74,9 @@ export interface RequirementCommentRow {
   attachments: unknown;
   mentions: string[];
   activityId?: string | null;
+  replyToId?: string;
+  replyToAuthor?: string;
+  replyToContent?: string;
   createdAt: Date;
 }
 
@@ -118,6 +124,8 @@ export interface ChannelMsg {
   mentions: string[];
   metadata?: ChannelMsgMetadata | null;
   replyToId?: string;
+  replyToSender?: string;
+  replyToText?: string;
   createdAt: Date;
 }
 

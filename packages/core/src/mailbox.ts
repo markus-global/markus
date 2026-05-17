@@ -42,6 +42,8 @@ export interface MailboxPersistence {
   updateStatus(itemId: string, status: MailboxItemStatus, extra?: Partial<MailboxItem>): void;
   /** Mark all items stuck in 'processing' as 'dropped' (stale after restart). */
   markStaleProcessingAsDropped?(agentId: string): number;
+  /** Mark all items stuck in 'processing' as 'completed' (runtime self-healing). */
+  markStaleProcessingAsCompleted?(agentId: string): number;
   /** Load persisted queued items for this agent (for recovery on restart). */
   loadQueued?(agentId: string): MailboxItem[];
   /** Load persisted deferred items for this agent (for auto-resurface). */
@@ -110,6 +112,17 @@ export class AgentMailbox {
       });
     }
     return { dropped, restored, expired, merged };
+  }
+
+  /**
+   * Runtime self-healing: mark DB items stuck in 'processing' as 'completed'.
+   * Called by the watchdog when no item is being processed in memory.
+   * Unlike recoverStaleItems (startup-only, marks as 'dropped'), this uses
+   * 'completed' because the processing likely did finish — the DB update
+   * just failed silently or was interrupted.
+   */
+  cleanStaleProcessing(): number {
+    return this.persistence?.markStaleProcessingAsCompleted?.(this.agentId) ?? 0;
   }
 
   /**
@@ -191,9 +204,9 @@ export class AgentMailbox {
       }
       this.persistence?.updateStatus(survivor.id, 'queued', survivor);
 
-      // Remove the duplicate
+      // Remove the duplicate (mark as merged, not dropped — content is preserved in survivor)
       this.queue.splice(i, 1);
-      this.persistence?.updateStatus(item.id, 'dropped');
+      this.persistence?.updateStatus(item.id, 'merged', { mergedInto: survivor.id });
       removed++;
       i--; // re-check same index since we spliced
     }
@@ -231,15 +244,34 @@ export class AgentMailbox {
       'requirement',
     );
 
+    // Group by channel: merge a2a_messages from the same group chat so the
+    // agent reads them as one conversation thread instead of N separate items.
+    // Skip items already grouped by task/requirement above.
+    removed += this.consolidateGroup(
+      (item) => {
+        if (item.sourceType !== 'a2a_message') return undefined;
+        if (item.payload.taskId || item.metadata?.taskId) return undefined;
+        if (item.payload.requirementId) return undefined;
+        return item.payload.extra?.channelKey as string | undefined;
+      },
+      'channel',
+      { skipProtectedCheck: true },
+    );
+
     if (removed > 0) {
       log.info('Pre-triage consolidation', { agentId: this.agentId, merged: removed });
     }
     return removed;
   }
 
+  private static readonly CONSOLIDATION_PROTECTED_TYPES: ReadonlySet<MailboxItemType> = new Set([
+    'human_chat',
+  ]);
+
   private consolidateGroup(
     getKey: (item: MailboxItem) => string | undefined,
     _groupType: string,
+    opts?: { skipProtectedCheck?: boolean },
   ): number {
     let removed = 0;
     const seen = new Map<string, number>();
@@ -248,6 +280,7 @@ export class AgentMailbox {
       const item = this.queue[i];
       if (item.status !== 'queued') continue;
       if (item.payload.extra?.triggerExecution) continue;
+      if (!opts?.skipProtectedCheck && AgentMailbox.CONSOLIDATION_PROTECTED_TYPES.has(item.sourceType)) continue;
 
       const key = getKey(item);
       if (!key) continue;
@@ -275,7 +308,7 @@ export class AgentMailbox {
       this.persistence?.updateStatus(survivor.id, 'queued', survivor);
 
       this.queue.splice(i, 1);
-      this.persistence?.updateStatus(item.id, 'dropped');
+      this.persistence?.updateStatus(item.id, 'merged', { mergedInto: survivor.id });
       removed++;
       i--;
     }
@@ -540,6 +573,20 @@ export class AgentMailbox {
     item.startedAt = new Date().toISOString();
     this.persistence?.updateStatus(item.id, 'processing', { startedAt: item.startedAt });
     return item;
+  }
+
+  getById(itemId: string): MailboxItem | undefined {
+    return this.queue.find(i => i.id === itemId);
+  }
+
+  updatePriority(itemId: string, newPriority: number): boolean {
+    const idx = this.queue.findIndex(i => i.id === itemId);
+    if (idx < 0) return false;
+    const item = this.queue.splice(idx, 1)[0]!;
+    item.priority = newPriority as MailboxPriority;
+    this.insertSorted(item);
+    this.persistence?.save(item);
+    return true;
   }
 
   /**

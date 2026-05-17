@@ -126,15 +126,22 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const [pos, setPos] = useState<{ top: number; left: number; width: number; maxHeight: number }>({ top: 0, left: 0, width: 448, maxHeight: 576 });
   const prevPendingRef = useRef<number | null>(null);
   const initialFetchDone = useRef(false);
+  const [hasMoreNotifications, setHasMoreNotifications] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const notifScrollRef = useRef<HTMLDivElement>(null);
+  const lastTabRef = useRef<'approvals' | 'notifications'>('approvals');
+
+  const NOTIF_PAGE_SIZE = 30;
 
   const fetchData = useCallback(async () => {
     try {
       const [n, a] = await Promise.all([
-        api.notifications.list(userId, false),
+        api.notifications.list(userId, false, { limit: NOTIF_PAGE_SIZE, offset: 0 }),
         api.approvals.list(),
       ]);
       setNotifications(n.notifications);
       setUnreadCount(n.unreadCount ?? n.notifications.filter((x: NotificationInfo) => !x.read).length);
+      setHasMoreNotifications(n.totalCount != null ? n.notifications.length < n.totalCount : n.notifications.length >= NOTIF_PAGE_SIZE);
       setApprovals(a.approvals);
       if (!initialFetchDone.current) {
         const pending = a.approvals.filter((ap: any) => ap.status === 'pending').length;
@@ -143,6 +150,19 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       }
     } catch { /* */ }
   }, [userId]);
+
+  const loadMoreNotifications = useCallback(async () => {
+    if (loadingMore || !hasMoreNotifications) return;
+    setLoadingMore(true);
+    try {
+      const n = await api.notifications.list(userId, false, { limit: NOTIF_PAGE_SIZE, offset: notifications.length });
+      if (n.notifications.length > 0) {
+        setNotifications(prev => [...prev, ...n.notifications.filter(nn => !prev.some(p => p.id === nn.id))]);
+      }
+      setHasMoreNotifications(n.totalCount != null ? notifications.length + n.notifications.length < n.totalCount : n.notifications.length >= NOTIF_PAGE_SIZE);
+    } catch { /* */ }
+    setLoadingMore(false);
+  }, [userId, notifications.length, loadingMore, hasMoreNotifications]);
 
   const markReadByRef = useCallback((e: Event) => {
     const detail = (e as CustomEvent).detail as { taskId?: string; requirementId?: string } | undefined;
@@ -210,6 +230,20 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     };
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const hasPending = approvals.some(a => a.status === 'pending');
+    const hasUnread = notifications.some(n => !n.read);
+    if (hasPending && !hasUnread) {
+      setTab('approvals');
+    } else if (!hasPending && hasUnread) {
+      setTab('notifications');
+    } else {
+      setTab(lastTabRef.current);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const pendingApprovalIds = new Set(approvals.filter(a => a.status === 'pending').map(a => a.id));
@@ -364,13 +398,20 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       setAdjustingId(null);
       setFreeformTexts(prev => { const next = { ...prev }; delete next[id]; return next; });
 
-      const relatedNotif = notifications.find(
-        n => n.type === 'approval_request' && n.metadata?.approvalId === id
+      const taskId = approval.details?.taskId as string | undefined;
+      const requirementId = approval.details?.requirementId as string | undefined;
+      const relatedNotifs = notifications.filter(n =>
+        !n.read && (
+          (n.type === 'approval_request' && n.metadata?.approvalId === id) ||
+          (taskId && n.metadata?.taskId === taskId) ||
+          (requirementId && n.metadata?.requirementId === requirementId)
+        )
       );
-      if (relatedNotif && !relatedNotif.read) {
-        api.notifications.markRead(relatedNotif.id);
-        setNotifications(prev => prev.map(n => n.id === relatedNotif.id ? { ...n, read: true } : n));
-        setUnreadCount(prev => Math.max(0, prev - 1));
+      if (relatedNotifs.length > 0) {
+        for (const rn of relatedNotifs) api.notifications.markRead(rn.id).catch(() => {});
+        const ids = new Set(relatedNotifs.map(rn => rn.id));
+        setNotifications(prev => prev.map(n => ids.has(n.id) ? { ...n, read: true } : n));
+        setUnreadCount(prev => Math.max(0, prev - relatedNotifs.length));
       }
       window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
     } catch { /* */ }
@@ -444,7 +485,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       {/* Tabs + Close */}
       <div className="flex border-b border-border-default shrink-0">
         <button
-          onClick={() => setTab('approvals')}
+          onClick={() => { setTab('approvals'); lastTabRef.current = 'approvals'; }}
           className={`flex-1 px-3 py-2.5 text-xs font-medium transition-colors ${
             tab === 'approvals' ? 'text-fg-primary border-b-2 border-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'
           }`}
@@ -452,7 +493,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
           {t('team:notifications.approvals')}{pendingApprovals > 0 ? ` (${pendingApprovals})` : ''}
         </button>
         <button
-          onClick={() => setTab('notifications')}
+          onClick={() => { setTab('notifications'); lastTabRef.current = 'notifications'; }}
           className={`flex-1 px-3 py-2.5 text-xs font-medium transition-colors ${
             tab === 'notifications' ? 'text-fg-primary border-b-2 border-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'
           }`}
@@ -478,7 +519,11 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       )}
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div ref={notifScrollRef} className="flex-1 overflow-y-auto" onScroll={(e) => {
+        if (tab !== 'notifications' || !hasMoreNotifications || loadingMore) return;
+        const el = e.currentTarget;
+        if (el.scrollTop + el.clientHeight >= el.scrollHeight - 80) loadMoreNotifications();
+      }}>
             {tab === 'approvals' && (
               approvals.length === 0 ? (
                 <div className="p-6 text-center text-xs text-fg-tertiary">{t('team:notifications.noApprovals')}</div>
@@ -687,7 +732,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                 <div className="p-6 text-center text-xs text-fg-tertiary">{t('team:notifications.noNotifications')}</div>
               ) : (
                 <div className="divide-y divide-border-default/50">
-                  {displayNotifications.slice(0, 50).map(n => {
+                  {displayNotifications.map(n => {
                     const typeColor = TYPE_COLOR[n.type] ?? 'text-fg-tertiary';
                     return (
                     <div
@@ -725,6 +770,14 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                     </div>
                     );
                   })}
+                  {loadingMore && (
+                    <div className="py-3 text-center">
+                      <svg className="animate-spin h-4 w-4 text-fg-tertiary mx-auto" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                    </div>
+                  )}
                 </div>
               )
             )}

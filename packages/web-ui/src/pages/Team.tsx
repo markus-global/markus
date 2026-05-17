@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -30,6 +30,29 @@ import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { Avatar } from '../components/Avatar.tsx';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function throttle<T extends (...args: unknown[]) => unknown>(fn: T, ms: number): T {
+  let last = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return ((...args: unknown[]) => {
+    const now = Date.now();
+    const remaining = ms - (now - last);
+    if (remaining <= 0) {
+      if (timer) { clearTimeout(timer); timer = null; }
+      last = now;
+      return fn(...args);
+    }
+    if (!timer) {
+      timer = setTimeout(() => {
+        last = Date.now();
+        timer = null;
+        fn(...args);
+      }, remaining);
+    }
+  }) as T;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -595,11 +618,15 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
 
 function AgentMessageBody({
   msg, isStreaming, liveActivities, onViewModeChange,
+  onMentionClick,
+  knownNames,
 }: {
   msg: ChatMsg;
   isStreaming: boolean;
   liveActivities: import('../components/ActivityIndicator.tsx').ActivityStep[];
   onViewModeChange?: (mode: 'compact' | 'full') => void;
+  onMentionClick?: (name: string, event: ReactMouseEvent) => void;
+  knownNames?: string[];
 }) {
   const { t } = useTranslation(['team', 'common']);
   const segments = msg.segments;
@@ -678,7 +705,7 @@ function AgentMessageBody({
         )}
 
         {viewMode === 'compact' && displayText && (
-          <MarkdownMessage content={displayText} />
+          <MarkdownMessage content={displayText} onMentionClick={onMentionClick} knownNames={knownNames} />
         )}
 
         {isStopped && (
@@ -709,7 +736,7 @@ function AgentMessageBody({
           persistent={!isStreaming && hasActivities}
         />
       )}
-      {legacyText ? <MarkdownMessage content={legacyText} /> : null}
+      {legacyText ? <MarkdownMessage content={legacyText} onMentionClick={onMentionClick} knownNames={knownNames} /> : null}
       {isStopped && (
         <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
           <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
@@ -840,16 +867,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       if (!entry) return;
       const containerW = entry.contentRect.width;
       const chatAreaIfL2 = containerW - chatSidebar.width - teamDetailPanel.width;
-      const tight = chatAreaIfL2 < 400;
-      setL2SpaceTight(tight);
-      if (tight && showTeamDetailPanel) {
-        setShowTeamDetailPanel(false);
-        try { localStorage.setItem('markus_team_panel_visible', 'false'); } catch { /* */ }
-      }
+      setL2SpaceTight(chatAreaIfL2 < 400);
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [isMobile, chatSidebar.width, teamDetailPanel.width, showTeamDetailPanel]);
+  }, [isMobile, chatSidebar.width, teamDetailPanel.width]);
 
   useEffect(() => {
     if (!l2Floating) return;
@@ -902,6 +924,16 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     setAvatarPopover(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isMobile, enterMobileDetail, switchToProfile]);
+
+  const handleMentionClick = useCallback((name: string, event: ReactMouseEvent) => {
+    const agent = agents.find(a => a.name.toLowerCase() === name.toLowerCase());
+    if (agent) {
+      const rect = (event.target as HTMLElement).getBoundingClientRect();
+      setAvatarPopover({ agentId: agent.id, top: rect.bottom, left: rect.left });
+    }
+  }, [agents]);
+
+  const agentNames = useMemo(() => agents.map(a => a.name), [agents]);
 
   // Mode & target
   const [chatMode, setChatMode] = useState<ChatMode>(
@@ -1145,6 +1177,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const refreshAgents = useCallback(() => api.agents.list().then(d => setAgents(d.agents)).catch(() => {}), []);
   const refreshTeams = useCallback(() => api.teams.list().then(d => setTeams(d.teams)).catch(() => {}), []);
   const refreshGroupChats = useCallback(() => api.groupChats.list().then(d => setGroupChats(d.chats)).catch(() => {}), []);
+
+  // Throttled versions for WS-driven refreshes to prevent API spam
+  const throttledRefreshAgents = useMemo(() => throttle(refreshAgents, 3000), [refreshAgents]);
+  const throttledRefreshTeams = useMemo(() => throttle(refreshTeams, 5000), [refreshTeams]);
+  const throttledRefreshGroupChats = useMemo(() => throttle(refreshGroupChats, 3000), [refreshGroupChats]);
   const refreshHumans = useCallback(() => {
     api.users.list(authUser?.orgId).then(d => setHumans(d.users)).catch(() => {});
   }, [authUser?.orgId]);
@@ -1160,18 +1197,19 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     api.externalAgents.list().then(d => setExternalAgents(d.agents)).catch(() => {});
     refreshGroupChats();
 
-    const timer = setInterval(refreshAgents, 8000);
-    const teamTimer = setInterval(refreshTeams, 15000);
-    const unsub = wsClient.on('agent:update', refreshAgents);
-    const unsubTeam = wsClient.on('*', refreshTeams);
-    const unsubGroup = wsClient.on('chat:group_created', refreshGroupChats);
-    const unsubGroupUpdate = wsClient.on('chat:group_updated', refreshGroupChats);
-    const unsubGroupDelete = wsClient.on('chat:group_deleted', refreshGroupChats);
+    const timer = setInterval(refreshAgents, 30_000);
+    const teamTimer = setInterval(refreshTeams, 60_000);
+    const unsub = wsClient.on('agent:update', throttledRefreshAgents);
+    const unsubTeamUpdate = wsClient.on('team:update', throttledRefreshTeams);
+    const unsubTeamOnAgentRemoved = wsClient.on('agent:removed', throttledRefreshTeams);
+    const unsubGroup = wsClient.on('chat:group_created', () => { throttledRefreshGroupChats(); throttledRefreshTeams(); });
+    const unsubGroupUpdate = wsClient.on('chat:group_updated', throttledRefreshGroupChats);
+    const unsubGroupDelete = wsClient.on('chat:group_deleted', () => { throttledRefreshGroupChats(); throttledRefreshTeams(); });
     const onDataChanged = () => { refreshAgents(); refreshTeams(); refreshHumans(); };
     const onNotifChanged = () => { refreshUnreadCounts(); };
     window.addEventListener('markus:data-changed', onDataChanged);
     window.addEventListener('markus:notifications-changed', onNotifChanged);
-    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeam(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); window.removeEventListener('markus:data-changed', onDataChanged); window.removeEventListener('markus:notifications-changed', onNotifChanged); };
+    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeamUpdate(); unsubTeamOnAgentRemoved(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); window.removeEventListener('markus:data-changed', onDataChanged); window.removeEventListener('markus:notifications-changed', onNotifChanged); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshHumans, refreshUnreadCounts]);
 
@@ -2597,7 +2635,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           if (isMobile) {
             if (teamGc) { setChatMode('channel'); setActiveChannel(teamGc.channelKey); setMainTab('chat'); setShowMemberPanel(false); enterMobileDetail(); }
           } else {
-            if (teamGc) { setChatMode('channel'); setActiveChannel(teamGc.channelKey); setMainTab('chat'); setShowMemberPanel(false); }
+            if (teamGc) { setChatMode('channel'); setActiveChannel(teamGc.channelKey); setMainTab('chat'); setShowMemberPanel(false); if (!showTeamDetailPanel && !l2SpaceTight) setShowTeamDetailPanel(true); }
           }
         }}
         selectedTeamId={activeTeamId ?? (chatMode === 'direct' && currentAgent?.teamId ? currentAgent.teamId : null)}
@@ -3241,12 +3279,13 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                         <span className="truncate max-w-[250px]">{msg.replyToText ?? '...'}</span>
                       </button>
                     )}
-                    <div className={msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
-                      ? 'mt-0.5 px-3 py-2 rounded-lg border-b-2 border-red-500/60'
-                      : 'mt-0.5'
-                    }>
+                    <div className={`mt-0.5 ${msg.sender === 'agent' ? 'bg-surface-chat-bubble rounded-2xl px-3.5 py-2.5' : ''} ${
+                      msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
+                        ? 'border-b-2 border-red-500/60'
+                        : ''
+                    }`}>
                       {msg.sender === 'agent'
-                        ? <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" />
+                        ? <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" onMentionClick={handleMentionClick} knownNames={agentNames} />
                         : <div className="text-sm text-fg-secondary whitespace-pre-wrap">
                             {msg.images && msg.images.length > 0 && (
                               <div className="flex flex-wrap gap-1.5 mb-1">
@@ -3255,7 +3294,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                                 ))}
                               </div>
                             )}
-                            {renderMentionText(msg.text, agents)}
+                            {renderMentionText(msg.text, agents, (agent, e) => {
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              setAvatarPopover({ agentId: agent.id, top: rect.bottom, left: rect.left });
+                            })}
                           </div>
                       }
                       {msg.isNotification && (
@@ -3314,9 +3356,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                           <span className="truncate max-w-[250px]">{msg.replyToText ?? '...'}</span>
                         </button>
                       )}
-                      <div className={`mt-0.5 ${
+                      <div className={`mt-0.5 ${msg.sender === 'agent' ? 'bg-surface-chat-bubble rounded-2xl px-3.5 py-2.5' : ''} ${
                         msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
-                          ? 'px-3 py-2 rounded-lg border-b-2 border-red-500/60'
+                          ? 'border-b-2 border-red-500/60'
                           : ''
                       } ${showStreamingBubble && msg.sender === 'agent' ? 'streaming-bubble' : ''}`}>
                         {msg.sender === 'user'
@@ -3328,7 +3370,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                                   ))}
                                 </div>
                               )}
-                              {msg.text && <span className="leading-relaxed">{renderMentionText(msg.text, agents)}</span>}
+                              {msg.text && <span className="leading-relaxed">{renderMentionText(msg.text, agents, (agent, e) => {
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                setAvatarPopover({ agentId: agent.id, top: rect.bottom, left: rect.left });
+                              })}</span>}
                             </div>
                           : <AgentMessageBody
                               msg={msg}
@@ -3339,6 +3384,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                                 if (mode === 'full') next.add(msg.id); else next.delete(msg.id);
                                 return next;
                               })}
+                              onMentionClick={handleMentionClick}
+                              knownNames={agentNames}
                             />
                         }
                         {msg.isNotification && (

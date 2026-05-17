@@ -486,6 +486,7 @@ CREATE TABLE IF NOT EXISTS mailbox_items (
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_status ON mailbox_items(agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_queued ON mailbox_items(agent_id, priority, queued_at);
+CREATE INDEX IF NOT EXISTS idx_mailbox_agent_source ON mailbox_items(agent_id, source_type);
 
 CREATE TABLE IF NOT EXISTS agent_decisions (
   id TEXT PRIMARY KEY,
@@ -498,6 +499,7 @@ CREATE TABLE IF NOT EXISTS agent_decisions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_agent ON agent_decisions(agent_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_decisions_mailbox_item ON agent_decisions(mailbox_item_id);
 
 CREATE TABLE IF NOT EXISTS user_notifications (
   id TEXT PRIMARY KEY,
@@ -642,6 +644,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'users', column: 'deleted_at', sql: 'ALTER TABLE users ADD COLUMN deleted_at TEXT' },
     { table: 'agents', column: 'deleted_at', sql: 'ALTER TABLE agents ADD COLUMN deleted_at TEXT' },
     { table: 'deliverables', column: 'format', sql: 'ALTER TABLE deliverables ADD COLUMN format TEXT' },
+    { table: 'task_comments', column: 'reply_to_id', sql: 'ALTER TABLE task_comments ADD COLUMN reply_to_id TEXT' },
+    { table: 'requirement_comments', column: 'reply_to_id', sql: 'ALTER TABLE requirement_comments ADD COLUMN reply_to_id TEXT' },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -1655,14 +1659,15 @@ export class SqliteTaskCommentRepo {
     attachments?: unknown[];
     mentions?: string[];
     activityId?: string;
+    replyToId?: string;
   }) {
     const id = generateId('tc');
     const ts = now();
     this.db
       .prepare(
-        'INSERT INTO task_comments (id, task_id, author_id, author_name, author_type, content, attachments, mentions, activity_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO task_comments (id, task_id, author_id, author_name, author_type, content, attachments, mentions, activity_id, reply_to_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
-      .run(id, data.taskId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), data.activityId ?? null, ts);
+      .run(id, data.taskId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), data.activityId ?? null, data.replyToId ?? null, ts);
     return {
       id,
       taskId: data.taskId,
@@ -1673,6 +1678,7 @@ export class SqliteTaskCommentRepo {
       attachments: data.attachments ?? [],
       mentions: data.mentions ?? [],
       activityId: data.activityId,
+      replyToId: data.replyToId,
       createdAt: new Date(ts),
     };
   }
@@ -1680,7 +1686,11 @@ export class SqliteTaskCommentRepo {
   getByTask(taskId: string) {
     return (
       this.db
-        .prepare('SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC')
+        .prepare(
+          `SELECT c.*, r.author_name AS reply_to_author, SUBSTR(r.content, 1, 120) AS reply_to_content
+           FROM task_comments c LEFT JOIN task_comments r ON c.reply_to_id = r.id
+           WHERE c.task_id = ? ORDER BY c.created_at ASC`
+        )
         .all(taskId) as Record<string, unknown>[]
     ).map(r => ({
       id: r['id'] as string,
@@ -1692,6 +1702,9 @@ export class SqliteTaskCommentRepo {
       attachments: fromJson(r['attachments'] as string),
       mentions: (fromJson(r['mentions'] as string) ?? []) as string[],
       activityId: r['activity_id'] as string | undefined,
+      replyToId: (r['reply_to_id'] as string) ?? undefined,
+      replyToAuthor: (r['reply_to_author'] as string) ?? undefined,
+      replyToContent: (r['reply_to_content'] as string) ?? undefined,
       createdAt: toDate(r['created_at'] as string)!,
     }));
   }
@@ -1713,14 +1726,15 @@ export class SqliteRequirementCommentRepo {
     attachments?: unknown[];
     mentions?: string[];
     activityId?: string;
+    replyToId?: string;
   }) {
     const id = generateId('rc');
     const ts = now();
     this.db
       .prepare(
-        'INSERT INTO requirement_comments (id, requirement_id, author_id, author_name, author_type, content, attachments, mentions, activity_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO requirement_comments (id, requirement_id, author_id, author_name, author_type, content, attachments, mentions, activity_id, reply_to_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
-      .run(id, data.requirementId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), data.activityId ?? null, ts);
+      .run(id, data.requirementId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), data.activityId ?? null, data.replyToId ?? null, ts);
     return {
       id,
       requirementId: data.requirementId,
@@ -1731,6 +1745,7 @@ export class SqliteRequirementCommentRepo {
       attachments: data.attachments ?? [],
       mentions: data.mentions ?? [],
       activityId: data.activityId,
+      replyToId: data.replyToId,
       createdAt: new Date(ts),
     };
   }
@@ -1738,7 +1753,11 @@ export class SqliteRequirementCommentRepo {
   getByRequirement(requirementId: string) {
     return (
       this.db
-        .prepare('SELECT * FROM requirement_comments WHERE requirement_id = ? ORDER BY created_at ASC')
+        .prepare(
+          `SELECT c.*, r.author_name AS reply_to_author, SUBSTR(r.content, 1, 120) AS reply_to_content
+           FROM requirement_comments c LEFT JOIN requirement_comments r ON c.reply_to_id = r.id
+           WHERE c.requirement_id = ? ORDER BY c.created_at ASC`
+        )
         .all(requirementId) as Record<string, unknown>[]
     ).map(r => ({
       id: r['id'] as string,
@@ -1750,6 +1769,9 @@ export class SqliteRequirementCommentRepo {
       attachments: fromJson(r['attachments'] as string),
       mentions: (fromJson(r['mentions'] as string) ?? []) as string[],
       activityId: r['activity_id'] as string | undefined,
+      replyToId: (r['reply_to_id'] as string) ?? undefined,
+      replyToAuthor: (r['reply_to_author'] as string) ?? undefined,
+      replyToContent: (r['reply_to_content'] as string) ?? undefined,
       createdAt: toDate(r['created_at'] as string)!,
     }));
   }
@@ -3513,6 +3535,20 @@ export class SqliteActivityRepo {
     return r ? this.mapActivity(r) : null;
   }
 
+  getByMailboxItemIds(ids: string[]): Map<string, ActivityRecord> {
+    const result = new Map<string, ActivityRecord>();
+    if (ids.length === 0) return result;
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(`SELECT * FROM agent_activities WHERE mailbox_item_id IN (${placeholders})`)
+      .all(...ids) as Record<string, unknown>[];
+    for (const r of rows) {
+      const rec = this.mapActivity(r);
+      if (rec.mailboxItemId) result.set(rec.mailboxItemId, rec);
+    }
+    return result;
+  }
+
   searchActivities(
     agentId: string,
     query: string,
@@ -3703,6 +3739,14 @@ export class SqliteMailboxRepo {
     return (result as { changes?: number }).changes ?? 0;
   }
 
+  markStaleProcessingAsCompleted(agentId: string): number {
+    const ts = now();
+    const result = this.db
+      .prepare("UPDATE mailbox_items SET status = 'completed', completed_at = ? WHERE agent_id = ? AND status = 'processing'")
+      .run(ts, agentId);
+    return (result as { changes?: number }).changes ?? 0;
+  }
+
   getByAgent(agentId: string, options?: { status?: string; limit?: number }): MailboxItemRow[] {
     let sql = 'SELECT * FROM mailbox_items WHERE agent_id = ?';
     const params: (string | number | null)[] = [agentId];
@@ -3715,6 +3759,24 @@ export class SqliteMailboxRepo {
   getById(id: string): MailboxItemRow | undefined {
     const row = this.db.prepare('SELECT * FROM mailbox_items WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     return row ? this.mapRow(row) : undefined;
+  }
+
+  getStatusCounts(agentId: string): Record<string, number> {
+    const rows = this.db
+      .prepare('SELECT status, COUNT(*) as cnt FROM mailbox_items WHERE agent_id = ? GROUP BY status')
+      .all(agentId) as Array<{ status: string; cnt: number }>;
+    const counts: Record<string, number> = {};
+    for (const r of rows) counts[r.status] = r.cnt;
+    return counts;
+  }
+
+  getSourceTypeCounts(agentId: string): Record<string, number> {
+    const rows = this.db
+      .prepare('SELECT source_type, COUNT(*) as cnt FROM mailbox_items WHERE agent_id = ? GROUP BY source_type')
+      .all(agentId) as Array<{ source_type: string; cnt: number }>;
+    const counts: Record<string, number> = {};
+    for (const r of rows) counts[r.source_type] = r.cnt;
+    return counts;
   }
 
   getHistory(agentId: string, opts?: { limit?: number; offset?: number; sourceTypes?: string[]; status?: string }): MailboxItemRow[] {
@@ -3800,6 +3862,21 @@ export class SqliteDecisionRepo {
     return (this.db
       .prepare('SELECT * FROM agent_decisions WHERE mailbox_item_id = ? ORDER BY created_at ASC')
       .all(mailboxItemId) as Record<string, unknown>[]).map(r => this.mapRow(r));
+  }
+
+  getByMailboxItemIds(ids: string[]): Map<string, DecisionRow[]> {
+    const result = new Map<string, DecisionRow[]>();
+    if (ids.length === 0) return result;
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = (this.db
+      .prepare(`SELECT * FROM agent_decisions WHERE mailbox_item_id IN (${placeholders}) ORDER BY created_at ASC`)
+      .all(...ids) as Record<string, unknown>[]).map(r => this.mapRow(r));
+    for (const row of rows) {
+      const list = result.get(row.mailboxItemId);
+      if (list) list.push(row);
+      else result.set(row.mailboxItemId, [row]);
+    }
+    return result;
   }
 
   private mapRow(r: Record<string, unknown>): DecisionRow {
