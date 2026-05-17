@@ -963,56 +963,25 @@ export class APIServer {
         prefixLines.push('This is an open group message (no specific @mention or reply target).');
       }
 
-      prefixLines.push('');
-      prefixLines.push('Rules for ALL group chat messages:');
-      prefixLines.push('1. Check channel history — if another agent already answered, do NOT repeat.');
-      prefixLines.push('2. Only respond if your specific role/expertise is directly relevant.');
-      prefixLines.push('3. Be concise — short, actionable responses only.');
-      if (agent.config.agentRole === 'manager') {
-        prefixLines.push('4. When assigning work to agents, you MUST use `task_create` to formalize each assignment as a tracked task. Verbal delegation without a task is NOT allowed — oral promises are meaningless without task tracking. Every commitment must have a corresponding task.');
-      } else {
-        prefixLines.push('4. When you accept a work assignment, verify a task has been created for it (`task_list`). If the coordinator did not create one, remind them or create it yourself with the correct `assigned_agent_id`. Do NOT make promises without task tracking.');
-      }
-      prefixLines.push('5. DEFAULT IS SILENCE. Before responding, answer these questions:');
-      prefixLines.push('   a) Has another agent already given a substantively similar answer? If yes → [NO_RESPONSE]');
-      prefixLines.push('   b) Does your response add UNIQUE expertise or information? If no → [NO_RESPONSE]');
-      prefixLines.push('   c) Check channel history — duplicate or "me too" responses waste everyone\'s time.');
-      prefixLines.push('6. @MENTION — CRITICAL ROUTING MECHANISM:');
-      prefixLines.push('   The @ symbol controls message routing. You MUST use it correctly:');
-      prefixLines.push('   - WITH @: `@Name` or `@[Full Name]` → the named agent receives a direct notification and is expected to respond.');
-      prefixLines.push('   - WITHOUT @: Writing a name without @ (e.g., "Bilahari, confirmed") does NOT notify anyone — it is just text.');
-      prefixLines.push('   - FORMAT: `@Name` for single-word names, `@[Name With Spaces]` for multi-word names (e.g., `@[Sam Altman]`).');
-      prefixLines.push('   - You can @mention MULTIPLE agents in one message to address several people at once (e.g., "@Bilahari your SLOC data is ready. @[Dmitry Medvedev] please verify the sanctions overlay.").');
-      prefixLines.push('   - @mentions can appear ANYWHERE in the message — beginning, middle, or end. Place each @mention naturally next to the content directed at that person.');
-      prefixLines.push('   - Only @mention agents who need to take action or whose expertise you need. Do NOT @mention just to acknowledge, agree, or be polite.');
-      // Build member roster with correct @ format
+      // Static group chat rules (silence-by-default, @mention routing, processing
+      // checklist) are now in the system prompt via scenario='group_chat'.
+      // Only per-message variable parts remain here.
       if (chainCtx?.allAgentIds) {
-        const rosterLines = ['   TEAM MEMBERS (use exact format for @mentions):'];
+        prefixLines.push('');
+        const rosterLines = ['TEAM MEMBERS (use exact format for @mentions):'];
         for (const aid of chainCtx.allAgentIds) {
           try {
             const a = agentManager.getAgent(aid);
             const name = a.config.name;
             const fmt = name.includes(' ') ? `@[${name}]` : `@${name}`;
-            rosterLines.push(`     ${fmt}${aid === agentId ? ' (you)' : ''}`);
+            rosterLines.push(`  ${fmt}${aid === agentId ? ' (you)' : ''}`);
           } catch { /* skip */ }
         }
         prefixLines.push(rosterLines.join('\n'));
       }
-      prefixLines.push('7. REPLY IN GROUP: Always reply in the group chat using `agent_send_group_message`. Do NOT use `agent_send_message` for private replies unless the other party explicitly requests a private conversation. Use `reply_to_message_id` to link your reply to the message you\'re responding to.');
-      prefixLines.push(`8. Your context already includes ~${CHANNEL_CONTEXT_MESSAGES} recent messages. For OLDER messages beyond that window, use recall_context(scope="channel", channel_key="${channel}"). For task/requirement details use task_get/requirement_get. Do NOT guess about prior discussion.`);
-      prefixLines.push('');
-      prefixLines.push('GROUP CHAT PROCESSING CHECKLIST:');
-      prefixLines.push('Before responding, walk through these steps:');
-      prefixLines.push('- [ ] Am I @mentioned or is this an open message? If directed at someone else → `[NO_RESPONSE]`.');
-      prefixLines.push('- [ ] Check the channel messages in your context — has someone already answered? If yes → `[NO_RESPONSE]`.');
-      prefixLines.push('- [ ] Does my role/expertise add UNIQUE value here? If no → `[NO_RESPONSE]`.');
-      prefixLines.push('- [ ] Draft my reply. Is it concise and actionable? Remove filler.');
-      prefixLines.push('- [ ] @mention specific agents if I need their input — use correct format (`@Name` or `@[Full Name]`).');
-      prefixLines.push('- [ ] Use `reply_to_message_id` to thread my response to the right message.');
-      prefixLines.push('- [ ] Use `agent_send_group_message` — NOT `agent_send_message`.');
-      prefixLines.push('- [ ] Final check: does my response contain NEW information? If not → `[NO_RESPONSE]`.');
       if (isTargeted && !thisAgentIsTarget && !isA2A) {
-        prefixLines.push('9. REMINDER: This message is directed at ' + [...targetNames].join(', ') + '. You are ' + agentName + '. Respond ONLY with [NO_RESPONSE].');
+        prefixLines.push('');
+        prefixLines.push('REMINDER: This message is directed at ' + [...targetNames].join(', ') + '. You are ' + agentName + '. Respond ONLY with [NO_RESPONSE].');
       }
 
       prefixLines.push('---', '');
@@ -1025,8 +994,9 @@ export class APIServer {
         senderInfo,
         {
           sourceType: isA2A ? 'a2a_message' : 'human_chat',
-          scenario: isA2A ? 'a2a' : undefined,
+          scenario: isA2A ? 'a2a' : 'group_chat',
           channelContext,
+          channelKey: channel,
           toolEventCollector: toolEvents,
         }
       );

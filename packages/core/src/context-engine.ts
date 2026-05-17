@@ -18,6 +18,7 @@ import {
   SYSTEM_DELIVERABLE_PREVIEW_CHARS,
   SYSTEM_MAILBOX_MERGED_CHARS,
   SYSTEM_MAILBOX_ITEM_PREVIEW_CHARS,
+  CHANNEL_CONTEXT_MESSAGES,
 } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
@@ -260,7 +261,7 @@ export class ContextEngine {
     }
 
     const scenario = opts.scenario ?? 'chat';
-    stable.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply }));
+    stable.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply, isManager: opts.isTeamManager }));
 
     // ═══════════════════════════════════════════════════════════════════════
     // TIER 2 — SEMI-STABLE
@@ -546,16 +547,6 @@ export class ContextEngine {
       }
     }
 
-    if (!isDream) {
-      dynamic.push('\n## Tool Usage Rules');
-      dynamic.push('**File editing discipline**: You MUST use `file_write` and `file_edit` for all file creation and modification. NEVER use `shell_execute` with `cat`, `echo`, `printf`, `tee`, pipes (`|`), output redirection (`>`, `>>`), heredocs (`<<`), or `sed`/`awk` to write or modify files — these bypass file access controls. `shell_execute` is for running commands (build, test, git, etc.), not for writing files.');
-      dynamic.push('**Large file writing**: NEVER write a document >200 lines in a single `file_write` call. Write section by section: `file_write` the first section, then `file_edit` to append each subsequent section.');
-      dynamic.push('**Error handling**: If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action.');
-      dynamic.push('**Subagent delegation**: For heavy subtasks needing many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
-      dynamic.push('**Built-in tools over CLI**: ALWAYS prefer built-in tools (`task_create`, `task_assign`, `package_install`, `agent_send_message`, `memory_save`, etc.) over running `markus` CLI commands via `shell_execute`. The CLI is for human operators — agents must use their native tool interface. Only fall back to CLI if no built-in tool exists for the operation.');
-      dynamic.push('**No auto-install/deploy**: NEVER automatically install or deploy agents, teams, or skills via `package_install` or `hub_install` unless explicitly requested by a human team member (e.g., "install", "deploy", "hire", "start"). Creating an artifact (writing files to `builder-artifacts/`) is separate from deploying it into the live organization.');
-    }
-
     // Timestamp at the end of the system prompt preserves KV-cache for the
     // stable prefix (identity, role, policies, memory) which rarely changes.
     const now = new Date();
@@ -688,7 +679,7 @@ export class ContextEngine {
     return lines.join('\n');
   }
 
-  private buildScenarioSection(scenario: AgentScenario, extra?: { a2aWaitForReply?: boolean }): string {
+  private buildScenarioSection(scenario: AgentScenario, extra?: { a2aWaitForReply?: boolean; isManager?: boolean }): string {
     const lines: string[] = ['\n## Current Interaction Mode'];
 
     switch (scenario) {
@@ -778,6 +769,46 @@ export class ContextEngine {
         lines.push('- If you cannot help, explain why and suggest who can');
         break;
       }
+
+      case 'group_chat':
+        lines.push('You are in a **team group chat channel**. Multiple agents and humans share this channel.');
+        lines.push('');
+        lines.push('**Communication channel**: Your text output is sent to the group chat. All team members can see it. To reach a human privately, use `notify_user`. To reach a specific agent privately, use `agent_send_message`.');
+        lines.push('');
+        lines.push('**Rules for ALL group chat messages:**');
+        lines.push('1. Check channel history — if another agent already answered, do NOT repeat.');
+        lines.push('2. Only respond if your specific role/expertise is directly relevant.');
+        lines.push('3. Be concise — short, actionable responses only.');
+        if (extra?.isManager) {
+          lines.push('4. When assigning work to agents, you MUST use `task_create` to formalize each assignment as a tracked task. Verbal delegation without a task is NOT allowed — oral promises are meaningless without task tracking. Every commitment must have a corresponding task.');
+        } else {
+          lines.push('4. When you accept a work assignment, verify a task has been created for it (`task_list`). If the coordinator did not create one, remind them or create it yourself with the correct `assigned_agent_id`. Do NOT make promises without task tracking.');
+        }
+        lines.push('5. DEFAULT IS SILENCE. Before responding, answer these questions:');
+        lines.push('   a) Has another agent already given a substantively similar answer? If yes → [NO_RESPONSE]');
+        lines.push('   b) Does your response add UNIQUE expertise or information? If no → [NO_RESPONSE]');
+        lines.push('   c) Check channel history — duplicate or "me too" responses waste everyone\'s time.');
+        lines.push('6. @MENTION — CRITICAL ROUTING MECHANISM:');
+        lines.push('   The @ symbol controls message routing. You MUST use it correctly:');
+        lines.push('   - WITH @: `@Name` or `@[Full Name]` → the named agent receives a direct notification and is expected to respond.');
+        lines.push('   - WITHOUT @: Writing a name without @ (e.g., "Alice, confirmed") does NOT notify anyone — it is just text.');
+        lines.push('   - FORMAT: `@Name` for single-word names, `@[Name With Spaces]` for multi-word names (e.g., `@[Sam Altman]`).');
+        lines.push('   - You can @mention MULTIPLE agents in one message to address several people at once.');
+        lines.push('   - @mentions can appear ANYWHERE in the message — beginning, middle, or end. Place each @mention naturally next to the content directed at that person.');
+        lines.push('   - Only @mention agents who need to take action or whose expertise you need. Do NOT @mention just to acknowledge, agree, or be polite.');
+        lines.push('7. REPLY IN GROUP: Always reply in the group chat using `agent_send_group_message`. Do NOT use `agent_send_message` for private replies unless the other party explicitly requests a private conversation. Use `reply_to_message_id` to link your reply to the message you\'re responding to.');
+        lines.push(`8. Your context already includes ~${CHANNEL_CONTEXT_MESSAGES} recent messages. For OLDER messages beyond that window, use recall_context(scope="channel"). For task/requirement details use task_get/requirement_get. Do NOT guess about prior discussion.`);
+        lines.push('');
+        lines.push('**GROUP CHAT PROCESSING CHECKLIST** (walk through before every response):');
+        lines.push('- [ ] Am I @mentioned or is this an open message? If directed at someone else → `[NO_RESPONSE]`.');
+        lines.push('- [ ] Check the channel messages in your context — has someone already answered? If yes → `[NO_RESPONSE]`.');
+        lines.push('- [ ] Does my role/expertise add UNIQUE value here? If no → `[NO_RESPONSE]`.');
+        lines.push('- [ ] Draft my reply. Is it concise and actionable? Remove filler.');
+        lines.push('- [ ] @mention specific agents if I need their input — use correct format (`@Name` or `@[Full Name]`).');
+        lines.push('- [ ] Use `reply_to_message_id` to thread my response to the right message.');
+        lines.push('- [ ] Use `agent_send_group_message` — NOT `agent_send_message`.');
+        lines.push('- [ ] Final check: does my response contain NEW information? If not → `[NO_RESPONSE]`.');
+        break;
 
       case 'comment_response':
         lines.push('You are responding to a **comment on a task or requirement**. You MUST follow the context-first protocol below.');
@@ -1161,6 +1192,14 @@ export class ContextEngine {
 
     if (usagePercent > 80) {
       log.warn('Context usage above 80%', { usagePercent: usagePercent.toFixed(1), totalUsed, effectiveBudget });
+    }
+
+    // Mark a cache breakpoint at the boundary between older history and
+    // the current turn so providers (e.g. Anthropic) can cache the stable
+    // conversation prefix independently from new messages.
+    const turnStart = this.findCurrentTurnStart(messages);
+    if (turnStart > 0) {
+      messages[turnStart - 1] = { ...messages[turnStart - 1], cacheBreakpoint: true };
     }
 
     return {

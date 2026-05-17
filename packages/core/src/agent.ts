@@ -191,11 +191,13 @@ export interface AgentOptions {
   cognitive?: CognitiveConfig;
 }
 
-export type AgentScenario = 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review' | 'requirement_action' | 'deliberation';
+export type AgentScenario = 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'group_chat' | 'comment_response' | 'memory_consolidation' | 'review' | 'requirement_action' | 'deliberation';
 
 interface HandleMessageOptions {
   sessionId?: string;
   channelContext?: Array<{ role: string; content: string }>;
+  /** Channel key for group chat session reuse (e.g. "team_xxx"). */
+  channelKey?: string;
   images?: string[];
   fileNames?: string[];
   allowedTools?: Set<string>;
@@ -617,6 +619,7 @@ export class Agent {
       extra: {
         sessionId: options?.sessionId,
         channelContext: options?.channelContext,
+        channelKey: options?.channelKey,
         images: options?.images,
         fileNames: options?.fileNames,
         allowedTools: options?.allowedTools
@@ -926,9 +929,16 @@ export class Agent {
             resolveResponse(reply);
             return reply;
           }
+          const msgChannelKey = extra.channelKey as string | undefined;
+          const channelSessionId = msgChannelKey ? `channel_${msgChannelKey}_${this.id}` : undefined;
           const defaults: HandleMessageOptions = item.sourceType === 'a2a_message'
-            ? { sessionId: `a2a_${this.id}_${ts}`, scenario: 'a2a' as const }
-            : {};
+            ? {
+                sessionId: channelSessionId ?? `a2a_${this.id}_${ts}`,
+                scenario: 'a2a' as const,
+              }
+            : channelSessionId
+              ? { sessionId: channelSessionId }
+              : {};
           const opts = buildHandleOpts(defaults);
           if (item.sourceType === 'a2a_message') opts.scenario = 'a2a';
           const reply = await this.handleMessage(
@@ -2180,6 +2190,8 @@ export class Agent {
     tokensUsed?: number;
     inputTokens?: number;
     outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
     cost?: number;
     durationMs?: number;
     success: boolean;
@@ -2676,6 +2688,8 @@ export class Agent {
         tokensUsed: tokensThisCall,
         inputTokens: response.usage.inputTokens,
         outputTokens: response.usage.outputTokens,
+        cacheReadTokens: response.usage.cacheReadTokens,
+        cacheWriteTokens: response.usage.cacheWriteTokens,
         cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens),
         durationMs: Date.now() - llmStart,
         success: true,
@@ -2898,6 +2912,8 @@ export class Agent {
           tokensUsed: tokens2,
           inputTokens: response.usage.inputTokens,
           outputTokens: response.usage.outputTokens,
+          cacheReadTokens: response.usage.cacheReadTokens,
+          cacheWriteTokens: response.usage.cacheWriteTokens,
           cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens),
           durationMs: Date.now() - llmStart2,
           success: true,

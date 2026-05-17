@@ -57,43 +57,65 @@ These are `handleMessage()` calls with `scenario: 'heartbeat'` and typed session
 
 ## 2. System Prompt Architecture
 
-The system prompt is assembled by `ContextEngine.buildSystemPrompt()`. Sections are appended in a fixed order to maximize KV-cache reuse (stable prefix, volatile suffix):
+The system prompt is assembled by `ContextEngine.buildSystemPrompt()` and organized into **three tiers** for optimal KV-cache reuse. Each tier has a `cache_control: { type: 'ephemeral' }` breakpoint (for Anthropic), allowing the provider to cache each stable prefix independently:
 
 ```
-┌─────────────────────────────────────────────┐
-│  1. Role System Prompt (from ROLE.md)       │  ← Stable: rarely changes
-│  2. Dynamic Context (skills + cognition)    │
-│  3. Identity Section                        │
-│  4. Organization Context (CONTEXT.md)       │
-│  5. Team Announcements & Norms              │
-│  6. Project Context (governance)            │
-│  7. Workspace Info (paths)                  │
-│  8. User Profiles (users/*.md) + Team Context│
-│  9. Trust Level                             │
-│ 10. System Announcements                    │
-│ 11. Human Feedback                          │
-│ 12. Project Deliverables                    │
-│ 13. Policies                                │
-│ 14. Your Knowledge (MEMORY.md — unified)    │  ← Was 5 sections, now 1
-│ 15. Shared Deliverables                     │
-│ 16. Relevant Memories (legacy fallback)     │  ← Replaced by §16a-c when CPP active
-│16a. Cognitive Context (Phase 1 Appraisal)   │  ← CPP active (D1+)
-│16b. Retrieved Context (Phase 2 Retrieval)   │  ← CPP active (D2+)
-│16c. Reflection (Phase 3 Reflection)         │  ← CPP active (D2+)
-│ 17. Task Board (capped)                     │
-│ 18. Task & Requirement Workflow             │
-│ 19. Environment Profile                     │
-│ 20. Current Conversation (sender info)      │
-│ 21. Tool Usage Rules                        │
-│ 22. Mailbox & Attention Context             │
-│ 23. Scenario Section (mode-specific)        │  ← Volatile: changes per call
-│ 24. Timestamp                               │
-└─────────────────────────────────────────────┘
+╔══════════════════════════════════════════════════════════╗
+║  TIER 1 — STABLE (cache breakpoint ✓)                   ║
+║  Rarely changes between calls for the same agent.        ║
+║                                                          ║
+║   1. Role System Prompt (from ROLE.md)                   ║
+║   2. Policies                                            ║
+║   3. Deliverable Format                                  ║
+║   4. Task & Requirement Workflow                         ║
+║   5. Tool Usage Rules                                    ║
+║   6. Communication Rules                                 ║
+║   7. Scenario Section (mode-specific instructions)       ║
+╠══════════════════════════════════════════════════════════╣
+║  TIER 2 — SEMI-STABLE (cache breakpoint ✓)              ║
+║  Changes with org/config/session, not per query.         ║
+║                                                          ║
+║   8. Identity Section (name, role, colleagues)           ║
+║   9. Organization Context (CONTEXT.md)                   ║
+║  10. Team Announcements & Norms                          ║
+║  11. Workspace Info (paths)                              ║
+║  12. User Profiles (users/*.md) + Team Context           ║
+║  13. Trust Level                                         ║
+║  14. Environment Profile                                 ║
+║  15. Your Knowledge (MEMORY.md — unified long-term)      ║
+╠══════════════════════════════════════════════════════════╣
+║  TIER 3 — DYNAMIC (no cache breakpoint)                  ║
+║  Changes per call. Kept as small as possible.            ║
+║                                                          ║
+║  16. Project Context (governance)                        ║
+║  17. System Announcements                                ║
+║  18. Human Feedback                                      ║
+║  19. Project Deliverables                                ║
+║  20. Shared Deliverables                                 ║
+║  21. Dynamic Context (skills, working memory)            ║
+║  22. Cognitive Context / Relevant Memories               ║
+║      (22a. CPP Appraisal, 22b. Retrieval, 22c.          ║
+║       Reflection — when CPP active D1+/D2+)              ║
+║  23. Task Board (capped)                                 ║
+║  24. Mailbox & Attention Context                         ║
+║  25. Sender Identity                                     ║
+║  26. Timestamp                                           ║
+╚══════════════════════════════════════════════════════════╝
 ```
 
 ### 2.1 KV-Cache Optimization Strategy
 
-The timestamp is placed at the **end** of the system prompt (not the beginning) so that the stable prefix (identity, role, policies, memory) can be KV-cached across calls. Only the last few lines change between invocations.
+The system prompt uses a **3-tier cache architecture** with explicit cache breakpoints:
+
+1. **Tier 1 (Stable)**: Role, policies, tool usage rules, scenario instructions. These rarely change for the same agent and scenario. A cache breakpoint after this tier allows the provider to cache this prefix across all calls with the same scenario.
+
+2. **Tier 2 (Semi-stable)**: Identity, org context, workspace paths, long-term memory. These change when the agent's configuration, team, or memory changes, but remain stable within a session. A cache breakpoint here enables caching the combined Tier 1+2 prefix.
+
+3. **Tier 3 (Dynamic)**: Project context, announcements, feedback, task board, mailbox state, timestamps. These change per call and are kept as small as possible. No cache breakpoint — this section is always re-processed.
+
+**Message-level cache breakpoints**: In addition to system prompt caching, a `cacheBreakpoint` is placed on the last message before the current turn in the conversation history. This allows providers (e.g. Anthropic) to cache the stable conversation prefix (older history, channel context) independently from new messages.
+
+**Channel session reuse**: A2A and group chat messages using the same channel share a stable session ID (`channel_{channelKey}_{agentId}`), so conversation history accumulates naturally and benefits from message-level prefix caching. Only the delta (new messages since last call) is added on subsequent turns.
 
 ### 2.2 Section Details
 
@@ -157,6 +179,7 @@ Eight distinct instruction sets depending on `scenario` parameter. Each scenario
 | `task_execution` | Isolated session. Decompose → execute → `task_submit_review`. | Visible in **task execution logs** (Work page) | `notify_user` for critical updates; `agent_send_message` for agents |
 | `heartbeat` | Brief check-in: review tasks, retry failures, self-evolution. | **Not visible** to anyone | `notify_user` (only way to reach humans); `agent_send_message` for agents |
 | `a2a` | Coordination only. Concise, structured. Complex work → `task_create`. | Visible to **peer agent** only | Reply directly; `notify_user` to escalate to humans |
+| `group_chat` | Team group chat channel. Silence by default, @mention routing, processing checklist, reply-in-group rules. | Visible to **all team members** | `agent_send_group_message` for replies; `notify_user` for private escalation |
 | `comment_response` | Context-first protocol. Batch awareness (handle bundled comments as one). Use `reply_to_comment_id` for structural quoting. Convergence check before replying. | **Not directly visible** | `task_comment` / `requirement_comment` for thread (with `reply_to_comment_id`); `notify_user` if urgent |
 | `deliberation` | Multiple mailbox items — assess before committing. Use `check_mailbox` for full queue inspection; `defer_mailbox_item` / `drop_mailbox_item` for queue management; `update_working_memory` to record situational assessment; finish with `complete_deliberation`. | **Not visible** | Inline handling via deliberation whitelist (`notify_user`, `task_comment`, `agent_send_message`, etc.) |
 | `review` | Evaluate deliverable quality against acceptance criteria. | **Not directly visible** | `task_update` for verdict; `notify_user` optionally |
@@ -389,19 +412,22 @@ Retry: 3 retries with exponential backoff (3s base).
 
 ### 5.4 A2A Chat
 
-Uses `handleMessage(message, fromAgentId, senderInfo, { sessionId: 'a2a_<agentId>_<ts>', scenario: 'a2a' })`.
+Uses `handleMessage(message, fromAgentId, senderInfo, { sessionId, scenario: 'a2a' })`.
 
-The sender's identity is injected via `senderIdentity` in `buildSystemPrompt`. Channel-based A2A (via group chats) passes `channelContext` — recent channel messages are prepended to the session for multi-party conversation context.
+**Session ID strategy**: When a `channelKey` is present (group chat context), the session ID is `channel_{channelKey}_{agentId}` — stable across all messages in the same channel. This enables conversation history accumulation and KV-cache reuse. For direct 1:1 A2A messages without a channel, a timestamp-based `a2a_{agentId}_{ts}` session is used (one-off).
+
+The sender's identity is injected via `senderIdentity` in `buildSystemPrompt`. Channel-based A2A (via group chats) passes `channelContext` — recent channel messages are prepended to the session on the first turn; subsequent turns inject only delta messages (last 5).
 
 ### 5.4.1 Group Chat
 
-Group chat messages (to `group:<teamId>` channels) are broadcast to ALL team members simultaneously via `processGroupChatReply()` in `api-server.ts`. Each agent processes the message independently with `scenario: 'chat'`. A group chat prefix is injected before the user message with rules:
-- Only respond if your role/expertise is specifically relevant
-- Check channel history — do not repeat what another agent already said
-- **DEFAULT IS SILENCE**: Before responding, check (a) has another agent already given a similar answer? (b) does your response add unique expertise? If no → `[NO_RESPONSE]`
-- **@mention discipline**: Only @mention another agent when you have a specific question requiring their expertise
-- **Reply clarity**: Use `reply_to_message_id` in `agent_send_group_message` to link replies to specific messages for conversation clarity
-- Be concise — multi-party conversation, short actionable responses only
+Group chat messages (to `group:<teamId>` channels) are broadcast to ALL team members simultaneously via `processGroupChatReply()` in `api-server.ts`. Each agent processes the message independently with `scenario: 'group_chat'` (for human messages) or `scenario: 'a2a'` (for agent chain replies).
+
+**Static rules in system prompt**: The `group_chat` scenario section in `buildScenarioSection()` contains all static group chat rules (silence by default, @mention routing, processing checklist, reply-in-group). This content is part of the Tier 1 stable system prompt and benefits from KV-caching.
+
+**Per-message prefix**: Only variable, per-message information remains in the user message prefix:
+- Channel header (team size, agent name, channel key)
+- Targeting info (who is @mentioned, reply target, whether this agent is the target)
+- Team member roster (for @mention format reference)
 
 Empty or `[NO_RESPONSE]` replies are silently discarded (not persisted or broadcast).
 

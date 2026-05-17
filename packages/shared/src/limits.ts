@@ -246,7 +246,7 @@ export const ARCHIVE_SCAN_INTERVAL_MS = 6 * 60 * 60 * 1000;
  *  when processing a group-chat reply.  Higher values give agents more context
  *  but increase token usage.  The prompt tells the agent how many messages it
  *  already has so it doesn't needlessly call recall_context. */
-export const CHANNEL_CONTEXT_MESSAGES = 80;
+export const CHANNEL_CONTEXT_MESSAGES = 40;
 
 // ─── Mailbox Item TTL ────────────────────────────────────────────────────────
 
