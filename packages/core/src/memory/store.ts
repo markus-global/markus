@@ -7,7 +7,7 @@
  *
  * Procedural Memory (ROLE.md + skills) is managed by RoleLoader and the skill system.
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createLogger, getTextContent, type LLMMessage, MEMORY_MD_SECTION_MAX_CHARS, MEMORY_MD_TOTAL_MAX_CHARS } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry, ConversationSession } from './types.js';
@@ -42,9 +42,12 @@ function sanitizeEntry(raw: Record<string, unknown> | MemoryEntry): MemoryEntry 
 }
 
 export class MemoryStore implements IMemoryStore {
+  private static readonly MAX_SESSIONS_IN_MEMORY = 20;
+
   private dataDir: string;
   private entries: MemoryEntry[] = [];
   private sessions = new Map<string, ConversationSession>();
+  private sessionAccessOrder: string[] = [];
   private sessionsDir: string;
   private logsDir: string;
   private saveDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -115,7 +118,13 @@ export class MemoryStore implements IMemoryStore {
   }
 
   getSession(sessionId: string): ConversationSession | undefined {
-    return this.sessions.get(sessionId);
+    let session = this.sessions.get(sessionId);
+    if (!session) {
+      session = this.tryLoadSessionFromDisk(sessionId);
+      if (session) this.sessions.set(session.id, session);
+    }
+    if (session) this.touchSession(sessionId);
+    return session;
   }
 
   listSessions(agentId?: string): ConversationSession[] {
@@ -141,13 +150,21 @@ export class MemoryStore implements IMemoryStore {
       lastActivityAt: new Date().toISOString(),
     };
     this.sessions.set(session.id, session);
+    this.touchSession(session.id);
     this.debouncedSaveSession(session);
     return session;
   }
 
   getOrCreateSession(agentId: string, sessionId: string): ConversationSession {
-    const existing = this.sessions.get(sessionId);
-    if (existing) return existing;
+    let existing = this.sessions.get(sessionId);
+    if (!existing) {
+      existing = this.tryLoadSessionFromDisk(sessionId);
+      if (existing) this.sessions.set(existing.id, existing);
+    }
+    if (existing) {
+      this.touchSession(sessionId);
+      return existing;
+    }
     const session: ConversationSession = {
       id: sessionId,
       agentId,
@@ -156,6 +173,7 @@ export class MemoryStore implements IMemoryStore {
       lastActivityAt: new Date().toISOString(),
     };
     this.sessions.set(sessionId, session);
+    this.touchSession(sessionId);
     this.debouncedSaveSession(session);
     return session;
   }
@@ -419,20 +437,62 @@ export class MemoryStore implements IMemoryStore {
   private loadSessionsFromDisk(): void {
     try {
       const files = readdirSync(this.sessionsDir).filter((f) => f.endsWith('.json'));
-      for (const f of files) {
+      if (files.length === 0) return;
+
+      // Sort by mtime descending, only load the N most recent into memory
+      const withMtime = files.map(f => {
+        try {
+          const stat = statSync(join(this.sessionsDir, f));
+          return { f, mtime: stat.mtimeMs };
+        } catch {
+          return { f, mtime: 0 };
+        }
+      });
+      withMtime.sort((a, b) => b.mtime - a.mtime);
+      const toLoad = withMtime.slice(0, MemoryStore.MAX_SESSIONS_IN_MEMORY);
+
+      for (const { f } of toLoad) {
         try {
           const raw = readFileSync(join(this.sessionsDir, f), 'utf-8');
           const session = JSON.parse(raw) as ConversationSession;
           this.sessions.set(session.id, session);
+          this.sessionAccessOrder.push(session.id);
         } catch {
           log.warn(`Failed to load session file: ${f}`);
         }
       }
-      if (files.length > 0) {
-        log.info(`Loaded ${files.length} conversation sessions`);
-      }
+      log.info(`Loaded ${this.sessions.size} of ${files.length} conversation sessions (max ${MemoryStore.MAX_SESSIONS_IN_MEMORY} in memory)`);
     } catch {
       // sessions dir may not exist yet
+    }
+  }
+
+  private tryLoadSessionFromDisk(sessionId: string): ConversationSession | undefined {
+    try {
+      const sessionFile = join(this.sessionsDir, `${sessionId}.json`);
+      if (!existsSync(sessionFile)) return undefined;
+      const raw = readFileSync(sessionFile, 'utf-8');
+      return JSON.parse(raw) as ConversationSession;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private touchSession(sessionId: string): void {
+    const idx = this.sessionAccessOrder.indexOf(sessionId);
+    if (idx !== -1) this.sessionAccessOrder.splice(idx, 1);
+    this.sessionAccessOrder.push(sessionId);
+    this.evictOldSessions();
+  }
+
+  private evictOldSessions(): void {
+    while (this.sessions.size > MemoryStore.MAX_SESSIONS_IN_MEMORY && this.sessionAccessOrder.length > 0) {
+      const oldest = this.sessionAccessOrder.shift()!;
+      const session = this.sessions.get(oldest);
+      if (session) {
+        this.saveSessionToDisk(session);
+        this.sessions.delete(oldest);
+      }
     }
   }
 

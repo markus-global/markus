@@ -795,6 +795,20 @@ export class APIServer {
   /** Per-channel cooldown tracker: channel → agentId → last reply timestamp */
   private a2aCooldowns = new Map<string, Map<string, number>>();
 
+  private cleanStaleCooldowns(): void {
+    const now = Date.now();
+    for (const [channel, agentMap] of this.a2aCooldowns) {
+      for (const [agentId, lastReply] of agentMap) {
+        if (now - lastReply > APIServer.A2A_COOLDOWN_MS * 2) {
+          agentMap.delete(agentId);
+        }
+      }
+      if (agentMap.size === 0) {
+        this.a2aCooldowns.delete(channel);
+      }
+    }
+  }
+
   /** Extract @mentions from agent reply text. Returns agent names found.
    *  Handles multi-word names (e.g. "Ryan 莱恩") by checking known names after each @ sign.
    *  Also matches partial names: "@Sofia" matches "Sofia 索菲亚" if "Sofia" is a token in the name. */
@@ -997,6 +1011,7 @@ export class APIServer {
           scenario: isA2A ? 'a2a' : 'group_chat',
           channelContext,
           channelKey: channel,
+          directMention: thisAgentIsTarget,
           toolEventCollector: toolEvents,
         }
       );
@@ -1169,9 +1184,22 @@ export class APIServer {
     teamSize: number,
     chainCtx: { roundId: string; depth: number; respondedAgents: Set<string>; allAgentIds: string[] },
   ): Promise<void> {
-    // Layer 1: depth limit
+    this.cleanStaleCooldowns();
+
+    // Layer 1: depth limit — deliver to mailbox without chain capability
     if (chainCtx.depth > APIServer.A2A_MAX_DEPTH) {
-      log.info('A2A chain depth limit reached', { channel, depth: chainCtx.depth, roundId: chainCtx.roundId });
+      log.info('A2A chain depth limit — delivering to mailbox without chain', { channel, depth: chainCtx.depth, roundId: chainCtx.roundId });
+      for (const targetName of mentionedNames) {
+        const targetId = nameMap.get(targetName);
+        if (!targetId) continue;
+        try {
+          agentManager.getAgent(targetId).enqueueToMailbox('a2a_message', {
+            summary: `@mention from ${fromAgentName} (chain depth limit)`,
+            content: `[From @${fromAgentName}]: ${fromText}`,
+            extra: { senderId: fromAgentId, senderName: fromAgentName, channelKey: channel, directMention: true, throttled: true },
+          }, { metadata: { senderId: fromAgentId, senderName: fromAgentName, senderRole: 'agent' } });
+        } catch { /* agent may not exist */ }
+      }
       return;
     }
 
@@ -1199,16 +1227,30 @@ export class APIServer {
       const targetId = nameMap.get(targetName);
       if (!targetId) continue;
 
-      // Layer 2: per-round dedup
+      // Layer 2: per-round dedup — deliver to mailbox without chain capability
       if (chainCtx.respondedAgents.has(targetId)) {
-        log.info('A2A skipping (already responded this round)', { targetName, roundId: chainCtx.roundId });
+        log.info('A2A throttled (already responded) — delivering to mailbox', { targetName, roundId: chainCtx.roundId });
+        try {
+          agentManager.getAgent(targetId).enqueueToMailbox('a2a_message', {
+            summary: `@mention from ${fromAgentName} (round dedup)`,
+            content: `[From @${fromAgentName}]: ${fromText}`,
+            extra: { senderId: fromAgentId, senderName: fromAgentName, channelKey: channel, directMention: true, throttled: true },
+          }, { metadata: { senderId: fromAgentId, senderName: fromAgentName, senderRole: 'agent' } });
+        } catch { /* agent may not exist */ }
         continue;
       }
 
-      // Layer 3: cooldown window
+      // Layer 3: cooldown window — deliver to mailbox without chain capability
       const lastReply = channelCooldowns.get(targetId) ?? 0;
       if (now - lastReply < APIServer.A2A_COOLDOWN_MS) {
-        log.info('A2A skipping (cooldown)', { targetName, channel, cooldownRemaining: APIServer.A2A_COOLDOWN_MS - (now - lastReply) });
+        log.info('A2A throttled (cooldown) — delivering to mailbox', { targetName, channel, cooldownRemaining: APIServer.A2A_COOLDOWN_MS - (now - lastReply) });
+        try {
+          agentManager.getAgent(targetId).enqueueToMailbox('a2a_message', {
+            summary: `@mention from ${fromAgentName} (cooldown)`,
+            content: `[From @${fromAgentName}]: ${fromText}`,
+            extra: { senderId: fromAgentId, senderName: fromAgentName, channelKey: channel, directMention: true, throttled: true },
+          }, { metadata: { senderId: fromAgentId, senderName: fromAgentName, senderRole: 'agent' } });
+        } catch { /* agent may not exist */ }
         continue;
       }
       channelCooldowns.set(targetId, now);

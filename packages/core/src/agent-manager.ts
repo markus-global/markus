@@ -2730,6 +2730,8 @@ export class AgentManager {
   private announcements: SystemAnnouncement[] = [];
 
   broadcastAnnouncement(announcement: SystemAnnouncement): void {
+    const now = new Date().toISOString();
+    this.announcements = this.announcements.filter(a => !a.expiresAt || a.expiresAt > now);
     this.announcements.push(announcement);
 
     for (const [, agent] of this.agents) {

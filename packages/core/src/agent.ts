@@ -211,6 +211,8 @@ interface HandleMessageOptions {
     durationMs?: number;
   }>;
   waitForReply?: boolean;
+  /** Whether this agent was directly @mentioned in the message. */
+  directMention?: boolean;
 }
 
 export class Agent {
@@ -628,6 +630,7 @@ export class Agent {
         scenario: options?.scenario,
         toolEventCollector: options?.toolEventCollector,
         waitForReply: options?.waitForReply,
+        directMention: options?.directMention,
       },
     };
 

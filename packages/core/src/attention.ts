@@ -1116,6 +1116,7 @@ export class AttentionController {
       if (!it) return false;
       if (it.sourceType === 'human_chat') return true;
       if (it.payload.extra?.triggerExecution) return true;
+      if (it.payload.extra?.directMention) return true;
       return false;
     };
 
@@ -1152,6 +1153,7 @@ export class AttentionController {
       if (!it) return false;
       if (it.sourceType === 'human_chat') return true;
       if (it.payload.extra?.triggerExecution) return true;
+      if (it.payload.extra?.directMention) return true;
       return false;
     };
 
@@ -1302,6 +1304,7 @@ export class AttentionController {
       '',
       '## Rules',
       '- Human messages (human_chat) and human comments are ALWAYS highest priority — process them first.',
+      '- Agent messages with direct @mentions (a2a_message where you were explicitly mentioned) should be treated like human messages — NEVER drop them. They represent explicit requests for your input.',
       '- Task status updates (task_status_update) come in two flavours: **execution triggers** (priority 1, carry execution context) that MUST be processed — never drop or defer them; and **informational** ones that the system already handled. Informational updates serve as decision context, not work items.',
       '- **Time decay**: Items older than 1 hour are increasingly stale. Multiple status updates about the same task — only the latest matters. Aggressively DROP old informational items (heartbeats, old status updates, memory consolidation) that no longer provide actionable context.',
       '- **Task grouping**: When multiple items reference the same taskId, consider them together. Drop redundant/superseded items for the same task — only keep the most recent or most actionable one.',

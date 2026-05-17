@@ -204,9 +204,9 @@ export class AgentMailbox {
       }
       this.persistence?.updateStatus(survivor.id, 'queued', survivor);
 
-      // Remove the duplicate
+      // Remove the duplicate (mark as merged, not dropped — content is preserved in survivor)
       this.queue.splice(i, 1);
-      this.persistence?.updateStatus(item.id, 'dropped');
+      this.persistence?.updateStatus(item.id, 'merged', { mergedInto: survivor.id });
       removed++;
       i--; // re-check same index since we spliced
     }
@@ -308,7 +308,7 @@ export class AgentMailbox {
       this.persistence?.updateStatus(survivor.id, 'queued', survivor);
 
       this.queue.splice(i, 1);
-      this.persistence?.updateStatus(item.id, 'dropped');
+      this.persistence?.updateStatus(item.id, 'merged', { mergedInto: survivor.id });
       removed++;
       i--;
     }
