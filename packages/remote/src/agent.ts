@@ -610,13 +610,7 @@ export class RemoteAccessAgent {
   private sendToPeer(peerId: string, msg: unknown): void {
     const data = JSON.stringify(msg);
 
-    // Prefer relay (primary transport) — always reliable when WS is connected
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.send({ type: 'relay_frame', peerId, data });
-      return;
-    }
-
-    // Fallback to DC if relay WS is down
+    // Prefer P2P DataChannel — direct, low latency
     const session = this.peers.get(peerId);
     if (session?.dc && session.dc.isOpen()) {
       try {
@@ -625,6 +619,12 @@ export class RemoteAccessAgent {
       } catch (err) {
         log.warn('DataChannel send failed', { peerId, error: String(err) });
       }
+    }
+
+    // Fallback to relay via signaling WS
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.send({ type: 'relay_frame', peerId, data });
+      return;
     }
 
     log.warn('No transport available for peer', { peerId });
