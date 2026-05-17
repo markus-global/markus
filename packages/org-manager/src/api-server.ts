@@ -2667,11 +2667,30 @@ export class APIServer {
       const orgId = url.searchParams.get('orgId') ?? 'default';
       const teams = this.orgService.listTeamsWithMembers(orgId);
       const ungrouped = this.orgService.listUngroupedMembers(orgId);
+      const allMembers = [
+        ...teams.flatMap(t => (t.members as unknown as Record<string, unknown>[])),
+        ...(ungrouped as unknown as Record<string, unknown>[]),
+      ];
+      const agentIds = [...new Set(allMembers.filter(m => m.type === 'agent').map(m => m.id as string))];
+      const userIds = [...new Set(allMembers.filter(m => m.type !== 'agent').map(m => m.id as string))];
+
+      const avatarMap = new Map<string, string>();
+      if (this.storage?.agentRepo) {
+        for (const id of agentIds) {
+          const a = this.storage.agentRepo.findById(id);
+          if (a?.avatarUrl) avatarMap.set(id, a.avatarUrl);
+        }
+      }
+      if (this.storage?.userRepo) {
+        for (const id of userIds) {
+          const u = this.storage.userRepo.findById(id);
+          if (u?.avatarUrl) avatarMap.set(id, u.avatarUrl);
+        }
+      }
+
       const enrichMember = (m: Record<string, unknown>) => {
-        const avatarUrl = m.type === 'agent'
-          ? this.storage?.agentRepo.findById(m.id as string)?.avatarUrl
-          : this.storage?.userRepo.findById(m.id as string)?.avatarUrl;
-        return avatarUrl ? { ...m, avatarUrl } : m;
+        const av = avatarMap.get(m.id as string);
+        return av ? { ...m, avatarUrl: av } : m;
       };
       const enrichedTeams = teams.map(t => ({ ...t, members: (t.members as unknown as Record<string, unknown>[]).map(enrichMember) }));
       const enrichedUngrouped = (ungrouped as unknown as Record<string, unknown>[]).map(enrichMember);
@@ -3659,24 +3678,29 @@ export class APIServer {
         let history: Array<Record<string, unknown>> = [];
         if (this.storage?.mailboxRepo) {
           const raw = this.storage.mailboxRepo.getHistory(agentId, { limit, offset, sourceTypes, status });
+          const itemIds = raw.map((item: { id: string }) => item.id);
+
+          const decisionsMap = this.storage?.decisionRepo
+            ? this.storage.decisionRepo.getByMailboxItemIds(itemIds)
+            : new Map<string, unknown[]>();
+          const activitiesMap = this.storage?.activityRepo
+            ? this.storage.activityRepo.getByMailboxItemIds(itemIds)
+            : new Map<string, unknown>();
+
           history = raw.map((item: { id: string; [k: string]: unknown }) => {
             const enriched: Record<string, unknown> = { ...item };
-            if (this.storage?.decisionRepo) {
-              enriched.decisions = this.storage.decisionRepo.getByMailboxItemId(item.id);
-            }
-            if (this.storage?.activityRepo) {
-              const act = this.storage.activityRepo.getByMailboxItemId(item.id);
-              enriched.activity = act ? {
-                id: act.id,
-                type: act.type,
-                label: act.label,
-                startedAt: act.startedAt,
-                endedAt: act.endedAt,
-                totalTokens: act.totalTokens,
-                totalTools: act.totalTools,
-                success: act.success,
-              } : null;
-            }
+            enriched.decisions = decisionsMap.get(item.id) ?? [];
+            const act = activitiesMap.get(item.id) as Record<string, unknown> | undefined;
+            enriched.activity = act ? {
+              id: act.id,
+              type: act.type,
+              label: act.label,
+              startedAt: act.startedAt,
+              endedAt: act.endedAt,
+              totalTokens: act.totalTokens,
+              totalTools: act.totalTools,
+              success: act.success,
+            } : null;
             return enriched;
           });
         }

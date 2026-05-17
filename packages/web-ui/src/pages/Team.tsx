@@ -31,6 +31,29 @@ import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { Avatar } from '../components/Avatar.tsx';
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function throttle<T extends (...args: unknown[]) => unknown>(fn: T, ms: number): T {
+  let last = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return ((...args: unknown[]) => {
+    const now = Date.now();
+    const remaining = ms - (now - last);
+    if (remaining <= 0) {
+      if (timer) { clearTimeout(timer); timer = null; }
+      last = now;
+      return fn(...args);
+    }
+    if (!timer) {
+      timer = setTimeout(() => {
+        last = Date.now();
+        timer = null;
+        fn(...args);
+      }, remaining);
+    }
+  }) as T;
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 /** A single interleaved segment: either text or a tool call */
@@ -1152,6 +1175,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const refreshAgents = useCallback(() => api.agents.list().then(d => setAgents(d.agents)).catch(() => {}), []);
   const refreshTeams = useCallback(() => api.teams.list().then(d => setTeams(d.teams)).catch(() => {}), []);
   const refreshGroupChats = useCallback(() => api.groupChats.list().then(d => setGroupChats(d.chats)).catch(() => {}), []);
+
+  // Throttled versions for WS-driven refreshes to prevent API spam
+  const throttledRefreshAgents = useMemo(() => throttle(refreshAgents, 3000), [refreshAgents]);
+  const throttledRefreshTeams = useMemo(() => throttle(refreshTeams, 5000), [refreshTeams]);
+  const throttledRefreshGroupChats = useMemo(() => throttle(refreshGroupChats, 3000), [refreshGroupChats]);
   const refreshHumans = useCallback(() => {
     api.users.list(authUser?.orgId).then(d => setHumans(d.users)).catch(() => {});
   }, [authUser?.orgId]);
@@ -1167,18 +1195,19 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     api.externalAgents.list().then(d => setExternalAgents(d.agents)).catch(() => {});
     refreshGroupChats();
 
-    const timer = setInterval(refreshAgents, 8000);
-    const teamTimer = setInterval(refreshTeams, 15000);
-    const unsub = wsClient.on('agent:update', refreshAgents);
-    const unsubTeam = wsClient.on('*', refreshTeams);
-    const unsubGroup = wsClient.on('chat:group_created', refreshGroupChats);
-    const unsubGroupUpdate = wsClient.on('chat:group_updated', refreshGroupChats);
-    const unsubGroupDelete = wsClient.on('chat:group_deleted', refreshGroupChats);
+    const timer = setInterval(refreshAgents, 30_000);
+    const teamTimer = setInterval(refreshTeams, 60_000);
+    const unsub = wsClient.on('agent:update', throttledRefreshAgents);
+    const unsubTeamUpdate = wsClient.on('team:update', throttledRefreshTeams);
+    const unsubTeamOnAgentRemoved = wsClient.on('agent:removed', throttledRefreshTeams);
+    const unsubGroup = wsClient.on('chat:group_created', () => { throttledRefreshGroupChats(); throttledRefreshTeams(); });
+    const unsubGroupUpdate = wsClient.on('chat:group_updated', throttledRefreshGroupChats);
+    const unsubGroupDelete = wsClient.on('chat:group_deleted', () => { throttledRefreshGroupChats(); throttledRefreshTeams(); });
     const onDataChanged = () => { refreshAgents(); refreshTeams(); refreshHumans(); };
     const onNotifChanged = () => { refreshUnreadCounts(); };
     window.addEventListener('markus:data-changed', onDataChanged);
     window.addEventListener('markus:notifications-changed', onNotifChanged);
-    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeam(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); window.removeEventListener('markus:data-changed', onDataChanged); window.removeEventListener('markus:notifications-changed', onNotifChanged); };
+    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeamUpdate(); unsubTeamOnAgentRemoved(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); window.removeEventListener('markus:data-changed', onDataChanged); window.removeEventListener('markus:notifications-changed', onNotifChanged); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshHumans, refreshUnreadCounts]);
 

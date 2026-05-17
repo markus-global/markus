@@ -1261,14 +1261,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // Wire agent activity logs to WS broadcast
   agentManager.getEventBus().on('agent:activity_log', (event: unknown) => {
     const ws = apiServer.getWSBroadcaster();
-    const ts = new Date().toISOString();
-    ws.broadcast({ type: 'agent:activity_log', payload: event, timestamp: ts });
-    const e = event as Record<string, unknown>;
-    ws.broadcastExecutionLog({
-      sourceType: 'activity', sourceId: e.activityId ?? '', agentId: e.agentId ?? '',
-      seq: e.seq ?? 0, type: e.type ?? 'status', content: e.content ?? '',
-      metadata: e.metadata, createdAt: e.createdAt ?? ts,
-    });
+    ws.broadcast({ type: 'agent:activity_log', payload: event, timestamp: new Date().toISOString() });
   });
 
   // Wire mailbox & attention events to WS broadcast

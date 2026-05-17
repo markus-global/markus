@@ -486,6 +486,7 @@ CREATE TABLE IF NOT EXISTS mailbox_items (
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_status ON mailbox_items(agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_queued ON mailbox_items(agent_id, priority, queued_at);
+CREATE INDEX IF NOT EXISTS idx_mailbox_agent_source ON mailbox_items(agent_id, source_type);
 
 CREATE TABLE IF NOT EXISTS agent_decisions (
   id TEXT PRIMARY KEY,
@@ -498,6 +499,7 @@ CREATE TABLE IF NOT EXISTS agent_decisions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_agent ON agent_decisions(agent_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_decisions_mailbox_item ON agent_decisions(mailbox_item_id);
 
 CREATE TABLE IF NOT EXISTS user_notifications (
   id TEXT PRIMARY KEY,
@@ -3533,6 +3535,20 @@ export class SqliteActivityRepo {
     return r ? this.mapActivity(r) : null;
   }
 
+  getByMailboxItemIds(ids: string[]): Map<string, ActivityRecord> {
+    const result = new Map<string, ActivityRecord>();
+    if (ids.length === 0) return result;
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(`SELECT * FROM agent_activities WHERE mailbox_item_id IN (${placeholders})`)
+      .all(...ids) as Record<string, unknown>[];
+    for (const r of rows) {
+      const rec = this.mapActivity(r);
+      if (rec.mailboxItemId) result.set(rec.mailboxItemId, rec);
+    }
+    return result;
+  }
+
   searchActivities(
     agentId: string,
     query: string,
@@ -3846,6 +3862,21 @@ export class SqliteDecisionRepo {
     return (this.db
       .prepare('SELECT * FROM agent_decisions WHERE mailbox_item_id = ? ORDER BY created_at ASC')
       .all(mailboxItemId) as Record<string, unknown>[]).map(r => this.mapRow(r));
+  }
+
+  getByMailboxItemIds(ids: string[]): Map<string, DecisionRow[]> {
+    const result = new Map<string, DecisionRow[]>();
+    if (ids.length === 0) return result;
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = (this.db
+      .prepare(`SELECT * FROM agent_decisions WHERE mailbox_item_id IN (${placeholders}) ORDER BY created_at ASC`)
+      .all(...ids) as Record<string, unknown>[]).map(r => this.mapRow(r));
+    for (const row of rows) {
+      const list = result.get(row.mailboxItemId);
+      if (list) list.push(row);
+      else result.set(row.mailboxItemId, [row]);
+    }
+    return result;
   }
 
   private mapRow(r: Record<string, unknown>): DecisionRow {

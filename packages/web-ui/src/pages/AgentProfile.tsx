@@ -1417,16 +1417,17 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
   const [triggerMsg, setTriggerMsg] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
-    api.agents.getHeartbeat(agentId).then(setData).catch(() => {});
-    api.agents.getRecentActivities(agentId).then(d => {
-      setRecentRuns(d.activities.filter(a => a.type === 'heartbeat'));
-    }).catch(() => {});
+    return Promise.all([
+      api.agents.getHeartbeat(agentId).then(setData).catch(() => {}),
+      api.agents.getRecentActivities(agentId).then(d => {
+        setRecentRuns(d.activities.filter(a => a.type === 'heartbeat'));
+      }).catch(() => {}),
+    ]);
   }, [agentId]);
 
   useEffect(() => {
     setLoading(true);
-    refresh();
-    setLoading(false);
+    refresh().finally(() => setLoading(false));
   }, [refresh]);
 
   // Auto-refresh when agent activity changes (heartbeat completes)
@@ -1985,8 +1986,11 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
   }, [highlightedId, loading, mailbox, hasMore, agentId]);
 
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const refresh = (evt: { payload?: unknown }) => {
-      if ((evt.payload as { agentId?: string })?.agentId === agentId) load(false);
+      if ((evt.payload as { agentId?: string })?.agentId !== agentId) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { timer = null; load(false); }, 500);
     };
     const unsubs = [
       wsClient.on('agent:mailbox', refresh),
@@ -1996,7 +2000,7 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
       wsClient.on('agent:update', refresh),
       wsClient.on('agent:triage', refresh),
     ];
-    return () => unsubs.forEach(u => u());
+    return () => { if (timer) clearTimeout(timer); unsubs.forEach(u => u()); };
   }, [agentId, load]);
 
   if (loading && !mind) return <div className="text-fg-tertiary text-sm animate-pulse">{t('agent:profilePage.mind.loading')}</div>;
