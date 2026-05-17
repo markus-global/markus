@@ -638,9 +638,36 @@ export class RemoteAccessAgent {
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
+  private static readonly CHUNK_SIZE = 48 * 1024; // 48KB per chunk (safe for DC + relay)
+
   private sendToPeer(peerId: string, msg: unknown): void {
     const data = JSON.stringify(msg);
 
+    if (data.length > RemoteAccessAgent.CHUNK_SIZE) {
+      this.sendChunked(peerId, data);
+      return;
+    }
+
+    this.sendRaw(peerId, data);
+  }
+
+  private sendChunked(peerId: string, data: string): void {
+    const chunkId = `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const total = Math.ceil(data.length / RemoteAccessAgent.CHUNK_SIZE);
+
+    for (let i = 0; i < total; i++) {
+      const chunk = data.slice(i * RemoteAccessAgent.CHUNK_SIZE, (i + 1) * RemoteAccessAgent.CHUNK_SIZE);
+      this.sendRaw(peerId, JSON.stringify({
+        type: '__chunk',
+        chunkId,
+        index: i,
+        total,
+        data: chunk,
+      }));
+    }
+  }
+
+  private sendRaw(peerId: string, data: string): void {
     // Prefer P2P DataChannel — direct, low latency
     const session = this.peers.get(peerId);
     if (session?.dc && session.dc.isOpen()) {
@@ -648,7 +675,7 @@ export class RemoteAccessAgent {
         session.dc.sendMessage(data);
         return;
       } catch (err) {
-        log.warn('DataChannel send failed', { peerId, error: String(err) });
+        log.warn('DataChannel send failed, falling back to relay', { peerId, error: String(err) });
       }
     }
 
