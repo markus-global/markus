@@ -274,6 +274,23 @@ export class AttentionController {
         });
         this.launchLoop();
       }
+
+      // Self-heal: if nothing is being processed in memory but the DB has
+      // items stuck in 'processing' status, mark them as completed.
+      // This catches edge cases where complete()/requeue()/defer() failed
+      // silently or the process was interrupted between activity end and
+      // status update.
+      if (this.running && !this.currentFocus && this.state === 'idle') {
+        try {
+          const cleaned = this.mailbox.cleanStaleProcessing();
+          if (cleaned > 0) {
+            log.warn('Watchdog: cleaned stale processing items from DB', {
+              agentId: this.agentId,
+              cleaned,
+            });
+          }
+        } catch { /* best-effort */ }
+      }
     }, WATCHDOG_INTERVAL_MS);
 
     if (this.watchdogTimer && typeof this.watchdogTimer === 'object' && 'unref' in this.watchdogTimer) {
@@ -518,8 +535,10 @@ export class AttentionController {
 
     this.processingStartedAt = undefined;
 
+    let statusResolved = false;
     if (timedOut) {
       this.mailbox.requeue(item);
+      statusResolved = true;
     } else if (reply === '[cancelled]' || this.lastYieldDecision === 'cancel') {
       // Permanently cancelled by an explicit cancel decision — the new incoming
       // message contradicts or revokes this work.  Drop the item; it will NOT
@@ -530,6 +549,7 @@ export class AttentionController {
         type: item.sourceType,
       });
       this.mailbox.complete(item.id);
+      statusResolved = true;
     } else if (reply === '[preempted]' || this.lastYieldDecision === 'preempt') {
       // Paused by a higher-priority item — defer so it can be resumed later.
       // The session context is preserved by sessionId in the payload, so when
@@ -540,6 +560,7 @@ export class AttentionController {
         type: item.sourceType,
       });
       this.mailbox.deferDequeued(item);
+      statusResolved = true;
     } else if (!this.running) {
       // Agent was stopped/paused during processing — requeue so the item
       // is not lost and will be picked up when the agent resumes.
@@ -549,6 +570,7 @@ export class AttentionController {
         type: item.sourceType,
       });
       this.mailbox.requeue(item);
+      statusResolved = true;
     } else {
       const abnormalReason = detectAbnormalCompletion(reply, item);
       const retries = item.retryCount ?? 0;
@@ -574,6 +596,20 @@ export class AttentionController {
         }
         this.mailbox.complete(item.id);
       }
+      statusResolved = true;
+    }
+
+    // Safety net: if no branch above resolved the item status (should never
+    // happen, but guards against future code changes), force-complete so the
+    // item doesn't stay stuck as 'processing' in the DB forever.
+    if (!statusResolved) {
+      log.error('processFocusedItem: no status branch matched — force-completing', {
+        agentId: this.agentId,
+        itemId: item.id,
+        type: item.sourceType,
+        reply: typeof reply === 'string' ? reply.slice(0, 100) : String(reply),
+      });
+      this.mailbox.complete(item.id);
     }
 
     this.currentFocus = undefined;

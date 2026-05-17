@@ -3723,6 +3723,14 @@ export class SqliteMailboxRepo {
     return (result as { changes?: number }).changes ?? 0;
   }
 
+  markStaleProcessingAsCompleted(agentId: string): number {
+    const ts = now();
+    const result = this.db
+      .prepare("UPDATE mailbox_items SET status = 'completed', completed_at = ? WHERE agent_id = ? AND status = 'processing'")
+      .run(ts, agentId);
+    return (result as { changes?: number }).changes ?? 0;
+  }
+
   getByAgent(agentId: string, options?: { status?: string; limit?: number }): MailboxItemRow[] {
     let sql = 'SELECT * FROM mailbox_items WHERE agent_id = ?';
     const params: (string | number | null)[] = [agentId];

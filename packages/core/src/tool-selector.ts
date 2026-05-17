@@ -42,7 +42,8 @@ const TOOL_GROUPS: ToolGroup[] = [
     keywords: ['delegate', 'broadcast', 'group', 'channel', 'chat',
       '委派', '广播', '群聊', '频道', '群组'],
     toolNames: ['agent_broadcast_status', 'agent_delegate_task',
-      'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats'],
+      'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats',
+      'recall_context'],
   },
   {
     name: 'manager',

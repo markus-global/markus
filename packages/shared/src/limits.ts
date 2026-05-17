@@ -240,6 +240,14 @@ export const ARCHIVE_REQUIREMENT_AFTER_DAYS = 30;
  *  6 hours balances responsiveness with minimal overhead. */
 export const ARCHIVE_SCAN_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
+// ─── Group Chat Channel Context ──────────────────────────────────────────
+
+/** Number of recent channel messages loaded into the LLM conversation history
+ *  when processing a group-chat reply.  Higher values give agents more context
+ *  but increase token usage.  The prompt tells the agent how many messages it
+ *  already has so it doesn't needlessly call recall_context. */
+export const CHANNEL_CONTEXT_MESSAGES = 80;
+
 // ─── Mailbox Item TTL ────────────────────────────────────────────────────────
 
 /** Maximum age (ms) for queued mailbox items before they are dropped on restart.

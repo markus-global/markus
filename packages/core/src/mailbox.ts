@@ -42,6 +42,8 @@ export interface MailboxPersistence {
   updateStatus(itemId: string, status: MailboxItemStatus, extra?: Partial<MailboxItem>): void;
   /** Mark all items stuck in 'processing' as 'dropped' (stale after restart). */
   markStaleProcessingAsDropped?(agentId: string): number;
+  /** Mark all items stuck in 'processing' as 'completed' (runtime self-healing). */
+  markStaleProcessingAsCompleted?(agentId: string): number;
   /** Load persisted queued items for this agent (for recovery on restart). */
   loadQueued?(agentId: string): MailboxItem[];
   /** Load persisted deferred items for this agent (for auto-resurface). */
@@ -110,6 +112,17 @@ export class AgentMailbox {
       });
     }
     return { dropped, restored, expired, merged };
+  }
+
+  /**
+   * Runtime self-healing: mark DB items stuck in 'processing' as 'completed'.
+   * Called by the watchdog when no item is being processed in memory.
+   * Unlike recoverStaleItems (startup-only, marks as 'dropped'), this uses
+   * 'completed' because the processing likely did finish — the DB update
+   * just failed silently or was interrupted.
+   */
+  cleanStaleProcessing(): number {
+    return this.persistence?.markStaleProcessingAsCompleted?.(this.agentId) ?? 0;
   }
 
   /**

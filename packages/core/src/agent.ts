@@ -926,14 +926,16 @@ export class Agent {
             resolveResponse(reply);
             return reply;
           }
-          const defaults = item.sourceType === 'a2a_message'
+          const defaults: HandleMessageOptions = item.sourceType === 'a2a_message'
             ? { sessionId: `a2a_${this.id}_${ts}`, scenario: 'a2a' as const }
             : {};
+          const opts = buildHandleOpts(defaults);
+          if (item.sourceType === 'a2a_message') opts.scenario = 'a2a';
           const reply = await this.handleMessage(
             item.payload.content + markerSuffix,
             item.metadata?.senderId,
             senderInfo,
-            buildHandleOpts(defaults),
+            opts,
           );
           resolveResponse(reply);
           return reply;

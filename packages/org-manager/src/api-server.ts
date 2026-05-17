@@ -3,7 +3,7 @@ import { join, resolve, dirname } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, kebab, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, kebab, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -221,7 +221,38 @@ export class APIServer {
         senderName: string,
         replyToId?: string
       ) => {
-        const cleanText = stripInternalBlocks(message);
+        let cleanText = stripInternalBlocks(message);
+
+        // Reject NO_RESPONSE variants — agent should simply not call this tool.
+        const NO_RESPONSE_RE = /\[NO[_\s-]?RESPONSE[^\]]*\]/i;
+        const NO_RESPONSE_CREATIVE_RE = /^\[(?:context check|no response|silent|listening|observing|monitoring|watching|noting|acknowledged?)[^\]]*\]$/i;
+        if (NO_RESPONSE_RE.test(cleanText.trim()) || NO_RESPONSE_CREATIVE_RE.test(cleanText.trim())) {
+          throw new Error(
+            'Message blocked: you sent a [NO_RESPONSE] variant via agent_send_group_message. ' +
+            'If you have nothing to say, simply do NOT call this tool. ' +
+            '[NO_RESPONSE] is only valid as a direct reply, not as a tool call argument.'
+          );
+        }
+
+        // Reject raw tool commands and slash commands — agent should use the actual tool.
+        const TOOL_CMD_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|update_working_memory|clear_working_memory|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
+        const SLASH_CMD_RE = /^\s*\/(?:history|help|status|list|search|get|set|info|ping|who|whois|me|join|leave|invite|kick|ban|mute|unmute|clear|purge|poll|remind|note|todo|roll|flip|ask)\b/i;
+        const blockedLines = cleanText.split('\n').filter(line => TOOL_CMD_RE.test(line) || SLASH_CMD_RE.test(line));
+        if (blockedLines.length > 0) {
+          cleanText = cleanText.split('\n')
+            .filter(line => !TOOL_CMD_RE.test(line) && !SLASH_CMD_RE.test(line))
+            .join('\n').trim();
+          if (!cleanText) {
+            throw new Error(
+              `Message blocked: "${blockedLines[0].trim()}" is not a valid chat message. ` +
+              'Slash commands like /history do not exist. ' +
+              'To fetch channel history, use the recall_context tool with scope="channel". ' +
+              'To interact with tasks, use task_get/task_list. ' +
+              'Do NOT send tool names or slash commands as chat messages.'
+            );
+          }
+        }
+
         const orgId = 'default';
 
         // Persist agent message
@@ -288,7 +319,7 @@ export class APIServer {
             let channelContext: Array<{ role: string; content: string }> = [];
             if (this.storage) {
               try {
-                const recent = await this.storage.channelMessageRepo.getMessages(channelKey, 80);
+                const recent = await this.storage.channelMessageRepo.getMessages(channelKey, CHANNEL_CONTEXT_MESSAGES);
                 channelContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
                   role: m.senderType === 'agent' ? 'assistant' : 'user',
                   content: m.senderType === 'agent' ? stripInternalBlocks(m.text) : `[${m.senderName}]: ${m.text}`,
@@ -901,6 +932,7 @@ export class APIServer {
 
       const prefixLines = [
         `[GROUP CHAT — ${teamSize} team members | You are: ${agentName}]`,
+        `[CHANNEL] channel_key="${channel}" — You already have the most recent ~${CHANNEL_CONTEXT_MESSAGES} messages in your context.`,
         '',
       ];
 
@@ -967,12 +999,12 @@ export class APIServer {
         prefixLines.push(rosterLines.join('\n'));
       }
       prefixLines.push('7. REPLY IN GROUP: Always reply in the group chat using `agent_send_group_message`. Do NOT use `agent_send_message` for private replies unless the other party explicitly requests a private conversation. Use `reply_to_message_id` to link your reply to the message you\'re responding to.');
-      prefixLines.push('8. If the provided context is insufficient, use `recall_context` (scope="channel") to fetch earlier messages before responding. For task/requirement details use `task_get`/`requirement_get`. Do NOT guess about prior discussion.');
+      prefixLines.push(`8. Your context already includes ~${CHANNEL_CONTEXT_MESSAGES} recent messages. For OLDER messages beyond that window, use recall_context(scope="channel", channel_key="${channel}"). For task/requirement details use task_get/requirement_get. Do NOT guess about prior discussion.`);
       prefixLines.push('');
       prefixLines.push('GROUP CHAT PROCESSING CHECKLIST:');
       prefixLines.push('Before responding, walk through these steps:');
       prefixLines.push('- [ ] Am I @mentioned or is this an open message? If directed at someone else → `[NO_RESPONSE]`.');
-      prefixLines.push('- [ ] `recall_context` (scope=channel) — has someone already answered? If yes → `[NO_RESPONSE]`.');
+      prefixLines.push('- [ ] Check the channel messages in your context — has someone already answered? If yes → `[NO_RESPONSE]`.');
       prefixLines.push('- [ ] Does my role/expertise add UNIQUE value here? If no → `[NO_RESPONSE]`.');
       prefixLines.push('- [ ] Draft my reply. Is it concise and actionable? Remove filler.');
       prefixLines.push('- [ ] @mention specific agents if I need their input — use correct format (`@Name` or `@[Full Name]`).');
@@ -1183,7 +1215,7 @@ export class APIServer {
     let channelContext: Array<{ role: string; content: string }> = [];
     if (this.storage) {
       try {
-        const recent = await this.storage.channelMessageRepo.getMessages(channel, 80);
+        const recent = await this.storage.channelMessageRepo.getMessages(channel, CHANNEL_CONTEXT_MESSAGES);
         channelContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
           role: m.senderType === 'agent' ? 'assistant' : 'user',
           content: m.senderType === 'agent'
@@ -1947,7 +1979,7 @@ export class APIServer {
       const buildChannelContext = async (): Promise<Array<{ role: string; content: string }>> => {
         if (!this.storage) return [];
         try {
-          const recent = await this.storage.channelMessageRepo.getMessages(channel, 80);
+          const recent = await this.storage.channelMessageRepo.getMessages(channel, CHANNEL_CONTEXT_MESSAGES);
           return (recent.messages ?? []).map((m: ChannelMsg) => ({
             role: m.senderType === 'agent' ? 'assistant' : 'user',
             content: m.senderType === 'agent'
