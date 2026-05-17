@@ -89,6 +89,12 @@ export interface MarkusConfig {
     // Future cloud providers:
     // s3?: { bucket: string; region: string; endpoint?: string; accessKeyId?: string; secretAccessKey?: string };
   };
+  remote?: {
+    enabled?: boolean;
+    autoConnect?: boolean;
+    hubUrl?: string;
+    instanceName?: string;
+  };
 }
 
 const DEFAULT_CONFIG: MarkusConfig = {

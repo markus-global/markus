@@ -326,6 +326,15 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export interface RemoteStatus {
+  enabled: boolean;
+  connected: boolean;
+  instanceId: string | null;
+  remoteUrl: string | null;
+  signalUrl: string | null;
+  peerCount: number;
+}
+
 export type AgentActivityType = 'task' | 'heartbeat' | 'chat' | 'a2a' | 'internal' | 'respond_in_session';
 
 export interface AgentActivityInfo {
@@ -1172,6 +1181,9 @@ export const api = {
     getSearch: () => request<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search'),
     updateSearch: (keys: { serperApiKey?: string; braveApiKey?: string; bochaApiKey?: string }) =>
       request<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search', { method: 'POST', body: JSON.stringify(keys) }),
+    getRemote: () => request<RemoteStatus>('/settings/remote'),
+    enableRemote: () => request<{ ok: boolean; status: RemoteStatus }>('/settings/remote/enable', { method: 'POST' }),
+    disableRemote: () => request<{ ok: boolean }>('/settings/remote/disable', { method: 'POST' }),
   },
   skills: {
     list: () => request<{ skills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; requiredPermissions?: string[]; type: 'builtin' | 'filesystem' | 'imported'; sourcePath?: string; agentIds: string[] }> }>('/skills'),

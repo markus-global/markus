@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import { resolve, join, dirname } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { allTemplateDirs, resolveTemplatesDir, resolveWebUiDir } from '../paths.js';
 import {
@@ -896,6 +896,37 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   });
   apiServer.setGateway(gateway, gatewaySecret);
   log.info('External Agent Gateway enabled', { secret: gatewaySecret === 'markus-gateway-default-secret-change-me' ? '(default)' : '(custom)' });
+
+  // ── Remote Access (WebRTC P2P via markus-hub + signal server) ─────────
+  {
+    const hubTokenPath = join(homedir(), '.markus', 'hub-token');
+    const hubToken = existsSync(hubTokenPath) ? readFileSync(hubTokenPath, 'utf-8').trim() : undefined;
+    const remoteEnabled = config.remote?.enabled !== false;
+
+    if (hubToken && remoteEnabled) {
+      const { RemoteAccessAgent } = await import('@markus/remote');
+      const remoteAgent = new RemoteAccessAgent({
+        hubUrl: config.remote?.hubUrl ?? config.hub?.url ?? 'https://markus.global',
+        hubToken,
+        instanceName: config.remote?.instanceName ?? config.org?.name ?? 'My Markus',
+        localPort: config.server?.apiPort ?? 8056,
+      });
+      apiServer.setRemoteAgent(remoteAgent);
+
+      if (config.remote?.autoConnect !== false) {
+        remoteAgent.start().then(() => {
+          const status = remoteAgent.getStatus();
+          if (status.remoteUrl) {
+            log.info(`Remote access available at ${status.remoteUrl}`);
+          }
+        }).catch((err: unknown) => {
+          log.warn('Remote access failed to start', { error: String(err) });
+        });
+      }
+    } else {
+      log.debug('Remote access not configured (no Hub token or disabled in config)');
+    }
+  }
 
   apiServer.start();
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());

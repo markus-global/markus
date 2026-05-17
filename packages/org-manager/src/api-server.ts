@@ -197,6 +197,7 @@ export class APIServer {
   private workflowEngine?: WorkflowEngine;
   private teamTemplateRegistry: TeamTemplateRegistry;
   private fileStorage?: LocalFileStorageProvider;
+  private remoteAgent?: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void };
   // Custom group chats are now persisted in SQLite via storage.groupChatRepo
   constructor(
     private orgService: OrganizationService,
@@ -524,6 +525,13 @@ export class APIServer {
 
   setStorage(storage: StorageBridge): void {
     this.storage = storage;
+  }
+
+  setRemoteAgent(agent: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void }): void {
+    this.remoteAgent = agent;
+    agent.onStatus((status) => {
+      this.ws.broadcast({ type: 'remote:status', payload: status, timestamp: new Date().toISOString() });
+    });
   }
 
   setGateway(gateway: ExternalAgentGateway, secret?: string): void {
@@ -6877,6 +6885,35 @@ EXPLANATION_END`;
         userId: authUser?.userId,
         success: true,
       });
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
+    // Settings — Remote Access
+    if (path === '/api/settings/remote' && req.method === 'GET') {
+      const status = this.remoteAgent?.getStatus() ?? { enabled: false, connected: false, instanceId: null, remoteUrl: null, signalUrl: null, peerCount: 0 };
+      this.json(res, 200, status);
+      return;
+    }
+
+    if (path === '/api/settings/remote/enable' && req.method === 'POST') {
+      if (!this.remoteAgent) {
+        this.json(res, 400, { error: 'Remote access not configured. Hub token required.' });
+        return;
+      }
+      try {
+        await this.remoteAgent.start();
+        this.json(res, 200, { ok: true, status: this.remoteAgent.getStatus() });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path === '/api/settings/remote/disable' && req.method === 'POST') {
+      if (this.remoteAgent) {
+        await this.remoteAgent.stop();
+      }
       this.json(res, 200, { ok: true });
       return;
     }

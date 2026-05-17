@@ -33,6 +33,7 @@
     "@markus/comms": "workspace:*",
     "@markus/core": "workspace:*",
     "@markus/org-manager": "workspace:*",
+    "@markus/remote": "workspace:*",
     "@markus/shared": "workspace:*",
     "commander": "^14.0.3",
     "esbuild": "^0.27.4"
