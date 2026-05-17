@@ -10,8 +10,10 @@ import 'katex/dist/katex.min.css';
 import { FilePathLink, looksLikeFilePath } from './FilePathLink.tsx';
 import { copyPlainText, copyAsHtml } from './markdown-copy.ts';
 
-const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkBreaks] as const;
-const REHYPE_PLUGINS = [[rehypeKatex, { strict: 'ignore' }]] as const;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const REMARK_PLUGINS: any[] = [remarkGfm, remarkMath, remarkBreaks];
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const REHYPE_PLUGINS: any[] = [[rehypeKatex, { strict: 'ignore' }]];
 
 interface Props {
   content: string;
