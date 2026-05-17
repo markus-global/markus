@@ -1,15 +1,30 @@
 import { createLogger } from '@markus/shared';
 import { WebSocket } from 'ws';
 import { request as httpRequest, type IncomingMessage } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { createHmac } from 'node:crypto';
 import {
   PeerConnection,
   DataChannel,
   initLogger as initRtcLogger,
   type RtcConfig,
+  type IceServer,
+  RelayType,
   DescriptionType,
 } from 'node-datachannel';
 
 const log = createLogger('remote');
+
+function base64url(buf: Buffer): string {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function signJwt(payload: Record<string, unknown>, secret: string): string {
+  const header = base64url(Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));
+  const body = base64url(Buffer.from(JSON.stringify(payload)));
+  const sig = base64url(createHmac('sha256', secret).update(`${header}.${body}`).digest());
+  return `${header}.${body}.${sig}`;
+}
 
 const STUN_SERVERS = [
   'stun:stun.l.google.com:19302',
@@ -25,15 +40,23 @@ export interface RemoteAccessConfig {
   hubToken: string;
   instanceName?: string;
   localPort: number;
+  jwtSecret?: string;
 }
 
 export interface RemoteAccessStatus {
   enabled: boolean;
   connected: boolean;
+  state: 'idle' | 'registering' | 'connecting' | 'connected' | 'disconnected';
   instanceId: string | null;
   remoteUrl: string | null;
   signalUrl: string | null;
   peerCount: number;
+}
+
+interface TurnServer {
+  urls: string;
+  username: string;
+  credential: string;
 }
 
 interface RegistrationResult {
@@ -41,12 +64,14 @@ interface RegistrationResult {
   signalingToken: string;
   signalUrl: string;
   remoteUrl: string;
+  turnServers?: TurnServer[] | null;
 }
 
 interface PeerSession {
   pc: PeerConnection;
   dc: DataChannel | null;
   pendingChunks: Map<string, Buffer[]>;
+  markusToken: string | null;
 }
 
 export class RemoteAccessAgent {
@@ -58,6 +83,7 @@ export class RemoteAccessAgent {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private destroyed = false;
+  private localOwnerUserId: string | null = null;
 
   private statusListeners = new Set<(status: RemoteAccessStatus) => void>();
 
@@ -69,8 +95,10 @@ export class RemoteAccessAgent {
   // ── Public API ────────────────────────────────────────────────────────────
 
   async start(): Promise<void> {
-    if (this.destroyed) return;
+    this.destroyed = false;
     log.info('Starting remote access agent...');
+
+    await this.discoverLocalOwner();
 
     try {
       this.registration = await this.registerInstance();
@@ -82,6 +110,41 @@ export class RemoteAccessAgent {
     } catch (err) {
       log.error('Failed to register with Hub', { error: String(err) });
       this.scheduleReconnect();
+    }
+  }
+
+  private async discoverLocalOwner(): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const resp = await new Promise<string>((resolve, reject) => {
+          const req = httpRequest(
+            `http://127.0.0.1:${this.config.localPort}/api/users`,
+            { method: 'GET', headers: { host: `127.0.0.1:${this.config.localPort}` } },
+            (res) => {
+              const chunks: Buffer[] = [];
+              res.on('data', (c: Buffer) => chunks.push(c));
+              res.on('end', () => resolve(Buffer.concat(chunks).toString()));
+            }
+          );
+          req.on('error', reject);
+          req.end();
+        });
+
+        const data = JSON.parse(resp);
+        const users = data.users as Array<{ id: string; role: string }> | undefined;
+        if (users?.length) {
+          const owner = users.find(u => u.role === 'owner') ?? users[0];
+          this.localOwnerUserId = owner!.id;
+          log.info('Discovered local owner', { userId: this.localOwnerUserId });
+        }
+        return;
+      } catch (err) {
+        if (attempt < 2) {
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        } else {
+          log.warn('Failed to discover local owner, using synthetic user', { error: String(err) });
+        }
+      }
     }
   }
 
@@ -111,9 +174,19 @@ export class RemoteAccessAgent {
   }
 
   getStatus(): RemoteAccessStatus {
+    const wsOpen = this.ws?.readyState === WebSocket.OPEN;
+    let state: RemoteAccessStatus['state'] = 'idle';
+    if (!this.destroyed) {
+      if (wsOpen) state = 'connected';
+      else if (this.registration) state = 'connecting';
+      else if (this.reconnectTimer) state = 'connecting';
+      else state = 'registering';
+    }
+
     return {
       enabled: !this.destroyed,
-      connected: this.ws?.readyState === WebSocket.OPEN,
+      connected: wsOpen,
+      state,
       instanceId: this.registration?.instanceId ?? null,
       remoteUrl: this.registration?.remoteUrl ?? null,
       signalUrl: this.registration?.signalUrl ?? null,
@@ -142,12 +215,13 @@ export class RemoteAccessAgent {
     });
   }
 
-  private hubFetch(method: string, path: string, body?: unknown): Promise<unknown> {
+  private hubFetch(method: string, path: string, body?: unknown, _redirects = 0): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const url = new URL(path, this.config.hubUrl);
       const data = body ? JSON.stringify(body) : undefined;
+      const transport = url.protocol === 'https:' ? httpsRequest : httpRequest;
 
-      const req = httpRequest(
+      const req = transport(
         url,
         {
           method,
@@ -158,6 +232,13 @@ export class RemoteAccessAgent {
           },
         },
         (res: IncomingMessage) => {
+          if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            if (_redirects >= 5) { reject(new Error('Too many redirects')); return; }
+            const redirectUrl = new URL(res.headers.location, url);
+            this.config.hubUrl = redirectUrl.origin;
+            resolve(this.hubFetch(method, redirectUrl.pathname + redirectUrl.search, body, _redirects + 1));
+            return;
+          }
           let raw = '';
           res.on('data', (c: Buffer) => (raw += c.toString()));
           res.on('end', () => {
@@ -227,9 +308,15 @@ export class RemoteAccessAgent {
 
   private handleSignalingMessage(msg: Record<string, unknown>): void {
     const type = msg['type'] as string;
-    const peerId = msg['peerId'] as string | undefined;
+    const peerId = (msg['peerId'] ?? msg['from']) as string | undefined;
 
     switch (type) {
+      case 'ping':
+        this.send({ type: 'pong' });
+        break;
+      case 'registered':
+        log.info('Registered with signal server', { instanceId: msg['instanceId'] });
+        break;
       case 'peer_request':
         if (peerId) this.handlePeerRequest(peerId);
         break;
@@ -245,6 +332,9 @@ export class RemoteAccessAgent {
         break;
       case 'peer_disconnected':
         if (peerId) this.cleanupPeer(peerId);
+        break;
+      case 'relay_activated':
+        if (peerId) log.info('Peer activated relay mode', { peerId });
         break;
       case 'relay_frame':
         if (peerId && msg['data']) {
@@ -283,11 +373,27 @@ export class RemoteAccessAgent {
       this.cleanupPeer(peerId);
     }
 
+    const iceServers: (string | IceServer)[] = [...STUN_SERVERS];
+    if (this.registration?.turnServers) {
+      for (const t of this.registration.turnServers) {
+        const parsed = t.urls.match(/^(turns?):([^:]+):(\d+)$/);
+        if (parsed) {
+          const relayType = parsed[1] === 'turns' ? RelayType.TurnTls : RelayType.TurnUdp;
+          iceServers.push({
+            hostname: parsed[2]!,
+            port: parseInt(parsed[3]!, 10),
+            username: t.username,
+            password: t.credential,
+            relayType,
+          });
+        }
+      }
+    }
     const pc = new PeerConnection(`markus-${peerId}`, {
-      iceServers: STUN_SERVERS,
+      iceServers,
     } satisfies RtcConfig);
 
-    const session: PeerSession = { pc, dc: null, pendingChunks: new Map() };
+    const session: PeerSession = { pc, dc: null, pendingChunks: new Map(), markusToken: null };
     this.peers.set(peerId, session);
 
     pc.onStateChange((state: string) => {
@@ -374,10 +480,22 @@ export class RemoteAccessAgent {
     this.handleDataChannelMessage(peerId, data);
   }
 
+  private generateMarkusToken(): string {
+    const secret = this.config.jwtSecret ?? process.env['JWT_SECRET'] ?? 'markus-dev-secret-change-in-prod';
+    const exp = Math.floor(Date.now() / 1000) + 24 * 3600;
+    const userId = this.localOwnerUserId ?? 'remote_owner';
+    return signJwt({ userId, orgId: 'default', role: 'owner', exp }, secret);
+  }
+
   private handleAuthHandshake(peerId: string, _msg: Record<string, unknown>): void {
+    const session = this.peers.get(peerId);
+    if (session && !session.markusToken) {
+      session.markusToken = this.generateMarkusToken();
+    }
     this.sendToPeer(peerId, {
       type: 'auth_ok',
       instanceName: this.config.instanceName ?? 'My Markus',
+      token: session?.markusToken ?? null,
     });
   }
 
@@ -388,13 +506,21 @@ export class RemoteAccessAgent {
     const headers = (msg.headers as Record<string, string>) ?? {};
     const body = msg.body as string | undefined;
 
+    const session = this.peers.get(peerId);
+    if (session && !session.markusToken) {
+      session.markusToken = this.generateMarkusToken();
+    }
+    const tokenCookie = session?.markusToken ? `markus_token=${session.markusToken}` : '';
+    const existingCookie = headers['cookie'] ?? headers['Cookie'] ?? '';
+    const cookie = existingCookie ? `${existingCookie}; ${tokenCookie}` : tokenCookie;
+
     const url = new URL(path, `http://127.0.0.1:${this.config.localPort}`);
 
     const req = httpRequest(
       url,
       {
         method,
-        headers: { ...headers, host: `127.0.0.1:${this.config.localPort}` },
+        headers: { ...headers, host: `127.0.0.1:${this.config.localPort}`, cookie },
       },
       (res: IncomingMessage) => {
         const chunks: Buffer[] = [];
@@ -482,19 +608,26 @@ export class RemoteAccessAgent {
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   private sendToPeer(peerId: string, msg: unknown): void {
-    const session = this.peers.get(peerId);
     const data = JSON.stringify(msg);
 
+    // Prefer relay (primary transport) — always reliable when WS is connected
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.send({ type: 'relay_frame', peerId, data });
+      return;
+    }
+
+    // Fallback to DC if relay WS is down
+    const session = this.peers.get(peerId);
     if (session?.dc && session.dc.isOpen()) {
       try {
         session.dc.sendMessage(data);
         return;
       } catch (err) {
-        log.warn('DataChannel send failed, falling back to relay', { peerId, error: String(err) });
+        log.warn('DataChannel send failed', { peerId, error: String(err) });
       }
     }
 
-    this.send({ type: 'relay_frame', peerId, data });
+    log.warn('No transport available for peer', { peerId });
   }
 
   private send(msg: unknown): void {
@@ -506,7 +639,7 @@ export class RemoteAccessAgent {
   private startHeartbeat(): void {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
-      this.send({ type: 'heartbeat' });
+      this.send({ type: 'pong' });
     }, HEARTBEAT_INTERVAL_MS);
   }
 

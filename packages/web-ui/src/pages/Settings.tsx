@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation, Trans } from 'react-i18next';
-import { api, type StorageInfo, type OrphanInfo, type AuthUser, type HumanUserInfo, type RemoteStatus, hubApi, getHubUser, ensureHubAuth } from '../api.ts';
+import { api, type StorageInfo, type OrphanInfo, type AuthUser, type HumanUserInfo, type RemoteStatus, hubApi, getHubUser, ensureHubAuth, wsClient } from '../api.ts';
 import { THEME_OPTIONS, type ThemeMode } from '../hooks/useTheme.ts';
 import { SUPPORTED_LANGUAGES } from '../i18n/index.ts';
 import { navBus } from '../navBus.ts';
@@ -2298,6 +2298,7 @@ function RemoteAccessSection() {
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const hubUser = getHubUser();
 
   const loadStatus = useCallback(async () => {
@@ -2313,22 +2314,32 @@ function RemoteAccessSection() {
 
   useEffect(() => { loadStatus(); }, [loadStatus]);
 
+  useEffect(() => {
+    return wsClient.on('remote:status', (event) => {
+      const payload = event.payload as RemoteStatus | undefined;
+      if (payload) {
+        setStatus(payload);
+        setToggling(false);
+      }
+    });
+  }, []);
+
   const handleToggle = async () => {
     setToggling(true);
     setError(null);
     try {
       if (status?.enabled) {
         await api.settings.disableRemote();
+        await loadStatus();
+        setToggling(false);
       } else {
         if (!hubApi.isAuthenticated()) {
           await ensureHubAuth();
         }
         await api.settings.enableRemote();
       }
-      await loadStatus();
     } catch (err) {
       setError(String(err instanceof Error ? err.message : err));
-    } finally {
       setToggling(false);
     }
   };
@@ -2340,13 +2351,21 @@ function RemoteAccessSection() {
     } catch { /* user cancelled */ }
   };
 
+  const handleCopy = () => {
+    if (!status?.remoteUrl) return;
+    navigator.clipboard.writeText(status.remoteUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const isConnecting = toggling || (status?.enabled && !status?.connected && status?.state !== 'idle');
   const qrUrl = status?.remoteUrl ?? null;
 
   return (
-    <Section title={t('remoteAccess.title', 'Remote Access')}>
+    <Section title={t('settings:remoteAccess.title')}>
       <div className="space-y-4">
         <p className="text-sm text-content-secondary">
-          {t('remoteAccess.description', 'Access this Markus instance from your phone or any device via WebRTC P2P connection through Markus Hub.')}
+          {t('settings:remoteAccess.description')}
         </p>
 
         {/* Hub Auth Status */}
@@ -2356,19 +2375,19 @@ function RemoteAccessSection() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             <span className="text-sm text-amber-600 dark:text-amber-400">
-              {t('remoteAccess.loginRequired', 'Sign in to Markus Hub to enable remote access.')}
+              {t('settings:remoteAccess.loginRequired')}
             </span>
             <button
               onClick={handleLogin}
               className="ml-auto px-3 py-1.5 text-xs font-medium bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors"
             >
-              {t('remoteAccess.signIn', 'Sign In')}
+              {t('settings:remoteAccess.signIn')}
             </button>
           </div>
         ) : (
           <div className="flex items-center gap-2 text-sm text-content-secondary">
             <span className="w-2 h-2 rounded-full bg-green-500" />
-            {t('remoteAccess.signedInAs', 'Signed in as')} <strong>{hubUser?.username ?? hubUser?.displayName}</strong>
+            {t('settings:remoteAccess.signedInAs')} <strong>{hubUser?.username ?? hubUser?.displayName}</strong>
           </div>
         )}
 
@@ -2382,24 +2401,48 @@ function RemoteAccessSection() {
                   disabled={toggling || loading}
                   className={`relative w-12 h-6 rounded-full transition-colors duration-200 ${
                     status?.enabled ? 'bg-brand-600' : 'bg-gray-300 dark:bg-gray-600'
-                  } ${toggling ? 'opacity-50' : ''}`}
+                  } ${(toggling || loading) ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
                 >
                   <span className={`block w-5 h-5 bg-white rounded-full shadow transform transition-transform duration-200 ${
                     status?.enabled ? 'translate-x-6' : 'translate-x-0.5'
                   }`} />
                 </button>
                 <span className="text-sm font-medium">
-                  {status?.enabled
-                    ? t('remoteAccess.enabled', 'Remote access enabled')
-                    : t('remoteAccess.disabled', 'Remote access disabled')}
+                  {isConnecting
+                    ? t('settings:remoteAccess.connecting')
+                    : status?.enabled
+                      ? t('settings:remoteAccess.enabled')
+                      : t('settings:remoteAccess.disabled')}
                 </span>
+                {isConnecting && <Spinner />}
               </div>
 
-              {status?.connected && (
-                <div className="flex items-center gap-1.5 text-xs text-green-600 dark:text-green-400">
-                  <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                  {t('remoteAccess.connected', 'Connected')}
-                  {status.peerCount > 0 && ` · ${status.peerCount} ${status.peerCount === 1 ? 'peer' : 'peers'}`}
+              {status?.enabled && (
+                <div className={`flex items-center gap-1.5 text-xs ${
+                  status.connected
+                    ? 'text-green-600 dark:text-green-400'
+                    : (status.state === 'registering' || status.state === 'connecting')
+                      ? 'text-blue-600 dark:text-blue-400'
+                      : 'text-amber-600 dark:text-amber-400'
+                }`}>
+                  <span className={`w-2 h-2 rounded-full ${
+                    status.connected
+                      ? 'bg-green-500 animate-pulse'
+                      : (status.state === 'registering' || status.state === 'connecting')
+                        ? 'bg-blue-500 animate-pulse'
+                        : 'bg-amber-500'
+                  }`} />
+                  {status.connected
+                    ? t('settings:remoteAccess.connected')
+                    : (status.state === 'registering')
+                      ? t('settings:remoteAccess.registering')
+                      : (status.state === 'connecting')
+                        ? t('settings:remoteAccess.connecting')
+                        : t('settings:remoteAccess.disconnected')}
+                  {status.connected && status.peerCount > 0 && (
+                    <> &middot; {t('settings:remoteAccess.peerCount', { count: status.peerCount })}</>
+                  )}
+                  {(status.state === 'registering' || status.state === 'connecting') && <Spinner />}
                 </div>
               )}
             </div>
@@ -2412,23 +2455,34 @@ function RemoteAccessSection() {
             {status?.enabled && status.remoteUrl && (
               <div className="p-4 rounded-lg bg-surface-elevated border border-border-default space-y-3">
                 <div>
-                  <label className="text-xs text-content-tertiary uppercase tracking-wider">{t('remoteAccess.url', 'Remote URL')}</label>
+                  <label className="text-xs text-content-tertiary uppercase tracking-wider">
+                    {t('settings:remoteAccess.url')}
+                  </label>
                   <div className="flex items-center gap-2 mt-1">
-                    <code className="flex-1 px-3 py-1.5 text-sm bg-surface-inset rounded font-mono truncate">{status.remoteUrl}</code>
+                    <code className="flex-1 px-3 py-1.5 text-sm bg-surface-inset rounded font-mono truncate">
+                      {status.remoteUrl}
+                    </code>
                     <button
-                      onClick={() => navigator.clipboard.writeText(status.remoteUrl!)}
-                      className="px-2 py-1.5 text-xs border border-border-default rounded hover:bg-surface-elevated transition-colors"
-                      title="Copy URL"
+                      onClick={handleCopy}
+                      className={`px-2 py-1.5 text-xs border rounded transition-colors ${
+                        copied
+                          ? 'border-green-500 text-green-600 dark:text-green-400'
+                          : 'border-border-default hover:bg-surface-elevated'
+                      }`}
                     >
-                      {t('remoteAccess.copy', 'Copy')}
+                      {copied ? t('settings:remoteAccess.copied') : t('settings:remoteAccess.copy')}
                     </button>
                   </div>
                 </div>
 
                 {qrUrl && (
                   <div>
-                    <label className="text-xs text-content-tertiary uppercase tracking-wider">{t('remoteAccess.qrCode', 'QR Code')}</label>
-                    <p className="text-xs text-content-secondary mt-0.5 mb-2">{t('remoteAccess.scanQr', 'Scan with your phone camera to connect')}</p>
+                    <label className="text-xs text-content-tertiary uppercase tracking-wider">
+                      {t('settings:remoteAccess.qrCode')}
+                    </label>
+                    <p className="text-xs text-content-secondary mt-0.5 mb-2">
+                      {t('settings:remoteAccess.scanQr')}
+                    </p>
                     <QRCode url={qrUrl} />
                   </div>
                 )}
@@ -2438,6 +2492,15 @@ function RemoteAccessSection() {
         )}
       </div>
     </Section>
+  );
+}
+
+function Spinner() {
+  return (
+    <svg className="w-4 h-4 animate-spin text-content-secondary" viewBox="0 0 24 24" fill="none">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+    </svg>
   );
 }
 

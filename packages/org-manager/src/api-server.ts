@@ -198,6 +198,7 @@ export class APIServer {
   private teamTemplateRegistry: TeamTemplateRegistry;
   private fileStorage?: LocalFileStorageProvider;
   private remoteAgent?: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void };
+  private remoteAgentFactory?: () => Promise<{ getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void } | null>;
   // Custom group chats are now persisted in SQLite via storage.groupChatRepo
   constructor(
     private orgService: OrganizationService,
@@ -532,6 +533,10 @@ export class APIServer {
     agent.onStatus((status) => {
       this.ws.broadcast({ type: 'remote:status', payload: status, timestamp: new Date().toISOString() });
     });
+  }
+
+  setRemoteAgentFactory(factory: () => Promise<{ getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void } | null>): void {
+    this.remoteAgentFactory = factory;
   }
 
   setGateway(gateway: ExternalAgentGateway, secret?: string): void {
@@ -6897,16 +6902,16 @@ EXPLANATION_END`;
     }
 
     if (path === '/api/settings/remote/enable' && req.method === 'POST') {
+      if (!this.remoteAgent && this.remoteAgentFactory) {
+        const agent = await this.remoteAgentFactory();
+        if (agent) this.setRemoteAgent(agent);
+      }
       if (!this.remoteAgent) {
-        this.json(res, 400, { error: 'Remote access not configured. Hub token required.' });
+        this.json(res, 400, { error: 'Remote access not configured. Please sign in to Markus Hub first.' });
         return;
       }
-      try {
-        await this.remoteAgent.start();
-        this.json(res, 200, { ok: true, status: this.remoteAgent.getStatus() });
-      } catch (err) {
-        this.json(res, 500, { error: String(err) });
-      }
+      this.remoteAgent.start().catch(() => {});
+      this.json(res, 200, { ok: true, status: this.remoteAgent.getStatus() });
       return;
     }
 

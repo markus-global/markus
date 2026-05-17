@@ -900,31 +900,39 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // ── Remote Access (WebRTC P2P via markus-hub + signal server) ─────────
   {
     const hubTokenPath = join(homedir(), '.markus', 'hub-token');
-    const hubToken = existsSync(hubTokenPath) ? readFileSync(hubTokenPath, 'utf-8').trim() : undefined;
-    const remoteEnabled = config.remote?.enabled !== false;
 
-    if (hubToken && remoteEnabled) {
+    const createRemoteAgent = async () => {
+      const token = existsSync(hubTokenPath) ? readFileSync(hubTokenPath, 'utf-8').trim() : undefined;
+      if (!token) return null;
       const { RemoteAccessAgent } = await import('@markus/remote');
-      const remoteAgent = new RemoteAccessAgent({
-        hubUrl: config.remote?.hubUrl ?? config.hub?.url ?? 'https://markus.global',
-        hubToken,
+      return new RemoteAccessAgent({
+        hubUrl: config.remote?.hubUrl ?? config.hub?.url ?? 'https://www.markus.global',
+        hubToken: token,
         instanceName: config.remote?.instanceName ?? config.org?.name ?? 'My Markus',
         localPort: config.server?.apiPort ?? 8056,
+        jwtSecret: process.env['JWT_SECRET'],
       });
-      apiServer.setRemoteAgent(remoteAgent);
+    };
 
-      if (config.remote?.autoConnect !== false) {
-        remoteAgent.start().then(() => {
-          const status = remoteAgent.getStatus();
-          if (status.remoteUrl) {
-            log.info(`Remote access available at ${status.remoteUrl}`);
-          }
-        }).catch((err: unknown) => {
-          log.warn('Remote access failed to start', { error: String(err) });
-        });
+    apiServer.setRemoteAgentFactory(createRemoteAgent);
+
+    if (config.remote?.enabled !== false) {
+      const remoteAgent = await createRemoteAgent();
+      if (remoteAgent) {
+        apiServer.setRemoteAgent(remoteAgent);
+        if (config.remote?.autoConnect !== false) {
+          remoteAgent.start().then(() => {
+            const status = remoteAgent.getStatus();
+            if (status.remoteUrl) {
+              log.info(`Remote access available at ${status.remoteUrl}`);
+            }
+          }).catch((err: unknown) => {
+            log.warn('Remote access failed to start', { error: String(err) });
+          });
+        }
+      } else {
+        log.debug('Remote access: no Hub token yet (can enable later via Settings)');
       }
-    } else {
-      log.debug('Remote access not configured (no Hub token or disabled in config)');
     }
   }
 

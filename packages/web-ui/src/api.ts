@@ -329,6 +329,7 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
 export interface RemoteStatus {
   enabled: boolean;
   connected: boolean;
+  state: 'idle' | 'registering' | 'connecting' | 'connected' | 'disconnected';
   instanceId: string | null;
   remoteUrl: string | null;
   signalUrl: string | null;
