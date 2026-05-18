@@ -167,6 +167,52 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
     return () => { unsub1(); unsub2(); unsub3(); };
   }, [refresh]);
 
+  // Handle deep navigation to a specific deliverable
+  const pendingOpenRef = useRef<string | null>(null);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+
+  const openDeliverableById = useCallback((id: string) => {
+    const showDetail = (item: DeliverableInfo) => {
+      setSelected(item);
+      if (isMobile) {
+        setMobileShowDetail(true);
+        history.pushState({ mobileDetail: PAGE.DELIVERABLES }, '', window.location.hash);
+      }
+    };
+    const found = itemsRef.current.find(d => d.id === id);
+    if (found) { showDetail(found); return; }
+    api.deliverables.get(id).then(r => { if (r.deliverable) showDetail(r.deliverable); }).catch(() => {});
+  }, [isMobile]);
+
+  useEffect(() => {
+    const navId = localStorage.getItem('markus_nav_openDeliverable');
+    if (navId) {
+      localStorage.removeItem('markus_nav_openDeliverable');
+      if (itemsRef.current.length > 0) {
+        openDeliverableById(navId);
+      } else {
+        pendingOpenRef.current = navId;
+      }
+    }
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.params?.openDeliverable) {
+        localStorage.removeItem('markus_nav_openDeliverable');
+        openDeliverableById(detail.params.openDeliverable);
+      }
+    };
+    window.addEventListener('markus:navigate', handler);
+    return () => window.removeEventListener('markus:navigate', handler);
+  }, [openDeliverableById]);
+
+  useEffect(() => {
+    const id = pendingOpenRef.current;
+    if (!id || items.length === 0) return;
+    pendingOpenRef.current = null;
+    openDeliverableById(id);
+  }, [items, openDeliverableById]);
+
   const checkNeedMore = useCallback(() => {
     const el = listRef.current;
     if (!el || loading || loadingMore || items.length >= totalCount) return;

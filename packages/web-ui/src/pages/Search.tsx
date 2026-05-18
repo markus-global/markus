@@ -1,15 +1,16 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, type AgentInfo, type TaskInfo, type ProjectInfo, type DeliverableInfo } from '../api.ts';
+import { api, type AgentInfo, type TaskInfo, type ProjectInfo, type DeliverableInfo, type RequirementInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { Avatar } from '../components/Avatar.tsx';
 
-type SearchCategory = 'all' | 'agents' | 'tasks' | 'projects' | 'deliverables';
+type SearchCategory = 'all' | 'agents' | 'tasks' | 'requirements' | 'projects' | 'deliverables';
 
 interface SearchResults {
   agents: AgentInfo[];
   tasks: TaskInfo[];
+  requirements: RequirementInfo[];
   projects: ProjectInfo[];
   deliverables: DeliverableInfo[];
 }
@@ -18,11 +19,11 @@ export function SearchPage() {
   const { t } = useTranslation(['common', 'home', 'work']);
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<SearchCategory>('all');
-  const [results, setResults] = useState<SearchResults>({ agents: [], tasks: [], projects: [], deliverables: [] });
+  const [results, setResults] = useState<SearchResults>({ agents: [], tasks: [], requirements: [], projects: [], deliverables: [] });
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     setTimeout(() => inputRef.current?.focus(), 100);
@@ -30,7 +31,7 @@ export function SearchPage() {
 
   const doSearch = useCallback(async (q: string) => {
     if (!q.trim()) {
-      setResults({ agents: [], tasks: [], projects: [], deliverables: [] });
+      setResults({ agents: [], tasks: [], requirements: [], projects: [], deliverables: [] });
       setSearched(false);
       return;
     }
@@ -38,9 +39,10 @@ export function SearchPage() {
     setSearched(true);
     const lower = q.toLowerCase();
     try {
-      const [agentsRes, tasksRes, projectsRes, deliverablesRes] = await Promise.allSettled([
+      const [agentsRes, tasksRes, requirementsRes, projectsRes, deliverablesRes] = await Promise.allSettled([
         api.agents.list(),
         api.tasks.list({ search: q, pageSize: 20 }),
+        api.requirements.list(),
         api.projects.list(),
         api.deliverables.search({ q, limit: 20 }),
       ]);
@@ -49,14 +51,17 @@ export function SearchPage() {
         ? agentsRes.value.agents.filter(a => a.name?.toLowerCase().includes(lower) || a.role?.toLowerCase().includes(lower))
         : [];
       const tasks = tasksRes.status === 'fulfilled' ? tasksRes.value.tasks : [];
+      const requirements = requirementsRes.status === 'fulfilled'
+        ? requirementsRes.value.requirements.filter(r => r.title?.toLowerCase().includes(lower) || r.description?.toLowerCase().includes(lower))
+        : [];
       const projects = projectsRes.status === 'fulfilled'
         ? projectsRes.value.projects.filter(p => p.name?.toLowerCase().includes(lower) || p.description?.toLowerCase().includes(lower))
         : [];
       const deliverables = deliverablesRes.status === 'fulfilled' ? deliverablesRes.value.results : [];
 
-      setResults({ agents, tasks, projects, deliverables });
+      setResults({ agents, tasks, requirements, projects, deliverables });
     } catch {
-      setResults({ agents: [], tasks: [], projects: [], deliverables: [] });
+      setResults({ agents: [], tasks: [], requirements: [], projects: [], deliverables: [] });
     } finally {
       setLoading(false);
     }
@@ -72,11 +77,12 @@ export function SearchPage() {
     { id: 'all', label: t('common:all', { defaultValue: '全部' }) },
     { id: 'agents', label: t('common:agents', { defaultValue: '智能体' }) },
     { id: 'tasks', label: t('common:tasks', { defaultValue: '任务' }) },
+    { id: 'requirements', label: t('common:requirements', { defaultValue: '需求' }) },
     { id: 'projects', label: t('common:projects', { defaultValue: '项目' }) },
     { id: 'deliverables', label: t('common:deliverables', { defaultValue: '交付物' }) },
   ];
 
-  const hasResults = results.agents.length > 0 || results.tasks.length > 0 || results.projects.length > 0 || results.deliverables.length > 0;
+  const hasResults = results.agents.length > 0 || results.tasks.length > 0 || results.requirements.length > 0 || results.projects.length > 0 || results.deliverables.length > 0;
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -100,7 +106,7 @@ export function SearchPage() {
             />
             {query && (
               <button
-                onClick={() => { setQuery(''); setResults({ agents: [], tasks: [], projects: [], deliverables: [] }); setSearched(false); inputRef.current?.focus(); }}
+                onClick={() => { setQuery(''); setResults({ agents: [], tasks: [], requirements: [], projects: [], deliverables: [] }); setSearched(false); inputRef.current?.focus(); }}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-fg-tertiary hover:text-fg-secondary"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
@@ -145,7 +151,7 @@ export function SearchPage() {
               <section>
                 <h3 className="text-xs font-medium text-fg-tertiary uppercase mb-2">{t('common:agents', { defaultValue: '智能体' })}</h3>
                 <div className="space-y-1">
-                  {results.agents.slice(0, category === 'all' ? 5 : 50).map(agent => (
+                  {(category === 'all' ? results.agents.slice(0, 8) : results.agents).map(agent => (
                     <button
                       key={agent.id}
                       onClick={() => navBus.navigate(PAGE.TEAM, { agentId: agent.id })}
@@ -160,6 +166,11 @@ export function SearchPage() {
                     </button>
                   ))}
                 </div>
+                {category === 'all' && results.agents.length > 8 && (
+                  <button onClick={() => setCategory('agents')} className="mt-1 w-full text-xs text-brand-500 hover:text-brand-400 py-1.5 rounded-lg hover:bg-surface-overlay transition-colors">
+                    {t('common:showAll', { defaultValue: '查看全部' })} ({results.agents.length})
+                  </button>
+                )}
               </section>
             )}
 
@@ -168,10 +179,10 @@ export function SearchPage() {
               <section>
                 <h3 className="text-xs font-medium text-fg-tertiary uppercase mb-2">{t('common:tasks', { defaultValue: '任务' })}</h3>
                 <div className="space-y-1">
-                  {results.tasks.slice(0, category === 'all' ? 5 : 50).map(task => (
+                  {(category === 'all' ? results.tasks.slice(0, 8) : results.tasks).map(task => (
                     <button
                       key={task.id}
-                      onClick={() => { window.location.hash = `work/${task.projectId || ''}`; navBus.navigate(PAGE.WORK); }}
+                      onClick={() => navBus.navigate(PAGE.WORK, { openTask: task.id })}
                       className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface-overlay transition-colors text-left"
                     >
                       <TaskStatusIcon status={task.status} />
@@ -182,6 +193,45 @@ export function SearchPage() {
                     </button>
                   ))}
                 </div>
+                {category === 'all' && results.tasks.length > 8 && (
+                  <button onClick={() => setCategory('tasks')} className="mt-1 w-full text-xs text-brand-500 hover:text-brand-400 py-1.5 rounded-lg hover:bg-surface-overlay transition-colors">
+                    {t('common:showAll', { defaultValue: '查看全部' })} ({results.tasks.length})
+                  </button>
+                )}
+              </section>
+            )}
+
+            {/* Requirements */}
+            {(category === 'all' || category === 'requirements') && results.requirements.length > 0 && (
+              <section>
+                <h3 className="text-xs font-medium text-fg-tertiary uppercase mb-2">{t('common:requirements', { defaultValue: '需求' })}</h3>
+                <div className="space-y-1">
+                  {(category === 'all' ? results.requirements.slice(0, 8) : results.requirements).map(req => (
+                    <button
+                      key={req.id}
+                      onClick={() => navBus.navigate(PAGE.WORK, { openRequirement: req.id })}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface-overlay transition-colors text-left"
+                    >
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                        req.status === 'approved' ? 'text-green-500 bg-green-500/15'
+                        : req.status === 'pending' ? 'text-amber-500 bg-amber-500/15'
+                        : req.status === 'rejected' ? 'text-red-500 bg-red-500/15'
+                        : 'text-fg-tertiary bg-surface-elevated'
+                      }`}>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-fg-primary truncate">{req.title}</div>
+                        <div className="text-xs text-fg-tertiary truncate">{req.status} · {req.priority || ''}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                {category === 'all' && results.requirements.length > 8 && (
+                  <button onClick={() => setCategory('requirements')} className="mt-1 w-full text-xs text-brand-500 hover:text-brand-400 py-1.5 rounded-lg hover:bg-surface-overlay transition-colors">
+                    {t('common:showAll', { defaultValue: '查看全部' })} ({results.requirements.length})
+                  </button>
+                )}
               </section>
             )}
 
@@ -190,10 +240,10 @@ export function SearchPage() {
               <section>
                 <h3 className="text-xs font-medium text-fg-tertiary uppercase mb-2">{t('common:projects', { defaultValue: '项目' })}</h3>
                 <div className="space-y-1">
-                  {results.projects.slice(0, category === 'all' ? 5 : 50).map(proj => (
+                  {(category === 'all' ? results.projects.slice(0, 8) : results.projects).map(proj => (
                     <button
                       key={proj.id}
-                      onClick={() => { window.location.hash = `work/${proj.id}`; navBus.navigate(PAGE.WORK); }}
+                      onClick={() => navBus.navigate(PAGE.WORK, { projectId: proj.id })}
                       className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface-overlay transition-colors text-left"
                     >
                       <div className="w-8 h-8 rounded-lg bg-teal-500/15 flex items-center justify-center shrink-0">
@@ -206,6 +256,11 @@ export function SearchPage() {
                     </button>
                   ))}
                 </div>
+                {category === 'all' && results.projects.length > 8 && (
+                  <button onClick={() => setCategory('projects')} className="mt-1 w-full text-xs text-brand-500 hover:text-brand-400 py-1.5 rounded-lg hover:bg-surface-overlay transition-colors">
+                    {t('common:showAll', { defaultValue: '查看全部' })} ({results.projects.length})
+                  </button>
+                )}
               </section>
             )}
 
@@ -214,10 +269,10 @@ export function SearchPage() {
               <section>
                 <h3 className="text-xs font-medium text-fg-tertiary uppercase mb-2">{t('common:deliverables', { defaultValue: '交付物' })}</h3>
                 <div className="space-y-1">
-                  {results.deliverables.slice(0, category === 'all' ? 5 : 50).map(d => (
+                  {(category === 'all' ? results.deliverables.slice(0, 8) : results.deliverables).map(d => (
                     <button
                       key={d.id}
-                      onClick={() => navBus.navigate(PAGE.DELIVERABLES)}
+                      onClick={() => navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: d.id })}
                       className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface-overlay transition-colors text-left"
                     >
                       <div className="w-8 h-8 rounded-lg bg-purple-500/15 flex items-center justify-center shrink-0">
@@ -230,6 +285,11 @@ export function SearchPage() {
                     </button>
                   ))}
                 </div>
+                {category === 'all' && results.deliverables.length > 8 && (
+                  <button onClick={() => setCategory('deliverables')} className="mt-1 w-full text-xs text-brand-500 hover:text-brand-400 py-1.5 rounded-lg hover:bg-surface-overlay transition-colors">
+                    {t('common:showAll', { defaultValue: '查看全部' })} ({results.deliverables.length})
+                  </button>
+                )}
               </section>
             )}
           </div>

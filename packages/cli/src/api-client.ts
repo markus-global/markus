@@ -75,7 +75,12 @@ export class ApiClient {
 
   private async request<T>(url: string, init: RequestInit): Promise<T> {
     const headers = { ...this.headers };
-    if (!init.body) delete headers['Content-Type'];
+    // Always send Content-Type even for empty-body POST (e.g., /tasks/:id/approve)
+    // The server rejects requests without Content-Type with HTTP 415.
+    // We explicitly set it to 'application/json' for consistency.
+    if (init.body === undefined || init.body === null) {
+      // Ensure Content-Type is present even for no-body requests
+    }
 
     let res: Response;
     try {

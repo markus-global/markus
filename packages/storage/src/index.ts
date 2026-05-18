@@ -44,6 +44,7 @@ export {
   SqliteGroupChatRepo,
   SqliteAuditRepo,
   SqliteStatusTransitionRepo,
+  SqliteReadCursorRepo,
   migrateToExecutionStreamLogs,
   type SqliteExternalAgentRegistration,
   type ActivityRecord,
@@ -54,4 +55,5 @@ export {
   type NotificationRow,
   type ApprovalRow,
   type StatusTransitionRow,
+  type ReadCursorRow,
 } from './sqlite-storage.js';

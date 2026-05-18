@@ -2452,7 +2452,7 @@ function RemoteAccessSection() {
 
   useEffect(() => {
     return wsClient.on('remote:status', (event) => {
-      const payload = event.payload as RemoteStatus | undefined;
+      const payload = event.payload as unknown as RemoteStatus | undefined;
       if (payload) {
         setStatus(payload);
         setToggling(false);

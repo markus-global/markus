@@ -1326,6 +1326,15 @@ export const api = {
     markAllRead: (userId: string) => request<{ success: boolean; count: number }>('/notifications/mark-all-read', { method: 'POST', body: JSON.stringify({ userId }) }),
   },
 
+  // ─── Unread Tracking ───────────────────────────────────────────────
+  unread: {
+    getCounts: () => request<{ counts: Record<string, number> }>('/unread'),
+    markRead: (conversationKey: string, lastReadAt: string, lastReadId?: string) =>
+      request<{ success: boolean }>('/unread/mark-read', { method: 'POST', body: JSON.stringify({ conversationKey, lastReadAt, lastReadId }) }),
+    markAllRead: () =>
+      request<{ success: boolean }>('/unread/mark-all-read', { method: 'POST' }),
+  },
+
   // ─── Activity Feed ────────────────────────────────────────────────
   activity: {
     list: (opts?: { limit?: number; type?: string }) => {
@@ -1387,6 +1396,8 @@ export const api = {
       if (opts?.limit) params.set('limit', String(opts.limit));
       return request<{ results: DeliverableInfo[]; total: number }>(`/deliverables?${params}`);
     },
+    get: (id: string) =>
+      request<{ deliverable: DeliverableInfo }>(`/deliverables/${id}`),
     create: (data: Partial<DeliverableInfo>) =>
       request<{ deliverable: DeliverableInfo }>('/deliverables', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: Partial<DeliverableInfo>) =>

@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Avatar } from './Avatar.tsx';
-import { PAGE } from '../routes.ts';
+import { PAGE, type PageId } from '../routes.ts';
 import type { AuthUser } from '../api.ts';
 
 interface MobileDrawerProps {
   authUser?: AuthUser;
-  onNavigate: (page: string) => void;
+  onNavigate: (page: PageId) => void;
 }
 
 export function MobileDrawer({ authUser, onNavigate }: MobileDrawerProps) {
@@ -36,7 +36,7 @@ export function MobileDrawer({ authUser, onNavigate }: MobileDrawerProps) {
       setTimeout(() => window.dispatchEvent(new CustomEvent('markus:open-edit-profile')), 100);
       return;
     }
-    onNavigate(page);
+    onNavigate(page as PageId);
   };
 
   if (!open) return null;

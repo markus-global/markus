@@ -24,6 +24,7 @@ import { useTheme } from './hooks/useTheme.ts';
 import { useIsMobile } from './hooks/useIsMobile.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 import { useTranslation } from 'react-i18next';
+import { SearchModal } from './components/SearchModal.tsx';
 
 const PageSlot = memo(function PageSlot({
   id, activePage, children,
@@ -75,6 +76,27 @@ export function App() {
     const stored = localStorage.getItem('markus_update_dismissed');
     return stored ? stored : null;
   });
+
+  const [showSearchModal, setShowSearchModal] = useState(false);
+
+  // Global search shortcut: Cmd+P (Mac) / Ctrl+P (Win/Linux)
+  useEffect(() => {
+    if (isMobile) return;
+    const isMac = navigator.platform.toUpperCase().includes('MAC');
+    const onKey = (e: KeyboardEvent) => {
+      if (isMac && e.metaKey && !e.ctrlKey && e.key === 'p') {
+        e.preventDefault();
+        setShowSearchModal(prev => !prev);
+      } else if (!isMac && e.ctrlKey && !e.metaKey && e.key === 'p') {
+        e.preventDefault();
+        setShowSearchModal(prev => !prev);
+      }
+    };
+    const onOpen = () => setShowSearchModal(true);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('markus:open-search', onOpen);
+    return () => { document.removeEventListener('keydown', onKey); window.removeEventListener('markus:open-search', onOpen); };
+  }, [isMobile]);
 
   const navigate = useCallback((p: PageId) => {
     let normalized = resolvePageId(p);
@@ -340,6 +362,11 @@ export function App() {
       {/* Mobile drawer menu */}
       {isMobile && (
         <MobileDrawer authUser={currentUser} onNavigate={navigate} />
+      )}
+
+      {/* Global search modal (desktop) */}
+      {!isMobile && showSearchModal && (
+        <SearchModal onClose={() => setShowSearchModal(false)} currentPage={page} />
       )}
     </div>
   );

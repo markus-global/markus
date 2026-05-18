@@ -200,6 +200,14 @@ export class WSBroadcaster {
     }
   }
 
+  broadcastUnreadUpdate(conversationKey: string, messageId: string): void {
+    this.broadcast({
+      type: 'chat:unread_update',
+      payload: { conversationKey, messageId },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   broadcastExecutionLog(entry: Record<string, unknown>): void {
     const ts = new Date().toISOString();
     this.broadcast({ type: 'execution:log', payload: entry, timestamp: ts });

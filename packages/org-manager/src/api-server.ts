@@ -270,6 +270,7 @@ export class APIServer {
             replyToId,
           });
           persistedMsgId = saved.id;
+          this.ws.broadcastUnreadUpdate(`channel:${channelKey}`, saved.id);
         }
 
         // Send to frontend via WebSocket (scoped to channel members)
@@ -1330,7 +1331,7 @@ export class APIServer {
   ): Promise<void> {
     if (!this.storage || !sessionId) return;
     try {
-      await this.storage.chatSessionRepo.appendMessage(
+      const msg = await this.storage.chatSessionRepo.appendMessage(
         sessionId,
         agentId,
         'assistant',
@@ -1339,6 +1340,9 @@ export class APIServer {
         metadata
       );
       await this.storage.chatSessionRepo.updateLastMessage(sessionId);
+      if (msg?.id) {
+        this.ws.broadcastUnreadUpdate(`session:${sessionId}`, msg.id);
+      }
     } catch (err) {
       log.warn('Failed to persist assistant message', { error: String(err) });
     }
@@ -1994,6 +1998,11 @@ export class APIServer {
           mentions,
           replyToId,
         });
+      }
+
+      // Broadcast unread update for channel message
+      if (userMsg) {
+        this.ws.broadcastUnreadUpdate(`channel:${channel}`, userMsg.id);
       }
 
       // DM / personal-notepad channels never route to agents
@@ -3074,6 +3083,21 @@ export class APIServer {
           requirementId: body['requirementId'] as string,
         });
         this.json(res, 201, { deliverable: d });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/deliverables\/[^/]+$/) && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
+      const delivId = path.split('/')[3]!;
+      try {
+        const d = await this.deliverableService.get(delivId);
+        if (!d) { this.json(res, 404, { error: 'Deliverable not found' }); return; }
+        this.json(res, 200, { deliverable: d });
       } catch (err) {
         this.json(res, 500, { error: String(err) });
       }
@@ -6504,6 +6528,40 @@ EXPLANATION_END`;
       const notifId = path.split('/')[3]!;
       const read = this.hitlService?.markNotificationRead(notifId);
       this.json(res, 200, { success: read ?? false });
+      return;
+    }
+
+    // ── Unread message tracking ──────────────────────────────────────────────
+    if (path === '/api/unread' && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const repo = this.storage?.readCursorRepo;
+      if (!repo) { this.json(res, 200, { counts: {} }); return; }
+      const counts = repo.getUnreadCounts(authUser.userId);
+      this.json(res, 200, { counts });
+      return;
+    }
+
+    if (path === '/api/unread/mark-read' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const body = await this.readBody(req);
+      const { conversationKey, lastReadAt, lastReadId } = body as { conversationKey: string; lastReadAt: string; lastReadId?: string };
+      if (!conversationKey || !lastReadAt) { this.json(res, 400, { error: 'conversationKey and lastReadAt required' }); return; }
+      const repo = this.storage?.readCursorRepo;
+      if (!repo) { this.json(res, 200, { success: true }); return; }
+      repo.setReadCursor(authUser.userId, conversationKey, lastReadAt, lastReadId);
+      this.json(res, 200, { success: true });
+      return;
+    }
+
+    if (path === '/api/unread/mark-all-read' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const repo = this.storage?.readCursorRepo;
+      if (!repo) { this.json(res, 200, { success: true }); return; }
+      repo.markAllRead(authUser.userId);
+      this.json(res, 200, { success: true });
       return;
     }
 

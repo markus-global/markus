@@ -3524,6 +3524,17 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     }
   }, [board, forceOpenTask, ensureProjectVisible]);
 
+  useEffect(() => {
+    const navReqId = localStorage.getItem('markus_nav_openRequirement');
+    if (!navReqId) return;
+    const req = allRequirements.find(r => r.id === navReqId);
+    if (req) {
+      ensureProjectVisible(req.projectId);
+      forceOpenReq(req);
+      localStorage.removeItem('markus_nav_openRequirement');
+    }
+  }, [allRequirements, forceOpenReq, ensureProjectVisible]);
+
   // Initial project selection from hash / localStorage (runs once on mount)
   useEffect(() => {
     const hashParts = window.location.hash.slice(1).split('/');
