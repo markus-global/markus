@@ -9,7 +9,6 @@ import {
   initLogger as initRtcLogger,
   type RtcConfig,
   type IceServer,
-  RelayType,
   DescriptionType,
 } from 'node-datachannel';
 
@@ -403,16 +402,20 @@ export class RemoteAccessAgent {
     const iceServers: (string | IceServer)[] = [...STUN_SERVERS];
     if (this.registration?.turnServers) {
       for (const t of this.registration.turnServers) {
-        const parsed = t.urls.match(/^(turns?):([^:]+):(\d+)$/);
+        const parsed = t.urls.match(/^(turns?):([^:?]+):(\d+)/);
         if (parsed) {
-          const relayType = parsed[1] === 'turns' ? RelayType.TurnTls : RelayType.TurnUdp;
+          const isTcp = t.urls.includes('transport=tcp');
+          const isTls = parsed[1] === 'turns';
+          let relayType = 'TurnUdp';
+          if (isTls) relayType = 'TurnTls';
+          else if (isTcp) relayType = 'TurnTcp';
           iceServers.push({
             hostname: parsed[2]!,
             port: parseInt(parsed[3]!, 10),
             username: t.username,
             password: t.credential,
             relayType,
-          });
+          } as IceServer);
         }
       }
     }
