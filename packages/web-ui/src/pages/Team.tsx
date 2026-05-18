@@ -1224,6 +1224,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           } else {
             setChatMode('direct');
             setSelectedAgent(detail.params.agentId);
+            setMainTab('chat');
+            if (isMobile) enterMobileDetail();
             if (detail.params.sessionId) {
               const targetSessionId = detail.params.sessionId;
               setTimeout(async () => {
@@ -1247,11 +1249,13 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           setChatMode('dm');
           setActiveDmUserId(detail.params.dm);
           setMainTab('chat');
+          if (isMobile) enterMobileDetail();
         }
         if (detail.params?.channel) {
           setChatMode('channel');
           setActiveChannel(detail.params.channel);
           setMainTab('chat');
+          if (isMobile) enterMobileDetail();
         }
         if (detail.params?.openHire === 'true') {
           // handled by ChatTeamSidebar via nav events
@@ -1269,11 +1273,13 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     if (navDm) {
       localStorage.removeItem('markus_nav_dm');
       setChatMode('dm'); setActiveDmUserId(navDm); setMainTab('chat');
+      if (isMobile) enterMobileDetail();
     }
     const navChannel = localStorage.getItem('markus_nav_channel');
     if (navChannel) {
       localStorage.removeItem('markus_nav_channel');
       setChatMode('channel'); setActiveChannel(navChannel); setMainTab('chat');
+      if (isMobile) enterMobileDetail();
     }
     const selectAgent = localStorage.getItem('markus_nav_selectAgent');
     if (selectAgent) {

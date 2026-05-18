@@ -9,6 +9,7 @@ import { WorkPage } from './pages/Work.tsx';
 import { DeliverablesPage } from './pages/Deliverables.tsx';
 import { ReportsPage } from './pages/Reports.tsx';
 import { NotificationsPage } from './pages/Notifications.tsx';
+import { SearchPage } from './pages/Search.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { BottomNav } from './components/BottomNav.tsx';
 import { MobileBuilderTabs } from './components/MobileBuilderTabs.tsx';
@@ -188,6 +189,7 @@ export function App() {
         [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
         [PAGE.NOTIFICATIONS]: <NotificationsPage authUser={currentUser} />,
         [PAGE.REPORTS]: <ReportsPage authUser={currentUser} />,
+        [PAGE.SEARCH]: <SearchPage />,
       };
     }
     return {
@@ -298,7 +300,7 @@ export function App() {
         </>
       )}
 
-      <div className={`flex-1 overflow-hidden flex flex-col min-w-0 ${isMobile && page !== PAGE.SETTINGS ? 'pb-14' : ''}`}>
+      <div className={`flex-1 overflow-hidden flex flex-col min-w-0 ${isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH ? 'pb-14' : ''}`}>
         {llmConfigured === false && !llmBannerDismissed && page !== PAGE.SETTINGS && (
           <div className="flex items-center justify-between px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-600 text-sm shrink-0">
             <span className={isMobile ? 'text-xs' : ''}>No LLM provider configured — agents cannot process requests.</span>
@@ -330,8 +332,8 @@ export function App() {
         </main>
       </div>
 
-      {/* Mobile bottom nav (hidden on Settings page) */}
-      {isMobile && page !== PAGE.SETTINGS && (
+      {/* Mobile bottom nav (hidden on Settings/Search pages) */}
+      {isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH && (
         <BottomNav currentPage={page} onNavigate={navigate} userId={currentUser?.id} />
       )}
 
