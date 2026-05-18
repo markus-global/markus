@@ -16,6 +16,7 @@ import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
+import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 
 /* ── useDropdownPosition: compute fixed position for dropdown escaping overflow containers ── */
 function useDropdownPosition(triggerRef: React.RefObject<HTMLDivElement | null>, open: boolean) {
@@ -3921,6 +3922,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
           <div className="shrink-0">
             {/* Mobile Row 1: title + action buttons */}
             <div className="flex items-center gap-2 px-3 h-11">
+              <MobileMenuButton />
               {selectedProject ? (
                 <div className="flex items-center gap-1 min-w-0 flex-1">
                   <span className="text-sm font-semibold text-fg-primary truncate">{selectedProject.name}</span>

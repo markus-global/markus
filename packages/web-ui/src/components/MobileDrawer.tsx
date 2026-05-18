@@ -31,8 +31,9 @@ export function MobileDrawer({ authUser, onNavigate }: MobileDrawerProps) {
   const handleNav = (page: string) => {
     setOpen(false);
     if (page === '__edit_profile') {
-      window.location.hash = '#settings/users';
+      window.location.hash = '#settings';
       onNavigate(PAGE.SETTINGS);
+      setTimeout(() => window.dispatchEvent(new CustomEvent('markus:open-edit-profile')), 100);
       return;
     }
     onNavigate(page);

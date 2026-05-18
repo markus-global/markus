@@ -5,6 +5,8 @@ import { api, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, t
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { Avatar } from '../components/Avatar.tsx';
+import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 
 const SHOW_HERO_BANNER = false;
 
@@ -31,6 +33,7 @@ const STATUS_ORDER = ['completed', 'in_progress', 'review', 'pending', 'failed',
 
 export function HomePage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } } = {}) {
   const { t } = useTranslation(['home', 'common', 'team']);
+  const isMobile = useIsMobile();
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [teams, setTeams] = useState<TeamInfo[]>([]);
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>({});
@@ -120,7 +123,8 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
     <div className="flex-1 overflow-y-auto scrollbar-thin">
       {/* Header */}
       <div className="flex items-center justify-between px-4 sm:px-6 lg:px-8 h-14 sm:h-16 max-w-7xl mx-auto w-full">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          {isMobile && <MobileMenuButton />}
           <div>
             <h2 className="text-base sm:text-lg font-bold">{t('title')}</h2>
             <p className="text-xs text-fg-tertiary hidden sm:block">{t('subtitle')}</p>

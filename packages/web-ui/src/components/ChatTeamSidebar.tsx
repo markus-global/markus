@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { MobileMenuButton } from './MobileMenuButton.tsx';
 import {
   api, wsClient,
   type AgentInfo, type TeamInfo, type TeamMemberInfo,
@@ -858,7 +859,8 @@ export function ChatTeamSidebar({
     <>
       <div className={`bg-surface-secondary rounded-xl my-1 flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'}`} style={hidden ? { display: 'none' } : width != null ? { width } : undefined}>
         {/* Header with title + pause toggle */}
-        <div className="px-4 h-14 flex items-center shrink-0">
+        <div className="px-4 h-14 flex items-center shrink-0 gap-2">
+          {isMobile && <MobileMenuButton />}
           <h2 className="text-lg font-semibold">{t('chat.title')}</h2>
           <div className="ml-auto">
             {globalPaused === null ? (

@@ -8,6 +8,7 @@ import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 
@@ -340,11 +341,14 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
       <div className={`${isMobile ? 'flex-1 min-w-0' : 'shrink-0'} flex flex-col bg-surface-secondary rounded-xl m-1 mr-0`}
         style={isMobile ? (mobileShowDetail ? { display: 'none' } : undefined) : { width: listPanel.width }}>
         <div className="p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-fg-secondary">
-              {t('title')}{totalCount > 0 && <span className="ml-1.5 text-fg-tertiary font-normal">({totalCount})</span>}
-            </h2>
-            <button onClick={openContributeForm} className="text-xs px-2.5 py-1 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">{t('create')}</button>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              {isMobile && <MobileMenuButton />}
+              <h2 className="text-sm font-semibold text-fg-secondary truncate">
+                {t('title')}{totalCount > 0 && <span className="ml-1.5 text-fg-tertiary font-normal">({totalCount})</span>}
+              </h2>
+            </div>
+            <button onClick={openContributeForm} className="text-xs px-2.5 py-1 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors shrink-0">{t('create')}</button>
           </div>
           <input
             value={searchQuery}

@@ -5,6 +5,7 @@ import { TemplateMarketplace } from '../pages/TemplateMarketplace.tsx';
 import { TeamsStore } from '../pages/TeamsStore.tsx';
 import { SkillStore } from '../pages/SkillStore.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
+import { MobileMenuButton } from './MobileMenuButton.tsx';
 import type { AuthUser } from '../api.ts';
 
 const tabIds = ['builder', 'agents', 'teams', 'skills'] as const;
@@ -23,7 +24,8 @@ export function MobileBuilderTabs({ authUser }: { authUser?: AuthUser }) {
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col" onTouchStart={swipe.onTouchStart} onTouchEnd={swipe.onTouchEnd}>
-      <div className="flex shrink-0 overflow-x-auto scrollbar-hide">
+      <div className="flex items-center shrink-0 overflow-x-auto scrollbar-hide">
+        <MobileMenuButton className="ml-2" />
         {tabs.map(tab => (
           <button
             key={tab.id}

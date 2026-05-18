@@ -87,6 +87,12 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const resolvedTab: SettingsTab | null = activeTab ?? (isMobile ? null : 'appearance');
 
   useEffect(() => {
+    const handler = () => setShowEditProfile(true);
+    window.addEventListener('markus:open-edit-profile', handler);
+    return () => window.removeEventListener('markus:open-edit-profile', handler);
+  }, []);
+
+  useEffect(() => {
     if (!userMenuOpen) return;
     const handler = (e: MouseEvent) => {
       if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) setUserMenuOpen(false);

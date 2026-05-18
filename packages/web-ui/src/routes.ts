@@ -60,7 +60,6 @@ export function hashPath(page: PageId, sub?: string): string {
 
 export const MOBILE_REDIRECTS: Partial<Record<PageId, PageId>> = {
   [PAGE.STORE]: PAGE.BUILDER,
-  [PAGE.REPORTS]: PAGE.SETTINGS,
 };
 
 // ── SVG icon paths (shared by Sidebar + BottomNav) ──────────────────────────
