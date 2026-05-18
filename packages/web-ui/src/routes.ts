@@ -109,5 +109,4 @@ export const MOBILE_TABS: Array<{ id: MobileTabId; label: string; group: PageId[
   { id: PAGE.NOTIFICATIONS, label: 'Notifications', group: [PAGE.NOTIFICATIONS] },
   { id: PAGE.DELIVERABLES,  label: 'Deliverables',  group: [PAGE.DELIVERABLES] },
   { id: PAGE.BUILDER,       label: 'Builder',       group: [PAGE.BUILDER, PAGE.STORE] },
-  { id: PAGE.SETTINGS,      label: 'Settings',      group: [PAGE.SETTINGS, PAGE.REPORTS] },
 ];

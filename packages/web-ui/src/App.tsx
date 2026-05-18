@@ -12,7 +12,7 @@ import { NotificationsPage } from './pages/Notifications.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { BottomNav } from './components/BottomNav.tsx';
 import { MobileBuilderTabs } from './components/MobileBuilderTabs.tsx';
-import { MobileSettingsTabs } from './components/MobileSettingsTabs.tsx';
+import { MobileDrawer, openMobileDrawer } from './components/MobileDrawer.tsx';
 import { Onboarding } from './components/Onboarding.tsx';
 import { Login, InviteSetup, InitialSetup } from './pages/Login.tsx';
 import { ChangePassword } from './pages/ChangePassword.tsx';
@@ -183,7 +183,7 @@ export function App() {
         [PAGE.HOME]: <HomePage authUser={currentUser} />,
         [PAGE.TEAM]: <TeamPage authUser={currentUser} />,
         [PAGE.BUILDER]: <MobileBuilderTabs authUser={currentUser} />,
-        [PAGE.SETTINGS]: <MobileSettingsTabs theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} onLogout={() => setAuthUser(null)} onUserUpdated={(u) => setAuthUser(u)} />,
+        [PAGE.SETTINGS]: <Settings theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} onLogout={() => setAuthUser(null)} onUserUpdated={(u) => setAuthUser(u)} />,
         [PAGE.WORK]: <WorkPage authUser={currentUser} />,
         [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
         [PAGE.NOTIFICATIONS]: <NotificationsPage authUser={currentUser} />,
@@ -272,8 +272,8 @@ export function App() {
 
   return (
     <div className={`flex h-dvh bg-surface-primary text-fg-primary overflow-x-hidden ${isMobile ? 'flex-col' : ''}`}>
-      {/* Desktop sidebar */}
-      {!isMobile && (
+      {/* Desktop sidebar (hidden on Settings page) */}
+      {!isMobile && page !== PAGE.SETTINGS && (
         <>
           <div
             className="relative z-40 shrink-0"
@@ -297,7 +297,23 @@ export function App() {
         </>
       )}
 
-      <div className={`flex-1 overflow-hidden flex flex-col min-w-0 ${isMobile ? 'pb-14' : ''}`}>
+      <div className={`flex-1 overflow-hidden flex flex-col min-w-0 ${isMobile && page !== PAGE.SETTINGS ? 'pb-14' : ''}`}>
+        {/* Mobile top bar */}
+        {isMobile && page !== PAGE.SETTINGS && (
+          <div className="flex items-center px-3 py-2 shrink-0 border-b border-border-default bg-surface-secondary">
+            <button
+              onClick={openMobileDrawer}
+              className="p-2 -ml-1 rounded-lg hover:bg-surface-overlay transition-colors"
+              aria-label="Menu"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="3" y1="6" x2="21" y2="6" />
+                <line x1="3" y1="12" x2="21" y2="12" />
+                <line x1="3" y1="18" x2="21" y2="18" />
+              </svg>
+            </button>
+          </div>
+        )}
         {llmConfigured === false && !llmBannerDismissed && page !== PAGE.SETTINGS && (
           <div className="flex items-center justify-between px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-600 text-sm shrink-0">
             <span className={isMobile ? 'text-xs' : ''}>No LLM provider configured — agents cannot process requests.</span>
@@ -329,9 +345,14 @@ export function App() {
         </main>
       </div>
 
-      {/* Mobile bottom nav */}
-      {isMobile && (
+      {/* Mobile bottom nav (hidden on Settings page) */}
+      {isMobile && page !== PAGE.SETTINGS && (
         <BottomNav currentPage={page} onNavigate={navigate} userId={currentUser?.id} />
+      )}
+
+      {/* Mobile drawer menu */}
+      {isMobile && (
+        <MobileDrawer authUser={currentUser} onNavigate={navigate} />
       )}
     </div>
   );

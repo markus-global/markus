@@ -1,5 +1,15 @@
 {
   "title": "设置",
+  "nav": {
+    "appearance": "外观",
+    "providers": "模型配置",
+    "execution": "智能体与流水线",
+    "browser": "浏览器自动化",
+    "search": "网络搜索",
+    "storage": "数据与存储",
+    "users": "用户管理",
+    "remote": "远程访问"
+  },
   "appearance": {
     "title": "外观",
     "theme": "主题",

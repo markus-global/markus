@@ -6,6 +6,7 @@ import { SUPPORTED_LANGUAGES } from '../i18n/index.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[] }
@@ -35,11 +36,55 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
+type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'storage' | 'users' | 'remote';
+
+const SETTINGS_TABS: Array<{ id: SettingsTab; labelKey: string; adminOnly?: boolean }> = [
+  { id: 'appearance', labelKey: 'nav.appearance' },
+  { id: 'providers', labelKey: 'nav.providers', adminOnly: true },
+  { id: 'execution', labelKey: 'nav.execution', adminOnly: true },
+  { id: 'browser', labelKey: 'nav.browser', adminOnly: true },
+  { id: 'search', labelKey: 'nav.search', adminOnly: true },
+  { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
+  { id: 'users', labelKey: 'nav.users', adminOnly: true },
+  { id: 'remote', labelKey: 'nav.remote', adminOnly: true },
+];
+
+function getSettingsTab(): SettingsTab | null {
+  const hash = window.location.hash.slice(1);
+  const parts = hash.split('/');
+  if (parts[0] === 'settings' && parts[1]) {
+    const tab = parts[1] as SettingsTab;
+    if (SETTINGS_TABS.some(t => t.id === tab)) return tab;
+  }
+  return null;
+}
+
 export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdated }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void; authUser?: AuthUser; onLogout?: () => void; onUserUpdated?: (u: AuthUser) => void } = {}) {
   const { t, i18n } = useTranslation(['settings', 'common']);
+  const isMobile = useIsMobile();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [showEditProfile, setShowEditProfile] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const [activeTab, setActiveTab] = useState<SettingsTab | null>(getSettingsTab);
+
+  useEffect(() => {
+    const onHashChange = () => setActiveTab(getSettingsTab());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  const navigateTab = useCallback((tab: SettingsTab) => {
+    setActiveTab(tab);
+    history.pushState(null, '', `#settings/${tab}`);
+  }, []);
+
+  const navigateBackToList = useCallback(() => {
+    setActiveTab(null);
+    history.pushState(null, '', '#settings');
+  }, []);
+
+  // On desktop, always show a tab (default to appearance). On mobile, null means show the list.
+  const resolvedTab: SettingsTab | null = activeTab ?? (isMobile ? null : 'appearance');
 
   useEffect(() => {
     if (!userMenuOpen) return;
@@ -677,8 +722,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const showSetupGuide = llm && !hasConfiguredProviders && !setupDismissed;
   const canManageOrgSettings = authUser?.role === 'owner' || authUser?.role === 'admin';
 
+  const visibleTabs = SETTINGS_TABS.filter(tab => !tab.adminOnly || canManageOrgSettings);
+
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div className="flex-1 flex overflow-hidden">
       {showEditProfile && authUser && (
         <EditProfileModal
           authUser={authUser}
@@ -687,20 +734,47 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         />
       )}
 
-      <div className="p-7 space-y-10 max-w-4xl mx-auto w-full">
-        <div className="flex items-center">
-          <h2 className="text-lg font-semibold flex-1">{t('title')}</h2>
-          {authUser && (
+      {/* Settings Sidebar */}
+      <aside className="hidden md:flex flex-col w-56 shrink-0 border-r border-border-default bg-surface-secondary overflow-y-auto">
+        <div className="px-3 pt-4 pb-2">
+          <button
+            onClick={() => { navBus.navigate(PAGE.HOME); }}
+            className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-fg-secondary hover:text-fg-primary hover:bg-surface-overlay transition-colors"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5" /><polyline points="12 19 5 12 12 5" /></svg>
+            {t('common:back', { defaultValue: 'Back' })}
+          </button>
+        </div>
+        <div className="px-5 pb-4">
+          <h2 className="text-base font-semibold text-fg-primary">{t('title')}</h2>
+        </div>
+        <nav className="flex-1 px-3 pb-4 space-y-0.5">
+          {visibleTabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => navigateTab(tab.id)}
+              className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+                resolvedTab === tab.id
+                  ? 'bg-brand-600/10 text-brand-600 dark:text-brand-400 font-medium'
+                  : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-overlay'
+              }`}
+            >
+              {t(`settings:${tab.labelKey}`)}
+            </button>
+          ))}
+        </nav>
+        {authUser && (
+          <div className="px-3 pb-4 border-t border-border-default pt-3">
             <div ref={userMenuRef} className="relative">
               <button
                 onClick={() => setUserMenuOpen(!userMenuOpen)}
-                className="hover:ring-2 hover:ring-brand-500/50 transition-all rounded-full"
-                title={authUser.name || t('common:userPlaceholder')}
+                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-surface-overlay transition-colors"
               >
-                <Avatar name={authUser.name || t('common:userPlaceholder')} avatarUrl={authUser.avatarUrl} size={30} />
+                <Avatar name={authUser.name || t('common:userPlaceholder')} avatarUrl={authUser.avatarUrl} size={24} />
+                <span className="text-sm text-fg-secondary truncate flex-1 text-left">{authUser.name || t('common:userPlaceholder')}</span>
               </button>
               {userMenuOpen && (
-                <div className="absolute right-0 top-full mt-1 bg-surface-secondary border border-border-default rounded-xl shadow-xl z-50 overflow-hidden" style={{ minWidth: 200 }}>
+                <div className="absolute left-0 bottom-full mb-1 bg-surface-secondary border border-border-default rounded-xl shadow-xl z-50 overflow-hidden" style={{ minWidth: 200 }}>
                   <div className="px-4 py-3 border-b border-border-default">
                     <div className="text-sm font-medium text-fg-primary">{authUser.name || t('common:userPlaceholder')}</div>
                     <div className="text-xs text-fg-tertiary mt-0.5">{authUser.email || authUser.role}</div>
@@ -726,11 +800,54 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 </div>
               )}
             </div>
-          )}
+          </div>
+        )}
+      </aside>
+
+      {/* Content Panel */}
+      <div className="flex-1 overflow-y-auto">
+      {/* Mobile: settings list (when no sub-tab selected) */}
+      {isMobile && resolvedTab === null && (
+        <div className="flex flex-col h-full">
+          <div className="flex items-center gap-3 px-4 py-3 border-b border-border-default bg-surface-secondary">
+            <button
+              onClick={() => navBus.navigate(PAGE.HOME)}
+              className="p-1.5 rounded-lg hover:bg-surface-overlay transition-colors"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5" /><polyline points="12 19 5 12 12 5" /></svg>
+            </button>
+            <h1 className="text-base font-semibold text-fg-primary">{t('title')}</h1>
+          </div>
+          <nav className="flex-1 overflow-y-auto py-2 px-3">
+            {visibleTabs.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => navigateTab(tab.id)}
+                className="w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm text-fg-primary hover:bg-surface-overlay transition-colors"
+              >
+                <span>{t(`settings:${tab.labelKey}`)}</span>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-fg-tertiary"><polyline points="9 18 15 12 9 6" /></svg>
+              </button>
+            ))}
+          </nav>
         </div>
+      )}
+      {/* Mobile: sub-page header with back button */}
+      {isMobile && resolvedTab !== null && (
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-border-default bg-surface-secondary sticky top-0 z-10">
+          <button
+            onClick={navigateBackToList}
+            className="p-1.5 rounded-lg hover:bg-surface-overlay transition-colors"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5" /><polyline points="12 19 5 12 12 5" /></svg>
+          </button>
+          <h1 className="text-base font-semibold text-fg-primary">{t(`settings:${visibleTabs.find(tb => tb.id === resolvedTab)?.labelKey || 'title'}`)}</h1>
+        </div>
+      )}
+      {resolvedTab !== null && <div className="p-7 space-y-10 max-w-4xl mx-auto w-full">
 
         {/* ───── Appearance ───── */}
-        <Section title={t('appearance.title')}>
+        {resolvedTab === 'appearance' && <Section title={t('appearance.title')}>
           <div className="bg-surface-elevated rounded-xl p-5">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
@@ -772,11 +889,12 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </div>
             </div>
           </div>
-        </Section>
+        </Section>}
 
         {canManageOrgSettings && (
         <>
-        {/* ───── First-Run Setup Guide ───── */}
+        {/* ───── First-Run Setup Guide (shown in providers tab) ───── */}
+        {resolvedTab === 'providers' && <>
         {showSetupGuide && (
           <div className="relative bg-gradient-to-br from-brand-500/10 to-surface-secondary border border-brand-500/20 rounded-2xl p-6 space-y-5">
             <button onClick={() => setSetupDismissed(true)}
@@ -910,6 +1028,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         </Section>
 
         {/* ───── Default Provider ───── */}
+        
         <Section title={t('defaultProvider.title')}>
           <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
             <div className="flex items-center justify-between">
@@ -1511,7 +1630,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             </div>
           </div>
         </Section>
+        </>}
 
+        {resolvedTab === 'execution' && <>
         <Section title={t('agentExecution.title')}>
           <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
             <div className="flex items-center justify-between">
@@ -1607,7 +1728,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             {cppMsg && <Msg type={cppMsg.type} text={cppMsg.text} />}
           </div>
         </Section>
+        </>}
 
+        {resolvedTab === 'browser' && <>
         <Section title={t('browserAutomation.title')}>
           <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
             <div className="text-xs text-fg-tertiary">
@@ -1716,7 +1839,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             {browserMsg && <Msg type={browserMsg.type} text={browserMsg.text} />}
           </div>
         </Section>
+        </>}
 
+        {resolvedTab === 'search' && <>
         <Section title={t('searchApi.title')}>
           <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
             <div className="text-xs text-fg-tertiary">{t('searchApi.description')}</div>
@@ -1773,7 +1898,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             </div>
           </div>
         </Section>
+        </>}
 
+        {resolvedTab === 'storage' && <>
         <Section title={t('dataStorage.title')}>
           <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
             {storageLoading && !storageInfo && <div className="text-sm text-fg-tertiary">{t('dataStorage.scanning')}</div>}
@@ -1864,14 +1991,17 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           </div>
         </Section>
 
-        <UserManagementSection authUser={authUser} />
+        </>}
 
-        <RemoteAccessSection />
+        {resolvedTab === 'users' && <UserManagementSection authUser={authUser} />}
+
+        {resolvedTab === 'remote' && <RemoteAccessSection />}
 
         </>
         )}
 
         <div className="h-8" />
+      </div>}
       </div>
     </div>
   );
@@ -2539,78 +2669,34 @@ function Spinner() {
   );
 }
 
-/** Simple SVG-based QR code using a canvas. Falls back to a link if canvas unavailable. */
 function QRCode({ url }: { url: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [ready, setReady] = useState(false);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    setError(false);
 
-    // Simple QR code generation using a lightweight approach:
-    // encode the URL data into a visual matrix pattern
-    const size = 200;
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    // Use a simple encoding: create a visual representation
-    // In production, this would use a proper QR library.
-    // For now, render a placeholder with the URL hash pattern.
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, size, size);
-    ctx.fillStyle = '#000000';
-
-    // Generate a deterministic pattern from the URL
-    const data = url;
-    const moduleCount = 25;
-    const cellSize = size / moduleCount;
-
-    // Position detection patterns (top-left, top-right, bottom-left)
-    const drawFinderPattern = (x: number, y: number) => {
-      for (let r = 0; r < 7; r++) {
-        for (let c = 0; c < 7; c++) {
-          const isBlack = r === 0 || r === 6 || c === 0 || c === 6 ||
-            (r >= 2 && r <= 4 && c >= 2 && c <= 4);
-          if (isBlack) {
-            ctx.fillRect((x + c) * cellSize, (y + r) * cellSize, cellSize, cellSize);
-          }
-        }
-      }
-    };
-
-    drawFinderPattern(0, 0);
-    drawFinderPattern(moduleCount - 7, 0);
-    drawFinderPattern(0, moduleCount - 7);
-
-    // Data area: hash-based pattern
-    let hash = 0;
-    for (let i = 0; i < data.length; i++) {
-      hash = ((hash << 5) - hash + data.charCodeAt(i)) | 0;
-    }
-
-    for (let r = 0; r < moduleCount; r++) {
-      for (let c = 0; c < moduleCount; c++) {
-        // Skip finder pattern areas
-        if ((r < 8 && c < 8) || (r < 8 && c >= moduleCount - 8) || (r >= moduleCount - 8 && c < 8)) continue;
-        hash = ((hash << 5) - hash + r * moduleCount + c) | 0;
-        if (Math.abs(hash) % 3 === 0) {
-          ctx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
-        }
-      }
-    }
-
-    setReady(true);
+    import('qrcode').then((QRLib) => {
+      QRLib.toCanvas(canvas, url, {
+        width: 200,
+        margin: 2,
+        color: { dark: '#000000', light: '#ffffff' },
+        errorCorrectionLevel: 'M',
+      });
+    }).catch(() => setError(true));
   }, [url]);
+
+  if (error) {
+    return (
+      <a href={url} target="_blank" rel="noopener" className="text-sm text-brand-500 underline">{url}</a>
+    );
+  }
 
   return (
     <div className="inline-block p-2 bg-white rounded-lg">
       <canvas ref={canvasRef} className="block" style={{ width: 160, height: 160 }} />
-      {!ready && (
-        <a href={url} target="_blank" rel="noopener" className="text-xs text-brand-500 underline">{url}</a>
-      )}
     </div>
   );
 }

@@ -1,5 +1,15 @@
 {
   "title": "Settings",
+  "nav": {
+    "appearance": "Appearance",
+    "providers": "Model Providers",
+    "execution": "Agent & Pipeline",
+    "browser": "Browser Automation",
+    "search": "Web Search",
+    "storage": "Data & Storage",
+    "users": "User Management",
+    "remote": "Remote Access"
+  },
   "appearance": {
     "title": "Appearance",
     "theme": "Theme",
