@@ -33,6 +33,8 @@ const STUN_SERVERS = [
 const RECONNECT_BASE_MS = 2_000;
 const RECONNECT_MAX_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 25_000;
+const DC_PING_INTERVAL_MS = 15_000;
+const DC_PING_TIMEOUT_MS = 10_000;
 
 export interface RemoteAccessConfig {
   hubUrl: string;
@@ -81,6 +83,8 @@ interface PeerSession {
   markusToken: string | null;
   connectedAt: number;
   lastActiveAt: number;
+  pingTimer: ReturnType<typeof setInterval> | null;
+  lastPong: number;
 }
 
 export class RemoteAccessAgent {
@@ -424,7 +428,7 @@ export class RemoteAccessAgent {
     } satisfies RtcConfig);
 
     const now = Date.now();
-    const session: PeerSession = { pc, dc: null, pendingChunks: new Map(), markusToken: null, connectedAt: now, lastActiveAt: now };
+    const session: PeerSession = { pc, dc: null, pendingChunks: new Map(), markusToken: null, connectedAt: now, lastActiveAt: now, pingTimer: null, lastPong: now };
     this.peers.set(peerId, session);
 
     pc.onStateChange((state: string) => {
@@ -450,9 +454,12 @@ export class RemoteAccessAgent {
     pc.onDataChannel((dc: DataChannel) => {
       log.info('DataChannel opened', { peerId, label: dc.getLabel() });
       session.dc = dc;
+      session.lastPong = Date.now();
+      this.startDcPing(peerId, session);
 
       dc.onMessage((msg: string | Buffer) => {
         const data = typeof msg === 'string' ? msg : msg.toString('utf-8');
+        session.lastActiveAt = Date.now();
         this.handleDataChannelMessage(peerId, data);
       });
 
@@ -469,11 +476,35 @@ export class RemoteAccessAgent {
     const session = this.peers.get(peerId);
     if (!session) return;
 
+    if (session.pingTimer) clearInterval(session.pingTimer);
     try { session.dc?.close(); } catch { /* ignore */ }
     try { session.pc.close(); } catch { /* ignore */ }
     this.peers.delete(peerId);
     this.emitStatus();
     log.info('Peer cleaned up', { peerId });
+  }
+
+  private startDcPing(peerId: string, session: PeerSession): void {
+    if (session.pingTimer) clearInterval(session.pingTimer);
+    session.pingTimer = setInterval(() => {
+      if (!session.dc || !session.dc.isOpen()) {
+        log.warn('DC not open during ping check, cleaning up', { peerId });
+        this.cleanupPeer(peerId);
+        return;
+      }
+      const elapsed = Date.now() - session.lastPong;
+      if (elapsed > DC_PING_TIMEOUT_MS) {
+        log.warn('DC ping timeout, peer unresponsive', { peerId, elapsed });
+        this.cleanupPeer(peerId);
+        return;
+      }
+      try {
+        session.dc.sendMessage(JSON.stringify({ type: '__ping' }));
+      } catch {
+        log.warn('DC ping send failed', { peerId });
+        this.cleanupPeer(peerId);
+      }
+    }, DC_PING_INTERVAL_MS);
   }
 
   // ── DataChannel Message Handling (HTTP/WS proxy) ─────────────────────────
@@ -487,6 +518,11 @@ export class RemoteAccessAgent {
       const type = msg.type as string;
 
       switch (type) {
+        case '__pong': {
+          const s = this.peers.get(peerId);
+          if (s) s.lastPong = Date.now();
+          return;
+        }
         case 'http':
           this.proxyHttpRequest(peerId, msg);
           break;
@@ -557,18 +593,47 @@ export class RemoteAccessAgent {
         headers: { ...headers, host: `127.0.0.1:${this.config.localPort}`, cookie },
       },
       (res: IncomingMessage) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (c: Buffer) => chunks.push(c));
-        res.on('end', () => {
-          const bodyStr = Buffer.concat(chunks).toString('base64');
+        const contentType = res.headers['content-type'] ?? '';
+        const isStreaming = contentType.includes('text/event-stream') ||
+          contentType.includes('application/x-ndjson') ||
+          res.headers['transfer-encoding'] === 'chunked' && contentType.includes('stream');
+
+        if (isStreaming) {
           this.sendToPeer(peerId, {
-            type: 'http_response',
+            type: 'http_response_start',
             id: reqId,
             status: res.statusCode ?? 200,
             headers: res.headers,
-            body: bodyStr,
           });
-        });
+
+          res.on('data', (c: Buffer) => {
+            this.sendToPeer(peerId, {
+              type: 'http_response_chunk',
+              id: reqId,
+              data: c.toString('base64'),
+            });
+          });
+
+          res.on('end', () => {
+            this.sendToPeer(peerId, {
+              type: 'http_response_end',
+              id: reqId,
+            });
+          });
+        } else {
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () => {
+            const bodyStr = Buffer.concat(chunks).toString('base64');
+            this.sendToPeer(peerId, {
+              type: 'http_response',
+              id: reqId,
+              status: res.statusCode ?? 200,
+              headers: res.headers,
+              body: bodyStr,
+            });
+          });
+        }
       }
     );
 
@@ -593,7 +658,16 @@ export class RemoteAccessAgent {
     const path = (msg.path as string) ?? '/ws';
     const wsUrl = `ws://127.0.0.1:${this.config.localPort}${path}`;
 
-    const ws = new WebSocket(wsUrl);
+    const session = this.peers.get(peerId);
+    if (session && !session.markusToken) {
+      session.markusToken = this.generateMarkusToken();
+    }
+    const headers: Record<string, string> = {};
+    if (session?.markusToken) {
+      headers['cookie'] = `markus_token=${session.markusToken}`;
+    }
+
+    const ws = new WebSocket(wsUrl, { headers });
     const key = `${peerId}:${wsId}`;
 
     ws.on('open', () => {

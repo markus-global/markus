@@ -407,7 +407,7 @@ export class MCPClientManager {
       const id = ++this.requestId;
       const message = JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n';
 
-      const timeoutMs = method === 'tools/call' ? 120_000 : 30_000;
+      const timeoutMs = method === 'tools/call' ? 120_000 : 60_000;
       const timer = setTimeout(() => {
         this.pendingRequests.delete(id);
         reject(new Error(`MCP request timeout for ${method} (id=${id}, ${timeoutMs}ms)`));
