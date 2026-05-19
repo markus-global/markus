@@ -177,6 +177,21 @@ TypeScript monorepo with modular packages:
 
 ---
 
+## Blog & Articles
+
+Learn about Markus from our growing collection of articles covering architecture, multi-agent systems, and AI workforce management:
+
+| Article | Description |
+|---------|-------------|
+| [Markus: An Open-Source AI Employee Platform — Deep Dive](https://markus.global/blog/markus-open-source-ai-employee-platform-deep-dive/) | Architecture overview: agent runtime, memory systems, tool ecosystem, and deployment |
+| [Why Traditional AI Tools Aren't Enough: The Case for AI Employees](https://markus.global/blog/why-traditional-ai-tools-are-not-enough-ai-employees/) | From copilots and chatbots to autonomous, collaborative AI workforces |
+| [Markus vs LangChain vs CrewAI vs AutoGPT: Architecture Comparison](https://markus.global/blog/markus-vs-langchain-vs-crewai-vs-autogpt-architecture-comparison/) | Technical comparison of agent frameworks across runtime, memory, governance, and production readiness |
+| [如何用 Markus 搭建你的第一个 AI 团队](https://markus.global/blog/ru-he-yong-markus-da-jian-di-yi-ge-ai-tuan-dui/) | 中文教程：5分钟从零搭建你的第一个AI数字员工团队（中文） |
+| [X.com Thread: Markus — The AI Workforce OS](https://x.com/jsyqrt/status/2053816964527874383) | 7-post thread: multi-agent collaboration, GEO optimization, autonomous execution, quality control |
+| [掘金: Markus 开源项目分析](https://juejin.cn/post/7638525040418963519) | Markus 开源项目分析：一个 AI 数字员工平台的架构与上手指南（中文） |
+
+---
+
 ## Documentation
 
 | Guide | Description |
