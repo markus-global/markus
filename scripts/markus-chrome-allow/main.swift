@@ -39,6 +39,44 @@ if args.contains("--open-accessibility") {
     exit(0)
 }
 
+// --list-windows: debug mode to show all Chrome windows
+if args.contains("--list-windows") {
+    let chromeDebugApps = NSRunningApplication.runningApplications(
+        withBundleIdentifier: "com.google.Chrome"
+    )
+    guard let chromeDebug = chromeDebugApps.first else {
+        jsonOut(["error": "Chrome not running"])
+        exit(1)
+    }
+    let pid = Int(chromeDebug.processIdentifier)
+    guard let windowList = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
+        jsonOut(["error": "Cannot get window list"])
+        exit(1)
+    }
+    var windows: [[String: Any]] = []
+    for info in windowList {
+        guard let ownerPid = info[kCGWindowOwnerPID as String] as? Int, ownerPid == pid else { continue }
+        var entry: [String: Any] = [:]
+        entry["name"] = info[kCGWindowName as String] as? String ?? "(nil)"
+        entry["layer"] = info[kCGWindowLayer as String] as? Int ?? -1
+        if let boundsDict = info[kCGWindowBounds as String] {
+            var rect = CGRect.zero
+            if CGRectMakeWithDictionaryRepresentation(boundsDict as! CFDictionary, &rect) {
+                entry["x"] = Int(rect.origin.x)
+                entry["y"] = Int(rect.origin.y)
+                entry["w"] = Int(rect.width)
+                entry["h"] = Int(rect.height)
+            }
+        }
+        windows.append(entry)
+    }
+    if let data = try? JSONSerialization.data(withJSONObject: windows, options: .prettyPrinted),
+       let str = String(data: data, encoding: .utf8) {
+        print(str)
+    }
+    exit(0)
+}
+
 guard AXIsProcessTrusted() else {
     exitWithError("Accessibility permission not granted", code: 2)
 }
@@ -61,6 +99,7 @@ let chromePid = Int(chrome.processIdentifier)
 // Dialog window name patterns (multi-language)
 let dialogNamePatterns = [
     "允许远程调试",
+    "要允许远程调试吗",
     "Allow remote debugging",
     "Allow debugging",
     "リモートデバッグを許可",
@@ -171,4 +210,5 @@ while Date() < deadline {
     Thread.sleep(forTimeInterval: pollInterval)
 }
 
-exitWithError("Allow button not found within timeout", code: 1)
+jsonOut(["clicked": false, "reason": "no_dialog_found"])
+exit(1)

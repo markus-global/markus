@@ -48,7 +48,7 @@ export class BrowserSessionManager {
   /**
    * Per-agent mutex: only one browser operation runs at a time per MCP process.
    * This prevents session A's "select → operate" from being interleaved with
-   * session B's operations.
+   * session B's operations within the same agent.
    */
   private agentLocks = new Map<string, Promise<void>>();
 
@@ -58,6 +58,7 @@ export class BrowserSessionManager {
    * going through the ownership check wrapper.
    */
   private selectPageHandlers = new Map<string, AgentToolHandler>();
+  private listPageHandlers = new Map<string, AgentToolHandler>();
 
   /**
    * Per-agent callback to disconnect + reconnect the MCP server process.
@@ -66,7 +67,7 @@ export class BrowserSessionManager {
    * Since handlers look up the server by key dynamically, they automatically
    * route to the new process after reconnect.
    */
-  private reconnectors = new Map<string, () => Promise<void>>();
+  private reconnectors = new Map<string, Map<string, () => Promise<void>>>();
 
   private _bringToFront = false;
   private _autoCloseTabs = true;
@@ -77,11 +78,16 @@ export class BrowserSessionManager {
   set autoCloseTabs(v: boolean) { this._autoCloseTabs = v; }
 
   /**
-   * Register a reconnect callback for an agent's MCP server.
-   * Called by agent-manager after wrapToolHandlers.
+   * Register a reconnect callback for a specific MCP server of an agent.
+   * Multiple servers can each have their own reconnector without overwriting.
    */
-  setReconnector(agentId: string, callback: () => Promise<void>): void {
-    this.reconnectors.set(agentId, callback);
+  setReconnector(agentId: string, serverKey: string, callback: () => Promise<void>): void {
+    let map = this.reconnectors.get(agentId);
+    if (!map) {
+      map = new Map();
+      this.reconnectors.set(agentId, map);
+    }
+    map.set(serverKey, callback);
   }
 
   // ─── Stale page recovery ──────────────────────────────────────────────────
@@ -91,11 +97,13 @@ export class BrowserSessionManager {
   }
 
   /**
-   * Clear all ownership state for an agent and reconnect its MCP server.
-   * Returns true if reconnect succeeded.
+   * Reconnect the MCP server for an agent. Preserves ownership state
+   * because page IDs remain stable across reconnects (Chrome stays running).
+   * Only clears the currentPage pointer so the next operation re-selects.
    */
   private async reconnectMcp(agentId: string): Promise<boolean> {
-    const reconnect = this.reconnectors.get(agentId);
+    const map = this.reconnectors.get(agentId);
+    const reconnect = map?.get('chrome-devtools');
     if (!reconnect) {
       log.warn(`No reconnector available for agent ${agentId}`);
       return false;
@@ -103,11 +111,11 @@ export class BrowserSessionManager {
 
     log.info(`Stale page detected for agent ${agentId} — reconnecting MCP server`);
 
-    // Clear all session state for this agent
+    // Only clear currentPage and lastActive (forces re-select on next op).
+    // Ownership is preserved — page IDs are stable since Chrome is still running.
     const prefix = `${agentId}::`;
-    for (const key of [...this.ownedPages.keys()]) {
+    for (const key of [...this.currentPage.keys()]) {
       if (key === agentId || key.startsWith(prefix)) {
-        this.ownedPages.delete(key);
         this.currentPage.delete(key);
       }
     }
@@ -116,10 +124,40 @@ export class BrowserSessionManager {
     try {
       await reconnect();
       log.info(`MCP server reconnected for agent ${agentId}`);
+      await this.pruneOwnedPages(agentId);
       return true;
     } catch (err) {
       log.error(`Failed to reconnect MCP server for agent ${agentId}: ${err}`);
       return false;
+    }
+  }
+
+  /**
+   * After reconnect, call list_pages and prune ownedPages to only valid IDs.
+   * Pages that were closed while the MCP was disconnected are removed.
+   */
+  private async pruneOwnedPages(agentId: string): Promise<void> {
+    const listHandler = this.listPageHandlers.get(agentId);
+    if (!listHandler) return;
+
+    try {
+      const result = await listHandler.execute({});
+      const livePages = this.parsePageEntries(result);
+      const liveIds = new Set(livePages.map(p => p.id));
+
+      const prefix = `${agentId}::`;
+      for (const [key, owned] of this.ownedPages) {
+        if (key === agentId || key.startsWith(prefix)) {
+          for (const pageId of owned) {
+            if (!liveIds.has(pageId)) {
+              owned.delete(pageId);
+              log.debug(`Pruned stale page ${pageId} from ${key}`);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      log.warn(`Failed to prune owned pages for ${agentId}: ${err}`);
     }
   }
 
@@ -216,15 +254,20 @@ export class BrowserSessionManager {
       handlers.find((h) => (h.name.split('__').pop() ?? h.name) === name);
     const newPageHandler = findHandler('new_page');
     const selectPageHandler = findHandler('select_page');
+    const listPageHandler = findHandler('list_pages');
 
     if (selectPageHandler) {
       this.selectPageHandlers.set(agentId, selectPageHandler);
+    }
+    if (listPageHandler) {
+      this.listPageHandlers.set(agentId, listPageHandler);
     }
 
     return handlers.map((h) => {
       const baseName = h.name.split('__').pop() ?? h.name;
       switch (baseName) {
         case 'new_page':
+        case 'open_page':
           return this.wrapNewPage(h, agentId);
         case 'list_pages':
           return this.wrapListPages(h, agentId);
@@ -293,14 +336,16 @@ export class BrowserSessionManager {
       ...handler,
       execute: async (args: Record<string, unknown>) => {
         const ownerKey = this.extractOwnerKey(agentId, args);
-        let result = await handler.execute(args);
+        return this.withAgentLock(agentId, async () => {
+          let result = await handler.execute(args);
 
-        if (this.isStalePageError(result)) {
-          const ok = await this.reconnectMcp(agentId);
-          if (ok) result = await handler.execute(args);
-        }
+          if (this.isStalePageError(result)) {
+            const ok = await this.reconnectMcp(agentId);
+            if (ok) result = await handler.execute(args);
+          }
 
-        return this.annotateResponse(result, ownerKey);
+          return this.annotateResponse(result, ownerKey);
+        });
       },
     };
   }
@@ -325,8 +370,15 @@ export class BrowserSessionManager {
           if (this.isStalePageError(result)) {
             const ok = await this.reconnectMcp(agentId);
             if (ok) {
-              return 'Browser session was reset because tabs were closed externally. '
-                + 'Your previously owned tabs are gone. Call new_page or navigate_page to create a new tab.';
+              // Remove only the failed page from ownership
+              if (pageId !== undefined) {
+                this.getOwned(ownerKey).delete(pageId);
+                if (this.currentPage.get(ownerKey) === pageId) {
+                  this.currentPage.delete(ownerKey);
+                }
+              }
+              return `Tab ${pageId ?? 'unknown'} was closed externally. `
+                + `${this.ownedPagesSummary(ownerKey)} Call new_page or navigate_page to create a new tab.`;
             }
           }
 
@@ -357,8 +409,17 @@ export class BrowserSessionManager {
           if (this.isStalePageError(result)) {
             const ok = await this.reconnectMcp(agentId);
             if (ok) {
-              return 'Browser session was reset because tabs were closed externally. '
-                + 'Your previously owned tabs are gone. Call new_page or navigate_page to create a new tab.';
+              // Remove only the failed page from ownership
+              if (pageId !== undefined) {
+                this.getOwned(ownerKey).delete(pageId);
+              }
+              const remaining = this.getOwned(ownerKey);
+              if (remaining.size > 0) {
+                return `Tab ${pageId ?? 'unknown'} was already closed externally. `
+                  + `${this.ownedPagesSummary(ownerKey)}`;
+              }
+              return `Tab ${pageId ?? 'unknown'} was closed externally and you have no remaining tabs. `
+                + 'Call new_page or navigate_page to create a new tab.';
             }
           }
 
@@ -505,8 +566,14 @@ export class BrowserSessionManager {
           if (this.isStalePageError(result)) {
             const ok = await this.reconnectMcp(agentId);
             if (ok) {
-              return 'Browser session was reset because tabs were closed externally. '
-                + 'Your previously owned tabs are gone. Call navigate_page or new_page to create a new tab, then retry.';
+              // Remove the stale page from ownership
+              const currentPageId = this.currentPage.get(ownerKey);
+              if (currentPageId !== undefined) {
+                this.getOwned(ownerKey).delete(currentPageId);
+                this.currentPage.delete(ownerKey);
+              }
+              return `The tab you were operating on was closed externally. `
+                + `${this.ownedPagesSummary(ownerKey)} Call navigate_page or new_page to create a new tab, then retry.`;
             }
           }
 
@@ -530,6 +597,7 @@ export class BrowserSessionManager {
     }
     this.agentLocks.delete(agentId);
     this.selectPageHandlers.delete(agentId);
+    this.listPageHandlers.delete(agentId);
     this.lastActiveSession.delete(agentId);
     this.reconnectors.delete(agentId);
     if (total > 0) {

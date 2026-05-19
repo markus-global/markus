@@ -152,9 +152,11 @@ export async function testAutoClick(): Promise<AutoClickTestResult> {
 
 /**
  * Spawn chrome-devtools-mcp, auto-click the Allow dialog, then navigate to a page.
+ * If Chrome is already in debug mode, connection succeeds without dialog.
  * Returns whether navigation succeeded and the page title.
  */
 async function runMcpTest(): Promise<{ navigated: boolean; title?: string }> {
+
   const npxCmd = platform() === 'win32' ? 'npx.cmd' : 'npx';
 
   return new Promise((resolveTest, rejectTest) => {
@@ -247,23 +249,15 @@ async function runMcpTest(): Promise<{ navigated: boolean; title?: string }> {
         sendNotification('notifications/initialized', {});
         await sendRequest('tools/list', {});
 
-        // open_page (new tab) triggers Chrome CDP connection → "Allow" dialog
+        // open_page triggers Chrome CDP connection → "Allow" dialog
+        // Open in foreground so the user can see the test working
         const navResult = await sendRequest('tools/call', {
           name: 'open_page',
-          arguments: { url: 'https://example.com', background: true },
+          arguments: { url: 'https://example.com' },
         }) as { content?: Array<{ text?: string }> };
 
         const text = navResult?.content?.[0]?.text ?? '';
         const navigated = !text.toLowerCase().includes('error');
-
-        // Close the test tab to avoid leaving garbage
-        const pageIdMatch = text.match(/(\d+):\s*https?:\/\/example\.com/);
-        if (pageIdMatch) {
-          await sendRequest('tools/call', {
-            name: 'close_page',
-            arguments: { pageId: Number(pageIdMatch[1]) },
-          }).catch(() => {});
-        }
 
         clearTimeout(timeout);
         cleanup();

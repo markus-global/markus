@@ -10,7 +10,7 @@ interface MCPServerConfig {
   env?: Record<string, string>;
 }
 
-interface MCPToolDescriptor {
+export interface MCPToolDescriptor {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
@@ -48,9 +48,14 @@ export class MCPClientManager {
   private stdoutBuffers = new Map<ChildProcess, string>();
   private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private idleTimeoutMs: number = DEFAULT_IDLE_TIMEOUT_MS;
+  private onReconnectCallback?: (serverName: string) => void;
 
   private static scopedKey(name: string, scopeId: string): string {
     return `${name}::${scopeId}`;
+  }
+
+  setOnReconnect(callback: (serverName: string) => void): void {
+    this.onReconnectCallback = callback;
   }
 
   setIdleTimeout(ms: number): void {
@@ -150,6 +155,9 @@ export class MCPClientManager {
 
       this.servers.set(key, { process: proc, tools });
       this.resetIdleTimer(key);
+      // Cache tool descriptors by base server name (for lazy registration)
+      const baseName = key.split('::')[0];
+      this.toolCache.set(baseName, tools);
       log.info(`MCP server ${displayName} connected with ${tools.length} tools`);
 
       return tools;
@@ -167,10 +175,35 @@ export class MCPClientManager {
   /**
    * Connect a scoped (per-agent) instance of the MCP server.
    * Each (name, scopeId) pair gets its own child process.
+   * Serialized via startup lock to prevent concurrent connections to the same external resource.
    */
   async connectServerScoped(name: string, config: MCPServerConfig, scopeId: string): Promise<MCPToolDescriptor[]> {
     const key = MCPClientManager.scopedKey(name, scopeId);
-    return this.connectByKey(key, `${name}[${scopeId}]`, config);
+    let tools: MCPToolDescriptor[] = [];
+    await this.withStartupLock(name, async () => {
+      tools = await this.connectByKey(key, `${name}[${scopeId}]`, config);
+    });
+    return tools;
+  }
+
+  /**
+   * Startup semaphore: serializes MCP process creation for servers that share
+   * an external resource (e.g. chrome-devtools → Chrome). Prevents concurrent
+   * CDP connections from crashing Chrome.
+   */
+  private startupLocks = new Map<string, Promise<void>>();
+
+  private async withStartupLock(serverName: string, fn: () => Promise<void>): Promise<void> {
+    const prev = this.startupLocks.get(serverName) ?? Promise.resolve();
+    let release: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    this.startupLocks.set(serverName, gate);
+    await prev;
+    try {
+      await fn();
+    } finally {
+      release!();
+    }
   }
 
   private async callToolByKey(key: string, toolName: string, args: Record<string, unknown>): Promise<string> {
@@ -180,7 +213,13 @@ export class MCPClientManager {
       const saved = this.serverConfigs.get(key);
       if (saved) {
         log.info(`MCP server ${key} not running, auto-reconnecting...`);
-        await this.connectByKey(key, saved.displayName, saved.config);
+        const serverName = key.split('::')[0];
+        this.onReconnectCallback?.(serverName);
+        await this.withStartupLock(serverName, async () => {
+          if (!this.servers.has(key)) {
+            await this.connectByKey(key, saved.displayName, saved.config);
+          }
+        });
         server = this.servers.get(key);
       }
       if (!server) throw new Error(`MCP server not found: ${key}`);
@@ -219,6 +258,26 @@ export class MCPClientManager {
     }));
   }
 
+  /**
+   * Register a server config and tool descriptors WITHOUT starting the process.
+   * Returns tool handlers that will auto-connect on first call via callToolByKey.
+   * Used for lazy-start servers (e.g. chrome-devtools: only connect when agent
+   * actually calls a browser tool).
+   */
+  registerLazyScoped(name: string, config: MCPServerConfig, scopeId: string, tools: MCPToolDescriptor[]): AgentToolHandler[] {
+    const key = MCPClientManager.scopedKey(name, scopeId);
+    const displayName = `${name}[${scopeId}]`;
+    this.serverConfigs.set(key, { displayName, config });
+    return tools.map((tool) => ({
+      name: `${name}__${tool.name}`,
+      description: `[MCP:${name}] ${tool.description}`,
+      inputSchema: tool.inputSchema,
+      execute: async (args: Record<string, unknown>) => {
+        return this.callToolByKey(key, tool.name, args);
+      },
+    }));
+  }
+
   getToolHandlers(serverName: string): AgentToolHandler[] {
     return this.getToolHandlersByKey(serverName, serverName);
   }
@@ -238,6 +297,21 @@ export class MCPClientManager {
       toolCount: s.tools.length,
     }));
   }
+
+  /**
+   * Get cached tool descriptors for a server (from any scoped or shared instance).
+   * Returns undefined if no instance has connected yet.
+   */
+  getCachedTools(serverName: string): MCPToolDescriptor[] | undefined {
+    for (const [key, server] of this.servers) {
+      if (key === serverName || key.startsWith(`${serverName}::`)) {
+        return server.tools;
+      }
+    }
+    return this.toolCache.get(serverName);
+  }
+
+  private toolCache = new Map<string, MCPToolDescriptor[]>();
 
   async disconnectServer(name: string): Promise<void> {
     const server = this.servers.get(name);
@@ -260,10 +334,13 @@ export class MCPClientManager {
    * Shared (non-scoped) servers are not affected.
    * The server configs are retained so the server can auto-reconnect on next tool call.
    */
-  async disconnectAllForScope(scopeId: string): Promise<void> {
+  async disconnectAllForScope(scopeId: string, opts?: { skip?: string[] }): Promise<void> {
     const suffix = `::${scopeId}`;
+    const skipSet = opts?.skip ? new Set(opts.skip) : undefined;
     for (const key of [...this.servers.keys()]) {
       if (key.endsWith(suffix)) {
+        const serverName = key.split('::')[0];
+        if (skipSet?.has(serverName)) continue;
         await this.disconnectServer(key);
       }
     }
