@@ -1184,9 +1184,17 @@ export const api = {
     getAgent: () => request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent'),
     updateAgent: (settings: { maxToolIterations?: number; cognitive?: { enabled?: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }) =>
       request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent', { method: 'POST', body: JSON.stringify(settings) }),
-    getBrowser: () => request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean }>('/settings/browser'),
-    updateBrowser: (settings: { bringToFront?: boolean; remoteDebuggingPort?: number; autoCloseTabs?: boolean }) =>
-      request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean }>('/settings/browser', { method: 'POST', body: JSON.stringify(settings) }),
+    getBrowser: () => request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean }>('/settings/browser'),
+    updateBrowser: (settings: { bringToFront?: boolean; remoteDebuggingPort?: number; autoCloseTabs?: boolean; autoClickAllowDialog?: boolean }) =>
+      request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean }>('/settings/browser', { method: 'POST', body: JSON.stringify(settings) }),
+    testAutoClick: () => request<{
+      checkResult: { platform: string; supported: boolean; accessibilityPermission: boolean; chromeRunning: boolean; binaryAvailable: boolean };
+      openedAccessibilitySettings: boolean;
+      clickResult: 'success' | 'no_permission' | 'chrome_not_running' | 'unsupported' | 'error';
+      pageLoaded: boolean;
+      pageTitle?: string;
+      error?: string;
+    }>('/settings/browser/test-auto-click', { method: 'POST' }),
     getSearch: () => request<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search'),
     updateSearch: (keys: { serperApiKey?: string; braveApiKey?: string; bochaApiKey?: string }) =>
       request<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search', { method: 'POST', body: JSON.stringify(keys) }),

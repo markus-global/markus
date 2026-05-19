@@ -235,3 +235,10 @@ export {
   type AgentDataProvider,
   type AgentDataRestorer,
 } from './agent-snapshot.js';
+export {
+  clickChromeAllowDialog,
+  checkAutoClickStatus,
+  testAutoClick,
+  type AutoClickCheckResult,
+  type AutoClickTestResult,
+} from './tools/chrome-dialog-clicker.js';

@@ -77,6 +77,31 @@ If the MCP server is running, it will appear as a connected client.
 - **Firewall**: Ensure localhost access to the debugging port is not blocked.
 - **Memory Saver**: Chrome's Memory Saver can freeze tabs and cause connection timeouts. Disable it at `chrome://settings/performance` or upgrade to Chrome 146+.
 - **Permission dialog**: On first Auto-Connect, Chrome shows a permission dialog — click **Allow**.
+  If this blocks automation, see "Permission dialog auto-click" below.
+
+### Permission dialog auto-click
+
+If the Chrome permission dialog blocks automation (connection timeout or failure), check and
+advise the user based on their platform:
+
+**macOS / Windows:**
+Suggest enabling "Auto-Allow Chrome Debugging Dialog" in Settings > Browser Automation.
+On macOS, this requires Accessibility permission — guide the user:
+1. Open System Settings > Privacy & Security > Accessibility
+2. Add the application running Markus (Markus.app, Terminal, or iTerm) to the allowed list
+3. Enable the toggle in Settings > Browser Automation
+
+On Windows, no additional permissions are needed.
+
+**Linux:**
+Auto-click is not supported on Linux. Recommend using Remote Debugging Port instead:
+1. Launch Chrome with `--remote-debugging-port=9222`
+2. Set port 9222 in Settings > Browser Automation > Remote Debugging Port
+
+**All platforms (alternative):**
+If the user prefers not to grant accessibility permission, using a dedicated Chrome profile
+with `--remote-debugging-port=9222 --user-data-dir=/path/to/markus-profile` eliminates
+the permission dialog entirely.
 
 ## Prerequisites
 

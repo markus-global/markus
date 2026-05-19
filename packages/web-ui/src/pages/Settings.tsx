@@ -156,6 +156,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [browserBringToFront, setBrowserBringToFront] = useState(false);
   const [browserRemotePort, setBrowserRemotePort] = useState(0);
   const [browserAutoClose, setBrowserAutoClose] = useState(true);
+  const [browserAutoClickAllow, setBrowserAutoClickAllow] = useState(false);
   const [browserSaving, setBrowserSaving] = useState(false);
   const [browserMsg, setBrowserMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
@@ -224,6 +225,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           setBrowserBringToFront(d.bringToFront ?? false);
           setBrowserRemotePort(d.remoteDebuggingPort ?? 0);
           setBrowserAutoClose(d.autoCloseTabs ?? true);
+          setBrowserAutoClickAllow(d.autoClickAllowDialog ?? false);
         }
       })
       .catch(() => {});
@@ -1795,6 +1797,63 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               >
                 <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${browserAutoClose ? 'translate-x-4' : 'translate-x-1'}`} />
               </button>
+            </div>
+
+            {/* Auto-click Chrome Allow Dialog toggle */}
+            <div className="border-t border-border-default pt-4">
+              <div className="flex items-center justify-between">
+                <div className="flex-1 mr-4">
+                  <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.autoClickAllowDialog')}</div>
+                  <div className="text-xs text-fg-tertiary mt-0.5">
+                    {t('browserAutomation.autoClickAllowDialogDesc')}
+                  </div>
+                  <div className="text-xs text-fg-tertiary mt-2 space-y-0.5">
+                    <div>{t('browserAutomation.autoClickAllowDialogMacNote')}</div>
+                    <div>{t('browserAutomation.autoClickAllowDialogWinNote')}</div>
+                    <div>{t('browserAutomation.autoClickAllowDialogLinuxNote')}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    disabled={browserSaving}
+                    onClick={async () => {
+                      setBrowserSaving(true); setBrowserMsg(null);
+                      try {
+                        const result = await api.settings.testAutoClick();
+                        const msgMap: Record<string, { type: 'ok' | 'err'; text: string }> = {
+                          success: { type: 'ok', text: t('browserAutomation.autoClickTestSuccess', { title: result.pageTitle || 'example.com' }) },
+                          no_permission: { type: 'err', text: t('browserAutomation.autoClickTestNoPermission') },
+                          chrome_not_running: { type: 'err', text: t('browserAutomation.autoClickTestChromeNotRunning') },
+                          unsupported: { type: 'err', text: t('browserAutomation.autoClickTestUnsupported') },
+                          error: { type: 'err', text: t('browserAutomation.autoClickTestError', { error: result.error || 'unknown' }) },
+                        };
+                        setBrowserMsg(msgMap[result.clickResult] ?? { type: 'err', text: result.clickResult });
+                      } catch { setBrowserMsg({ type: 'err', text: t('browserAutomation.autoClickTestError', { error: 'request failed' }) }); }
+                      setBrowserSaving(false);
+                    }}
+                    className="px-3 py-1.5 text-xs bg-surface-primary border border-border-default text-fg-primary rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-40"
+                  >
+                    {browserSaving ? t('browserAutomation.autoClickTesting') : t('browserAutomation.autoClickTest')}
+                  </button>
+                  <button
+                    onClick={async () => {
+                      const newVal = !browserAutoClickAllow;
+                      setBrowserAutoClickAllow(newVal);
+                      setBrowserSaving(true); setBrowserMsg(null);
+                      try {
+                        const d = await api.settings.updateBrowser({ autoClickAllowDialog: newVal });
+                        setBrowserAutoClickAllow(d.autoClickAllowDialog);
+                        setBrowserMsg({ type: 'ok', text: t('agentExecution.saved') });
+                      } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); setBrowserAutoClickAllow(!newVal); }
+                      setBrowserSaving(false);
+                    }}
+                    disabled={browserSaving}
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${browserAutoClickAllow ? 'bg-green-500' : 'bg-gray-600'} ${browserSaving ? 'opacity-50' : ''}`}
+                  >
+                    <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${browserAutoClickAllow ? 'translate-x-4' : 'translate-x-1'}`} />
+                  </button>
+                </div>
+              </div>
             </div>
 
             {/* Remote Debugging Port */}

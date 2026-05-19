@@ -250,6 +250,9 @@ export class BrowserSessionManager {
         if (args.background === undefined) {
           args.background = !this._bringToFront;
         }
+        if (args.timeout === undefined && args.url) {
+          args.timeout = 60000;
+        }
         return this.withAgentLock(agentId, async () => {
           const owned = this.getOwned(ownerKey);
           const prevIds = new Set(owned);
@@ -385,6 +388,9 @@ export class BrowserSessionManager {
     return {
       ...handler,
       execute: async (args: Record<string, unknown>) => {
+        if (args.timeout === undefined) {
+          args.timeout = 60000;
+        }
         const ownerKey = this.extractOwnerKey(agentId, args);
         const owned = this.getOwned(ownerKey);
 
@@ -476,6 +482,9 @@ export class BrowserSessionManager {
     return {
       ...handler,
       execute: async (args: Record<string, unknown>) => {
+        if (args.timeout === undefined && args.url) {
+          args.timeout = 60000;
+        }
         const ownerKey = this.extractOwnerKey(agentId, args);
         const owned = this.getOwned(ownerKey);
         if (owned.size === 0) {

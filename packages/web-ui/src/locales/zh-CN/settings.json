@@ -252,7 +252,21 @@
     "tabsForeground": "标签页将置于前台",
     "tabsBackground": "标签页将保留在后台",
     "usingPort": "正在使用端口 {{port}} 的持久连接（不再出现权限对话框）",
-    "usingAutoConnect": "正在使用自动连接模式（每次连接都需要权限对话框）"
+    "usingAutoConnect": "正在使用自动连接模式（每次连接都需要权限对话框）",
+    "autoClickAllowDialog": "自动允许 Chrome 调试弹窗",
+    "autoClickAllowDialogDesc": "Chrome 每次被 Markus 连接时都会弹出「允许远程调试？」对话框。开启后，Markus 通过操作系统辅助功能 API 自动点击「允许」按钮。",
+    "autoClickAllowDialogMacNote": "macOS：需在「系统设置 → 隐私与安全性 → 辅助功能」中授予运行 Markus 的应用（Markus.app / Terminal / iTerm）权限。",
+    "autoClickAllowDialogWinNote": "Windows：无需额外权限，使用内置 UI Automation。",
+    "autoClickAllowDialogLinuxNote": "Linux：暂不支持。请使用上方「远程调试端口」作为替代方案。",
+    "autoClickAllowDialogSupported": "当前平台支持",
+    "autoClickAllowDialogUnsupported": "当前平台暂不支持",
+    "autoClickTest": "测试",
+    "autoClickTesting": "测试中...",
+    "autoClickTestSuccess": "自动点击验证通过！已成功连接 Chrome 并加载测试页面（{{title}}）。",
+    "autoClickTestNoPermission": "辅助功能权限未授予。已打开系统设置页面，请将本应用添加到列表中。",
+    "autoClickTestChromeNotRunning": "Chrome 未运行。请先启动 Chrome。",
+    "autoClickTestUnsupported": "当前平台不支持自动点击。请使用「远程调试端口」作为替代方案。",
+    "autoClickTestError": "测试失败：{{error}}"
   },
   "dataStorage": {
     "title": "数据与存储",

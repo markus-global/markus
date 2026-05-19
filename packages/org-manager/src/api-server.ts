@@ -7099,6 +7099,7 @@ EXPLANATION_END`;
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
+        autoClickAllowDialog: browser.autoClickAllowDialog ?? false,
       });
       return;
     }
@@ -7111,6 +7112,7 @@ EXPLANATION_END`;
       if (typeof body['bringToFront'] === 'boolean') updates.bringToFront = body['bringToFront'];
       if (typeof body['remoteDebuggingPort'] === 'number') updates.remoteDebuggingPort = body['remoteDebuggingPort'];
       if (typeof body['autoCloseTabs'] === 'boolean') updates.autoCloseTabs = body['autoCloseTabs'];
+      if (typeof body['autoClickAllowDialog'] === 'boolean') updates.autoClickAllowDialog = body['autoClickAllowDialog'];
       try {
         saveConfig({ browser: updates } as any, this.markusConfigPath);
         const am = this.orgService.getAgentManager();
@@ -7122,6 +7124,9 @@ EXPLANATION_END`;
         }
         if (typeof updates.remoteDebuggingPort === 'number') {
           am.setBrowserRemoteDebuggingPort(updates.remoteDebuggingPort);
+        }
+        if (typeof updates.autoClickAllowDialog === 'boolean') {
+          am.setBrowserAutoClickAllowDialog(updates.autoClickAllowDialog);
         }
       } catch (e) {
         log.warn('Failed to persist browser settings', { error: String(e) });
@@ -7144,7 +7149,18 @@ EXPLANATION_END`;
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
+        autoClickAllowDialog: browser.autoClickAllowDialog ?? false,
       });
+      return;
+    }
+
+    // Settings — Browser auto-click test
+    if (path === '/api/settings/browser/test-auto-click' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const { testAutoClick } = await import('@markus/core');
+      const result = await testAutoClick();
+      this.json(res, 200, result);
       return;
     }
 
@@ -9743,6 +9759,7 @@ EXPLANATION_END`;
       exact('/api/settings/agent', 'GET', 'POST'),
       exact('/api/settings/browser', 'GET', 'POST'),
       exact('/api/settings/browser/check', 'GET'),
+      exact('/api/settings/browser/test-auto-click', 'POST'),
       exact('/api/settings/search', 'GET', 'POST'),
       exact('/api/settings/env-models', 'GET', 'POST'),
       exact('/api/settings/detect-ollama', 'GET'),

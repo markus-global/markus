@@ -34,6 +34,7 @@ import { createSettingsTools } from './tools/settings.js';
 import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
+import { clickChromeAllowDialog } from './tools/chrome-dialog-clicker.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
 import { DelegationManager, type TaskDelegation } from '@markus/a2a';
 import type { TemplateRegistry } from './templates/registry.js';
@@ -302,6 +303,7 @@ export class AgentManager {
   private mcpManager: MCPClientManager;
   private browserSessionManager: BrowserSessionManager;
   private remoteDebuggingPort = 0;
+  private autoClickAllowDialog = false;
   private globalSecurityPolicy?: SecurityPolicy;
   private globalMcpServers?: Record<string, MCPServerConfig>;
   private skillRegistry?: SkillRegistry;
@@ -587,6 +589,10 @@ export class AgentManager {
     this.remoteDebuggingPort = port;
   }
 
+  setBrowserAutoClickAllowDialog(enabled: boolean): void {
+    this.autoClickAllowDialog = enabled;
+  }
+
   /**
    * When remoteDebuggingPort is configured, replace --autoConnect with
    * --browserUrl so that the chrome-devtools MCP server reuses a persistent
@@ -604,6 +610,22 @@ export class AgentManager {
       args.push('--browserUrl', `http://127.0.0.1:${this.remoteDebuggingPort}`);
     }
     return { ...config, args };
+  }
+
+  private chromeAutoClickRunning = false;
+
+  /**
+   * Trigger auto-click of Chrome's "Allow remote debugging?" dialog before
+   * an MCP connection is established. Only fires when the feature is enabled
+   * and the server is chrome-devtools. Ensures only one instance runs at a time.
+   */
+  private triggerChromeDialogAutoClick(serverName: string): void {
+    if (serverName !== 'chrome-devtools' || !this.autoClickAllowDialog) return;
+    if (this.chromeAutoClickRunning) return;
+    this.chromeAutoClickRunning = true;
+    clickChromeAllowDialog(60).catch(() => {}).finally(() => {
+      this.chromeAutoClickRunning = false;
+    });
   }
 
   setTaskService(taskService: TaskServiceBridge): void {
@@ -868,15 +890,18 @@ export class AgentManager {
               let mcpTools: AgentToolHandler[];
               if (isolation === 'per-agent' || isolation === 'pooled') {
                 const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
+                this.triggerChromeDialogAutoClick(serverName);
                 await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                 mcpTools = this.mcpManager.getToolHandlersScoped(serverName, id);
                 mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, id);
                 this.browserSessionManager.setReconnector(id, async () => {
+                  this.triggerChromeDialogAutoClick(serverName);
                   await this.mcpManager.disconnectServerScoped(serverName, id);
                   await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                 });
               } else {
                 const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
+                this.triggerChromeDialogAutoClick(serverName);
                 await this.mcpManager.connectServer(serverName, serverConfig);
                 mcpTools = this.mcpManager.getToolHandlers(serverName);
               }
@@ -908,10 +933,12 @@ export class AgentManager {
         if (isolation === 'per-agent' || isolation === 'pooled') {
           const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
           await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
+          this.triggerChromeDialogAutoClick(serverName);
           tools.push(...this.mcpManager.getToolHandlersScoped(serverName, id));
         } else {
           const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
           await this.mcpManager.connectServer(serverName, srvConfig);
+          this.triggerChromeDialogAutoClick(serverName);
           tools.push(...this.mcpManager.getToolHandlers(serverName));
         }
       }
@@ -922,6 +949,7 @@ export class AgentManager {
           this.browserSessionManager.setReconnector(id, async () => {
             await this.mcpManager.disconnectServerScoped(serverName, id);
             await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
+            this.triggerChromeDialogAutoClick(serverName);
           });
         }
       }
@@ -1562,28 +1590,36 @@ export class AgentManager {
       }
 
       // Connect MCP servers declared by explicitly assigned skills (background, non-blocking).
-      // Connections complete asynchronously and register tools when ready.
-      // This avoids blocking startup for slow MCP processes (e.g. npx chrome-devtools).
+      // Skip chrome-devtools during restore — it connects lazily when the agent actually
+      // needs browser tools. This prevents flooding Chrome with 20+ concurrent CDP connections
+      // on startup which causes Chrome to crash.
       const mcpConnections: Array<Promise<void>> = [];
       for (const skillName of config.skills) {
         const skill = this.skillRegistry.get(skillName);
         if (skill?.manifest.mcpServers) {
           const isolation = skill.manifest.isolation ?? 'shared';
           for (const [serverName, rawServerConfig] of Object.entries(skill.manifest.mcpServers)) {
+            if (serverName === 'chrome-devtools') {
+              log.info(`Skipping chrome-devtools MCP restore for agent ${id} (lazy connect)`);
+              continue;
+            }
             mcpConnections.push((async () => {
               try {
                 let mcpTools: AgentToolHandler[];
                 if (isolation === 'per-agent' || isolation === 'pooled') {
                   const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
+                  this.triggerChromeDialogAutoClick(serverName);
                   await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                   mcpTools = this.mcpManager.getToolHandlersScoped(serverName, id);
                   mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, id);
                   this.browserSessionManager.setReconnector(id, async () => {
+                    this.triggerChromeDialogAutoClick(serverName);
                     await this.mcpManager.disconnectServerScoped(serverName, id);
                     await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                   });
                 } else {
                   const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
+                  this.triggerChromeDialogAutoClick(serverName);
                   await this.mcpManager.connectServer(serverName, serverConfig);
                   mcpTools = this.mcpManager.getToolHandlers(serverName);
                 }
@@ -1616,10 +1652,12 @@ export class AgentManager {
       for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
         if (isolation === 'per-agent' || isolation === 'pooled') {
           const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
+          this.triggerChromeDialogAutoClick(serverName);
           await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
           tools.push(...this.mcpManager.getToolHandlersScoped(serverName, id));
         } else {
           const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
+          this.triggerChromeDialogAutoClick(serverName);
           await this.mcpManager.connectServer(serverName, srvConfig);
           tools.push(...this.mcpManager.getToolHandlers(serverName));
         }
@@ -1629,6 +1667,7 @@ export class AgentManager {
         for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
           const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
           this.browserSessionManager.setReconnector(id, async () => {
+            this.triggerChromeDialogAutoClick(serverName);
             await this.mcpManager.disconnectServerScoped(serverName, id);
             await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
           });

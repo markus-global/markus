@@ -69,6 +69,8 @@ export interface MarkusConfig {
     remoteDebuggingPort?: number;
     /** Automatically close agent-owned tabs when the task completes (default: true) */
     autoCloseTabs?: boolean;
+    /** Auto-click Chrome's "Allow debugging" dialog via OS accessibility APIs (macOS/Windows) */
+    autoClickAllowDialog?: boolean;
   };
   integrations?: {
     feishu?: { appId?: string; appSecret?: string };

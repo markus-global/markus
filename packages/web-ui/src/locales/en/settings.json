@@ -252,7 +252,21 @@
     "tabsForeground": "Tabs will be brought to foreground",
     "tabsBackground": "Tabs will stay in background",
     "usingPort": "Using persistent connection on port {{port}} (no more permission dialogs)",
-    "usingAutoConnect": "Using auto-connect mode (permission dialog required on each connection)"
+    "usingAutoConnect": "Using auto-connect mode (permission dialog required on each connection)",
+    "autoClickAllowDialog": "Auto-Allow Chrome Debugging Dialog",
+    "autoClickAllowDialogDesc": "Chrome shows an \"Allow remote debugging?\" dialog each time Markus connects. When enabled, Markus auto-clicks \"Allow\" via OS accessibility APIs.",
+    "autoClickAllowDialogMacNote": "macOS: Grant Accessibility permission in System Settings > Privacy & Security > Accessibility for the app running Markus (Markus.app / Terminal / iTerm).",
+    "autoClickAllowDialogWinNote": "Windows: No additional permissions needed. Uses built-in UI Automation.",
+    "autoClickAllowDialogLinuxNote": "Linux: Not yet supported. Use Remote Debugging Port (above) as an alternative.",
+    "autoClickAllowDialogSupported": "Supported on this platform",
+    "autoClickAllowDialogUnsupported": "Not supported on this platform",
+    "autoClickTest": "Test",
+    "autoClickTesting": "Testing...",
+    "autoClickTestSuccess": "Auto-click verified! Successfully connected to Chrome and loaded a test page ({{title}}).",
+    "autoClickTestNoPermission": "Accessibility permission not granted. The system settings page has been opened — please add this app to the list.",
+    "autoClickTestChromeNotRunning": "Chrome is not running. Please start Chrome first.",
+    "autoClickTestUnsupported": "Auto-click is not supported on this platform. Use Remote Debugging Port instead.",
+    "autoClickTestError": "Test failed: {{error}}"
   },
   "dataStorage": {
     "title": "Data & Storage",

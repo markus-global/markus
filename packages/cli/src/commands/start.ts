@@ -305,6 +305,9 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (config.browser?.remoteDebuggingPort) {
     agentManager.setBrowserRemoteDebuggingPort(config.browser.remoteDebuggingPort);
   }
+  if (config.browser?.autoClickAllowDialog) {
+    agentManager.setBrowserAutoClickAllowDialog(true);
+  }
 
   taskService.setAgentManager(agentManager);
 
