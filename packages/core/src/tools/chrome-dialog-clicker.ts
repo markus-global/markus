@@ -212,7 +212,7 @@ async function runMcpTest(): Promise<{ navigated: boolean; title?: string }> {
         if (!trimmed) continue;
         try {
           const msg = JSON.parse(trimmed);
-          if (msg.id != null && pending.has(msg.id)) {
+          if (msg.id !== null && msg.id !== undefined && pending.has(msg.id)) {
             const p = pending.get(msg.id)!;
             pending.delete(msg.id);
             if (msg.error) p.reject(new Error(msg.error.message ?? JSON.stringify(msg.error)));

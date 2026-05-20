@@ -5,7 +5,7 @@ import { request as httpsRequest } from 'node:https';
 import { createHmac } from 'node:crypto';
 import {
   PeerConnection,
-  DataChannel,
+  type DataChannel,
   initLogger as initRtcLogger,
   type RtcConfig,
   type IceServer,

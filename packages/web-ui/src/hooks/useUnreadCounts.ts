@@ -4,7 +4,7 @@ import { api, wsClient } from '../api.ts';
 const POLL_INTERVAL_MS = 60_000;
 
 let _globalCounts: Record<string, number> = {};
-let _listeners = new Set<() => void>();
+const _listeners = new Set<() => void>();
 
 function notify() {
   for (const fn of _listeners) fn();
