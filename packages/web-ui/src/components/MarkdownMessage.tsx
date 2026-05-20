@@ -192,14 +192,16 @@ function localImageUrl(filePath: string): string {
   return `/api/files/image?path=${encodeURIComponent(filePath)}`;
 }
 
-function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; alt?: string; onPreview?: (src: string) => void; basePath?: string }) {
-  const [loaded, setLoaded] = useState(false);
-  const [error, setError] = useState(false);
+const loadedImageCache = new Set<string>();
 
+function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; alt?: string; onPreview?: (src: string) => void; basePath?: string }) {
   const effectiveSrc = useMemo(() => {
     if (!isLocalImagePath(src)) return src;
     return localImageUrl(resolveImagePath(src, basePath));
   }, [src, basePath]);
+
+  const [loaded, setLoaded] = useState(() => loadedImageCache.has(effectiveSrc));
+  const [error, setError] = useState(false);
 
   return (
     <span className="inline-block align-middle max-w-full">
@@ -220,7 +222,7 @@ function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; alt?: s
           src={effectiveSrc}
           alt={alt ?? ''}
           loading="lazy"
-          onLoad={() => setLoaded(true)}
+          onLoad={() => { loadedImageCache.add(effectiveSrc); setLoaded(true); }}
           onError={() => setError(true)}
           onClick={() => onPreview?.(effectiveSrc)}
           className="max-w-full h-auto rounded-lg cursor-pointer hover:opacity-90 transition-opacity my-1"
