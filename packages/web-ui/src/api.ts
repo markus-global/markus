@@ -306,24 +306,42 @@ export class ApiError extends Error {
   }
 }
 
+const _dedupCache = new Map<string, { promise: Promise<unknown>; ts: number }>();
+const DEDUP_TTL_MS = 3000;
+
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',  // send cookies
-    ...opts,
-    body: opts?.body ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : undefined,
-  });
-  if (!res.ok) {
-    let detail = '';
-    let code: string | undefined;
-    try {
-      const body = await res.json() as { error?: string; message?: string; code?: string };
-      detail = body.error ?? body.message ?? '';
-      code = body.code;
-    } catch { /* ignore parse failures */ }
-    throw new ApiError(detail || `API error: ${res.status}`, code);
+  const method = opts?.method?.toUpperCase() ?? 'GET';
+  const isGet = method === 'GET' && !opts?.body;
+  if (isGet) {
+    const cached = _dedupCache.get(path);
+    if (cached && Date.now() - cached.ts < DEDUP_TTL_MS) return cached.promise as Promise<T>;
   }
-  return res.json() as Promise<T>;
+
+  const promise = (async () => {
+    const res = await fetch(`${BASE}${path}`, {
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      ...opts,
+      body: opts?.body ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : undefined,
+    });
+    if (!res.ok) {
+      let detail = '';
+      let code: string | undefined;
+      try {
+        const body = await res.json() as { error?: string; message?: string; code?: string };
+        detail = body.error ?? body.message ?? '';
+        code = body.code;
+      } catch { /* ignore parse failures */ }
+      throw new ApiError(detail || `API error: ${res.status}`, code);
+    }
+    return res.json() as Promise<T>;
+  })();
+
+  if (isGet) {
+    _dedupCache.set(path, { promise, ts: Date.now() });
+    promise.catch(() => _dedupCache.delete(path));
+  }
+  return promise;
 }
 
 export interface RemotePeerInfo {

@@ -5,6 +5,7 @@ import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { usePageActive } from '../hooks/usePageActive.ts';
 
 type Period = 'daily' | 'weekly' | 'monthly';
 interface ReportsPageProps { authUser?: AuthUser }
@@ -39,6 +40,7 @@ function formatBytes(b: number): string {
 export function ReportsPage({ authUser }: ReportsPageProps) {
   const { t } = useTranslation(['reports', 'common']);
   const isMobile = useIsMobile();
+  const isActive = usePageActive(PAGE.REPORTS);
   const [period, setPeriod] = useState<Period>('weekly');
   const [report, setReport] = useState<ReportInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -87,10 +89,11 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
 
   useEffect(() => { fetchReport(period); }, [period, fetchReport]);
   useEffect(() => {
+    if (!isActive) return;
     fetchUsage();
     const i = setInterval(fetchUsage, 30000);
     return () => clearInterval(i);
-  }, [fetchUsage]);
+  }, [fetchUsage, isActive]);
   useEffect(() => { if (tab === 'history') fetchHistory(); }, [tab, fetchHistory]);
 
   const sortedAgents = useMemo(() => {

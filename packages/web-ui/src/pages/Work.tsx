@@ -14,6 +14,7 @@ import { CommentInput, type PendingImage } from '../components/CommentInput.tsx'
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { usePageActive } from '../hooks/usePageActive.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
@@ -3243,6 +3244,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
 
 export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   const { t } = useTranslation(['work', 'common']);
+  const isActive = usePageActive(PAGE.WORK);
   const boardColumns = useMemo(() => BOARD_COLUMNS_BASE.map(c => ({ ...c, label: t(`work:boardColumn.${c.id}`) })), [t]);
   const subStatusBadges = useMemo(() => buildSubStatusBadges(t), [t]);
   const reqStatusBadges = useMemo(() => buildReqStatusBadges(t), [t]);
@@ -3450,10 +3452,21 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   }, []);
 
   useEffect(() => {
-    const pollMs = selectedTaskRef.current ? 60000 : 15000;
+    if (!isActive) return;
+    const pollMs = selectedTaskRef.current ? 120000 : 45000;
     const i = setInterval(() => { refreshBoard(); refreshAgents(); refreshRequirements(); }, pollMs);
+    let boardDebounce: ReturnType<typeof setTimeout> | null = null;
+    const debouncedRefreshBoard = () => {
+      if (boardDebounce) return;
+      boardDebounce = setTimeout(() => { boardDebounce = null; refreshBoard(); }, 800);
+    };
+    let reqDebounce: ReturnType<typeof setTimeout> | null = null;
+    const debouncedRefreshReqs = () => {
+      if (reqDebounce) return;
+      reqDebounce = setTimeout(() => { reqDebounce = null; refreshRequirements(); }, 800);
+    };
     const unsub = wsClient.on('task:update', (event) => {
-      refreshBoard();
+      debouncedRefreshBoard();
       const p = event?.payload as Record<string, unknown> | undefined;
       if (p?.taskId) {
         setSelectedTask(prev => {
@@ -3468,7 +3481,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
       }
     });
     const unsubTaskCreate = wsClient.on('task:create', () => {
-      refreshBoard();
+      debouncedRefreshBoard();
     });
     const reqEvents = [
       'requirement:created', 'requirement:approved', 'requirement:rejected',
@@ -3476,10 +3489,10 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
       'requirement:resubmitted',
     ];
     const reqUnsubs = reqEvents.map(evt =>
-      wsClient.on(evt, () => { refreshRequirements(); })
+      wsClient.on(evt, () => { debouncedRefreshReqs(); })
     );
-    return () => { clearInterval(i); unsub(); unsubTaskCreate(); reqUnsubs.forEach(u => u()); };
-  }, [refreshBoard, refreshAgents, refreshRequirements]);
+    return () => { clearInterval(i); unsub(); unsubTaskCreate(); reqUnsubs.forEach(u => u()); if (boardDebounce) clearTimeout(boardDebounce); if (reqDebounce) clearTimeout(reqDebounce); };
+  }, [isActive, refreshBoard, refreshAgents, refreshRequirements]);
 
   // Refs for event handlers that need current state without re-registering
   const boardRef = useRef(board);

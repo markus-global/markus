@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo, type StorageInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
+import { usePageActive } from '../hooks/usePageActive.ts';
 import { Avatar } from '../components/Avatar.tsx';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
@@ -34,6 +35,7 @@ const STATUS_ORDER = ['completed', 'in_progress', 'review', 'pending', 'failed',
 export function HomePage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } } = {}) {
   const { t } = useTranslation(['home', 'common', 'team']);
   const isMobile = useIsMobile();
+  const isActive = usePageActive(PAGE.HOME);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [teams, setTeams] = useState<TeamInfo[]>([]);
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>({});
@@ -67,13 +69,14 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
   };
 
   useEffect(() => {
+    if (!isActive) return;
     refresh();
-    const i = setInterval(refresh, 30000);
+    const i = setInterval(refresh, 60000);
     const onDataChanged = () => refresh();
     window.addEventListener('markus:data-changed', onDataChanged);
     return () => { clearInterval(i); window.removeEventListener('markus:data-changed', onDataChanged); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opsPeriod]);
+  }, [opsPeriod, isActive]);
 
   const rootStatusCounts: Record<string, number> = {};
   for (const [status, tasks] of Object.entries(board)) {
@@ -294,7 +297,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
           <div className="lg:col-span-2 space-y-5 sm:space-y-6">
             {/* Pending Requirement Reviews */}
             {pendingReqs.length > 0 && (
-              <div className="bg-surface-secondary border border-amber-500/30 rounded-2xl p-4 sm:p-5">
+              <div className="bg-surface-elevated shadow-sm rounded-2xl p-4 sm:p-5">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <span className="w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
@@ -333,7 +336,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
 
             {/* Task Overview — donut + all status legend */}
             {totalRootTasks > 0 && (
-              <div className="bg-surface-elevated rounded-2xl p-4 sm:p-5 cursor-pointer hover:bg-surface-overlay transition-colors" onClick={() => navBus.navigate(PAGE.WORK)}>
+              <div className="bg-surface-elevated shadow-sm rounded-2xl p-4 sm:p-5 cursor-pointer hover:shadow-md transition-shadow" onClick={() => navBus.navigate(PAGE.WORK)}>
                 <div className="flex items-center justify-between mb-5">
                   <div>
                     <h3 className="text-sm font-semibold text-fg-primary">{t('taskOverview.title')}</h3>
@@ -362,7 +365,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
 
             {/* Activity Feed */}
             {ops && ops.taskKPI.recentActivity.length > 0 && (
-              <div className="bg-surface-elevated rounded-2xl p-4 sm:p-5">
+              <div className="bg-surface-elevated shadow-sm rounded-2xl p-4 sm:p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold text-fg-primary">{t('recentActivity.title')}</h3>
                   <button onClick={() => navBus.navigate(PAGE.WORK)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
@@ -385,7 +388,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
             )}
 
             {/* Team Overview */}
-            <div className="bg-surface-elevated rounded-2xl p-4 sm:p-5">
+            <div className="bg-surface-elevated shadow-sm rounded-2xl p-4 sm:p-5">
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h3 className="text-sm font-semibold text-fg-primary">{t('teamOverview.title')}</h3>
@@ -430,7 +433,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
           <div className="space-y-5 sm:space-y-6">
             {/* Agent Focus — compact, only when agents working */}
             {workingAgents > 0 && (
-              <div className="bg-surface-elevated rounded-2xl p-4 sm:p-5">
+              <div className="bg-surface-elevated shadow-sm rounded-2xl p-4 sm:p-5">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 rounded-full bg-brand-500 animate-pulse" />
@@ -462,7 +465,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
 
             {/* Top Performing Agents */}
             {topPerformers.length > 0 && (
-              <div className="bg-surface-elevated rounded-2xl p-4 sm:p-5">
+              <div className="bg-surface-elevated shadow-sm rounded-2xl p-4 sm:p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold text-fg-primary">{t('topPerformers.title')}</h3>
                   <button onClick={() => setShowRankingModal(true)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
@@ -489,7 +492,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
 
             {/* System Health + Storage */}
             {ops && (
-              <div className="bg-surface-elevated rounded-2xl p-4 sm:p-5">
+              <div className="bg-surface-elevated shadow-sm rounded-2xl p-4 sm:p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold text-fg-primary">{t('systemHealth.title')}</h3>
                   {ops.systemHealth.overallScore >= 80 && (
@@ -654,16 +657,16 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
 function MetricCard({ label, value, total, suffix, icon, color, onClick }: {
   label: string; value: number; total?: number; suffix?: string; icon: React.ReactNode; color: string; onClick: () => void;
 }) {
-  const styles: Record<string, { bg: string; iconBg: string; text: string; glow: string }> = {
-    brand:  { bg: 'border-brand-500/20', iconBg: 'bg-brand-500/15', text: 'text-brand-400', glow: 'hover:shadow-brand-500/10' },
-    blue:   { bg: 'border-blue-500/20', iconBg: 'bg-blue-500/15', text: 'text-blue-400', glow: 'hover:shadow-blue-500/10' },
-    amber:  { bg: 'border-amber-500/20', iconBg: 'bg-amber-500/15', text: 'text-amber-400', glow: 'hover:shadow-amber-500/10' },
-    green:  { bg: 'border-green-500/20', iconBg: 'bg-green-500/15', text: 'text-green-400', glow: 'hover:shadow-green-500/10' },
+  const styles: Record<string, { iconBg: string; text: string }> = {
+    brand:  { iconBg: 'bg-brand-500/15', text: 'text-brand-400' },
+    blue:   { iconBg: 'bg-blue-500/15', text: 'text-blue-400' },
+    amber:  { iconBg: 'bg-amber-500/15', text: 'text-amber-400' },
+    green:  { iconBg: 'bg-green-500/15', text: 'text-green-400' },
   };
   const s = styles[color] ?? styles.brand!;
 
   return (
-    <div onClick={onClick} className={`bg-surface-secondary border ${s.bg} rounded-2xl p-4 sm:p-5 cursor-pointer hover:bg-surface-elevated/60 hover:shadow-lg ${s.glow} transition-all duration-200 card-shine`}>
+    <div onClick={onClick} className="bg-surface-elevated rounded-2xl p-4 sm:p-5 cursor-pointer hover:shadow-md transition-all duration-200 shadow-sm">
       <div className="flex items-start justify-between mb-2 sm:mb-3">
         <div className="text-[11px] sm:text-xs text-fg-tertiary font-medium">{label}</div>
         <div className={`w-8 h-8 sm:w-9 sm:h-9 rounded-xl ${s.iconBg} ${s.text} flex items-center justify-center`}>{icon}</div>
@@ -791,7 +794,7 @@ function HealthRow({ label, value, max, suffix, displayValue, alwaysGreen, neutr
         <span className="text-xs text-fg-secondary">{label}</span>
         <span className={`text-sm font-semibold ${textColor}`}>{displayValue ?? `${value}${suffix ?? ''}`}</span>
       </div>
-      <div className="w-full h-1.5 bg-surface-elevated rounded-full overflow-hidden">
+      <div className="w-full h-1.5 bg-surface-secondary rounded-full overflow-hidden">
         <div className={`h-full rounded-full ${barColor} transition-all duration-500`} style={{ width: `${pct}%` }} />
       </div>
     </div>

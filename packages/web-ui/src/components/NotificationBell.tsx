@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { api, type NotificationInfo, type ApprovalInfo } from '../api.ts';
+import { api, wsClient, type NotificationInfo, type ApprovalInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
@@ -184,11 +184,13 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
 
   useEffect(() => {
     fetchData();
-    const timer = setInterval(fetchData, 15000);
+    const timer = setInterval(fetchData, 60000);
     const onChanged = () => fetchData();
     window.addEventListener('markus:notifications-changed', onChanged);
     window.addEventListener('markus:mark-read-by-ref', markReadByRef);
-    return () => { clearInterval(timer); window.removeEventListener('markus:notifications-changed', onChanged); window.removeEventListener('markus:mark-read-by-ref', markReadByRef); };
+    const unsubNotif = wsClient.on('notification:created', () => fetchData());
+    const unsubApproval = wsClient.on('approval:created', () => fetchData());
+    return () => { clearInterval(timer); window.removeEventListener('markus:notifications-changed', onChanged); window.removeEventListener('markus:mark-read-by-ref', markReadByRef); unsubNotif(); unsubApproval(); };
   }, [fetchData, markReadByRef]);
 
   const reposition = useCallback(() => {

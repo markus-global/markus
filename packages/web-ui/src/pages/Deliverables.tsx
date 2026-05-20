@@ -8,6 +8,7 @@ import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { usePageActive } from '../hooks/usePageActive.ts';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
@@ -38,6 +39,7 @@ const ARTIFACT_META: Record<string, { icon: string; color: string }> = {
 export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser } = {}) {
   const { t } = useTranslation(['deliverables', 'common']);
   const isMobile = useIsMobile();
+  const isActive = usePageActive(PAGE.DELIVERABLES);
   const listPanel = useResizablePanel({ side: 'left', defaultWidth: 384, minWidth: 280, maxWidth: 600, storageKey: 'markus_deliverables_list' });
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
   const mobileShowDetailRef = useRef(mobileShowDetail);
@@ -161,11 +163,12 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
   useEffect(() => { refresh(); }, [refresh]);
 
   useEffect(() => {
+    if (!isActive) return;
     const unsub1 = wsClient.on('deliverable:created', () => refresh());
     const unsub2 = wsClient.on('deliverable:updated', () => refresh());
     const unsub3 = wsClient.on('deliverable:removed', () => refresh());
     return () => { unsub1(); unsub2(); unsub3(); };
-  }, [refresh]);
+  }, [refresh, isActive]);
 
   // Handle deep navigation to a specific deliverable
   const pendingOpenRef = useRef<string | null>(null);

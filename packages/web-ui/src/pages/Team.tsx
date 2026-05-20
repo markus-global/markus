@@ -30,6 +30,7 @@ import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useUnreadCounts } from '../hooks/useUnreadCounts.ts';
+import { usePageActive } from '../hooks/usePageActive.ts';
 import { Avatar } from '../components/Avatar.tsx';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -794,6 +795,7 @@ const _introSentGlobal = new Set<string>();
 
 export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string; authUser?: AuthUser } = {}) {
   const { t, i18n } = useTranslation(['team', 'common']);
+  const isActive = usePageActive(PAGE.TEAM);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [humans, setHumans] = useState<HumanUserInfo[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -1250,7 +1252,12 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     api.tasks.list().then(d => setTasks(d.tasks)).catch(() => {});
     api.externalAgents.list().then(d => setExternalAgents(d.agents)).catch(() => {});
     refreshGroupChats();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshHumans, refreshUnreadCounts]);
 
+  useEffect(() => {
+    if (!isActive) return;
+    refreshAgents();
     const timer = setInterval(refreshAgents, 30_000);
     const teamTimer = setInterval(refreshTeams, 60_000);
     const unsub = wsClient.on('agent:update', throttledRefreshAgents);
@@ -1265,7 +1272,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     window.addEventListener('markus:notifications-changed', onNotifChanged);
     return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeamUpdate(); unsubTeamOnAgentRemoved(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); window.removeEventListener('markus:data-changed', onDataChanged); window.removeEventListener('markus:notifications-changed', onNotifChanged); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshHumans, refreshUnreadCounts]);
+  }, [isActive, refreshHumans, refreshUnreadCounts]);
 
   // Check for nav params (e.g., navigated here from AgentProfile or Team redirect)
   useEffect(() => {
