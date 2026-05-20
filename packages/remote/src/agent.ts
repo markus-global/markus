@@ -33,8 +33,9 @@ const STUN_SERVERS = [
 const RECONNECT_BASE_MS = 2_000;
 const RECONNECT_MAX_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 25_000;
-const DC_PING_INTERVAL_MS = 15_000;
-const DC_PING_TIMEOUT_MS = 10_000;
+const PEER_PING_INTERVAL_MS = 15_000;
+const PEER_PING_TIMEOUT_MS = 10_000;
+const RELAY_INACTIVITY_TIMEOUT_MS = 5 * 60_000;
 
 export interface RemoteAccessConfig {
   hubUrl: string;
@@ -77,7 +78,7 @@ interface RegistrationResult {
 }
 
 interface PeerSession {
-  pc: PeerConnection;
+  pc: PeerConnection | null;
   dc: DataChannel | null;
   pendingChunks: Map<string, Buffer[]>;
   markusToken: string | null;
@@ -168,7 +169,7 @@ export class RemoteAccessAgent {
 
     for (const [peerId, session] of this.peers) {
       try { session.dc?.close(); } catch { /* ignore */ }
-      try { session.pc.close(); } catch { /* ignore */ }
+      try { session.pc?.close(); } catch { /* ignore */ }
       this.peers.delete(peerId);
     }
 
@@ -387,14 +388,23 @@ export class RemoteAccessAgent {
     let session = this.peers.get(peerId);
     if (!session) {
       session = this.createPeerConnection(peerId);
+    } else if (!session.pc) {
+      // ICE restart: create new PC but preserve existing session state (markusToken, etc.)
+      log.info('Received offer for relay-only peer, upgrading to P2P', { peerId });
+      const newSession = this.createPeerConnection(peerId);
+      newSession.markusToken = session.markusToken;
+      newSession.connectedAt = session.connectedAt;
+      newSession.lastActiveAt = session.lastActiveAt;
+      if (session.pingTimer) clearInterval(session.pingTimer);
+      session = newSession;
     }
 
-    session.pc.setRemoteDescription(sdp, DescriptionType.Offer);
+    session.pc!.setRemoteDescription(sdp, DescriptionType.Offer);
   }
 
   private handleIce(peerId: string, candidate: string, mid?: string): void {
     const session = this.peers.get(peerId);
-    if (!session) return;
+    if (!session?.pc) return;
     session.pc.addRemoteCandidate(candidate, mid ?? '0');
   }
 
@@ -434,7 +444,7 @@ export class RemoteAccessAgent {
     pc.onStateChange((state: string) => {
       log.debug('Peer state change', { peerId, state });
       if (state === 'failed' || state === 'closed') {
-        this.cleanupPeer(peerId);
+        this.handlePcFailed(peerId);
       }
       this.emitStatus();
     });
@@ -455,7 +465,7 @@ export class RemoteAccessAgent {
       log.info('DataChannel opened', { peerId, label: dc.getLabel() });
       session.dc = dc;
       session.lastPong = Date.now();
-      this.startDcPing(peerId, session);
+      this.emitStatus();
 
       dc.onMessage((msg: string | Buffer) => {
         const data = typeof msg === 'string' ? msg : msg.toString('utf-8');
@@ -464,12 +474,24 @@ export class RemoteAccessAgent {
       });
 
       dc.onClosed(() => {
-        log.info('DataChannel closed', { peerId });
-        this.cleanupPeer(peerId);
+        log.info('DataChannel closed, keeping session for relay', { peerId });
+        session.dc = null;
+        this.emitStatus();
       });
     });
 
     return session;
+  }
+
+  private handlePcFailed(peerId: string): void {
+    const session = this.peers.get(peerId);
+    if (!session) return;
+
+    log.info('WebRTC failed, keeping session alive for relay', { peerId });
+    try { session.dc?.close(); } catch { /* ignore */ }
+    session.dc = null;
+    try { session.pc?.close(); } catch { /* ignore */ }
+    session.pc = null;
   }
 
   private cleanupPeer(peerId: string): void {
@@ -478,33 +500,42 @@ export class RemoteAccessAgent {
 
     if (session.pingTimer) clearInterval(session.pingTimer);
     try { session.dc?.close(); } catch { /* ignore */ }
-    try { session.pc.close(); } catch { /* ignore */ }
+    try { session.pc?.close(); } catch { /* ignore */ }
+    for (const [key, ws] of this.wsConnections) {
+      if (key.startsWith(`${peerId}:`)) {
+        ws.close();
+        this.wsConnections.delete(key);
+      }
+    }
     this.peers.delete(peerId);
     this.emitStatus();
     log.info('Peer cleaned up', { peerId });
   }
 
-  private startDcPing(peerId: string, session: PeerSession): void {
+  private startPeerPing(peerId: string, session: PeerSession): void {
     if (session.pingTimer) clearInterval(session.pingTimer);
+    session.lastPong = Date.now();
     session.pingTimer = setInterval(() => {
-      if (!session.dc || !session.dc.isOpen()) {
-        log.warn('DC not open during ping check, cleaning up', { peerId });
+      const now = Date.now();
+
+      // Check inactivity — clean up if no messages for RELAY_INACTIVITY_TIMEOUT_MS
+      if (now - session.lastActiveAt > RELAY_INACTIVITY_TIMEOUT_MS) {
+        log.info('Peer inactive for too long, cleaning up', { peerId });
         this.cleanupPeer(peerId);
         return;
       }
-      const elapsed = Date.now() - session.lastPong;
-      if (elapsed > DC_PING_TIMEOUT_MS) {
-        log.warn('DC ping timeout, peer unresponsive', { peerId, elapsed });
+
+      // Check pong timeout
+      const elapsed = now - session.lastPong;
+      if (elapsed > PEER_PING_TIMEOUT_MS) {
+        log.warn('Peer ping timeout, unresponsive', { peerId, elapsed });
         this.cleanupPeer(peerId);
         return;
       }
-      try {
-        session.dc.sendMessage(JSON.stringify({ type: '__ping' }));
-      } catch {
-        log.warn('DC ping send failed', { peerId });
-        this.cleanupPeer(peerId);
-      }
-    }, DC_PING_INTERVAL_MS);
+
+      // Send ping via whatever transport is available (DC or relay)
+      this.sendRaw(peerId, JSON.stringify({ type: '__ping' }));
+    }, PEER_PING_INTERVAL_MS);
   }
 
   // ── DataChannel Message Handling (HTTP/WS proxy) ─────────────────────────
@@ -547,6 +578,21 @@ export class RemoteAccessAgent {
   }
 
   private handleRelayFrame(peerId: string, data: string): void {
+    if (!this.peers.has(peerId)) {
+      log.info('Relay frame from unknown peer, creating relay-only session', { peerId });
+      const now = Date.now();
+      this.peers.set(peerId, {
+        pc: null,
+        dc: null,
+        pendingChunks: new Map(),
+        markusToken: null,
+        connectedAt: now,
+        lastActiveAt: now,
+        pingTimer: null,
+        lastPong: now,
+      });
+      this.emitStatus();
+    }
     this.handleDataChannelMessage(peerId, data);
   }
 
@@ -561,6 +607,9 @@ export class RemoteAccessAgent {
     const session = this.peers.get(peerId);
     if (session && !session.markusToken) {
       session.markusToken = this.generateMarkusToken();
+    }
+    if (session && !session.pingTimer) {
+      this.startPeerPing(peerId, session);
     }
     this.sendToPeer(peerId, {
       type: 'auth_ok',
