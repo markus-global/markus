@@ -680,6 +680,13 @@ export class RemoteAccessAgent {
               id: reqId,
             });
           });
+
+          res.on('error', () => {
+            this.sendToPeer(peerId, {
+              type: 'http_response_end',
+              id: reqId,
+            });
+          });
         } else {
           const chunks: Buffer[] = [];
           res.on('data', (c: Buffer) => chunks.push(c));
