@@ -34,6 +34,9 @@ import { createSettingsTools } from './tools/settings.js';
 import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
+import { clickChromeAllowDialog } from './tools/chrome-dialog-clicker.js';
+import { MarkusBrowserBridge } from './tools/markus-browser-bridge.js';
+import { createBridgeToolHandlers, getBridgeToolDescriptors } from './tools/markus-browser-mcp.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
 import { DelegationManager, type TaskDelegation } from '@markus/a2a';
 import type { TemplateRegistry } from './templates/registry.js';
@@ -302,6 +305,9 @@ export class AgentManager {
   private mcpManager: MCPClientManager;
   private browserSessionManager: BrowserSessionManager;
   private remoteDebuggingPort = 0;
+  private autoClickAllowDialog = false;
+  private chromeAutoClickRunning = false;
+  private browserBridge: MarkusBrowserBridge;
   private globalSecurityPolicy?: SecurityPolicy;
   private globalMcpServers?: Record<string, MCPServerConfig>;
   private skillRegistry?: SkillRegistry;
@@ -494,7 +500,11 @@ export class AgentManager {
     this.sharedDataDir = options.sharedDataDir;
     this.eventBus = options.eventBus ?? new EventBus();
     this.mcpManager = new MCPClientManager();
+    this.mcpManager.setOnReconnect((serverName) => {
+      this.triggerChromeDialogAutoClick(serverName);
+    });
     this.browserSessionManager = new BrowserSessionManager();
+    this.browserBridge = new MarkusBrowserBridge();
     this.globalSecurityPolicy = options.securityPolicy;
     this.globalMcpServers = options.mcpServers;
     this.skillRegistry = options.skillRegistry;
@@ -587,6 +597,29 @@ export class AgentManager {
     this.remoteDebuggingPort = port;
   }
 
+  setBrowserAutoClickAllowDialog(enabled: boolean): void {
+    this.autoClickAllowDialog = enabled;
+  }
+
+  startBrowserBridge(port?: number): void {
+    if (port !== undefined) {
+      this.browserBridge = new MarkusBrowserBridge(port);
+    }
+    this.browserBridge.start();
+  }
+
+  stopBrowserBridge(): void {
+    this.browserBridge.stop();
+  }
+
+  get browserExtensionConnected(): boolean {
+    return this.browserBridge.connected;
+  }
+
+  getBrowserBridge(): MarkusBrowserBridge {
+    return this.browserBridge;
+  }
+
   /**
    * When remoteDebuggingPort is configured, replace --autoConnect with
    * --browserUrl so that the chrome-devtools MCP server reuses a persistent
@@ -604,6 +637,65 @@ export class AgentManager {
       args.push('--browserUrl', `http://127.0.0.1:${this.remoteDebuggingPort}`);
     }
     return { ...config, args };
+  }
+
+  /**
+   * Trigger Chrome dialog auto-click with smart mutex.
+   * Only one clicker process runs at a time. If triggered while already running,
+   * it's a no-op (the running clicker will detect the dialog when it appears).
+   */
+  private triggerChromeDialogAutoClick(serverName: string): void {
+    if (serverName !== 'chrome-devtools' || !this.autoClickAllowDialog) return;
+    if (this.chromeAutoClickRunning) return;
+    this.chromeAutoClickRunning = true;
+    clickChromeAllowDialog(60)
+      .catch(() => {})
+      .finally(() => { this.chromeAutoClickRunning = false; });
+  }
+
+  /**
+   * Register chrome-devtools tools for an agent WITHOUT starting the MCP process.
+   *
+   * Tool handlers dynamically choose bridge vs npx at CALL TIME:
+   * - If the Chrome extension is connected, use the WebSocket bridge (no dialog, instant).
+   * - Otherwise, fall back to npx chrome-devtools-mcp (lazy-started on first call).
+   *
+   * This ensures agents created before the extension connects can still
+   * use the bridge once it becomes available, and vice versa.
+   */
+  private async registerChromeDevtoolsLazy(
+    agentId: string,
+    serverName: string,
+    serverConfig: { command: string; args?: string[]; env?: Record<string, string> },
+  ): Promise<AgentToolHandler[]> {
+    const toolDescriptors = getBridgeToolDescriptors();
+
+    // Register npx config lazily so callToolScoped can auto-connect when needed.
+    this.mcpManager.registerLazyScoped(serverName, serverConfig, agentId, toolDescriptors);
+
+    let mcpTools: AgentToolHandler[] = toolDescriptors.map((tool) => ({
+      name: `${serverName}__${tool.name}`,
+      description: `[MCP:${serverName}] ${tool.description}`,
+      inputSchema: tool.inputSchema,
+      execute: async (args: Record<string, unknown>) => {
+        if (this.browserBridge.connected) {
+          const result = await this.browserBridge.callTool(tool.name, args);
+          if (result.error) return `Error: ${result.error}`;
+          return result.content;
+        }
+        // npx fallback; auto-click is triggered by mcpManager's onReconnect callback
+        return this.mcpManager.callToolScoped(serverName, agentId, tool.name, args);
+      },
+    }));
+
+    mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, agentId);
+    this.browserSessionManager.setReconnector(agentId, serverName, async () => {
+      if (!this.browserBridge.connected) {
+        await this.mcpManager.disconnectServerScoped(serverName, agentId);
+        await this.mcpManager.connectServerScoped(serverName, serverConfig, agentId);
+      }
+    });
+    return mcpTools;
   }
 
   setTaskService(taskService: TaskServiceBridge): void {
@@ -866,17 +958,20 @@ export class AgentManager {
           for (const [serverName, rawServerConfig] of Object.entries(skill.manifest.mcpServers)) {
             try {
               let mcpTools: AgentToolHandler[];
-              if (isolation === 'per-agent' || isolation === 'pooled') {
-                const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
+              const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
+              if (serverName === 'chrome-devtools') {
+                // Lazy start: register tools now, connect on first call.
+                // Startup semaphore in MCPClientManager serializes connections.
+                mcpTools = await this.registerChromeDevtoolsLazy(id, serverName, serverConfig);
+              } else if (isolation === 'per-agent' || isolation === 'pooled') {
                 await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                 mcpTools = this.mcpManager.getToolHandlersScoped(serverName, id);
                 mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, id);
-                this.browserSessionManager.setReconnector(id, async () => {
+                this.browserSessionManager.setReconnector(id, serverName, async () => {
                   await this.mcpManager.disconnectServerScoped(serverName, id);
                   await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                 });
               } else {
-                const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
                 await this.mcpManager.connectServer(serverName, serverConfig);
                 mcpTools = this.mcpManager.getToolHandlers(serverName);
               }
@@ -905,21 +1000,25 @@ export class AgentManager {
       const skill = this.skillRegistry?.get(skillName);
       const isolation = skill?.manifest.isolation ?? 'shared';
       for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
-        if (isolation === 'per-agent' || isolation === 'pooled') {
-          const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
+        const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
+        if (serverName === 'chrome-devtools') {
+          const chromeTools = await this.registerChromeDevtoolsLazy(id, serverName, srvConfig);
+          tools.push(...chromeTools);
+        } else if (isolation === 'per-agent' || isolation === 'pooled') {
           await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
           tools.push(...this.mcpManager.getToolHandlersScoped(serverName, id));
         } else {
-          const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
           await this.mcpManager.connectServer(serverName, srvConfig);
           tools.push(...this.mcpManager.getToolHandlers(serverName));
         }
       }
-      if (isolation === 'per-agent' || isolation === 'pooled') {
+      // Wrap with BrowserSessionManager for per-agent tools (tab isolation)
+      const hasChromeDevtools = Object.keys(mcpServers).includes('chrome-devtools');
+      if (!hasChromeDevtools && (isolation === 'per-agent' || isolation === 'pooled')) {
         tools = this.browserSessionManager.wrapToolHandlers(tools, id);
         for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
           const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
-          this.browserSessionManager.setReconnector(id, async () => {
+          this.browserSessionManager.setReconnector(id, serverName, async () => {
             await this.mcpManager.disconnectServerScoped(serverName, id);
             await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
           });
@@ -1352,10 +1451,16 @@ export class AgentManager {
     // Connect MCP servers and register their tools
     const mcpConfigs = request.mcpServers ?? this.globalMcpServers;
     if (mcpConfigs) {
-      for (const [serverName, serverConfig] of Object.entries(mcpConfigs)) {
+      for (const [serverName, rawServerConfig] of Object.entries(mcpConfigs)) {
         try {
-          await this.mcpManager.connectServer(serverName, serverConfig);
-          const mcpTools = this.mcpManager.getToolHandlers(serverName);
+          const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
+          let mcpTools: AgentToolHandler[];
+          if (serverName === 'chrome-devtools') {
+            mcpTools = await this.registerChromeDevtoolsLazy(id, serverName, serverConfig);
+          } else {
+            await this.mcpManager.connectServer(serverName, serverConfig);
+            mcpTools = this.mcpManager.getToolHandlers(serverName);
+          }
           for (const tool of mcpTools) {
             agent.registerTool(tool);
           }
@@ -1562,14 +1667,33 @@ export class AgentManager {
       }
 
       // Connect MCP servers declared by explicitly assigned skills (background, non-blocking).
-      // Connections complete asynchronously and register tools when ready.
-      // This avoids blocking startup for slow MCP processes (e.g. npx chrome-devtools).
+      // Skip chrome-devtools during restore — it connects lazily when the agent actually
+      // needs browser tools. This prevents flooding Chrome with 20+ concurrent CDP connections
+      // on startup which causes Chrome to crash.
       const mcpConnections: Array<Promise<void>> = [];
       for (const skillName of config.skills) {
         const skill = this.skillRegistry.get(skillName);
         if (skill?.manifest.mcpServers) {
           const isolation = skill.manifest.isolation ?? 'shared';
           for (const [serverName, rawServerConfig] of Object.entries(skill.manifest.mcpServers)) {
+            if (serverName === 'chrome-devtools') {
+              mcpConnections.push((async () => {
+                try {
+                  const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
+                  const mcpTools = await this.registerChromeDevtoolsLazy(id, serverName, serverConfig);
+                  const toolNames: string[] = [];
+                  for (const tool of mcpTools) {
+                    agent.registerTool(tool);
+                    toolNames.push(tool.name);
+                  }
+                  agent.activateTools(toolNames);
+                  log.info(`Skill ${skillName} chrome-devtools registered lazily for agent ${id}`);
+                } catch (error) {
+                  log.warn(`Failed to register chrome-devtools lazily for agent ${id}`, { error: String(error) });
+                }
+              })());
+              continue;
+            }
             mcpConnections.push((async () => {
               try {
                 let mcpTools: AgentToolHandler[];
@@ -1578,7 +1702,7 @@ export class AgentManager {
                   await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                   mcpTools = this.mcpManager.getToolHandlersScoped(serverName, id);
                   mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, id);
-                  this.browserSessionManager.setReconnector(id, async () => {
+                  this.browserSessionManager.setReconnector(id, serverName, async () => {
                     await this.mcpManager.disconnectServerScoped(serverName, id);
                     await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
                   });
@@ -1614,21 +1738,24 @@ export class AgentManager {
       const skill = this.skillRegistry?.get(skillName);
       const isolation = skill?.manifest.isolation ?? 'shared';
       for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
-        if (isolation === 'per-agent' || isolation === 'pooled') {
-          const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
+        const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
+        if (serverName === 'chrome-devtools') {
+          const chromeTools = await this.registerChromeDevtoolsLazy(id, serverName, srvConfig);
+          tools.push(...chromeTools);
+        } else if (isolation === 'per-agent' || isolation === 'pooled') {
           await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
           tools.push(...this.mcpManager.getToolHandlersScoped(serverName, id));
         } else {
-          const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
           await this.mcpManager.connectServer(serverName, srvConfig);
           tools.push(...this.mcpManager.getToolHandlers(serverName));
         }
       }
-      if (isolation === 'per-agent' || isolation === 'pooled') {
+      const hasChromeDevtools = Object.keys(mcpServers).includes('chrome-devtools');
+      if (!hasChromeDevtools && (isolation === 'per-agent' || isolation === 'pooled')) {
         tools = this.browserSessionManager.wrapToolHandlers(tools, id);
         for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
           const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
-          this.browserSessionManager.setReconnector(id, async () => {
+          this.browserSessionManager.setReconnector(id, serverName, async () => {
             await this.mcpManager.disconnectServerScoped(serverName, id);
             await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
           });
@@ -2234,8 +2361,9 @@ export class AgentManager {
     if (this.mcpReleaseTimers.has(agentId)) return;
     const timer = setTimeout(() => {
       this.mcpReleaseTimers.delete(agentId);
-      this.browserSessionManager.cleanupAgent(agentId);
-      this.mcpManager.disconnectAllForScope(agentId).catch(() => {});
+      // Disconnect idle non-browser MCP processes.
+      // chrome-devtools manages its own lifecycle via the MCP idle timer (5min).
+      this.mcpManager.disconnectAllForScope(agentId, { skip: ['chrome-devtools'] }).catch(() => {});
       log.info(`Released scoped MCP processes for idle agent: ${agentId}`);
     }, AgentManager.MCP_IDLE_GRACE_MS);
     timer.unref();

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { MobileMenuButton } from './MobileMenuButton.tsx';
 import {
   api, wsClient,
   type AgentInfo, type TeamInfo, type TeamMemberInfo,
@@ -47,6 +48,8 @@ interface ChatTeamSidebarProps {
   onManageGroupMembers?: (channelKey: string) => void;
   /** Per-agent unread notification count (agentId → count) */
   unreadByAgent?: Map<string, number>;
+  /** Per-channel unread message count (channelKey → count) */
+  unreadByChannel?: Record<string, number>;
   width?: number;
   onResizeStart?: (e: React.MouseEvent) => void;
   hidden?: boolean;
@@ -192,6 +195,7 @@ export function ChatTeamSidebar({
   onRefreshTeams, onRefreshAgents, onRefreshHumans, onRefreshGroupChats, onViewProfile,
   onManageGroupMembers,
   unreadByAgent,
+  unreadByChannel,
   width, onResizeStart, hidden,
   initialLoading,
 }: ChatTeamSidebarProps) {
@@ -655,7 +659,10 @@ export function ChatTeamSidebar({
     const isDropTarget = isDragging && dragOverTeam === tid && dragAgent?.fromTeamId !== tid;
     const isHighlighted = highlightTeamId === tid;
     const isSelected = selectedTeamId === tid;
-    const teamUnread = unreadByAgent ? (agentsByTeam.byTeam.get(tid) ?? []).reduce((sum, a) => sum + (unreadByAgent.get(a.id) ?? 0), 0) : 0;
+    const agentUnread = unreadByAgent ? (agentsByTeam.byTeam.get(tid) ?? []).reduce((sum, a) => sum + (unreadByAgent.get(a.id) ?? 0), 0) : 0;
+    const teamGc = groupChats.find(gc => gc.type === 'team' && gc.teamId === tid);
+    const channelUnread = teamGc && unreadByChannel ? (unreadByChannel[teamGc.channelKey] ?? 0) : 0;
+    const teamUnread = agentUnread + channelUnread;
 
     return (
       <div
@@ -858,7 +865,8 @@ export function ChatTeamSidebar({
     <>
       <div className={`bg-surface-secondary rounded-xl my-1 flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'}`} style={hidden ? { display: 'none' } : width != null ? { width } : undefined}>
         {/* Header with title + pause toggle */}
-        <div className="px-4 h-14 flex items-center shrink-0">
+        <div className="px-4 h-14 flex items-center shrink-0 gap-2">
+          {isMobile && <MobileMenuButton />}
           <h2 className="text-lg font-semibold">{t('chat.title')}</h2>
           <div className="ml-auto">
             {globalPaused === null ? (
@@ -1059,64 +1067,51 @@ export function ChatTeamSidebar({
           ) : null}
 
           {/* Unmatched group chats (no matching team) */}
-          {groupChatsByTeam.unmatched.map(gc => (
-            <button
-              key={gc.id}
-              onClick={() => onSelectChannel(gc.channelKey)}
-              className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
-                chatMode === 'channel' && activeChannel === gc.channelKey
-                  ? 'bg-brand-600/15'
-                  : 'hover:bg-white/[0.08]'
-              }`}
-            >
-              <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-surface-overlay text-fg-primary">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
-              </div>
-              <div className="flex-1 min-w-0 text-left">
-                <span className="truncate font-medium text-[12px] leading-tight block">{gc.name}</span>
-                <div className="text-[10px] text-fg-secondary leading-tight mt-0.5">{t('chat.groupChat')}</div>
-              </div>
-              {gc.memberCount !== undefined && gc.memberCount > 0 && (
-                <span className="text-[9px] text-fg-secondary shrink-0">{gc.memberCount}</span>
-              )}
-            </button>
-          ))}
+          {groupChatsByTeam.unmatched.map(gc => {
+            const chUnread = unreadByChannel?.[gc.channelKey] ?? 0;
+            return (
+              <button
+                key={gc.id}
+                onClick={() => onSelectChannel(gc.channelKey)}
+                className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
+                  chatMode === 'channel' && activeChannel === gc.channelKey
+                    ? 'bg-brand-600/15'
+                    : 'hover:bg-white/[0.08]'
+                }`}
+              >
+                <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-surface-overlay text-fg-primary">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+                </div>
+                <div className="flex-1 min-w-0 text-left">
+                  <span className="truncate font-medium text-[12px] leading-tight block">{gc.name}</span>
+                  <div className="text-[10px] text-fg-secondary leading-tight mt-0.5">{t('chat.groupChat')}</div>
+                </div>
+                {chUnread > 0 ? (
+                  <span className="min-w-[16px] h-[16px] flex items-center justify-center text-[9px] font-semibold text-white bg-red-500 rounded-full px-1 leading-none">{chUnread}</span>
+                ) : gc.memberCount !== undefined && gc.memberCount > 0 ? (
+                  <span className="text-[9px] text-fg-secondary shrink-0">{gc.memberCount}</span>
+                ) : null}
+              </button>
+            );
+          })}
 
-          {isMobile ? (
-            <>
-              {/* Mobile: original flat layout with nested agents */}
+          {/* Ungrouped agents listed individually */}
+          {agentsByTeam.ungrouped.length > 0 && (
+            <div className="mb-2">
+              <p className="text-[10px] font-semibold text-fg-muted uppercase tracking-wider mb-1.5 px-2.5">{t('chat.agents')}</p>
+              {agentsByTeam.ungrouped.map(a => renderAgentItem(a))}
+            </div>
+          )}
+          {/* Teams as clickable rows (drill into L2 on mobile, expand on desktop) */}
+          {teams.length > 0 && (
+            <div className="mb-2">
+              <p className="text-[10px] font-semibold text-fg-muted uppercase tracking-wider mb-1.5 px-2.5">{t('chat.teams')}</p>
               {teams.map(tm => {
                 const agentList = agentsByTeam.byTeam.get(tm.id) ?? [];
-                if (agentList.length === 0 && (!tm.members || tm.members.length === 0)) return null;
-                return renderTeamSection(tm.id, tm, agentList, tm.name);
+                const memberCount = tm.members?.length || agentList.length;
+                return renderTeamRow(tm.id, tm, memberCount, tm.name);
               })}
-              {teams.filter(tm => {
-                const agentList = agentsByTeam.byTeam.get(tm.id) ?? [];
-                return agentList.length === 0 && (!tm.members || tm.members.length === 0);
-              }).map(tm => renderTeamSection(tm.id, tm, [], tm.name))}
-              {agentsByTeam.ungrouped.length > 0 && renderTeamSection('_ungrouped', null, agentsByTeam.ungrouped, t('chat.other'))}
-            </>
-          ) : (
-            <>
-              {/* Desktop L1: ungrouped agents listed individually above teams */}
-              {agentsByTeam.ungrouped.length > 0 && (
-                <div className="mb-2">
-                  <p className="text-[10px] font-semibold text-fg-muted uppercase tracking-wider mb-1.5 px-2.5">{t('chat.agents')}</p>
-                  {agentsByTeam.ungrouped.map(a => renderAgentItem(a))}
-                </div>
-              )}
-              {/* Desktop L1: simple clickable team rows */}
-              {teams.length > 0 && (
-                <div className="mb-2">
-                  <p className="text-[10px] font-semibold text-fg-muted uppercase tracking-wider mb-1.5 px-2.5">{t('chat.teams')}</p>
-                  {teams.map(tm => {
-                    const agentList = agentsByTeam.byTeam.get(tm.id) ?? [];
-                    const memberCount = tm.members?.length || agentList.length;
-                    return renderTeamRow(tm.id, tm, memberCount, tm.name);
-                  })}
-                </div>
-              )}
-            </>
+            </div>
           )}
 
           {/* No teams — flat agent list */}

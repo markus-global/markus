@@ -9,6 +9,7 @@
     { "path": "../shared" },
     { "path": "../core" },
     { "path": "../comms" },
-    { "path": "../org-manager" }
+    { "path": "../org-manager" },
+    { "path": "../remote" }
   ]
 }

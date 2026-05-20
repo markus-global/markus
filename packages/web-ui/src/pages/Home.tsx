@@ -1,10 +1,12 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { api, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo, type StorageInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { Avatar } from '../components/Avatar.tsx';
+import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 
 const SHOW_HERO_BANNER = false;
 
@@ -31,6 +33,7 @@ const STATUS_ORDER = ['completed', 'in_progress', 'review', 'pending', 'failed',
 
 export function HomePage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } } = {}) {
   const { t } = useTranslation(['home', 'common', 'team']);
+  const isMobile = useIsMobile();
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [teams, setTeams] = useState<TeamInfo[]>([]);
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>({});
@@ -39,7 +42,18 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
   const [pendingReqs, setPendingReqs] = useState<RequirementInfo[]>([]);
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
   const [showDeployChoice, setShowDeployChoice] = useState(false);
+  const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [showRankingModal, setShowRankingModal] = useState(false);
+  const createMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showCreateMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (createMenuRef.current && !createMenuRef.current.contains(e.target as Node)) setShowCreateMenu(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showCreateMenu]);
 
   const refresh = () => {
     api.agents.list().then(d => setAgents(d.agents)).catch(() => {});
@@ -120,19 +134,110 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
     <div className="flex-1 overflow-y-auto scrollbar-thin">
       {/* Header */}
       <div className="flex items-center justify-between px-4 sm:px-6 lg:px-8 h-14 sm:h-16 max-w-7xl mx-auto w-full">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          {isMobile && <MobileMenuButton />}
           <div>
             <h2 className="text-base sm:text-lg font-bold">{t('title')}</h2>
             <p className="text-xs text-fg-tertiary hidden sm:block">{t('subtitle')}</p>
           </div>
         </div>
-        <button
-          onClick={() => setShowDeployChoice(true)}
-          className="flex items-center gap-2 px-3 sm:px-4 py-2 sm:py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-xs sm:text-sm font-medium rounded-xl transition-all shadow-md shadow-brand-900/30 hover:shadow-lg hover:shadow-brand-900/40"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="hidden sm:block"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><line x1="19" y1="8" x2="19" y2="14" /><line x1="22" y1="11" x2="16" y2="11" /></svg>
-          {t('hireAgent')}
-        </button>
+        {isMobile ? (
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => navBus.navigate(PAGE.SEARCH)}
+              className="p-2 rounded-lg hover:bg-surface-overlay transition-colors text-fg-secondary"
+              aria-label="Search"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+            </button>
+            <div ref={createMenuRef} className="relative">
+              <button
+                onClick={() => setShowCreateMenu(!showCreateMenu)}
+                className="p-2 rounded-lg hover:bg-surface-overlay transition-colors text-fg-secondary"
+                aria-label="Create"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+              </button>
+              {showCreateMenu && (
+                <div className="absolute right-0 top-full mt-2 bg-surface-elevated border border-border-default rounded-xl shadow-xl z-50 overflow-hidden w-48 animate-fadeIn">
+                  <div className="py-1">
+                    <button
+                      onClick={() => { setShowCreateMenu(false); navBus.navigate(PAGE.BUILDER, { storeTab: 'builder' }); }}
+                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-fg-secondary hover:bg-surface-overlay transition-colors"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><line x1="19" y1="8" x2="19" y2="14" /><line x1="22" y1="11" x2="16" y2="11" /></svg>
+                      {t('home:createMenu.agent', { defaultValue: '创建智能体' })}
+                    </button>
+                    <button
+                      onClick={() => { setShowCreateMenu(false); navBus.navigate(PAGE.BUILDER, { storeTab: 'builder' }); }}
+                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-fg-secondary hover:bg-surface-overlay transition-colors"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                      {t('home:createMenu.team', { defaultValue: '创建智能体团队' })}
+                    </button>
+                    <button
+                      onClick={() => { setShowCreateMenu(false); navBus.navigate(PAGE.BUILDER, { storeTab: 'builder' }); }}
+                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-fg-secondary hover:bg-surface-overlay transition-colors"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /></svg>
+                      {t('home:createMenu.skill', { defaultValue: '创建技能' })}
+                    </button>
+                    <div className="border-t border-border-default my-1" />
+                    <button
+                      onClick={() => { setShowCreateMenu(false); const tabs = ['agents', 'teams', 'skills'] as const; navBus.navigate(PAGE.BUILDER, { storeTab: tabs[Math.floor(Math.random() * 3)] }); }}
+                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-fg-secondary hover:bg-surface-overlay transition-colors"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+                      {t('home:createMenu.discover', { defaultValue: '发现更多' })}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => window.dispatchEvent(new CustomEvent('markus:open-search'))}
+              className="p-2 rounded-lg hover:bg-surface-overlay transition-colors text-fg-secondary"
+              aria-label="Search"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+            </button>
+            <div ref={createMenuRef} className="relative">
+              <button
+                onClick={() => setShowCreateMenu(!showCreateMenu)}
+                className="p-2 rounded-lg hover:bg-surface-overlay transition-colors text-fg-secondary"
+                aria-label="Create"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+              </button>
+              {showCreateMenu && (
+                <div className="absolute right-0 top-full mt-2 bg-surface-elevated border border-border-default rounded-xl shadow-xl z-50 overflow-hidden w-48 animate-fadeIn">
+                  <div className="py-1">
+                    <button onClick={() => { setShowCreateMenu(false); navBus.navigate(PAGE.BUILDER); }} className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-fg-secondary hover:bg-surface-overlay transition-colors">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><line x1="19" y1="8" x2="19" y2="14" /><line x1="22" y1="11" x2="16" y2="11" /></svg>
+                      {t('home:createMenu.agent', { defaultValue: '创建智能体' })}
+                    </button>
+                    <button onClick={() => { setShowCreateMenu(false); navBus.navigate(PAGE.BUILDER); }} className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-fg-secondary hover:bg-surface-overlay transition-colors">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                      {t('home:createMenu.team', { defaultValue: '创建智能体团队' })}
+                    </button>
+                    <button onClick={() => { setShowCreateMenu(false); navBus.navigate(PAGE.BUILDER); }} className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-fg-secondary hover:bg-surface-overlay transition-colors">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /></svg>
+                      {t('home:createMenu.skill', { defaultValue: '创建技能' })}
+                    </button>
+                    <div className="border-t border-border-default my-1" />
+                    <button onClick={() => { setShowCreateMenu(false); navBus.navigate(PAGE.STORE); }} className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-fg-secondary hover:bg-surface-overlay transition-colors">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2L3 7v13a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-3-5z" /><line x1="3" y1="7" x2="21" y2="7" /><path d="M16 11a4 4 0 0 1-8 0" /></svg>
+                      {t('home:createMenu.discover', { defaultValue: '发现更多' })}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="p-4 sm:p-6 lg:p-8 space-y-5 sm:space-y-6 max-w-7xl mx-auto w-full">

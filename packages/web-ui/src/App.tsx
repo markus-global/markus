@@ -9,10 +9,11 @@ import { WorkPage } from './pages/Work.tsx';
 import { DeliverablesPage } from './pages/Deliverables.tsx';
 import { ReportsPage } from './pages/Reports.tsx';
 import { NotificationsPage } from './pages/Notifications.tsx';
+import { SearchPage } from './pages/Search.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { BottomNav } from './components/BottomNav.tsx';
 import { MobileBuilderTabs } from './components/MobileBuilderTabs.tsx';
-import { MobileSettingsTabs } from './components/MobileSettingsTabs.tsx';
+import { MobileDrawer } from './components/MobileDrawer.tsx';
 import { Onboarding } from './components/Onboarding.tsx';
 import { Login, InviteSetup, InitialSetup } from './pages/Login.tsx';
 import { ChangePassword } from './pages/ChangePassword.tsx';
@@ -23,6 +24,7 @@ import { useTheme } from './hooks/useTheme.ts';
 import { useIsMobile } from './hooks/useIsMobile.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 import { useTranslation } from 'react-i18next';
+import { SearchModal } from './components/SearchModal.tsx';
 
 const PageSlot = memo(function PageSlot({
   id, activePage, children,
@@ -74,6 +76,27 @@ export function App() {
     const stored = localStorage.getItem('markus_update_dismissed');
     return stored ? stored : null;
   });
+
+  const [showSearchModal, setShowSearchModal] = useState(false);
+
+  // Global search shortcut: Cmd+P (Mac) / Ctrl+P (Win/Linux)
+  useEffect(() => {
+    if (isMobile) return;
+    const isMac = navigator.platform.toUpperCase().includes('MAC');
+    const onKey = (e: KeyboardEvent) => {
+      if (isMac && e.metaKey && !e.ctrlKey && e.key === 'p') {
+        e.preventDefault();
+        setShowSearchModal(prev => !prev);
+      } else if (!isMac && e.ctrlKey && !e.metaKey && e.key === 'p') {
+        e.preventDefault();
+        setShowSearchModal(prev => !prev);
+      }
+    };
+    const onOpen = () => setShowSearchModal(true);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('markus:open-search', onOpen);
+    return () => { document.removeEventListener('keydown', onKey); window.removeEventListener('markus:open-search', onOpen); };
+  }, [isMobile]);
 
   const navigate = useCallback((p: PageId) => {
     let normalized = resolvePageId(p);
@@ -183,10 +206,12 @@ export function App() {
         [PAGE.HOME]: <HomePage authUser={currentUser} />,
         [PAGE.TEAM]: <TeamPage authUser={currentUser} />,
         [PAGE.BUILDER]: <MobileBuilderTabs authUser={currentUser} />,
-        [PAGE.SETTINGS]: <MobileSettingsTabs theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} onLogout={() => setAuthUser(null)} onUserUpdated={(u) => setAuthUser(u)} />,
+        [PAGE.SETTINGS]: <Settings theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} onLogout={() => setAuthUser(null)} onUserUpdated={(u) => setAuthUser(u)} />,
         [PAGE.WORK]: <WorkPage authUser={currentUser} />,
         [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
         [PAGE.NOTIFICATIONS]: <NotificationsPage authUser={currentUser} />,
+        [PAGE.REPORTS]: <ReportsPage authUser={currentUser} />,
+        [PAGE.SEARCH]: <SearchPage />,
       };
     }
     return {
@@ -272,8 +297,8 @@ export function App() {
 
   return (
     <div className={`flex h-dvh bg-surface-primary text-fg-primary overflow-x-hidden ${isMobile ? 'flex-col' : ''}`}>
-      {/* Desktop sidebar */}
-      {!isMobile && (
+      {/* Desktop sidebar (hidden on Settings page) */}
+      {!isMobile && page !== PAGE.SETTINGS && (
         <>
           <div
             className="relative z-40 shrink-0"
@@ -297,7 +322,7 @@ export function App() {
         </>
       )}
 
-      <div className={`flex-1 overflow-hidden flex flex-col min-w-0 ${isMobile ? 'pb-14' : ''}`}>
+      <div className={`flex-1 overflow-hidden flex flex-col min-w-0 ${isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH ? 'pb-14' : ''}`}>
         {llmConfigured === false && !llmBannerDismissed && page !== PAGE.SETTINGS && (
           <div className="flex items-center justify-between px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-600 text-sm shrink-0">
             <span className={isMobile ? 'text-xs' : ''}>No LLM provider configured — agents cannot process requests.</span>
@@ -329,9 +354,19 @@ export function App() {
         </main>
       </div>
 
-      {/* Mobile bottom nav */}
-      {isMobile && (
+      {/* Mobile bottom nav (hidden on Settings/Search pages) */}
+      {isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH && (
         <BottomNav currentPage={page} onNavigate={navigate} userId={currentUser?.id} />
+      )}
+
+      {/* Mobile drawer menu */}
+      {isMobile && (
+        <MobileDrawer authUser={currentUser} onNavigate={navigate} />
+      )}
+
+      {/* Global search modal (desktop) */}
+      {!isMobile && showSearchModal && (
+        <SearchModal onClose={() => setShowSearchModal(false)} currentPage={page} />
       )}
     </div>
   );

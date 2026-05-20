@@ -1,14 +1,24 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AgentBuilder } from '../pages/AgentBuilder.tsx';
 import { TemplateMarketplace } from '../pages/TemplateMarketplace.tsx';
 import { TeamsStore } from '../pages/TeamsStore.tsx';
 import { SkillStore } from '../pages/SkillStore.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
+import { MobileMenuButton } from './MobileMenuButton.tsx';
 import type { AuthUser } from '../api.ts';
 
 const tabIds = ['builder', 'agents', 'teams', 'skills'] as const;
 type TabId = (typeof tabIds)[number];
+
+function getInitialTab(): TabId {
+  const stored = localStorage.getItem('markus_nav_storeTab');
+  if (stored) {
+    localStorage.removeItem('markus_nav_storeTab');
+    if (tabIds.includes(stored as TabId)) return stored as TabId;
+  }
+  return 'builder';
+}
 
 export function MobileBuilderTabs({ authUser }: { authUser?: AuthUser }) {
   const { t } = useTranslation(['nav', 'common']);
@@ -18,12 +28,24 @@ export function MobileBuilderTabs({ authUser }: { authUser?: AuthUser }) {
     { id: 'teams' as const, label: t('nav:tabs.teams') },
     { id: 'skills' as const, label: t('nav:tabs.skills') },
   ], [t]);
-  const [activeTab, setActiveTab] = useState<TabId>('builder');
+  const [activeTab, setActiveTab] = useState<TabId>(getInitialTab);
   const swipe = useSwipeTabs(tabs, activeTab, setActiveTab);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ page: string; params?: Record<string, string> }>).detail;
+      if (detail.params?.storeTab && tabIds.includes(detail.params.storeTab as TabId)) {
+        setActiveTab(detail.params.storeTab as TabId);
+      }
+    };
+    window.addEventListener('markus:navigate', handler);
+    return () => window.removeEventListener('markus:navigate', handler);
+  }, []);
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col" onTouchStart={swipe.onTouchStart} onTouchEnd={swipe.onTouchEnd}>
-      <div className="flex shrink-0 overflow-x-auto scrollbar-hide">
+      <div className="flex items-center shrink-0 overflow-x-auto scrollbar-hide">
+        <MobileMenuButton className="ml-2" />
         {tabs.map(tab => (
           <button
             key={tab.id}

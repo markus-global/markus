@@ -326,6 +326,24 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export interface RemotePeerInfo {
+  peerId: string;
+  transport: 'p2p' | 'relay' | 'connecting';
+  connectedAt: number;
+  lastActiveAt: number;
+}
+
+export interface RemoteStatus {
+  enabled: boolean;
+  connected: boolean;
+  state: 'idle' | 'registering' | 'connecting' | 'connected' | 'disconnected';
+  instanceId: string | null;
+  remoteUrl: string | null;
+  signalUrl: string | null;
+  peerCount: number;
+  peers: RemotePeerInfo[];
+}
+
 export type AgentActivityType = 'task' | 'heartbeat' | 'chat' | 'a2a' | 'internal' | 'respond_in_session';
 
 export interface AgentActivityInfo {
@@ -1166,12 +1184,40 @@ export const api = {
     getAgent: () => request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent'),
     updateAgent: (settings: { maxToolIterations?: number; cognitive?: { enabled?: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }) =>
       request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent', { method: 'POST', body: JSON.stringify(settings) }),
-    getBrowser: () => request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean }>('/settings/browser'),
-    updateBrowser: (settings: { bringToFront?: boolean; remoteDebuggingPort?: number; autoCloseTabs?: boolean }) =>
-      request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean }>('/settings/browser', { method: 'POST', body: JSON.stringify(settings) }),
+    getBrowser: () => request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser'),
+    updateBrowser: (settings: { bringToFront?: boolean; remoteDebuggingPort?: number; autoCloseTabs?: boolean; autoClickAllowDialog?: boolean }) =>
+      request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser', { method: 'POST', body: JSON.stringify(settings) }),
+    testAutoClick: () => request<{
+      checkResult: { platform: string; supported: boolean; accessibilityPermission: boolean; chromeRunning: boolean; binaryAvailable: boolean };
+      openedAccessibilitySettings: boolean;
+      clickResult: 'success' | 'no_permission' | 'chrome_not_running' | 'unsupported' | 'error';
+      pageLoaded: boolean;
+      pageTitle?: string;
+      error?: string;
+    }>('/settings/browser/test-auto-click', { method: 'POST' }),
+    downloadExtensionZip: () => {
+      const url = `${BASE}/settings/browser/extension.zip`;
+      const headers: Record<string, string> = {};
+      const token = localStorage.getItem('markus_token');
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      return fetch(url, { headers }).then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.blob();
+      }).then(blob => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'markus-browser-extension.zip';
+        a.click();
+        URL.revokeObjectURL(a.href);
+      });
+    },
+    openExtensionsPage: () => request<{ ok: boolean }>('/settings/browser/open-extensions-page', { method: 'POST' }),
     getSearch: () => request<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search'),
     updateSearch: (keys: { serperApiKey?: string; braveApiKey?: string; bochaApiKey?: string }) =>
       request<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search', { method: 'POST', body: JSON.stringify(keys) }),
+    getRemote: () => request<RemoteStatus>('/settings/remote'),
+    enableRemote: () => request<{ ok: boolean; status: RemoteStatus }>('/settings/remote/enable', { method: 'POST' }),
+    disableRemote: () => request<{ ok: boolean }>('/settings/remote/disable', { method: 'POST' }),
   },
   skills: {
     list: () => request<{ skills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; requiredPermissions?: string[]; type: 'builtin' | 'filesystem' | 'imported'; sourcePath?: string; agentIds: string[] }> }>('/skills'),
@@ -1305,6 +1351,15 @@ export const api = {
     markAllRead: (userId: string) => request<{ success: boolean; count: number }>('/notifications/mark-all-read', { method: 'POST', body: JSON.stringify({ userId }) }),
   },
 
+  // ─── Unread Tracking ───────────────────────────────────────────────
+  unread: {
+    getCounts: () => request<{ counts: Record<string, number> }>('/unread'),
+    markRead: (conversationKey: string, lastReadAt: string, lastReadId?: string) =>
+      request<{ success: boolean }>('/unread/mark-read', { method: 'POST', body: JSON.stringify({ conversationKey, lastReadAt, lastReadId }) }),
+    markAllRead: () =>
+      request<{ success: boolean }>('/unread/mark-all-read', { method: 'POST' }),
+  },
+
   // ─── Activity Feed ────────────────────────────────────────────────
   activity: {
     list: (opts?: { limit?: number; type?: string }) => {
@@ -1366,6 +1421,8 @@ export const api = {
       if (opts?.limit) params.set('limit', String(opts.limit));
       return request<{ results: DeliverableInfo[]; total: number }>(`/deliverables?${params}`);
     },
+    get: (id: string) =>
+      request<{ deliverable: DeliverableInfo }>(`/deliverables/${id}`),
     create: (data: Partial<DeliverableInfo>) =>
       request<{ deliverable: DeliverableInfo }>('/deliverables', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: Partial<DeliverableInfo>) =>

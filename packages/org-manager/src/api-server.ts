@@ -197,6 +197,8 @@ export class APIServer {
   private workflowEngine?: WorkflowEngine;
   private teamTemplateRegistry: TeamTemplateRegistry;
   private fileStorage?: LocalFileStorageProvider;
+  private remoteAgent?: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void };
+  private remoteAgentFactory?: () => Promise<{ getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void } | null>;
   // Custom group chats are now persisted in SQLite via storage.groupChatRepo
   constructor(
     private orgService: OrganizationService,
@@ -268,6 +270,7 @@ export class APIServer {
             replyToId,
           });
           persistedMsgId = saved.id;
+          this.ws.broadcastUnreadUpdate(`channel:${channelKey}`, saved.id);
         }
 
         // Send to frontend via WebSocket (scoped to channel members)
@@ -524,6 +527,17 @@ export class APIServer {
 
   setStorage(storage: StorageBridge): void {
     this.storage = storage;
+  }
+
+  setRemoteAgent(agent: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void }): void {
+    this.remoteAgent = agent;
+    agent.onStatus((status) => {
+      this.ws.broadcast({ type: 'remote:status', payload: status, timestamp: new Date().toISOString() });
+    });
+  }
+
+  setRemoteAgentFactory(factory: () => Promise<{ getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void } | null>): void {
+    this.remoteAgentFactory = factory;
   }
 
   setGateway(gateway: ExternalAgentGateway, secret?: string): void {
@@ -1317,7 +1331,7 @@ export class APIServer {
   ): Promise<void> {
     if (!this.storage || !sessionId) return;
     try {
-      await this.storage.chatSessionRepo.appendMessage(
+      const msg = await this.storage.chatSessionRepo.appendMessage(
         sessionId,
         agentId,
         'assistant',
@@ -1326,6 +1340,9 @@ export class APIServer {
         metadata
       );
       await this.storage.chatSessionRepo.updateLastMessage(sessionId);
+      if (msg?.id) {
+        this.ws.broadcastUnreadUpdate(`session:${sessionId}`, msg.id);
+      }
     } catch (err) {
       log.warn('Failed to persist assistant message', { error: String(err) });
     }
@@ -1981,6 +1998,11 @@ export class APIServer {
           mentions,
           replyToId,
         });
+      }
+
+      // Broadcast unread update for channel message
+      if (userMsg) {
+        this.ws.broadcastUnreadUpdate(`channel:${channel}`, userMsg.id);
       }
 
       // DM / personal-notepad channels never route to agents
@@ -3061,6 +3083,21 @@ export class APIServer {
           requirementId: body['requirementId'] as string,
         });
         this.json(res, 201, { deliverable: d });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/deliverables\/[^/]+$/) && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
+      const delivId = path.split('/')[3]!;
+      try {
+        const d = await this.deliverableService.get(delivId);
+        if (!d) { this.json(res, 404, { error: 'Deliverable not found' }); return; }
+        this.json(res, 200, { deliverable: d });
       } catch (err) {
         this.json(res, 500, { error: String(err) });
       }
@@ -6494,6 +6531,40 @@ EXPLANATION_END`;
       return;
     }
 
+    // ── Unread message tracking ──────────────────────────────────────────────
+    if (path === '/api/unread' && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const repo = this.storage?.readCursorRepo;
+      if (!repo) { this.json(res, 200, { counts: {} }); return; }
+      const counts = repo.getUnreadCounts(authUser.userId);
+      this.json(res, 200, { counts });
+      return;
+    }
+
+    if (path === '/api/unread/mark-read' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const body = await this.readBody(req);
+      const { conversationKey, lastReadAt, lastReadId } = body as { conversationKey: string; lastReadAt: string; lastReadId?: string };
+      if (!conversationKey || !lastReadAt) { this.json(res, 400, { error: 'conversationKey and lastReadAt required' }); return; }
+      const repo = this.storage?.readCursorRepo;
+      if (!repo) { this.json(res, 200, { success: true }); return; }
+      repo.setReadCursor(authUser.userId, conversationKey, lastReadAt, lastReadId);
+      this.json(res, 200, { success: true });
+      return;
+    }
+
+    if (path === '/api/unread/mark-all-read' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const repo = this.storage?.readCursorRepo;
+      if (!repo) { this.json(res, 200, { success: true }); return; }
+      repo.markAllRead(authUser.userId);
+      this.json(res, 200, { success: true });
+      return;
+    }
+
     // Unified activity feed — merges notifications, task comments, and deliverables
     if (path === '/api/activity' && req.method === 'GET') {
       const authUser = await this.requireAuth(req, res);
@@ -6881,6 +6952,35 @@ EXPLANATION_END`;
       return;
     }
 
+    // Settings — Remote Access
+    if (path === '/api/settings/remote' && req.method === 'GET') {
+      const status = this.remoteAgent?.getStatus() ?? { enabled: false, connected: false, instanceId: null, remoteUrl: null, signalUrl: null, peerCount: 0 };
+      this.json(res, 200, status);
+      return;
+    }
+
+    if (path === '/api/settings/remote/enable' && req.method === 'POST') {
+      if (!this.remoteAgent && this.remoteAgentFactory) {
+        const agent = await this.remoteAgentFactory();
+        if (agent) this.setRemoteAgent(agent);
+      }
+      if (!this.remoteAgent) {
+        this.json(res, 400, { error: 'Remote access not configured. Please sign in to Markus Hub first.' });
+        return;
+      }
+      this.remoteAgent.start().catch(() => {});
+      this.json(res, 200, { ok: true, status: this.remoteAgent.getStatus() });
+      return;
+    }
+
+    if (path === '/api/settings/remote/disable' && req.method === 'POST') {
+      if (this.remoteAgent) {
+        await this.remoteAgent.stop();
+      }
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
     // Settings — LLM configuration
     if (path === '/api/settings/llm' && req.method === 'GET') {
       if (!this.llmRouter) {
@@ -6995,10 +7095,14 @@ EXPLANATION_END`;
       const { loadConfig: loadCfg } = await import('@markus/shared');
       const currentConfig = loadCfg(this.markusConfigPath);
       const browser = currentConfig.browser ?? {};
+      const am = this.orgService.getAgentManager();
       this.json(res, 200, {
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
+        autoClickAllowDialog: browser.autoClickAllowDialog ?? false,
+        extensionBridgePort: browser.extensionBridgePort ?? 9333,
+        extensionConnected: am.browserExtensionConnected,
       });
       return;
     }
@@ -7011,6 +7115,7 @@ EXPLANATION_END`;
       if (typeof body['bringToFront'] === 'boolean') updates.bringToFront = body['bringToFront'];
       if (typeof body['remoteDebuggingPort'] === 'number') updates.remoteDebuggingPort = body['remoteDebuggingPort'];
       if (typeof body['autoCloseTabs'] === 'boolean') updates.autoCloseTabs = body['autoCloseTabs'];
+      if (typeof body['autoClickAllowDialog'] === 'boolean') updates.autoClickAllowDialog = body['autoClickAllowDialog'];
       try {
         saveConfig({ browser: updates } as any, this.markusConfigPath);
         const am = this.orgService.getAgentManager();
@@ -7022,6 +7127,9 @@ EXPLANATION_END`;
         }
         if (typeof updates.remoteDebuggingPort === 'number') {
           am.setBrowserRemoteDebuggingPort(updates.remoteDebuggingPort);
+        }
+        if (typeof updates.autoClickAllowDialog === 'boolean') {
+          am.setBrowserAutoClickAllowDialog(updates.autoClickAllowDialog);
         }
       } catch (e) {
         log.warn('Failed to persist browser settings', { error: String(e) });
@@ -7040,11 +7148,95 @@ EXPLANATION_END`;
       const { loadConfig: loadCfg } = await import('@markus/shared');
       const currentConfig = loadCfg(this.markusConfigPath);
       const browser = currentConfig.browser ?? {};
+      const am2 = this.orgService.getAgentManager();
       this.json(res, 200, {
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
+        autoClickAllowDialog: browser.autoClickAllowDialog ?? false,
+        extensionBridgePort: browser.extensionBridgePort ?? 9333,
+        extensionConnected: am2.browserExtensionConnected,
       });
+      return;
+    }
+
+    // Settings — Chrome Extension: download zip
+    if (path === '/api/settings/browser/extension.zip' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+
+      try {
+        const { fileURLToPath } = await import('node:url');
+        const { dirname: dn, resolve: rslv, join: jn } = await import('node:path');
+        const { execSync } = await import('node:child_process');
+        const { existsSync: ex, readFileSync, statSync } = await import('node:fs');
+
+        const thisDir = dn(fileURLToPath(import.meta.url));
+        // Search order: dev workspace → binary install → cwd fallback
+        const zipCandidates = [
+          jn(rslv(thisDir, '..', '..', 'chrome-extension'), 'dist', 'markus-browser-extension.zip'),
+          jn(rslv(thisDir, '..', '..', '..', 'chrome-extension'), 'markus-browser-extension.zip'),
+          jn(rslv(process.cwd(), 'packages', 'chrome-extension'), 'dist', 'markus-browser-extension.zip'),
+          jn(rslv(process.cwd(), 'chrome-extension'), 'markus-browser-extension.zip'),
+        ];
+        let zipPath = zipCandidates.find(p => ex(p));
+
+        // If not found, try building from source
+        if (!zipPath) {
+          const extDir = [
+            rslv(thisDir, '..', '..', 'chrome-extension'),
+            rslv(process.cwd(), 'packages', 'chrome-extension'),
+          ].find(d => ex(jn(d, 'package.json')));
+          if (extDir) {
+            try { execSync('pnpm run pack', { cwd: extDir, timeout: 30000, stdio: 'pipe' }); } catch { /* ignore */ }
+            const built = jn(extDir, 'dist', 'markus-browser-extension.zip');
+            if (ex(built)) zipPath = built;
+          }
+        }
+        if (!zipPath) { this.json(res, 404, { error: 'Extension zip not found.' }); return; }
+
+        const data = readFileSync(zipPath);
+        res.writeHead(200, {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': 'attachment; filename="markus-browser-extension.zip"',
+          'Content-Length': data.length,
+        });
+        res.end(data);
+      } catch (e) {
+        this.json(res, 500, { error: String(e) });
+      }
+      return;
+    }
+
+    // Settings — Chrome Extension: open chrome://extensions page
+    if (path === '/api/settings/browser/open-extensions-page' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+
+      try {
+        const { exec: execCb } = await import('node:child_process');
+        const platform = process.platform;
+        if (platform === 'darwin') {
+          execCb('open -a "Google Chrome" "chrome://extensions"', () => {});
+        } else if (platform === 'win32') {
+          execCb('start chrome "chrome://extensions"', () => {});
+        } else {
+          execCb('xdg-open "chrome://extensions" 2>/dev/null || google-chrome "chrome://extensions"', () => {});
+        }
+        this.json(res, 200, { ok: true });
+      } catch (e) {
+        this.json(res, 500, { error: String(e) });
+      }
+      return;
+    }
+
+    // Settings — Browser auto-click test
+    if (path === '/api/settings/browser/test-auto-click' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const { testAutoClick } = await import('@markus/core');
+      const result = await testAutoClick();
+      this.json(res, 200, result);
       return;
     }
 
@@ -9643,6 +9835,7 @@ EXPLANATION_END`;
       exact('/api/settings/agent', 'GET', 'POST'),
       exact('/api/settings/browser', 'GET', 'POST'),
       exact('/api/settings/browser/check', 'GET'),
+      exact('/api/settings/browser/test-auto-click', 'POST'),
       exact('/api/settings/search', 'GET', 'POST'),
       exact('/api/settings/env-models', 'GET', 'POST'),
       exact('/api/settings/detect-ollama', 'GET'),

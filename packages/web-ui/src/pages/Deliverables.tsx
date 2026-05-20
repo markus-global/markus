@@ -8,6 +8,7 @@ import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 
@@ -165,6 +166,52 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
     const unsub3 = wsClient.on('deliverable:removed', () => refresh());
     return () => { unsub1(); unsub2(); unsub3(); };
   }, [refresh]);
+
+  // Handle deep navigation to a specific deliverable
+  const pendingOpenRef = useRef<string | null>(null);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+
+  const openDeliverableById = useCallback((id: string) => {
+    const showDetail = (item: DeliverableInfo) => {
+      setSelected(item);
+      if (isMobile) {
+        setMobileShowDetail(true);
+        history.pushState({ mobileDetail: PAGE.DELIVERABLES }, '', window.location.hash);
+      }
+    };
+    const found = itemsRef.current.find(d => d.id === id);
+    if (found) { showDetail(found); return; }
+    api.deliverables.get(id).then(r => { if (r.deliverable) showDetail(r.deliverable); }).catch(() => {});
+  }, [isMobile]);
+
+  useEffect(() => {
+    const navId = localStorage.getItem('markus_nav_openDeliverable');
+    if (navId) {
+      localStorage.removeItem('markus_nav_openDeliverable');
+      if (itemsRef.current.length > 0) {
+        openDeliverableById(navId);
+      } else {
+        pendingOpenRef.current = navId;
+      }
+    }
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.params?.openDeliverable) {
+        localStorage.removeItem('markus_nav_openDeliverable');
+        openDeliverableById(detail.params.openDeliverable);
+      }
+    };
+    window.addEventListener('markus:navigate', handler);
+    return () => window.removeEventListener('markus:navigate', handler);
+  }, [openDeliverableById]);
+
+  useEffect(() => {
+    const id = pendingOpenRef.current;
+    if (!id || items.length === 0) return;
+    pendingOpenRef.current = null;
+    openDeliverableById(id);
+  }, [items, openDeliverableById]);
 
   const checkNeedMore = useCallback(() => {
     const el = listRef.current;
@@ -340,11 +387,14 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
       <div className={`${isMobile ? 'flex-1 min-w-0' : 'shrink-0'} flex flex-col bg-surface-secondary rounded-xl m-1 mr-0`}
         style={isMobile ? (mobileShowDetail ? { display: 'none' } : undefined) : { width: listPanel.width }}>
         <div className="p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-fg-secondary">
-              {t('title')}{totalCount > 0 && <span className="ml-1.5 text-fg-tertiary font-normal">({totalCount})</span>}
-            </h2>
-            <button onClick={openContributeForm} className="text-xs px-2.5 py-1 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">{t('create')}</button>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              {isMobile && <MobileMenuButton />}
+              <h2 className="text-sm font-semibold text-fg-secondary truncate">
+                {t('title')}{totalCount > 0 && <span className="ml-1.5 text-fg-tertiary font-normal">({totalCount})</span>}
+              </h2>
+            </div>
+            <button onClick={openContributeForm} className="text-xs px-2.5 py-1 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors shrink-0">{t('create')}</button>
           </div>
           <input
             value={searchQuery}

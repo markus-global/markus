@@ -69,6 +69,10 @@ export interface MarkusConfig {
     remoteDebuggingPort?: number;
     /** Automatically close agent-owned tabs when the task completes (default: true) */
     autoCloseTabs?: boolean;
+    /** Auto-click Chrome's "Allow debugging" dialog via OS accessibility APIs (macOS/Windows) */
+    autoClickAllowDialog?: boolean;
+    /** WebSocket port for Chrome extension bridge (default: 9333) */
+    extensionBridgePort?: number;
   };
   integrations?: {
     feishu?: { appId?: string; appSecret?: string };
@@ -88,6 +92,12 @@ export interface MarkusConfig {
     };
     // Future cloud providers:
     // s3?: { bucket: string; region: string; endpoint?: string; accessKeyId?: string; secretAccessKey?: string };
+  };
+  remote?: {
+    enabled?: boolean;
+    autoConnect?: boolean;
+    hubUrl?: string;
+    instanceName?: string;
   };
 }
 

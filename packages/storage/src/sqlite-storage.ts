@@ -585,6 +585,15 @@ CREATE TABLE IF NOT EXISTS status_transitions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_st_entity ON status_transitions(entity_type, entity_id, created_at);
+
+CREATE TABLE IF NOT EXISTS user_read_cursors (
+  user_id TEXT NOT NULL,
+  conversation_key TEXT NOT NULL,
+  last_read_at TEXT NOT NULL,
+  last_read_id TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, conversation_key)
+);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -4317,6 +4326,90 @@ export class SqliteStatusTransitionRepo {
        WHERE entity_type = ? AND entity_id = ?
        ORDER BY created_at ASC, id ASC LIMIT ?`
     ).all(entityType, entityId, limit) as unknown as StatusTransitionRow[];
+  }
+}
+
+// ─── Read Cursors (unread tracking) ──────────────────────────────────────────
+
+export interface ReadCursorRow {
+  userId: string;
+  conversationKey: string;
+  lastReadAt: string;
+  lastReadId: string | null;
+  updatedAt: string;
+}
+
+export class SqliteReadCursorRepo {
+  constructor(private db: DatabaseSync) {}
+
+  setReadCursor(userId: string, conversationKey: string, lastReadAt: string, lastReadId?: string): void {
+    this.db.prepare(
+      `INSERT INTO user_read_cursors (user_id, conversation_key, last_read_at, last_read_id, updated_at)
+       VALUES (?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(user_id, conversation_key) DO UPDATE SET
+         last_read_at = excluded.last_read_at,
+         last_read_id = COALESCE(excluded.last_read_id, last_read_id),
+         updated_at = datetime('now')`
+    ).run(userId, conversationKey, lastReadAt, lastReadId ?? null);
+  }
+
+  getReadCursors(userId: string): ReadCursorRow[] {
+    return this.db.prepare(
+      `SELECT user_id AS userId, conversation_key AS conversationKey,
+              last_read_at AS lastReadAt, last_read_id AS lastReadId,
+              updated_at AS updatedAt
+       FROM user_read_cursors WHERE user_id = ?`
+    ).all(userId) as unknown as ReadCursorRow[];
+  }
+
+  getUnreadCounts(userId: string): Record<string, number> {
+    const cursors = this.getReadCursors(userId);
+    const result: Record<string, number> = {};
+
+    for (const cursor of cursors) {
+      const key = cursor.conversationKey;
+      if (key.startsWith('session:')) {
+        const sessionId = key.slice('session:'.length);
+        const row = this.db.prepare(
+          `SELECT COUNT(*) as cnt FROM chat_messages
+           WHERE session_id = ? AND created_at > ?`
+        ).get(sessionId, cursor.lastReadAt) as { cnt: number } | undefined;
+        if (row && row.cnt > 0) result[key] = row.cnt;
+      } else if (key.startsWith('channel:')) {
+        const channel = key.slice('channel:'.length);
+        const row = this.db.prepare(
+          `SELECT COUNT(*) as cnt FROM channel_messages
+           WHERE channel = ? AND created_at > ?`
+        ).get(channel, cursor.lastReadAt) as { cnt: number } | undefined;
+        if (row && row.cnt > 0) result[key] = row.cnt;
+      }
+    }
+
+    return result;
+  }
+
+  markAllRead(userId: string): void {
+    const ts = now();
+    // Update all existing cursors
+    this.db.prepare(
+      `UPDATE user_read_cursors SET last_read_at = ?, updated_at = datetime('now') WHERE user_id = ?`
+    ).run(ts, userId);
+
+    // Create cursors for sessions that don't have one
+    this.db.exec(`
+      INSERT OR IGNORE INTO user_read_cursors (user_id, conversation_key, last_read_at, updated_at)
+      SELECT '${userId}', 'session:' || s.id, '${ts}', datetime('now')
+      FROM chat_sessions s WHERE s.user_id = '${userId}'
+    `);
+
+    // Create cursors for channels user is a member of
+    this.db.exec(`
+      INSERT OR IGNORE INTO user_read_cursors (user_id, conversation_key, last_read_at, updated_at)
+      SELECT '${userId}', 'channel:' || gc.channel_key, '${ts}', datetime('now')
+      FROM group_chats gc
+      JOIN group_chat_members gcm ON gcm.group_chat_id = gc.id
+      WHERE gcm.member_id = '${userId}'
+    `);
   }
 }
 

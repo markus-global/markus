@@ -29,6 +29,7 @@ import { TeamProfile, TABS as TEAM_TABS, type TeamTab } from './TeamProfile.tsx'
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
+import { useUnreadCounts } from '../hooks/useUnreadCounts.ts';
 import { Avatar } from '../components/Avatar.tsx';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -798,12 +799,27 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const [initialLoading, setInitialLoading] = useState(true);
   const isMobile = useIsMobile();
 
-  // Mobile: URL hash is the single source of truth (#chat = list, #chat/d = detail)
+  // Mobile: URL hash is the single source of truth for 3-layer navigation
+  // L1 (roster): #team — sidebar list
+  // L2 (team detail): #team/t/<teamId> — team agent list + channel
+  // L3 (chat): #team/d — agent/channel chat
   const hash = useSyncExternalStore(_subHash, _getHash);
   const mobileShowChat = isMobile && (hash.startsWith(`#${PAGE.TEAM}/`) || hash.startsWith('#chat/'));
+  const mobileTeamHash = isMobile && hash.match(/^#team\/t\/(.+)$/);
+  const mobileLayer: 'roster' | 'team' | 'chat' = !isMobile ? 'roster'
+    : mobileTeamHash ? 'team'
+    : mobileShowChat ? 'chat'
+    : 'roster';
+  const mobileTeamId = mobileTeamHash ? mobileTeamHash[1] : null;
 
+  const mobileBackHashRef = useRef<string>(PAGE.TEAM);
   const enterMobileDetail = useCallback(() => {
+    mobileBackHashRef.current = window.location.hash.slice(1) || PAGE.TEAM;
     window.location.hash = `${PAGE.TEAM}/d`;
+  }, []);
+
+  const enterMobileTeam = useCallback((teamId: string) => {
+    window.location.hash = `${PAGE.TEAM}/t/${teamId}`;
   }, []);
 
   // Profile tab: still uses pushState for back navigation
@@ -1032,6 +1048,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
   // Group chats
   const [groupChats, setGroupChats] = useState<Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number; teamId?: string; creatorId?: string; creatorName?: string; members?: Array<{ id: string; name: string; type: 'human' | 'agent' }> }>>([]);
+  const groupChatsRef = useRef(groupChats);
+  groupChatsRef.current = groupChats;
+  const pendingSelectTeamRef = useRef<string | null>(null);
   const [showMemberPanel, setShowMemberPanel] = useState(false);
 
   // Teams
@@ -1135,14 +1154,18 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   // ── Per-agent unread notification counts + auto-read ────────────────────────
   const [unreadByAgent, setUnreadByAgent] = useState<Map<string, number>>(new Map());
   const unreadIdsByAgent = useRef<Map<string, string[]>>(new Map());
+  const agentIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => { agentIdsRef.current = new Set(agents.map(a => a.id)); }, [agents]);
+
   const refreshUnreadCounts = useCallback(async () => {
     try {
       const { notifications } = await api.notifications.list(authUser?.id, true);
       const counts = new Map<string, number>();
       const ids = new Map<string, string[]>();
+      const knownAgents = agentIdsRef.current;
       for (const n of notifications) {
         const agentId = (n.metadata?.agentId as string) || undefined;
-        if (agentId) {
+        if (agentId && knownAgents.has(agentId)) {
           counts.set(agentId, (counts.get(agentId) ?? 0) + 1);
           const list = ids.get(agentId) ?? [];
           list.push(n.id);
@@ -1151,6 +1174,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       }
       setUnreadByAgent(counts);
       unreadIdsByAgent.current = ids;
+      // Broadcast total for BottomNav badge
+      let total = 0;
+      for (const v of counts.values()) total += v;
+      window.dispatchEvent(new CustomEvent('markus:team-unread-changed', { detail: { count: total } }));
     } catch { /* */ }
   }, [authUser?.id]);
 
@@ -1172,6 +1199,33 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       markAgentNotificationsRead(selectedAgent);
     }
   }, [chatMode, selectedAgent, markAgentNotificationsRead]);
+
+  // ── Chat unread counts (message-level read cursors) ──────────────────────────
+  const { counts: chatUnreadCounts, markRead: markChatRead } = useUnreadCounts();
+  const unreadByChannel = useMemo(() => {
+    const result: Record<string, number> = {};
+    for (const [key, count] of Object.entries(chatUnreadCounts)) {
+      if (key.startsWith('channel:')) {
+        result[key.slice('channel:'.length)] = count;
+      }
+    }
+    return result;
+  }, [chatUnreadCounts]);
+
+  // Auto mark-read when a conversation becomes visible
+  useEffect(() => {
+    const isVisible = !isMobile || mobileLayer === 'chat';
+    if (!isVisible) return;
+    if (chatMode === 'channel' && activeChannel) {
+      markChatRead(`channel:${activeChannel}`);
+    } else if (chatMode === 'direct' && activeSessionId) {
+      markChatRead(`session:${activeSessionId}`);
+    } else if (chatMode === 'dm' && activeDmUserId) {
+      const dmChannel = `dm:${[authUser?.id, activeDmUserId].sort().join(':')}`;
+      markChatRead(`channel:${dmChannel}`);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatMode, activeChannel, activeSessionId, activeDmUserId, mobileLayer]);
 
   // ── Data loading ─────────────────────────────────────────────────────────────
   const refreshAgents = useCallback(() => api.agents.list().then(d => setAgents(d.agents)).catch(() => {}), []);
@@ -1224,6 +1278,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           } else {
             setChatMode('direct');
             setSelectedAgent(detail.params.agentId);
+            setMainTab('chat');
+            if (isMobile) enterMobileDetail();
             if (detail.params.sessionId) {
               const targetSessionId = detail.params.sessionId;
               setTimeout(async () => {
@@ -1247,11 +1303,22 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           setChatMode('dm');
           setActiveDmUserId(detail.params.dm);
           setMainTab('chat');
+          if (isMobile) enterMobileDetail();
         }
         if (detail.params?.channel) {
           setChatMode('channel');
           setActiveChannel(detail.params.channel);
           setMainTab('chat');
+          if (isMobile) enterMobileDetail();
+        }
+        if (detail.params?.selectTeam) {
+          const teamId = detail.params.selectTeam;
+          if (isMobile) {
+            enterMobileTeam(teamId);
+          } else {
+            const teamGc = groupChatsRef.current.find(gc => gc.type === 'team' && gc.teamId === teamId);
+            if (teamGc) { setChatMode('channel'); setActiveChannel(teamGc.channelKey); setMainTab('chat'); setShowMemberPanel(false); setShowTeamDetailPanel(true); }
+          }
         }
         if (detail.params?.openHire === 'true') {
           // handled by ChatTeamSidebar via nav events
@@ -1269,21 +1336,42 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     if (navDm) {
       localStorage.removeItem('markus_nav_dm');
       setChatMode('dm'); setActiveDmUserId(navDm); setMainTab('chat');
+      if (isMobile) enterMobileDetail();
     }
     const navChannel = localStorage.getItem('markus_nav_channel');
     if (navChannel) {
       localStorage.removeItem('markus_nav_channel');
       setChatMode('channel'); setActiveChannel(navChannel); setMainTab('chat');
+      if (isMobile) enterMobileDetail();
     }
     const selectAgent = localStorage.getItem('markus_nav_selectAgent');
     if (selectAgent) {
       localStorage.removeItem('markus_nav_selectAgent');
       handleViewProfile(selectAgent);
     }
+    const selectTeam = localStorage.getItem('markus_nav_selectTeam');
+    if (selectTeam) {
+      localStorage.removeItem('markus_nav_selectTeam');
+      if (isMobile) {
+        enterMobileTeam(selectTeam);
+      } else {
+        pendingSelectTeamRef.current = selectTeam;
+      }
+    }
     window.addEventListener('markus:navigate', handleNav);
     return () => window.removeEventListener('markus:navigate', handleNav);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const teamId = pendingSelectTeamRef.current;
+    if (!teamId || groupChats.length === 0) return;
+    const teamGc = groupChats.find(gc => gc.type === 'team' && gc.teamId === teamId);
+    if (teamGc) {
+      pendingSelectTeamRef.current = null;
+      setChatMode('channel'); setActiveChannel(teamGc.channelKey); setMainTab('chat'); setShowMemberPanel(false); setShowTeamDetailPanel(true);
+    }
+  }, [groupChats]);
 
   // Auto-select secretary agent when no valid agent is selected.
   // Also handles stale IDs from localStorage (e.g. deleted agents).
@@ -2610,7 +2698,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     selectedAgent ? t('page.placeholder.direct') : t('page.placeholder.noAgent');
 
   // ── Render ────────────────────────────────────────────────────────────────────
-  const showChatOnMobile = isMobile && mobileShowChat;
+  const showChatOnMobile = isMobile && mobileLayer === 'chat';
 
   return (
     <div ref={teamContainerRef} className="flex-1 overflow-hidden flex relative">
@@ -2633,7 +2721,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         onSelectTeam={(teamId) => {
           const teamGc = groupChats.find(gc => gc.type === 'team' && gc.teamId === teamId);
           if (isMobile) {
-            if (teamGc) { setChatMode('channel'); setActiveChannel(teamGc.channelKey); setMainTab('chat'); setShowMemberPanel(false); enterMobileDetail(); }
+            enterMobileTeam(teamId);
           } else {
             if (teamGc) { setChatMode('channel'); setActiveChannel(teamGc.channelKey); setMainTab('chat'); setShowMemberPanel(false); if (!showTeamDetailPanel && !l2SpaceTight) setShowTeamDetailPanel(true); }
           }
@@ -2646,11 +2734,91 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         onViewProfile={handleViewProfile}
         onManageGroupMembers={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); setShowMemberPanel(true); if (isMobile) enterMobileDetail(); }}
         unreadByAgent={unreadByAgent}
+        unreadByChannel={unreadByChannel}
         width={isMobile ? undefined : chatSidebar.width}
         onResizeStart={isMobile ? undefined : chatSidebar.onResizeStart}
-        hidden={isMobile && mobileShowChat}
+        hidden={isMobile && mobileLayer !== 'roster'}
         initialLoading={initialLoading}
       />
+
+      {/* ── L2: Mobile team detail view ── */}
+      {isMobile && mobileLayer === 'team' && mobileTeamId && (() => {
+        const l2Team = teams.find(t => t.id === mobileTeamId);
+        if (!l2Team) return null;
+        const l2Agents = agents.filter(a => a.teamId === mobileTeamId);
+        const l2Gc = groupChats.find(gc => gc.type === 'team' && gc.teamId === mobileTeamId);
+        return (
+          <div className="flex-1 overflow-hidden flex flex-col min-w-0">
+            <div className="flex items-center gap-2 px-3 h-12 shrink-0 border-b border-border-default">
+              <button
+                onClick={() => { window.location.hash = PAGE.TEAM; }}
+                className="p-1.5 -ml-1 rounded-lg hover:bg-surface-overlay transition-colors shrink-0 text-fg-secondary"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+              </button>
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-brand-500/15 flex items-center justify-center shrink-0">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-brand-500"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-semibold text-fg-primary truncate">{l2Team.name}</h3>
+                  <p className="text-[10px] text-fg-tertiary">{t('chat.members_other', { count: l2Team.members?.length || l2Agents.length })}</p>
+                </div>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1">
+              {l2Gc && (() => {
+                const gcUnread = unreadByChannel[l2Gc.channelKey] ?? 0;
+                return (
+                  <button
+                    onClick={() => { setChatMode('channel'); setActiveChannel(l2Gc.channelKey); setMainTab('chat'); enterMobileDetail(); }}
+                    className="w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl hover:bg-surface-overlay transition-colors"
+                  >
+                    <div className="w-9 h-9 rounded-xl bg-brand-500/15 flex items-center justify-center shrink-0">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-brand-500"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+                    </div>
+                    <div className="flex-1 min-w-0 text-left">
+                      <div className="text-sm font-medium text-fg-primary truncate">{l2Gc.name}</div>
+                      <div className="text-[10px] text-fg-tertiary">{t('chat.groupChat')}</div>
+                    </div>
+                    {gcUnread > 0 ? (
+                      <span className="min-w-[16px] h-[16px] flex items-center justify-center text-[9px] font-semibold text-white bg-red-500 rounded-full px-1 leading-none shrink-0">{gcUnread}</span>
+                    ) : (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-fg-tertiary shrink-0"><polyline points="9 18 15 12 9 6" /></svg>
+                    )}
+                  </button>
+                );
+              })()}
+              {l2Agents.length > 0 && (
+                <>
+                  <p className="text-[10px] font-semibold text-fg-muted uppercase tracking-wider px-2.5 pt-2">{t('chat.agents')}</p>
+                  {l2Agents.map(agent => {
+                    const agentUnread = unreadByAgent.get(agent.id) ?? 0;
+                    return (
+                      <button
+                        key={agent.id}
+                        onClick={() => { setChatMode('direct'); setSelectedAgent(agent.id); setMainTab('chat'); enterMobileDetail(); }}
+                        className="w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl hover:bg-surface-overlay transition-colors"
+                      >
+                        <Avatar name={agent.name || 'Agent'} avatarUrl={agent.avatarUrl} size={36} />
+                        <div className="flex-1 min-w-0 text-left">
+                          <div className="text-sm font-medium text-fg-primary truncate">{agent.name}</div>
+                          <div className="text-[10px] text-fg-tertiary truncate">{agent.role || agent.status}</div>
+                        </div>
+                        {agentUnread > 0 ? (
+                          <span className="min-w-[16px] h-[16px] flex items-center justify-center text-[9px] font-semibold text-white bg-red-500 rounded-full px-1 leading-none shrink-0">{agentUnread}</span>
+                        ) : (
+                          <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'active' || agent.status === 'idle' ? 'bg-green-500' : agent.status === 'working' || agent.status === 'busy' ? 'bg-blue-500' : agent.status === 'paused' ? 'bg-amber-500' : 'bg-gray-400'}`} />
+                        )}
+                      </button>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── L2: Team detail panel (desktop only) ── */}
       {/* Inline mode: when space allows */}
@@ -2730,7 +2898,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               {/* Mobile Row 1: back + name + status */}
               <div className="flex items-center px-3 h-11 gap-2">
                 <button
-                  onClick={() => { window.location.hash = PAGE.TEAM; }}
+                  onClick={() => { window.location.hash = mobileBackHashRef.current; }}
                   className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1 shrink-0"
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>

@@ -16,6 +16,7 @@ import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
+import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 
 /* ── useDropdownPosition: compute fixed position for dropdown escaping overflow containers ── */
 function useDropdownPosition(triggerRef: React.RefObject<HTMLDivElement | null>, open: boolean) {
@@ -3523,6 +3524,17 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     }
   }, [board, forceOpenTask, ensureProjectVisible]);
 
+  useEffect(() => {
+    const navReqId = localStorage.getItem('markus_nav_openRequirement');
+    if (!navReqId) return;
+    const req = allRequirements.find(r => r.id === navReqId);
+    if (req) {
+      ensureProjectVisible(req.projectId);
+      forceOpenReq(req);
+      localStorage.removeItem('markus_nav_openRequirement');
+    }
+  }, [allRequirements, forceOpenReq, ensureProjectVisible]);
+
   // Initial project selection from hash / localStorage (runs once on mount)
   useEffect(() => {
     const hashParts = window.location.hash.slice(1).split('/');
@@ -3921,6 +3933,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
           <div className="shrink-0">
             {/* Mobile Row 1: title + action buttons */}
             <div className="flex items-center gap-2 px-3 h-11">
+              <MobileMenuButton />
               {selectedProject ? (
                 <div className="flex items-center gap-1 min-w-0 flex-1">
                   <span className="text-sm font-semibold text-fg-primary truncate">{selectedProject.name}</span>

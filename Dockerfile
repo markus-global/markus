@@ -14,6 +14,7 @@ COPY packages/gui/package.json packages/gui/
 COPY packages/a2a/package.json packages/a2a/
 COPY packages/cli/package.json packages/cli/
 COPY packages/web-ui/package.json packages/web-ui/
+COPY packages/chrome-extension/package.json packages/chrome-extension/
 RUN pnpm install --frozen-lockfile || pnpm install
 
 # ── Stage 2: Build all packages ─────────────────────────────────────────────

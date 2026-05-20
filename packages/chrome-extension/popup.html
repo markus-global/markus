@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 280px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      padding: 16px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .header img { width: 24px; height: 24px; }
+    .header h1 { font-size: 14px; font-weight: 600; color: #fff; }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      margin-bottom: 10px;
+    }
+    .status.connected { background: rgba(34, 197, 94, 0.15); }
+    .status.disconnected { background: rgba(107, 114, 128, 0.15); }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .dot.green { background: #22c55e; }
+    .dot.gray { background: #6b7280; }
+    .status-text { font-size: 13px; font-weight: 500; }
+    .info {
+      font-size: 11px;
+      color: #9ca3af;
+      line-height: 1.5;
+    }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 0;
+    }
+    .info-label { color: #9ca3af; }
+    .info-value { color: #d1d5db; font-family: monospace; }
+    .divider {
+      height: 1px;
+      background: rgba(255,255,255,0.1);
+      margin: 10px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <img src="icons/icon48.png" alt="">
+    <h1>Markus Browser</h1>
+  </div>
+  <div id="status" class="status disconnected">
+    <span id="dot" class="dot gray"></span>
+    <span id="statusText" class="status-text">Checking...</span>
+  </div>
+  <div class="info">
+    <div class="info-row">
+      <span class="info-label">Bridge</span>
+      <span id="bridgeUrl" class="info-value">ws://127.0.0.1:9333</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Pages tracked</span>
+      <span id="pageCount" class="info-value">0</span>
+    </div>
+  </div>
+  <div class="divider"></div>
+  <div class="info" style="margin-top: 4px;">
+    Enables Markus agents to automate Chrome without the remote debugging dialog.
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

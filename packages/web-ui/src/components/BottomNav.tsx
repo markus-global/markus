@@ -12,6 +12,7 @@ interface Props {
 export function BottomNav({ currentPage, onNavigate, userId }: Props) {
   const { t } = useTranslation('nav');
   const [unreadCount, setUnreadCount] = useState(0);
+  const [teamUnread, setTeamUnread] = useState(0);
 
   const fetchUnread = useCallback(async () => {
     try {
@@ -25,7 +26,16 @@ export function BottomNav({ currentPage, onNavigate, userId }: Props) {
     const timer = setInterval(fetchUnread, 15000);
     const onChanged = () => fetchUnread();
     window.addEventListener('markus:notifications-changed', onChanged);
-    return () => { clearInterval(timer); window.removeEventListener('markus:notifications-changed', onChanged); };
+    const onTeamUnread = (e: Event) => {
+      const count = (e as CustomEvent).detail?.count ?? 0;
+      setTeamUnread(count);
+    };
+    window.addEventListener('markus:team-unread-changed', onTeamUnread);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('markus:notifications-changed', onChanged);
+      window.removeEventListener('markus:team-unread-changed', onTeamUnread);
+    };
   }, [fetchUnread]);
 
   return (
@@ -33,6 +43,7 @@ export function BottomNav({ currentPage, onNavigate, userId }: Props) {
       {MOBILE_TABS.map(tab => {
         const isActive = tab.group.includes(currentPage);
         const isNotif = tab.id === PAGE.NOTIFICATIONS;
+        const isTeam = tab.id === PAGE.TEAM;
 
         return (
           <button
@@ -59,6 +70,11 @@ export function BottomNav({ currentPage, onNavigate, userId }: Props) {
               {isNotif && unreadCount > 0 && (
                 <span className="absolute -top-1.5 -right-2 min-w-[16px] h-4 px-1 flex items-center justify-center bg-red-500 text-white text-[9px] font-bold rounded-full leading-none">
                   {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
+              )}
+              {isTeam && teamUnread > 0 && (
+                <span className="absolute -top-1.5 -right-2 min-w-[16px] h-4 px-1 flex items-center justify-center bg-red-500 text-white text-[9px] font-bold rounded-full leading-none">
+                  {teamUnread > 99 ? '99+' : teamUnread}
                 </span>
               )}
             </div>

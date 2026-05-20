@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation, Trans } from 'react-i18next';
-import { api, type StorageInfo, type OrphanInfo, type AuthUser, type HumanUserInfo } from '../api.ts';
+import { api, type StorageInfo, type OrphanInfo, type AuthUser, type HumanUserInfo, type RemoteStatus, hubApi, getHubUser, ensureHubAuth, wsClient } from '../api.ts';
 import { THEME_OPTIONS, type ThemeMode } from '../hooks/useTheme.ts';
 import { SUPPORTED_LANGUAGES } from '../i18n/index.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[] }
@@ -35,11 +36,61 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
+type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'storage' | 'users' | 'remote';
+
+const SETTINGS_TABS: Array<{ id: SettingsTab; labelKey: string; adminOnly?: boolean }> = [
+  { id: 'appearance', labelKey: 'nav.appearance' },
+  { id: 'providers', labelKey: 'nav.providers', adminOnly: true },
+  { id: 'execution', labelKey: 'nav.execution', adminOnly: true },
+  { id: 'browser', labelKey: 'nav.browser', adminOnly: true },
+  { id: 'search', labelKey: 'nav.search', adminOnly: true },
+  { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
+  { id: 'users', labelKey: 'nav.users', adminOnly: true },
+  { id: 'remote', labelKey: 'nav.remote', adminOnly: true },
+];
+
+function getSettingsTab(): SettingsTab | null {
+  const hash = window.location.hash.slice(1);
+  const parts = hash.split('/');
+  if (parts[0] === 'settings' && parts[1]) {
+    const tab = parts[1] as SettingsTab;
+    if (SETTINGS_TABS.some(t => t.id === tab)) return tab;
+  }
+  return null;
+}
+
 export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdated }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void; authUser?: AuthUser; onLogout?: () => void; onUserUpdated?: (u: AuthUser) => void } = {}) {
   const { t, i18n } = useTranslation(['settings', 'common']);
+  const isMobile = useIsMobile();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [showEditProfile, setShowEditProfile] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const [activeTab, setActiveTab] = useState<SettingsTab | null>(getSettingsTab);
+
+  useEffect(() => {
+    const onHashChange = () => setActiveTab(getSettingsTab());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  const navigateTab = useCallback((tab: SettingsTab) => {
+    setActiveTab(tab);
+    history.pushState(null, '', `#settings/${tab}`);
+  }, []);
+
+  const navigateBackToList = useCallback(() => {
+    setActiveTab(null);
+    history.pushState(null, '', '#settings');
+  }, []);
+
+  // On desktop, always show a tab (default to appearance). On mobile, null means show the list.
+  const resolvedTab: SettingsTab | null = activeTab ?? (isMobile ? null : 'appearance');
+
+  useEffect(() => {
+    const handler = () => setShowEditProfile(true);
+    window.addEventListener('markus:open-edit-profile', handler);
+    return () => window.removeEventListener('markus:open-edit-profile', handler);
+  }, []);
 
   useEffect(() => {
     if (!userMenuOpen) return;
@@ -105,6 +156,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [browserBringToFront, setBrowserBringToFront] = useState(false);
   const [browserRemotePort, setBrowserRemotePort] = useState(0);
   const [browserAutoClose, setBrowserAutoClose] = useState(true);
+  const [browserAutoClickAllow, setBrowserAutoClickAllow] = useState(false);
+  const [browserExtensionConnected, setBrowserExtensionConnected] = useState(false);
+  const [browserExtensionPort, setBrowserExtensionPort] = useState(9333);
   const [browserSaving, setBrowserSaving] = useState(false);
   const [browserMsg, setBrowserMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
@@ -173,6 +227,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           setBrowserBringToFront(d.bringToFront ?? false);
           setBrowserRemotePort(d.remoteDebuggingPort ?? 0);
           setBrowserAutoClose(d.autoCloseTabs ?? true);
+          setBrowserAutoClickAllow(d.autoClickAllowDialog ?? false);
+          setBrowserExtensionConnected(d.extensionConnected ?? false);
+          setBrowserExtensionPort(d.extensionBridgePort ?? 9333);
         }
       })
       .catch(() => {});
@@ -442,6 +499,21 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     if (oauthPollRef.current) clearInterval(oauthPollRef.current);
   }, []);
 
+  // Poll extension connection status when browser tab is active and not yet connected
+  useEffect(() => {
+    if (resolvedTab !== 'browser' || browserExtensionConnected) return;
+    const poll = setInterval(async () => {
+      try {
+        const d = await api.settings.getBrowser();
+        if (d.extensionConnected) {
+          setBrowserExtensionConnected(true);
+          clearInterval(poll);
+        }
+      } catch { /* ignore */ }
+    }, 5000);
+    return () => clearInterval(poll);
+  }, [resolvedTab, browserExtensionConnected]);
+
   // Add/Edit/Delete provider state
   const [showAddProvider, setShowAddProvider] = useState(false);
   const [addProviderForm, setAddProviderForm] = useState({ name: '', apiKey: '', baseUrl: '', model: '', contextWindow: 128000, maxOutputTokens: 16384, costInput: 1, costOutput: 5 });
@@ -677,8 +749,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const showSetupGuide = llm && !hasConfiguredProviders && !setupDismissed;
   const canManageOrgSettings = authUser?.role === 'owner' || authUser?.role === 'admin';
 
+  const visibleTabs = SETTINGS_TABS.filter(tab => !tab.adminOnly || canManageOrgSettings);
+
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div className="flex-1 flex overflow-hidden">
       {showEditProfile && authUser && (
         <EditProfileModal
           authUser={authUser}
@@ -687,20 +761,47 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         />
       )}
 
-      <div className="p-7 space-y-10 max-w-4xl mx-auto w-full">
-        <div className="flex items-center">
-          <h2 className="text-lg font-semibold flex-1">{t('title')}</h2>
-          {authUser && (
+      {/* Settings Sidebar */}
+      <aside className="hidden md:flex flex-col w-56 shrink-0 border-r border-border-default bg-surface-secondary overflow-y-auto">
+        <div className="px-3 pt-4 pb-2">
+          <button
+            onClick={() => { navBus.navigate(PAGE.HOME); }}
+            className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-fg-secondary hover:text-fg-primary hover:bg-surface-overlay transition-colors"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5" /><polyline points="12 19 5 12 12 5" /></svg>
+            {t('common:back', { defaultValue: 'Back' })}
+          </button>
+        </div>
+        <div className="px-5 pb-4">
+          <h2 className="text-base font-semibold text-fg-primary">{t('title')}</h2>
+        </div>
+        <nav className="flex-1 px-3 pb-4 space-y-0.5">
+          {visibleTabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => navigateTab(tab.id)}
+              className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+                resolvedTab === tab.id
+                  ? 'bg-brand-600/10 text-brand-600 dark:text-brand-400 font-medium'
+                  : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-overlay'
+              }`}
+            >
+              {t(`settings:${tab.labelKey}`)}
+            </button>
+          ))}
+        </nav>
+        {authUser && (
+          <div className="px-3 pb-4 border-t border-border-default pt-3">
             <div ref={userMenuRef} className="relative">
               <button
                 onClick={() => setUserMenuOpen(!userMenuOpen)}
-                className="hover:ring-2 hover:ring-brand-500/50 transition-all rounded-full"
-                title={authUser.name || t('common:userPlaceholder')}
+                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-surface-overlay transition-colors"
               >
-                <Avatar name={authUser.name || t('common:userPlaceholder')} avatarUrl={authUser.avatarUrl} size={30} />
+                <Avatar name={authUser.name || t('common:userPlaceholder')} avatarUrl={authUser.avatarUrl} size={24} />
+                <span className="text-sm text-fg-secondary truncate flex-1 text-left">{authUser.name || t('common:userPlaceholder')}</span>
               </button>
               {userMenuOpen && (
-                <div className="absolute right-0 top-full mt-1 bg-surface-secondary border border-border-default rounded-xl shadow-xl z-50 overflow-hidden" style={{ minWidth: 200 }}>
+                <div className="absolute left-0 bottom-full mb-1 bg-surface-secondary border border-border-default rounded-xl shadow-xl z-50 overflow-hidden" style={{ minWidth: 200 }}>
                   <div className="px-4 py-3 border-b border-border-default">
                     <div className="text-sm font-medium text-fg-primary">{authUser.name || t('common:userPlaceholder')}</div>
                     <div className="text-xs text-fg-tertiary mt-0.5">{authUser.email || authUser.role}</div>
@@ -726,11 +827,54 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 </div>
               )}
             </div>
-          )}
+          </div>
+        )}
+      </aside>
+
+      {/* Content Panel */}
+      <div className="flex-1 overflow-y-auto">
+      {/* Mobile: settings list (when no sub-tab selected) */}
+      {isMobile && resolvedTab === null && (
+        <div className="flex flex-col h-full">
+          <div className="flex items-center gap-3 px-4 py-3 border-b border-border-default bg-surface-secondary">
+            <button
+              onClick={() => navBus.navigate(PAGE.HOME)}
+              className="p-1.5 rounded-lg hover:bg-surface-overlay transition-colors"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5" /><polyline points="12 19 5 12 12 5" /></svg>
+            </button>
+            <h1 className="text-base font-semibold text-fg-primary">{t('title')}</h1>
+          </div>
+          <nav className="flex-1 overflow-y-auto py-2 px-3">
+            {visibleTabs.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => navigateTab(tab.id)}
+                className="w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm text-fg-primary hover:bg-surface-overlay transition-colors"
+              >
+                <span>{t(`settings:${tab.labelKey}`)}</span>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-fg-tertiary"><polyline points="9 18 15 12 9 6" /></svg>
+              </button>
+            ))}
+          </nav>
         </div>
+      )}
+      {/* Mobile: sub-page header with back button */}
+      {isMobile && resolvedTab !== null && (
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-border-default bg-surface-secondary sticky top-0 z-10">
+          <button
+            onClick={navigateBackToList}
+            className="p-1.5 rounded-lg hover:bg-surface-overlay transition-colors"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5" /><polyline points="12 19 5 12 12 5" /></svg>
+          </button>
+          <h1 className="text-base font-semibold text-fg-primary">{t(`settings:${visibleTabs.find(tb => tb.id === resolvedTab)?.labelKey || 'title'}`)}</h1>
+        </div>
+      )}
+      {resolvedTab !== null && <div className="p-7 space-y-10 max-w-4xl mx-auto w-full">
 
         {/* ───── Appearance ───── */}
-        <Section title={t('appearance.title')}>
+        {resolvedTab === 'appearance' && <Section title={t('appearance.title')}>
           <div className="bg-surface-elevated rounded-xl p-5">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
@@ -772,11 +916,12 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </div>
             </div>
           </div>
-        </Section>
+        </Section>}
 
         {canManageOrgSettings && (
         <>
-        {/* ───── First-Run Setup Guide ───── */}
+        {/* ───── First-Run Setup Guide (shown in providers tab) ───── */}
+        {resolvedTab === 'providers' && <>
         {showSetupGuide && (
           <div className="relative bg-gradient-to-br from-brand-500/10 to-surface-secondary border border-brand-500/20 rounded-2xl p-6 space-y-5">
             <button onClick={() => setSetupDismissed(true)}
@@ -895,6 +1040,51 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               title={t('setupGuide.manual.title')}
               description={<Trans i18nKey="settings:setupGuide.manual.description" components={{ code: <code className="text-fg-secondary" /> }} />}
             />
+
+            {/* Option 5: Chrome Extension (only shown in Chrome) */}
+            {/Chrome\/\d/.test(navigator.userAgent) && !/Edg\//.test(navigator.userAgent) && (
+              <SetupCard
+                step={t('setupGuide.browserExtension.step')}
+                title={t('setupGuide.browserExtension.title')}
+                description={t('setupGuide.browserExtension.description')}
+                active={browserExtensionConnected}
+              >
+                {browserExtensionConnected ? (
+                  <div className="flex items-center gap-1.5 text-xs text-green-400">
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                    {t('setupGuide.browserExtension.alreadyConnected')}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <button
+                        disabled={browserSaving}
+                        onClick={async () => {
+                          setBrowserSaving(true);
+                          try { await api.settings.downloadExtensionZip(); } catch { /* ignore */ }
+                          setBrowserSaving(false);
+                        }}
+                        className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                        {t('setupGuide.browserExtension.downloadBtn')}
+                      </button>
+                      <button
+                        disabled={browserSaving}
+                        onClick={async () => {
+                          try { await api.settings.openExtensionsPage(); } catch { /* ignore */ }
+                        }}
+                        className="px-3 py-1.5 text-xs border border-border-default text-fg-primary rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                        {t('setupGuide.browserExtension.openChromeBtn')}
+                      </button>
+                    </div>
+                    <div className="text-xs text-fg-tertiary">{t('setupGuide.browserExtension.loadHint')}</div>
+                  </div>
+                )}
+              </SetupCard>
+            )}
           </div>
         )}
 
@@ -910,6 +1100,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         </Section>
 
         {/* ───── Default Provider ───── */}
+        
         <Section title={t('defaultProvider.title')}>
           <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
             <div className="flex items-center justify-between">
@@ -1511,7 +1702,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             </div>
           </div>
         </Section>
+        </>}
 
+        {resolvedTab === 'execution' && <>
         <Section title={t('agentExecution.title')}>
           <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
             <div className="flex items-center justify-between">
@@ -1607,20 +1800,42 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             {cppMsg && <Msg type={cppMsg.type} text={cppMsg.text} />}
           </div>
         </Section>
+        </>}
 
+        {resolvedTab === 'browser' && <>
         <Section title={t('browserAutomation.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
-            <div className="text-xs text-fg-tertiary">
-              {t('browserAutomation.description')}
+          {/* ── Active Mode Banner ── */}
+          <div className={`rounded-xl p-4 mb-4 flex items-start gap-3 ${browserExtensionConnected ? 'bg-green-500/10 border border-green-500/20' : browserRemotePort > 0 ? 'bg-blue-500/10 border border-blue-500/20' : browserAutoClickAllow ? 'bg-amber-500/10 border border-amber-500/20' : 'bg-surface-elevated border border-border-default'}`}>
+            <div className={`mt-0.5 w-2.5 h-2.5 rounded-full shrink-0 ${browserExtensionConnected ? 'bg-green-400' : browserRemotePort > 0 ? 'bg-blue-400' : browserAutoClickAllow ? 'bg-amber-400' : 'bg-gray-400'}`} />
+            <div className="flex-1 min-w-0">
+              <div className={`text-sm font-semibold ${browserExtensionConnected ? 'text-green-400' : browserRemotePort > 0 ? 'text-blue-400' : browserAutoClickAllow ? 'text-amber-400' : 'text-fg-secondary'}`}>
+                {browserExtensionConnected
+                  ? t('browserAutomation.modeExtension')
+                  : browserRemotePort > 0
+                    ? t('browserAutomation.modeDebuggingPort', { port: browserRemotePort })
+                    : browserAutoClickAllow
+                      ? t('browserAutomation.modeAutoClick')
+                      : t('browserAutomation.modeManual')}
+              </div>
+              <div className="text-xs text-fg-tertiary mt-0.5">
+                {browserExtensionConnected
+                  ? t('browserAutomation.modeExtensionDesc')
+                  : browserRemotePort > 0
+                    ? t('browserAutomation.modeDebuggingPortDesc')
+                    : browserAutoClickAllow
+                      ? t('browserAutomation.modeAutoClickDesc')
+                      : t('browserAutomation.modeManualDesc')}
+              </div>
             </div>
+          </div>
 
-            {/* Bring to Front toggle */}
+          {/* ── General Settings (always visible) ── */}
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-4 mb-4">
+            <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.generalSettings')}</div>
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.bringToFront')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">
-                  {t('browserAutomation.bringToFrontDesc')}
-                </div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.bringToFrontDesc')}</div>
               </div>
               <button
                 onClick={async () => {
@@ -1640,14 +1855,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${browserBringToFront ? 'translate-x-4' : 'translate-x-1'}`} />
               </button>
             </div>
-
-            {/* Auto-close tabs toggle */}
             <div className="flex items-center justify-between border-t border-border-default pt-4">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.autoCloseTabs')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">
-                  {t('browserAutomation.autoCloseTabsDesc')}
-                </div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.autoCloseTabsDesc')}</div>
               </div>
               <button
                 onClick={async () => {
@@ -1667,56 +1878,203 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${browserAutoClose ? 'translate-x-4' : 'translate-x-1'}`} />
               </button>
             </div>
+          </div>
 
-            {/* Remote Debugging Port */}
-            <div className="border-t border-border-default pt-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.remoteDebuggingPort')}</div>
-                  <div className="text-xs text-fg-tertiary mt-0.5">
-                    {t('browserAutomation.remoteDebuggingPortDescLead')}{' '}
-                    <code className="text-fg-secondary bg-surface-elevated px-1 rounded">--remote-debugging-port=9222</code>{' '}
-                    {t('browserAutomation.remoteDebuggingPortDescTail')}
+          {/* ── Connection Mode: Chrome Extension ── */}
+          <div className={`rounded-xl p-5 mb-4 transition-colors ${browserExtensionConnected ? 'bg-green-500/5 border border-green-500/20' : 'bg-surface-elevated'}`}>
+            {/* Header row: title + status badge */}
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.extensionStatus')}</div>
+                <span className="text-xs text-fg-tertiary">({t('browserAutomation.modeRecommended')})</span>
+              </div>
+              <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${browserExtensionConnected ? 'bg-green-500/20 text-green-400' : 'bg-gray-600/20 text-gray-400'}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${browserExtensionConnected ? 'bg-green-400' : 'bg-gray-400'}`} />
+                {browserExtensionConnected ? t('browserAutomation.extensionConnected') : t('browserAutomation.extensionDisconnected')}
+              </span>
+            </div>
+            <div className="text-xs text-fg-tertiary">{t('browserAutomation.extensionStatusDesc')}</div>
+
+            {browserExtensionConnected ? (
+              <div className="mt-3 flex items-center gap-1.5 text-xs text-green-400">
+                <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                {t('browserAutomation.extensionActiveNote')}
+              </div>
+            ) : (
+              /* Step-by-step install guide */
+              <div className="mt-4 space-y-3">
+                <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.extensionSetupTitle')}</div>
+
+                {/* Step 1: Download */}
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-surface-primary/50">
+                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-brand-500 text-white text-[10px] font-bold shrink-0 mt-0.5">1</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.extensionStep1')}</div>
+                    <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.extensionStep1Desc')}</div>
+                    <button
+                      disabled={browserSaving}
+                      onClick={async () => {
+                        setBrowserSaving(true); setBrowserMsg(null);
+                        try {
+                          await api.settings.downloadExtensionZip();
+                        } catch { setBrowserMsg({ type: 'err', text: t('browserAutomation.extensionDownloadError') }); }
+                        setBrowserSaving(false);
+                      }}
+                      className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                      {browserSaving ? t('browserAutomation.extensionStep1Downloading') : t('browserAutomation.extensionStep1Btn')}
+                    </button>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min={0}
-                    max={65535}
-                    value={browserRemotePort}
-                    onChange={e => { setBrowserRemotePort(Number(e.target.value)); setBrowserMsg(null); }}
-                    className="w-24 px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary text-right"
-                    placeholder="0"
-                  />
-                  <button
-                    disabled={browserSaving}
-                    onClick={async () => {
-                      setBrowserSaving(true); setBrowserMsg(null);
-                      try {
-                        const d = await api.settings.updateBrowser({ remoteDebuggingPort: browserRemotePort });
-                        setBrowserRemotePort(d.remoteDebuggingPort);
-                        setBrowserMsg({
-                          type: 'ok',
-                          text: d.remoteDebuggingPort > 0
-                            ? t('browserAutomation.usingPort', { port: d.remoteDebuggingPort })
-                            : t('browserAutomation.usingAutoConnect'),
-                        });
-                      } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
-                      setBrowserSaving(false);
-                    }}
-                    className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
-                  >
-                    {browserSaving ? t('common:saving') : t('common:save')}
-                  </button>
+
+                {/* Step 2: Open extensions page */}
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-surface-primary/50">
+                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-brand-500 text-white text-[10px] font-bold shrink-0 mt-0.5">2</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.extensionStep2')}</div>
+                    <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.extensionStep2Desc')}</div>
+                    <button
+                      disabled={browserSaving}
+                      onClick={async () => {
+                        setBrowserSaving(true); setBrowserMsg(null);
+                        try {
+                          await api.settings.openExtensionsPage();
+                        } catch { setBrowserMsg({ type: 'err', text: t('browserAutomation.extensionOpenError') }); }
+                        setBrowserSaving(false);
+                      }}
+                      className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-surface-primary border border-border-default text-fg-primary rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-40"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                      {t('browserAutomation.extensionStep2Btn')}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Step 3: Load unpacked */}
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-surface-primary/50">
+                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-brand-500 text-white text-[10px] font-bold shrink-0 mt-0.5">3</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.extensionStep3')}</div>
+                    <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.extensionStep3Desc')}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ── Fallback modes (collapsed when extension is connected) ── */}
+          {!browserExtensionConnected && (
+            <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+              <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.fallbackModes')}</div>
+
+              {/* Auto-click Chrome Allow Dialog toggle */}
+              <div>
+                <div className="flex items-center justify-between">
+                  <div className="flex-1 mr-4">
+                    <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.autoClickAllowDialog')}</div>
+                    <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.autoClickAllowDialogDesc')}</div>
+                    <div className="text-xs text-fg-tertiary mt-2 space-y-0.5">
+                      <div>{t('browserAutomation.autoClickAllowDialogMacNote')}</div>
+                      <div>{t('browserAutomation.autoClickAllowDialogWinNote')}</div>
+                      <div>{t('browserAutomation.autoClickAllowDialogLinuxNote')}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      disabled={browserSaving}
+                      onClick={async () => {
+                        setBrowserSaving(true); setBrowserMsg(null);
+                        try {
+                          const result = await api.settings.testAutoClick();
+                          const msgMap: Record<string, { type: 'ok' | 'err'; text: string }> = {
+                            success: { type: 'ok', text: t('browserAutomation.autoClickTestSuccess', { title: result.pageTitle || 'example.com' }) },
+                            no_permission: { type: 'err', text: t('browserAutomation.autoClickTestNoPermission') },
+                            chrome_not_running: { type: 'err', text: t('browserAutomation.autoClickTestChromeNotRunning') },
+                            unsupported: { type: 'err', text: t('browserAutomation.autoClickTestUnsupported') },
+                            error: { type: 'err', text: t('browserAutomation.autoClickTestError', { error: result.error || 'unknown' }) },
+                          };
+                          setBrowserMsg(msgMap[result.clickResult] ?? { type: 'err', text: result.clickResult });
+                        } catch { setBrowserMsg({ type: 'err', text: t('browserAutomation.autoClickTestError', { error: 'request failed' }) }); }
+                        setBrowserSaving(false);
+                      }}
+                      className="px-3 py-1.5 text-xs bg-surface-primary border border-border-default text-fg-primary rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-40"
+                    >
+                      {browserSaving ? t('browserAutomation.autoClickTesting') : t('browserAutomation.autoClickTest')}
+                    </button>
+                    <button
+                      onClick={async () => {
+                        const newVal = !browserAutoClickAllow;
+                        setBrowserAutoClickAllow(newVal);
+                        setBrowserSaving(true); setBrowserMsg(null);
+                        try {
+                          const d = await api.settings.updateBrowser({ autoClickAllowDialog: newVal });
+                          setBrowserAutoClickAllow(d.autoClickAllowDialog);
+                          setBrowserMsg({ type: 'ok', text: t('agentExecution.saved') });
+                        } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); setBrowserAutoClickAllow(!newVal); }
+                        setBrowserSaving(false);
+                      }}
+                      disabled={browserSaving}
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${browserAutoClickAllow ? 'bg-green-500' : 'bg-gray-600'} ${browserSaving ? 'opacity-50' : ''}`}
+                    >
+                      <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${browserAutoClickAllow ? 'translate-x-4' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Remote Debugging Port */}
+              <div className="border-t border-border-default pt-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.remoteDebuggingPort')}</div>
+                    <div className="text-xs text-fg-tertiary mt-0.5">
+                      {t('browserAutomation.remoteDebuggingPortDescLead')}{' '}
+                      <code className="text-fg-secondary bg-surface-primary px-1 rounded">--remote-debugging-port=9222</code>{' '}
+                      {t('browserAutomation.remoteDebuggingPortDescTail')}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={0}
+                      max={65535}
+                      value={browserRemotePort}
+                      onChange={e => { setBrowserRemotePort(Number(e.target.value)); setBrowserMsg(null); }}
+                      className="w-24 px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary text-right"
+                      placeholder="0"
+                    />
+                    <button
+                      disabled={browserSaving}
+                      onClick={async () => {
+                        setBrowserSaving(true); setBrowserMsg(null);
+                        try {
+                          const d = await api.settings.updateBrowser({ remoteDebuggingPort: browserRemotePort });
+                          setBrowserRemotePort(d.remoteDebuggingPort);
+                          setBrowserMsg({
+                            type: 'ok',
+                            text: d.remoteDebuggingPort > 0
+                              ? t('browserAutomation.usingPort', { port: d.remoteDebuggingPort })
+                              : t('browserAutomation.usingAutoConnect'),
+                          });
+                        } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
+                        setBrowserSaving(false);
+                      }}
+                      className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                    >
+                      {browserSaving ? t('common:saving') : t('common:save')}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
+          )}
 
-            {browserMsg && <Msg type={browserMsg.type} text={browserMsg.text} />}
-          </div>
+          {browserMsg && <div className="mt-4"><Msg type={browserMsg.type} text={browserMsg.text} /></div>}
         </Section>
+        </>}
 
+        {resolvedTab === 'search' && <>
         <Section title={t('searchApi.title')}>
           <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
             <div className="text-xs text-fg-tertiary">{t('searchApi.description')}</div>
@@ -1773,7 +2131,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             </div>
           </div>
         </Section>
+        </>}
 
+        {resolvedTab === 'storage' && <>
         <Section title={t('dataStorage.title')}>
           <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
             {storageLoading && !storageInfo && <div className="text-sm text-fg-tertiary">{t('dataStorage.scanning')}</div>}
@@ -1864,12 +2224,17 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           </div>
         </Section>
 
-        <UserManagementSection authUser={authUser} />
+        </>}
+
+        {resolvedTab === 'users' && <UserManagementSection authUser={authUser} />}
+
+        {resolvedTab === 'remote' && <RemoteAccessSection />}
 
         </>
         )}
 
         <div className="h-8" />
+      </div>}
       </div>
     </div>
   );
@@ -2284,6 +2649,287 @@ function EditProfileModal({ authUser, onClose, onSaved }: { authUser: AuthUser; 
           <button type="submit" disabled={saving} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white rounded-lg">{saving ? t('saving') : t('save')}</button>
         </div>
       </form>
+    </div>
+  );
+}
+
+/* ─── Remote Access ─── */
+
+function RemoteAccessSection() {
+  const { t } = useTranslation(['settings', 'common']);
+  const [status, setStatus] = useState<RemoteStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [toggling, setToggling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const hubUser = getHubUser();
+
+  const loadStatus = useCallback(async () => {
+    try {
+      const s = await api.settings.getRemote();
+      setStatus(s);
+    } catch {
+      setStatus(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  useEffect(() => {
+    return wsClient.on('remote:status', (event) => {
+      const payload = event.payload as unknown as RemoteStatus | undefined;
+      if (payload) {
+        setStatus(payload);
+        setToggling(false);
+      }
+    });
+  }, []);
+
+  const handleToggle = async () => {
+    setToggling(true);
+    setError(null);
+    try {
+      if (status?.enabled) {
+        await api.settings.disableRemote();
+        await loadStatus();
+        setToggling(false);
+      } else {
+        if (!hubApi.isAuthenticated()) {
+          await ensureHubAuth();
+        }
+        await api.settings.enableRemote();
+      }
+    } catch (err) {
+      setError(String(err instanceof Error ? err.message : err));
+      setToggling(false);
+    }
+  };
+
+  const handleLogin = async () => {
+    try {
+      await ensureHubAuth();
+      await loadStatus();
+    } catch { /* user cancelled */ }
+  };
+
+  const handleCopy = () => {
+    if (!status?.remoteUrl) return;
+    navigator.clipboard.writeText(status.remoteUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const isConnecting = toggling || (status?.enabled && !status?.connected && status?.state !== 'idle');
+  const qrUrl = status?.remoteUrl ?? null;
+
+  return (
+    <Section title={t('settings:remoteAccess.title')}>
+      <div className="space-y-4">
+        <p className="text-sm text-content-secondary">
+          {t('settings:remoteAccess.description')}
+        </p>
+
+        {/* Hub Auth Status */}
+        {!hubApi.isAuthenticated() ? (
+          <div className="flex items-center gap-3 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+            <svg className="w-5 h-5 text-amber-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span className="text-sm text-amber-600 dark:text-amber-400">
+              {t('settings:remoteAccess.loginRequired')}
+            </span>
+            <button
+              onClick={handleLogin}
+              className="ml-auto px-3 py-1.5 text-xs font-medium bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors"
+            >
+              {t('settings:remoteAccess.signIn')}
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 text-sm text-content-secondary">
+            <span className="w-2 h-2 rounded-full bg-green-500" />
+            {t('settings:remoteAccess.signedInAs')} <strong>{hubUser?.username ?? hubUser?.displayName}</strong>
+          </div>
+        )}
+
+        {/* Toggle + Status */}
+        {hubApi.isAuthenticated() && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleToggle}
+                  disabled={toggling || loading}
+                  className={`relative w-12 h-6 rounded-full transition-colors duration-200 ${
+                    status?.enabled ? 'bg-brand-600' : 'bg-gray-300 dark:bg-gray-600'
+                  } ${(toggling || loading) ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                >
+                  <span className={`block w-5 h-5 bg-white rounded-full shadow transform transition-transform duration-200 ${
+                    status?.enabled ? 'translate-x-6' : 'translate-x-0.5'
+                  }`} />
+                </button>
+                <span className="text-sm font-medium">
+                  {isConnecting
+                    ? t('settings:remoteAccess.connecting')
+                    : status?.enabled
+                      ? t('settings:remoteAccess.enabled')
+                      : t('settings:remoteAccess.disabled')}
+                </span>
+                {isConnecting && <Spinner />}
+              </div>
+
+              {status?.enabled && (
+                <div className={`flex items-center gap-1.5 text-xs ${
+                  status.connected
+                    ? 'text-green-600 dark:text-green-400'
+                    : (status.state === 'registering' || status.state === 'connecting')
+                      ? 'text-blue-600 dark:text-blue-400'
+                      : 'text-amber-600 dark:text-amber-400'
+                }`}>
+                  <span className={`w-2 h-2 rounded-full ${
+                    status.connected
+                      ? 'bg-green-500 animate-pulse'
+                      : (status.state === 'registering' || status.state === 'connecting')
+                        ? 'bg-blue-500 animate-pulse'
+                        : 'bg-amber-500'
+                  }`} />
+                  {status.connected
+                    ? t('settings:remoteAccess.connected')
+                    : (status.state === 'registering')
+                      ? t('settings:remoteAccess.registering')
+                      : (status.state === 'connecting')
+                        ? t('settings:remoteAccess.connecting')
+                        : t('settings:remoteAccess.disconnected')}
+                  {status.connected && status.peerCount > 0 && (
+                    <> &middot; {t('settings:remoteAccess.peerCount', { count: status.peerCount })}</>
+                  )}
+                  {(status.state === 'registering' || status.state === 'connecting') && <Spinner />}
+                </div>
+              )}
+            </div>
+
+            {error && (
+              <div className="p-2 rounded-lg bg-red-500/10 text-red-500 text-sm">{error}</div>
+            )}
+
+            {/* Connected Peers List */}
+            {status?.enabled && status.peers && status.peers.length > 0 && (
+              <div className="p-4 rounded-lg bg-surface-elevated border border-border-default space-y-2">
+                <label className="text-xs text-content-tertiary uppercase tracking-wider">
+                  {t('settings:remoteAccess.connectedPeers')}
+                </label>
+                <div className="space-y-2 mt-1">
+                  {status.peers.map((peer) => (
+                    <div key={peer.peerId} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-inset">
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${
+                        peer.transport === 'p2p' ? 'bg-green-500' : peer.transport === 'relay' ? 'bg-blue-500' : 'bg-amber-500 animate-pulse'
+                      }`} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-mono text-content-primary truncate">
+                          {peer.peerId.slice(0, 8)}...
+                        </div>
+                        <div className="text-xs text-content-tertiary">
+                          {t('settings:remoteAccess.connectedSince', { time: new Date(peer.connectedAt).toLocaleTimeString() })}
+                        </div>
+                      </div>
+                      <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${
+                        peer.transport === 'p2p'
+                          ? 'bg-green-500/10 text-green-600 dark:text-green-400'
+                          : peer.transport === 'relay'
+                            ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                            : 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                      }`}>
+                        {peer.transport === 'p2p' ? 'P2P' : peer.transport === 'relay' ? 'Relay' : t('settings:remoteAccess.peerConnecting')}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Remote URL + QR Code */}
+            {status?.enabled && status.remoteUrl && (
+              <div className="p-4 rounded-lg bg-surface-elevated border border-border-default space-y-3">
+                <div>
+                  <label className="text-xs text-content-tertiary uppercase tracking-wider">
+                    {t('settings:remoteAccess.url')}
+                  </label>
+                  <div className="flex items-center gap-2 mt-1">
+                    <code className="flex-1 px-3 py-1.5 text-sm bg-surface-inset rounded font-mono truncate">
+                      {status.remoteUrl}
+                    </code>
+                    <button
+                      onClick={handleCopy}
+                      className={`px-2 py-1.5 text-xs border rounded transition-colors ${
+                        copied
+                          ? 'border-green-500 text-green-600 dark:text-green-400'
+                          : 'border-border-default hover:bg-surface-elevated'
+                      }`}
+                    >
+                      {copied ? t('settings:remoteAccess.copied') : t('settings:remoteAccess.copy')}
+                    </button>
+                  </div>
+                </div>
+
+                {qrUrl && (
+                  <div>
+                    <label className="text-xs text-content-tertiary uppercase tracking-wider">
+                      {t('settings:remoteAccess.qrCode')}
+                    </label>
+                    <p className="text-xs text-content-secondary mt-0.5 mb-2">
+                      {t('settings:remoteAccess.scanQr')}
+                    </p>
+                    <QRCode url={qrUrl} />
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+function Spinner() {
+  return (
+    <svg className="w-4 h-4 animate-spin text-content-secondary" viewBox="0 0 24 24" fill="none">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+    </svg>
+  );
+}
+
+function QRCode({ url }: { url: string }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    setError(false);
+
+    import('qrcode').then((QRLib) => {
+      QRLib.toCanvas(canvas, url, {
+        width: 200,
+        margin: 2,
+        color: { dark: '#000000', light: '#ffffff' },
+        errorCorrectionLevel: 'M',
+      });
+    }).catch(() => setError(true));
+  }, [url]);
+
+  if (error) {
+    return (
+      <a href={url} target="_blank" rel="noopener" className="text-sm text-brand-500 underline">{url}</a>
+    );
+  }
+
+  return (
+    <div className="inline-block p-2 bg-white rounded-lg">
+      <canvas ref={canvasRef} className="block" style={{ width: 160, height: 160 }} />
     </div>
   );
 }

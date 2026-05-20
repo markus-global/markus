@@ -15,6 +15,7 @@ export const PAGE = {
   REPORTS: 'reports',
   SETTINGS: 'settings',
   NOTIFICATIONS: 'notifications',
+  SEARCH: 'search',
 } as const;
 
 export type PageId = (typeof PAGE)[keyof typeof PAGE];
@@ -60,7 +61,6 @@ export function hashPath(page: PageId, sub?: string): string {
 
 export const MOBILE_REDIRECTS: Partial<Record<PageId, PageId>> = {
   [PAGE.STORE]: PAGE.BUILDER,
-  [PAGE.REPORTS]: PAGE.SETTINGS,
 };
 
 // ── SVG icon paths (shared by Sidebar + BottomNav) ──────────────────────────
@@ -105,9 +105,7 @@ export type MobileTabId = PageId;
 export const MOBILE_TABS: Array<{ id: MobileTabId; label: string; group: PageId[] }> = [
   { id: PAGE.HOME,          label: 'Home',          group: [PAGE.HOME] },
   { id: PAGE.TEAM,          label: 'Team',          group: [PAGE.TEAM] },
-  { id: PAGE.WORK,          label: 'Work',          group: [PAGE.WORK] },
   { id: PAGE.NOTIFICATIONS, label: 'Notifications', group: [PAGE.NOTIFICATIONS] },
+  { id: PAGE.WORK,          label: 'Work',          group: [PAGE.WORK] },
   { id: PAGE.DELIVERABLES,  label: 'Deliverables',  group: [PAGE.DELIVERABLES] },
-  { id: PAGE.BUILDER,       label: 'Builder',       group: [PAGE.BUILDER, PAGE.STORE] },
-  { id: PAGE.SETTINGS,      label: 'Settings',      group: [PAGE.SETTINGS, PAGE.REPORTS] },
 ];

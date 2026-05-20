@@ -235,3 +235,12 @@ export {
   type AgentDataProvider,
   type AgentDataRestorer,
 } from './agent-snapshot.js';
+export {
+  clickChromeAllowDialog,
+  checkAutoClickStatus,
+  testAutoClick,
+  type AutoClickCheckResult,
+  type AutoClickTestResult,
+} from './tools/chrome-dialog-clicker.js';
+export { MarkusBrowserBridge } from './tools/markus-browser-bridge.js';
+export { createBridgeToolHandlers, getBridgeToolDescriptors } from './tools/markus-browser-mcp.js';

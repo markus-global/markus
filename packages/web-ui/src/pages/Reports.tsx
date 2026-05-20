@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { api, type ReportInfo, type ReportFeedbackInfo, type AgentUsageInfo, type AuthUser } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
+import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 
 type Period = 'daily' | 'weekly' | 'monthly';
 interface ReportsPageProps { authUser?: AuthUser }
@@ -36,6 +38,7 @@ function formatBytes(b: number): string {
 
 export function ReportsPage({ authUser }: ReportsPageProps) {
   const { t } = useTranslation(['reports', 'common']);
+  const isMobile = useIsMobile();
   const [period, setPeriod] = useState<Period>('weekly');
   const [report, setReport] = useState<ReportInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -120,6 +123,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
         {/* Header with tabs */}
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-4 flex-wrap">
+            {isMobile && <MobileMenuButton />}
             <h1 className="text-xl font-semibold text-fg-primary">{t('title')}</h1>
             <div className="flex gap-1 bg-surface-elevated rounded-lg p-0.5">
               <button onClick={() => setTab('generate')} className={`px-3 py-1.5 text-xs rounded-md transition-colors ${tab === 'generate' ? 'bg-surface-overlay text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'}`}>{t('tabs.generate')}</button>

@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import { resolve, join, dirname } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { allTemplateDirs, resolveTemplatesDir, resolveWebUiDir } from '../paths.js';
 import {
@@ -305,6 +305,10 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (config.browser?.remoteDebuggingPort) {
     agentManager.setBrowserRemoteDebuggingPort(config.browser.remoteDebuggingPort);
   }
+  if (config.browser?.autoClickAllowDialog) {
+    agentManager.setBrowserAutoClickAllowDialog(true);
+  }
+  agentManager.startBrowserBridge(config.browser?.extensionBridgePort);
 
   taskService.setAgentManager(agentManager);
 
@@ -896,6 +900,45 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   });
   apiServer.setGateway(gateway, gatewaySecret);
   log.info('External Agent Gateway enabled', { secret: gatewaySecret === 'markus-gateway-default-secret-change-me' ? '(default)' : '(custom)' });
+
+  // ── Remote Access (WebRTC P2P via markus-hub + signal server) ─────────
+  {
+    const hubTokenPath = join(homedir(), '.markus', 'hub-token');
+
+    const createRemoteAgent = async () => {
+      const token = existsSync(hubTokenPath) ? readFileSync(hubTokenPath, 'utf-8').trim() : undefined;
+      if (!token) return null;
+      const { RemoteAccessAgent } = await import('@markus/remote');
+      return new RemoteAccessAgent({
+        hubUrl: config.remote?.hubUrl ?? config.hub?.url ?? 'https://www.markus.global',
+        hubToken: token,
+        instanceName: config.remote?.instanceName ?? config.org?.name ?? 'My Markus',
+        localPort: config.server?.apiPort ?? 8056,
+        jwtSecret: process.env['JWT_SECRET'],
+      });
+    };
+
+    apiServer.setRemoteAgentFactory(createRemoteAgent);
+
+    if (config.remote?.enabled !== false) {
+      const remoteAgent = await createRemoteAgent();
+      if (remoteAgent) {
+        apiServer.setRemoteAgent(remoteAgent);
+        if (config.remote?.autoConnect !== false) {
+          remoteAgent.start().then(() => {
+            const status = remoteAgent.getStatus();
+            if (status.remoteUrl) {
+              log.info(`Remote access available at ${status.remoteUrl}`);
+            }
+          }).catch((err: unknown) => {
+            log.warn('Remote access failed to start', { error: String(err) });
+          });
+        }
+      } else {
+        log.debug('Remote access: no Hub token yet (can enable later via Settings)');
+      }
+    }
+  }
 
   apiServer.start();
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
