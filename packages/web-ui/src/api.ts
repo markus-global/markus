@@ -1184,9 +1184,9 @@ export const api = {
     getAgent: () => request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent'),
     updateAgent: (settings: { maxToolIterations?: number; cognitive?: { enabled?: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }) =>
       request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent', { method: 'POST', body: JSON.stringify(settings) }),
-    getBrowser: () => request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean }>('/settings/browser'),
+    getBrowser: () => request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser'),
     updateBrowser: (settings: { bringToFront?: boolean; remoteDebuggingPort?: number; autoCloseTabs?: boolean; autoClickAllowDialog?: boolean }) =>
-      request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean }>('/settings/browser', { method: 'POST', body: JSON.stringify(settings) }),
+      request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser', { method: 'POST', body: JSON.stringify(settings) }),
     testAutoClick: () => request<{
       checkResult: { platform: string; supported: boolean; accessibilityPermission: boolean; chromeRunning: boolean; binaryAvailable: boolean };
       openedAccessibilitySettings: boolean;
@@ -1195,6 +1195,23 @@ export const api = {
       pageTitle?: string;
       error?: string;
     }>('/settings/browser/test-auto-click', { method: 'POST' }),
+    downloadExtensionZip: () => {
+      const url = `${BASE}/settings/browser/extension.zip`;
+      const headers: Record<string, string> = {};
+      const token = localStorage.getItem('markus_token');
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      return fetch(url, { headers }).then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.blob();
+      }).then(blob => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'markus-browser-extension.zip';
+        a.click();
+        URL.revokeObjectURL(a.href);
+      });
+    },
+    openExtensionsPage: () => request<{ ok: boolean }>('/settings/browser/open-extensions-page', { method: 'POST' }),
     getSearch: () => request<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search'),
     updateSearch: (keys: { serperApiKey?: string; braveApiKey?: string; bochaApiKey?: string }) =>
       request<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search', { method: 'POST', body: JSON.stringify(keys) }),

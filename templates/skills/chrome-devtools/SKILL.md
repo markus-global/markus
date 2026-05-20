@@ -22,118 +22,129 @@ Use Chrome DevTools tools when you need to:
 Do NOT use these tools when `web_fetch` or `web_search` suffice (simple content retrieval or search).
 Chrome DevTools is for interactive browser sessions that require a real rendering engine.
 
+## Connection Modes
+
+Markus supports three ways to connect to Chrome, listed from best to fallback:
+
+### Mode 1: Markus Chrome Extension (recommended)
+
+The **Markus Browser Automation** Chrome extension provides the smoothest experience:
+- **No debugging dialog** — the extension uses `chrome.debugger` API internally
+- **Works when screen is locked or sleeping** — no OS-level interaction needed
+- **Cross-platform** — works on macOS, Windows, and Linux identically
+- **Instant startup** — no `npx` download, no child process spawn
+- **No extra permissions** — no macOS Accessibility or Windows UI Automation needed
+
+**How to install:**
+
+1. Build the extension (one-time):
+   ```
+   cd packages/chrome-extension && pnpm install && pnpm run build
+   ```
+2. Open Chrome → `chrome://extensions/`
+3. Enable **Developer mode** (toggle in top-right)
+4. Click **Load unpacked** → select `packages/chrome-extension/dist`
+5. The Markus icon appears in the toolbar
+
+**How it works:**
+
+When Markus starts, it launches a WebSocket bridge on `ws://127.0.0.1:9333`. The extension
+auto-connects to this bridge. All browser tool calls are routed through the extension instead
+of spawning an external MCP process.
+
+Check connection status in **Settings > Browser Automation > Chrome Extension**:
+- Green dot = Connected (extension is active, all tools route through it)
+- Gray dot = Not Connected (Markus falls back to Mode 2 or 3)
+
+The extension reconnects automatically within 3 seconds if the connection drops.
+
+**Note:** Chrome shows a yellow infobar ("Markus Browser Automation started debugging this
+tab") on debugged tabs. This is cosmetic and doesn't affect functionality. To hide it, launch
+Chrome with `--silent-debugger-extension-api`.
+
+### Mode 2: Auto-Connect with Auto-Click (fallback)
+
+If the extension is not installed, Markus falls back to `chrome-devtools-mcp` via `npx`.
+Chrome shows an "Allow remote debugging?" dialog each time. Markus can auto-click this
+dialog on supported platforms:
+
+**macOS:** Requires Accessibility permission.
+1. Open System Settings > Privacy & Security > Accessibility
+2. Add the app running Markus (Markus.app, Terminal, or iTerm)
+3. Enable "Auto-Allow Chrome Debugging Dialog" in Settings > Browser Automation
+
+**Windows:** No additional permissions needed. Enable the toggle in Settings.
+
+**Linux:** Auto-click is not supported. Use Mode 1 (extension) or Mode 3 (debugging port).
+
+Limitations of auto-click:
+- Does not work when the screen is locked or display is sleeping
+- Requires OS-specific permissions (Accessibility on macOS)
+- Has timing dependencies on npx download and dialog detection
+
+### Mode 3: Persistent Debugging Port (manual)
+
+Launch Chrome with a fixed debugging port to bypass the dialog entirely:
+
+- **macOS**: `/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222`
+- **Linux**: `google-chrome --remote-debugging-port=9222`
+- **Windows**: `"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222`
+
+Set the same port in **Settings > Browser Automation > Remote Debugging Port**.
+
 ## Installation & Setup
 
-### 1. Check if Chrome is already installed
-
-Before installing, check if Chrome is available on the system:
+### 1. Check if Chrome is installed
 
 - **macOS**: `ls /Applications/Google\ Chrome.app` or `mdfind "kMDItemCFBundleIdentifier == com.google.Chrome"`
 - **Linux**: `which google-chrome || which google-chrome-stable || which chromium-browser`
 - **Windows**: `where chrome` or check `"C:\Program Files\Google\Chrome\Application\chrome.exe"`
 
-To check the installed version:
+Chrome version **144+** is required (146+ recommended). Check with:
 - **macOS**: `/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --version`
 - **Linux**: `google-chrome --version`
 
-If Chrome is already installed and version is **144+**, skip to step 2.
-
-**Only if Chrome is NOT installed:**
-
+**If Chrome is NOT installed:**
 - **macOS**: `brew install --cask google-chrome` or download from https://www.google.com/chrome/
 - **Linux (Debian/Ubuntu)**: `wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add - && sudo apt update && sudo apt install google-chrome-stable`
 - **Windows**: Download from https://www.google.com/chrome/
 
-Chrome version **144+** is required (146+ recommended).
+### 2. Choose a connection mode
 
-### 2. Launch Chrome with Remote Debugging
-
-To use DevTools automation you must start Chrome with remote debugging enabled:
-
-- **macOS**:
-  ```
-  /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
-  ```
-- **Linux**:
-  ```
-  google-chrome --remote-debugging-port=9222
-  ```
-- **Windows**:
-  ```
-  "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
-  ```
-
-Alternatively, skip the launch flag and use Auto-Connect (see Mode 1 below) — but you must
-manually enable remote debugging in Chrome first.
+- **Best experience**: Install the Markus Chrome Extension (Mode 1 above)
+- **Quick start**: Just ensure Chrome is running — Markus will auto-connect and prompt for permission
+- **Unattended use without extension**: Launch Chrome with `--remote-debugging-port=9222` (Mode 3)
 
 ### 3. Verify Connection
 
-Open `chrome://inspect/#remote-debugging` in Chrome. You should see your open tabs listed.
-If the MCP server is running, it will appear as a connected client.
+- With extension: Click the Markus icon in Chrome toolbar — status should show "Connected to Markus"
+- With auto-connect: Open `chrome://inspect/#remote-debugging` in Chrome and verify tabs are listed
+- In Markus: Go to Settings > Browser Automation — check the extension status or run the auto-click test
 
 ### Troubleshooting
 
-- **Port conflict**: If port 9222 is in use, pick another (e.g. 9333) and update Settings > Browser Automation > Remote Debugging Port.
-- **Firewall**: Ensure localhost access to the debugging port is not blocked.
-- **Memory Saver**: Chrome's Memory Saver can freeze tabs and cause connection timeouts. Disable it at `chrome://settings/performance` or upgrade to Chrome 146+.
-- **Permission dialog**: On first Auto-Connect, Chrome shows a permission dialog — click **Allow**.
-  If this blocks automation, see "Permission dialog auto-click" below.
+- **Extension shows "Not Connected"**: Ensure Markus is running (`pnpm dev`). The bridge starts on port 9333 by default. Check if another process is using that port.
+- **Port conflict**: If port 9333 is in use, change `browser.extensionBridgePort` in Markus config.
+- **Permission dialog keeps appearing**: Install the Chrome extension (Mode 1) to eliminate it entirely.
+- **Memory Saver freezes tabs**: Disable at `chrome://settings/performance` or upgrade to Chrome 146+.
+- **Connection timeout**: On first use without extension, `npx` may need to download `chrome-devtools-mcp`. Wait up to 60 seconds. Subsequent connections are faster.
+- **Firewall**: Ensure localhost access to the debugging/bridge port is not blocked.
 
-### Permission dialog auto-click
-
-If the Chrome permission dialog blocks automation (connection timeout or failure), check and
-advise the user based on their platform:
-
-**macOS / Windows:**
-Suggest enabling "Auto-Allow Chrome Debugging Dialog" in Settings > Browser Automation.
-On macOS, this requires Accessibility permission — guide the user:
-1. Open System Settings > Privacy & Security > Accessibility
-2. Add the application running Markus (Markus.app, Terminal, or iTerm) to the allowed list
-3. Enable the toggle in Settings > Browser Automation
-
-On Windows, no additional permissions are needed.
-
-**Linux:**
-Auto-click is not supported on Linux. Recommend using Remote Debugging Port instead:
-1. Launch Chrome with `--remote-debugging-port=9222`
-2. Set port 9222 in Settings > Browser Automation > Remote Debugging Port
-
-**All platforms (alternative):**
-If the user prefers not to grant accessibility permission, using a dedicated Chrome profile
-with `--remote-debugging-port=9222 --user-data-dir=/path/to/markus-profile` eliminates
-the permission dialog entirely.
-
-## Prerequisites
-
-The MCP server connects to the user's running Chrome via one of two modes:
-
-### Mode 1: Auto-Connect (default)
-Uses `--autoConnect` to discover Chrome automatically (Chrome 144+).
-1. Chrome version must be 144 or newer (146+ recommended).
-2. Open `chrome://inspect/#remote-debugging` in Chrome and enable remote debugging.
-3. On first MCP connection, Chrome will show a permission dialog — the user must click **Allow**.
-4. **Note:** This permission is per-connection. Each new agent or session may trigger a new dialog.
-
-### Mode 2: Persistent Debugging Port (recommended for unattended use)
-Set **Remote Debugging Port** in Settings > Browser Automation (e.g. 9222) to skip the
-permission dialog entirely. This requires launching Chrome with:
-```
-chrome --remote-debugging-port=9222
-```
-Once configured, all agents reuse this connection without prompting for permission.
-
-**Frozen/suspended tabs cause connection timeout:** When Chrome has frozen tabs (Memory Saver
-or restored tabs), the MCP server may hang. If you encounter a timeout, inform the user to:
-upgrade Chrome to 146+, disable Memory Saver at `chrome://settings/performance`, click suspended
-tabs to wake them, or use a dedicated Chrome profile with few tabs.
+**If browser automation fails, advise the user:**
+1. First choice: Install the Markus Chrome Extension (Settings > Browser Automation shows install path)
+2. Second choice: Enable auto-click in Settings > Browser Automation (macOS/Windows only)
+3. Third choice: Launch Chrome with `--remote-debugging-port=9222` and set the port in Settings
 
 ## Configurable behavior (Settings > Browser Automation)
 
 | Setting | Default | Description |
 |---------|---------|-------------|
+| **Chrome Extension** | — | Shows connection status of the Markus Chrome Extension (Connected / Not Connected). |
 | **Bring to Foreground** | Off | When on, Chrome tabs are brought to the foreground during agent operations. When off (default), agents operate silently in background tabs. |
 | **Auto-close Tabs** | On | When on, agent-owned tabs are closed when the agent task completes or the agent is removed. |
+| **Auto-Allow Debugging Dialog** | Off | Auto-click Chrome's "Allow remote debugging?" dialog via OS APIs. Only needed when extension is not installed. macOS requires Accessibility permission; Windows works out of the box; Linux not supported. |
 | **Remote Debugging Port** | 0 (auto-connect) | Set to a port number (e.g. 9222) to use a persistent debugging connection instead of auto-connect, eliminating repeated permission dialogs. |
+| **Extension Bridge Port** | 9333 | WebSocket port for communication between Markus and the Chrome extension. Change if 9333 conflicts with another service. |
 
 ## Tool reference
 

@@ -35,6 +35,8 @@ import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
 import { clickChromeAllowDialog } from './tools/chrome-dialog-clicker.js';
+import { MarkusBrowserBridge } from './tools/markus-browser-bridge.js';
+import { createBridgeToolHandlers, getBridgeToolDescriptors } from './tools/markus-browser-mcp.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
 import { DelegationManager, type TaskDelegation } from '@markus/a2a';
 import type { TemplateRegistry } from './templates/registry.js';
@@ -305,6 +307,7 @@ export class AgentManager {
   private remoteDebuggingPort = 0;
   private autoClickAllowDialog = false;
   private chromeAutoClickRunning = false;
+  private browserBridge: MarkusBrowserBridge;
   private globalSecurityPolicy?: SecurityPolicy;
   private globalMcpServers?: Record<string, MCPServerConfig>;
   private skillRegistry?: SkillRegistry;
@@ -501,6 +504,7 @@ export class AgentManager {
       this.triggerChromeDialogAutoClick(serverName);
     });
     this.browserSessionManager = new BrowserSessionManager();
+    this.browserBridge = new MarkusBrowserBridge();
     this.globalSecurityPolicy = options.securityPolicy;
     this.globalMcpServers = options.mcpServers;
     this.skillRegistry = options.skillRegistry;
@@ -597,6 +601,25 @@ export class AgentManager {
     this.autoClickAllowDialog = enabled;
   }
 
+  startBrowserBridge(port?: number): void {
+    if (port !== undefined) {
+      this.browserBridge = new MarkusBrowserBridge(port);
+    }
+    this.browserBridge.start();
+  }
+
+  stopBrowserBridge(): void {
+    this.browserBridge.stop();
+  }
+
+  get browserExtensionConnected(): boolean {
+    return this.browserBridge.connected;
+  }
+
+  getBrowserBridge(): MarkusBrowserBridge {
+    return this.browserBridge;
+  }
+
   /**
    * When remoteDebuggingPort is configured, replace --autoConnect with
    * --browserUrl so that the chrome-devtools MCP server reuses a persistent
@@ -632,33 +655,45 @@ export class AgentManager {
 
   /**
    * Register chrome-devtools tools for an agent WITHOUT starting the MCP process.
-   * Uses cached tool descriptors if available; otherwise does one connection to populate cache.
-   * The MCP process starts lazily on the agent's first browser tool call.
+   *
+   * Tool handlers dynamically choose bridge vs npx at CALL TIME:
+   * - If the Chrome extension is connected, use the WebSocket bridge (no dialog, instant).
+   * - Otherwise, fall back to npx chrome-devtools-mcp (lazy-started on first call).
+   *
+   * This ensures agents created before the extension connects can still
+   * use the bridge once it becomes available, and vice versa.
    */
   private async registerChromeDevtoolsLazy(
     agentId: string,
     serverName: string,
     serverConfig: { command: string; args?: string[]; env?: Record<string, string> },
   ): Promise<AgentToolHandler[]> {
-    let cachedTools = this.mcpManager.getCachedTools(serverName);
-    if (!cachedTools) {
-      // First-ever connection: connect to get tool list, then disconnect immediately.
-      // The MCP process is only needed to discover available tools.
-      this.triggerChromeDialogAutoClick(serverName);
-      await this.mcpManager.connectServerScoped(serverName, serverConfig, agentId);
-      cachedTools = this.mcpManager.getCachedTools(serverName);
-      await this.mcpManager.disconnectServerScoped(serverName, agentId);
-      if (!cachedTools) {
-        throw new Error(`Failed to get tool list from ${serverName}`);
-      }
-    }
+    const toolDescriptors = getBridgeToolDescriptors();
 
-    // Lazy registration: tools call back to callToolByKey which auto-connects.
-    let mcpTools = this.mcpManager.registerLazyScoped(serverName, serverConfig, agentId, cachedTools);
+    // Register npx config lazily so callToolScoped can auto-connect when needed.
+    this.mcpManager.registerLazyScoped(serverName, serverConfig, agentId, toolDescriptors);
+
+    let mcpTools: AgentToolHandler[] = toolDescriptors.map((tool) => ({
+      name: `${serverName}__${tool.name}`,
+      description: `[MCP:${serverName}] ${tool.description}`,
+      inputSchema: tool.inputSchema,
+      execute: async (args: Record<string, unknown>) => {
+        if (this.browserBridge.connected) {
+          const result = await this.browserBridge.callTool(tool.name, args);
+          if (result.error) return `Error: ${result.error}`;
+          return result.content;
+        }
+        // npx fallback; auto-click is triggered by mcpManager's onReconnect callback
+        return this.mcpManager.callToolScoped(serverName, agentId, tool.name, args);
+      },
+    }));
+
     mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, agentId);
     this.browserSessionManager.setReconnector(agentId, serverName, async () => {
-      await this.mcpManager.disconnectServerScoped(serverName, agentId);
-      await this.mcpManager.connectServerScoped(serverName, serverConfig, agentId);
+      if (!this.browserBridge.connected) {
+        await this.mcpManager.disconnectServerScoped(serverName, agentId);
+        await this.mcpManager.connectServerScoped(serverName, serverConfig, agentId);
+      }
     });
     return mcpTools;
   }

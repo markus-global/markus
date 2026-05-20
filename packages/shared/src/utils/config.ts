@@ -71,6 +71,8 @@ export interface MarkusConfig {
     autoCloseTabs?: boolean;
     /** Auto-click Chrome's "Allow debugging" dialog via OS accessibility APIs (macOS/Windows) */
     autoClickAllowDialog?: boolean;
+    /** WebSocket port for Chrome extension bridge (default: 9333) */
+    extensionBridgePort?: number;
   };
   integrations?: {
     feishu?: { appId?: string; appSecret?: string };

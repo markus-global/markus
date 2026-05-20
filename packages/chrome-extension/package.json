@@ -1,0 +1,16 @@
+{
+  "name": "@markus/chrome-extension",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/background.ts --bundle --outfile=dist/background.js --format=esm --target=es2022 --platform=browser",
+    "watch": "esbuild src/background.ts --bundle --outfile=dist/background.js --format=esm --target=es2022 --platform=browser --watch",
+    "pack": "pnpm run build && node pack.mjs",
+    "prepare": "pnpm run build"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.300",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -308,6 +308,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (config.browser?.autoClickAllowDialog) {
     agentManager.setBrowserAutoClickAllowDialog(true);
   }
+  agentManager.startBrowserBridge(config.browser?.extensionBridgePort);
 
   taskService.setAgentManager(agentManager);
 

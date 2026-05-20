@@ -242,3 +242,5 @@ export {
   type AutoClickCheckResult,
   type AutoClickTestResult,
 } from './tools/chrome-dialog-clicker.js';
+export { MarkusBrowserBridge } from './tools/markus-browser-bridge.js';
+export { createBridgeToolHandlers, getBridgeToolDescriptors } from './tools/markus-browser-mcp.js';

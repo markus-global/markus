@@ -157,6 +157,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [browserRemotePort, setBrowserRemotePort] = useState(0);
   const [browserAutoClose, setBrowserAutoClose] = useState(true);
   const [browserAutoClickAllow, setBrowserAutoClickAllow] = useState(false);
+  const [browserExtensionConnected, setBrowserExtensionConnected] = useState(false);
+  const [browserExtensionPort, setBrowserExtensionPort] = useState(9333);
   const [browserSaving, setBrowserSaving] = useState(false);
   const [browserMsg, setBrowserMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
@@ -226,6 +228,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           setBrowserRemotePort(d.remoteDebuggingPort ?? 0);
           setBrowserAutoClose(d.autoCloseTabs ?? true);
           setBrowserAutoClickAllow(d.autoClickAllowDialog ?? false);
+          setBrowserExtensionConnected(d.extensionConnected ?? false);
+          setBrowserExtensionPort(d.extensionBridgePort ?? 9333);
         }
       })
       .catch(() => {});
@@ -494,6 +498,21 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   useEffect(() => () => {
     if (oauthPollRef.current) clearInterval(oauthPollRef.current);
   }, []);
+
+  // Poll extension connection status when browser tab is active and not yet connected
+  useEffect(() => {
+    if (resolvedTab !== 'browser' || browserExtensionConnected) return;
+    const poll = setInterval(async () => {
+      try {
+        const d = await api.settings.getBrowser();
+        if (d.extensionConnected) {
+          setBrowserExtensionConnected(true);
+          clearInterval(poll);
+        }
+      } catch { /* ignore */ }
+    }, 5000);
+    return () => clearInterval(poll);
+  }, [resolvedTab, browserExtensionConnected]);
 
   // Add/Edit/Delete provider state
   const [showAddProvider, setShowAddProvider] = useState(false);
@@ -1021,6 +1040,51 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               title={t('setupGuide.manual.title')}
               description={<Trans i18nKey="settings:setupGuide.manual.description" components={{ code: <code className="text-fg-secondary" /> }} />}
             />
+
+            {/* Option 5: Chrome Extension (only shown in Chrome) */}
+            {/Chrome\/\d/.test(navigator.userAgent) && !/Edg\//.test(navigator.userAgent) && (
+              <SetupCard
+                step={t('setupGuide.browserExtension.step')}
+                title={t('setupGuide.browserExtension.title')}
+                description={t('setupGuide.browserExtension.description')}
+                active={browserExtensionConnected}
+              >
+                {browserExtensionConnected ? (
+                  <div className="flex items-center gap-1.5 text-xs text-green-400">
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                    {t('setupGuide.browserExtension.alreadyConnected')}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <button
+                        disabled={browserSaving}
+                        onClick={async () => {
+                          setBrowserSaving(true);
+                          try { await api.settings.downloadExtensionZip(); } catch { /* ignore */ }
+                          setBrowserSaving(false);
+                        }}
+                        className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                        {t('setupGuide.browserExtension.downloadBtn')}
+                      </button>
+                      <button
+                        disabled={browserSaving}
+                        onClick={async () => {
+                          try { await api.settings.openExtensionsPage(); } catch { /* ignore */ }
+                        }}
+                        className="px-3 py-1.5 text-xs border border-border-default text-fg-primary rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                        {t('setupGuide.browserExtension.openChromeBtn')}
+                      </button>
+                    </div>
+                    <div className="text-xs text-fg-tertiary">{t('setupGuide.browserExtension.loadHint')}</div>
+                  </div>
+                )}
+              </SetupCard>
+            )}
           </div>
         )}
 
@@ -1740,18 +1804,38 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {resolvedTab === 'browser' && <>
         <Section title={t('browserAutomation.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
-            <div className="text-xs text-fg-tertiary">
-              {t('browserAutomation.description')}
+          {/* ── Active Mode Banner ── */}
+          <div className={`rounded-xl p-4 mb-4 flex items-start gap-3 ${browserExtensionConnected ? 'bg-green-500/10 border border-green-500/20' : browserRemotePort > 0 ? 'bg-blue-500/10 border border-blue-500/20' : browserAutoClickAllow ? 'bg-amber-500/10 border border-amber-500/20' : 'bg-surface-elevated border border-border-default'}`}>
+            <div className={`mt-0.5 w-2.5 h-2.5 rounded-full shrink-0 ${browserExtensionConnected ? 'bg-green-400' : browserRemotePort > 0 ? 'bg-blue-400' : browserAutoClickAllow ? 'bg-amber-400' : 'bg-gray-400'}`} />
+            <div className="flex-1 min-w-0">
+              <div className={`text-sm font-semibold ${browserExtensionConnected ? 'text-green-400' : browserRemotePort > 0 ? 'text-blue-400' : browserAutoClickAllow ? 'text-amber-400' : 'text-fg-secondary'}`}>
+                {browserExtensionConnected
+                  ? t('browserAutomation.modeExtension')
+                  : browserRemotePort > 0
+                    ? t('browserAutomation.modeDebuggingPort', { port: browserRemotePort })
+                    : browserAutoClickAllow
+                      ? t('browserAutomation.modeAutoClick')
+                      : t('browserAutomation.modeManual')}
+              </div>
+              <div className="text-xs text-fg-tertiary mt-0.5">
+                {browserExtensionConnected
+                  ? t('browserAutomation.modeExtensionDesc')
+                  : browserRemotePort > 0
+                    ? t('browserAutomation.modeDebuggingPortDesc')
+                    : browserAutoClickAllow
+                      ? t('browserAutomation.modeAutoClickDesc')
+                      : t('browserAutomation.modeManualDesc')}
+              </div>
             </div>
+          </div>
 
-            {/* Bring to Front toggle */}
+          {/* ── General Settings (always visible) ── */}
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-4 mb-4">
+            <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.generalSettings')}</div>
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.bringToFront')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">
-                  {t('browserAutomation.bringToFrontDesc')}
-                </div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.bringToFrontDesc')}</div>
               </div>
               <button
                 onClick={async () => {
@@ -1771,14 +1855,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${browserBringToFront ? 'translate-x-4' : 'translate-x-1'}`} />
               </button>
             </div>
-
-            {/* Auto-close tabs toggle */}
             <div className="flex items-center justify-between border-t border-border-default pt-4">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.autoCloseTabs')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">
-                  {t('browserAutomation.autoCloseTabsDesc')}
-                </div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.autoCloseTabsDesc')}</div>
               </div>
               <button
                 onClick={async () => {
@@ -1798,111 +1878,199 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${browserAutoClose ? 'translate-x-4' : 'translate-x-1'}`} />
               </button>
             </div>
-
-            {/* Auto-click Chrome Allow Dialog toggle */}
-            <div className="border-t border-border-default pt-4">
-              <div className="flex items-center justify-between">
-                <div className="flex-1 mr-4">
-                  <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.autoClickAllowDialog')}</div>
-                  <div className="text-xs text-fg-tertiary mt-0.5">
-                    {t('browserAutomation.autoClickAllowDialogDesc')}
-                  </div>
-                  <div className="text-xs text-fg-tertiary mt-2 space-y-0.5">
-                    <div>{t('browserAutomation.autoClickAllowDialogMacNote')}</div>
-                    <div>{t('browserAutomation.autoClickAllowDialogWinNote')}</div>
-                    <div>{t('browserAutomation.autoClickAllowDialogLinuxNote')}</div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    disabled={browserSaving}
-                    onClick={async () => {
-                      setBrowserSaving(true); setBrowserMsg(null);
-                      try {
-                        const result = await api.settings.testAutoClick();
-                        const msgMap: Record<string, { type: 'ok' | 'err'; text: string }> = {
-                          success: { type: 'ok', text: t('browserAutomation.autoClickTestSuccess', { title: result.pageTitle || 'example.com' }) },
-                          no_permission: { type: 'err', text: t('browserAutomation.autoClickTestNoPermission') },
-                          chrome_not_running: { type: 'err', text: t('browserAutomation.autoClickTestChromeNotRunning') },
-                          unsupported: { type: 'err', text: t('browserAutomation.autoClickTestUnsupported') },
-                          error: { type: 'err', text: t('browserAutomation.autoClickTestError', { error: result.error || 'unknown' }) },
-                        };
-                        setBrowserMsg(msgMap[result.clickResult] ?? { type: 'err', text: result.clickResult });
-                      } catch { setBrowserMsg({ type: 'err', text: t('browserAutomation.autoClickTestError', { error: 'request failed' }) }); }
-                      setBrowserSaving(false);
-                    }}
-                    className="px-3 py-1.5 text-xs bg-surface-primary border border-border-default text-fg-primary rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-40"
-                  >
-                    {browserSaving ? t('browserAutomation.autoClickTesting') : t('browserAutomation.autoClickTest')}
-                  </button>
-                  <button
-                    onClick={async () => {
-                      const newVal = !browserAutoClickAllow;
-                      setBrowserAutoClickAllow(newVal);
-                      setBrowserSaving(true); setBrowserMsg(null);
-                      try {
-                        const d = await api.settings.updateBrowser({ autoClickAllowDialog: newVal });
-                        setBrowserAutoClickAllow(d.autoClickAllowDialog);
-                        setBrowserMsg({ type: 'ok', text: t('agentExecution.saved') });
-                      } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); setBrowserAutoClickAllow(!newVal); }
-                      setBrowserSaving(false);
-                    }}
-                    disabled={browserSaving}
-                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${browserAutoClickAllow ? 'bg-green-500' : 'bg-gray-600'} ${browserSaving ? 'opacity-50' : ''}`}
-                  >
-                    <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${browserAutoClickAllow ? 'translate-x-4' : 'translate-x-1'}`} />
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Remote Debugging Port */}
-            <div className="border-t border-border-default pt-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.remoteDebuggingPort')}</div>
-                  <div className="text-xs text-fg-tertiary mt-0.5">
-                    {t('browserAutomation.remoteDebuggingPortDescLead')}{' '}
-                    <code className="text-fg-secondary bg-surface-elevated px-1 rounded">--remote-debugging-port=9222</code>{' '}
-                    {t('browserAutomation.remoteDebuggingPortDescTail')}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min={0}
-                    max={65535}
-                    value={browserRemotePort}
-                    onChange={e => { setBrowserRemotePort(Number(e.target.value)); setBrowserMsg(null); }}
-                    className="w-24 px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary text-right"
-                    placeholder="0"
-                  />
-                  <button
-                    disabled={browserSaving}
-                    onClick={async () => {
-                      setBrowserSaving(true); setBrowserMsg(null);
-                      try {
-                        const d = await api.settings.updateBrowser({ remoteDebuggingPort: browserRemotePort });
-                        setBrowserRemotePort(d.remoteDebuggingPort);
-                        setBrowserMsg({
-                          type: 'ok',
-                          text: d.remoteDebuggingPort > 0
-                            ? t('browserAutomation.usingPort', { port: d.remoteDebuggingPort })
-                            : t('browserAutomation.usingAutoConnect'),
-                        });
-                      } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
-                      setBrowserSaving(false);
-                    }}
-                    className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
-                  >
-                    {browserSaving ? t('common:saving') : t('common:save')}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {browserMsg && <Msg type={browserMsg.type} text={browserMsg.text} />}
           </div>
+
+          {/* ── Connection Mode: Chrome Extension ── */}
+          <div className={`rounded-xl p-5 mb-4 transition-colors ${browserExtensionConnected ? 'bg-green-500/5 border border-green-500/20' : 'bg-surface-elevated'}`}>
+            {/* Header row: title + status badge */}
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.extensionStatus')}</div>
+                <span className="text-xs text-fg-tertiary">({t('browserAutomation.modeRecommended')})</span>
+              </div>
+              <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${browserExtensionConnected ? 'bg-green-500/20 text-green-400' : 'bg-gray-600/20 text-gray-400'}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${browserExtensionConnected ? 'bg-green-400' : 'bg-gray-400'}`} />
+                {browserExtensionConnected ? t('browserAutomation.extensionConnected') : t('browserAutomation.extensionDisconnected')}
+              </span>
+            </div>
+            <div className="text-xs text-fg-tertiary">{t('browserAutomation.extensionStatusDesc')}</div>
+
+            {browserExtensionConnected ? (
+              <div className="mt-3 flex items-center gap-1.5 text-xs text-green-400">
+                <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                {t('browserAutomation.extensionActiveNote')}
+              </div>
+            ) : (
+              /* Step-by-step install guide */
+              <div className="mt-4 space-y-3">
+                <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.extensionSetupTitle')}</div>
+
+                {/* Step 1: Download */}
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-surface-primary/50">
+                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-brand-500 text-white text-[10px] font-bold shrink-0 mt-0.5">1</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.extensionStep1')}</div>
+                    <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.extensionStep1Desc')}</div>
+                    <button
+                      disabled={browserSaving}
+                      onClick={async () => {
+                        setBrowserSaving(true); setBrowserMsg(null);
+                        try {
+                          await api.settings.downloadExtensionZip();
+                        } catch { setBrowserMsg({ type: 'err', text: t('browserAutomation.extensionDownloadError') }); }
+                        setBrowserSaving(false);
+                      }}
+                      className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                      {browserSaving ? t('browserAutomation.extensionStep1Downloading') : t('browserAutomation.extensionStep1Btn')}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Step 2: Open extensions page */}
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-surface-primary/50">
+                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-brand-500 text-white text-[10px] font-bold shrink-0 mt-0.5">2</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.extensionStep2')}</div>
+                    <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.extensionStep2Desc')}</div>
+                    <button
+                      disabled={browserSaving}
+                      onClick={async () => {
+                        setBrowserSaving(true); setBrowserMsg(null);
+                        try {
+                          await api.settings.openExtensionsPage();
+                        } catch { setBrowserMsg({ type: 'err', text: t('browserAutomation.extensionOpenError') }); }
+                        setBrowserSaving(false);
+                      }}
+                      className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-surface-primary border border-border-default text-fg-primary rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-40"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                      {t('browserAutomation.extensionStep2Btn')}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Step 3: Load unpacked */}
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-surface-primary/50">
+                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-brand-500 text-white text-[10px] font-bold shrink-0 mt-0.5">3</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.extensionStep3')}</div>
+                    <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.extensionStep3Desc')}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ── Fallback modes (collapsed when extension is connected) ── */}
+          {!browserExtensionConnected && (
+            <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+              <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.fallbackModes')}</div>
+
+              {/* Auto-click Chrome Allow Dialog toggle */}
+              <div>
+                <div className="flex items-center justify-between">
+                  <div className="flex-1 mr-4">
+                    <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.autoClickAllowDialog')}</div>
+                    <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.autoClickAllowDialogDesc')}</div>
+                    <div className="text-xs text-fg-tertiary mt-2 space-y-0.5">
+                      <div>{t('browserAutomation.autoClickAllowDialogMacNote')}</div>
+                      <div>{t('browserAutomation.autoClickAllowDialogWinNote')}</div>
+                      <div>{t('browserAutomation.autoClickAllowDialogLinuxNote')}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      disabled={browserSaving}
+                      onClick={async () => {
+                        setBrowserSaving(true); setBrowserMsg(null);
+                        try {
+                          const result = await api.settings.testAutoClick();
+                          const msgMap: Record<string, { type: 'ok' | 'err'; text: string }> = {
+                            success: { type: 'ok', text: t('browserAutomation.autoClickTestSuccess', { title: result.pageTitle || 'example.com' }) },
+                            no_permission: { type: 'err', text: t('browserAutomation.autoClickTestNoPermission') },
+                            chrome_not_running: { type: 'err', text: t('browserAutomation.autoClickTestChromeNotRunning') },
+                            unsupported: { type: 'err', text: t('browserAutomation.autoClickTestUnsupported') },
+                            error: { type: 'err', text: t('browserAutomation.autoClickTestError', { error: result.error || 'unknown' }) },
+                          };
+                          setBrowserMsg(msgMap[result.clickResult] ?? { type: 'err', text: result.clickResult });
+                        } catch { setBrowserMsg({ type: 'err', text: t('browserAutomation.autoClickTestError', { error: 'request failed' }) }); }
+                        setBrowserSaving(false);
+                      }}
+                      className="px-3 py-1.5 text-xs bg-surface-primary border border-border-default text-fg-primary rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-40"
+                    >
+                      {browserSaving ? t('browserAutomation.autoClickTesting') : t('browserAutomation.autoClickTest')}
+                    </button>
+                    <button
+                      onClick={async () => {
+                        const newVal = !browserAutoClickAllow;
+                        setBrowserAutoClickAllow(newVal);
+                        setBrowserSaving(true); setBrowserMsg(null);
+                        try {
+                          const d = await api.settings.updateBrowser({ autoClickAllowDialog: newVal });
+                          setBrowserAutoClickAllow(d.autoClickAllowDialog);
+                          setBrowserMsg({ type: 'ok', text: t('agentExecution.saved') });
+                        } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); setBrowserAutoClickAllow(!newVal); }
+                        setBrowserSaving(false);
+                      }}
+                      disabled={browserSaving}
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${browserAutoClickAllow ? 'bg-green-500' : 'bg-gray-600'} ${browserSaving ? 'opacity-50' : ''}`}
+                    >
+                      <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${browserAutoClickAllow ? 'translate-x-4' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Remote Debugging Port */}
+              <div className="border-t border-border-default pt-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.remoteDebuggingPort')}</div>
+                    <div className="text-xs text-fg-tertiary mt-0.5">
+                      {t('browserAutomation.remoteDebuggingPortDescLead')}{' '}
+                      <code className="text-fg-secondary bg-surface-primary px-1 rounded">--remote-debugging-port=9222</code>{' '}
+                      {t('browserAutomation.remoteDebuggingPortDescTail')}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={0}
+                      max={65535}
+                      value={browserRemotePort}
+                      onChange={e => { setBrowserRemotePort(Number(e.target.value)); setBrowserMsg(null); }}
+                      className="w-24 px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary text-right"
+                      placeholder="0"
+                    />
+                    <button
+                      disabled={browserSaving}
+                      onClick={async () => {
+                        setBrowserSaving(true); setBrowserMsg(null);
+                        try {
+                          const d = await api.settings.updateBrowser({ remoteDebuggingPort: browserRemotePort });
+                          setBrowserRemotePort(d.remoteDebuggingPort);
+                          setBrowserMsg({
+                            type: 'ok',
+                            text: d.remoteDebuggingPort > 0
+                              ? t('browserAutomation.usingPort', { port: d.remoteDebuggingPort })
+                              : t('browserAutomation.usingAutoConnect'),
+                          });
+                        } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
+                        setBrowserSaving(false);
+                      }}
+                      className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                    >
+                      {browserSaving ? t('common:saving') : t('common:save')}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {browserMsg && <div className="mt-4"><Msg type={browserMsg.type} text={browserMsg.text} /></div>}
         </Section>
         </>}
 

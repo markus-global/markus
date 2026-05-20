@@ -7095,11 +7095,14 @@ EXPLANATION_END`;
       const { loadConfig: loadCfg } = await import('@markus/shared');
       const currentConfig = loadCfg(this.markusConfigPath);
       const browser = currentConfig.browser ?? {};
+      const am = this.orgService.getAgentManager();
       this.json(res, 200, {
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
         autoClickAllowDialog: browser.autoClickAllowDialog ?? false,
+        extensionBridgePort: browser.extensionBridgePort ?? 9333,
+        extensionConnected: am.browserExtensionConnected,
       });
       return;
     }
@@ -7145,12 +7148,85 @@ EXPLANATION_END`;
       const { loadConfig: loadCfg } = await import('@markus/shared');
       const currentConfig = loadCfg(this.markusConfigPath);
       const browser = currentConfig.browser ?? {};
+      const am2 = this.orgService.getAgentManager();
       this.json(res, 200, {
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
         autoClickAllowDialog: browser.autoClickAllowDialog ?? false,
+        extensionBridgePort: browser.extensionBridgePort ?? 9333,
+        extensionConnected: am2.browserExtensionConnected,
       });
+      return;
+    }
+
+    // Settings — Chrome Extension: download zip
+    if (path === '/api/settings/browser/extension.zip' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+
+      try {
+        const { fileURLToPath } = await import('node:url');
+        const { dirname: dn, resolve: rslv, join: jn } = await import('node:path');
+        const { execSync } = await import('node:child_process');
+        const { existsSync: ex, readFileSync, statSync } = await import('node:fs');
+
+        const thisDir = dn(fileURLToPath(import.meta.url));
+        // Search order: dev workspace → binary install → cwd fallback
+        const zipCandidates = [
+          jn(rslv(thisDir, '..', '..', 'chrome-extension'), 'dist', 'markus-browser-extension.zip'),
+          jn(rslv(thisDir, '..', '..', '..', 'chrome-extension'), 'markus-browser-extension.zip'),
+          jn(rslv(process.cwd(), 'packages', 'chrome-extension'), 'dist', 'markus-browser-extension.zip'),
+          jn(rslv(process.cwd(), 'chrome-extension'), 'markus-browser-extension.zip'),
+        ];
+        let zipPath = zipCandidates.find(p => ex(p));
+
+        // If not found, try building from source
+        if (!zipPath) {
+          const extDir = [
+            rslv(thisDir, '..', '..', 'chrome-extension'),
+            rslv(process.cwd(), 'packages', 'chrome-extension'),
+          ].find(d => ex(jn(d, 'package.json')));
+          if (extDir) {
+            try { execSync('pnpm run pack', { cwd: extDir, timeout: 30000, stdio: 'pipe' }); } catch { /* ignore */ }
+            const built = jn(extDir, 'dist', 'markus-browser-extension.zip');
+            if (ex(built)) zipPath = built;
+          }
+        }
+        if (!zipPath) { this.json(res, 404, { error: 'Extension zip not found.' }); return; }
+
+        const data = readFileSync(zipPath);
+        res.writeHead(200, {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': 'attachment; filename="markus-browser-extension.zip"',
+          'Content-Length': data.length,
+        });
+        res.end(data);
+      } catch (e) {
+        this.json(res, 500, { error: String(e) });
+      }
+      return;
+    }
+
+    // Settings — Chrome Extension: open chrome://extensions page
+    if (path === '/api/settings/browser/open-extensions-page' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+
+      try {
+        const { exec: execCb } = await import('node:child_process');
+        const platform = process.platform;
+        if (platform === 'darwin') {
+          execCb('open -a "Google Chrome" "chrome://extensions"', () => {});
+        } else if (platform === 'win32') {
+          execCb('start chrome "chrome://extensions"', () => {});
+        } else {
+          execCb('xdg-open "chrome://extensions" 2>/dev/null || google-chrome "chrome://extensions"', () => {});
+        }
+        this.json(res, 200, { ok: true });
+      } catch (e) {
+        this.json(res, 500, { error: String(e) });
+      }
       return;
     }
 
