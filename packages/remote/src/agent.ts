@@ -387,9 +387,9 @@ export class RemoteAccessAgent {
   private handleOffer(peerId: string, sdp: string): void {
     let session = this.peers.get(peerId);
     if (!session) {
+      log.info('Received offer, creating new peer connection', { peerId });
       session = this.createPeerConnection(peerId);
     } else if (!session.pc) {
-      // ICE restart: create new PC but preserve existing session state (markusToken, etc.)
       log.info('Received offer for relay-only peer, upgrading to P2P', { peerId });
       const newSession = this.createPeerConnection(peerId);
       newSession.markusToken = session.markusToken;
@@ -397,6 +397,8 @@ export class RemoteAccessAgent {
       newSession.lastActiveAt = session.lastActiveAt;
       if (session.pingTimer) clearInterval(session.pingTimer);
       session = newSession;
+    } else {
+      log.info('Received offer for existing peer (ICE restart)', { peerId });
     }
 
     session.pc!.setRemoteDescription(sdp, DescriptionType.Offer);
@@ -404,7 +406,10 @@ export class RemoteAccessAgent {
 
   private handleIce(peerId: string, candidate: string, mid?: string): void {
     const session = this.peers.get(peerId);
-    if (!session?.pc) return;
+    if (!session?.pc) {
+      log.warn('Received ICE candidate but no PC', { peerId, hasSession: !!session });
+      return;
+    }
     session.pc.addRemoteCandidate(candidate, mid ?? '0');
   }
 
@@ -442,7 +447,7 @@ export class RemoteAccessAgent {
     this.peers.set(peerId, session);
 
     pc.onStateChange((state: string) => {
-      log.debug('Peer state change', { peerId, state });
+      log.info('Peer RTC state', { peerId, state });
       if (state === 'failed' || state === 'closed') {
         this.handlePcFailed(peerId);
       }
@@ -450,14 +455,16 @@ export class RemoteAccessAgent {
     });
 
     pc.onGatheringStateChange((state: string) => {
-      log.debug('ICE gathering state', { peerId, state });
+      log.info('ICE gathering', { peerId, state });
     });
 
     pc.onLocalDescription((sdp: string, type: DescriptionType) => {
+      log.info('Sending local description', { peerId, type: type as string });
       this.send({ type: type as string, peerId, sdp });
     });
 
     pc.onLocalCandidate((candidate: string, mid: string) => {
+      log.info('Sending ICE candidate', { peerId, candidate: candidate.slice(0, 60) });
       this.send({ type: 'ice', peerId, candidate, mid });
     });
 
@@ -515,6 +522,10 @@ export class RemoteAccessAgent {
   private startPeerPing(peerId: string, session: PeerSession): void {
     if (session.pingTimer) clearInterval(session.pingTimer);
     session.lastPong = Date.now();
+
+    // Send first ping immediately so we get a pong before the first timeout check
+    this.sendRaw(peerId, JSON.stringify({ type: '__ping' }));
+
     session.pingTimer = setInterval(() => {
       const now = Date.now();
 
@@ -525,9 +536,9 @@ export class RemoteAccessAgent {
         return;
       }
 
-      // Check pong timeout
+      // Check pong timeout — only if we've sent at least one ping and waited long enough
       const elapsed = now - session.lastPong;
-      if (elapsed > PEER_PING_TIMEOUT_MS) {
+      if (elapsed > PEER_PING_INTERVAL_MS + PEER_PING_TIMEOUT_MS) {
         log.warn('Peer ping timeout, unresponsive', { peerId, elapsed });
         this.cleanupPeer(peerId);
         return;
