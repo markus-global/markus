@@ -130,10 +130,20 @@ export function registerInspectionTools(
       expression,
       returnByValue: true,
       awaitPromise: true,
-    }) as { result?: { value?: unknown; description?: string }; exceptionDetails?: { text?: string } };
+    }) as {
+      result?: { value?: unknown; description?: string };
+      exceptionDetails?: {
+        text?: string;
+        exception?: { description?: string; value?: unknown };
+      };
+    };
 
     if (result?.exceptionDetails) {
-      throw new Error(`Script error: ${result.exceptionDetails.text}`);
+      const detail = result.exceptionDetails.exception?.description
+        ?? String(result.exceptionDetails.exception?.value ?? '')
+        ?? result.exceptionDetails.text
+        ?? 'Unknown error';
+      throw new Error(`Script error: ${detail}`);
     }
 
     const value = result?.result?.value;
