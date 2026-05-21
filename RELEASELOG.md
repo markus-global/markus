@@ -1,5 +1,44 @@
 # Release Log
 
+## v0.7.0
+
+Hub 远程访问与 P2P 传输层；Chrome Extension 浏览器自动化套件；MCP 连接池优化与注意力系统重构；浏览器测试面板；全局搜索；首页重设计；Mailbox Agent 工具；大量测试补全与 UI 优化。
+
+### New Features
+
+- **Hub 远程访问** — 新增 `packages/remote` 模块，通过 markus-hub 实现 P2P 远程访问，WebRTC 传输层支持直连与中继，CLI 启动集成远程连接管理
+- **Chrome Extension 浏览器自动化** — 全新 `packages/chrome-extension`，支持页面管理、元素检查、表单输入、网络监控、导航控制；`markus-browser-bridge` 和 `markus-browser-mcp` 工具集成；Chrome 弹窗自动点击器（`chrome-dialog-clicker`）
+- **浏览器测试面板** — 新增 `BrowserTestPanel` 组件，支持在 Web UI 内直接执行和查看浏览器自动化测试
+- **全局搜索** — 新增 `SearchModal` 组件，支持跨 Agent、任务、需求的全局搜索
+- **Mailbox Agent 工具** — 新增 `mailbox-tools`，Agent 可查询和管理自身邮箱队列
+- **移动端抽屉导航** — 新增 `MobileDrawer` 和 `MobileMenuButton` 组件，优化移动端导航体验
+
+### Bug Fixes
+
+- **修复 Extension 队列请求过期** — Chrome Extension 请求队列新增过期机制，防止过期请求阻塞队列
+- **修复浏览器会话管理** — 页面管理器重构（`page-manager`），新增调试器辅助（`debugger-helper`），修复工具输入/检查/导航/网络模块
+- **修复通知铃铛显示** — NotificationBell 组件优化，未读计数逻辑改进
+
+### Improvements
+
+- **MCP 连接池优化** — 注意力系统（Attention）大幅重构，新增缓存优化策略，上下文引擎增强，工具选择器改进
+- **首页重设计** — Home 页面布局重构，信息架构优化，i18n 完善
+- **Settings 页面扩展** — 远程访问配置、Bocha 搜索 API Key 配置
+- **Onboarding 流程优化** — 引导步骤智能跳过，API Key 来源预览
+- **Team 页面增强** — 团队侧边栏交互优化，成员管理改进
+- **页面活跃检测** — 新增 `usePageActive` hook，优化后台页面资源消耗
+- **文档更新** — API、架构、认知架构、邮箱系统、提示工程、状态机文档全面更新
+
+### Tests
+
+- 新增 agent-loop / attention / cache-optimization / mailbox-lifecycle 测试套件，覆盖核心执行循环与邮箱生命周期
+
+### Stats
+
+- 129 files changed, +13,464 / −1,502 lines
+
+---
+
 ## v0.6.8
 
 无边框 UI 大改版；Team/Agent 页面重设计；Mailbox 深度审议决策；持久 Shell 会话；MCP 自动重连与进程回收；Bocha 搜索后端；多格式交付物输出；审批按钮重构；语义重试循环检测；大量 UX 与稳定性修复。
