@@ -31,6 +31,7 @@
 
 <p align="center">
   <a href="https://www.markus.global">官网</a> &middot;
+  <a href="https://markus.global/blog">博客</a> &middot;
   <a href="docs/GUIDE.md">文档</a> &middot;
   <a href="https://github.com/markus-global/markus/discussions">讨论</a> &middot;
   <a href="CONTRIBUTING.md">参与贡献</a>
@@ -181,6 +182,7 @@ TypeScript Monorepo，模块化包结构：
 | 指南 | 说明 |
 |-------|-------------|
 | [用户指南](docs/GUIDE.md) | 安装、配置、Web 界面使用 |
+| [博客](https://markus.global/blog) | 关于 Markus、AI Agent 和未来工作的文章与教程 |
 | [架构设计](docs/ARCHITECTURE.md) | 系统设计、智能体运行时、记忆、治理 |
 | [记忆系统](docs/MEMORY-SYSTEM.md) | 三层记忆架构（Tulving） |
 | [API 参考](docs/API.md) | REST API 接口 |
@@ -220,6 +222,7 @@ Markus 采用双重许可：
 
 <p align="center">
   <a href="https://www.markus.global">官网</a> &middot;
+  <a href="https://markus.global/blog">博客</a> &middot;
   <a href="https://github.com/markus-global/markus/discussions">讨论</a> &middot;
   <a href="https://github.com/markus-global/markus/issues">问题反馈</a>
 </p>

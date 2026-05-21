@@ -31,6 +31,7 @@
 
 <p align="center">
   <a href="https://www.markus.global">Website</a> &middot;
+  <a href="https://markus.global/blog">Blog</a> &middot;
   <a href="docs/GUIDE.md">Docs</a> &middot;
   <a href="https://github.com/markus-global/markus/discussions">Discussions</a> &middot;
   <a href="CONTRIBUTING.md">Contributing</a>
@@ -182,6 +183,7 @@ TypeScript monorepo with modular packages:
 | Guide | Description |
 |-------|-------------|
 | [User Guide](docs/GUIDE.md) | Setup, configuration, Web UI walkthrough |
+| [Blog](https://markus.global/blog) | Articles and tutorials on Markus, AI agents, and the future of work |
 | [Architecture](docs/ARCHITECTURE.md) | System design, agent runtime, memory, governance |
 | [API Reference](docs/API.md) | REST API endpoints and WebSocket events |
 | [State Machines](docs/STATE-MACHINES.md) | Task & requirement FSM specification |
@@ -226,6 +228,7 @@ Agent templates and skills shared through the marketplace may use their own lice
 
 <p align="center">
   <a href="https://www.markus.global">Website</a> &middot;
+  <a href="https://markus.global/blog">Blog</a> &middot;
   <a href="https://github.com/markus-global/markus/discussions">Discussions</a> &middot;
   <a href="https://github.com/markus-global/markus/issues">Issues</a>
 </p>
