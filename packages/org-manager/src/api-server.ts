@@ -7306,7 +7306,12 @@ EXPLANATION_END`;
       const mask = (key?: string) => key ? '***' + key.slice(-4) : '';
       this.json(res, 200, {
         serper: { configured: !!search.serperApiKey || !!process.env['SERPER_API_KEY'], preview: mask(search.serperApiKey || process.env['SERPER_API_KEY']) },
+        tavily: { configured: !!search.tavilyApiKey || !!process.env['TAVILY_API_KEY'], preview: mask(search.tavilyApiKey || process.env['TAVILY_API_KEY']) },
+        bing: { configured: !!search.bingApiKey || !!process.env['BING_SEARCH_API_KEY'], preview: mask(search.bingApiKey || process.env['BING_SEARCH_API_KEY']) },
+        google: { configured: !!(search.googleSearchApiKey && search.googleSearchCx) || !!(process.env['GOOGLE_SEARCH_API_KEY'] && process.env['GOOGLE_SEARCH_CX']), preview: mask(search.googleSearchApiKey || process.env['GOOGLE_SEARCH_API_KEY']) },
+        serpapi: { configured: !!search.serpApiKey || !!process.env['SERPAPI_API_KEY'], preview: mask(search.serpApiKey || process.env['SERPAPI_API_KEY']) },
         brave: { configured: !!search.braveApiKey || !!process.env['BRAVE_SEARCH_API_KEY'], preview: mask(search.braveApiKey || process.env['BRAVE_SEARCH_API_KEY']) },
+        exa: { configured: !!search.exaApiKey || !!process.env['EXA_API_KEY'], preview: mask(search.exaApiKey || process.env['EXA_API_KEY']) },
         bocha: { configured: !!search.bochaApiKey || !!process.env['BOCHA_API_KEY'], preview: mask(search.bochaApiKey || process.env['BOCHA_API_KEY']) },
       });
       return;
@@ -7322,10 +7327,40 @@ EXPLANATION_END`;
         if (body['serperApiKey']) process.env['SERPER_API_KEY'] = body['serperApiKey'] as string;
         else delete process.env['SERPER_API_KEY'];
       }
+      if (typeof body['tavilyApiKey'] === 'string') {
+        updates.tavilyApiKey = body['tavilyApiKey'] || undefined;
+        if (body['tavilyApiKey']) process.env['TAVILY_API_KEY'] = body['tavilyApiKey'] as string;
+        else delete process.env['TAVILY_API_KEY'];
+      }
+      if (typeof body['bingApiKey'] === 'string') {
+        updates.bingApiKey = body['bingApiKey'] || undefined;
+        if (body['bingApiKey']) process.env['BING_SEARCH_API_KEY'] = body['bingApiKey'] as string;
+        else delete process.env['BING_SEARCH_API_KEY'];
+      }
+      if (typeof body['googleSearchApiKey'] === 'string') {
+        updates.googleSearchApiKey = body['googleSearchApiKey'] || undefined;
+        if (body['googleSearchApiKey']) process.env['GOOGLE_SEARCH_API_KEY'] = body['googleSearchApiKey'] as string;
+        else delete process.env['GOOGLE_SEARCH_API_KEY'];
+      }
+      if (typeof body['googleSearchCx'] === 'string') {
+        updates.googleSearchCx = body['googleSearchCx'] || undefined;
+        if (body['googleSearchCx']) process.env['GOOGLE_SEARCH_CX'] = body['googleSearchCx'] as string;
+        else delete process.env['GOOGLE_SEARCH_CX'];
+      }
+      if (typeof body['serpApiKey'] === 'string') {
+        updates.serpApiKey = body['serpApiKey'] || undefined;
+        if (body['serpApiKey']) process.env['SERPAPI_API_KEY'] = body['serpApiKey'] as string;
+        else delete process.env['SERPAPI_API_KEY'];
+      }
       if (typeof body['braveApiKey'] === 'string') {
         updates.braveApiKey = body['braveApiKey'] || undefined;
         if (body['braveApiKey']) process.env['BRAVE_SEARCH_API_KEY'] = body['braveApiKey'] as string;
         else delete process.env['BRAVE_SEARCH_API_KEY'];
+      }
+      if (typeof body['exaApiKey'] === 'string') {
+        updates.exaApiKey = body['exaApiKey'] || undefined;
+        if (body['exaApiKey']) process.env['EXA_API_KEY'] = body['exaApiKey'] as string;
+        else delete process.env['EXA_API_KEY'];
       }
       if (typeof body['bochaApiKey'] === 'string') {
         updates.bochaApiKey = body['bochaApiKey'] || undefined;
@@ -7352,7 +7387,12 @@ EXPLANATION_END`;
       const mask = (key?: string) => key ? '***' + key.slice(-4) : '';
       this.json(res, 200, {
         serper: { configured: !!search.serperApiKey || !!process.env['SERPER_API_KEY'], preview: mask(search.serperApiKey || process.env['SERPER_API_KEY']) },
+        tavily: { configured: !!search.tavilyApiKey || !!process.env['TAVILY_API_KEY'], preview: mask(search.tavilyApiKey || process.env['TAVILY_API_KEY']) },
+        bing: { configured: !!search.bingApiKey || !!process.env['BING_SEARCH_API_KEY'], preview: mask(search.bingApiKey || process.env['BING_SEARCH_API_KEY']) },
+        google: { configured: !!(search.googleSearchApiKey && search.googleSearchCx) || !!(process.env['GOOGLE_SEARCH_API_KEY'] && process.env['GOOGLE_SEARCH_CX']), preview: mask(search.googleSearchApiKey || process.env['GOOGLE_SEARCH_API_KEY']) },
+        serpapi: { configured: !!search.serpApiKey || !!process.env['SERPAPI_API_KEY'], preview: mask(search.serpApiKey || process.env['SERPAPI_API_KEY']) },
         brave: { configured: !!search.braveApiKey || !!process.env['BRAVE_SEARCH_API_KEY'], preview: mask(search.braveApiKey || process.env['BRAVE_SEARCH_API_KEY']) },
+        exa: { configured: !!search.exaApiKey || !!process.env['EXA_API_KEY'], preview: mask(search.exaApiKey || process.env['EXA_API_KEY']) },
         bocha: { configured: !!search.bochaApiKey || !!process.env['BOCHA_API_KEY'], preview: mask(search.bochaApiKey || process.env['BOCHA_API_KEY']) },
       });
       return;

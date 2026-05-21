@@ -164,8 +164,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [browserMsg, setBrowserMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   // Search API key settings
-  const [searchKeys, setSearchKeys] = useState<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } } | null>(null);
-  const [searchForm, setSearchForm] = useState({ serperApiKey: '', braveApiKey: '', bochaApiKey: '' });
+  const [searchKeys, setSearchKeys] = useState<{ serper: { configured: boolean; preview: string }; tavily: { configured: boolean; preview: string }; bing: { configured: boolean; preview: string }; google: { configured: boolean; preview: string }; serpapi: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; exa: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } } | null>(null);
+  const [searchForm, setSearchForm] = useState({ serperApiKey: '', tavilyApiKey: '', bingApiKey: '', googleSearchApiKey: '', googleSearchCx: '', serpApiKey: '', braveApiKey: '', exaApiKey: '', bochaApiKey: '' });
   const [searchSaving, setSearchSaving] = useState(false);
   const [searchMsg, setSearchMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
@@ -728,17 +728,23 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   };
 
   const saveSearchKeys = async () => {
-    const hasAny = searchForm.serperApiKey || searchForm.braveApiKey || searchForm.bochaApiKey;
+    const hasAny = searchForm.serperApiKey || searchForm.tavilyApiKey || searchForm.bingApiKey || searchForm.googleSearchApiKey || searchForm.googleSearchCx || searchForm.serpApiKey || searchForm.braveApiKey || searchForm.exaApiKey || searchForm.bochaApiKey;
     if (!hasAny) return;
     setSearchSaving(true); setSearchMsg(null);
     try {
       const updates: Record<string, string> = {};
       if (searchForm.serperApiKey) updates.serperApiKey = searchForm.serperApiKey;
+      if (searchForm.tavilyApiKey) updates.tavilyApiKey = searchForm.tavilyApiKey;
+      if (searchForm.bingApiKey) updates.bingApiKey = searchForm.bingApiKey;
+      if (searchForm.googleSearchApiKey) updates.googleSearchApiKey = searchForm.googleSearchApiKey;
+      if (searchForm.googleSearchCx) updates.googleSearchCx = searchForm.googleSearchCx;
+      if (searchForm.serpApiKey) updates.serpApiKey = searchForm.serpApiKey;
       if (searchForm.braveApiKey) updates.braveApiKey = searchForm.braveApiKey;
+      if (searchForm.exaApiKey) updates.exaApiKey = searchForm.exaApiKey;
       if (searchForm.bochaApiKey) updates.bochaApiKey = searchForm.bochaApiKey;
       const d = await api.settings.updateSearch(updates);
       setSearchKeys(d);
-      setSearchForm({ serperApiKey: '', braveApiKey: '', bochaApiKey: '' });
+      setSearchForm({ serperApiKey: '', tavilyApiKey: '', bingApiKey: '', googleSearchApiKey: '', googleSearchCx: '', serpApiKey: '', braveApiKey: '', exaApiKey: '', bochaApiKey: '' });
       setSearchMsg({ type: 'ok', text: t('searchApi.saved') });
     } catch { setSearchMsg({ type: 'err', text: t('searchApi.failedToSave') }); }
     finally { setSearchSaving(false); }
@@ -2085,9 +2091,14 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
             {([
               { id: 'serper' as const, label: t('searchApi.serper'), hint: t('searchApi.serperHint'), field: 'serperApiKey' as const },
+              { id: 'tavily' as const, label: t('searchApi.tavily'), hint: t('searchApi.tavilyHint'), field: 'tavilyApiKey' as const },
+              { id: 'bing' as const, label: t('searchApi.bing'), hint: t('searchApi.bingHint'), field: 'bingApiKey' as const },
+              { id: 'google' as const, label: t('searchApi.google'), hint: t('searchApi.googleHint'), field: 'googleSearchApiKey' as const, extraField: 'googleSearchCx' as const, extraPlaceholder: t('searchApi.googleCxPlaceholder') },
+              { id: 'serpapi' as const, label: t('searchApi.serpapi'), hint: t('searchApi.serpapiHint'), field: 'serpApiKey' as const },
               { id: 'brave' as const, label: t('searchApi.brave'), hint: t('searchApi.braveHint'), field: 'braveApiKey' as const },
+              { id: 'exa' as const, label: t('searchApi.exa'), hint: t('searchApi.exaHint'), field: 'exaApiKey' as const },
               { id: 'bocha' as const, label: t('searchApi.bocha'), hint: t('searchApi.bochaHint'), field: 'bochaApiKey' as const },
-            ]).map((item, idx) => (
+            ] as Array<{ id: 'serper' | 'tavily' | 'bing' | 'google' | 'serpapi' | 'brave' | 'exa' | 'bocha'; label: string; hint: string; field: keyof typeof searchForm; extraField?: keyof typeof searchForm; extraPlaceholder?: string }>).map((item, idx) => (
               <div key={item.id} className={idx > 0 ? 'border-t border-border-default pt-4' : ''}>
                 <div className="flex items-center justify-between mb-2">
                   <div>
@@ -2117,6 +2128,15 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   placeholder={searchKeys?.[item.id]?.configured ? t('modelProviders.apiKeyPlaceholder') : t('searchApi.apiKeyPlaceholder')}
                   className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none"
                 />
+                {item.extraField && (
+                  <input
+                    type="text"
+                    value={searchForm[item.extraField]}
+                    onChange={e => setSearchForm({ ...searchForm, [item.extraField!]: e.target.value })}
+                    placeholder={item.extraPlaceholder ?? ''}
+                    className="w-full mt-2 px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none"
+                  />
+                )}
               </div>
             ))}
 
@@ -2126,7 +2146,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               {searchMsg && <Msg type={searchMsg.type} text={searchMsg.text} />}
               {!searchMsg && <div />}
               <button
-                disabled={searchSaving || (!searchForm.serperApiKey && !searchForm.braveApiKey && !searchForm.bochaApiKey)}
+                disabled={searchSaving || (!searchForm.serperApiKey && !searchForm.tavilyApiKey && !searchForm.bingApiKey && !searchForm.googleSearchApiKey && !searchForm.googleSearchCx && !searchForm.serpApiKey && !searchForm.braveApiKey && !searchForm.exaApiKey && !searchForm.bochaApiKey)}
                 onClick={() => void saveSearchKeys()}
                 className="px-4 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
               >

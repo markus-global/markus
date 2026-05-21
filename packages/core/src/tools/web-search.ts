@@ -51,7 +51,7 @@ async function proxyFetch(url: string | URL, init?: RequestInit): Promise<Respon
 
 /**
  * Multi-backend web search tool.
- * Priority: Serper (Google) > Brave Search > Bocha > DuckDuckGo Lite/HTML fallback.
+ * Priority: Serper > Tavily > Bing > Google > SerpAPI > Brave > Exa > Bocha > DuckDuckGo (free fallback).
  * API keys are read from environment variables.
  */
 export const WebSearchTool: AgentToolHandler = {
@@ -80,7 +80,12 @@ export const WebSearchTool: AgentToolHandler = {
 
     const backends: Array<{ name: string; fn: typeof searchSerper }> = [
       { name: 'Serper', fn: searchSerper },
+      { name: 'Tavily', fn: searchTavily },
+      { name: 'Bing', fn: searchBing },
+      { name: 'Google', fn: searchGoogle },
+      { name: 'SerpAPI', fn: searchSerpApi },
       { name: 'Brave', fn: searchBrave },
+      { name: 'Exa', fn: searchExa },
       { name: 'Bocha', fn: searchBocha },
       { name: 'DuckDuckGo', fn: searchDuckDuckGo },
     ];
@@ -152,6 +157,142 @@ async function searchSerper(query: string, maxResults: number): Promise<SearchRe
   }));
 }
 
+// ── Tavily backend ────────────────────────────────────────────────────────
+
+async function searchTavily(query: string, maxResults: number): Promise<SearchResult[]> {
+  const apiKey = process.env['TAVILY_API_KEY'];
+  if (!apiKey) throw new Error('TAVILY_API_KEY not configured');
+
+  let res: Response;
+  try {
+    res = await proxyFetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: apiKey,
+        query,
+        max_results: maxResults,
+        include_answer: false,
+      }),
+    });
+  } catch (err: unknown) {
+    throw new Error(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+
+  const data = (await res.json()) as {
+    results?: Array<{ title: string; url: string; content: string; published_date?: string }>;
+  };
+
+  return (data.results ?? []).slice(0, maxResults).map(r => ({
+    title: r.title,
+    url: r.url,
+    snippet: r.content,
+    date: r.published_date,
+  }));
+}
+
+// ── Bing Web Search backend ──────────────────────────────────────────────
+
+async function searchBing(query: string, maxResults: number): Promise<SearchResult[]> {
+  const apiKey = process.env['BING_SEARCH_API_KEY'];
+  if (!apiKey) throw new Error('BING_SEARCH_API_KEY not configured');
+
+  const params = new URLSearchParams({ q: query, count: String(maxResults), mkt: 'en-US' });
+  let res: Response;
+  try {
+    res = await proxyFetch(`https://api.bing.microsoft.com/v7.0/search?${params}`, {
+      headers: { 'Ocp-Apim-Subscription-Key': apiKey },
+    });
+  } catch (err: unknown) {
+    throw new Error(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+
+  const data = (await res.json()) as {
+    webPages?: {
+      value?: Array<{ name: string; url: string; snippet: string; dateLastCrawled?: string }>;
+    };
+  };
+
+  return (data.webPages?.value ?? []).slice(0, maxResults).map(r => ({
+    title: r.name,
+    url: r.url,
+    snippet: r.snippet,
+    date: r.dateLastCrawled,
+  }));
+}
+
+// ── Google Custom Search (Programmable Search Engine) backend ─────────────
+
+async function searchGoogle(query: string, maxResults: number): Promise<SearchResult[]> {
+  const apiKey = process.env['GOOGLE_SEARCH_API_KEY'];
+  const cx = process.env['GOOGLE_SEARCH_CX'];
+  if (!apiKey) throw new Error('GOOGLE_SEARCH_API_KEY not configured');
+  if (!cx) throw new Error('GOOGLE_SEARCH_CX not configured');
+
+  const params = new URLSearchParams({
+    key: apiKey,
+    cx,
+    q: query,
+    num: String(Math.min(maxResults, 10)),
+  });
+  let res: Response;
+  try {
+    res = await proxyFetch(`https://www.googleapis.com/customsearch/v1?${params}`);
+  } catch (err: unknown) {
+    throw new Error(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+
+  const data = (await res.json()) as {
+    items?: Array<{ title: string; link: string; snippet: string; pagemap?: { metatags?: Array<{ 'article:published_time'?: string }> } }>;
+  };
+
+  return (data.items ?? []).slice(0, maxResults).map(r => ({
+    title: r.title,
+    url: r.link,
+    snippet: r.snippet,
+    date: r.pagemap?.metatags?.[0]?.['article:published_time'],
+  }));
+}
+
+// ── SerpAPI backend ──────────────────────────────────────────────────────
+
+async function searchSerpApi(query: string, maxResults: number): Promise<SearchResult[]> {
+  const apiKey = process.env['SERPAPI_API_KEY'];
+  if (!apiKey) throw new Error('SERPAPI_API_KEY not configured');
+
+  const params = new URLSearchParams({
+    api_key: apiKey,
+    q: query,
+    engine: 'google',
+    num: String(maxResults),
+  });
+  let res: Response;
+  try {
+    res = await proxyFetch(`https://serpapi.com/search.json?${params}`);
+  } catch (err: unknown) {
+    throw new Error(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+
+  const data = (await res.json()) as {
+    organic_results?: Array<{ title: string; link: string; snippet: string; date?: string }>;
+  };
+
+  return (data.organic_results ?? []).slice(0, maxResults).map(r => ({
+    title: r.title,
+    url: r.link,
+    snippet: r.snippet,
+    date: r.date,
+  }));
+}
+
 // ── Brave Search backend ───────────────────────────────────────────────────
 
 async function searchBrave(query: string, maxResults: number): Promise<SearchResult[]> {
@@ -183,6 +324,45 @@ async function searchBrave(query: string, maxResults: number): Promise<SearchRes
     url: r.url,
     snippet: r.description,
     date: r.page_age,
+  }));
+}
+
+// ── Exa (AI-native search) backend ──────────────────────────────────────────
+
+async function searchExa(query: string, maxResults: number): Promise<SearchResult[]> {
+  const apiKey = process.env['EXA_API_KEY'];
+  if (!apiKey) throw new Error('EXA_API_KEY not configured');
+
+  let res: Response;
+  try {
+    res = await proxyFetch('https://api.exa.ai/search', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query,
+        numResults: maxResults,
+        type: 'auto',
+        contents: { text: { maxCharacters: 300 } },
+      }),
+    });
+  } catch (err: unknown) {
+    throw new Error(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+
+  const data = (await res.json()) as {
+    results?: Array<{ title: string; url: string; text?: string; publishedDate?: string }>;
+  };
+
+  return (data.results ?? []).slice(0, maxResults).map(r => ({
+    title: r.title,
+    url: r.url,
+    snippet: r.text ?? '',
+    date: r.publishedDate,
   }));
 }
 

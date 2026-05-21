@@ -443,8 +443,26 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   if (config.integrations?.search?.serperApiKey && !process.env['SERPER_API_KEY']) {
     process.env['SERPER_API_KEY'] = config.integrations.search.serperApiKey;
   }
+  if (config.integrations?.search?.tavilyApiKey && !process.env['TAVILY_API_KEY']) {
+    process.env['TAVILY_API_KEY'] = config.integrations.search.tavilyApiKey;
+  }
+  if (config.integrations?.search?.bingApiKey && !process.env['BING_SEARCH_API_KEY']) {
+    process.env['BING_SEARCH_API_KEY'] = config.integrations.search.bingApiKey;
+  }
+  if (config.integrations?.search?.googleSearchApiKey && !process.env['GOOGLE_SEARCH_API_KEY']) {
+    process.env['GOOGLE_SEARCH_API_KEY'] = config.integrations.search.googleSearchApiKey;
+  }
+  if (config.integrations?.search?.googleSearchCx && !process.env['GOOGLE_SEARCH_CX']) {
+    process.env['GOOGLE_SEARCH_CX'] = config.integrations.search.googleSearchCx;
+  }
+  if (config.integrations?.search?.serpApiKey && !process.env['SERPAPI_API_KEY']) {
+    process.env['SERPAPI_API_KEY'] = config.integrations.search.serpApiKey;
+  }
   if (config.integrations?.search?.braveApiKey && !process.env['BRAVE_SEARCH_API_KEY']) {
     process.env['BRAVE_SEARCH_API_KEY'] = config.integrations.search.braveApiKey;
+  }
+  if (config.integrations?.search?.exaApiKey && !process.env['EXA_API_KEY']) {
+    process.env['EXA_API_KEY'] = config.integrations.search.exaApiKey;
   }
   if (config.integrations?.search?.bochaApiKey && !process.env['BOCHA_API_KEY']) {
     process.env['BOCHA_API_KEY'] = config.integrations.search.bochaApiKey;

@@ -76,7 +76,17 @@ export interface MarkusConfig {
   };
   integrations?: {
     feishu?: { appId?: string; appSecret?: string };
-    search?: { serperApiKey?: string; braveApiKey?: string; bochaApiKey?: string };
+    search?: {
+      serperApiKey?: string;
+      tavilyApiKey?: string;
+      bingApiKey?: string;
+      googleSearchApiKey?: string;
+      googleSearchCx?: string;
+      serpApiKey?: string;
+      braveApiKey?: string;
+      exaApiKey?: string;
+      bochaApiKey?: string;
+    };
     embedding?: { apiKey?: string };
   };
   database?: {

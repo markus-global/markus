@@ -58,8 +58,8 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
   const envDetected = useRef(false);
 
   // Search API key state
-  const [searchKeys, setSearchKeys] = useState<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } } | null>(null);
-  const [searchForm, setSearchForm] = useState({ serperApiKey: '', braveApiKey: '', bochaApiKey: '' });
+  const [searchKeys, setSearchKeys] = useState<{ serper: { configured: boolean; preview: string }; tavily: { configured: boolean; preview: string }; bing: { configured: boolean; preview: string }; google: { configured: boolean; preview: string }; serpapi: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; exa: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } } | null>(null);
+  const [searchForm, setSearchForm] = useState({ serperApiKey: '', tavilyApiKey: '', bingApiKey: '', googleSearchApiKey: '', googleSearchCx: '', serpApiKey: '', braveApiKey: '', exaApiKey: '', bochaApiKey: '' });
   const [searchSaving, setSearchSaving] = useState(false);
   const [searchConfigured, setSearchConfigured] = useState(false);
   const [searchMsg, setSearchMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -183,7 +183,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
       if (res.ok) {
         const data = await res.json() as typeof searchKeys;
         setSearchKeys(data);
-        if (data && (data.serper.configured || data.brave.configured || data.bocha.configured)) {
+        if (data && (data.serper.configured || data.tavily.configured || data.bing.configured || data.google.configured || data.serpapi.configured || data.brave.configured || data.exa.configured || data.bocha.configured)) {
           setSearchConfigured(true);
         }
       }
@@ -191,13 +191,19 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
   };
 
   const saveSearchKeys = async () => {
-    const hasAny = searchForm.serperApiKey || searchForm.braveApiKey || searchForm.bochaApiKey;
+    const hasAny = searchForm.serperApiKey || searchForm.tavilyApiKey || searchForm.bingApiKey || searchForm.googleSearchApiKey || searchForm.googleSearchCx || searchForm.serpApiKey || searchForm.braveApiKey || searchForm.exaApiKey || searchForm.bochaApiKey;
     if (!hasAny) return;
     setSearchSaving(true); setSearchMsg(null);
     try {
       const updates: Record<string, string> = {};
       if (searchForm.serperApiKey) updates.serperApiKey = searchForm.serperApiKey;
+      if (searchForm.tavilyApiKey) updates.tavilyApiKey = searchForm.tavilyApiKey;
+      if (searchForm.bingApiKey) updates.bingApiKey = searchForm.bingApiKey;
+      if (searchForm.googleSearchApiKey) updates.googleSearchApiKey = searchForm.googleSearchApiKey;
+      if (searchForm.googleSearchCx) updates.googleSearchCx = searchForm.googleSearchCx;
+      if (searchForm.serpApiKey) updates.serpApiKey = searchForm.serpApiKey;
       if (searchForm.braveApiKey) updates.braveApiKey = searchForm.braveApiKey;
+      if (searchForm.exaApiKey) updates.exaApiKey = searchForm.exaApiKey;
       if (searchForm.bochaApiKey) updates.bochaApiKey = searchForm.bochaApiKey;
       const res = await fetch('/api/settings/search', {
         method: 'POST', headers: authHeaders(),
@@ -207,7 +213,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
         const data = await res.json() as typeof searchKeys;
         setSearchKeys(data);
         setSearchConfigured(true);
-        setSearchForm({ serperApiKey: '', braveApiKey: '', bochaApiKey: '' });
+        setSearchForm({ serperApiKey: '', tavilyApiKey: '', bingApiKey: '', googleSearchApiKey: '', googleSearchCx: '', serpApiKey: '', braveApiKey: '', exaApiKey: '', bochaApiKey: '' });
         setSearchMsg({ type: 'ok', text: t('search.saved') });
       } else {
         setSearchMsg({ type: 'err', text: t('search.failedToSave') });
@@ -508,7 +514,12 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
           </div>
           {searchKeys && ([
             { id: 'serper' as const, label: t('search.serper') },
+            { id: 'tavily' as const, label: t('search.tavily') },
+            { id: 'bing' as const, label: t('search.bing') },
+            { id: 'google' as const, label: t('search.google') },
+            { id: 'serpapi' as const, label: t('search.serpapi') },
             { id: 'brave' as const, label: t('search.brave') },
+            { id: 'exa' as const, label: t('search.exa') },
             { id: 'bocha' as const, label: t('search.bocha') },
           ]).filter(item => searchKeys[item.id]?.configured).map(item => (
             <div key={item.id} className="flex items-center justify-between bg-green-500/10 border border-green-500/30 rounded-lg px-4 py-2.5">
@@ -525,12 +536,17 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
         <div className="space-y-4">
           <div className="text-xs text-fg-secondary">{t('search.description')}</div>
 
-          {searchKeys && (searchKeys.serper.configured || searchKeys.brave.configured || searchKeys.bocha.configured) && (
+          {searchKeys && (searchKeys.serper.configured || searchKeys.tavily.configured || searchKeys.bing.configured || searchKeys.google.configured || searchKeys.serpapi.configured || searchKeys.brave.configured || searchKeys.exa.configured || searchKeys.bocha.configured) && (
             <div className="space-y-2">
               <div className="text-xs text-fg-secondary uppercase tracking-wider">{t('search.detected')}</div>
               {([
                 { id: 'serper' as const, label: t('search.serper') },
+                { id: 'tavily' as const, label: t('search.tavily') },
+                { id: 'bing' as const, label: t('search.bing') },
+                { id: 'google' as const, label: t('search.google') },
+                { id: 'serpapi' as const, label: t('search.serpapi') },
                 { id: 'brave' as const, label: t('search.brave') },
+                { id: 'exa' as const, label: t('search.exa') },
                 { id: 'bocha' as const, label: t('search.bocha') },
               ]).filter(item => searchKeys[item.id]?.configured).map(item => (
                 <div key={item.id} className="flex items-center justify-between bg-green-500/10 border border-green-500/30 rounded-lg px-3 py-2">
@@ -547,7 +563,12 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
           <div className="space-y-3">
             {([
               { label: t('search.serper'), field: 'serperApiKey' as const },
+              { label: t('search.tavily'), field: 'tavilyApiKey' as const },
+              { label: t('search.bing'), field: 'bingApiKey' as const },
+              { label: t('search.google'), field: 'googleSearchApiKey' as const },
+              { label: t('search.serpapi'), field: 'serpApiKey' as const },
               { label: t('search.brave'), field: 'braveApiKey' as const },
+              { label: t('search.exa'), field: 'exaApiKey' as const },
               { label: t('search.bocha'), field: 'bochaApiKey' as const },
             ]).map(item => (
               <div key={item.field} className="space-y-1">
@@ -565,7 +586,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
 
           <button
             onClick={() => void saveSearchKeys()}
-            disabled={searchSaving || (!searchForm.serperApiKey && !searchForm.braveApiKey && !searchForm.bochaApiKey)}
+            disabled={searchSaving || (!searchForm.serperApiKey && !searchForm.tavilyApiKey && !searchForm.bingApiKey && !searchForm.googleSearchApiKey && !searchForm.serpApiKey && !searchForm.braveApiKey && !searchForm.exaApiKey && !searchForm.bochaApiKey)}
             className="w-full px-4 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
           >
             {searchSaving ? t('search.saving') : t('search.save')}
