@@ -124,7 +124,8 @@ export class MarkusBrowserBridge {
     }
 
     const id = ++this.requestId;
-    const message = JSON.stringify({ id, method: name, params: args });
+    const _deadline = Date.now() + TOOL_CALL_TIMEOUT_MS;
+    const message = JSON.stringify({ id, method: name, params: args, _deadline });
 
     return new Promise<BridgeToolResult>((resolve, reject) => {
       const timer = setTimeout(() => {
