@@ -37,6 +37,7 @@ import type { SkillRegistry } from './skills/types.js';
 import { clickChromeAllowDialog } from './tools/chrome-dialog-clicker.js';
 import { MarkusBrowserBridge } from './tools/markus-browser-bridge.js';
 import { createBridgeToolHandlers, getBridgeToolDescriptors } from './tools/markus-browser-mcp.js';
+import { runQuickBrowserTest, runChaosBrowserTest, type BrowserTestResult, type ChaosEvent } from './tools/browser-test.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
 import { DelegationManager, type TaskDelegation } from '@markus/a2a';
 import type { TemplateRegistry } from './templates/registry.js';
@@ -605,6 +606,12 @@ export class AgentManager {
     if (port !== undefined) {
       this.browserBridge = new MarkusBrowserBridge(port);
     }
+    this.browserBridge.onEvent((event, data) => {
+      if (event === 'tab_closed') {
+        const { pageId } = (data ?? {}) as { pageId?: number };
+        this.browserSessionManager.handleTabClosed(pageId);
+      }
+    });
     this.browserBridge.start();
   }
 
@@ -618,6 +625,18 @@ export class AgentManager {
 
   getBrowserBridge(): MarkusBrowserBridge {
     return this.browserBridge;
+  }
+
+  async runQuickBrowserTest(): Promise<BrowserTestResult> {
+    return runQuickBrowserTest(this.browserBridge, this.browserSessionManager);
+  }
+
+  runChaosBrowserTest(opts: {
+    durationMs?: number;
+    agentCount?: number;
+    signal?: AbortSignal;
+  }): AsyncGenerator<ChaosEvent> {
+    return runChaosBrowserTest(this.browserBridge, this.browserSessionManager, opts);
   }
 
   /**
@@ -683,8 +702,10 @@ export class AgentManager {
           if (result.error) return `Error: ${result.error}`;
           return result.content;
         }
-        // npx fallback; auto-click is triggered by mcpManager's onReconnect callback
-        return this.mcpManager.callToolScoped(serverName, agentId, tool.name, args);
+        // npx fallback — strip _pageId (npx MCP doesn't understand it;
+        // tab selection is handled by ensureCorrectPage + select_page)
+        const { _pageId, ...cleanArgs } = args;
+        return this.mcpManager.callToolScoped(serverName, agentId, tool.name, cleanArgs);
       },
     }));
 

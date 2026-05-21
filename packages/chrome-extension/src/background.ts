@@ -27,8 +27,9 @@ setupNetworkListener();
 
 // Clean up page state when tabs are closed
 chrome.tabs.onRemoved.addListener((tabId) => {
+  const pageId = pm.peekPageId(tabId);
   pm.removeByTabId(tabId);
-  client.send({ event: 'tab_closed', data: { tabId } });
+  client.send({ event: 'tab_closed', data: { tabId, pageId } });
 });
 
 // Handle debugger detach events
@@ -50,7 +51,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 });
 
-// Connect to bridge
-client.connect();
-
-console.log('[Markus] Browser automation extension initialized');
+// Restore PM state from chrome.storage.session (survives service worker restarts),
+// then connect to bridge.
+pm.restore().then((restored) => {
+  if (restored) {
+    console.log('[Markus] Reconnecting with restored page state');
+  }
+  client.connect();
+  console.log('[Markus] Browser automation extension initialized');
+});

@@ -2,11 +2,25 @@
   "title": "Dashboard",
   "subtitle": "Here's what's happening with your AI workforce today.",
   "hireAgent": "Deploy Agent",
-  "metrics": {
-    "activeAgents": "Active Agents",
-    "workingNow": "Working Now",
-    "healthScore": "Health Score",
-    "totalTasks": "Total Tasks"
+  "metricCards": {
+    "working": "Working",
+    "tasksDone": "Tasks Done",
+    "projects": "Projects",
+    "health": "Health"
+  },
+  "statusBar": {
+    "agentsWorking": "working",
+    "tasksDone": "tasks done",
+    "projects": "projects",
+    "health": "Health"
+  },
+  "systemHealth": {
+    "title": "System Health",
+    "successRate": "Success Rate",
+    "tasksTotal": "Completed / Total",
+    "tokenUsage": "Token Usage",
+    "currentWorking": "Currently Working",
+    "storage": "Storage"
   },
   "gettingStarted": {
     "title": "Your AI workforce is ready",
@@ -24,6 +38,29 @@
     "watchDemo": "Watch Demo",
     "learnMore": "Learn More"
   },
+  "attention": {
+    "title": "Needs Your Attention",
+    "approvals": "approval(s) waiting",
+    "requirements": "requirement(s) to review",
+    "tasksReview": "task(s) need your review",
+    "reportPlans": "report plan(s) pending",
+    "blocked": "task(s) stuck/blocked",
+    "viewBlocked": "View blocked tasks →",
+    "report": "report",
+    "planItems": "items"
+  },
+  "globalOverview": {
+    "title": "Overview",
+    "projects": "Projects",
+    "requirements": "Requirements",
+    "tasks": "Tasks",
+    "deliverables": "Deliverables",
+    "active": "active"
+  },
+  "liveActivity": {
+    "whosWorking": "Working Now",
+    "recentChanges": "Recent Changes"
+  },
   "agentFocus": {
     "title": "Agent Focus",
     "totalQueued": "{{count}} total queued",
@@ -32,14 +69,9 @@
     "heartbeatSkip": "Heartbeat skipped (idle)"
   },
   "teamOverview": {
-    "title": "Team Overview",
+    "title": "Teams",
     "subtitle": "{{teams}} teams · {{members}} members",
     "activeCount": "{{count}} Active"
-  },
-  "taskOverview": {
-    "title": "Task Overview",
-    "subtitle": "{{total}} tasks total",
-    "stuckBlocked": "{{count}} task(s) blocked without pending dependencies — may need attention"
   },
   "teamStatus": {
     "title": "Team Status",
@@ -48,21 +80,10 @@
     "workingCount": "{{count}} working",
     "activeCount": "{{count}} active"
   },
-  "pendingReviews": {
-    "title": "Pending Reviews",
-    "review": "Review →",
-    "proposedBy": "proposed by {{author}} · {{priority}}",
-    "proposedBy2": "proposed by {{author}}",
-    "agentProposed": "Agents proposed {{count}} requirement(s) — review to authorize work.",
-    "agent": "Agent",
-    "user": "User"
-  },
-  "recentActivity": {
-    "title": "Activity Feed"
-  },
   "topPerformers": {
-    "title": "Top Performing Agents",
-    "tasksCompleted": "{{count}} tasks completed"
+    "title": "Top Performers",
+    "tasksCompleted": "{{count}} tasks completed",
+    "done": "done"
   },
   "ranking": {
     "title": "Agent Ranking",
@@ -73,27 +94,10 @@
     "errorRate": "Errors",
     "noData": "No agent data available yet."
   },
-  "systemHealth": {
-    "title": "System Health",
-    "allOperational": "All Systems Operational",
-    "healthScore": "Health Score",
-    "successRate": "Success Rate",
-    "activeTotal": "Active / Total",
-    "tokenUsage": "Token Usage",
-    "workingNow": "Working Now",
-    "needsAttention": "Needs attention:",
-    "agentScoreChip": "{{name}} ({{score}}%)"
-  },
-  "storage": {
-    "title": "Storage",
-    "total": "total",
-    "db": "DB: {{size}}",
-    "agents": "Agents: {{count}}",
-    "clickToView": "Click to view details in Settings",
-    "bytesZero": "0 B",
-    "bytesB": "B",
-    "bytesKB": "KB",
-    "bytesMB": "MB",
-    "bytesGB": "GB"
+  "createMenu": {
+    "agent": "Create Agent",
+    "team": "Create Team",
+    "skill": "Create Skill",
+    "discover": "Discover More"
   }
 }

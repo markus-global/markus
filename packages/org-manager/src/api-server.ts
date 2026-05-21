@@ -2547,10 +2547,7 @@ export class APIServer {
       const userId = authUser.userId;
       const isAdmin = authUser.role === 'owner' || authUser.role === 'admin';
       const teams = this.orgService.listTeamsWithMembers(orgId);
-      const filteredTeams = isAdmin
-        ? teams
-        : teams.filter(t => t.members.some(m => m.id === userId));
-      const teamChats = filteredTeams.map(t => ({
+      const teamChats = teams.map(t => ({
         id: `group:${t.id}`,
         name: t.name,
         type: 'team' as const,
@@ -7241,6 +7238,66 @@ EXPLANATION_END`;
       return;
     }
 
+    // Settings — Browser concurrent integration test
+    if (path === '/api/settings/browser/test-concurrent' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const am = this.orgService.getAgentManager();
+      const params = await this.readBody(req).catch(() => ({} as Record<string, unknown>));
+      const mode = (params.mode as string) ?? 'quick';
+
+      if (mode === 'chaos') {
+        const durationMs = Math.min(((params.durationSec as number) ?? 120) * 1000, 600_000);
+        const agentCount = Math.min((params.agents as number) ?? 3, 5);
+
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        });
+
+        const ac = new AbortController();
+        const chaosAbortKey = '__chaos_abort__';
+        (this as unknown as Record<string, AbortController>)[chaosAbortKey] = ac;
+
+        req.on('close', () => ac.abort());
+
+        try {
+          const gen = am.runChaosBrowserTest({ durationMs, agentCount, signal: ac.signal });
+          for await (const ev of gen) {
+            if (ac.signal.aborted) break;
+            res.write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`);
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          res.write(`event: error\ndata: ${JSON.stringify({ error: msg })}\n\n`);
+        }
+        res.end();
+        delete (this as unknown as Record<string, AbortController>)[chaosAbortKey];
+        return;
+      }
+
+      // Quick mode (default)
+      const result = await am.runQuickBrowserTest();
+      this.json(res, 200, result);
+      return;
+    }
+
+    // Settings — Stop chaos test
+    if (path === '/api/settings/browser/test-concurrent' && req.method === 'DELETE') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const chaosAbortKey = '__chaos_abort__';
+      const ac = (this as unknown as Record<string, AbortController>)[chaosAbortKey];
+      if (ac) {
+        ac.abort();
+        delete (this as unknown as Record<string, AbortController>)[chaosAbortKey];
+      }
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
     // Settings — Search API keys
     if (path === '/api/settings/search' && req.method === 'GET') {
       const { loadConfig: loadCfg } = await import('@markus/shared');
@@ -9837,6 +9894,7 @@ EXPLANATION_END`;
       exact('/api/settings/browser', 'GET', 'POST'),
       exact('/api/settings/browser/check', 'GET'),
       exact('/api/settings/browser/test-auto-click', 'POST'),
+      exact('/api/settings/browser/test-concurrent', 'POST', 'DELETE'),
       exact('/api/settings/search', 'GET', 'POST'),
       exact('/api/settings/env-models', 'GET', 'POST'),
       exact('/api/settings/detect-ollama', 'GET'),

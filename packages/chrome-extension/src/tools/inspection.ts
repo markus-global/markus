@@ -4,23 +4,10 @@
  */
 
 import type { PageManager } from '../page-manager.js';
+import { ensureDebugger } from '../debugger-helper.js';
 
 async function cdp(tabId: number, method: string, params?: Record<string, unknown>): Promise<unknown> {
   return chrome.debugger.sendCommand({ tabId }, method, params);
-}
-
-async function ensureDebugger(pm: PageManager, tabId: number): Promise<void> {
-  if (pm.isDebuggerAttached(tabId)) return;
-  await chrome.debugger.attach({ tabId }, '1.3');
-  pm.setDebuggerAttached(tabId, true);
-  await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
-  await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable');
-}
-
-function requireSelectedTab(pm: PageManager): number {
-  const tabId = pm.selectedTabId;
-  if (tabId === null) throw new Error('No page selected. Call new_page or select_page first.');
-  return tabId;
 }
 
 // Console message storage per tab
@@ -55,7 +42,7 @@ export function registerInspectionTools(
 ): void {
 
   register('take_screenshot', async (params) => {
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
     await ensureDebugger(pm, tabId);
 
     const format = (params.format as string) || 'png';
@@ -75,7 +62,7 @@ export function registerInspectionTools(
   });
 
   register('take_snapshot', async (params) => {
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
     await ensureDebugger(pm, tabId);
 
     // Get accessibility tree
@@ -136,7 +123,7 @@ export function registerInspectionTools(
   register('evaluate_script', async (params) => {
     const expression = params.expression as string;
     if (!expression) throw new Error('expression is required');
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
     await ensureDebugger(pm, tabId);
 
     const result = await cdp(tabId, 'Runtime.evaluate', {
@@ -157,7 +144,7 @@ export function registerInspectionTools(
   register('get_console_message', async (params) => {
     const msgId = params.msgid as number ?? params.id as number;
     if (msgId === undefined) throw new Error('msgid is required');
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
 
     const messages = consoleMessages.get(tabId) ?? [];
     const msg = messages.find(m => m.id === msgId);
@@ -166,8 +153,8 @@ export function registerInspectionTools(
     return `[${msg.level}] ${msg.text}`;
   });
 
-  register('list_console_messages', async () => {
-    const tabId = requireSelectedTab(pm);
+  register('list_console_messages', async (params) => {
+    const tabId = pm.resolveTabId(params);
     const messages = consoleMessages.get(tabId) ?? [];
 
     if (messages.length === 0) return 'No console messages';
@@ -176,7 +163,7 @@ export function registerInspectionTools(
   });
 
   register('lighthouse_audit', async (params) => {
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
     const categories = (params.categories as string[]) ?? ['accessibility', 'best-practices', 'seo'];
 
     // Lighthouse is not available via chrome.debugger — provide a basic a11y audit instead

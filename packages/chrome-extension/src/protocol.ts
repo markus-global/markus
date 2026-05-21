@@ -28,6 +28,7 @@ export class BridgeClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private _connected = false;
+  private requestQueue: Promise<void> = Promise.resolve();
 
   constructor(url?: string) {
     this.url = url ?? DEFAULT_URL;
@@ -75,11 +76,22 @@ export class BridgeClient {
     this.ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data as string) as BridgeRequest;
-        this.handleRequest(msg);
+        this.enqueueRequest(msg);
       } catch (err) {
         console.error('[Markus] Failed to parse message:', err);
       }
     };
+  }
+
+  /**
+   * Serialize all incoming requests so only one tool runs at a time.
+   * Prevents race conditions on shared PageManager state (selectedPageId)
+   * when multiple agents issue concurrent tool calls.
+   */
+  private enqueueRequest(req: BridgeRequest): void {
+    this.requestQueue = this.requestQueue
+      .then(() => this.handleRequest(req))
+      .catch((err) => console.error('[Markus] Request queue error:', err));
   }
 
   private async handleRequest(req: BridgeRequest): Promise<void> {

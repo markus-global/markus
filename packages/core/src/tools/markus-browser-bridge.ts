@@ -32,6 +32,7 @@ export class MarkusBrowserBridge {
   private port: number;
   private _started = false;
   private connectionListeners: Array<(connected: boolean) => void> = [];
+  private eventListeners: Array<(event: string, data: unknown) => void> = [];
 
   constructor(port?: number) {
     this.port = port ?? DEFAULT_PORT;
@@ -42,6 +43,10 @@ export class MarkusBrowserBridge {
 
   onConnectionChange(listener: (connected: boolean) => void): void {
     this.connectionListeners.push(listener);
+  }
+
+  onEvent(listener: (event: string, data: unknown) => void): void {
+    this.eventListeners.push(listener);
   }
 
   private notifyConnectionChange(connected: boolean): void {
@@ -135,6 +140,9 @@ export class MarkusBrowserBridge {
   private handleMessage(msg: { id?: number; result?: unknown; error?: string; event?: string; data?: unknown }): void {
     if (msg.event) {
       log.debug(`Extension event: ${msg.event}`, msg.data as Record<string, unknown>);
+      for (const listener of this.eventListeners) {
+        try { listener(msg.event, msg.data); } catch { /* ignore */ }
+      }
       return;
     }
 

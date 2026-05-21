@@ -6,23 +6,10 @@
  */
 
 import type { PageManager } from '../page-manager.js';
+import { ensureDebugger } from '../debugger-helper.js';
 
 async function cdp(tabId: number, method: string, params?: Record<string, unknown>): Promise<unknown> {
   return chrome.debugger.sendCommand({ tabId }, method, params);
-}
-
-async function ensureDebugger(pm: PageManager, tabId: number): Promise<void> {
-  if (pm.isDebuggerAttached(tabId)) return;
-  await chrome.debugger.attach({ tabId }, '1.3');
-  pm.setDebuggerAttached(tabId, true);
-  await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
-  await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable');
-}
-
-function requireSelectedTab(pm: PageManager): number {
-  const tabId = pm.selectedTabId;
-  if (tabId === null) throw new Error('No page selected. Call new_page or select_page first.');
-  return tabId;
 }
 
 /**
@@ -74,7 +61,7 @@ export function registerInputTools(
   register('click', async (params) => {
     const uid = params.uid as string;
     if (!uid) throw new Error('uid is required');
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
     await ensureDebugger(pm, tabId);
 
     const { x, y } = await resolveUidToCoords(tabId, uid);
@@ -87,7 +74,7 @@ export function registerInputTools(
     const value = params.value as string;
     if (!uid) throw new Error('uid is required');
     if (value === undefined) throw new Error('value is required');
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
     await ensureDebugger(pm, tabId);
 
     const { x, y } = await resolveUidToCoords(tabId, uid);
@@ -102,7 +89,7 @@ export function registerInputTools(
   register('fill_form', async (params) => {
     const fields = params.fields as Array<{ uid: string; value: string }>;
     if (!fields || !Array.isArray(fields)) throw new Error('fields array is required');
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
     await ensureDebugger(pm, tabId);
 
     const results: string[] = [];
@@ -120,7 +107,7 @@ export function registerInputTools(
   register('type_text', async (params) => {
     const text = params.text as string;
     if (!text) throw new Error('text is required');
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
     await ensureDebugger(pm, tabId);
 
     await cdp(tabId, 'Input.insertText', { text });
@@ -130,7 +117,7 @@ export function registerInputTools(
   register('press_key', async (params) => {
     const key = params.key as string;
     if (!key) throw new Error('key is required');
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
     await ensureDebugger(pm, tabId);
 
     const parts = key.split('+');
@@ -157,7 +144,7 @@ export function registerInputTools(
   register('hover', async (params) => {
     const uid = params.uid as string;
     if (!uid) throw new Error('uid is required');
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
     await ensureDebugger(pm, tabId);
 
     const { x, y } = await resolveUidToCoords(tabId, uid);
@@ -171,7 +158,7 @@ export function registerInputTools(
     const fromUid = params.from_uid as string ?? params.fromUid as string;
     const toUid = params.to_uid as string ?? params.toUid as string;
     if (!fromUid || !toUid) throw new Error('from_uid and to_uid are required');
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
     await ensureDebugger(pm, tabId);
 
     const from = await resolveUidToCoords(tabId, fromUid);
@@ -194,7 +181,7 @@ export function registerInputTools(
   register('handle_dialog', async (params) => {
     const accept = params.accept !== false;
     const promptText = params.promptText as string | undefined;
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
     await ensureDebugger(pm, tabId);
 
     await cdp(tabId, 'Page.handleJavaScriptDialog', {
@@ -208,7 +195,7 @@ export function registerInputTools(
     const uid = params.uid as string;
     const filePath = params.filePath as string ?? params.file_path as string;
     if (!uid || !filePath) throw new Error('uid and filePath are required');
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
     await ensureDebugger(pm, tabId);
 
     // Resolve uid to DOM node
