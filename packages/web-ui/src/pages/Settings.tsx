@@ -7,6 +7,7 @@ import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { BrowserTestPanel } from '../components/BrowserTestPanel.tsx';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[] }
@@ -2072,6 +2073,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
           {browserMsg && <div className="mt-4"><Msg type={browserMsg.type} text={browserMsg.text} /></div>}
         </Section>
+
+        {/* DEV-only: Browser Integration Test Suite */}
+        {import.meta.env.DEV && <BrowserTestPanel extensionConnected={browserExtensionConnected} />}
         </>}
 
         {resolvedTab === 'search' && <>

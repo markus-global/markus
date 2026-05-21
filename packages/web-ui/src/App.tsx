@@ -172,13 +172,20 @@ export function App() {
             setUpdateInfo({ latestVersion: h.latestVersion, currentVersion: h.version });
           }
         }).catch(() => {});
-        prefetch(PREFETCH_KEYS.builderArtifacts, () => api.builder.artifacts.list());
-        prefetch(PREFETCH_KEYS.builderAgents, () => api.agents.list());
-        prefetch(PREFETCH_KEYS.builderHubMyItems, () => hubApi.myItems());
-        prefetch(PREFETCH_KEYS.builderInstalled, () => api.builder.artifacts.installed());
-        prefetch(PREFETCH_KEYS.hubAgents, () => hubApi.search({ type: 'agent', limit: 50 }));
-        prefetch(PREFETCH_KEYS.hubTeams, () => hubApi.search({ type: 'team', limit: 50 }));
-        prefetch(PREFETCH_KEYS.hubSkills, () => hubApi.search({ type: 'skill', limit: 50 }));
+        const doPrefetch = () => {
+          prefetch(PREFETCH_KEYS.builderArtifacts, () => api.builder.artifacts.list());
+          prefetch(PREFETCH_KEYS.builderAgents, () => api.agents.list());
+          prefetch(PREFETCH_KEYS.builderHubMyItems, () => hubApi.myItems());
+          prefetch(PREFETCH_KEYS.builderInstalled, () => api.builder.artifacts.installed());
+          prefetch(PREFETCH_KEYS.hubAgents, () => hubApi.search({ type: 'agent', limit: 50 }));
+          prefetch(PREFETCH_KEYS.hubTeams, () => hubApi.search({ type: 'team', limit: 50 }));
+          prefetch(PREFETCH_KEYS.hubSkills, () => hubApi.search({ type: 'skill', limit: 50 }));
+        };
+        if (typeof requestIdleCallback === 'function') {
+          requestIdleCallback(doPrefetch, { timeout: 5000 });
+        } else {
+          setTimeout(doPrefetch, 3000);
+        }
       })
       .catch(() => {
         setAuthUser(null);

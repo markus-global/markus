@@ -37,13 +37,13 @@
 
 html.light {
   color-scheme: light;
-  --color-surface-primary: oklch(0.985 0.002 270);
-  --color-surface-secondary: oklch(0.95 0.004 270);
-  --color-surface-elevated: oklch(0.97 0.003 270);
+  --color-surface-primary: oklch(1 0 0);
+  --color-surface-secondary: oklch(0.97 0.003 270);
+  --color-surface-elevated: oklch(1 0 0);
   --color-surface-overlay: oklch(0.93 0.005 270);
-  --color-surface-chat-bubble: oklch(0.95 0.02 250);
-  --color-border-default: oklch(0.82 0.012 270);
-  --color-border-subtle: oklch(0.88 0.008 270);
+  --color-surface-chat-bubble: oklch(0.96 0.01 250);
+  --color-border-default: oklch(0.91 0.006 270);
+  --color-border-subtle: oklch(0.94 0.004 270);
   --color-fg-primary: oklch(0.18 0.006 264);
   --color-fg-secondary: oklch(0.36 0.012 264);
   --color-fg-tertiary: oklch(0.46 0.012 264);
@@ -57,13 +57,13 @@ html.light {
 @media (prefers-color-scheme: light) {
   html:not(.dark):not(.light):not(.cyberpunk):not(.mono) {
     color-scheme: light;
-    --color-surface-primary: oklch(0.985 0.002 270);
-    --color-surface-secondary: oklch(0.95 0.004 270);
-    --color-surface-elevated: oklch(0.97 0.003 270);
+    --color-surface-primary: oklch(1 0 0);
+    --color-surface-secondary: oklch(0.97 0.003 270);
+    --color-surface-elevated: oklch(1 0 0);
     --color-surface-overlay: oklch(0.93 0.005 270);
-    --color-surface-chat-bubble: oklch(0.95 0.02 250);
-    --color-border-default: oklch(0.82 0.012 270);
-    --color-border-subtle: oklch(0.88 0.008 270);
+    --color-surface-chat-bubble: oklch(0.96 0.01 250);
+    --color-border-default: oklch(0.91 0.006 270);
+    --color-border-subtle: oklch(0.94 0.004 270);
     --color-fg-primary: oklch(0.18 0.006 264);
     --color-fg-secondary: oklch(0.36 0.012 264);
     --color-fg-tertiary: oklch(0.46 0.012 264);

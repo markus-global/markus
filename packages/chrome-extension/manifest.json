@@ -3,7 +3,7 @@
   "name": "Markus Browser Automation",
   "description": "Enables Markus AI agents to automate browser tasks without the remote debugging dialog.",
   "version": "1.0.0",
-  "permissions": ["debugger", "tabs", "activeTab", "scripting"],
+  "permissions": ["debugger", "tabs", "activeTab", "scripting", "storage"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "dist/background.js",

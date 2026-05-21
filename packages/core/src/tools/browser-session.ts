@@ -90,10 +90,33 @@ export class BrowserSessionManager {
     map.set(serverKey, callback);
   }
 
+  // ─── Extension event handling ─────────────────────────────────────────────
+
+  /**
+   * Called when the Chrome extension reports a tab was closed.
+   * Proactively remove the pageId from all ownership sets and currentPage
+   * pointers so agents don't try to use a stale page.
+   */
+  handleTabClosed(pageId: number | undefined): void {
+    if (pageId === undefined) return;
+    for (const [key, owned] of this.ownedPages) {
+      if (owned.delete(pageId)) {
+        log.debug(`Removed closed page ${pageId} from ownership set ${key}`);
+      }
+    }
+    for (const [key, val] of this.currentPage) {
+      if (val === pageId) {
+        this.currentPage.delete(key);
+        log.debug(`Cleared currentPage pointer for ${key} (was page ${pageId})`);
+      }
+    }
+  }
+
   // ─── Stale page recovery ──────────────────────────────────────────────────
 
   private isStalePageError(result: string): boolean {
-    return result.includes(STALE_PAGE_ERROR);
+    return result.includes(STALE_PAGE_ERROR)
+      || /Page \d+ not found/.test(result);
   }
 
   /**
@@ -311,8 +334,13 @@ export class BrowserSessionManager {
 
           if (!this.isStalePageError(result)) {
             const pages = this.parsePageEntries(result);
-            const newPage = pages.find((p) => p.selected)
-              ?? pages.find((p) => !prevIds.has(p.id))
+            // Identify the newly created page. Prefer pages NOT previously
+            // owned by this session (highest ID among those = the new tab),
+            // falling back to selected / highest-ID overall.
+            const notPrevOwned = pages.filter((p) => !prevIds.has(p.id));
+            const newPage = notPrevOwned.find((p) => p.selected)
+              ?? (notPrevOwned.length > 0 ? notPrevOwned.reduce((a, b) => (a.id > b.id ? a : b)) : undefined)
+              ?? pages.find((p) => p.selected)
               ?? (pages.length > 0 ? pages.reduce((a, b) => (a.id > b.id ? a : b)) : undefined);
             if (newPage) {
               // Re-fetch owned after potential reconnect (reconnect clears state)
@@ -337,6 +365,8 @@ export class BrowserSessionManager {
       execute: async (args: Record<string, unknown>) => {
         const ownerKey = this.extractOwnerKey(agentId, args);
         return this.withAgentLock(agentId, async () => {
+          const currentPageId = this.currentPage.get(ownerKey);
+          if (currentPageId !== undefined) args._pageId = currentPageId;
           let result = await handler.execute(args);
 
           if (this.isStalePageError(result)) {
@@ -404,25 +434,11 @@ export class BrowserSessionManager {
           return JSON.stringify({ error: msg });
         }
         return this.withAgentLock(agentId, async () => {
-          const result = await handler.execute(args);
-
-          if (this.isStalePageError(result)) {
-            const ok = await this.reconnectMcp(agentId);
-            if (ok) {
-              // Remove only the failed page from ownership
-              if (pageId !== undefined) {
-                this.getOwned(ownerKey).delete(pageId);
-              }
-              const remaining = this.getOwned(ownerKey);
-              if (remaining.size > 0) {
-                return `Tab ${pageId ?? 'unknown'} was already closed externally. `
-                  + `${this.ownedPagesSummary(ownerKey)}`;
-              }
-              return `Tab ${pageId ?? 'unknown'} was closed externally and you have no remaining tabs. `
-                + 'Call new_page or navigate_page to create a new tab.';
-            }
-          }
-
+          // Adjust ownership and currentPage BEFORE calling the handler.
+          // The handler triggers chrome.tabs.remove → chrome.tabs.onRemoved →
+          // handleTabClosed, which runs during our await. If we haven't
+          // adjusted currentPage yet, handleTabClosed will delete it outright
+          // instead of letting us switch to the next owned tab.
           if (pageId !== undefined) {
             this.getOwned(ownerKey).delete(pageId);
             if (this.currentPage.get(ownerKey) === pageId) {
@@ -435,6 +451,22 @@ export class BrowserSessionManager {
               }
             }
           }
+
+          const result = await handler.execute(args);
+
+          if (this.isStalePageError(result)) {
+            const ok = await this.reconnectMcp(agentId);
+            if (ok) {
+              const remaining = this.getOwned(ownerKey);
+              if (remaining.size > 0) {
+                return `Tab ${pageId ?? 'unknown'} was already closed externally. `
+                  + `${this.ownedPagesSummary(ownerKey)}`;
+              }
+              return `Tab ${pageId ?? 'unknown'} was closed externally and you have no remaining tabs. `
+                + 'Call new_page or navigate_page to create a new tab.';
+            }
+          }
+
           return this.annotateResponse(result, ownerKey);
         });
       },
@@ -461,12 +493,13 @@ export class BrowserSessionManager {
 
         return this.withAgentLock(agentId, async () => {
           await this.ensureCorrectPage(agentId, ownerKey);
+          const currentPageId = this.currentPage.get(ownerKey);
+          if (currentPageId !== undefined) args._pageId = currentPageId;
           const result = await handler.execute(args);
 
           if (this.isStalePageError(result)) {
             const ok = await this.reconnectMcp(agentId);
             if (ok) {
-              // After reconnect, state is cleared. Fall back to auto-create.
               return this.navigateAutoCreateLocked(agentId, ownerKey, args, newPageHandler);
             }
           }
@@ -523,8 +556,10 @@ export class BrowserSessionManager {
       if (!this.isStalePageError(result)) {
         const owned = this.getOwned(ownerKey);
         const pages = this.parsePageEntries(result);
-        const newPage = pages.find((p) => p.selected)
-          ?? (pages.length > 0 ? pages.reduce((a, b) => (a.id > b.id ? a : b)) : undefined);
+        // Prefer highest-ID page (the just-created tab always gets the
+        // highest auto-incremented ID). Only fall back to [selected] if
+        // no pages exist at all.
+        const newPage = (pages.length > 0 ? pages.reduce((a, b) => (a.id > b.id ? a : b)) : undefined);
         if (newPage) {
           owned.add(newPage.id);
           this.currentPage.set(ownerKey, newPage.id);
@@ -561,13 +596,15 @@ export class BrowserSessionManager {
         }
         return this.withAgentLock(agentId, async () => {
           await this.ensureCorrectPage(agentId, ownerKey);
+          // Inject _pageId so the extension resolves target tab explicitly,
+          // eliminating dependency on shared selectedPageId state.
+          const currentPageId = this.currentPage.get(ownerKey);
+          if (currentPageId !== undefined) args._pageId = currentPageId;
           const result = await handler.execute(args);
 
           if (this.isStalePageError(result)) {
             const ok = await this.reconnectMcp(agentId);
             if (ok) {
-              // Remove the stale page from ownership
-              const currentPageId = this.currentPage.get(ownerKey);
               if (currentPageId !== undefined) {
                 this.getOwned(ownerKey).delete(currentPageId);
                 this.currentPage.delete(ownerKey);

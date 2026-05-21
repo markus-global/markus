@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { api, type NotificationInfo, type ApprovalInfo } from '../api.ts';
+import { api, invalidateApiCache, wsClient, type NotificationInfo, type ApprovalInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
@@ -184,11 +184,15 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
 
   useEffect(() => {
     fetchData();
-    const timer = setInterval(fetchData, 15000);
+    const timer = setInterval(fetchData, 60000);
     const onChanged = () => fetchData();
+    const onOpenNotifications = () => { setOpen(true); fetchData(); };
     window.addEventListener('markus:notifications-changed', onChanged);
     window.addEventListener('markus:mark-read-by-ref', markReadByRef);
-    return () => { clearInterval(timer); window.removeEventListener('markus:notifications-changed', onChanged); window.removeEventListener('markus:mark-read-by-ref', markReadByRef); };
+    window.addEventListener('markus:open-notifications', onOpenNotifications);
+    const unsubNotif = wsClient.on('notification:created', () => fetchData());
+    const unsubApproval = wsClient.on('approval:created', () => fetchData());
+    return () => { clearInterval(timer); window.removeEventListener('markus:notifications-changed', onChanged); window.removeEventListener('markus:mark-read-by-ref', markReadByRef); window.removeEventListener('markus:open-notifications', onOpenNotifications); unsubNotif(); unsubApproval(); };
   }, [fetchData, markReadByRef]);
 
   const reposition = useCallback(() => {
@@ -413,7 +417,12 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
         setNotifications(prev => prev.map(n => ids.has(n.id) ? { ...n, read: true } : n));
         setUnreadCount(prev => Math.max(0, prev - relatedNotifs.length));
       }
-      window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
+      invalidateApiCache('/approvals');
+      invalidateApiCache('/notifications');
+      invalidateApiCache('/tasks');
+      invalidateApiCache('/requirements');
+      window.dispatchEvent(new CustomEvent('markus:data-changed'));
+      setTimeout(() => fetchData(), 800);
     } catch { /* */ }
     setResponding(null);
   };
@@ -424,11 +433,13 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       await api.notifications.markAllRead(userId);
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
       setUnreadCount(0);
+      invalidateApiCache('/notifications');
     } catch {
       const unread = displayNotifications.filter(n => !n.read);
       await Promise.all(unread.map(n => api.notifications.markRead(n.id)));
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
       setUnreadCount(0);
+      invalidateApiCache('/notifications');
     }
   };
 

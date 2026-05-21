@@ -306,24 +306,54 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',  // send cookies
-    ...opts,
-    body: opts?.body ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : undefined,
-  });
-  if (!res.ok) {
-    let detail = '';
-    let code: string | undefined;
-    try {
-      const body = await res.json() as { error?: string; message?: string; code?: string };
-      detail = body.error ?? body.message ?? '';
-      code = body.code;
-    } catch { /* ignore parse failures */ }
-    throw new ApiError(detail || `API error: ${res.status}`, code);
+const _dedupCache = new Map<string, { promise: Promise<unknown>; ts: number }>();
+const DEDUP_TTL_MS = 3000;
+
+export function invalidateApiCache(pathPrefix?: string) {
+  if (!pathPrefix) { _dedupCache.clear(); return; }
+  for (const key of _dedupCache.keys()) {
+    if (key.startsWith(pathPrefix)) _dedupCache.delete(key);
   }
-  return res.json() as Promise<T>;
+}
+
+async function request<T>(path: string, opts?: RequestInit): Promise<T> {
+  const method = opts?.method?.toUpperCase() ?? 'GET';
+  const isGet = method === 'GET' && !opts?.body;
+  if (isGet) {
+    const cached = _dedupCache.get(path);
+    if (cached && Date.now() - cached.ts < DEDUP_TTL_MS) return cached.promise as Promise<T>;
+  } else {
+    const basePath = path.replace(/\/[^/]+$/, '');
+    for (const key of _dedupCache.keys()) {
+      if (key === path || key.startsWith(basePath)) _dedupCache.delete(key);
+    }
+  }
+
+  const promise = (async () => {
+    const res = await fetch(`${BASE}${path}`, {
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      ...opts,
+      body: opts?.body ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : undefined,
+    });
+    if (!res.ok) {
+      let detail = '';
+      let code: string | undefined;
+      try {
+        const body = await res.json() as { error?: string; message?: string; code?: string };
+        detail = body.error ?? body.message ?? '';
+        code = body.code;
+      } catch { /* ignore parse failures */ }
+      throw new ApiError(detail || `API error: ${res.status}`, code);
+    }
+    return res.json() as Promise<T>;
+  })();
+
+  if (isGet) {
+    _dedupCache.set(path, { promise, ts: Date.now() });
+    promise.catch(() => _dedupCache.delete(path));
+  }
+  return promise;
 }
 
 export interface RemotePeerInfo {
@@ -1212,6 +1242,44 @@ export const api = {
       });
     },
     openExtensionsPage: () => request<{ ok: boolean }>('/settings/browser/open-extensions-page', { method: 'POST' }),
+    testConcurrentBrowserQuick: () => request<{
+      connected: boolean;
+      steps: Array<{ name: string; group: string; passed: boolean; durationMs: number; error?: string; detail?: string }>;
+      totalDurationMs: number; passed: number; failed: number; summary: string;
+    }>('/settings/browser/test-concurrent', { method: 'POST', body: JSON.stringify({ mode: 'quick' }) }),
+    testConcurrentBrowserChaos: async (
+      opts: { durationSec?: number; agents?: number },
+      onEvent: (ev: { type: string; [k: string]: unknown }) => void,
+    ): Promise<void> => {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const token = localStorage.getItem('markus_token');
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const res = await fetch(`${BASE}/settings/browser/test-concurrent`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ mode: 'chaos', durationSec: opts.durationSec ?? 120, agents: opts.agents ?? 3 }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        let currentEvent = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) { currentEvent = line.slice(7).trim(); }
+          else if (line.startsWith('data: ')) {
+            try { onEvent({ type: currentEvent || 'unknown', ...JSON.parse(line.slice(6)) }); } catch { /* skip */ }
+            currentEvent = '';
+          }
+        }
+      }
+    },
+    stopConcurrentBrowserTest: () => request<{ ok: boolean }>('/settings/browser/test-concurrent', { method: 'DELETE' }),
     getSearch: () => request<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search'),
     updateSearch: (keys: { serperApiKey?: string; braveApiKey?: string; bochaApiKey?: string }) =>
       request<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search', { method: 'POST', body: JSON.stringify(keys) }),

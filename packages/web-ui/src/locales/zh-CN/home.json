@@ -2,11 +2,25 @@
   "title": "仪表盘",
   "subtitle": "以下是你的 AI 团队今日动态。",
   "hireAgent": "部署智能体",
-  "metrics": {
-    "activeAgents": "活跃智能体",
-    "workingNow": "工作中",
-    "healthScore": "健康分",
-    "totalTasks": "总任务数"
+  "metricCards": {
+    "working": "工作中",
+    "tasksDone": "任务完成",
+    "projects": "项目",
+    "health": "健康分"
+  },
+  "statusBar": {
+    "agentsWorking": "工作中",
+    "tasksDone": "任务完成",
+    "projects": "个项目",
+    "health": "健康"
+  },
+  "systemHealth": {
+    "title": "系统健康",
+    "successRate": "成功率",
+    "tasksTotal": "已完成 / 总计",
+    "tokenUsage": "Token 用量",
+    "currentWorking": "当前工作中",
+    "storage": "存储"
   },
   "gettingStarted": {
     "title": "你的 AI 团队已就绪",
@@ -24,6 +38,29 @@
     "watchDemo": "观看演示",
     "learnMore": "了解更多"
   },
+  "attention": {
+    "title": "需要你的关注",
+    "approvals": "项审批等待处理",
+    "requirements": "条需求待审核",
+    "tasksReview": "个任务需要你审查",
+    "reportPlans": "份报告计划待批准",
+    "blocked": "个任务阻塞/卡住",
+    "viewBlocked": "查看阻塞任务 →",
+    "report": "报告",
+    "planItems": "项"
+  },
+  "globalOverview": {
+    "title": "全局概览",
+    "projects": "项目",
+    "requirements": "需求",
+    "tasks": "任务",
+    "deliverables": "交付物",
+    "active": "进行中"
+  },
+  "liveActivity": {
+    "whosWorking": "正在工作",
+    "recentChanges": "最近变更"
+  },
   "agentFocus": {
     "title": "智能体焦点",
     "totalQueued": "共 {{count}} 项排队",
@@ -32,14 +69,9 @@
     "heartbeatSkip": "心跳已跳过（空闲）"
   },
   "teamOverview": {
-    "title": "团队概览",
+    "title": "团队",
     "subtitle": "{{teams}} 个团队 · {{members}} 名成员",
     "activeCount": "{{count}} 活跃"
-  },
-  "taskOverview": {
-    "title": "任务总览",
-    "subtitle": "共 {{total}} 个任务",
-    "stuckBlocked": "{{count}} 个任务阻塞但无未完成依赖，可能需要关注"
   },
   "teamStatus": {
     "title": "团队状态",
@@ -48,21 +80,10 @@
     "workingCount": "{{count}} 工作中",
     "activeCount": "{{count}} 活跃"
   },
-  "pendingReviews": {
-    "title": "待审核",
-    "review": "去审核 →",
-    "proposedBy": "由 {{author}} 提出 · {{priority}}",
-    "proposedBy2": "由 {{author}} 提出",
-    "agentProposed": "智能体提出了 {{count}} 条需求 — 请审核以授权执行。",
-    "agent": "智能体",
-    "user": "用户"
-  },
-  "recentActivity": {
-    "title": "活动动态"
-  },
   "topPerformers": {
-    "title": "最佳表现智能体",
-    "tasksCompleted": "已完成 {{count}} 个任务"
+    "title": "最佳表现",
+    "tasksCompleted": "已完成 {{count}} 个任务",
+    "done": "完成"
   },
   "ranking": {
     "title": "智能体排行榜",
@@ -73,27 +94,10 @@
     "errorRate": "错误率",
     "noData": "暂无智能体数据。"
   },
-  "systemHealth": {
-    "title": "系统健康",
-    "allOperational": "所有系统正常运行",
-    "healthScore": "健康分",
-    "successRate": "成功率",
-    "activeTotal": "活跃 / 总计",
-    "tokenUsage": "Token 用量",
-    "workingNow": "当前工作中",
-    "needsAttention": "需要关注：",
-    "agentScoreChip": "{{name}}（{{score}}%）"
-  },
-  "storage": {
-    "title": "存储",
-    "total": "合计",
-    "db": "数据库：{{size}}",
-    "agents": "智能体：{{count}}",
-    "clickToView": "点击在设置中查看详情",
-    "bytesZero": "0 B",
-    "bytesB": "B",
-    "bytesKB": "KB",
-    "bytesMB": "MB",
-    "bytesGB": "GB"
+  "createMenu": {
+    "agent": "创建智能体",
+    "team": "创建智能体团队",
+    "skill": "创建技能",
+    "discover": "发现更多"
   }
 }

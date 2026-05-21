@@ -6,15 +6,7 @@
  */
 
 import type { PageManager } from '../page-manager.js';
-
-/** Helper: attach debugger to tab if not already attached */
-async function ensureDebugger(pm: PageManager, tabId: number): Promise<void> {
-  if (pm.isDebuggerAttached(tabId)) return;
-  await chrome.debugger.attach({ tabId }, '1.3');
-  pm.setDebuggerAttached(tabId, true);
-  await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
-  await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable');
-}
+import { ensureDebugger } from '../debugger-helper.js';
 
 /** Helper: send CDP command on a tab */
 async function cdp(tabId: number, method: string, params?: Record<string, unknown>): Promise<unknown> {
@@ -118,14 +110,18 @@ export function registerNavigationTools(
     return `Closed page ${pageId}`;
   });
 
-  register('list_pages', async () => {
+  register('list_pages', async (params) => {
     const tabs = await chrome.tabs.query({});
     const entries: Array<{ pageId: number; tab: chrome.tabs.Tab; selected: boolean }> = [];
+    const explicitPageId = params._pageId as number | undefined;
 
     for (const tab of tabs) {
       if (!tab.id || tab.id === chrome.tabs.TAB_ID_NONE) continue;
       const pageId = pm.getPageId(tab.id);
-      entries.push({ pageId, tab, selected: pageId === pm.selectedPageId });
+      const isSelected = explicitPageId !== undefined
+        ? pageId === explicitPageId
+        : pageId === pm.selectedPageId;
+      entries.push({ pageId, tab, selected: isSelected });
     }
 
     entries.sort((a, b) => a.pageId - b.pageId);
@@ -158,8 +154,7 @@ export function registerNavigationTools(
     const url = params.url as string | undefined;
     const timeout = (params.timeout as number) || 15000;
 
-    const tabId = pm.selectedTabId;
-    if (tabId === null) throw new Error('No page selected. Call new_page or select_page first.');
+    const tabId = pm.resolveTabId(params);
 
     if (url) {
       await ensureDebugger(pm, tabId);
@@ -190,8 +185,7 @@ export function registerNavigationTools(
     const timeout = (params.timeout as number) || 30000;
     if (!text) throw new Error('text parameter is required');
 
-    const tabId = pm.selectedTabId;
-    if (tabId === null) throw new Error('No page selected.');
+    const tabId = pm.resolveTabId(params);
 
     await ensureDebugger(pm, tabId);
 

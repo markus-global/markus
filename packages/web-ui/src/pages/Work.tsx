@@ -14,6 +14,7 @@ import { CommentInput, type PendingImage } from '../components/CommentInput.tsx'
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { usePageActive } from '../hooks/usePageActive.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
@@ -454,6 +455,7 @@ function NoteComment({ note, compact }: { note: string; compact?: boolean }) {
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
 const ALL_STATUSES = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived'] as const;
+const CLOSED_STATUSES_SET = new Set(['rejected', 'cancelled', 'archived']);
 
 const BOARD_COLUMNS_BASE = [
   { id: 'failed',      statuses: ['failed'],                  accent: 'border-t-red-500',    dropStatus: 'failed' },
@@ -3243,6 +3245,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
 
 export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   const { t } = useTranslation(['work', 'common']);
+  const isActive = usePageActive(PAGE.WORK);
   const boardColumns = useMemo(() => BOARD_COLUMNS_BASE.map(c => ({ ...c, label: t(`work:boardColumn.${c.id}`) })), [t]);
   const subStatusBadges = useMemo(() => buildSubStatusBadges(t), [t]);
   const reqStatusBadges = useMemo(() => buildReqStatusBadges(t), [t]);
@@ -3316,6 +3319,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   const kanbanSwipeOpts = useMemo(() => ({ scrollContainerRef: kanbanScrollRef }), []);
   const kanbanSwipe = useSwipeTabs(boardTabs, boardType, setBoardType, kanbanSwipeOpts);
   const [showClosed, setShowClosed] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [showFilterSheet, setShowFilterSheet] = useState(false);
   const dragTaskRef = useRef<TaskInfo | null>(null);
   const dragReqRef = useRef<RequirementInfo | null>(null);
@@ -3450,10 +3454,21 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   }, []);
 
   useEffect(() => {
-    const pollMs = selectedTaskRef.current ? 60000 : 15000;
+    if (!isActive) return;
+    const pollMs = selectedTaskRef.current ? 120000 : 45000;
     const i = setInterval(() => { refreshBoard(); refreshAgents(); refreshRequirements(); }, pollMs);
+    let boardDebounce: ReturnType<typeof setTimeout> | null = null;
+    const debouncedRefreshBoard = () => {
+      if (boardDebounce) return;
+      boardDebounce = setTimeout(() => { boardDebounce = null; refreshBoard(); }, 800);
+    };
+    let reqDebounce: ReturnType<typeof setTimeout> | null = null;
+    const debouncedRefreshReqs = () => {
+      if (reqDebounce) return;
+      reqDebounce = setTimeout(() => { reqDebounce = null; refreshRequirements(); }, 800);
+    };
     const unsub = wsClient.on('task:update', (event) => {
-      refreshBoard();
+      debouncedRefreshBoard();
       const p = event?.payload as Record<string, unknown> | undefined;
       if (p?.taskId) {
         setSelectedTask(prev => {
@@ -3468,7 +3483,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
       }
     });
     const unsubTaskCreate = wsClient.on('task:create', () => {
-      refreshBoard();
+      debouncedRefreshBoard();
     });
     const reqEvents = [
       'requirement:created', 'requirement:approved', 'requirement:rejected',
@@ -3476,10 +3491,10 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
       'requirement:resubmitted',
     ];
     const reqUnsubs = reqEvents.map(evt =>
-      wsClient.on(evt, () => { refreshRequirements(); })
+      wsClient.on(evt, () => { debouncedRefreshReqs(); })
     );
-    return () => { clearInterval(i); unsub(); unsubTaskCreate(); reqUnsubs.forEach(u => u()); };
-  }, [refreshBoard, refreshAgents, refreshRequirements]);
+    return () => { clearInterval(i); unsub(); unsubTaskCreate(); reqUnsubs.forEach(u => u()); if (boardDebounce) clearTimeout(boardDebounce); if (reqDebounce) clearTimeout(reqDebounce); };
+  }, [isActive, refreshBoard, refreshAgents, refreshRequirements]);
 
   // Refs for event handlers that need current state without re-registering
   const boardRef = useRef(board);
@@ -3601,6 +3616,12 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
           }
         }
         if (detail.params?.projectId) selectProject(detail.params.projectId);
+        if (detail.params?.statusFilter) {
+          const sf = detail.params.statusFilter;
+          localStorage.removeItem('markus_nav_statusFilter');
+          if (CLOSED_STATUSES_SET.has(sf)) setShowClosed(true);
+          setStatusFilter(sf);
+        }
       }
     };
     window.addEventListener('markus:navigate', handler);
@@ -3819,6 +3840,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
 
   const filterTasks = (tasks: TaskInfo[], includeArchived = false) => {
     let result = tasks.filter(t => showClosed || !isClosed(t));
+    if (statusFilter) result = result.filter(t => t.status === statusFilter);
     if (viewMode === 'project' && selectedProjectId) {
       result = result.filter(t => t.projectId === selectedProjectId);
     }
@@ -3968,6 +3990,13 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
                 </button>
               )}
               <div className="flex-1" />
+              {statusFilter && (
+                <button onClick={() => setStatusFilter(null)}
+                  className="px-2 py-0.5 text-[11px] rounded-md font-medium bg-brand-600/20 text-brand-500 ring-1 ring-brand-500/30 flex items-center gap-1">
+                  {t(`common:status.${statusFilter === 'in_progress' ? 'inProgress' : statusFilter}`)}
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                </button>
+              )}
               {(projectFilter.size > 0 || agentFilter.size > 0 || myTasksOnly || projects.length > 1 || agents.length > 0) && (
                 <button onClick={() => setShowFilterSheet(true)}
                   className={`px-2 py-1 text-[11px] rounded-md font-medium transition-colors flex items-center gap-1 ${

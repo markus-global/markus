@@ -5,23 +5,10 @@
  */
 
 import type { PageManager } from '../page-manager.js';
+import { ensureDebugger } from '../debugger-helper.js';
 
 async function cdp(tabId: number, method: string, params?: Record<string, unknown>): Promise<unknown> {
   return chrome.debugger.sendCommand({ tabId }, method, params);
-}
-
-async function ensureDebugger(pm: PageManager, tabId: number): Promise<void> {
-  if (pm.isDebuggerAttached(tabId)) return;
-  await chrome.debugger.attach({ tabId }, '1.3');
-  pm.setDebuggerAttached(tabId, true);
-  await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
-  await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable');
-}
-
-function requireSelectedTab(pm: PageManager): number {
-  const tabId = pm.selectedTabId;
-  if (tabId === null) throw new Error('No page selected.');
-  return tabId;
 }
 
 // Network request storage per tab
@@ -75,8 +62,8 @@ export function registerNetworkTools(
   pm: PageManager,
 ): void {
 
-  register('list_network_requests', async () => {
-    const tabId = requireSelectedTab(pm);
+  register('list_network_requests', async (params) => {
+    const tabId = pm.resolveTabId(params);
     await enableNetwork(pm, tabId);
 
     const reqs = networkRequests.get(tabId) ?? [];
@@ -90,7 +77,7 @@ export function registerNetworkTools(
   register('get_network_request', async (params) => {
     const reqId = params.reqid as string ?? params.id as string;
     if (!reqId) throw new Error('reqid is required');
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
 
     const reqs = networkRequests.get(tabId) ?? [];
     const req = reqs.find(r => r.id === reqId);
@@ -105,8 +92,8 @@ export function registerNetworkTools(
     }, null, 2);
   });
 
-  register('performance_start_trace', async () => {
-    const tabId = requireSelectedTab(pm);
+  register('performance_start_trace', async (params) => {
+    const tabId = pm.resolveTabId(params);
     await ensureDebugger(pm, tabId);
     await cdp(tabId, 'Tracing.start', {
       categories: '-*,devtools.timeline,v8.execute,disabled-by-default-devtools.timeline',
@@ -114,8 +101,8 @@ export function registerNetworkTools(
     return 'Performance trace started';
   });
 
-  register('performance_stop_trace', async () => {
-    const tabId = requireSelectedTab(pm);
+  register('performance_stop_trace', async (params) => {
+    const tabId = pm.resolveTabId(params);
     await ensureDebugger(pm, tabId);
     await cdp(tabId, 'Tracing.end');
     return 'Performance trace stopped. Results will be available via tracing events.';
@@ -131,7 +118,7 @@ export function registerNetworkTools(
   });
 
   register('emulate', async (params) => {
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
     await ensureDebugger(pm, tabId);
 
     if (params.width || params.height) {
@@ -171,7 +158,7 @@ export function registerNetworkTools(
     const width = params.width as number;
     const height = params.height as number;
     if (!width || !height) throw new Error('width and height are required');
-    const tabId = requireSelectedTab(pm);
+    const tabId = pm.resolveTabId(params);
 
     const tab = await chrome.tabs.get(tabId);
     if (tab.windowId) {

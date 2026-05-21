@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { usePageActive } from '../hooks/usePageActive.ts';
 import { MobileMenuButton } from './MobileMenuButton.tsx';
 import {
   api, wsClient,
@@ -201,6 +202,7 @@ export function ChatTeamSidebar({
 }: ChatTeamSidebarProps) {
   const { t } = useTranslation(['team', 'common']);
   const isMobile = useIsMobile();
+  const isActive = usePageActive(PAGE.TEAM);
   const isAdmin = authUser?.role === 'owner' || authUser?.role === 'admin';
   const externalMarkusIds = useMemo(() => new Set(externalAgents.map(ea => ea.markusAgentId).filter(Boolean) as string[]), [externalAgents]);
 
@@ -316,7 +318,7 @@ export function ChatTeamSidebar({
   const agentIdsKey = useMemo(() => agents.map(a => a.id).sort().join(','), [agents]);
 
   useEffect(() => {
-    if (!agents.length) return;
+    if (!agents.length || !isActive) return;
     let cancelled = false;
     const fetchAll = async () => {
       const entries: [string, string][] = [];
@@ -350,9 +352,29 @@ export function ChatTeamSidebar({
       }
     };
     fetchAll();
-    const timer = setInterval(fetchAll, 30_000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [agentIdsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    const timer = setInterval(fetchAll, 120_000);
+
+    const agentIdSet = new Set(agents.map(a => a.id));
+    const stripMarkup = (raw: string) => raw
+      .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
+      .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
+      .replace(/\n+/g, ' ').trim().slice(0, 80);
+    const unsubMsg = wsClient.on('chat:proactive_message', (event) => {
+      const p = event.payload;
+      const agentId = (p['agentId'] as string) ?? '';
+      const message = (p['message'] as string) ?? '';
+      if (!agentId || !message || !agentIdSet.has(agentId)) return;
+      const txt = stripMarkup(message);
+      if (!txt) return;
+      setAgentLastMsg(prev => {
+        const next = new Map(prev);
+        next.set(agentId, txt);
+        _lastMsgCache = next;
+        return next;
+      });
+    });
+    return () => { cancelled = true; clearInterval(timer); unsubMsg(); };
+  }, [agentIdsKey, isActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Data loading ──────────────────────────────────────────────────────────
   const refreshUngrouped = useCallback(() => {
@@ -364,10 +386,11 @@ export function ChatTeamSidebar({
   }, [refreshUngrouped]);
 
   useEffect(() => {
+    if (!isActive) return;
     const unsub1 = wsClient.on('team:update', refreshUngrouped);
     const unsub2 = wsClient.on('agent:removed', refreshUngrouped);
     return () => { unsub1(); unsub2(); };
-  }, [refreshUngrouped]);
+  }, [refreshUngrouped, isActive]);
 
   // Close menus on outside click
   useEffect(() => {
