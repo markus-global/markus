@@ -7,6 +7,7 @@ export interface BridgeRequest {
   id: number;
   method: string;
   params: Record<string, unknown>;
+  _deadline?: number;
 }
 
 export interface BridgeResponse {
@@ -89,12 +90,21 @@ export class BridgeClient {
    * when multiple agents issue concurrent tool calls.
    */
   private enqueueRequest(req: BridgeRequest): void {
+    if (!req._deadline) {
+      req._deadline = Date.now() + 110_000;
+    }
     this.requestQueue = this.requestQueue
       .then(() => this.handleRequest(req))
       .catch((err) => console.error('[Markus] Request queue error:', err));
   }
 
   private async handleRequest(req: BridgeRequest): Promise<void> {
+    if (req._deadline && Date.now() > req._deadline) {
+      console.warn(`[Markus] Skipping expired request ${req.method} (id=${req.id})`);
+      this.send({ id: req.id, error: `Request expired while queued (bridge timeout likely already fired)` });
+      return;
+    }
+
     const handler = this.handlers.get(req.method);
     if (!handler) {
       this.send({ id: req.id, error: `Unknown method: ${req.method}` });
