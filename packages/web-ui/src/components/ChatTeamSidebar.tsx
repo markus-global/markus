@@ -887,46 +887,18 @@ export function ChatTeamSidebar({
   return (
     <>
       <div className={`bg-surface-secondary rounded-xl my-1 flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'}`} style={hidden ? { display: 'none' } : width != null ? { width } : undefined}>
-        {/* Header with title + pause toggle */}
+        {/* Header with title + manage button */}
         <div className="px-4 h-14 flex items-center shrink-0 gap-2">
           {isMobile && <MobileMenuButton />}
           <h2 className="text-lg font-semibold">{t('chat.title')}</h2>
-          <div className="ml-auto">
-            {globalPaused === null ? (
-              <span className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border border-border-default text-fg-tertiary opacity-60">
-                <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" strokeDasharray="31.4 31.4" strokeLinecap="round" /></svg>
-                {t('common:status.loading', { defaultValue: '...' })}
-              </span>
-            ) : (
-              <button
-                onClick={handlePauseClick}
-                disabled={pauseLoading}
-                title={globalPaused ? t('modals.resumeAll.title') : t('modals.pauseAll.title')}
-                className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border transition-colors ${
-                  globalPaused
-                    ? 'bg-green-500/10 border-green-500/30 text-green-500 hover:bg-green-500/20'
-                    : 'bg-amber-500/10 border-amber-500/30 text-amber-600 hover:bg-amber-500/20'
-                } disabled:opacity-50`}
-              >
-                {globalPaused ? (
-                  <><svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg> {t('chat.resume')}</>
-                ) : (
-                  <><svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg> {t('chat.pause')}</>
-                )}
-              </button>
-            )}
-          </div>
-        </div>
-        {/* Action bar */}
-        {isAdmin && (
-          <div className="px-3 pt-2 pb-1 flex items-center gap-1.5" ref={actionMenuRef}>
-            <div className="relative flex-1">
+          {isAdmin && (
+            <div className="ml-auto relative" ref={actionMenuRef}>
               <button
                 onClick={() => setActionMenu(!actionMenu)}
-                className="w-full flex items-center justify-center gap-1 px-2 py-1.5 text-[10px] font-medium text-fg-secondary hover:text-fg-primary bg-surface-elevated/60 hover:bg-surface-elevated rounded-lg transition-colors"
+                className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-fg-secondary hover:text-fg-primary bg-surface-elevated/60 hover:bg-surface-elevated rounded-md transition-colors"
               >
                 <span className="text-brand-500">+</span> {t('chat.manage')}
-                <svg className={`w-2.5 h-2.5 ml-auto transition-transform ${actionMenu ? 'rotate-180' : ''}`} fill="currentColor" viewBox="0 0 20 20">
+                <svg className={`w-2.5 h-2.5 transition-transform ${actionMenu ? 'rotate-180' : ''}`} fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
                 </svg>
               </button>
@@ -936,10 +908,9 @@ export function ChatTeamSidebar({
                   const rect = el.getBoundingClientRect();
                   const vw = window.innerWidth;
                   const pad = 8;
-                  if (rect.right > vw - pad) el.style.left = 'auto';
-                  if (rect.right > vw - pad) el.style.right = '0';
+                  if (rect.right > vw - pad) { el.style.left = 'auto'; el.style.right = '0'; }
                   if (rect.left < pad) { el.style.left = '0'; el.style.right = 'auto'; }
-                }} className="absolute left-0 top-full mt-1 w-48 max-w-[calc(100vw-1rem)] bg-surface-secondary border border-border-default rounded-lg shadow-xl z-30 overflow-hidden">
+                }} className="absolute right-0 top-full mt-1 w-48 max-w-[calc(100vw-1rem)] bg-surface-secondary border border-border-default rounded-lg shadow-xl z-30 overflow-hidden">
                   <button onClick={() => { setActionMenu(false); setShowMethodChoice('agent'); }}
                     className="w-full text-left px-4 py-2.5 text-xs text-fg-secondary hover:bg-surface-elevated transition-colors">
                     <div className="font-medium flex items-center gap-1.5">
@@ -972,11 +943,29 @@ export function ChatTeamSidebar({
                     </div>
                     <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.newGroupChatDesc')}</div>
                   </button>
+                  {globalPaused !== null && (
+                    <button
+                      onClick={() => { setActionMenu(false); handlePauseClick(); }}
+                      disabled={pauseLoading}
+                      className={`w-full text-left px-4 py-2.5 text-xs hover:bg-surface-elevated border-t border-border-default transition-colors disabled:opacity-50 ${
+                        globalPaused ? 'text-green-600' : 'text-amber-600'
+                      }`}
+                    >
+                      <div className="font-medium flex items-center gap-1.5">
+                        {globalPaused ? (
+                          <><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg> {t('chat.resume')}</>
+                        ) : (
+                          <><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg> {t('chat.pause')}</>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{globalPaused ? t('modals.resumeAll.title') : t('modals.pauseAll.title')}</div>
+                    </button>
+                  )}
                 </div>
               )}
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
         {/* Sidebar content */}
         <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col">
