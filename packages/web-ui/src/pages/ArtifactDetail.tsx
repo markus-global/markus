@@ -995,17 +995,17 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
 
         {/* Version bump notification */}
         {!readOnly && contentDirty && !showVersionBump && (
-          <div className="mb-4 px-4 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-between">
-            <span className="text-xs text-amber-300">{t('versionBump.contentModified')}</span>
-            <button onClick={() => setShowVersionBump(true)} className="text-xs px-3 py-1 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition-colors">
+          <div className="mb-4 px-4 py-2.5 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/20 flex items-center justify-between">
+            <span className="text-xs text-amber-800 dark:text-amber-300">{t('versionBump.contentModified')}</span>
+            <button onClick={() => setShowVersionBump(true)} className="text-xs px-3 py-1 rounded bg-amber-200 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 hover:bg-amber-300 dark:hover:bg-amber-500/30 transition-colors">
               {t('versionBump.bumpVersion')}
             </button>
           </div>
         )}
         {!readOnly && showVersionBump && (
-          <div className="mb-4 px-4 py-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+          <div className="mb-4 px-4 py-3 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/20">
             <div className="flex items-center gap-3">
-              <span className="text-xs text-amber-300">{t('versionBump.newVersion')}</span>
+              <span className="text-xs text-amber-800 dark:text-amber-300">{t('versionBump.newVersion')}</span>
               <input
                 type="text"
                 defaultValue={(() => {
@@ -1023,7 +1023,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
               <button onClick={(e) => {
                 const input = (e.target as HTMLElement).parentElement?.querySelector('input');
                 if (input) handleFieldChange('version', input.value);
-              }} className="text-xs px-3 py-1 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition-colors">
+              }} className="text-xs px-3 py-1 rounded bg-amber-200 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 hover:bg-amber-300 dark:hover:bg-amber-500/30 transition-colors">
                 {t('common:confirm')}
               </button>
               <button onClick={() => setShowVersionBump(false)} className="text-xs text-fg-tertiary hover:text-fg-secondary">
