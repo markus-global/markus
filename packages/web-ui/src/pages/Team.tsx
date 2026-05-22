@@ -793,7 +793,7 @@ if (typeof window !== 'undefined') {
 // returns zero sessions for this agent (i.e., the user has never chatted with it).
 const _introSentGlobal = new Set<string>();
 
-export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string; authUser?: AuthUser } = {}) {
+export function TeamPage({ initialAgentId, authUser, previewMode }: { initialAgentId?: string; authUser?: AuthUser; previewMode?: boolean } = {}) {
   const { t, i18n } = useTranslation(['team', 'common']);
   const isActive = usePageActive(PAGE.TEAM);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -1197,10 +1197,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   }, []);
 
   useEffect(() => {
+    if (previewMode) return;
     if (chatMode === 'direct' && selectedAgent) {
       markAgentNotificationsRead(selectedAgent);
     }
-  }, [chatMode, selectedAgent, markAgentNotificationsRead]);
+  }, [previewMode, chatMode, selectedAgent, markAgentNotificationsRead]);
 
   // ── Chat unread counts (message-level read cursors) ──────────────────────────
   const { counts: chatUnreadCounts, markRead: markChatRead } = useUnreadCounts();
@@ -1216,6 +1217,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
   // Auto mark-read when a conversation becomes visible
   useEffect(() => {
+    if (previewMode) return;
     const isVisible = !isMobile || mobileLayer === 'chat';
     if (!isVisible) return;
     if (chatMode === 'channel' && activeChannel) {
@@ -1227,7 +1229,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       markChatRead(`channel:${dmChannel}`);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMode, activeChannel, activeSessionId, activeDmUserId, mobileLayer]);
+  }, [previewMode, chatMode, activeChannel, activeSessionId, activeDmUserId, mobileLayer]);
 
   // ── Data loading ─────────────────────────────────────────────────────────────
   const refreshAgents = useCallback(() => api.agents.list().then(d => setAgents(d.agents)).catch(() => {}), []);
@@ -1243,6 +1245,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   }, [authUser?.orgId]);
 
   useEffect(() => {
+    if (previewMode) return;
     Promise.all([
       refreshAgents(),
       refreshTeams(),
@@ -1253,9 +1256,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     api.externalAgents.list().then(d => setExternalAgents(d.agents)).catch(() => {});
     refreshGroupChats();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshHumans, refreshUnreadCounts]);
+  }, [previewMode, refreshHumans, refreshUnreadCounts]);
 
   useEffect(() => {
+    if (previewMode) return;
     if (!isActive) return;
     refreshAgents();
     const timer = setInterval(refreshAgents, 30_000);
@@ -1272,10 +1276,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     window.addEventListener('markus:notifications-changed', onNotifChanged);
     return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeamUpdate(); unsubTeamOnAgentRemoved(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); window.removeEventListener('markus:data-changed', onDataChanged); window.removeEventListener('markus:notifications-changed', onNotifChanged); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isActive, refreshHumans, refreshUnreadCounts]);
+  }, [previewMode, isActive, refreshHumans, refreshUnreadCounts]);
 
   // Check for nav params (e.g., navigated here from AgentProfile or Team redirect)
   useEffect(() => {
+    if (previewMode) return;
     const handleNav = (e: Event) => {
       const detail = (e as CustomEvent<{ page: string; params?: Record<string, string> }>).detail;
       if (resolvePageId(detail.page) === PAGE.TEAM) {
@@ -1368,7 +1373,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     window.addEventListener('markus:navigate', handleNav);
     return () => window.removeEventListener('markus:navigate', handleNav);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [previewMode]);
 
   useEffect(() => {
     const teamId = pendingSelectTeamRef.current;
@@ -1573,6 +1578,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   // If the new conv is already streaming or has buffered messages, show them immediately.
   // Otherwise load from DB.
   useEffect(() => {
+    if (previewMode) return;
     const newKey = makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId);
     const prevKey = currentConvKeyRef.current;
     currentConvKeyRef.current = newKey;
@@ -1662,10 +1668,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMode, selectedAgent, activeChannel, activeDmUserId, i18n.language, t]);
+  }, [previewMode, chatMode, selectedAgent, activeChannel, activeDmUserId, i18n.language, t]);
 
   // WS live updates for channel mode — buffer messages for ALL channels, not just the active one
   useEffect(() => {
+    if (previewMode) return;
     const unsub = wsClient.on('chat:message', (event) => {
       const p = event.payload;
       const msgChannel = (p['channel'] as string) ?? '';
@@ -1734,10 +1741,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       }
     });
     return unsub;
-  }, [updateConvMsgs, authUser?.id, activeChannel]);
+  }, [previewMode, updateConvMsgs, authUser?.id, activeChannel]);
 
   // Remove agent from thinkingAgents when it decides not to respond
   useEffect(() => {
+    if (previewMode) return;
     const unsub = wsClient.on('chat:agent_no_response', (event) => {
       const p = event.payload;
       const msgChannel = (p['channel'] as string) ?? '';
@@ -1754,10 +1762,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       }
     });
     return unsub;
-  }, [activeChannel]);
+  }, [previewMode, activeChannel]);
 
   // WS live updates for proactive agent messages (direct mode)
   useEffect(() => {
+    if (previewMode) return;
     const unsub = wsClient.on('chat:proactive_message', (event) => {
       const p = event.payload;
       const targetUserId = p['targetUserId'] as string | undefined;
@@ -1800,7 +1809,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       updateConvMsgs(key, prev => [...prev, newMsg]);
     });
     return unsub;
-  }, [updateConvMsgs, t]);
+  }, [previewMode, updateConvMsgs, t]);
 
   // ── Task helpers ─────────────────────────────────────────────────────────────
   const linkedTask = tasks.find(t => t.id === linkedTaskId);
@@ -2683,6 +2692,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
   // Fetch custom group chat details (with member list) when selected
   useEffect(() => {
+    if (previewMode) return;
     if (!activeChannel.startsWith('group:custom:')) return;
     const gc = groupChats.find(g => g.channelKey === activeChannel);
     if (!gc || gc.members) return;
@@ -2691,7 +2701,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         setGroupChats(prev => prev.map(g => g.id === gc.id ? { ...g, members: d.chat.members } : g));
       }
     }).catch(() => {});
-  }, [activeChannel, groupChats]);
+  }, [previewMode, activeChannel, groupChats]);
 
   const modeTitle =
     chatMode === 'channel' ? (activeGroupChat?.name ?? activeChannel) :

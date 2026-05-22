@@ -15,6 +15,7 @@ import enStore from '../locales/en/store.json';
 import enAgent from '../locales/en/agent.json';
 import enDeliverables from '../locales/en/deliverables.json';
 import enReports from '../locales/en/reports.json';
+import enShowcase from '../locales/en/showcase.json';
 
 import zhCommon from '../locales/zh-CN/common.json';
 import zhNav from '../locales/zh-CN/nav.json';
@@ -29,6 +30,7 @@ import zhStore from '../locales/zh-CN/store.json';
 import zhAgent from '../locales/zh-CN/agent.json';
 import zhDeliverables from '../locales/zh-CN/deliverables.json';
 import zhReports from '../locales/zh-CN/reports.json';
+import zhShowcase from '../locales/zh-CN/showcase.json';
 
 export const SUPPORTED_LANGUAGES = [
   { code: 'en', label: 'English' },
@@ -39,7 +41,7 @@ export const DEFAULT_NS = 'common';
 export const NAMESPACES = [
   'common', 'nav', 'auth', 'home', 'team', 'work',
   'settings', 'onboarding', 'builder', 'store',
-  'agent', 'deliverables', 'reports',
+  'agent', 'deliverables', 'reports', 'showcase',
 ] as const;
 
 void i18n
@@ -61,6 +63,7 @@ void i18n
         agent: enAgent,
         deliverables: enDeliverables,
         reports: enReports,
+        showcase: enShowcase,
       },
       'zh-CN': {
         common: zhCommon,
@@ -76,6 +79,7 @@ void i18n
         agent: zhAgent,
         deliverables: zhDeliverables,
         reports: zhReports,
+        showcase: zhShowcase,
       },
     },
     fallbackLng: 'en',

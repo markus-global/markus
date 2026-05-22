@@ -38,20 +38,32 @@ const ACTIVITY_LABEL_KEYS: Record<string, string> = {
 
 // ═════════════════════════════════════════════════════════════════════════════
 
-export function HomePage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } } = {}) {
+export interface HomePreviewData {
+  agents?: AgentInfo[];
+  teams?: TeamInfo[];
+  board?: Record<string, TaskInfo[]>;
+  ops?: OpsDashboard | null;
+  requirements?: RequirementInfo[];
+  projects?: ProjectInfo[];
+  deliverableTotal?: number;
+  storageInfo?: StorageInfo | null;
+  usageInfo?: { llmTokens: number; storageBytes: number } | null;
+}
+
+export function HomePage({ authUser, previewMode, previewData }: { authUser?: { id: string; name: string; role: string; orgId: string }; previewMode?: boolean; previewData?: HomePreviewData } = {}) {
   const { t } = useTranslation(['home', 'common', 'team']);
   const isMobile = useIsMobile();
   const isActive = usePageActive(PAGE.HOME);
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [teams, setTeams] = useState<TeamInfo[]>([]);
-  const [board, setBoard] = useState<Record<string, TaskInfo[]>>({});
-  const [ops, setOps] = useState<OpsDashboard | null>(null);
+  const [agents, setAgents] = useState<AgentInfo[]>(previewData?.agents ?? []);
+  const [teams, setTeams] = useState<TeamInfo[]>(previewData?.teams ?? []);
+  const [board, setBoard] = useState<Record<string, TaskInfo[]>>(previewData?.board ?? {});
+  const [ops, setOps] = useState<OpsDashboard | null>(previewData?.ops ?? null);
   const opsPeriod = '7d' as const;
-  const [allRequirements, setAllRequirements] = useState<RequirementInfo[]>([]);
-  const [projects, setProjects] = useState<ProjectInfo[]>([]);
-  const [deliverableTotal, setDeliverableTotal] = useState(0);
-  const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
-  const [usageInfo, setUsageInfo] = useState<{ llmTokens: number; storageBytes: number } | null>(null);
+  const [allRequirements, setAllRequirements] = useState<RequirementInfo[]>(previewData?.requirements ?? []);
+  const [projects, setProjects] = useState<ProjectInfo[]>(previewData?.projects ?? []);
+  const [deliverableTotal, setDeliverableTotal] = useState(previewData?.deliverableTotal ?? 0);
+  const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(previewData?.storageInfo ?? null);
+  const [usageInfo, setUsageInfo] = useState<{ llmTokens: number; storageBytes: number } | null>(previewData?.usageInfo ?? null);
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [showRankingModal, setShowRankingModal] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
@@ -78,13 +90,13 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
   }, [opsPeriod]);
 
   useEffect(() => {
-    if (!isActive) return;
+    if (previewMode || !isActive) return;
     refresh();
     const i = setInterval(refresh, 30000);
     const onDataChanged = () => refresh();
     window.addEventListener('markus:data-changed', onDataChanged);
     return () => { clearInterval(i); window.removeEventListener('markus:data-changed', onDataChanged); };
-  }, [opsPeriod, isActive, refresh]);
+  }, [previewMode, opsPeriod, isActive, refresh]);
 
   // ── Computed ──
   const rootStatusCounts: Record<string, number> = {};
@@ -129,6 +141,8 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
 
   const workingAgentsList = agents.filter(a => a.status === 'working');
 
+  const nav = previewMode ? (() => {}) as typeof navBus.navigate : navBus.navigate;
+
   // ═══════════════════════════════════════════════════════════════════════════
 
   return (
@@ -143,7 +157,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
           </div>
         </div>
         <div className="flex items-center gap-1.5">
-          <button onClick={() => isMobile ? navBus.navigate(PAGE.SEARCH) : window.dispatchEvent(new CustomEvent('markus:open-search'))}
+          <button onClick={() => previewMode ? undefined : isMobile ? navBus.navigate(PAGE.SEARCH) : window.dispatchEvent(new CustomEvent('markus:open-search'))}
             className="p-2 rounded-lg hover:bg-surface-overlay transition-colors text-fg-tertiary" aria-label="Search">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
           </button>

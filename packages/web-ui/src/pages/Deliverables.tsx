@@ -36,7 +36,7 @@ const ARTIFACT_META: Record<string, { icon: string; color: string }> = {
   skill: { icon: '\u2B21', color: 'bg-amber-500/10 text-amber-600' },
 };
 
-export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser } = {}) {
+export function DeliverablesPage({ authUser: _authUser, previewMode }: { authUser?: AuthUser; previewMode?: boolean } = {}) {
   const { t } = useTranslation(['deliverables', 'common']);
   const isMobile = useIsMobile();
   const isActive = usePageActive(PAGE.DELIVERABLES);
@@ -120,10 +120,11 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
   const projectMap = useMemo(() => new Map(projects.map(p => [p.id, p])), [projects]);
 
   useEffect(() => {
+    if (previewMode) return;
     api.projects.list().then(r => setProjects(r.projects)).catch(() => {});
     api.agents.list().then(r => setAgents(r.agents ?? [])).catch(() => {});
     api.system.storage().then(info => setSharedDir(info.dataDir + '/shared')).catch(() => {});
-  }, []);
+  }, [previewMode]);
 
   useEffect(() => {
     debounceRef.current = setTimeout(() => setDebouncedQuery(searchQuery), 300);
@@ -160,15 +161,16 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
     setLoadingMore(false);
   }, [searchParams, items.length, totalCount, loadingMore]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { if (previewMode) return; refresh(); }, [refresh, previewMode]);
 
   useEffect(() => {
+    if (previewMode) return;
     if (!isActive) return;
     const unsub1 = wsClient.on('deliverable:created', () => refresh());
     const unsub2 = wsClient.on('deliverable:updated', () => refresh());
     const unsub3 = wsClient.on('deliverable:removed', () => refresh());
     return () => { unsub1(); unsub2(); unsub3(); };
-  }, [refresh, isActive]);
+  }, [refresh, isActive, previewMode]);
 
   // Handle deep navigation to a specific deliverable
   const pendingOpenRef = useRef<string | null>(null);
@@ -189,6 +191,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
   }, [isMobile]);
 
   useEffect(() => {
+    if (previewMode) return;
     const navId = localStorage.getItem('markus_nav_openDeliverable');
     if (navId) {
       localStorage.removeItem('markus_nav_openDeliverable');
@@ -207,7 +210,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
     };
     window.addEventListener('markus:navigate', handler);
     return () => window.removeEventListener('markus:navigate', handler);
-  }, [openDeliverableById]);
+  }, [openDeliverableById, previewMode]);
 
   useEffect(() => {
     const id = pendingOpenRef.current;
@@ -344,13 +347,14 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
   };
 
   useEffect(() => {
+    if (previewMode) return;
     setPreviewContent(null);
     setPreviewFormat('markdown');
     setPreviewImage(null);
     setShowCopyPath(false);
     if (selected) loadPreview(selected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.id]);
+  }, [selected?.id, previewMode]);
 
   const toggleGroup = useCallback((key: string) => {
     setCollapsedGroups(prev => {

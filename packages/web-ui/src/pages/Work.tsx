@@ -3243,7 +3243,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
 
 // ─── Main Page ──────────────────────────────────────────────────────────────────
 
-export function WorkPage({ authUser }: { authUser?: AuthUser }) {
+export function WorkPage({ authUser, previewMode }: { authUser?: AuthUser; previewMode?: boolean }) {
   const { t } = useTranslation(['work', 'common']);
   const isActive = usePageActive(PAGE.WORK);
   const boardColumns = useMemo(() => BOARD_COLUMNS_BASE.map(c => ({ ...c, label: t(`work:boardColumn.${c.id}`) })), [t]);
@@ -3376,7 +3376,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     setLoading(false);
   }, [refreshProjects, refreshBoard, refreshAgents, refreshUsers, refreshRequirements]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { if (previewMode) return; refresh(); }, [previewMode, refresh]);
 
   const handleSelectTask = useCallback((task: TaskInfo) => {
     setSelectedTask(prev => {
@@ -3454,6 +3454,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   }, []);
 
   useEffect(() => {
+    if (previewMode) return;
     if (!isActive) return;
     const pollMs = selectedTaskRef.current ? 120000 : 45000;
     const i = setInterval(() => { refreshBoard(); refreshAgents(); refreshRequirements(); }, pollMs);
@@ -3494,7 +3495,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
       wsClient.on(evt, () => { debouncedRefreshReqs(); })
     );
     return () => { clearInterval(i); unsub(); unsubTaskCreate(); reqUnsubs.forEach(u => u()); if (boardDebounce) clearTimeout(boardDebounce); if (reqDebounce) clearTimeout(reqDebounce); };
-  }, [isActive, refreshBoard, refreshAgents, refreshRequirements]);
+  }, [previewMode, isActive, refreshBoard, refreshAgents, refreshRequirements]);
 
   // Refs for event handlers that need current state without re-registering
   const boardRef = useRef(board);
@@ -3568,6 +3569,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   // Hash change & custom navigation events
   const prevHashPageRef = useRef(resolvePageId(window.location.hash.slice(1).split('/')[0]));
   useEffect(() => {
+    if (previewMode) return;
     const onHashChange = () => {
       const parts = window.location.hash.slice(1).split('/');
       const newPage = resolvePageId(parts[0]);
@@ -3628,7 +3630,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     window.addEventListener('hashchange', onHashChange);
     return () => { window.removeEventListener('markus:navigate', handler); window.removeEventListener('hashchange', onHashChange); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [previewMode]);
 
   // ── Actions ──
 
