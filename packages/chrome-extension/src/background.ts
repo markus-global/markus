@@ -39,6 +39,27 @@ chrome.debugger.onDetach.addListener((source) => {
   }
 });
 
+// Auto-dismiss beforeunload dialogs so agent navigation isn't blocked.
+// Regular dialogs (alert/confirm/prompt) are left for the agent to handle
+// via handle_dialog, but a notification event is sent.
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  if (method !== 'Page.javascriptDialogOpening' || !source.tabId) return;
+  const p = params as { type?: string; message?: string; url?: string };
+
+  if (p.type === 'beforeunload') {
+    chrome.debugger.sendCommand(source, 'Page.handleJavaScriptDialog', { accept: true })
+      .catch(() => { /* tab may have closed */ });
+    console.log(`[Markus] Auto-dismissed beforeunload dialog on tab ${source.tabId}`);
+    return;
+  }
+
+  const pageId = pm.peekPageId(source.tabId);
+  client.send({
+    event: 'dialog_opened',
+    data: { tabId: source.tabId, pageId, type: p.type, message: p.message },
+  });
+});
+
 // Handle popup status queries
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'getStatus') {
