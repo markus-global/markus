@@ -1258,9 +1258,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   useEffect(() => {
     if (!isActive) return;
     refreshAgents();
+    refreshTeams();
     const timer = setInterval(refreshAgents, 30_000);
     const teamTimer = setInterval(refreshTeams, 60_000);
-    const unsub = wsClient.on('agent:update', throttledRefreshAgents);
+    const unsub = wsClient.on('agent:update', () => { throttledRefreshAgents(); throttledRefreshTeams(); });
     const unsubTeamUpdate = wsClient.on('team:update', throttledRefreshTeams);
     const unsubTeamOnAgentRemoved = wsClient.on('agent:removed', throttledRefreshTeams);
     const unsubGroup = wsClient.on('chat:group_created', () => { throttledRefreshGroupChats(); throttledRefreshTeams(); });
