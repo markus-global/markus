@@ -56,6 +56,8 @@ interface ChatTeamSidebarProps {
   hidden?: boolean;
   /** True while the initial data load is in progress; sidebar shows skeleton placeholders */
   initialLoading?: boolean;
+  /** When true, auto-scroll to the Teams section on mount */
+  previewMode?: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -199,6 +201,7 @@ export function ChatTeamSidebar({
   unreadByChannel,
   width, onResizeStart, hidden,
   initialLoading,
+  previewMode,
 }: ChatTeamSidebarProps) {
   const { t } = useTranslation(['team', 'common']);
   const isMobile = useIsMobile();
@@ -234,6 +237,10 @@ export function ChatTeamSidebar({
   // Highlight newly created team
   const [highlightTeamId, setHighlightTeamId] = useState<string | null>(null);
 
+  // Preview mode: scroll sidebar to teams section
+  const sidebarScrollRef = useRef<HTMLDivElement>(null);
+  const teamsSectionRef = useRef<HTMLDivElement>(null);
+
   // Toast
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -249,6 +256,7 @@ export function ChatTeamSidebar({
   const statusFetchedRef = useRef(false);
 
   useEffect(() => {
+    if (previewMode) return;
     api.governance.getSystemStatus()
       .then(s => { statusFetchedRef.current = true; setGlobalPaused(s.globalPaused); })
       .catch(() => { statusFetchedRef.current = true; setGlobalPaused(false); });
@@ -256,6 +264,18 @@ export function ChatTeamSidebar({
     const unsubResume = wsClient.on('system:resume-all', () => { if (statusFetchedRef.current) setGlobalPaused(false); });
     return () => { unsubPause(); unsubResume(); };
   }, []);
+
+  useEffect(() => {
+    if (!previewMode) return;
+    const timer = setTimeout(() => {
+      const el = teamsSectionRef.current;
+      const container = sidebarScrollRef.current;
+      if (el && container) {
+        container.scrollTo({ top: el.offsetTop - container.offsetTop - 8, behavior: 'instant' });
+      }
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [previewMode]);
 
   const handlePauseClick = useCallback(() => {
     if (globalPaused === null) return;
@@ -979,7 +999,7 @@ export function ChatTeamSidebar({
         )}
 
         {/* Sidebar content */}
-        <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col">
+        <div ref={sidebarScrollRef} className="flex-1 overflow-y-auto px-3 py-2 flex flex-col">
 
           {/* People — shown first, flat list */}
           <div className="mb-2">
@@ -1127,7 +1147,7 @@ export function ChatTeamSidebar({
           )}
           {/* Teams as clickable rows (drill into L2 on mobile, expand on desktop) */}
           {teams.length > 0 && (
-            <div className="mb-2">
+            <div className="mb-2" ref={teamsSectionRef}>
               <p className="text-[10px] font-semibold text-fg-muted uppercase tracking-wider mb-1.5 px-2.5">{t('chat.teams')}</p>
               {teams.map(tm => {
                 const agentList = agentsByTeam.byTeam.get(tm.id) ?? [];

@@ -36,7 +36,14 @@ const ARTIFACT_META: Record<string, { icon: string; color: string }> = {
   skill: { icon: '\u2B21', color: 'bg-amber-500/10 text-amber-600' },
 };
 
-export function DeliverablesPage({ authUser: _authUser, previewMode }: { authUser?: AuthUser; previewMode?: boolean } = {}) {
+export interface DeliverablesPreviewData {
+  items?: DeliverableInfo[];
+  projects?: ProjectInfo[];
+  agents?: AgentInfo[];
+  initialSelectedId?: string;
+}
+
+export function DeliverablesPage({ authUser: _authUser, previewMode, previewData }: { authUser?: AuthUser; previewMode?: boolean; previewData?: DeliverablesPreviewData } = {}) {
   const { t } = useTranslation(['deliverables', 'common']);
   const isMobile = useIsMobile();
   const isActive = usePageActive(PAGE.DELIVERABLES);
@@ -57,12 +64,12 @@ export function DeliverablesPage({ authUser: _authUser, previewMode }: { authUse
   }, [isMobile]);
 
   const PAGE_SIZE = 100;
-  const [items, setItems] = useState<DeliverableInfo[]>([]);
-  const [totalCount, setTotalCount] = useState(0);
+  const [items, setItems] = useState<DeliverableInfo[]>(previewData?.items ?? []);
+  const [totalCount, setTotalCount] = useState(previewData?.items?.length ?? 0);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [projects, setProjects] = useState<ProjectInfo[]>([]);
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [projects, setProjects] = useState<ProjectInfo[]>(previewData?.projects ?? []);
+  const [agents, setAgents] = useState<AgentInfo[]>(previewData?.agents ?? []);
+  const [loading, setLoading] = useState(previewData ? false : true);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [filterType, setFilterType] = useState('');
@@ -71,7 +78,12 @@ export function DeliverablesPage({ authUser: _authUser, previewMode }: { authUse
   const [filterStatus, setFilterStatus] = useState('');
   const [filterArtifact, setFilterArtifact] = useState('');
   const [groupBy, setGroupBy] = useState<'project' | 'agent' | 'date' | 'type'>('date');
-  const [selected, setSelected] = useState<DeliverableInfo | null>(null);
+  const [selected, setSelected] = useState<DeliverableInfo | null>(() => {
+    if (previewData?.initialSelectedId && previewData.items) {
+      return previewData.items.find(d => d.id === previewData.initialSelectedId) ?? previewData.items[0] ?? null;
+    }
+    return previewData?.items?.[0] ?? null;
+  });
   const [flash, setFlash] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [actionLoading, setActionLoading] = useState('');
   const [showCreate, setShowCreate] = useState(false);
@@ -162,6 +174,17 @@ export function DeliverablesPage({ authUser: _authUser, previewMode }: { authUse
   }, [searchParams, items.length, totalCount, loadingMore]);
 
   useEffect(() => { if (previewMode) return; refresh(); }, [refresh, previewMode]);
+
+  useEffect(() => {
+    if (!previewMode || !previewData) return;
+    setItems(previewData.items ?? []);
+    setTotalCount(previewData.items?.length ?? 0);
+    setProjects(previewData.projects ?? []);
+    setAgents(previewData.agents ?? []);
+    if (previewData.initialSelectedId) {
+      setSelected(previewData.items?.find(d => d.id === previewData.initialSelectedId) ?? previewData.items?.[0] ?? null);
+    }
+  }, [previewMode, previewData]);
 
   useEffect(() => {
     if (previewMode) return;
@@ -570,6 +593,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode }: { authUse
             {/* Header */}
             <div>
               <h2 className="text-xl font-semibold text-fg-primary">{selected.title}</h2>
+              {!previewMode && (
               <div className="flex items-center gap-2 mt-2">
                 {selected.status !== 'verified' && (
                   <button onClick={() => handleVerify(selected)} disabled={!!actionLoading}
@@ -588,6 +612,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode }: { authUse
                   {actionLoading === 'remove' ? t('common:removing') : t('common:remove')}
                 </button>
               </div>
+              )}
               <div className="flex items-center gap-3 mt-2 flex-wrap">
                 <span className={`px-2 py-0.5 rounded text-xs font-medium uppercase ${TYPE_META[selected.type]?.color ?? 'bg-surface-overlay text-fg-secondary'}`}>{TYPE_META[selected.type]?.icon ?? ''} {selected.type}</span>
                 <span className={`px-2 py-0.5 rounded text-xs ${STATUS_META[selected.status]?.color ?? 'bg-surface-elevated text-fg-tertiary'}`}>{t(`common:status.${selected.status}`, { defaultValue: selected.status })}</span>

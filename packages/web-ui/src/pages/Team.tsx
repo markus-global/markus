@@ -793,12 +793,23 @@ if (typeof window !== 'undefined') {
 // returns zero sessions for this agent (i.e., the user has never chatted with it).
 const _introSentGlobal = new Set<string>();
 
-export function TeamPage({ initialAgentId, authUser, previewMode }: { initialAgentId?: string; authUser?: AuthUser; previewMode?: boolean } = {}) {
+export interface TeamPreviewData {
+  agents?: AgentInfo[];
+  humans?: HumanUserInfo[];
+  teams?: TeamInfo[];
+  groupChats?: Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number; teamId?: string; creatorId?: string; creatorName?: string; members?: Array<{ id: string; name: string; type: 'human' | 'agent' }> }>;
+  channelMessages?: ChannelMessageInfo[];
+  chatMode?: 'channel' | 'direct' | 'dm';
+  activeChannel?: string;
+  streamLastMessage?: boolean;
+}
+
+export function TeamPage({ initialAgentId, authUser, previewMode, previewData }: { initialAgentId?: string; authUser?: AuthUser; previewMode?: boolean; previewData?: TeamPreviewData } = {}) {
   const { t, i18n } = useTranslation(['team', 'common']);
   const isActive = usePageActive(PAGE.TEAM);
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [humans, setHumans] = useState<HumanUserInfo[]>([]);
-  const [initialLoading, setInitialLoading] = useState(true);
+  const [agents, setAgents] = useState<AgentInfo[]>(previewData?.agents ?? []);
+  const [humans, setHumans] = useState<HumanUserInfo[]>(previewData?.humans ?? []);
+  const [initialLoading, setInitialLoading] = useState(previewData ? false : true);
   const isMobile = useIsMobile();
 
   // Mobile: URL hash is the single source of truth for 3-layer navigation
@@ -850,6 +861,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode }: { initialAge
 
   // L2: Team detail panel (hidden by default, toggled via header button)
   const [showTeamDetailPanel, setShowTeamDetailPanel] = useState<boolean>(() => {
+    if (previewMode) return true;
     try { return localStorage.getItem('markus_team_panel_visible') === 'true'; } catch { return false; }
   });
   const teamDetailPanel = useResizablePanel({
@@ -878,7 +890,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode }: { initialAge
   }, [l2SpaceTight]);
 
   useEffect(() => {
-    if (isMobile) return;
+    if (isMobile || previewMode) return;
     const el = teamContainerRef.current;
     if (!el) return;
     const ro = new ResizeObserver(([entry]) => {
@@ -889,7 +901,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode }: { initialAge
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [isMobile, chatSidebar.width, teamDetailPanel.width]);
+  }, [isMobile, previewMode, chatSidebar.width, teamDetailPanel.width]);
 
   useEffect(() => {
     if (!l2Floating) return;
@@ -955,13 +967,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode }: { initialAge
 
   // Mode & target
   const [chatMode, setChatMode] = useState<ChatMode>(
-    () => initialAgentId ? 'direct' : ((localStorage.getItem('markus_chat_mode') as ChatMode | null) ?? 'direct')
+    () => previewData?.chatMode ?? (initialAgentId ? 'direct' : ((localStorage.getItem('markus_chat_mode') as ChatMode | null) ?? 'direct'))
   );
   const [selectedAgent, setSelectedAgent] = useState(
     () => initialAgentId ?? localStorage.getItem('markus_chat_agent') ?? ''
   );
   const [activeChannel, setActiveChannel] = useState(
-    () => localStorage.getItem('markus_chat_channel') ?? '#general'
+    () => previewData?.activeChannel ?? localStorage.getItem('markus_chat_channel') ?? '#general'
   );
   const [activeDmUserId, setActiveDmUserId] = useState<string>('');
 
@@ -975,13 +987,19 @@ export function TeamPage({ initialAgentId, authUser, previewMode }: { initialAge
   const currentConvKeyRef = useRef<string>('');
 
   // Displayed state — always mirrors the current conv's buffer
-  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const [messages, setMessages] = useState<ChatMsg[]>(() => {
+    if (previewData?.channelMessages) {
+      const ch = previewData.activeChannel ?? 'custom:general';
+      return previewData.channelMessages.filter(m => m.channel === ch).map(m => channelMsgToChat(m));
+    }
+    return [];
+  });
   const [input, setInput] = useState('');
   const [chatReplyTo, setChatReplyTo] = useState<{ id: string; sender: string; text: string } | null>(null);
   const [sending, setSending] = useState(false);
   const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
   const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [streamingVisual, setStreamingVisual] = useState(false);
+  const [streamingVisual, setStreamingVisual] = useState(!!previewData?.streamLastMessage);
   const streamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const STREAMING_MIN_DISPLAY_MS = 1500;
   useEffect(() => {
@@ -993,6 +1011,44 @@ export function TeamPage({ initialAgentId, authUser, previewMode }: { initialAge
     }
     return () => { if (streamingTimerRef.current) clearTimeout(streamingTimerRef.current); };
   }, [sending]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Preview mode: typewriter streaming effect for the last agent message
+  const previewStreamRef = useRef<{ fullText: string; timers: ReturnType<typeof setTimeout>[] }>({ fullText: '', timers: [] });
+  useEffect(() => {
+    if (!previewMode || !previewData?.streamLastMessage) return;
+    if (messages.length === 0) return;
+    const lastMsg = messages[messages.length - 1];
+    if (!lastMsg || lastMsg.sender !== 'agent') return;
+
+    const fullText = lastMsg.text;
+    previewStreamRef.current.fullText = fullText;
+    const timers = previewStreamRef.current.timers;
+
+    function startTypewriter() {
+      let charIdx = 0;
+      setMessages(prev => prev.map((m, i) => i === prev.length - 1 ? { ...m, text: '' } : m));
+      setStreamingVisual(true);
+      const interval = setInterval(() => {
+        charIdx += 1 + Math.floor(Math.random() * 2);
+        if (charIdx >= fullText.length) {
+          clearInterval(interval);
+          setMessages(prev => prev.map((m, i) => i === prev.length - 1 ? { ...m, text: fullText } : m));
+          const t = setTimeout(() => setStreamingVisual(false), 800);
+          timers.push(t);
+          const restart = setTimeout(startTypewriter, 6000);
+          timers.push(restart);
+        } else {
+          setMessages(prev => prev.map((m, i) => i === prev.length - 1 ? { ...m, text: fullText.slice(0, charIdx) } : m));
+        }
+      }, 30);
+      timers.push(interval as any);
+    }
+
+    const delay = setTimeout(startTypewriter, 1500);
+    timers.push(delay);
+
+    return () => { timers.forEach(t => clearTimeout(t)); previewStreamRef.current.timers = []; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Safety net: if the agent is no longer "working" but `sending` is still true,
   // the SSE stream may have stalled (done event lost, connection silently dead, etc.).
@@ -1049,14 +1105,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode }: { initialAge
   const loadingSessionRef = useRef<string | null>(null);
 
   // Group chats
-  const [groupChats, setGroupChats] = useState<Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number; teamId?: string; creatorId?: string; creatorName?: string; members?: Array<{ id: string; name: string; type: 'human' | 'agent' }> }>>([]);
+  const [groupChats, setGroupChats] = useState<Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number; teamId?: string; creatorId?: string; creatorName?: string; members?: Array<{ id: string; name: string; type: 'human' | 'agent' }> }>>(previewData?.groupChats ?? []);
   const groupChatsRef = useRef(groupChats);
   groupChatsRef.current = groupChats;
   const pendingSelectTeamRef = useRef<string | null>(null);
   const [showMemberPanel, setShowMemberPanel] = useState(false);
 
   // Teams
-  const [teams, setTeams] = useState<TeamInfo[]>([]);
+  const [teams, setTeams] = useState<TeamInfo[]>(previewData?.teams ?? []);
 
   // External agents (OpenClaw etc.)
   const [externalAgents, setExternalAgents] = useState<ExternalAgentInfo[]>([]);
@@ -1259,6 +1315,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode }: { initialAge
   }, [previewMode, refreshHumans, refreshUnreadCounts]);
 
   useEffect(() => {
+    if (!previewMode || !previewData) return;
+    setAgents(previewData.agents ?? []);
+    setHumans(previewData.humans ?? []);
+    setTeams(previewData.teams ?? []);
+    setGroupChats(previewData.groupChats ?? []);
+    if (previewData.channelMessages) {
+      const ch = previewData.activeChannel ?? 'custom:general';
+      setMessages(previewData.channelMessages.filter(m => m.channel === ch).map(m => channelMsgToChat(m)));
+    }
+  }, [previewMode, previewData]);
+
+  useEffect(() => {
     if (previewMode) return;
     if (!isActive) return;
     refreshAgents();
@@ -1388,6 +1456,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode }: { initialAge
   // Auto-select secretary agent when no valid agent is selected.
   // Also handles stale IDs from localStorage (e.g. deleted agents).
   useEffect(() => {
+    if (previewMode && previewData?.chatMode === 'channel') return;
     if (agents.length === 0) return;
     if (selectedAgent && agents.some(a => a.id === selectedAgent)) return;
     const secretary = agents.find(a => a.role === 'secretary')
@@ -1430,6 +1499,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode }: { initialAge
     };
   }, []);
 
+  const scrollChatToBottom = useCallback((behavior: ScrollBehavior = 'instant') => {
+    const el = chatScrollRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior });
+  }, []);
+
   // Snap to bottom after DOM updates, but only if user hasn't scrolled up.
   useLayoutEffect(() => {
     if (skipScrollRef.current) {
@@ -1437,24 +1511,25 @@ export function TeamPage({ initialAgentId, authUser, previewMode }: { initialAge
       return;
     }
     if (!userAtBottomRef.current) return;
-    messagesEnd.current?.scrollIntoView({ behavior: 'instant' });
-  }, [messages, activities]);
+    scrollChatToBottom();
+  }, [messages, activities, scrollChatToBottom]);
 
   useEffect(() => {
     if (mainTab === 'chat') {
       requestAnimationFrame(() => {
-        messagesEnd.current?.scrollIntoView({ behavior: 'instant' });
+        scrollChatToBottom();
         userAtBottomRef.current = true;
       });
     }
-  }, [mainTab]);
+  }, [mainTab, scrollChatToBottom]);
 
   useEffect(() => {
+    if (previewMode) return;
     const scrollToLatest = () => {
       if (resolvePageId(window.location.hash.slice(1).split('/')[0]) !== PAGE.TEAM) return;
       if (mainTabRef.current !== 'chat') return;
       requestAnimationFrame(() => {
-        messagesEnd.current?.scrollIntoView({ behavior: 'instant' });
+        scrollChatToBottom();
       });
     };
     window.addEventListener('hashchange', scrollToLatest);
@@ -2732,6 +2807,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode }: { initialAge
         selectedAgent={selectedAgent}
         activeChannel={activeChannel}
         activeDmUserId={activeDmUserId}
+        previewMode={previewMode}
         onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); setShowMemberPanel(false); if (isMobile) enterMobileDetail(); }}
         onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); setShowMemberPanel(false); if (isMobile) enterMobileDetail(); }}
         onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); setShowMemberPanel(false); if (isMobile) enterMobileDetail(); }}
@@ -3489,9 +3565,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode }: { initialAge
                         <NotificationBadge priority={msg.notifyPriority} />
                       )}
                     </div>
+                    {!previewMode && (
                     <div className={`transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'}`}>
                       <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onResume={handleResume} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
                     </div>
+                    )}
                   </div>
                 </div>
               ))
@@ -3577,7 +3655,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode }: { initialAge
                           <NotificationBadge priority={msg.notifyPriority} />
                         )}
                       </div>
-                      {showActions && (
+                      {showActions && !previewMode && (
                         <div className={`transition-opacity ${msg.isStopped || isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'}`}>
                           <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onResume={handleResume} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
                         </div>

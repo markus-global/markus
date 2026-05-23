@@ -77,6 +77,19 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     return () => document.removeEventListener('mousedown', handler);
   }, [showCreateMenu]);
 
+  useEffect(() => {
+    if (!previewMode || !previewData) return;
+    setAgents(previewData.agents);
+    setTeams(previewData.teams);
+    setBoard(previewData.board);
+    setOps(previewData.ops ?? null);
+    setAllRequirements(previewData.requirements ?? []);
+    setProjects(previewData.projects ?? []);
+    setDeliverableTotal(previewData.deliverableTotal ?? 0);
+    if (previewData.storageInfo) setStorageInfo(previewData.storageInfo);
+    if (previewData.usageInfo) setUsageInfo(previewData.usageInfo);
+  }, [previewMode, previewData]);
+
   const refresh = useCallback(() => {
     api.agents.list().then(d => setAgents(d.agents)).catch(() => {});
     api.teams.list().then(d => setTeams(d.teams)).catch(() => {});
@@ -148,7 +161,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   return (
     <div className="flex-1 overflow-y-auto scrollbar-thin">
       {/* ── Header ── */}
-      <div className="flex items-center justify-between px-4 sm:px-6 lg:px-8 h-14 sm:h-16 max-w-7xl mx-auto w-full">
+      <div className={`flex items-center justify-between px-4 sm:px-6 lg:px-8 h-14 sm:h-16 ${previewMode ? '' : 'max-w-7xl mx-auto'} w-full`}>
         <div className="flex items-center gap-2">
           {isMobile && <MobileMenuButton />}
           <div>
@@ -165,7 +178,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
         </div>
       </div>
 
-      <div className="px-4 sm:px-6 lg:px-8 pb-8 space-y-6 max-w-7xl mx-auto w-full">
+      <div className={`px-4 sm:px-6 lg:px-8 pb-8 space-y-6 ${previewMode ? '' : 'max-w-7xl mx-auto'} w-full`}>
 
         {/* ── Metric Cards ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

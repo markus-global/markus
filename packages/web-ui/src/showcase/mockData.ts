@@ -5,6 +5,9 @@ import type {
   OpsDashboard, GroupChatInfo, ChannelMessageInfo, StorageInfo,
 } from '../api.ts';
 import type { HomePreviewData } from '../pages/Home.tsx';
+import type { TeamPreviewData } from '../pages/Team.tsx';
+import type { WorkPreviewData } from '../pages/Work.tsx';
+import type { DeliverablesPreviewData } from '../pages/Deliverables.tsx';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // IDs
@@ -14,7 +17,6 @@ const ORG = 'org-nexus';
 
 const HUMAN_IDS = {
   alex: 'human-alex', sarah: 'human-sarah', james: 'human-james',
-  emily: 'human-emily', michael: 'human-michael',
 } as const;
 
 const AGENT_IDS = {
@@ -49,13 +51,11 @@ const PROJECT_IDS = {
 export function createMockData(t: TFunction) {
   const ts = (key: string) => t(`showcase:${key}`);
 
-  // ── Founding Team (5 humans) ───────────────────────────────────────────
+  // ── Founding Team (3 humans) ───────────────────────────────────────────
   const humans: HumanUserInfo[] = [
     { id: HUMAN_IDS.alex, name: ts('humans.alex.name'), role: 'owner', orgId: ORG, avatarUrl: '/avatars/alex.jpg' },
     { id: HUMAN_IDS.sarah, name: ts('humans.sarah.name'), role: 'admin', orgId: ORG, avatarUrl: '/avatars/sarah.jpg' },
     { id: HUMAN_IDS.james, name: ts('humans.james.name'), role: 'admin', orgId: ORG, avatarUrl: '/avatars/james.jpg' },
-    { id: HUMAN_IDS.emily, name: ts('humans.emily.name'), role: 'member', orgId: ORG, avatarUrl: '/avatars/emily.jpg' },
-    { id: HUMAN_IDS.michael, name: ts('humans.michael.name'), role: 'member', orgId: ORG, avatarUrl: '/avatars/michael.jpg' },
   ];
 
   // ── Digital Employees (30 agents) ──────────────────────────────────────
@@ -127,7 +127,6 @@ export function createMockData(t: TFunction) {
       managerId: HUMAN_IDS.james, managerType: 'human', managerName: ts('humans.james.name'),
       members: [
         member(HUMAN_IDS.james, ts('humans.james.name'), 'human', 'admin'),
-        member(HUMAN_IDS.emily, ts('humans.emily.name'), 'human', 'member'),
         ...agentDefs.filter(a => a.teamId === TEAM_IDS.productDesign).map(a => member(a.id, ts(a.nameKey), 'agent', ts(a.roleKey), a.agentRole, a.status)),
       ],
     },
@@ -146,9 +145,9 @@ export function createMockData(t: TFunction) {
     {
       id: TEAM_IDS.operations, orgId: ORG, name: ts('teams.operations.name'),
       description: ts('teams.operations.desc'),
-      managerId: HUMAN_IDS.michael, managerType: 'human', managerName: ts('humans.michael.name'),
+      managerId: HUMAN_IDS.alex, managerType: 'human', managerName: ts('humans.alex.name'),
       members: [
-        member(HUMAN_IDS.michael, ts('humans.michael.name'), 'human', 'member'),
+        member(HUMAN_IDS.alex, ts('humans.alex.name'), 'human', 'admin'),
         ...agentDefs.filter(a => a.teamId === TEAM_IDS.operations).map(a => member(a.id, ts(a.nameKey), 'agent', ts(a.roleKey), a.agentRole, a.status)),
       ],
     },
@@ -179,10 +178,11 @@ export function createMockData(t: TFunction) {
 
   // ── Tasks (board format: status -> TaskInfo[]) ─────────────────────────
   let taskCounter = 0;
-  function task(titleKey: string, status: string, agentId: string, priority: string, projectId?: string, extras?: Partial<TaskInfo>): TaskInfo {
+  const td = (key: string) => ts(`taskDesc.${key}`);
+  function task(titleKey: string, descKey: string, status: string, agentId: string, priority: string, projectId?: string, extras?: Partial<TaskInfo>): TaskInfo {
     taskCounter++;
     return {
-      id: `task-${taskCounter}`, title: ts(titleKey), description: '', status, priority,
+      id: `task-${taskCounter}`, title: ts(titleKey), description: td(descKey), status, priority,
       assignedAgentId: agentId, reviewerId: HUMAN_IDS.sarah, projectId,
       createdAt: now, updatedAt: now, ...extras,
     };
@@ -190,87 +190,86 @@ export function createMockData(t: TFunction) {
 
   const board: Record<string, TaskInfo[]> = {
     completed: [
-      task('tasks.paymentWebhook', 'completed', AGENT_IDS.srBackend, 'high', PROJECT_IDS.payment),
-      task('tasks.dbSchema', 'completed', AGENT_IDS.backend, 'high', PROJECT_IDS.payment),
-      task('tasks.userResearch', 'completed', AGENT_IDS.uxResearcher, 'medium', PROJECT_IDS.dashboard),
-      task('tasks.competitorReport', 'completed', AGENT_IDS.researchLead, 'high', PROJECT_IDS.research),
-      task('tasks.cicdSetup', 'completed', AGENT_IDS.devops, 'high', PROJECT_IDS.payment),
-      task('tasks.designTokens', 'completed', AGENT_IDS.uiDesigner, 'medium', PROJECT_IDS.dashboard),
-      task('tasks.authFlow', 'completed', AGENT_IDS.srBackend, 'high', PROJECT_IDS.payment),
-      task('tasks.loadTesting', 'completed', AGENT_IDS.qaLead, 'medium', PROJECT_IDS.payment),
-      task('tasks.seoMatrix', 'completed', AGENT_IDS.seo, 'low', PROJECT_IDS.research),
-      task('tasks.privacyDraft', 'completed', AGENT_IDS.legal, 'high'),
-      task('tasks.q1Finance', 'completed', AGENT_IDS.finance, 'medium'),
-      task('tasks.testFramework', 'completed', AGENT_IDS.qaLead, 'high', PROJECT_IDS.payment),
+      task('tasks.paymentWebhook', 'paymentWebhook', 'completed', AGENT_IDS.srBackend, 'high', PROJECT_IDS.payment),
+      task('tasks.dbSchema', 'dbSchema', 'completed', AGENT_IDS.backend, 'high', PROJECT_IDS.payment),
+      task('tasks.userResearch', 'userResearch', 'completed', AGENT_IDS.uxResearcher, 'medium', PROJECT_IDS.dashboard),
+      task('tasks.competitorReport', 'competitorReport', 'completed', AGENT_IDS.researchLead, 'high', PROJECT_IDS.research),
+      task('tasks.cicdSetup', 'cicdSetup', 'completed', AGENT_IDS.devops, 'high', PROJECT_IDS.payment),
+      task('tasks.designTokens', 'designTokens', 'completed', AGENT_IDS.uiDesigner, 'medium', PROJECT_IDS.dashboard),
+      task('tasks.authFlow', 'authFlow', 'completed', AGENT_IDS.srBackend, 'high', PROJECT_IDS.payment),
+      task('tasks.loadTesting', 'loadTesting', 'completed', AGENT_IDS.qaLead, 'medium', PROJECT_IDS.payment),
+      task('tasks.seoMatrix', 'seoMatrix', 'completed', AGENT_IDS.seo, 'low', PROJECT_IDS.research),
+      task('tasks.privacyDraft', 'privacyDraft', 'completed', AGENT_IDS.legal, 'high'),
+      task('tasks.q1Finance', 'q1Finance', 'completed', AGENT_IDS.finance, 'medium'),
+      task('tasks.testFramework', 'testFramework', 'completed', AGENT_IDS.qaLead, 'high', PROJECT_IDS.payment),
     ],
     in_progress: [
-      task('tasks.paymentReconciliation', 'in_progress', AGENT_IDS.srBackend, 'high', PROJECT_IDS.payment),
-      task('tasks.dashboardCharts', 'in_progress', AGENT_IDS.srFrontend, 'medium', PROJECT_IDS.dashboard),
-      task('tasks.mobileOnboarding', 'in_progress', AGENT_IDS.mobile, 'medium', PROJECT_IDS.mobile),
-      task('tasks.mlPipeline', 'in_progress', AGENT_IDS.mlEngineer, 'high', PROJECT_IDS.research),
-      task('tasks.rateLimiting', 'in_progress', AGENT_IDS.backend, 'high', PROJECT_IDS.payment),
-      task('tasks.editorialCalendar', 'in_progress', AGENT_IDS.contentLead, 'low'),
-      task('tasks.funnelAnalysis', 'in_progress', AGENT_IDS.dataAnalyst, 'medium', PROJECT_IDS.dashboard),
-      task('tasks.componentDocs', 'in_progress', AGENT_IDS.frontend, 'low', PROJECT_IDS.dashboard),
-      task('tasks.regressionSuite', 'in_progress', AGENT_IDS.qaEng, 'high', PROJECT_IDS.payment),
-      task('tasks.socialCampaign', 'in_progress', AGENT_IDS.socialMedia, 'low'),
+      task('tasks.paymentReconciliation', 'paymentReconciliation', 'in_progress', AGENT_IDS.srBackend, 'high', PROJECT_IDS.payment, { blockedBy: ['task-1', 'task-2'] }),
+      task('tasks.dashboardCharts', 'dashboardCharts', 'in_progress', AGENT_IDS.srFrontend, 'medium', PROJECT_IDS.dashboard, { blockedBy: ['task-6'] }),
+      task('tasks.mobileOnboarding', 'mobileOnboarding', 'in_progress', AGENT_IDS.mobile, 'medium', PROJECT_IDS.mobile),
+      task('tasks.mlPipeline', 'mlPipeline', 'in_progress', AGENT_IDS.mlEngineer, 'high', PROJECT_IDS.research),
+      task('tasks.rateLimiting', 'rateLimiting', 'in_progress', AGENT_IDS.backend, 'high', PROJECT_IDS.payment, { blockedBy: ['task-13'] }),
+      task('tasks.editorialCalendar', 'editorialCalendar', 'in_progress', AGENT_IDS.contentLead, 'low'),
+      task('tasks.funnelAnalysis', 'funnelAnalysis', 'in_progress', AGENT_IDS.dataAnalyst, 'medium', PROJECT_IDS.dashboard),
+      task('tasks.componentDocs', 'componentDocs', 'in_progress', AGENT_IDS.frontend, 'low', PROJECT_IDS.dashboard),
+      task('tasks.regressionSuite', 'regressionSuite', 'in_progress', AGENT_IDS.qaEng, 'high', PROJECT_IDS.payment, { blockedBy: ['task-13'] }),
+      task('tasks.socialCampaign', 'socialCampaign', 'in_progress', AGENT_IDS.socialMedia, 'low'),
     ],
     review: [
-      task('tasks.idempotency', 'review', AGENT_IDS.srBackend, 'high', PROJECT_IDS.payment),
-      task('tasks.landingMockup', 'review', AGENT_IDS.uiDesigner, 'medium', PROJECT_IDS.dashboard),
-      task('tasks.patentReport', 'review', AGENT_IDS.researchAnalyst, 'medium', PROJECT_IDS.research),
-      task('tasks.apiDocsV2', 'review', AGENT_IDS.techWriter, 'medium'),
-      task('tasks.monthlyFinance', 'review', AGENT_IDS.finance, 'medium'),
-      task('tasks.securityScan', 'review', AGENT_IDS.security, 'high', PROJECT_IDS.securityAudit),
+      task('tasks.idempotency', 'idempotency', 'review', AGENT_IDS.srBackend, 'high', PROJECT_IDS.payment, { blockedBy: ['task-17'] }),
+      task('tasks.landingMockup', 'landingMockup', 'review', AGENT_IDS.uiDesigner, 'medium', PROJECT_IDS.dashboard),
+      task('tasks.patentReport', 'patentReport', 'review', AGENT_IDS.researchAnalyst, 'medium', PROJECT_IDS.research),
+      task('tasks.apiDocsV2', 'apiDocsV2', 'review', AGENT_IDS.techWriter, 'medium'),
+      task('tasks.monthlyFinance', 'monthlyFinance', 'review', AGENT_IDS.finance, 'medium'),
+      task('tasks.securityScan', 'securityScan', 'review', AGENT_IDS.security, 'high', PROJECT_IDS.securityAudit),
     ],
     pending: [
-      task('tasks.disputeHandling', 'pending', AGENT_IDS.srBackend, 'medium', PROJECT_IDS.payment),
-      task('tasks.darkMode', 'pending', AGENT_IDS.srFrontend, 'low', PROJECT_IDS.dashboard),
-      task('tasks.pushNotifications', 'pending', AGENT_IDS.mobile, 'medium', PROJECT_IDS.mobile),
-      task('tasks.abTesting', 'pending', AGENT_IDS.dataAnalyst, 'medium'),
-      task('tasks.blogAiWorkforce', 'pending', AGENT_IDS.copywriter, 'low'),
-      task('tasks.offlineMode', 'pending', AGENT_IDS.mobile, 'medium', PROJECT_IDS.mobile),
-      task('tasks.perfBenchmarks', 'pending', AGENT_IDS.devops, 'medium'),
-      task('tasks.emailOnboarding', 'pending', AGENT_IDS.socialMedia, 'low'),
+      task('tasks.disputeHandling', 'disputeHandling', 'pending', AGENT_IDS.srBackend, 'medium', PROJECT_IDS.payment),
+      task('tasks.darkMode', 'darkMode', 'pending', AGENT_IDS.srFrontend, 'low', PROJECT_IDS.dashboard),
+      task('tasks.pushNotifications', 'pushNotifications', 'pending', AGENT_IDS.mobile, 'medium', PROJECT_IDS.mobile),
+      task('tasks.abTesting', 'abTesting', 'pending', AGENT_IDS.dataAnalyst, 'medium'),
+      task('tasks.blogAiWorkforce', 'blogAiWorkforce', 'pending', AGENT_IDS.copywriter, 'low'),
+      task('tasks.offlineMode', 'offlineMode', 'pending', AGENT_IDS.mobile, 'medium', PROJECT_IDS.mobile),
+      task('tasks.perfBenchmarks', 'perfBenchmarks', 'pending', AGENT_IDS.devops, 'medium'),
+      task('tasks.emailOnboarding', 'emailOnboarding', 'pending', AGENT_IDS.socialMedia, 'low'),
     ],
     blocked: [
-      task('tasks.mobilePayment', 'blocked', AGENT_IDS.mobile, 'high', PROJECT_IDS.mobile, { blockedBy: ['task-13'] }),
-      task('tasks.deepLinking', 'blocked', AGENT_IDS.mobile, 'medium', PROJECT_IDS.mobile, { blockedBy: ['task-13'] }),
+      task('tasks.mobilePayment', 'mobilePayment', 'blocked', AGENT_IDS.mobile, 'high', PROJECT_IDS.mobile, { blockedBy: ['task-13'] }),
+      task('tasks.deepLinking', 'deepLinking', 'blocked', AGENT_IDS.mobile, 'medium', PROJECT_IDS.mobile, { blockedBy: ['task-13'] }),
     ],
-    failed: [
-      task('tasks.legacyMigration', 'failed', AGENT_IDS.backend, 'medium', { result: ts('tasks.legacyMigrationError') }),
-    ],
+    failed: [],
   };
 
   // ── Requirements ───────────────────────────────────────────────────────
+  const rd = (key: string) => ts(`reqDesc.${key}`);
   const requirements: RequirementInfo[] = [
-    { id: 'req-1', title: ts('requirements.stripePaypal'), description: '', status: 'in_progress', priority: 'high', source: 'human', createdBy: HUMAN_IDS.alex, taskIds: ['task-1', 'task-13'], projectId: PROJECT_IDS.payment, createdAt: now, updatedAt: now },
-    { id: 'req-2', title: ts('requirements.dashboardPerf'), description: '', status: 'pending', priority: 'high', source: 'human', createdBy: HUMAN_IDS.james, taskIds: [], projectId: PROJECT_IDS.dashboard, createdAt: now, updatedAt: now },
-    { id: 'req-3', title: ts('requirements.openApiDocs'), description: '', status: 'in_progress', priority: 'medium', source: 'agent', createdBy: AGENT_IDS.techWriter, taskIds: ['task-26'], createdAt: now, updatedAt: now },
-    { id: 'req-4', title: ts('requirements.offlineCore'), description: '', status: 'pending', priority: 'medium', source: 'human', createdBy: HUMAN_IDS.james, taskIds: [], projectId: PROJECT_IDS.mobile, createdAt: now, updatedAt: now },
-    { id: 'req-5', title: ts('requirements.gdpr'), description: '', status: 'completed', priority: 'high', source: 'human', createdBy: HUMAN_IDS.michael, taskIds: ['task-10'], createdAt: now, updatedAt: now },
-    { id: 'req-6', title: ts('requirements.monthlyReport'), description: '', status: 'in_progress', priority: 'medium', source: 'human', createdBy: HUMAN_IDS.alex, taskIds: ['task-27'], createdAt: now, updatedAt: now },
-    { id: 'req-7', title: ts('requirements.competitiveQuarterly'), description: '', status: 'completed', priority: 'medium', source: 'human', createdBy: HUMAN_IDS.alex, taskIds: ['task-4'], projectId: PROJECT_IDS.research, createdAt: now, updatedAt: now },
-    { id: 'req-8', title: ts('requirements.paymentSla'), description: '', status: 'in_progress', priority: 'high', source: 'human', createdBy: HUMAN_IDS.sarah, taskIds: ['task-8'], projectId: PROJECT_IDS.payment, createdAt: now, updatedAt: now },
+    { id: 'req-1', title: ts('requirements.stripePaypal'), description: rd('stripePaypal'), status: 'in_progress', priority: 'high', source: 'human', createdBy: HUMAN_IDS.alex, taskIds: ['task-1', 'task-2', 'task-5', 'task-13', 'task-17', 'task-23'], projectId: PROJECT_IDS.payment, createdAt: now, updatedAt: now },
+    { id: 'req-2', title: ts('requirements.dashboardPerf'), description: rd('dashboardPerf'), status: 'pending', priority: 'high', source: 'human', createdBy: HUMAN_IDS.james, taskIds: [], projectId: PROJECT_IDS.dashboard, createdAt: now, updatedAt: now },
+    { id: 'req-3', title: ts('requirements.openApiDocs'), description: rd('openApiDocs'), status: 'in_progress', priority: 'medium', source: 'agent', createdBy: AGENT_IDS.techWriter, taskIds: ['task-26'], createdAt: now, updatedAt: now },
+    { id: 'req-4', title: ts('requirements.offlineCore'), description: rd('offlineCore'), status: 'pending', priority: 'medium', source: 'human', createdBy: HUMAN_IDS.james, taskIds: [], projectId: PROJECT_IDS.mobile, createdAt: now, updatedAt: now },
+    { id: 'req-5', title: ts('requirements.gdpr'), description: rd('gdpr'), status: 'completed', priority: 'high', source: 'human', createdBy: HUMAN_IDS.alex, taskIds: ['task-10'], createdAt: now, updatedAt: now },
+    { id: 'req-6', title: ts('requirements.monthlyReport'), description: rd('monthlyReport'), status: 'in_progress', priority: 'medium', source: 'human', createdBy: HUMAN_IDS.alex, taskIds: ['task-27'], createdAt: now, updatedAt: now },
+    { id: 'req-7', title: ts('requirements.competitiveQuarterly'), description: rd('competitiveQuarterly'), status: 'completed', priority: 'medium', source: 'human', createdBy: HUMAN_IDS.alex, taskIds: ['task-4'], projectId: PROJECT_IDS.research, createdAt: now, updatedAt: now },
+    { id: 'req-8', title: ts('requirements.paymentSla'), description: rd('paymentSla'), status: 'in_progress', priority: 'high', source: 'human', createdBy: HUMAN_IDS.sarah, taskIds: ['task-8'], projectId: PROJECT_IDS.payment, createdAt: now, updatedAt: now },
   ];
 
   // ── Deliverables ───────────────────────────────────────────────────────
   const deliverables: DeliverableInfo[] = [
-    { id: 'del-1', type: 'file', title: ts('deliverables.paymentApiSpec'), summary: '', reference: '/deliverables/payment-api-v2.yaml', tags: ['api', 'payment'], status: 'verified', agentId: AGENT_IDS.srBackend, projectId: PROJECT_IDS.payment, accessCount: 24, createdAt: now, updatedAt: now },
-    { id: 'del-2', type: 'directory', title: ts('deliverables.dashboardMockups'), summary: '', reference: '/deliverables/dashboard-redesign/', tags: ['design', 'ui'], status: 'active', agentId: AGENT_IDS.uiDesigner, projectId: PROJECT_IDS.dashboard, accessCount: 12, createdAt: now, updatedAt: now },
-    { id: 'del-3', type: 'file', title: ts('deliverables.q2Report'), summary: '', reference: '/deliverables/q2-competitive-report.pdf', tags: ['research', 'strategy'], status: 'active', agentId: AGENT_IDS.researchLead, projectId: PROJECT_IDS.research, accessCount: 8, createdAt: now, updatedAt: now },
-    { id: 'del-4', type: 'file', title: ts('deliverables.cicdConfig'), summary: '', reference: '/deliverables/cicd-pipeline.yaml', tags: ['devops', 'ci'], status: 'verified', agentId: AGENT_IDS.devops, projectId: PROJECT_IDS.payment, accessCount: 18, createdAt: now, updatedAt: now },
-    { id: 'del-5', type: 'file', title: ts('deliverables.componentDocs'), summary: '', reference: '/deliverables/component-library.md', tags: ['docs', 'frontend'], status: 'active', agentId: AGENT_IDS.frontend, projectId: PROJECT_IDS.dashboard, accessCount: 6, createdAt: now, updatedAt: now },
-    { id: 'del-6', type: 'file', title: ts('deliverables.securityReport'), summary: '', reference: '/deliverables/security-audit-q1.pdf', tags: ['security', 'audit'], status: 'verified', agentId: AGENT_IDS.security, projectId: PROJECT_IDS.securityAudit, accessCount: 15, createdAt: now, updatedAt: now },
-    { id: 'del-7', type: 'directory', title: ts('deliverables.mlResults'), summary: '', reference: '/deliverables/ml-training/', tags: ['ml', 'ai'], status: 'active', agentId: AGENT_IDS.mlEngineer, projectId: PROJECT_IDS.research, accessCount: 4, createdAt: now, updatedAt: now },
-    { id: 'del-8', type: 'file', title: ts('deliverables.seoMatrix'), summary: '', reference: '/deliverables/seo-keywords.xlsx', tags: ['seo', 'marketing'], status: 'verified', agentId: AGENT_IDS.seo, accessCount: 10, createdAt: now, updatedAt: now },
-    { id: 'del-9', type: 'file', title: ts('deliverables.financeReport'), summary: '', reference: '/deliverables/monthly-finance-may.pdf', tags: ['finance'], status: 'active', agentId: AGENT_IDS.finance, accessCount: 3, createdAt: now, updatedAt: now },
-    { id: 'del-10', type: 'file', title: ts('deliverables.apiDocsV2'), summary: '', reference: '/deliverables/api-docs-v2.md', tags: ['docs', 'api'], status: 'active', agentId: AGENT_IDS.techWriter, accessCount: 7, createdAt: now, updatedAt: now },
-    { id: 'del-11', type: 'directory', title: ts('deliverables.interviewNotes'), summary: '', reference: '/deliverables/user-research/', tags: ['research', 'ux'], status: 'verified', agentId: AGENT_IDS.uxResearcher, projectId: PROJECT_IDS.dashboard, accessCount: 5, createdAt: now, updatedAt: now },
-    { id: 'del-12', type: 'file', title: ts('deliverables.wireframes'), summary: '', reference: '/deliverables/mobile-wireframes.fig', tags: ['design', 'mobile'], status: 'active', agentId: AGENT_IDS.uiDesigner, projectId: PROJECT_IDS.mobile, accessCount: 9, createdAt: now, updatedAt: now },
-    { id: 'del-13', type: 'file', title: ts('deliverables.patentAnalysis'), summary: '', reference: '/deliverables/patent-landscape.pdf', tags: ['research', 'legal'], status: 'active', agentId: AGENT_IDS.researchAnalyst, projectId: PROJECT_IDS.research, accessCount: 2, createdAt: now, updatedAt: now },
-    { id: 'del-14', type: 'file', title: ts('deliverables.testFramework'), summary: '', reference: '/deliverables/test-framework/', artifactType: 'skill', tags: ['testing', 'automation'], status: 'verified', agentId: AGENT_IDS.qaLead, projectId: PROJECT_IDS.payment, accessCount: 11, createdAt: now, updatedAt: now },
-    { id: 'del-15', type: 'directory', title: ts('deliverables.socialAssets'), summary: '', reference: '/deliverables/social-media/', tags: ['marketing', 'design'], status: 'active', agentId: AGENT_IDS.socialMedia, accessCount: 6, createdAt: now, updatedAt: now },
+    { id: 'del-1', type: 'file', title: ts('deliverables.paymentApiSpec'), summary: ts('delSummary.paymentApiSpec'), reference: '/deliverables/payment-api-v2.yaml', tags: ['api', 'payment'], status: 'verified', agentId: AGENT_IDS.srBackend, projectId: PROJECT_IDS.payment, accessCount: 24, createdAt: now, updatedAt: now },
+    { id: 'del-2', type: 'directory', title: ts('deliverables.dashboardMockups'), summary: ts('delSummary.dashboardMockups'), reference: '/deliverables/dashboard-redesign/', tags: ['design', 'ui'], status: 'active', agentId: AGENT_IDS.uiDesigner, projectId: PROJECT_IDS.dashboard, accessCount: 12, createdAt: now, updatedAt: now },
+    { id: 'del-3', type: 'file', title: ts('deliverables.q2Report'), summary: ts('delSummary.q2Report'), reference: '/deliverables/q2-competitive-report.pdf', tags: ['research', 'strategy'], status: 'active', agentId: AGENT_IDS.researchLead, projectId: PROJECT_IDS.research, accessCount: 8, createdAt: now, updatedAt: now },
+    { id: 'del-4', type: 'file', title: ts('deliverables.cicdConfig'), summary: ts('delSummary.cicdConfig'), reference: '/deliverables/cicd-pipeline.yaml', tags: ['devops', 'ci'], status: 'verified', agentId: AGENT_IDS.devops, projectId: PROJECT_IDS.payment, accessCount: 18, createdAt: now, updatedAt: now },
+    { id: 'del-5', type: 'file', title: ts('deliverables.componentDocs'), summary: ts('delSummary.componentDocs'), reference: '/deliverables/component-library.md', tags: ['docs', 'frontend'], status: 'active', agentId: AGENT_IDS.frontend, projectId: PROJECT_IDS.dashboard, accessCount: 6, createdAt: now, updatedAt: now },
+    { id: 'del-6', type: 'file', title: ts('deliverables.securityReport'), summary: ts('delSummary.securityReport'), reference: '/deliverables/security-audit-q1.pdf', tags: ['security', 'audit'], status: 'verified', agentId: AGENT_IDS.security, projectId: PROJECT_IDS.securityAudit, accessCount: 15, createdAt: now, updatedAt: now },
+    { id: 'del-7', type: 'directory', title: ts('deliverables.mlResults'), summary: ts('delSummary.mlResults'), reference: '/deliverables/ml-training/', tags: ['ml', 'ai'], status: 'active', agentId: AGENT_IDS.mlEngineer, projectId: PROJECT_IDS.research, accessCount: 4, createdAt: now, updatedAt: now },
+    { id: 'del-8', type: 'file', title: ts('deliverables.seoMatrix'), summary: ts('delSummary.seoMatrix'), reference: '/deliverables/seo-keywords.xlsx', tags: ['seo', 'marketing'], status: 'verified', agentId: AGENT_IDS.seo, accessCount: 10, createdAt: now, updatedAt: now },
+    { id: 'del-9', type: 'file', title: ts('deliverables.financeReport'), summary: ts('delSummary.financeReport'), reference: '/deliverables/monthly-finance-may.pdf', tags: ['finance'], status: 'active', agentId: AGENT_IDS.finance, accessCount: 3, createdAt: now, updatedAt: now },
+    { id: 'del-10', type: 'file', title: ts('deliverables.apiDocsV2'), summary: ts('delSummary.apiDocsV2'), reference: '/deliverables/api-docs-v2.md', tags: ['docs', 'api'], status: 'active', agentId: AGENT_IDS.techWriter, accessCount: 7, createdAt: now, updatedAt: now },
+    { id: 'del-11', type: 'directory', title: ts('deliverables.interviewNotes'), summary: ts('delSummary.interviewNotes'), reference: '/deliverables/user-research/', tags: ['research', 'ux'], status: 'verified', agentId: AGENT_IDS.uxResearcher, projectId: PROJECT_IDS.dashboard, accessCount: 5, createdAt: now, updatedAt: now },
+    { id: 'del-12', type: 'file', title: ts('deliverables.wireframes'), summary: ts('delSummary.wireframes'), reference: '/deliverables/mobile-wireframes.fig', tags: ['design', 'mobile'], status: 'active', agentId: AGENT_IDS.uiDesigner, projectId: PROJECT_IDS.mobile, accessCount: 9, createdAt: now, updatedAt: now },
+    { id: 'del-13', type: 'file', title: ts('deliverables.patentAnalysis'), summary: ts('delSummary.patentAnalysis'), reference: '/deliverables/patent-landscape.pdf', tags: ['research', 'legal'], status: 'active', agentId: AGENT_IDS.researchAnalyst, projectId: PROJECT_IDS.research, accessCount: 2, createdAt: now, updatedAt: now },
+    { id: 'del-14', type: 'file', title: ts('deliverables.testFramework'), summary: ts('delSummary.testFramework'), reference: '/deliverables/test-framework/', artifactType: 'skill', tags: ['testing', 'automation'], status: 'verified', agentId: AGENT_IDS.qaLead, projectId: PROJECT_IDS.payment, accessCount: 11, createdAt: now, updatedAt: now },
+    { id: 'del-15', type: 'directory', title: ts('deliverables.socialAssets'), summary: ts('delSummary.socialAssets'), reference: '/deliverables/social-media/', tags: ['marketing', 'design'], status: 'active', agentId: AGENT_IDS.socialMedia, accessCount: 6, createdAt: now, updatedAt: now },
   ];
 
   // ── Group Chats ────────────────────────────────────────────────────────
@@ -279,10 +278,16 @@ export function createMockData(t: TFunction) {
     ...agents.map(a => ({ id: a.id, name: a.name, type: 'agent' as const })),
   ];
 
+  const engMembers = allMembersList.filter(m => agents.find(a => a.id === m.id && a.teamId === TEAM_IDS.engineering) || humans.find(h => h.id === m.id));
   const groupChats: GroupChatInfo[] = [
-    { id: 'gc-general', name: ts('channels.general'), type: 'custom', channelKey: 'custom:general', memberCount: 35, members: allMembersList },
-    { id: 'gc-announcements', name: ts('channels.announcements'), type: 'custom', channelKey: 'custom:announcements', memberCount: 35, members: allMembersList },
-    { id: 'gc-watercooler', name: ts('channels.watercooler'), type: 'custom', channelKey: 'custom:watercooler', memberCount: 35, members: allMembersList },
+    { id: 'gc-general', name: ts('channels.general'), type: 'custom', channelKey: 'custom:general', memberCount: 33, members: allMembersList },
+    { id: 'gc-announcements', name: ts('channels.announcements'), type: 'custom', channelKey: 'custom:announcements', memberCount: 33, members: allMembersList },
+    { id: 'gc-eng', name: ts('teams.engineering.name'), type: 'team', channelKey: `team:${TEAM_IDS.engineering}`, memberCount: engMembers.length, teamId: TEAM_IDS.engineering, members: engMembers },
+    { id: 'gc-pd', name: ts('teams.productDesign.name'), type: 'team', channelKey: `team:${TEAM_IDS.productDesign}`, memberCount: 6, teamId: TEAM_IDS.productDesign },
+    { id: 'gc-research', name: ts('teams.research.name'), type: 'team', channelKey: `team:${TEAM_IDS.research}`, memberCount: 4, teamId: TEAM_IDS.research },
+    { id: 'gc-content', name: ts('teams.content.name'), type: 'team', channelKey: `team:${TEAM_IDS.content}`, memberCount: 4, teamId: TEAM_IDS.content },
+    { id: 'gc-ops', name: ts('teams.operations.name'), type: 'team', channelKey: `team:${TEAM_IDS.operations}`, memberCount: 4, teamId: TEAM_IDS.operations },
+    { id: 'gc-alpha', name: ts('teams.projectAlpha.name'), type: 'team', channelKey: `team:${TEAM_IDS.projectAlpha}`, memberCount: 6, teamId: TEAM_IDS.projectAlpha },
   ];
 
   // ── Channel Messages ───────────────────────────────────────────────────
@@ -302,23 +307,37 @@ export function createMockData(t: TFunction) {
     msg('custom:general', AGENT_IDS.researchLead, 'agent', ts('agents.researchLead.name'), 'messages.general.researchLeadReply', 112),
     msg('custom:general', AGENT_IDS.engLead, 'agent', ts('agents.engLead.name'), 'messages.general.engLeadApi', 108, [AGENT_IDS.qaLead]),
     msg('custom:general', AGENT_IDS.qaLead, 'agent', ts('agents.qaLead.name'), 'messages.general.qaLeadReply', 105),
-    // team:core-engineering
-    msg('team:core-engineering', HUMAN_IDS.sarah, 'human', ts('humans.sarah.name'), 'messages.engineering.sarahArchitecture', 90),
-    msg('team:core-engineering', AGENT_IDS.srBackend, 'agent', ts('agents.srBackend.name'), 'messages.engineering.srBackendReply', 85),
-    msg('team:core-engineering', AGENT_IDS.devops, 'agent', ts('agents.devops.name'), 'messages.engineering.devopsCi', 80),
-    msg('team:core-engineering', HUMAN_IDS.sarah, 'human', ts('humans.sarah.name'), 'messages.engineering.sarahBuildTime', 75, [AGENT_IDS.devops]),
-    msg('team:core-engineering', AGENT_IDS.frontend, 'agent', ts('agents.frontend.name'), 'messages.engineering.frontendLib', 70),
-    // team:product-design
-    msg('team:product-design', HUMAN_IDS.james, 'human', ts('humans.james.name'), 'messages.product.jamesFunnel', 60, [AGENT_IDS.dataAnalyst]),
-    msg('team:product-design', AGENT_IDS.pm, 'agent', ts('agents.pm.name'), 'messages.product.pmMockups', 55, [AGENT_IDS.uiDesigner]),
-    msg('team:product-design', AGENT_IDS.uiDesigner, 'agent', ts('agents.uiDesigner.name'), 'messages.product.uiDesignerReply', 50),
-    msg('team:product-design', HUMAN_IDS.emily, 'human', ts('humans.emily.name'), 'messages.product.emilyA11y', 45),
-    msg('team:product-design', AGENT_IDS.dataAnalyst, 'agent', ts('agents.dataAnalyst.name'), 'messages.product.dataAnalystConversion', 40),
-    // team:project-alpha
-    msg('team:project-alpha', AGENT_IDS.engLead, 'agent', ts('agents.engLead.name'), 'messages.alpha.engLeadSprint', 30, [AGENT_IDS.mobile]),
-    msg('team:project-alpha', AGENT_IDS.mobile, 'agent', ts('agents.mobile.name'), 'messages.alpha.mobileIntegration', 25),
-    msg('team:project-alpha', HUMAN_IDS.james, 'human', ts('humans.james.name'), 'messages.alpha.jamesTimeline', 20, [AGENT_IDS.qaLead]),
-    msg('team:project-alpha', AGENT_IDS.qaLead, 'agent', ts('agents.qaLead.name'), 'messages.alpha.qaLeadTestPlan', 15, [AGENT_IDS.security]),
+    msg('custom:general', AGENT_IDS.pm, 'agent', ts('agents.pm.name'), 'messages.general.pmStandup', 100, [AGENT_IDS.frontend]),
+    msg('custom:general', AGENT_IDS.frontend, 'agent', ts('agents.frontend.name'), 'messages.general.frontendEstimate', 95),
+    msg('custom:general', AGENT_IDS.chiefOfStaff, 'agent', ts('agents.chiefOfStaff.name'), 'messages.general.chiefOfStaffSync', 88, [AGENT_IDS.uiDesigner]),
+    msg('custom:general', AGENT_IDS.uiDesigner, 'agent', ts('agents.uiDesigner.name'), 'messages.general.uiDesignerTokens', 82),
+    msg('custom:general', HUMAN_IDS.sarah, 'human', ts('humans.sarah.name'), 'messages.general.sarahReview', 75),
+    msg('custom:general', AGENT_IDS.dataAnalyst, 'agent', ts('agents.dataAnalyst.name'), 'messages.general.dataAnalystInsight', 68),
+    msg('custom:general', AGENT_IDS.devops, 'agent', ts('agents.devops.name'), 'messages.general.devopsDeployment', 60),
+    msg('custom:general', AGENT_IDS.strategyAnalyst, 'agent', ts('agents.strategyAnalyst.name'), 'messages.general.strategyMarket', 52),
+    // Core Engineering team chat
+    msg(`team:${TEAM_IDS.engineering}`, HUMAN_IDS.sarah, 'human', ts('humans.sarah.name'), 'messages.engineering.sarahArchitecture', 90),
+    msg(`team:${TEAM_IDS.engineering}`, AGENT_IDS.srBackend, 'agent', ts('agents.srBackend.name'), 'messages.engineering.srBackendReply', 85),
+    msg(`team:${TEAM_IDS.engineering}`, AGENT_IDS.devops, 'agent', ts('agents.devops.name'), 'messages.engineering.devopsCi', 80),
+    msg(`team:${TEAM_IDS.engineering}`, HUMAN_IDS.sarah, 'human', ts('humans.sarah.name'), 'messages.engineering.sarahBuildTime', 75, [AGENT_IDS.devops]),
+    msg(`team:${TEAM_IDS.engineering}`, AGENT_IDS.frontend, 'agent', ts('agents.frontend.name'), 'messages.engineering.frontendLib', 70),
+    msg(`team:${TEAM_IDS.engineering}`, AGENT_IDS.backend, 'agent', ts('agents.backend.name'), 'messages.engineering.backendMigration', 65),
+    msg(`team:${TEAM_IDS.engineering}`, AGENT_IDS.engLead, 'agent', ts('agents.engLead.name'), 'messages.engineering.engLeadCodeReview', 58),
+    msg(`team:${TEAM_IDS.engineering}`, AGENT_IDS.security, 'agent', ts('agents.security.name'), 'messages.engineering.securityDep', 53, [AGENT_IDS.srBackend]),
+    msg(`team:${TEAM_IDS.engineering}`, AGENT_IDS.qaLead, 'agent', ts('agents.qaLead.name'), 'messages.engineering.qaE2e', 48),
+    msg(`team:${TEAM_IDS.engineering}`, HUMAN_IDS.sarah, 'human', ts('humans.sarah.name'), 'messages.engineering.sarahShipIt', 42),
+    msg(`team:${TEAM_IDS.engineering}`, AGENT_IDS.engLead, 'agent', ts('agents.engLead.name'), 'messages.engineering.engLeadWrapUp', 38),
+    // Product & Design team chat
+    msg(`team:${TEAM_IDS.productDesign}`, HUMAN_IDS.james, 'human', ts('humans.james.name'), 'messages.product.jamesFunnel', 60, [AGENT_IDS.dataAnalyst]),
+    msg(`team:${TEAM_IDS.productDesign}`, AGENT_IDS.pm, 'agent', ts('agents.pm.name'), 'messages.product.pmMockups', 55, [AGENT_IDS.uiDesigner]),
+    msg(`team:${TEAM_IDS.productDesign}`, AGENT_IDS.uiDesigner, 'agent', ts('agents.uiDesigner.name'), 'messages.product.uiDesignerReply', 50),
+    msg(`team:${TEAM_IDS.productDesign}`, HUMAN_IDS.james, 'human', ts('humans.james.name'), 'messages.product.emilyA11y', 45),
+    msg(`team:${TEAM_IDS.productDesign}`, AGENT_IDS.dataAnalyst, 'agent', ts('agents.dataAnalyst.name'), 'messages.product.dataAnalystConversion', 40),
+    // Project Alpha team chat
+    msg(`team:${TEAM_IDS.projectAlpha}`, AGENT_IDS.engLead, 'agent', ts('agents.engLead.name'), 'messages.alpha.engLeadSprint', 30, [AGENT_IDS.mobile]),
+    msg(`team:${TEAM_IDS.projectAlpha}`, AGENT_IDS.mobile, 'agent', ts('agents.mobile.name'), 'messages.alpha.mobileIntegration', 25),
+    msg(`team:${TEAM_IDS.projectAlpha}`, HUMAN_IDS.james, 'human', ts('humans.james.name'), 'messages.alpha.jamesTimeline', 20, [AGENT_IDS.qaLead]),
+    msg(`team:${TEAM_IDS.projectAlpha}`, AGENT_IDS.qaLead, 'agent', ts('agents.qaLead.name'), 'messages.alpha.qaLeadTestPlan', 15, [AGENT_IDS.security]),
   ];
 
   // ── Ops Dashboard ──────────────────────────────────────────────────────
@@ -337,7 +356,7 @@ export function createMockData(t: TFunction) {
     taskKPI: {
       totalTasks: allTasks.length,
       statusCounts: Object.fromEntries(Object.entries(board).map(([s, t]) => [s, t.length])),
-      successRate: 91.2,
+      successRate: 96.8,
       blockedCount: board.blocked?.length ?? 0,
       averageCompletionTimeMs: 15120000,
       recentActivity: allTasks.filter(t => t.status !== 'pending').slice(0, 15).map(t => ({
@@ -350,12 +369,12 @@ export function createMockData(t: TFunction) {
       tokenUsage: { input: 50000 + i * 3000, output: 30000 + i * 2000, cost: 0.5 + i * 0.1 },
       taskMetrics: {
         completed: Math.max(0, 12 - Math.floor(i / 2)),
-        failed: i % 8 === 0 ? 1 : 0,
+        failed: 0,
         cancelled: 0,
         averageCompletionTimeMs: 3600000 + Math.random() * 7200000,
       },
       averageResponseTimeMs: 500 + Math.random() * 2000,
-      errorRate: i % 8 === 0 ? 0.08 : Math.random() * 0.05,
+      errorRate: Math.random() * 0.03,
       totalInteractions: 30 + Math.floor(Math.random() * 60),
     })),
   };
@@ -388,6 +407,36 @@ export function createMockData(t: TFunction) {
     usageInfo,
   };
 
+  // ── Assemble TeamPreviewData ───────────────────────────────────────────
+  const teamPreviewData: TeamPreviewData = {
+    agents,
+    humans,
+    teams,
+    groupChats,
+    channelMessages,
+    chatMode: 'channel',
+    activeChannel: `team:${TEAM_IDS.engineering}`,
+    streamLastMessage: true,
+  };
+
+  // ── Assemble WorkPreviewData ───────────────────────────────────────────
+  const workPreviewData: WorkPreviewData = {
+    projects,
+    board,
+    agents,
+    users: humans,
+    allRequirements: requirements,
+    initialBoardType: 'kanban',
+    initialSelectedReqId: 'req-1',
+  };
+
+  // ── Assemble DeliverablesPreviewData ───────────────────────────────────
+  const deliverablesPreviewData: DeliverablesPreviewData = {
+    items: deliverables,
+    projects,
+    agents,
+  };
+
   return {
     humans,
     agents,
@@ -402,6 +451,9 @@ export function createMockData(t: TFunction) {
     storageInfo,
     usageInfo,
     homePreviewData,
+    teamPreviewData,
+    workPreviewData,
+    deliverablesPreviewData,
   };
 }
 

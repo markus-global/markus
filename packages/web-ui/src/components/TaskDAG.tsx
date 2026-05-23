@@ -14,6 +14,7 @@ import {
   Position,
   useNodesState,
   useEdgesState,
+  useUpdateNodeInternals as useUpdateNodeInternalsHook,
   MarkerType,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -124,6 +125,21 @@ const nodeTypes: NodeTypes = {
   task: TaskNode as unknown as NodeTypes[string],
   requirement: RequirementNode as unknown as NodeTypes[string],
 };
+
+function PreviewNodeUpdater({ nodeIds, rfRef }: { nodeIds: string[]; rfRef: React.RefObject<ReactFlowInstance | null> }) {
+  const updateNodeInternals = useUpdateNodeInternalsHook();
+  useEffect(() => {
+    if (nodeIds.length === 0) return;
+    const t = setTimeout(() => {
+      updateNodeInternals(nodeIds);
+      requestAnimationFrame(() => {
+        rfRef.current?.fitView({ padding: 0.2 });
+      });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [nodeIds.length]);
+  return null;
+}
 
 const isLightSnapshot = () =>
   document.documentElement.classList.contains('light') ||
@@ -276,6 +292,8 @@ interface TaskDAGProps {
   selectedTaskId?: string | null;
   selectedReqId?: string | null;
   hasDetailPanel?: boolean;
+  defaultExpandedNodeId?: string | null;
+  previewMode?: boolean;
 }
 
 const ALL_STATUSES = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived'] as const;
@@ -321,12 +339,12 @@ function collectTransitiveDeps(nodeId: string, taskMap: Map<string, TaskInfo>, r
   return visited;
 }
 
-export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onDependencyChange, selectedTaskId, selectedReqId, hasDetailPanel }: TaskDAGProps) {
+export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onDependencyChange, selectedTaskId, selectedReqId, hasDetailPanel, defaultExpandedNodeId, previewMode }: TaskDAGProps) {
   const isLight = useIsLight();
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Edge | null>(null);
   const [groupFilter, setGroupFilter] = useState<Set<string>>(new Set(ALL_DAG_GROUP_IDS));
-  const [expandedNodeId, setExpandedNodeId] = useState<string | null>(null);
+  const [expandedNodeId, setExpandedNodeId] = useState<string | null>(defaultExpandedNodeId ?? null);
   const [localShowArchived, setLocalShowArchived] = useState(showArchivedProp ?? false);
   const showArchived = showArchivedProp ?? localShowArchived;
   const setShowArchived = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
@@ -338,6 +356,10 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
   useEffect(() => {
     if (showArchivedProp !== undefined) setLocalShowArchived(showArchivedProp);
   }, [showArchivedProp]);
+
+  useEffect(() => {
+    if (defaultExpandedNodeId) setExpandedNodeId(defaultExpandedNodeId);
+  }, [defaultExpandedNodeId]);
 
   const archivedCount = useMemo(() => tasks.filter(t => isArchivedTask(t)).length, [tasks]);
 
@@ -624,6 +646,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
         proOptions={{ hideAttribution: true }}
         connectionLineStyle={{ stroke: '#818cf8', strokeWidth: 2, strokeDasharray: '6 3' }}
       >
+        {previewMode && <PreviewNodeUpdater nodeIds={nodes.map(n => n.id)} rfRef={rfRef} />}
         <Background color={isLight ? '#cbd5e1' : '#374151'} gap={20} size={1} />
         <Controls
           showInteractive={false}
