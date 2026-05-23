@@ -420,6 +420,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       invalidateApiCache('/approvals');
       invalidateApiCache('/notifications');
       invalidateApiCache('/tasks');
+      invalidateApiCache('/taskboard');
       invalidateApiCache('/requirements');
       window.dispatchEvent(new CustomEvent('markus:data-changed'));
       setTimeout(() => fetchData(), 800);

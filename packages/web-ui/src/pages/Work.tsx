@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient, ApiError, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo } from '../api.ts';
+import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, attachSubagentLogsToEntries, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
@@ -3493,7 +3493,9 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     const reqUnsubs = reqEvents.map(evt =>
       wsClient.on(evt, () => { debouncedRefreshReqs(); })
     );
-    return () => { clearInterval(i); unsub(); unsubTaskCreate(); reqUnsubs.forEach(u => u()); if (boardDebounce) clearTimeout(boardDebounce); if (reqDebounce) clearTimeout(reqDebounce); };
+    const onDataChanged = () => { invalidateApiCache('/taskboard'); refreshBoard(); refreshRequirements(); };
+    window.addEventListener('markus:data-changed', onDataChanged);
+    return () => { clearInterval(i); unsub(); unsubTaskCreate(); reqUnsubs.forEach(u => u()); window.removeEventListener('markus:data-changed', onDataChanged); if (boardDebounce) clearTimeout(boardDebounce); if (reqDebounce) clearTimeout(reqDebounce); };
   }, [isActive, refreshBoard, refreshAgents, refreshRequirements]);
 
   // Refs for event handlers that need current state without re-registering

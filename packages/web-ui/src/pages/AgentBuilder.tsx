@@ -577,13 +577,13 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
         )}
         {sharePrompt && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setSharePrompt(null)}>
-            <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-sm w-full mx-4 p-6" onClick={e => e.stopPropagation()}>
+            <div className="bg-surface-secondary border border-border-default rounded-xl max-w-sm w-full mx-4 p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
               <h3 className="text-base font-semibold text-fg-primary mb-2">{t('common:share')}</h3>
               <p className="text-sm text-fg-secondary mb-5">{t('share.imagePrompt')}</p>
               <div className="flex gap-3">
                 <button
                   onClick={() => { const art = sharePrompt; setSharePrompt(null); PAYMENTS_ENABLED ? setShareModeTarget(art) : void handleShare(art); }}
-                  className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-gray-600 transition-colors">
+                  className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-fg-tertiary transition-colors">
                   {t('share.directly')}
                 </button>
                 <button
@@ -597,7 +597,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
         )}
         {shareModeTarget && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShareModeTarget(null)}>
-            <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-sm w-full mx-4 p-6" onClick={e => e.stopPropagation()}>
+            <div className="bg-surface-secondary border border-border-default rounded-xl max-w-sm w-full mx-4 p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
               <ShareModeSelect
                 isUpdate={sharedMap.has(`${shareModeTarget.type}/${shareModeTarget.name}`)}
                 onCancel={() => setShareModeTarget(null)}

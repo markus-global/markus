@@ -653,13 +653,14 @@ function AgentMessageBody({
       : undefined;
     const textSegments = segments.filter(s => s.type === 'text');
     const allText = !isStreaming ? textSegments.map(s => s.content).join('') : null;
-    const displayText = allText
-      ? allText
-          .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
-          .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
-          .replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '')
-          .trim() || null
-      : null;
+    const stripMarkup = (t: string) => t
+      .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
+      .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
+      .replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '')
+      .trim() || null;
+    const segmentText = allText ? stripMarkup(allText) : null;
+    const displayText = segmentText
+      || (!isStreaming && msg.text ? stripMarkup(msg.text) : null);
 
     // For the full execution log, prefer server-committed clean segments
     // (populated from thinking_commit/text_commit SSE events) over fragmented
@@ -983,7 +984,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [streamingVisual, setStreamingVisual] = useState(false);
   const streamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const STREAMING_MIN_DISPLAY_MS = 1500;
+  const STREAMING_MIN_DISPLAY_MS = 400;
   useEffect(() => {
     if (sending) {
       if (streamingTimerRef.current) { clearTimeout(streamingTimerRef.current); streamingTimerRef.current = null; }
@@ -1258,9 +1259,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   useEffect(() => {
     if (!isActive) return;
     refreshAgents();
+    refreshTeams();
     const timer = setInterval(refreshAgents, 30_000);
     const teamTimer = setInterval(refreshTeams, 60_000);
-    const unsub = wsClient.on('agent:update', throttledRefreshAgents);
+    const unsub = wsClient.on('agent:update', () => { throttledRefreshAgents(); throttledRefreshTeams(); });
     const unsubTeamUpdate = wsClient.on('team:update', throttledRefreshTeams);
     const unsubTeamOnAgentRemoved = wsClient.on('agent:removed', throttledRefreshTeams);
     const unsubGroup = wsClient.on('chat:group_created', () => { throttledRefreshGroupChats(); throttledRefreshTeams(); });
