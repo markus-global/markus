@@ -22,6 +22,7 @@
     "deleteProject": "删除项目",
     "archiveProject": "归档项目",
     "settingsTitle": "项目设置",
+    "editProject": "编辑项目",
     "descriptionPlaceholderLong": "添加项目描述…",
     "projectStatusHeading": "项目状态",
     "statusActive": "进行中",
@@ -417,5 +418,33 @@
     "minutesAgo": "{{count}} 分钟前",
     "hoursAgo": "{{count}} 小时前",
     "daysAgo": "{{count}} 天前"
+  },
+  "dag": {
+    "filter": {
+      "todo": "待办",
+      "in_progress": "进行中",
+      "review": "审核中",
+      "done": "已完成"
+    },
+    "reset": "重置",
+    "archivedToggle": "{{count}} 个已归档",
+    "expandHint": "点击卡片展开依赖关系",
+    "backToOverview": "← 返回概览",
+    "dragHint": "拖拽连线 · 点击边线移除",
+    "noTasks": "暂无任务可显示",
+    "reqLabel": "需求",
+    "taskCount_one": "{{count}} 个任务",
+    "taskCount_other": "{{count}} 个任务",
+    "depCount_one": "{{count}} 个依赖",
+    "depCount_other": "{{count}} 个依赖",
+    "removeDependencyTitle": "移除依赖？",
+    "removeDependencyBody": "「{{target}}」将不再被「{{source}}」阻塞。",
+    "toast": {
+      "dependencyExists": "依赖关系已存在",
+      "cycleError": "无法添加：会形成循环依赖",
+      "dependencyAdded": "已添加依赖",
+      "dependencyRemoved": "已移除依赖",
+      "failed": "失败：{{message}}"
+    }
   }
 }

@@ -1,4 +1,5 @@
 import { useMemo, useCallback, useState, useEffect, useRef, useSyncExternalStore } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   ReactFlow,
   Background,
@@ -41,10 +42,15 @@ const PRIORITY_INDICATOR: Record<string, string> = {
 };
 
 function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string; selected?: boolean; direction?: 'TB' | 'LR' } }) {
+  const { t } = useTranslation(['work', 'common']);
   const { task, agentName, selected, direction = 'TB' } = data;
   const colors = STATUS_COLORS[task.status] ?? STATUS_COLORS['pending']!;
   const isSched = task.taskType === 'scheduled' && !!task.scheduleConfig;
-  const schedLabel = isSched ? (task.scheduleConfig!.every ? `Every ${task.scheduleConfig!.every}` : task.scheduleConfig!.cron ? 'Cron' : '') : '';
+  const schedLabel = isSched
+    ? (task.scheduleConfig!.every
+      ? t('work:task.everyInterval', { interval: task.scheduleConfig!.every })
+      : task.scheduleConfig!.cron ? t('work:task.cronLabel') : '')
+    : '';
   const targetPos = direction === 'LR' ? Position.Left : Position.Top;
   const sourcePos = direction === 'LR' ? Position.Right : Position.Bottom;
 
@@ -54,7 +60,7 @@ function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string; select
       <div className="flex items-center gap-1.5 mb-1">
         <span className={`w-2 h-2 rounded-full shrink-0 ${PRIORITY_INDICATOR[task.priority] ?? 'bg-gray-500'}`} />
         <span className={`text-[10px] font-medium uppercase tracking-wider ${colors.text}`}>
-          {task.status.replace('_', ' ')}
+          {t(`work:status.task.${task.status}`, { defaultValue: task.status.replace('_', ' ') })}
         </span>
         {isSched && (
           <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/15 text-blue-600 ml-auto whitespace-nowrap inline-flex items-center gap-0.5"><svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg>{schedLabel}</span>
@@ -70,7 +76,7 @@ function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string; select
       )}
       {task.blockedBy && task.blockedBy.length > 0 && (
         <div className="text-[10px] text-fg-tertiary mt-0.5">
-          {task.blockedBy.length} dep{task.blockedBy.length > 1 ? 's' : ''}
+          {t('work:dag.depCount', { count: task.blockedBy.length })}
         </div>
       )}
       <Handle type="source" position={sourcePos} className="!bg-border-default !w-2 !h-2" />
@@ -94,6 +100,7 @@ const REQ_GROUP_MAP: Record<string, string> = {
 };
 
 function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: boolean; direction?: 'TB' | 'LR' } }) {
+  const { t } = useTranslation(['work', 'common']);
   const { req, selected, direction = 'TB' } = data;
   const colors = REQ_STATUS_COLORS[req.status] ?? REQ_STATUS_COLORS['pending']!;
   const targetPos = direction === 'LR' ? Position.Left : Position.Top;
@@ -102,9 +109,9 @@ function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: bo
     <div className={`rounded-lg border-2 border-dashed px-3 py-2 min-w-[180px] max-w-[220px] shadow-lg ${colors.bg} ${colors.border} ${selected ? 'ring-2 ring-brand-500 shadow-brand-500/25' : ''}`}>
       <Handle type="target" position={targetPos} className="!bg-border-default !w-2 !h-2" />
       <div className="flex items-center gap-1.5 mb-1">
-        <span className="text-[9px] px-1 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-600">REQ</span>
+        <span className="text-[9px] px-1 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-600">{t('work:dag.reqLabel')}</span>
         <span className={`text-[10px] font-medium uppercase tracking-wider ${colors.text}`}>
-          {req.status.replace('_', ' ')}
+          {t(`work:status.requirement.${req.status}`, { defaultValue: req.status.replace('_', ' ') })}
         </span>
       </div>
       <div className="text-xs font-medium text-fg-primary leading-snug line-clamp-2 mb-1">
@@ -112,7 +119,7 @@ function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: bo
       </div>
       {req.taskIds.length > 0 && (
         <div className="text-[10px] text-fg-tertiary">
-          {req.taskIds.length} task{req.taskIds.length > 1 ? 's' : ''}
+          {t('work:dag.taskCount', { count: req.taskIds.length })}
         </div>
       )}
       <Handle type="source" position={sourcePos} className="!bg-border-default !w-2 !h-2" />
@@ -281,13 +288,14 @@ interface TaskDAGProps {
 const ALL_STATUSES = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived'] as const;
 
 const DAG_FILTER_GROUPS = [
-  { id: 'todo',        label: 'To Do',       statuses: new Set(['pending']),                                           color: { bg: 'bg-blue-500/10', border: 'border-blue-500/30', text: 'text-blue-500' } },
-  { id: 'in_progress', label: 'In Progress', statuses: new Set(['in_progress', 'blocked']),                           color: { bg: 'bg-amber-500/10', border: 'border-amber-500/30', text: 'text-amber-600' } },
-  { id: 'review',      label: 'In Review',   statuses: new Set(['review']),                                           color: { bg: 'bg-brand-500/10', border: 'border-brand-500/30', text: 'text-brand-500' } },
-  { id: 'done',        label: 'Done',        statuses: new Set(['completed', 'failed', 'rejected', 'cancelled', 'archived']),     color: { bg: 'bg-green-500/10', border: 'border-green-500/30', text: 'text-green-600' } },
+  { id: 'todo',        statuses: new Set(['pending']),                                           color: { bg: 'bg-blue-500/10', border: 'border-blue-500/30', text: 'text-blue-500' } },
+  { id: 'in_progress', statuses: new Set(['in_progress', 'blocked']),                           color: { bg: 'bg-amber-500/10', border: 'border-amber-500/30', text: 'text-amber-600' } },
+  { id: 'review',      statuses: new Set(['review']),                                           color: { bg: 'bg-brand-500/10', border: 'border-brand-500/30', text: 'text-brand-500' } },
+  { id: 'done',        statuses: new Set(['completed', 'failed', 'rejected', 'cancelled', 'archived']),     color: { bg: 'bg-green-500/10', border: 'border-green-500/30', text: 'text-green-600' } },
 ] as const;
 
 const ALL_DAG_GROUP_IDS = new Set(DAG_FILTER_GROUPS.map(g => g.id));
+const DEFAULT_DAG_GROUP_FILTER = new Set(DAG_FILTER_GROUPS.filter(g => g.id !== 'done').map(g => g.id));
 
 const isArchivedTask = (t: TaskInfo) => t.status === 'archived';
 
@@ -322,10 +330,11 @@ function collectTransitiveDeps(nodeId: string, taskMap: Map<string, TaskInfo>, r
 }
 
 export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onDependencyChange, selectedTaskId, selectedReqId, hasDetailPanel }: TaskDAGProps) {
+  const { t } = useTranslation(['work', 'common']);
   const isLight = useIsLight();
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Edge | null>(null);
-  const [groupFilter, setGroupFilter] = useState<Set<string>>(new Set(ALL_DAG_GROUP_IDS));
+  const [groupFilter, setGroupFilter] = useState<Set<string>>(() => new Set(DEFAULT_DAG_GROUP_FILTER));
   const [expandedNodeId, setExpandedNodeId] = useState<string | null>(null);
   const [localShowArchived, setLocalShowArchived] = useState(showArchivedProp ?? false);
   const showArchived = showArchivedProp ?? localShowArchived;
@@ -555,24 +564,24 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     if (!targetTask) return;
 
     if (targetTask.blockedBy?.includes(source)) {
-      showToast('Dependency already exists', 'error');
+      showToast(t('work:dag.toast.dependencyExists'), 'error');
       return;
     }
 
     if (wouldCreateCycle(taskMap, source, target)) {
-      showToast('Cannot add: would create a cycle', 'error');
+      showToast(t('work:dag.toast.cycleError'), 'error');
       return;
     }
 
     const newBlockedBy = [...(targetTask.blockedBy ?? []), source];
     try {
       await api.tasks.update(target, { blockedBy: newBlockedBy });
-      showToast('Dependency added');
+      showToast(t('work:dag.toast.dependencyAdded'));
       onDependencyChange?.();
     } catch (err) {
-      showToast(`Failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      showToast(t('work:dag.toast.failed', { message: err instanceof Error ? err.message : String(err) }), 'error');
     }
-  }, [taskMap, showToast, onDependencyChange]);
+  }, [taskMap, showToast, onDependencyChange, t]);
 
   const handleEdgeClick: EdgeMouseHandler = useCallback((_event, edge) => {
     setPendingDelete(edge);
@@ -586,21 +595,25 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     const newBlockedBy = (targetTask.blockedBy ?? []).filter(id => id !== pendingDelete.source);
     try {
       await api.tasks.update(pendingDelete.target, { blockedBy: newBlockedBy });
-      showToast('Dependency removed');
+      showToast(t('work:dag.toast.dependencyRemoved'));
       onDependencyChange?.();
     } catch (err) {
-      showToast(`Failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      showToast(t('work:dag.toast.failed', { message: err instanceof Error ? err.message : String(err) }), 'error');
     }
     setPendingDelete(null);
-  }, [pendingDelete, taskMap, showToast, onDependencyChange]);
+  }, [pendingDelete, taskMap, showToast, onDependencyChange, t]);
 
   if (tasks.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm">
-        No tasks to display
+        {t('work:dag.noTasks')}
       </div>
     );
   }
+
+  const isDefaultFilter = groupFilter.size === DEFAULT_DAG_GROUP_FILTER.size
+    && [...DEFAULT_DAG_GROUP_FILTER].every(id => groupFilter.has(id))
+    && !showArchived;
 
   const sourceTask = pendingDelete ? taskMap.get(pendingDelete.source) : null;
   const targetTask = pendingDelete ? taskMap.get(pendingDelete.target) : null;
@@ -652,30 +665,30 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
             return (
               <button key={g.id} onClick={() => toggleGroup(g.id)}
                 className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${active ? `${g.color.bg} ${g.color.border} ${g.color.text}` : 'bg-surface-elevated/50 border-border-default/50 text-fg-tertiary'}`}>
-                {g.label}
+                {t(`work:dag.filter.${g.id}`)}
               </button>
             );
           })}
           {archivedCount > 0 && (
             <button onClick={() => setShowArchived(v => !v)}
               className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${showArchived ? 'bg-surface-overlay/60 border-gray-500/50 text-fg-secondary' : 'bg-surface-elevated/50 border-border-default/50 text-fg-tertiary'}`}>
-              Archived {archivedCount}
+              {t('work:dag.archivedToggle', { count: archivedCount })}
             </button>
           )}
-          {groupFilter.size < ALL_DAG_GROUP_IDS.size && (
-            <button onClick={() => { setGroupFilter(new Set(ALL_DAG_GROUP_IDS)); setShowArchived(false); }} className="text-[10px] text-fg-tertiary hover:text-fg-secondary px-1">Reset</button>
+          {!isDefaultFilter && (
+            <button onClick={() => { setGroupFilter(new Set(DEFAULT_DAG_GROUP_FILTER)); setShowArchived(false); }} className="text-[10px] text-fg-tertiary hover:text-fg-secondary px-1">{t('work:dag.reset')}</button>
           )}
         </div>
         <div className="text-[10px] text-fg-tertiary select-none flex items-center gap-2">
           {expandedNodeId ? (
             <button onClick={() => { userHasInteracted.current = false; setExpandedNodeId(null); }} className="text-brand-500 hover:text-brand-400 transition-colors">
-              ← Back to overview
+              {t('work:dag.backToOverview')}
             </button>
           ) : (
-            <span>Click a card to expand dependencies</span>
+            <span>{t('work:dag.expandHint')}</span>
           )}
           <span className="text-fg-tertiary/50">·</span>
-          <span>Drag to link · Click edge to remove</span>
+          <span>{t('work:dag.dragHint')}</span>
         </div>
       </div>
 
@@ -694,18 +707,19 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
       {pendingDelete && (
         <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-50 backdrop-blur-[2px]" onClick={() => setPendingDelete(null)}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5 shadow-2xl max-w-sm" onClick={e => e.stopPropagation()}>
-            <h4 className="text-sm font-semibold text-fg-primary mb-2">Remove dependency?</h4>
+            <h4 className="text-sm font-semibold text-fg-primary mb-2">{t('work:dag.removeDependencyTitle')}</h4>
             <p className="text-xs text-fg-secondary mb-4 leading-relaxed">
-              <span className="text-fg-secondary font-medium">{targetTask?.title ?? pendingDelete.target.slice(-8)}</span>
-              {' '}will no longer be blocked by{' '}
-              <span className="text-fg-secondary font-medium">{sourceTask?.title ?? pendingDelete.source.slice(-8)}</span>.
+              {t('work:dag.removeDependencyBody', {
+                target: targetTask?.title ?? pendingDelete.target.slice(-8),
+                source: sourceTask?.title ?? pendingDelete.source.slice(-8),
+              })}
             </p>
             <div className="flex justify-end gap-2">
               <button onClick={() => setPendingDelete(null)} className="px-3 py-1.5 text-xs text-fg-secondary hover:text-fg-primary bg-surface-elevated rounded-lg border border-border-default hover:border-gray-600 transition-colors">
-                Cancel
+                {t('common:cancel')}
               </button>
               <button onClick={confirmDeleteEdge} className="px-3 py-1.5 text-xs text-red-500 bg-red-600/20 hover:bg-red-600/30 rounded-lg border border-red-500/40 hover:border-red-500/60 transition-colors">
-                Remove
+                {t('common:remove')}
               </button>
             </div>
           </div>
