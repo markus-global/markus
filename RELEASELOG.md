@@ -1,5 +1,27 @@
 # Release Log
 
+## v0.7.1
+
+修复流式气泡结束后空白、Team 页显示 Agent 而非 Team、亮色模式下版本横幅与 Builder 分享弹窗颜色问题；beforeunload 弹窗自动关闭防止 Agent 导航阻塞；暂停/恢复按钮移入管理下拉菜单。
+
+### Bug Fixes
+
+- **修复流式气泡结束后空白** — Agent 流式输出结束后消息气泡显示空白内容
+- **修复 Team 页显示 Agent 而非 Team** — Team 页面错误展示 Agent 列表，Work 页审批后数据未刷新
+- **修复亮色模式版本横幅不可读** — 版本升级提示横幅在亮色模式下文字颜色修复
+- **修复 Builder 分享弹窗亮色模式** — Builder 分享弹窗硬编码深色配色，亮色模式下不可用
+- **修复 beforeunload 弹窗阻塞 Agent** — 自动关闭 beforeunload 弹窗，防止 Agent 导航操作被阻塞
+
+### Improvements
+
+- **暂停/恢复移入管理下拉菜单** — L1 Header 中 pause/resume 按钮重构为 manage dropdown 内操作，界面更简洁
+
+### Stats
+
+- 10 files changed, +211 / −109 lines
+
+---
+
 ## v0.7.0
 
 Hub 远程访问与 P2P 传输层；Chrome Extension 浏览器自动化套件；MCP 连接池优化与注意力系统重构；浏览器测试面板；全局搜索；首页重设计；Mailbox Agent 工具；大量测试补全与 UI 优化。
