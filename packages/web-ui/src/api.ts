@@ -419,6 +419,12 @@ export interface ActivityRecord {
 
 export interface AgentMindState {
   attentionState: string;
+  isDeliberating?: boolean;
+  deliberationActivity?: {
+    activityId: string;
+    label: string;
+    startedAt: string;
+  };
   currentFocus?: {
     mailboxItemId: string;
     type: string;

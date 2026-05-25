@@ -339,6 +339,8 @@
     "mind": {
       "loading": "Loading agent mind state...",
       "idleWaiting": "Idle — waiting for new mail",
+      "decidingWaiting": "Deciding which item to process ({{count}} queued)…",
+      "deliberationInProgress": "Deliberation in progress",
       "since": "since {{time}}",
       "refresh": "↻ Refresh",
       "queue": "Queue ({{count}})",

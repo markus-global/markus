@@ -279,8 +279,9 @@ export class AttentionController {
       // items stuck in 'processing' status, mark them as completed.
       // This catches edge cases where complete()/requeue()/defer() failed
       // silently or the process was interrupted between activity end and
-      // status update.
-      if (this.running && !this.currentFocus && this.state === 'idle') {
+      // status update.  Also triggers during 'deciding' (triage/deliberation)
+      // because no item is actively being processed at that point either.
+      if (this.running && !this.currentFocus && (this.state === 'idle' || this.state === 'deciding')) {
         try {
           const cleaned = this.mailbox.cleanStaleProcessing();
           if (cleaned > 0) {
@@ -1342,6 +1343,7 @@ export class AttentionController {
     const queued = this.mailbox.getQueuedItems();
     return {
       attentionState: this.state,
+      isDeliberating: this.isDeliberating || undefined,
       currentFocus: this.currentFocus
         ? {
             mailboxItemId: this.currentFocus.id,

@@ -339,6 +339,8 @@
     "mind": {
       "loading": "正在加载智能体心智状态…",
       "idleWaiting": "空闲 — 等待新邮件",
+      "decidingWaiting": "决策中 — 正在分拣 {{count}} 个待处理项…",
+      "deliberationInProgress": "正在深度分拣",
       "since": "自 {{time}} 起",
       "refresh": "↻ 刷新",
       "queue": "队列（{{count}}）",

@@ -2037,9 +2037,12 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
 
   if (loading && !mind) return <div className="text-fg-tertiary text-sm animate-pulse">{t('agent:profilePage.mind.loading')}</div>;
 
-  const effectiveAttentionState = (mind?.attentionState && mind.attentionState !== 'idle' && !mind?.currentFocus)
-    ? 'idle'
-    : (mind?.attentionState ?? 'idle');
+  const effectiveAttentionState: string = (() => {
+    const raw = mind?.attentionState ?? 'idle';
+    if (raw === 'deciding') return 'deciding';
+    if (raw !== 'idle' && !mind?.currentFocus) return 'idle';
+    return raw;
+  })();
 
   const hasStaleProcessingItems = effectiveAttentionState === 'idle' && mailbox?.history?.some(h => h.status === 'processing');
 
@@ -2070,7 +2073,9 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
                 <span className="text-fg-tertiary ml-2 text-xs">{t('agent:profilePage.mind.since', { time: new Date(mind.currentFocus.startedAt).toLocaleTimeString() })}</span>
               </span>
             );
-          })() : (
+          })() : effectiveAttentionState === 'deciding' ? (
+            <span className="text-sm text-amber-500">{t('agent:profilePage.mind.decidingWaiting', { count: mind?.mailboxDepth ?? 0 })}</span>
+          ) : (
             <span className="text-sm text-fg-tertiary">{t('agent:profilePage.mind.idleWaiting')}</span>
           )}
           <button onClick={() => { load(); }} className="ml-auto text-xs text-fg-tertiary hover:text-fg-secondary active:text-fg-primary transition-colors">{t('agent:profilePage.mind.refresh')}</button>
@@ -2128,6 +2133,18 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
           );
         })()}
       </section>
+
+      {/* ── Live Deliberation Activity ── */}
+      {mind?.deliberationActivity && (
+        <section className="bg-surface-2 rounded-lg border border-amber-500/20 p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-sm">🧠</span>
+            <h4 className="text-xs font-medium text-amber-500 uppercase tracking-wider">{t('agent:profilePage.mind.deliberationInProgress')}</h4>
+            <span className="text-[10px] text-fg-quaternary ml-auto">{t('agent:profilePage.mind.since', { time: new Date(mind.deliberationActivity.startedAt).toLocaleTimeString() })}</span>
+          </div>
+          <ActivityLog agentId={agentId} activityId={mind.deliberationActivity.activityId} isLive />
+        </section>
+      )}
 
       {/* ── Last Triage Decision ── */}
       {mind?.lastTriage && (() => {

@@ -766,7 +766,15 @@ export class Agent {
 
   /** Get the current cognitive state of the agent. */
   getMindState(): AgentMindState {
-    return this.attentionController.getMindState();
+    const mind = this.attentionController.getMindState();
+    if (mind.isDeliberating && this.state.currentActivity) {
+      mind.deliberationActivity = {
+        activityId: this.state.currentActivity.id,
+        label: this.state.currentActivity.label,
+        startedAt: this.state.currentActivity.startedAt,
+      };
+    }
+    return mind;
   }
 
   /** Get the raw mailbox instance (for persistence wiring). */
