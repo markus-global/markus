@@ -27,7 +27,7 @@ import { createManagerTools, createPackageTools } from './tools/manager.js';
 import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
-import { createProjectTools, type ProjectServiceBridge, type KnowledgeServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext } from './tools/project-tools.js';
+import { createProjectTools, type ProjectServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext } from './tools/project-tools.js';
 import { createMemoryTools } from './tools/memory.js';
 import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
 import { createSettingsTools } from './tools/settings.js';
@@ -322,7 +322,6 @@ export class AgentManager {
   private userNotifier?: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void;
   private taskService?: TaskServiceBridge;
   private projectService?: ProjectServiceBridge;
-  private knowledgeService?: KnowledgeServiceBridge;
   private deliverableService?: DeliverableServiceBridge;
   private webUiBaseUrl?: string;
   private semanticSearch?: SemanticMemorySearch;
@@ -388,49 +387,6 @@ export class AgentManager {
       before?: string
     ) => Promise<{ messages: Array<{ id?: string; senderName: string; senderType: string; text: string; replyToId?: string; replyToSender?: string; replyToText?: string; createdAt: string }>; hasMore: boolean }>;
   };
-
-  private buildKnowledgeCallbacks(agentId: string, orgId: string): Pick<
-    ProjectToolsContext,
-    'knowledgeContribute' | 'knowledgeSearch' | 'knowledgeBrowse' | 'knowledgeFlagOutdated'
-  > {
-    if (!this.knowledgeService) return {};
-    const ks = this.knowledgeService;
-    return {
-      knowledgeContribute: async (opts) => {
-        const scopeId = opts.scope === 'org' ? orgId : (opts.scope === 'project' ? orgId : agentId);
-        const entry = ks.contribute({
-          scope: opts.scope as 'project' | 'org',
-          scopeId,
-          category: opts.category as any,
-          title: opts.title,
-          content: opts.content,
-          source: agentId,
-          importance: opts.importance,
-          tags: opts.tags?.split(',').map(t => t.trim()).filter(Boolean),
-          supersedes: opts.supersedes,
-        });
-        return { id: entry.id, status: entry.status, filePath: ks.getEntryFilePath?.(entry.id) };
-      },
-      knowledgeSearch: async (query, scope, category, limit) => {
-        const results = ks.search({ query, scope: scope as any, category: category as any, limit });
-        return results.map(e => ({
-          id: e.id, title: e.title, category: e.category,
-          content: e.content, importance: e.importance,
-          filePath: ks.getEntryFilePath?.(e.id),
-        }));
-      },
-      knowledgeBrowse: async (category, scope) => {
-        return ks.browse({
-          scope: (scope ?? 'project') as 'project' | 'org',
-          scopeId: orgId,
-          category: category as any,
-        });
-      },
-      knowledgeFlagOutdated: async (id, reason) => {
-        ks.flagOutdated(id, reason);
-      },
-    };
-  }
 
   private buildDeliverableCallbacks(agentId: string, projectId?: string): Pick<
     ProjectToolsContext,
@@ -731,9 +687,6 @@ export class AgentManager {
     this.requirementService = requirementService;
   }
 
-  setKnowledgeService(knowledgeService: KnowledgeServiceBridge): void {
-    this.knowledgeService = knowledgeService;
-  }
 
   setDeliverableService(deliverableService: DeliverableServiceBridge): void {
     this.deliverableService = deliverableService;
@@ -1353,16 +1306,51 @@ export class AgentManager {
       log.info(`Task tools injected for agent ${id}`);
     }
 
-    // Project tools — every agent can list/view/create/update projects
+    // Project tools — every agent can list/view/create/update/delete projects + knowledge + stats
     if (this.projectService) {
       const ah = this.approvalHandler;
+      const ps = this.projectService;
+      const ts = this.taskService;
+      const rs = this.requirementService;
       for (const tool of createProjectTools({
         agentId: id,
         orgId: config.orgId,
         webUiBaseUrl: this.webUiBaseUrl,
-        projectService: this.projectService,
+        projectService: ps,
         requestApproval: ah ? (req) => ah(id, req) : undefined,
-        ...this.buildKnowledgeCallbacks(id, config.orgId),
+        getProjectInfo: async (projectId?: string) => {
+          let resolvedId = projectId;
+          if (!resolvedId && config.teamId) {
+            resolvedId = ps.listProjects(config.orgId).find(p =>
+              p.teamIds.includes(config.teamId!)
+            )?.id;
+          }
+          if (!resolvedId) return null;
+          const project = ps.getProject(resolvedId);
+          return project ?? null;
+        },
+        getProjectStats: ts ? async (projectId: string) => {
+          const tasks = ts.listTasks({ orgId: config.orgId, projectId });
+          const reqs = rs?.listRequirements?.({ projectId }) ?? [];
+          const stats = {
+            totalTasks: tasks.length,
+            completed: 0, inProgress: 0, inReview: 0, blocked: 0, pending: 0, failed: 0,
+            totalRequirements: reqs.length,
+            completedRequirements: 0,
+          };
+          for (const t of tasks) {
+            if (t.status === 'completed' || t.status === 'accepted') stats.completed++;
+            else if (t.status === 'in_progress') stats.inProgress++;
+            else if (t.status === 'review' || t.status === 'revision') stats.inReview++;
+            else if (t.status === 'blocked') stats.blocked++;
+            else if (t.status === 'failed') stats.failed++;
+            else stats.pending++;
+          }
+          for (const r of reqs) {
+            if ((r as any).status === 'completed') stats.completedRequirements++;
+          }
+          return stats;
+        } : undefined,
         ...this.buildDeliverableCallbacks(id, config.orgId),
       })) {
         agent.registerTool(tool);
@@ -1434,6 +1422,7 @@ export class AgentManager {
     // Package tools (package_install, package_list, hub_search, hub_install) — available to all agents
     // Uses getter functions (late-binding) so services set after agent creation are still accessible
     {
+      const pkgAh = this.approvalHandler;
       const packageTools = createPackageTools({
         installArtifact: () => this.builderService
           ? (type: 'agent' | 'team' | 'skill', name: string) => this.builderService!.installArtifact(type, name)
@@ -1465,6 +1454,7 @@ export class AgentManager {
         downloadAndInstall: () => this.hubClient
           ? (itemId) => this.hubClient!.downloadAndInstall(itemId)
           : undefined,
+        requestApproval: pkgAh ? (req) => pkgAh(id, req) : undefined,
       });
       for (const tool of packageTools) agent.registerTool(tool);
     }
@@ -2053,13 +2043,48 @@ export class AgentManager {
 
     if (this.projectService) {
       const ah2 = this.approvalHandler;
+      const ps2 = this.projectService;
+      const ts2 = this.taskService;
+      const rs2 = this.requirementService;
       for (const tool of createProjectTools({
         agentId: id,
         orgId: config.orgId,
         webUiBaseUrl: this.webUiBaseUrl,
-        projectService: this.projectService,
+        projectService: ps2,
         requestApproval: ah2 ? (req) => ah2(id, req) : undefined,
-        ...this.buildKnowledgeCallbacks(id, config.orgId),
+        getProjectInfo: async (projectId?: string) => {
+          let resolvedId2 = projectId;
+          if (!resolvedId2 && config.teamId) {
+            resolvedId2 = ps2.listProjects(config.orgId).find(p =>
+              p.teamIds.includes(config.teamId!)
+            )?.id;
+          }
+          if (!resolvedId2) return null;
+          const project = ps2.getProject(resolvedId2);
+          return project ?? null;
+        },
+        getProjectStats: ts2 ? async (projectId: string) => {
+          const tasks = ts2.listTasks({ orgId: config.orgId, projectId });
+          const reqs = rs2?.listRequirements?.({ projectId }) ?? [];
+          const stats = {
+            totalTasks: tasks.length,
+            completed: 0, inProgress: 0, inReview: 0, blocked: 0, pending: 0, failed: 0,
+            totalRequirements: reqs.length,
+            completedRequirements: 0,
+          };
+          for (const t of tasks) {
+            if (t.status === 'completed' || t.status === 'accepted') stats.completed++;
+            else if (t.status === 'in_progress') stats.inProgress++;
+            else if (t.status === 'review' || t.status === 'revision') stats.inReview++;
+            else if (t.status === 'blocked') stats.blocked++;
+            else if (t.status === 'failed') stats.failed++;
+            else stats.pending++;
+          }
+          for (const r of reqs) {
+            if ((r as any).status === 'completed') stats.completedRequirements++;
+          }
+          return stats;
+        } : undefined,
         ...this.buildDeliverableCallbacks(id, config.orgId),
       })) {
         agent.registerTool(tool);
@@ -2128,6 +2153,7 @@ export class AgentManager {
     // Package tools (package_install, package_list, hub_search, hub_install) — available to all agents
     // Uses getter functions (late-binding) so services set after agent creation are still accessible
     {
+      const pkgAh2 = this.approvalHandler;
       const packageTools = createPackageTools({
         installArtifact: () => this.builderService
           ? (type: 'agent' | 'team' | 'skill', name: string) => this.builderService!.installArtifact(type, name)
@@ -2159,6 +2185,7 @@ export class AgentManager {
         downloadAndInstall: () => this.hubClient
           ? (itemId) => this.hubClient!.downloadAndInstall(itemId)
           : undefined,
+        requestApproval: pkgAh2 ? (req) => pkgAh2(id, req) : undefined,
       });
       for (const tool of packageTools) agent.registerTool(tool);
     }

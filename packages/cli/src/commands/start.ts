@@ -516,7 +516,6 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
   agentManager.setRequirementService(requirementService);
   agentManager.setProjectService(projectService);
-  agentManager.setKnowledgeService(knowledgeService);
   agentManager.setDeliverableService(deliverableService);
   agentManager.setWebUiBaseUrl(`http://localhost:${apiPort}`);
   requirementService.setAgentManager(agentManager);
