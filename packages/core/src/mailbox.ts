@@ -743,12 +743,15 @@ export class AgentMailbox {
   }
 
   /**
-   * Insert item into the queue maintaining priority + FIFO order.
+   * Insert item into the queue maintaining priority order.
+   * Within the same priority, newer items go first (LIFO) so the most
+   * recent message is processed before older ones — a user's latest
+   * instruction may supersede earlier ones.
    */
   private insertSorted(item: MailboxItem): void {
     let insertIdx = this.queue.length;
     for (let i = 0; i < this.queue.length; i++) {
-      if (this.queue[i].priority > item.priority) {
+      if (this.queue[i].priority >= item.priority) {
         insertIdx = i;
         break;
       }

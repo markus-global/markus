@@ -335,6 +335,9 @@ export class Agent {
   private static readonly NETWORK_RETRY_MAX = 3;
   private static readonly NETWORK_RETRY_BASE_MS = 2000;
   private static readonly MEMORY_CONSOLIDATION_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
+  private static readonly MAX_CONCURRENT_DREAMS = 3;
+  private static dreamSemaphore = 0;
+  private static dreamQueue: Array<() => void> = [];
   private static readonly DEFAULT_MAX_TOOL_ITERATIONS = 200;
   private static readonly HEARTBEAT_MAX_TOOL_ITERATIONS = 30;
   /** Maps background_exec session IDs to the originating session that spawned them */
@@ -550,15 +553,49 @@ export class Agent {
     this.heartbeat.start(options?.initialHeartbeatDelayMs);
     this.attentionController.start();
 
-    // Periodic memory consolidation: compact sessions and generate daily insights
-    this.memoryConsolidationTimer = setInterval(() => {
-      this.consolidateMemory().catch(e =>
-        log.warn('Memory consolidation failed', { error: String(e) })
-      );
-    }, Agent.MEMORY_CONSOLIDATION_INTERVAL_MS);
+    // Periodic memory consolidation: compact sessions and generate daily insights.
+    // Use random initial delay to stagger across agents and avoid a "dream storm"
+    // where all agents fire LLM-heavy consolidation cycles simultaneously.
+    this.scheduleConsolidationTimer();
 
     this.eventBus.emit('agent:started', { agentId: this.id });
     log.info(`Agent started: ${this.config.name}`);
+  }
+
+  private consolidationInitialTimer?: ReturnType<typeof setTimeout>;
+
+  private scheduleConsolidationTimer(): void {
+    const jitter = Math.floor(Math.random() * Agent.MEMORY_CONSOLIDATION_INTERVAL_MS);
+    this.consolidationInitialTimer = setTimeout(() => {
+      this.consolidationInitialTimer = undefined;
+      this.consolidateMemory().catch(e =>
+        log.warn('Memory consolidation failed', { error: String(e) })
+      );
+      this.memoryConsolidationTimer = setInterval(() => {
+        this.consolidateMemory().catch(e =>
+          log.warn('Memory consolidation failed', { error: String(e) })
+        );
+      }, Agent.MEMORY_CONSOLIDATION_INTERVAL_MS);
+    }, jitter);
+  }
+
+  private static acquireDreamSlot(): Promise<void> {
+    if (Agent.dreamSemaphore < Agent.MAX_CONCURRENT_DREAMS) {
+      Agent.dreamSemaphore++;
+      return Promise.resolve();
+    }
+    return new Promise<void>(resolve => {
+      Agent.dreamQueue.push(() => {
+        Agent.dreamSemaphore++;
+        resolve();
+      });
+    });
+  }
+
+  private static releaseDreamSlot(): void {
+    Agent.dreamSemaphore--;
+    const next = Agent.dreamQueue.shift();
+    if (next) next();
   }
 
   async stop(): Promise<void> {
@@ -566,6 +603,10 @@ export class Agent {
     this.attentionController.stop();
     this.heartbeat.stop();
     this._bgCompletionUnsub?.();
+    if (this.consolidationInitialTimer) {
+      clearTimeout(this.consolidationInitialTimer);
+      this.consolidationInitialTimer = undefined;
+    }
     if (this.memoryConsolidationTimer) {
       clearInterval(this.memoryConsolidationTimer);
       this.memoryConsolidationTimer = undefined;
@@ -1315,6 +1356,10 @@ export class Agent {
       this.cancelActiveStream();
       this.heartbeat.stop();
       this.attentionController.stop();
+      if (this.consolidationInitialTimer) {
+        clearTimeout(this.consolidationInitialTimer);
+        this.consolidationInitialTimer = undefined;
+      }
       if (this.memoryConsolidationTimer) {
         clearInterval(this.memoryConsolidationTimer);
         this.memoryConsolidationTimer = undefined;
@@ -1331,11 +1376,7 @@ export class Agent {
     this.heartbeat.start();
     this.attentionController.start();
     if (!this.memoryConsolidationTimer) {
-      this.memoryConsolidationTimer = setInterval(() => {
-        this.consolidateMemory().catch(e =>
-          log.warn('Memory consolidation failed', { error: String(e) })
-        );
-      }, Agent.MEMORY_CONSOLIDATION_INTERVAL_MS);
+      this.scheduleConsolidationTimer();
     }
     this.setStatus(this.activeTasks.size > 0 ? 'working' : 'idle');
     this.eventBus.emit('agent:resumed', { agentId: this.id });
@@ -5647,8 +5688,13 @@ export class Agent {
       const dreamKey = entries.length > 500 ? `${today}_${Math.floor(Date.now() / (6 * 3600_000))}` : today;
       if (entries.length >= 50 && this.lastDreamDate !== dreamKey) {
         this.lastDreamDate = dreamKey;
-        await this.dreamConsolidateMemory(entries);
-        this.pruneMemoryMd();
+        await Agent.acquireDreamSlot();
+        try {
+          await this.dreamConsolidateMemory(entries);
+          this.pruneMemoryMd();
+        } finally {
+          Agent.releaseDreamSlot();
+        }
       }
 
       log.debug('Memory consolidation completed', { agentId: this.id });

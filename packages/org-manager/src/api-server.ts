@@ -2347,7 +2347,7 @@ export class APIServer {
       return;
     }
 
-    if (path.match(/^\/api\/agents\/[^/]+\/(start|stop|daily-report|a2a|message)$/) && req.method === 'POST') {
+    if (path.match(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message)$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
       const parts = path.split('/');
@@ -2364,6 +2364,29 @@ export class APIServer {
         await this.orgService.getAgentManager().stopAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'offline');
         this.json(res, 200, { status: 'stopped' });
+        return;
+      }
+      if (action === 'pause') {
+        const body = await this.readBody(req);
+        const reason = body['reason'] as string | undefined;
+        const agent = this.orgService.getAgentManager().getAgent(agentId!);
+        agent.pause(reason);
+        this.ws.broadcastAgentUpdate(agentId!, 'paused');
+        this.json(res, 200, { status: 'paused' });
+        return;
+      }
+      if (action === 'resume') {
+        const agent = this.orgService.getAgentManager().getAgent(agentId!);
+        agent.resume();
+        const newStatus = agent.getState().status;
+        this.ws.broadcastAgentUpdate(agentId!, newStatus);
+        this.json(res, 200, { status: newStatus });
+        return;
+      }
+      if (action === 'cancel-processing') {
+        const agent = this.orgService.getAgentManager().getAgent(agentId!);
+        agent.cancelActiveStream();
+        this.json(res, 200, { status: 'cancelled' });
         return;
       }
       if (action === 'daily-report') {
@@ -9735,7 +9758,7 @@ EXPLANATION_END`;
       exact('/api/agents', 'GET', 'POST'),
       exact('/api/agents/role-updates', 'GET'),
       regex(/^\/api\/agents\/[^/]+\/sessions$/, 'GET'),
-      regex(/^\/api\/agents\/[^/]+\/(start|stop|daily-report|a2a|message)$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message)$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+$/, 'GET', 'DELETE'),
       regex(/^\/api\/agents\/[^/]+\/mind$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/mailbox$/, 'GET'),

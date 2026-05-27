@@ -100,7 +100,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
           {effectiveTab === 'overview' && (
             agent.state.status === 'working' || agent.state.status === 'idle' ? (
               <>
-                <MindTab agentId={agentId} highlightId={highlightMailboxId} />
+                <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} onAgentStateChange={reload} />
                 <details className="mt-6 group">
                   <summary className="text-xs font-medium text-fg-tertiary uppercase tracking-wider cursor-pointer hover:text-fg-secondary transition-colors list-none flex items-center gap-1.5">
                     <span className="text-fg-tertiary group-open:rotate-90 transition-transform">▸</span>
@@ -115,7 +115,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
               <>
                 <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
                 <div className="mt-6">
-                  <MindTab agentId={agentId} highlightId={highlightMailboxId} />
+                  <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} onAgentStateChange={reload} />
                 </div>
               </>
             )
@@ -192,7 +192,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
         {tab === 'overview' && (
           agent.state.status === 'working' || agent.state.status === 'idle' ? (
             <>
-              <MindTab agentId={agentId} highlightId={highlightMailboxId} />
+              <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} onAgentStateChange={reload} />
               <details className="mt-6 group">
                 <summary className="text-xs font-medium text-fg-tertiary uppercase tracking-wider cursor-pointer hover:text-fg-secondary transition-colors list-none flex items-center gap-1.5">
                   <span className="text-fg-tertiary group-open:rotate-90 transition-transform">▸</span>
@@ -207,7 +207,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
             <>
               <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
               <div className="mt-6">
-                <MindTab agentId={agentId} highlightId={highlightMailboxId} />
+                <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} onAgentStateChange={reload} />
               </div>
             </>
           )
@@ -1935,7 +1935,7 @@ function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem, t:
   }
 }
 
-function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: string }) {
+function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentStateChange }: { agentId: string; highlightId?: string; agentStatus?: string; canManageAgents?: boolean; onAgentStateChange?: () => void }) {
   const { t } = useTranslation(['agent', 'common']);
   const [mind, setMind] = useState<import('../api.ts').AgentMindState | null>(null);
   const [mailbox, setMailbox] = useState<import('../api.ts').AgentMailboxResponse | null>(null);
@@ -2078,7 +2078,27 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
           ) : (
             <span className="text-sm text-fg-tertiary">{t('agent:profilePage.mind.idleWaiting')}</span>
           )}
-          <button onClick={() => { load(); }} className="ml-auto text-xs text-fg-tertiary hover:text-fg-secondary active:text-fg-primary transition-colors">{t('agent:profilePage.mind.refresh')}</button>
+          <div className="ml-auto flex items-center gap-2">
+            {canManageAgents && agentStatus === 'paused' && (
+              <button onClick={() => { api.agents.resume(agentId).then(() => { onAgentStateChange?.(); load(); }); }}
+                className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-green-500/15 text-green-500 hover:bg-green-500/25 transition-colors">
+                ▶ {t('agent:profilePage.mind.continueBtn')}
+              </button>
+            )}
+            {canManageAgents && (agentStatus === 'working' || agentStatus === 'idle') && mind?.currentFocus && (
+              <button onClick={() => { api.agents.cancelProcessing(agentId).then(() => load()); }}
+                className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-red-500/15 text-red-500 hover:bg-red-500/25 transition-colors">
+                ✕ {t('agent:profilePage.mind.cancelCurrentBtn')}
+              </button>
+            )}
+            {canManageAgents && (agentStatus === 'working' || agentStatus === 'idle') && (
+              <button onClick={() => { api.agents.pause(agentId).then(() => { onAgentStateChange?.(); load(); }); }}
+                className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-amber-500/15 text-amber-500 hover:bg-amber-500/25 transition-colors">
+                ⏸ {t('agent:profilePage.mind.pauseBtn')}
+              </button>
+            )}
+            <button onClick={() => { load(); }} className="text-xs text-fg-tertiary hover:text-fg-secondary active:text-fg-primary transition-colors">{t('agent:profilePage.mind.refresh')}</button>
+          </div>
         </div>
 
         {hasStaleProcessingItems && (
