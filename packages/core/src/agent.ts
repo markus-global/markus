@@ -325,8 +325,10 @@ export class Agent {
   private onActivityStartCb?: (activity: AgentActivity & { agentId: string }) => void;
   private onActivityLogCb?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
   private onActivityEndCb?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
+  private browserCloseTabsHelper?: (sessionId: string) => string | null;
   private dynamicContextProviders = new Map<string, () => string>();
   private static readonly MAX_ACTIVITY_LOG_ENTRIES = 200;
+  private static readonly BROWSER_CLOSE_FOLLOWUP_MAX_ITER = 5;
   private static readonly MAX_ACTIVITY_LOGS_KEPT = 10;
   private static readonly MAX_CONCURRENT_TASKS = 1;
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
@@ -2334,6 +2336,127 @@ export class Agent {
     this.onActivityEndCb = cbs.onEnd;
   }
 
+  setBrowserCloseTabsHelper(fn: (sessionId: string) => string | null): void {
+    this.browserCloseTabsHelper = fn;
+  }
+
+  /**
+   * At session end: inject a one-time [SYSTEM] reminder if the session used
+   * the browser and still has owned tabs, then run a lightweight LLM turn so
+   * the agent can call close_page.
+   */
+  private async finalizeBrowserSession(sessionId: string): Promise<void> {
+    if (!this.browserCloseTabsHelper) return;
+    const reminder = this.browserCloseTabsHelper(sessionId);
+    if (!reminder) return;
+
+    try {
+      this.memory.appendMessage(sessionId, { role: 'user', content: reminder });
+      log.debug('Injected browser close-tabs reminder', { agentId: this.id, sessionId });
+
+      const allTools = this.buildToolDefinitions({});
+      const browserTools = allTools.filter(t =>
+        t.name.startsWith('chrome-devtools__') &&
+        (t.name.endsWith('__close_page') || t.name.endsWith('__list_pages') || t.name.endsWith('__select_page')),
+      );
+      if (browserTools.length === 0) return;
+
+      const { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
+        agentId: this.id,
+        agentName: this.config.name,
+        role: this.role,
+        orgContext: this.orgContext,
+        contextMdPath: this.contextMdPath,
+        memory: this.memory,
+        scenario: 'chat',
+        ...this.getTeamContextParams(),
+      });
+
+      const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
+      const prepareFollowUpMessages = () =>
+        this.contextEngine.prepareMessages({
+          systemPrompt,
+          sessionMessages: this.memory.getRecentMessages(sessionId, 50),
+          memory: this.memory,
+          sessionId,
+          agentId: this.id,
+          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          toolDefinitions: browserTools,
+          systemCacheSegments,
+        });
+
+      let iterations = 0;
+      let preparedFollowUp = await prepareFollowUpMessages();
+      let response = await this.withNetworkRetry(
+        () => this.llmRouter.chat({
+          messages: preparedFollowUp.messages,
+          tools: browserTools,
+          metadata: this.getLLMMetadata(sessionId),
+          compaction: useCompaction,
+          systemCacheSegments,
+        }, this.getEffectiveProvider()),
+        'Browser close-tabs follow-up',
+      );
+
+      while (
+        response.finishReason === 'tool_use' &&
+        response.toolCalls?.length &&
+        ++iterations <= Agent.BROWSER_CLOSE_FOLLOWUP_MAX_ITER
+      ) {
+        this.memory.appendMessage(sessionId, {
+          role: 'assistant',
+          content: response.content,
+          toolCalls: response.toolCalls,
+          reasoningContent: response.reasoningContent,
+        });
+
+        for (const tc of response.toolCalls) {
+          try {
+            let result = await this.executeTool(tc, undefined, sessionId);
+            result = this.offloadLargeResult(tc.name, result);
+            this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
+          } catch (toolErr) {
+            this.memory.appendMessage(sessionId, {
+              role: 'tool',
+              content: `Error: ${String(toolErr)}`,
+              toolCallId: tc.id,
+            });
+          }
+        }
+
+        preparedFollowUp = await prepareFollowUpMessages();
+        response = await this.withNetworkRetry(
+          () => this.llmRouter.chat({
+            messages: preparedFollowUp.messages,
+            tools: browserTools,
+            metadata: this.getLLMMetadata(sessionId),
+            compaction: useCompaction,
+            systemCacheSegments,
+          }, this.getEffectiveProvider()),
+          'Browser close-tabs follow-up continuation',
+        );
+      }
+
+      if (response.toolCalls?.length) {
+        this.memory.appendMessage(sessionId, {
+          role: 'assistant',
+          content: response.content,
+          toolCalls: response.toolCalls,
+          reasoningContent: response.reasoningContent,
+        });
+      } else if (response.content?.trim()) {
+        this.memory.appendMessage(sessionId, {
+          role: 'assistant',
+          content: sanitizeLLMReply(response.content),
+          reasoningContent: response.reasoningContent,
+        });
+      }
+    } catch (err) {
+      log.warn('Browser close-tabs follow-up failed', { agentId: this.id, sessionId, error: String(err) });
+    }
+  }
+
   // ─── Activity Tracking ───────────────────────────────────────────────────────
 
   private startActivity(type: AgentActivity['type'], label: string, extra?: Partial<AgentActivity>): string {
@@ -3234,6 +3357,8 @@ export class Agent {
       });
       log.error('Failed to handle message', { error: String(error) });
       throw error;
+    } finally {
+      await this.finalizeBrowserSession(sessionId);
     }
   }
 
@@ -3670,6 +3795,9 @@ export class Agent {
       throw error;
     } finally {
       if (cancelPollTimer) clearInterval(cancelPollTimer);
+      if (this.currentSessionId) {
+        await this.finalizeBrowserSession(this.currentSessionId);
+      }
     }
   }
 
@@ -4384,6 +4512,7 @@ export class Agent {
         this.activeTasks.delete(taskId);
         this.activeTaskGen.delete(taskId);
         this.pendingInjections.delete(sessionId);
+        await this.finalizeBrowserSession(sessionId);
       }
       this.endActivity(taskActId);
       this.notifyStateChange();
@@ -4636,6 +4765,7 @@ export class Agent {
     } finally {
       this.endActivity(actId);
       if (this.activeTasks.size === 0) this.setStatus('idle');
+      await this.finalizeBrowserSession(sessionId);
     }
   }
 

@@ -1504,6 +1504,9 @@ export class AgentManager {
     if (this.activityCallbacks) {
       agent.setActivityCallbacks(this.activityCallbacks);
     }
+    agent.setBrowserCloseTabsHelper((sessionId) =>
+      this.browserSessionManager.consumeCloseTabsReminder(id, sessionId),
+    );
     this.forwardAgentEvents(agent);
 
     if (config.teamId) {
@@ -2208,6 +2211,9 @@ export class AgentManager {
     if (this.activityCallbacks) {
       agent.setActivityCallbacks(this.activityCallbacks);
     }
+    agent.setBrowserCloseTabsHelper((sessionId) =>
+      this.browserSessionManager.consumeCloseTabsReminder(id, sessionId),
+    );
     this.forwardAgentEvents(agent);
 
     if (config.teamId) {
