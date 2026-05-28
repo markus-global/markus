@@ -52,7 +52,8 @@ export interface MailboxPersistence {
 
 /**
  * Priority queue mailbox for an individual agent.
- * Items are ordered by priority (lower number = higher priority), then by arrival time (FIFO).
+ * Items are ordered by priority (lower number = higher priority), then by arrival time (LIFO
+ * within the same priority so the most recent message is processed first).
  * Emits 'mailbox:new-item' on the EventBus whenever a new item is enqueued,
  * which the AttentionController listens to for event-driven interrupts.
  */
