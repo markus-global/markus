@@ -155,7 +155,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
 
         {/* ── Metric Cards ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <MetricCard label={t('metricCards.working')} value={String(workingAgents)}
+          <MetricCard label={t('metricCards.working')} value={String(workingAgents)} sub={`/${agents.length}`}
             icon={<MetricIcon type="working" />} pulse={workingAgents > 0} onClick={() => navBus.navigate(PAGE.TEAM)} />
           <MetricCard label={t('metricCards.tasksDone')} value={`${completed}`} sub={`/${totalRootTasks}`}
             icon={<MetricIcon type="tasks" />} onClick={() => navBus.navigate(PAGE.WORK)} />

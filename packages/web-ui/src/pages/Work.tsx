@@ -3283,6 +3283,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   const [loading, setLoading] = useState(true);
   const [flash, setFlash] = useState('');
   const [showProjectSettings, setShowProjectSettings] = useState(false);
+  const [settingsProjectId, setSettingsProjectId] = useState<string | null>(null);
   const openCreateReq = useCallback(() => {
     setReqProjectId(selectedProjectId ?? '');
     setShowCreateReq(true);
@@ -3339,6 +3340,21 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   const msg = (m: string) => { setFlash(m); setTimeout(() => setFlash(''), 3000); };
 
   const selectedProject = projects.find(p => p.id === selectedProjectId) ?? null;
+  const settingsProject = selectedProject ?? projects.find(p => p.id === settingsProjectId) ?? null;
+
+  const closeProjectSettings = useCallback(() => {
+    setShowProjectSettings(false);
+    setSettingsProjectId(null);
+  }, []);
+
+  const openProjectSettings = useCallback((projectId: string) => {
+    if (showProjectSettings && (selectedProjectId === projectId || settingsProjectId === projectId)) {
+      closeProjectSettings();
+      return;
+    }
+    if (!selectedProjectId) setSettingsProjectId(projectId);
+    setShowProjectSettings(true);
+  }, [showProjectSettings, selectedProjectId, settingsProjectId, closeProjectSettings]);
 
   useEffect(() => { projectFilterRef.current = projectFilter; }, [projectFilter]);
 
@@ -3641,6 +3657,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     setProjectFilter(new Set());
     setSelectedProjectId(projectId);
     setViewMode('project');
+    setSettingsProjectId(null);
     setShowProjectSettings(false);
     history.replaceState(null, '', hashPath(PAGE.WORK, projectId));
   };
@@ -3649,6 +3666,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     setProjectFilter(savedProjectFilterRef.current);
     setSelectedProjectId(null);
     setViewMode('all');
+    setSettingsProjectId(null);
     setShowProjectSettings(false);
     history.replaceState(null, '', hashPath(PAGE.WORK));
   };
@@ -3917,9 +3935,13 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
       }
     }
     return [...projects].sort((a, b) => {
+      const aArchived = a.status === 'archived' ? 1 : 0;
+      const bArchived = b.status === 'archived' ? 1 : 0;
+      if (aArchived !== bArchived) return aArchived - bArchived;
       const aActive = activeProjectIds.has(a.id) ? 0 : 1;
       const bActive = activeProjectIds.has(b.id) ? 0 : 1;
-      return aActive - bActive;
+      if (aActive !== bActive) return aActive - bActive;
+      return a.name.localeCompare(b.name);
     });
   }, [projects, board]);
 
@@ -3961,7 +3983,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
               {selectedProject ? (
                 <div className="flex items-center gap-1 min-w-0 flex-1">
                   <span className="text-sm font-semibold text-fg-primary truncate">{selectedProject.name}</span>
-                  <button onClick={() => setShowProjectSettings(!showProjectSettings)}
+                  <button onClick={() => openProjectSettings(selectedProject.id)}
                     className={`w-6 h-6 flex items-center justify-center rounded-md transition-colors shrink-0 ${showProjectSettings ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary'}`}>
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
                   </button>
@@ -4023,7 +4045,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
                 className="text-sm font-semibold text-fg-primary"
               />
               <button
-                onClick={() => setShowProjectSettings(!showProjectSettings)}
+                onClick={() => openProjectSettings(selectedProject.id)}
                 className={`w-6 h-6 flex items-center justify-center rounded-md transition-colors ${
                   showProjectSettings ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
                 }`}
@@ -4072,15 +4094,29 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
             {sortedProjects.map(p => {
               const selected = projectFilter.has(p.id);
               const count = allTaskCounts[p.id] ?? 0;
+              const editingThis = showProjectSettings && settingsProjectId === p.id;
               return (
-                <button key={p.id} onClick={() => toggleProjectFilter(p.id)}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] shrink-0 transition-all ${
-                    selected ? 'bg-brand-500/15 text-brand-600 ring-1 ring-brand-500/30' : 'text-fg-tertiary hover:bg-surface-elevated hover:text-fg-secondary'
-                  }`}>
-                  <span className={`w-4 h-4 rounded-sm flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-secondary'}`}>{p.name[0]?.toUpperCase()}</span>
-                  {p.name}
-                  {count > 0 && <span className="text-[9px] text-fg-tertiary ml-0.5">{count}</span>}
-                </button>
+                <div key={p.id} className={`flex items-center shrink-0 rounded-md overflow-hidden transition-all ${selected ? 'bg-brand-500/15 ring-1 ring-brand-500/30' : ''}`}>
+                  <button onClick={() => toggleProjectFilter(p.id)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] shrink-0 transition-all ${
+                      selected ? 'text-brand-600' : 'text-fg-tertiary hover:bg-surface-elevated hover:text-fg-secondary'
+                    }`}>
+                    <span className={`w-4 h-4 rounded-sm flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-secondary'}`}>{p.name[0]?.toUpperCase()}</span>
+                    {p.name}
+                    {count > 0 && <span className="text-[9px] text-fg-tertiary ml-0.5">{count}</span>}
+                  </button>
+                  {selected && (
+                    <button
+                      onClick={() => openProjectSettings(p.id)}
+                      className={`px-1.5 py-1 self-stretch flex items-center border-l border-brand-500/20 transition-colors ${
+                        editingThis ? 'text-fg-primary bg-surface-overlay' : 'text-fg-tertiary hover:text-brand-600 hover:bg-brand-500/10'
+                      }`}
+                      title={t('work:project.editProject')}
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+                    </button>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -4117,15 +4153,28 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
           </div>
         )}
 
-        {showProjectSettings && selectedProject ? (
+        {showProjectSettings && settingsProject ? (
           <div className="flex-1 overflow-y-auto">
+            {!selectedProject && (
+              <div className="px-6 py-2 flex items-center gap-2 border-b border-border-default/60 shrink-0">
+                <button onClick={closeProjectSettings} className="text-[11px] text-brand-500 hover:text-brand-400 font-medium flex items-center gap-1 shrink-0">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+                  {t('common:back')}
+                </button>
+                <InlineEditableText
+                  value={settingsProject.name}
+                  onSave={async (name) => { await api.projects.update(settingsProject.id, { name } as Partial<ProjectInfo>); refreshProjects(); }}
+                  className="text-sm font-semibold text-fg-primary truncate min-w-0"
+                />
+              </div>
+            )}
             <ProjectSettingsPanel
-              project={selectedProject}
+              project={settingsProject}
               tasks={Object.values(board).flat()}
               requirements={allRequirements}
               agents={agents}
-              onDeleteProject={() => handleDeleteProject(selectedProject.id)}
-              onUpdateProject={async (data) => { await api.projects.update(selectedProject.id, data); }}
+              onDeleteProject={() => handleDeleteProject(settingsProject.id)}
+              onUpdateProject={async (data) => { await api.projects.update(settingsProject.id, data); }}
               onRefresh={() => { refreshProjects(); }}
             />
           </div>
@@ -4179,6 +4228,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
             onShowArchivedChange={setShowClosed}
             onTaskClick={(task) => handleSelectTask(task)}
             onReqClick={(req) => handleSelectReq(req)}
+            onCollapseDAG={() => { setSelectedTask(null); setSelectedReq(null); }}
             onDependencyChange={refreshBoard}
             selectedTaskId={selectedTask?.id}
             selectedReqId={selectedReq?.id}
@@ -4671,14 +4721,25 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
                     const selected = projectFilter.has(p.id);
                     const count = allTaskCounts[p.id] ?? 0;
                     return (
-                      <button key={p.id} onClick={() => toggleProjectFilter(p.id)}
-                        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] transition-all ${
-                          selected ? 'bg-brand-500/15 text-brand-600 ring-1 ring-brand-500/30' : 'bg-surface-elevated text-fg-secondary'
-                        }`}>
-                        <span className={`w-4 h-4 rounded-sm flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-tertiary'}`}>{p.name[0]?.toUpperCase()}</span>
-                        {p.name}
-                        {count > 0 && <span className="text-[9px] text-fg-tertiary">{count}</span>}
-                      </button>
+                      <div key={p.id} className={`flex items-center rounded-lg overflow-hidden transition-all ${selected ? 'bg-brand-500/15 ring-1 ring-brand-500/30' : ''}`}>
+                        <button onClick={() => toggleProjectFilter(p.id)}
+                          className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] transition-all ${
+                            selected ? 'text-brand-600' : 'bg-surface-elevated text-fg-secondary'
+                          }`}>
+                          <span className={`w-4 h-4 rounded-sm flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-tertiary'}`}>{p.name[0]?.toUpperCase()}</span>
+                          {p.name}
+                          {count > 0 && <span className="text-[9px] text-fg-tertiary">{count}</span>}
+                        </button>
+                        {selected && (
+                          <button
+                            onClick={() => { setShowFilterSheet(false); openProjectSettings(p.id); }}
+                            className="px-2 py-1.5 self-stretch flex items-center border-l border-brand-500/20 text-fg-tertiary hover:text-brand-600"
+                            title={t('work:project.editProject')}
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+                          </button>
+                        )}
+                      </div>
                     );
                   })}
                 </div>

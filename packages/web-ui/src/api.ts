@@ -419,6 +419,12 @@ export interface ActivityRecord {
 
 export interface AgentMindState {
   attentionState: string;
+  isDeliberating?: boolean;
+  deliberationActivity?: {
+    activityId: string;
+    label: string;
+    startedAt: string;
+  };
   currentFocus?: {
     mailboxItemId: string;
     type: string;
@@ -868,6 +874,9 @@ export const api = {
       request('/agents', { method: 'POST', body: JSON.stringify({ name, ...(roleName ? { roleName } : {}), agentRole, teamId }) }),
     start: (id: string) => request(`/agents/${id}/start`, { method: 'POST' }),
     stop: (id: string) => request(`/agents/${id}/stop`, { method: 'POST' }),
+    pause: (id: string, reason?: string) => request(`/agents/${id}/pause`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    resume: (id: string) => request<{ status: string }>(`/agents/${id}/resume`, { method: 'POST' }),
+    cancelProcessing: (id: string) => request(`/agents/${id}/cancel-processing`, { method: 'POST' }),
     remove: (id: string, opts?: { purgeFiles?: boolean }) =>
       request(`/agents/${id}${opts?.purgeFiles ? '?purgeFiles=true' : ''}`, { method: 'DELETE' }),
     updateConfig: (id: string, patch: Record<string, unknown>) =>

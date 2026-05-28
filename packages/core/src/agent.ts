@@ -325,8 +325,10 @@ export class Agent {
   private onActivityStartCb?: (activity: AgentActivity & { agentId: string }) => void;
   private onActivityLogCb?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
   private onActivityEndCb?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
+  private browserCloseTabsHelper?: (sessionId: string) => string | null;
   private dynamicContextProviders = new Map<string, () => string>();
   private static readonly MAX_ACTIVITY_LOG_ENTRIES = 200;
+  private static readonly BROWSER_CLOSE_FOLLOWUP_MAX_ITER = 5;
   private static readonly MAX_ACTIVITY_LOGS_KEPT = 10;
   private static readonly MAX_CONCURRENT_TASKS = 1;
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
@@ -335,6 +337,9 @@ export class Agent {
   private static readonly NETWORK_RETRY_MAX = 3;
   private static readonly NETWORK_RETRY_BASE_MS = 2000;
   private static readonly MEMORY_CONSOLIDATION_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
+  private static readonly MAX_CONCURRENT_DREAMS = 3;
+  private static dreamSemaphore = 0;
+  private static dreamQueue: Array<() => void> = [];
   private static readonly DEFAULT_MAX_TOOL_ITERATIONS = 200;
   private static readonly HEARTBEAT_MAX_TOOL_ITERATIONS = 30;
   /** Maps background_exec session IDs to the originating session that spawned them */
@@ -550,15 +555,49 @@ export class Agent {
     this.heartbeat.start(options?.initialHeartbeatDelayMs);
     this.attentionController.start();
 
-    // Periodic memory consolidation: compact sessions and generate daily insights
-    this.memoryConsolidationTimer = setInterval(() => {
-      this.consolidateMemory().catch(e =>
-        log.warn('Memory consolidation failed', { error: String(e) })
-      );
-    }, Agent.MEMORY_CONSOLIDATION_INTERVAL_MS);
+    // Periodic memory consolidation: compact sessions and generate daily insights.
+    // Use random initial delay to stagger across agents and avoid a "dream storm"
+    // where all agents fire LLM-heavy consolidation cycles simultaneously.
+    this.scheduleConsolidationTimer();
 
     this.eventBus.emit('agent:started', { agentId: this.id });
     log.info(`Agent started: ${this.config.name}`);
+  }
+
+  private consolidationInitialTimer?: ReturnType<typeof setTimeout>;
+
+  private scheduleConsolidationTimer(): void {
+    const jitter = Math.floor(Math.random() * Agent.MEMORY_CONSOLIDATION_INTERVAL_MS);
+    this.consolidationInitialTimer = setTimeout(() => {
+      this.consolidationInitialTimer = undefined;
+      this.consolidateMemory().catch(e =>
+        log.warn('Memory consolidation failed', { error: String(e) })
+      );
+      this.memoryConsolidationTimer = setInterval(() => {
+        this.consolidateMemory().catch(e =>
+          log.warn('Memory consolidation failed', { error: String(e) })
+        );
+      }, Agent.MEMORY_CONSOLIDATION_INTERVAL_MS);
+    }, jitter);
+  }
+
+  private static acquireDreamSlot(): Promise<void> {
+    if (Agent.dreamSemaphore < Agent.MAX_CONCURRENT_DREAMS) {
+      Agent.dreamSemaphore++;
+      return Promise.resolve();
+    }
+    return new Promise<void>(resolve => {
+      Agent.dreamQueue.push(() => {
+        Agent.dreamSemaphore++;
+        resolve();
+      });
+    });
+  }
+
+  private static releaseDreamSlot(): void {
+    Agent.dreamSemaphore--;
+    const next = Agent.dreamQueue.shift();
+    if (next) next();
   }
 
   async stop(): Promise<void> {
@@ -566,6 +605,10 @@ export class Agent {
     this.attentionController.stop();
     this.heartbeat.stop();
     this._bgCompletionUnsub?.();
+    if (this.consolidationInitialTimer) {
+      clearTimeout(this.consolidationInitialTimer);
+      this.consolidationInitialTimer = undefined;
+    }
     if (this.memoryConsolidationTimer) {
       clearInterval(this.memoryConsolidationTimer);
       this.memoryConsolidationTimer = undefined;
@@ -766,7 +809,15 @@ export class Agent {
 
   /** Get the current cognitive state of the agent. */
   getMindState(): AgentMindState {
-    return this.attentionController.getMindState();
+    const mind = this.attentionController.getMindState();
+    if (mind.isDeliberating && this.state.currentActivity) {
+      mind.deliberationActivity = {
+        activityId: this.state.currentActivity.id,
+        label: this.state.currentActivity.label,
+        startedAt: this.state.currentActivity.startedAt,
+      };
+    }
+    return mind;
   }
 
   /** Get the raw mailbox instance (for persistence wiring). */
@@ -1307,6 +1358,10 @@ export class Agent {
       this.cancelActiveStream();
       this.heartbeat.stop();
       this.attentionController.stop();
+      if (this.consolidationInitialTimer) {
+        clearTimeout(this.consolidationInitialTimer);
+        this.consolidationInitialTimer = undefined;
+      }
       if (this.memoryConsolidationTimer) {
         clearInterval(this.memoryConsolidationTimer);
         this.memoryConsolidationTimer = undefined;
@@ -1323,11 +1378,7 @@ export class Agent {
     this.heartbeat.start();
     this.attentionController.start();
     if (!this.memoryConsolidationTimer) {
-      this.memoryConsolidationTimer = setInterval(() => {
-        this.consolidateMemory().catch(e =>
-          log.warn('Memory consolidation failed', { error: String(e) })
-        );
-      }, Agent.MEMORY_CONSOLIDATION_INTERVAL_MS);
+      this.scheduleConsolidationTimer();
     }
     this.setStatus(this.activeTasks.size > 0 ? 'working' : 'idle');
     this.eventBus.emit('agent:resumed', { agentId: this.id });
@@ -2285,6 +2336,127 @@ export class Agent {
     this.onActivityEndCb = cbs.onEnd;
   }
 
+  setBrowserCloseTabsHelper(fn: (sessionId: string) => string | null): void {
+    this.browserCloseTabsHelper = fn;
+  }
+
+  /**
+   * At session end: inject a one-time [SYSTEM] reminder if the session used
+   * the browser and still has owned tabs, then run a lightweight LLM turn so
+   * the agent can call close_page.
+   */
+  private async finalizeBrowserSession(sessionId: string): Promise<void> {
+    if (!this.browserCloseTabsHelper) return;
+    const reminder = this.browserCloseTabsHelper(sessionId);
+    if (!reminder) return;
+
+    try {
+      this.memory.appendMessage(sessionId, { role: 'user', content: reminder });
+      log.debug('Injected browser close-tabs reminder', { agentId: this.id, sessionId });
+
+      const allTools = this.buildToolDefinitions({});
+      const browserTools = allTools.filter(t =>
+        t.name.startsWith('chrome-devtools__') &&
+        (t.name.endsWith('__close_page') || t.name.endsWith('__list_pages') || t.name.endsWith('__select_page')),
+      );
+      if (browserTools.length === 0) return;
+
+      const { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
+        agentId: this.id,
+        agentName: this.config.name,
+        role: this.role,
+        orgContext: this.orgContext,
+        contextMdPath: this.contextMdPath,
+        memory: this.memory,
+        scenario: 'chat',
+        ...this.getTeamContextParams(),
+      });
+
+      const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
+      const prepareFollowUpMessages = () =>
+        this.contextEngine.prepareMessages({
+          systemPrompt,
+          sessionMessages: this.memory.getRecentMessages(sessionId, 50),
+          memory: this.memory,
+          sessionId,
+          agentId: this.id,
+          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          toolDefinitions: browserTools,
+          systemCacheSegments,
+        });
+
+      let iterations = 0;
+      let preparedFollowUp = await prepareFollowUpMessages();
+      let response = await this.withNetworkRetry(
+        () => this.llmRouter.chat({
+          messages: preparedFollowUp.messages,
+          tools: browserTools,
+          metadata: this.getLLMMetadata(sessionId),
+          compaction: useCompaction,
+          systemCacheSegments,
+        }, this.getEffectiveProvider()),
+        'Browser close-tabs follow-up',
+      );
+
+      while (
+        response.finishReason === 'tool_use' &&
+        response.toolCalls?.length &&
+        ++iterations <= Agent.BROWSER_CLOSE_FOLLOWUP_MAX_ITER
+      ) {
+        this.memory.appendMessage(sessionId, {
+          role: 'assistant',
+          content: response.content,
+          toolCalls: response.toolCalls,
+          reasoningContent: response.reasoningContent,
+        });
+
+        for (const tc of response.toolCalls) {
+          try {
+            let result = await this.executeTool(tc, undefined, sessionId);
+            result = this.offloadLargeResult(tc.name, result);
+            this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
+          } catch (toolErr) {
+            this.memory.appendMessage(sessionId, {
+              role: 'tool',
+              content: `Error: ${String(toolErr)}`,
+              toolCallId: tc.id,
+            });
+          }
+        }
+
+        preparedFollowUp = await prepareFollowUpMessages();
+        response = await this.withNetworkRetry(
+          () => this.llmRouter.chat({
+            messages: preparedFollowUp.messages,
+            tools: browserTools,
+            metadata: this.getLLMMetadata(sessionId),
+            compaction: useCompaction,
+            systemCacheSegments,
+          }, this.getEffectiveProvider()),
+          'Browser close-tabs follow-up continuation',
+        );
+      }
+
+      if (response.toolCalls?.length) {
+        this.memory.appendMessage(sessionId, {
+          role: 'assistant',
+          content: response.content,
+          toolCalls: response.toolCalls,
+          reasoningContent: response.reasoningContent,
+        });
+      } else if (response.content?.trim()) {
+        this.memory.appendMessage(sessionId, {
+          role: 'assistant',
+          content: sanitizeLLMReply(response.content),
+          reasoningContent: response.reasoningContent,
+        });
+      }
+    } catch (err) {
+      log.warn('Browser close-tabs follow-up failed', { agentId: this.id, sessionId, error: String(err) });
+    }
+  }
+
   // ─── Activity Tracking ───────────────────────────────────────────────────────
 
   private startActivity(type: AgentActivity['type'], label: string, extra?: Partial<AgentActivity>): string {
@@ -3185,6 +3357,8 @@ export class Agent {
       });
       log.error('Failed to handle message', { error: String(error) });
       throw error;
+    } finally {
+      await this.finalizeBrowserSession(sessionId);
     }
   }
 
@@ -3621,6 +3795,9 @@ export class Agent {
       throw error;
     } finally {
       if (cancelPollTimer) clearInterval(cancelPollTimer);
+      if (this.currentSessionId) {
+        await this.finalizeBrowserSession(this.currentSessionId);
+      }
     }
   }
 
@@ -4335,6 +4512,7 @@ export class Agent {
         this.activeTasks.delete(taskId);
         this.activeTaskGen.delete(taskId);
         this.pendingInjections.delete(sessionId);
+        await this.finalizeBrowserSession(sessionId);
       }
       this.endActivity(taskActId);
       this.notifyStateChange();
@@ -4587,6 +4765,7 @@ export class Agent {
     } finally {
       this.endActivity(actId);
       if (this.activeTasks.size === 0) this.setStatus('idle');
+      await this.finalizeBrowserSession(sessionId);
     }
   }
 
@@ -5639,8 +5818,13 @@ export class Agent {
       const dreamKey = entries.length > 500 ? `${today}_${Math.floor(Date.now() / (6 * 3600_000))}` : today;
       if (entries.length >= 50 && this.lastDreamDate !== dreamKey) {
         this.lastDreamDate = dreamKey;
-        await this.dreamConsolidateMemory(entries);
-        this.pruneMemoryMd();
+        await Agent.acquireDreamSlot();
+        try {
+          await this.dreamConsolidateMemory(entries);
+          this.pruneMemoryMd();
+        } finally {
+          Agent.releaseDreamSlot();
+        }
       }
 
       log.debug('Memory consolidation completed', { agentId: this.id });

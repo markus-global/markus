@@ -13,6 +13,22 @@ async function cdp(tabId: number, method: string, params?: Record<string, unknow
   return chrome.debugger.sendCommand({ tabId }, method, params);
 }
 
+/** Suppress beforeunload dialog on current page so navigation/close isn't blocked. */
+async function suppressBeforeUnload(tabId: number): Promise<void> {
+  try {
+    await cdp(tabId, 'Runtime.evaluate', {
+      expression: `(() => {
+        window.onbeforeunload = null;
+        window.addEventListener('beforeunload', e => {
+          delete e.returnValue;
+          e.stopImmediatePropagation();
+        }, true);
+      })()`,
+      returnByValue: true,
+    });
+  } catch { /* page may not support script eval (e.g. chrome://) */ }
+}
+
 /** Helper: wait for page load after navigation */
 async function waitForLoad(tabId: number, timeoutMs: number): Promise<void> {
   // Check if already loaded before registering listener (avoids race condition)
@@ -102,6 +118,7 @@ export function registerNavigationTools(
     if (tabId === undefined) throw new Error(`Page ${pageId} not found`);
 
     if (pm.isDebuggerAttached(tabId)) {
+      await suppressBeforeUnload(tabId);
       try { await chrome.debugger.detach({ tabId }); } catch { /* ignore */ }
     }
     await chrome.tabs.remove(tabId);
@@ -158,15 +175,18 @@ export function registerNavigationTools(
 
     if (url) {
       await ensureDebugger(pm, tabId);
+      await suppressBeforeUnload(tabId);
       await cdp(tabId, 'Page.navigate', { url });
       await waitForLoad(tabId, timeout);
     } else if (params.action === 'back') {
       await ensureDebugger(pm, tabId);
+      await suppressBeforeUnload(tabId);
       await cdp(tabId, 'Page.navigateToHistoryEntry', { entryId: -1 }).catch(() => {
         return chrome.tabs.goBack(tabId);
       });
     } else if (params.action === 'forward') {
       await ensureDebugger(pm, tabId);
+      await suppressBeforeUnload(tabId);
       await cdp(tabId, 'Page.navigateToHistoryEntry', { entryId: 1 }).catch(() => {
         return chrome.tabs.goForward(tabId);
       });

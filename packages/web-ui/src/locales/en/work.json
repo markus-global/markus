@@ -22,6 +22,7 @@
     "deleteProject": "Delete Project",
     "archiveProject": "Archive Project",
     "settingsTitle": "Project settings",
+    "editProject": "Edit project",
     "descriptionPlaceholderLong": "Add a project description…",
     "projectStatusHeading": "Project Status",
     "statusActive": "Active",
@@ -417,5 +418,33 @@
     "minutesAgo": "{{count}}m ago",
     "hoursAgo": "{{count}}h ago",
     "daysAgo": "{{count}}d ago"
+  },
+  "dag": {
+    "filter": {
+      "todo": "To Do",
+      "in_progress": "In Progress",
+      "review": "In Review",
+      "done": "Done"
+    },
+    "reset": "Reset",
+    "archivedToggle": "{{count}} archived",
+    "expandHint": "Click a card to expand dependencies",
+    "backToOverview": "← Back to overview",
+    "dragHint": "Drag to link · Click edge to remove",
+    "noTasks": "No tasks to display",
+    "reqLabel": "REQ",
+    "taskCount_one": "{{count}} task",
+    "taskCount_other": "{{count}} tasks",
+    "depCount_one": "{{count}} dep",
+    "depCount_other": "{{count}} deps",
+    "removeDependencyTitle": "Remove dependency?",
+    "removeDependencyBody": "{{target}} will no longer be blocked by {{source}}.",
+    "toast": {
+      "dependencyExists": "Dependency already exists",
+      "cycleError": "Cannot add: would create a cycle",
+      "dependencyAdded": "Dependency added",
+      "dependencyRemoved": "Dependency removed",
+      "failed": "Failed: {{message}}"
+    }
   }
 }

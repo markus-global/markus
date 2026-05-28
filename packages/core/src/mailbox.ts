@@ -52,7 +52,8 @@ export interface MailboxPersistence {
 
 /**
  * Priority queue mailbox for an individual agent.
- * Items are ordered by priority (lower number = higher priority), then by arrival time (FIFO).
+ * Items are ordered by priority (lower number = higher priority), then by arrival time (LIFO
+ * within the same priority so the most recent message is processed first).
  * Emits 'mailbox:new-item' on the EventBus whenever a new item is enqueued,
  * which the AttentionController listens to for event-driven interrupts.
  */
@@ -743,12 +744,15 @@ export class AgentMailbox {
   }
 
   /**
-   * Insert item into the queue maintaining priority + FIFO order.
+   * Insert item into the queue maintaining priority order.
+   * Within the same priority, newer items go first (LIFO) so the most
+   * recent message is processed before older ones — a user's latest
+   * instruction may supersede earlier ones.
    */
   private insertSorted(item: MailboxItem): void {
     let insertIdx = this.queue.length;
     for (let i = 0; i < this.queue.length; i++) {
-      if (this.queue[i].priority > item.priority) {
+      if (this.queue[i].priority >= item.priority) {
         insertIdx = i;
         break;
       }

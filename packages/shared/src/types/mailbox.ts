@@ -193,6 +193,12 @@ export type AttentionState = 'idle' | 'focused' | 'deciding';
 
 export interface AgentMindState {
   attentionState: AttentionState;
+  isDeliberating?: boolean;
+  deliberationActivity?: {
+    activityId: string;
+    label: string;
+    startedAt: string;
+  };
   currentFocus?: {
     mailboxItemId: string;
     type: MailboxItemType;

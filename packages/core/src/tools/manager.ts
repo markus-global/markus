@@ -21,6 +21,7 @@ export interface PackageToolsContext {
   listTemplates?: () => (() => Array<{ id: string; name: string; description: string; roleId: string; category: string }>) | undefined;
   searchHub?: () => ((opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>) | undefined;
   downloadAndInstall?: () => ((itemId: string) => Promise<{ type: string; installed: unknown }>) | undefined;
+  requestApproval?: (request: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) => Promise<{ approved: boolean; comment?: string }>;
 }
 
 export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[] {
@@ -63,7 +64,7 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
 
     {
       name: 'package_install',
-      description: 'Install a package into the live organization. type "agent": hire/install an agent (from a built-in role or a custom package). type "team": deploy a full team with all members, norms, and starter tasks. type "skill": install a skill package. Use package_list to see what is available.',
+      description: 'Install a package into the live organization. type "agent": hire/install an agent (from a built-in role or a custom package). type "team": deploy a full team with all members, norms, and starter tasks. type "skill": install a skill package. Requires user approval. Use package_list to see what is available.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -90,6 +91,15 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
           const name = (args['name'] as string | undefined)?.trim();
           if (!type || !['agent', 'team', 'skill'].includes(type)) return JSON.stringify({ status: 'error', error: 'type is required and must be one of: agent, team, skill' });
           if (!name) return JSON.stringify({ status: 'error', error: 'name is required — use package_list to see available packages' });
+
+          if (ctx.requestApproval) {
+            const { approved, comment } = await ctx.requestApproval({
+              toolName: 'package_install',
+              toolArgs: { type, name, agent_name: args['agent_name'] },
+              reason: `Agent wants to install ${type} "${name}" into the organization`,
+            });
+            if (!approved) return JSON.stringify({ status: 'rejected', reason: comment || 'User denied package installation' });
+          }
 
           if (type === 'agent') {
             try {
@@ -164,7 +174,7 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
 
     {
       name: 'hub_install',
-      description: 'Download an item from Markus Hub and install it. Combines download, save as artifact, and install into a single step. For agents/teams: remember to onboard the new agent(s) after installation.',
+      description: 'Download an item from Markus Hub and install it. Combines download, save as artifact, and install into a single step. Requires user approval. For agents/teams: remember to onboard the new agent(s) after installation.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -178,6 +188,16 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
         try {
           const itemId = (args['item_id'] as string | undefined)?.trim();
           if (!itemId) return JSON.stringify({ status: 'error', error: 'item_id is required — use hub_search to find available items first' });
+
+          if (ctx.requestApproval) {
+            const { approved, comment } = await ctx.requestApproval({
+              toolName: 'hub_install',
+              toolArgs: { item_id: itemId },
+              reason: `Agent wants to download and install Hub item "${itemId}" into the organization`,
+            });
+            if (!approved) return JSON.stringify({ status: 'rejected', reason: comment || 'User denied Hub installation' });
+          }
+
           const result = await downloadAndInstall(itemId);
           const isAgentOrTeam = result.type === 'agent' || result.type === 'team';
           return JSON.stringify({

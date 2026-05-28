@@ -431,7 +431,7 @@ describe('Mailbox Priority Processing', () => {
     expect(fourth?.priority).toBe(4);  // background
   });
 
-  it('maintains FIFO order for items with the same priority', () => {
+  it('maintains LIFO order for items with the same priority', () => {
     const mailbox = makeMailbox();
 
     mailbox.enqueue('a2a_message', makePayload('msg-1'), { priority: 2 });
@@ -442,9 +442,9 @@ describe('Mailbox Priority Processing', () => {
     const second = mailbox.dequeue();
     const third = mailbox.dequeue();
 
-    expect(first?.payload.summary).toBe('msg-1');
+    expect(first?.payload.summary).toBe('msg-3');
     expect(second?.payload.summary).toBe('msg-2');
-    expect(third?.payload.summary).toBe('msg-3');
+    expect(third?.payload.summary).toBe('msg-1');
   });
 
   it('hasItemAbovePriority returns correct result', () => {

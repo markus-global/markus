@@ -1,33 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
 
-export interface KnowledgeServiceBridge {
-  contribute(opts: {
-    scope: string;
-    scopeId: string;
-    category: string;
-    title: string;
-    content: string;
-    source: string;
-    importance?: number;
-    tags?: string[];
-    supersedes?: string;
-  }): { id: string; status: string };
-  search(opts: {
-    query: string;
-    scope?: string;
-    scopeId?: string;
-    category?: string;
-    limit?: number;
-  }): Array<{ id: string; title: string; category: string; content: string; importance: number; filePath?: string }>;
-  browse(opts: {
-    scope: string;
-    scopeId: string;
-    category?: string;
-  }): Record<string, number> | Array<{ id: string; title: string; content: string }>;
-  flagOutdated(id: string, reason: string): void;
-  getEntryFilePath?(id: string): string | undefined;
-}
-
 export interface DeliverableServiceBridge {
   create(opts: {
     type: string;
@@ -91,11 +63,8 @@ export interface ProjectServiceBridge {
     description: string;
     createdBy?: string;
   }): { id: string; name: string; status: string };
-  updateProject?(id: string, data: {
-    name?: string;
-    description?: string;
-    status?: string;
-  }): { id: string; name: string; status: string };
+  updateProject?(id: string, data: Record<string, unknown>): { id: string; name: string; status: string };
+  deleteProject?(id: string): void;
 }
 
 export interface ProjectToolsContext {
@@ -113,29 +82,17 @@ export interface ProjectToolsContext {
     teamIds: string[];
     governancePolicy?: { enabled: boolean; defaultTier: string };
   } | null>;
-  knowledgeContribute?: (opts: {
-    scope: string;
-    category: string;
-    title: string;
-    content: string;
-    importance?: number;
-    tags?: string;
-    supersedes?: string;
-  }) => Promise<{ id: string; status: string; filePath?: string }>;
-  knowledgeSearch?: (
-    query: string,
-    scope?: string,
-    category?: string,
-    limit?: number
-  ) => Promise<
-    Array<{ id: string; title: string; category: string; content: string; importance: number }>
-  >;
-  knowledgeBrowse?: (
-    category?: string,
-    scope?: string
-  ) => Promise<Record<string, number> | Array<{ id: string; title: string; content: string }>>;
-  knowledgeFlagOutdated?: (id: string, reason: string) => Promise<void>;
-
+  getProjectStats?: (projectId: string) => Promise<{
+    totalTasks: number;
+    completed: number;
+    inProgress: number;
+    inReview: number;
+    blocked: number;
+    pending: number;
+    failed: number;
+    totalRequirements: number;
+    completedRequirements: number;
+  } | null>;
   deliverableCreate?: (opts: {
     type: string;
     title: string;
@@ -201,34 +158,60 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
           {
             name: 'get_project',
             description:
-              'Get detailed information about a specific project including repositories, teams, and governance policy.',
+              'Get detailed information about a specific project including repositories (with paths and branches), teams, and governance policy. Use project_id or omit to get your current project.',
             inputSchema: {
               type: 'object',
               properties: {
                 project_id: {
                   type: 'string',
-                  description: 'The project ID',
+                  description: 'The project ID (omit to get current project if available)',
                 },
               },
-              required: ['project_id'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const projectId = args['project_id'] as string;
-                const project = ctx.projectService!.getProject(projectId);
-                if (!project) return JSON.stringify({ status: 'error', error: 'Project not found' });
-                return JSON.stringify({
-                  status: 'success',
-                  project: {
-                    id: project.id,
-                    name: project.name,
-                    description: project.description,
-                    status: project.status,
-                    repoCount: project.repositories?.length ?? 0,
-                    teamIds: project.teamIds ?? [],
-                    governance: project.governancePolicy?.enabled ? project.governancePolicy.defaultTier : 'none',
-                  },
-                });
+                const projectId = args['project_id'] as string | undefined;
+                if (projectId) {
+                  const project = ctx.projectService!.getProject(projectId);
+                  if (!project) return JSON.stringify({ status: 'error', error: 'Project not found' });
+                  return JSON.stringify({
+                    status: 'success',
+                    project: {
+                      id: project.id,
+                      name: project.name,
+                      description: project.description,
+                      status: project.status,
+                      repositories: (project.repositories ?? []).map(r => ({
+                        path: r.localPath,
+                        branch: r.defaultBranch,
+                        role: r.role,
+                      })),
+                      teamIds: project.teamIds ?? [],
+                      governancePolicy: project.governancePolicy ?? null,
+                    },
+                  });
+                }
+                if (ctx.getProjectInfo) {
+                  const info = await ctx.getProjectInfo();
+                  if (!info) return JSON.stringify({ status: 'error', error: 'No current project found' });
+                  return JSON.stringify({
+                    status: 'success',
+                    project: {
+                      id: info.id,
+                      name: info.name,
+                      description: info.description,
+                      status: info.status,
+                      repositories: (info.repositories ?? []).map(r => ({
+                        path: r.localPath,
+                        branch: r.defaultBranch,
+                        role: r.role,
+                      })),
+                      teamIds: info.teamIds ?? [],
+                      governancePolicy: info.governancePolicy ?? null,
+                    },
+                  });
+                }
+                return JSON.stringify({ status: 'error', error: 'project_id is required' });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
@@ -279,7 +262,8 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 {
                   name: 'update_project',
                   description:
-                    'Update an existing project (name, description, or status). Requires user approval before execution.',
+                    'Update an existing project. Supports name, description, status, repositories, teamIds, and governancePolicy. ' +
+                    'Changing description alone executes directly; all other changes require user approval.',
                   inputSchema: {
                     type: 'object',
                     properties: {
@@ -287,21 +271,55 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                       name: { type: 'string', description: 'New project name (optional)' },
                       description: { type: 'string', description: 'New description (optional)' },
                       status: { type: 'string', enum: ['active', 'paused', 'archived'], description: 'New status (optional)' },
+                      repositories: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            localPath: { type: 'string', description: 'Local filesystem path to the repository' },
+                            defaultBranch: { type: 'string', description: 'Default branch name (e.g. main)' },
+                            role: { type: 'string', enum: ['primary', 'secondary'], description: 'Role of this repository' },
+                          },
+                          required: ['localPath', 'defaultBranch', 'role'],
+                        },
+                        description: 'Full list of repositories (replaces existing). Requires approval.',
+                      },
+                      team_ids: {
+                        type: 'array',
+                        items: { type: 'string' },
+                        description: 'Team IDs to associate with this project. Requires approval.',
+                      },
+                      governance_policy: {
+                        type: 'object',
+                        properties: {
+                          enabled: { type: 'boolean' },
+                          defaultTier: { type: 'string' },
+                        },
+                        description: 'Governance policy settings. Requires approval.',
+                      },
                     },
                     required: ['project_id'],
                   },
                   async execute(args: Record<string, unknown>): Promise<string> {
                     try {
                       const projectId = args['project_id'] as string;
-                      const data: { name?: string; description?: string; status?: string } = {};
+                      const data: Record<string, unknown> = {};
                       if (args['name']) data.name = args['name'] as string;
                       if (args['description']) data.description = args['description'] as string;
                       if (args['status']) data.status = args['status'] as string;
-                      if (ctx.requestApproval) {
+                      if (args['repositories']) data.repositories = args['repositories'];
+                      if (args['team_ids']) data.teamIds = args['team_ids'];
+                      if (args['governance_policy']) data.governancePolicy = args['governance_policy'];
+
+                      const APPROVAL_FIELDS = ['name', 'status', 'repositories', 'teamIds', 'governancePolicy'];
+                      const needsApproval = APPROVAL_FIELDS.some(f => data[f] !== undefined);
+
+                      if (needsApproval && ctx.requestApproval) {
+                        const changedFields = Object.keys(data).filter(k => k !== 'description');
                         const { approved, comment } = await ctx.requestApproval({
                           toolName: 'update_project',
                           toolArgs: { project_id: projectId, ...data },
-                          reason: `Agent wants to update project ${projectId}`,
+                          reason: `Agent wants to update project ${projectId} (fields: ${changedFields.join(', ')})`,
                         });
                         if (!approved) return JSON.stringify({ status: 'rejected', reason: comment || 'User denied project update' });
                       }
@@ -316,37 +334,60 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
             : []),
         ]
       : []),
-    ...(ctx.getProjectInfo
+    ...(ctx.projectService?.deleteProject
       ? [
           {
-            name: 'project_info',
+            name: 'delete_project',
             description:
-              'Get details about your current project: repositories, governance rules, and team composition. Call this when you need to understand your working context.',
+              'Delete a project. This is a destructive operation that unlinks all tasks and requirements. Always requires user approval.',
             inputSchema: {
               type: 'object',
               properties: {
-                project_id: {
-                  type: 'string',
-                  description: 'Project ID (omit for your current project)',
-                },
+                project_id: { type: 'string', description: 'The project ID to delete' },
+                reason: { type: 'string', description: 'Why this project should be deleted' },
               },
+              required: ['project_id', 'reason'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const info = await ctx.getProjectInfo!(args['project_id'] as string | undefined);
-                if (!info) return JSON.stringify({ status: 'error', error: 'No project found' });
-                return JSON.stringify({
-                  status: 'success',
-                  project: {
-                    id: info.id,
-                    name: info.name,
-                    description: info.description,
-                    status: info.status,
-                    repositories: info.repositories?.map(r => ({ path: r.localPath, branch: r.defaultBranch })),
-                    teamCount: info.teamIds?.length ?? 0,
-                    governance: info.governancePolicy?.enabled ? info.governancePolicy.defaultTier : 'none',
-                  },
-                });
+                const projectId = args['project_id'] as string;
+                const reason = args['reason'] as string;
+                if (ctx.requestApproval) {
+                  const { approved, comment } = await ctx.requestApproval({
+                    toolName: 'delete_project',
+                    toolArgs: { project_id: projectId, reason },
+                    reason: `Agent wants to DELETE project ${projectId}: ${reason}`,
+                  });
+                  if (!approved) return JSON.stringify({ status: 'rejected', reason: comment || 'User denied project deletion' });
+                }
+                ctx.projectService!.deleteProject!(projectId);
+                return JSON.stringify({ status: 'success', deleted: projectId });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.getProjectStats
+      ? [
+          {
+            name: 'project_stats',
+            description:
+              'Get task and requirement statistics for a project: counts by status (completed, in_progress, blocked, etc.).',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                project_id: { type: 'string', description: 'The project ID' },
+              },
+              required: ['project_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const stats = await ctx.getProjectStats!(args['project_id'] as string);
+                if (!stats) return JSON.stringify({ status: 'error', error: 'Project not found' });
+                return JSON.stringify({ status: 'success', ...stats });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
