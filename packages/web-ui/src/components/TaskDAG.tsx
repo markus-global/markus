@@ -41,9 +41,9 @@ const PRIORITY_INDICATOR: Record<string, string> = {
   low: 'bg-blue-500',
 };
 
-function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string; selected?: boolean; direction?: 'TB' | 'LR' } }) {
+function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string; selected?: boolean; direction?: 'TB' | 'LR'; isExpandedRoot?: boolean; onCollapse?: () => void } }) {
   const { t } = useTranslation(['work', 'common']);
-  const { task, agentName, selected, direction = 'TB' } = data;
+  const { task, agentName, selected, direction = 'TB', isExpandedRoot, onCollapse } = data;
   const colors = STATUS_COLORS[task.status] ?? STATUS_COLORS['pending']!;
   const isSched = task.taskType === 'scheduled' && !!task.scheduleConfig;
   const schedLabel = isSched
@@ -55,7 +55,7 @@ function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string; select
   const sourcePos = direction === 'LR' ? Position.Right : Position.Bottom;
 
   return (
-    <div className={`rounded-lg border px-3 py-2 min-w-[180px] max-w-[220px] shadow-md backdrop-blur-sm ${isSched ? `${colors.bg} border-blue-500/40 ring-1 ring-blue-500/20` : `${colors.bg} ${colors.border}`} ${selected ? 'ring-2 ring-brand-500 shadow-brand-500/25 shadow-lg' : ''}`}>
+    <div className={`relative rounded-lg border px-3 py-2 min-w-[180px] max-w-[220px] shadow-md backdrop-blur-sm ${isSched ? `${colors.bg} border-blue-500/40 ring-1 ring-blue-500/20` : `${colors.bg} ${colors.border}`} ${selected ? 'ring-2 ring-brand-500 shadow-brand-500/25 shadow-lg' : ''}`}>
       <Handle type="target" position={targetPos} className="!bg-border-default !w-2 !h-2" />
       <div className="flex items-center gap-1.5 mb-1">
         <span className={`w-2 h-2 rounded-full shrink-0 ${PRIORITY_INDICATOR[task.priority] ?? 'bg-gray-500'}`} />
@@ -80,6 +80,15 @@ function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string; select
         </div>
       )}
       <Handle type="source" position={sourcePos} className="!bg-border-default !w-2 !h-2" />
+      {isExpandedRoot && onCollapse && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onCollapse(); }}
+          className="absolute top-1/2 -translate-y-1/2 -right-7 w-5 h-5 rounded-full bg-surface-secondary border border-border-default flex items-center justify-center text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay transition-colors shadow-sm"
+          title={t('work:dag.backToOverview')}
+        >
+          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+        </button>
+      )}
     </div>
   );
 }
@@ -99,14 +108,14 @@ const REQ_GROUP_MAP: Record<string, string> = {
   rejected: 'done', cancelled: 'done', archived: 'done',
 };
 
-function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: boolean; direction?: 'TB' | 'LR' } }) {
+function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: boolean; direction?: 'TB' | 'LR'; isExpandedRoot?: boolean; onCollapse?: () => void } }) {
   const { t } = useTranslation(['work', 'common']);
-  const { req, selected, direction = 'TB' } = data;
+  const { req, selected, direction = 'TB', isExpandedRoot, onCollapse } = data;
   const colors = REQ_STATUS_COLORS[req.status] ?? REQ_STATUS_COLORS['pending']!;
   const targetPos = direction === 'LR' ? Position.Left : Position.Top;
   const sourcePos = direction === 'LR' ? Position.Right : Position.Bottom;
   return (
-    <div className={`rounded-lg border-2 border-dashed px-3 py-2 min-w-[180px] max-w-[220px] shadow-lg ${colors.bg} ${colors.border} ${selected ? 'ring-2 ring-brand-500 shadow-brand-500/25' : ''}`}>
+    <div className={`relative rounded-lg border-2 border-dashed px-3 py-2 min-w-[180px] max-w-[220px] shadow-lg ${colors.bg} ${colors.border} ${selected ? 'ring-2 ring-brand-500 shadow-brand-500/25' : ''}`}>
       <Handle type="target" position={targetPos} className="!bg-border-default !w-2 !h-2" />
       <div className="flex items-center gap-1.5 mb-1">
         <span className="text-[9px] px-1 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-600">{t('work:dag.reqLabel')}</span>
@@ -123,6 +132,15 @@ function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: bo
         </div>
       )}
       <Handle type="source" position={sourcePos} className="!bg-border-default !w-2 !h-2" />
+      {isExpandedRoot && onCollapse && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onCollapse(); }}
+          className="absolute top-1/2 -translate-y-1/2 -right-7 w-5 h-5 rounded-full bg-surface-secondary border border-border-default flex items-center justify-center text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay transition-colors shadow-sm"
+          title={t('work:dag.backToOverview')}
+        >
+          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+        </button>
+      )}
     </div>
   );
 }
@@ -279,6 +297,7 @@ interface TaskDAGProps {
   onShowArchivedChange?: (show: boolean) => void;
   onTaskClick?: (task: TaskInfo) => void;
   onReqClick?: (req: RequirementInfo) => void;
+  onCollapseDAG?: () => void;
   onDependencyChange?: () => void;
   selectedTaskId?: string | null;
   selectedReqId?: string | null;
@@ -329,7 +348,7 @@ function collectTransitiveDeps(nodeId: string, taskMap: Map<string, TaskInfo>, r
   return visited;
 }
 
-export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onDependencyChange, selectedTaskId, selectedReqId, hasDetailPanel }: TaskDAGProps) {
+export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onCollapseDAG, onDependencyChange, selectedTaskId, selectedReqId, hasDetailPanel }: TaskDAGProps) {
   const { t } = useTranslation(['work', 'common']);
   const isLight = useIsLight();
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
@@ -405,6 +424,14 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     return m;
   }, [requirements]);
 
+  const userHasInteracted = useRef(false);
+
+  const collapseDAG = useCallback(() => {
+    userHasInteracted.current = false;
+    setExpandedNodeId(null);
+    onCollapseDAG?.();
+  }, [onCollapseDAG]);
+
   const edgeDefault = isLight ? '#94a3b8' : '#6b7280';
   const makeEdge = useCallback((depId: string, taskId: string, status: string): Edge => ({
     id: `${depId}->${taskId}`,
@@ -416,17 +443,65 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
   }), [edgeDefault]);
 
   const { initialNodes, initialEdges, topLevelIds } = useMemo(() => {
-    const rootTasks = tasks.filter(t => allowedStatuses.has(t.status) && (showArchived || !isArchivedTask(t)));
+    const buildNodesAndEdges = (srcTasks: TaskInfo[], srcReqs: RequirementInfo[]) => {
+      const nodeIdSet = new Set<string>();
+      const nodes: Node[] = srcTasks.map(task => {
+        nodeIdSet.add(task.id);
+        return {
+          id: task.id,
+          type: 'task' as const,
+          data: { task, agentName: task.assignedAgentId ? agentMap.get(task.assignedAgentId) : undefined, selected: task.id === selectedTaskId },
+          position: { x: 0, y: 0 },
+        };
+      });
+      for (const req of srcReqs) {
+        const reqNodeId = `req-${req.id}`;
+        nodeIdSet.add(reqNodeId);
+        nodes.push({
+          id: reqNodeId,
+          type: 'requirement' as const,
+          data: { req, selected: req.id === selectedReqId },
+          position: { x: 0, y: 0 },
+        });
+      }
+      const edges: Edge[] = [];
+      for (const task of srcTasks) {
+        if (task.blockedBy) {
+          for (const depId of task.blockedBy) {
+            if (nodeIdSet.has(depId)) edges.push(makeEdge(depId, task.id, task.status));
+          }
+        }
+      }
+      const reqEdgeIds = new Set<string>();
+      const addReqEdge = (reqNodeId: string, taskId: string) => {
+        const edgeId = `${reqNodeId}->${taskId}`;
+        if (reqEdgeIds.has(edgeId)) return;
+        reqEdgeIds.add(edgeId);
+        edges.push({
+          id: edgeId,
+          source: reqNodeId,
+          target: taskId,
+          markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: '#8b5cf6' },
+          style: { stroke: '#8b5cf6', strokeWidth: 1.5, strokeDasharray: '4 2' },
+        });
+      };
+      for (const req of srcReqs) {
+        const reqNodeId = `req-${req.id}`;
+        for (const taskId of req.taskIds) {
+          if (nodeIdSet.has(taskId)) addReqEdge(reqNodeId, taskId);
+        }
+      }
+      for (const task of srcTasks) {
+        if (task.requirementId) {
+          const reqNodeId = `req-${task.requirementId}`;
+          if (nodeIdSet.has(reqNodeId)) addReqEdge(reqNodeId, task.id);
+        }
+      }
+      return { nodes, edges };
+    };
 
-    const rawNodes: Node[] = rootTasks.map(task => ({
-      id: task.id,
-      type: 'task',
-      data: { task, agentName: task.assignedAgentId ? agentMap.get(task.assignedAgentId) : undefined, selected: task.id === selectedTaskId },
-      position: { x: 0, y: 0 },
-    }));
-
-    const nodeIdSet = new Set(rawNodes.map(n => n.id));
-
+    // Overview: filtered by status groups
+    const filteredTasks = tasks.filter(t => allowedStatuses.has(t.status) && (showArchived || !isArchivedTask(t)));
     const allowedGroupIds = new Set<string>();
     for (const g of DAG_FILTER_GROUPS) {
       if (groupFilter.has(g.id)) allowedGroupIds.add(g.id);
@@ -435,78 +510,35 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
       const gid = REQ_GROUP_MAP[r.status];
       return gid && allowedGroupIds.has(gid);
     });
-    for (const req of filteredReqs) {
-      const reqNodeId = `req-${req.id}`;
-      rawNodes.push({
-        id: reqNodeId,
-        type: 'requirement',
-        data: { req, selected: req.id === selectedReqId },
-        position: { x: 0, y: 0 },
-      });
-      nodeIdSet.add(reqNodeId);
-    }
 
-    const rawEdges: Edge[] = [];
-    for (const task of rootTasks) {
-      if (task.blockedBy) {
-        for (const depId of task.blockedBy) {
-          if (nodeIdSet.has(depId)) {
-            rawEdges.push(makeEdge(depId, task.id, task.status));
-          }
-        }
-      }
-    }
-
-    const reqEdgeIds = new Set<string>();
-    const addReqEdge = (reqNodeId: string, taskId: string) => {
-      const edgeId = `${reqNodeId}->${taskId}`;
-      if (reqEdgeIds.has(edgeId)) return;
-      reqEdgeIds.add(edgeId);
-      rawEdges.push({
-        id: edgeId,
-        source: reqNodeId,
-        target: taskId,
-        markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: '#8b5cf6' },
-        style: { stroke: '#8b5cf6', strokeWidth: 1.5, strokeDasharray: '4 2' },
-      });
-    };
-    for (const req of filteredReqs) {
-      const reqNodeId = `req-${req.id}`;
-      for (const taskId of req.taskIds) {
-        if (nodeIdSet.has(taskId)) addReqEdge(reqNodeId, taskId);
-      }
-    }
-    for (const task of rootTasks) {
-      if (task.requirementId) {
-        const reqNodeId = `req-${task.requirementId}`;
-        if (nodeIdSet.has(reqNodeId)) addReqEdge(reqNodeId, task.id);
-      }
-    }
-
+    const { nodes: overviewNodes, edges: overviewEdges } = buildNodesAndEdges(filteredTasks, filteredReqs);
     const dependedUpon = new Set<string>();
-    for (const e of rawEdges) dependedUpon.add(e.target);
-    const topLevel = new Set(rawNodes.filter(n => !dependedUpon.has(n.id)).map(n => n.id));
+    for (const e of overviewEdges) dependedUpon.add(e.target);
+    const topLevel = new Set(overviewNodes.filter(n => !dependedUpon.has(n.id)).map(n => n.id));
 
-    let visibleNodes: Node[];
-    let visibleEdges: Edge[];
     if (!expandedNodeId || !topLevel.has(expandedNodeId)) {
-      visibleNodes = rawNodes.filter(n => topLevel.has(n.id));
-      visibleEdges = [];
-    } else {
-      const visible = collectTransitiveDeps(expandedNodeId, taskMap, reqMap, rootTasks);
-      visibleNodes = rawNodes.filter(n => visible.has(n.id));
-      visibleEdges = rawEdges.filter(e => visible.has(e.source) && visible.has(e.target));
+      const visibleNodes = overviewNodes.filter(n => topLevel.has(n.id));
+      const { nodes: layouted, direction: layoutDir } = layoutNodes(visibleNodes, []);
+      const withDir: Node[] = layouted.map(n => ({ ...n, data: { ...n.data, direction: layoutDir } }));
+      return { initialNodes: withDir, initialEdges: [] as Edge[], topLevelIds: topLevel };
     }
+
+    // Expanded: use ALL tasks/requirements regardless of status filter
+    const { nodes: allNodes, edges: allEdges } = buildNodesAndEdges(tasks, requirements);
+    const visible = collectTransitiveDeps(expandedNodeId, taskMap, reqMap, tasks);
+    const visibleNodes = allNodes.filter(n => visible.has(n.id)).map(n =>
+      n.id === expandedNodeId ? { ...n, data: { ...n.data, isExpandedRoot: true, onCollapse: collapseDAG } } : n
+    );
+    const visibleEdges = allEdges.filter(e => visible.has(e.source) && visible.has(e.target));
 
     const { nodes: layouted, direction: layoutDir } = layoutNodes(visibleNodes, visibleEdges);
     const withDir: Node[] = layouted.map(n => ({ ...n, data: { ...n.data, direction: layoutDir } }));
     return { initialNodes: withDir, initialEdges: visibleEdges, topLevelIds: topLevel };
-  }, [tasks, requirements, agentMap, taskMap, reqMap, makeEdge, allowedStatuses, groupFilter, showArchived, selectedTaskId, selectedReqId, expandedNodeId]);
+  }, [tasks, requirements, agentMap, taskMap, reqMap, makeEdge, allowedStatuses, groupFilter, showArchived, selectedTaskId, selectedReqId, expandedNodeId, collapseDAG]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const rfRef = useRef<ReactFlowInstance | null>(null);
-  const userHasInteracted = useRef(false);
   const prevFilterRef = useRef({ groupFilter, showArchived });
 
   useEffect(() => {
@@ -542,9 +574,9 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
   }, []);
 
   const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
-    if (topLevelIds.has(node.id)) {
+    if (!expandedNodeId && topLevelIds.has(node.id)) {
       userHasInteracted.current = false;
-      setExpandedNodeId(prev => prev === node.id ? null : node.id);
+      setExpandedNodeId(node.id);
     }
     if (node.id.startsWith('req-')) {
       const req = reqMap.get(node.id.slice(4));
@@ -553,7 +585,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
       const task = taskMap.get(node.id);
       if (task && onTaskClick) onTaskClick(task);
     }
-  }, [taskMap, reqMap, onTaskClick, onReqClick, topLevelIds]);
+  }, [taskMap, reqMap, onTaskClick, onReqClick, topLevelIds, expandedNodeId]);
 
   // Drag from source (blocker) → target (dependent): source blocks target
   const handleConnect = useCallback(async (connection: Connection) => {
@@ -681,7 +713,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
         </div>
         <div className="text-[10px] text-fg-tertiary select-none flex items-center gap-2">
           {expandedNodeId ? (
-            <button onClick={() => { userHasInteracted.current = false; setExpandedNodeId(null); }} className="text-brand-500 hover:text-brand-400 transition-colors">
+            <button onClick={collapseDAG} className="text-brand-500 hover:text-brand-400 transition-colors">
               {t('work:dag.backToOverview')}
             </button>
           ) : (
