@@ -2223,6 +2223,28 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
             });
           }
 
+          // Fallback for pure text responses where the server sends text_commit
+          // events (no text_delta, no done.segments) — build final segments
+          // from the committedSegments that were accumulated during streaming.
+          if (!streamResult.segments?.length) {
+            updateConvMsgs(sendKey, prev => {
+              const u = [...prev];
+              const idx = u.findIndex(m => m.id === agentMsgId);
+              if (idx < 0) return prev;
+              const msg = u[idx]!;
+              const committed = msg.committedSegments ?? [];
+              const committedText = committed
+                .filter((s): s is MsgSegment & { type: 'text' } => s.type === 'text' && !!s.content)
+                .map(s => s.content)
+                .join('');
+              const finalText = committedText || streamResult.content || msg.text;
+              if (committed.length > 0 || finalText) {
+                u[idx] = { ...msg, text: finalText, segments: committed.length > 0 ? committed : msg.segments };
+              }
+              return u;
+            });
+          }
+
           if (streamResult.sessionId) {
             setActiveSessionId(streamResult.sessionId);
             setOpenSessionTabs(prev =>
