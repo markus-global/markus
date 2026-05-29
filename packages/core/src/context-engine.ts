@@ -254,8 +254,9 @@ export class ContextEngine {
       stable.push('- `recall_activity` — query your own past execution logs by task or activity type. Use when you need to review what you did previously (e.g., to answer a follow-up question).');
       stable.push('');
       stable.push('**Communicating with other agents**:');
-      stable.push('- `agent_send_message` — send a direct message to a peer agent. **By default this is asynchronous (fire-and-forget)**: the message enters their mailbox and you continue working without waiting. Set `wait_for_reply: true` only when you need the answer before you can proceed (rare — prefer async).');
-      stable.push('- A2A messaging is inherently **non-blocking**. You send a message, the recipient processes it on their own schedule, and may reply later via their own `agent_send_message`. Do NOT spin-wait or poll for responses.');
+      stable.push('- `agent_send_message` — send a direct message to a peer agent. **Always asynchronous**: the message enters their mailbox and you continue working without blocking.');
+      stable.push('- A2A messaging is **non-blocking by design**. You send a message, the recipient processes it on their own schedule, and may reply via their own `agent_send_message`. Do NOT spin-wait or poll.');
+      stable.push('- Use `conversation_id` to correlate multi-turn exchanges. Record what you asked in working memory (`update_working_memory`) so you recognize the reply when it arrives as a new mailbox item.');
       stable.push('- For substantial work requests, create a `task_create` assigned to the target agent instead of asking via message.');
       stable.push('- Do NOT use A2A messages for routine task status notifications — the system handles those automatically.');
     }
@@ -736,24 +737,19 @@ export class ContextEngine {
         break;
 
       case 'a2a': {
-        const waitForReply = extra?.a2aWaitForReply;
         lines.push('You are in an **agent-to-agent (A2A) conversation**. This context is for COORDINATION, not for executing work.');
         lines.push('');
-        if (waitForReply) {
-          lines.push('**Communication channel**: The peer agent is **waiting for your reply**. Your text output is sent **directly back** to the peer agent as the response. Humans do NOT see this conversation. To reach a human, use `notify_user`. To reach a different agent (not the one who messaged you), use `agent_send_message`.');
-        } else {
-          lines.push('**Communication channel**: The peer agent sent you a **one-way notification** and is **NOT waiting for a reply**. Your text output will NOT reach the sender. Humans do NOT see this conversation.');
-          lines.push('- To **reply to the sender**, use `agent_send_message` with the sender\'s agent ID.');
-          lines.push('- To reach a **human**, use `notify_user`.');
-          lines.push('- To reach a **different agent**, use `agent_send_message`.');
-          lines.push('- If no response is needed, just process the information silently (e.g., update your state, create tasks, take notes).');
-          lines.push('');
-          lines.push('**One-way notification etiquette**: The sender is NOT waiting. Only act if:');
-          lines.push('- The message contains a direct question or request for you');
-          lines.push('- The information changes your current work priorities');
-          lines.push('- You have critical corrections to share');
-          lines.push('Otherwise, absorb silently and continue your current work.');
-        }
+        lines.push('**Communication channel**: All A2A messaging is **asynchronous**. The sender is NOT blocking for your reply. Humans do NOT see this conversation.');
+        lines.push('- To **reply to the sender**, use `agent_send_message` with the sender\'s agent ID and the same `conversation_id` (if present in the message as `[conversation:...]`).');
+        lines.push('- To reach a **human**, use `notify_user`.');
+        lines.push('- To reach a **different agent**, use `agent_send_message`.');
+        lines.push('- If no response is needed, just process the information silently (e.g., update your state, create tasks, take notes).');
+        lines.push('');
+        lines.push('**A2A etiquette**: Only act if:');
+        lines.push('- The message contains a direct question or request for you');
+        lines.push('- The information changes your current work priorities');
+        lines.push('- You have critical corrections to share');
+        lines.push('Otherwise, absorb silently and continue your current work.');
         lines.push('');
         lines.push('**Communication rules:**');
         lines.push('- Be concise and structured — your colleague needs actionable information');

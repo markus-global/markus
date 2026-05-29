@@ -102,6 +102,13 @@ export interface MailboxItem {
 export interface MailboxPayload {
   summary: string;
   content: string;
+  /** Structured multi-message array for merged channel items (group chat, A2A). */
+  messages?: Array<{
+    senderId?: string;
+    senderName: string;
+    content: string;
+    timestamp: string;
+  }>;
   /** For task_status_update */
   taskId?: string;
   /** For requirement_update */
@@ -160,12 +167,23 @@ export interface TriageResult {
 }
 
 export interface DeliberationResult {
+  /** Primary item to process (backward compat). Ignored if processItemIds is set. */
   processItemId: string;
+  /** Batch of items to process together in one LLM session. Overrides processItemId when length > 1. */
+  processItemIds?: string[];
+  /** Optional synthesis/instruction for batch processing context. */
+  batchContext?: string;
   deferItemIds: string[];
   dropItemIds: string[];
   inlineCompletedIds: string[];
   reasoning: string;
   situationalAwareness?: string;
+  /** Memory operations to apply after deliberation completes. */
+  memoryUpdates?: Array<{
+    type: 'working' | 'longterm';
+    key: string;
+    content: string;
+  }>;
 }
 
 export interface AttentionDecision {

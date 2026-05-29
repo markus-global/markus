@@ -232,9 +232,11 @@ The heuristic interrupt rules (`heuristicDecision`) never produce `cancel` — o
 
 User chat (`human_chat`), task comments (`task_comment`), and requirement comments (`requirement_comment`) are assigned **priority 0 (critical)** — the highest possible level. The heuristic rules enforce:
 
-1. **R1**: If a new `human_chat`, `task_comment`, or `requirement_comment` arrives while the agent is focused on any non-user work, the agent **always preempts** to handle the user interaction immediately.
-2. When idle with multiple items queued, the priority queue ensures user interactions are dequeued first.
-3. The agent's system prompt includes the **full mailbox queue** (not a truncated view), so the agent is always aware of everything waiting for its attention.
+1. **R0**: If a new `human_chat` arrives from the **same user** while the agent is already processing that user's previous message, the new message is **merged** (injected into the active session as a follow-up). This avoids unnecessary preemption and allows natural multi-message conversations.
+2. **R1**: If a new `human_chat`, `task_comment`, or `requirement_comment` arrives while the agent is focused on any non-user work, the agent **always preempts** to handle the user interaction immediately.
+3. When idle with multiple items queued, the priority queue ensures user interactions are dequeued first.
+4. The agent's system prompt includes the **full mailbox queue** (not a truncated view), so the agent is always aware of everything waiting for its attention.
+5. **Deliberation abort**: If a `human_chat` arrives during active deliberation, the deliberation is aborted immediately and the user message is processed first. Deliberation results are discarded; items remain in queue for next cycle.
 
 ### Safe Yield Points
 
@@ -611,11 +613,17 @@ tool: agent_send_message ──►  agentManager.sendAgentMessage()
                                AttentionController picks it up
 ```
 
-- **`agent_send_message`** tool: Agent calls this to message a peer. It resolves to `agentManager.sendAgentMessage()` which calls `targetAgent.sendMessage()`.
+- **`agent_send_message`** tool: Agent calls this to message a peer. It resolves to `agentManager.sendAgentMessage()` which calls `targetAgent.sendMessage()`. **Always asynchronous** — the tool returns immediately with a `conversation_id` for correlation.
 - **`agent_delegate_task`** tool: Delegation still uses `DelegationManager` for protocol orchestration (handshake, progress updates, completion), but the underlying message transport goes through `sendMessage()` → mailbox.
 - **`agent_broadcast_status`** tool: Broadcasts to all other agents via `enqueueToMailbox('system_event', ...)` on each recipient.
 
 The `@markus/a2a` package retains `DelegationManager` and protocol types. `A2ABus` is exported with a `@deprecated` annotation for backward compatibility only.
+
+### Async-Only A2A (Deadlock Prevention)
+
+The `wait_for_reply=true` parameter is **deprecated and ignored**. All A2A messaging is non-blocking. This eliminates deadlocks that occurred when two agents simultaneously awaited each other's reply.
+
+**Correlation pattern**: Each message carries a `conversation_id` (auto-generated UUID). Agents record pending questions in working memory and recognize replies by the `[conversation:...]` tag prepended to the message content. Multi-turn exchanges use the same `conversation_id` for context continuity.
 
 ---
 
@@ -779,6 +787,7 @@ When multiple messages for the same entity arrive before the agent can process t
 |-------|-----------|---------------|
 | Task comments | `payload.taskId` | `task_comment` |
 | Requirement comments | `payload.requirementId` | `requirement_comment` |
+| Channel messages | `payload.extra.channelKey` | `a2a_message` |
 
 **Why status updates are excluded**: `task_status_update` and `requirement_update` represent distinct state transitions with different processing semantics. Merging a "task blocked" notification with a "task resumed" notification would lose critical state information. Only comments — which are additive human/agent text — are safe to merge.
 
@@ -790,8 +799,26 @@ When a new item matches an existing **queued** (not yet processing) item in the 
 2. The existing item's `summary` gains a `(+1)` suffix
 3. The new item is **not** inserted into the queue — the existing item serves both
 4. The merge is logged for traceability
+5. For channel messages: the `messages` array in the payload is populated with structured per-sender entries
 
 This prevents scenarios where 5 rapid-fire comments on the same task each trigger separate LLM calls. Instead, the agent sees one consolidated item with all 5 comments.
+
+### Channel Coalescing
+
+Group chat and A2A messages from the same `channelKey` are coalesced both at enqueue time and during pre-triage consolidation. The merged item carries a `messages` array providing structured context:
+
+```typescript
+payload.messages: Array<{
+  senderId?: string;
+  senderName: string;
+  content: string;
+  timestamp: string;
+}>
+```
+
+### Burst Coalescing Window
+
+After dequeuing a non-user item, the attention loop pauses for `MAILBOX_COALESCE_WINDOW_MS` (default 200ms) before starting triage. This gives rapid-fire messages time to arrive and merge via enqueue-time dedup, reducing redundant processing for burst scenarios (e.g., multiple agents posting to the same group chat within milliseconds).
 
 **Execution-trigger safety**: Items with `extra.triggerExecution` (task execution triggers) are **never merged** — neither as the incoming item nor as the merge target. Execution items carry critical callbacks (`onLog`, `cancelToken`, `taskProjectContext`) in their `extra` field that would be lost during a content merge. They must always remain standalone queue entries.
 
@@ -1103,13 +1130,39 @@ effect. `complete_deliberation` handles remaining items in bulk. They are additi
 
 ```typescript
 interface DeliberationResult {
-  processItemId: string;       // Item to focus on next
+  processItemId: string;       // Primary item (backward compat)
+  processItemIds?: string[];   // Batch: multiple items to process together
+  batchContext?: string;       // Synthesis/instruction for batch processing
   deferItemIds: string[];      // Postpone for later
   dropItemIds: string[];       // Discard (stale/redundant)
   inlineCompletedIds: string[]; // Already handled during deliberation
   reasoning: string;
   situationalAwareness?: string; // Agent-authored metacognitive summary
+  memoryUpdates?: Array<{      // Memory operations applied after deliberation
+    type: 'working' | 'longterm';
+    key: string;
+    content: string;
+  }>;
 }
+```
+
+### Batch Processing
+
+When `processItemIds` contains more than one item, the attention controller dequeues all of them and composes their content into a single LLM session. This is efficient for:
+- Multiple `a2a_message` items from the same channel (already partially merged by dedup)
+- Related notifications about the same project/topic
+- Multiple low-priority items that can be acknowledged together
+
+All batch items share one LLM call. If processing is interrupted (preempt/cancel/timeout), all batch items are requeued.
+
+### Memory Updates During Deliberation
+
+Deliberation can produce `memoryUpdates` — both working memory (volatile, per-session) and long-term memory (curated, persisted to MEMORY.md). This enables the agent to:
+- Record team decisions observed in merged messages
+- Note user preferences inferred from multiple interactions
+- Build context continuity across processing cycles
+
+Tools `memory_save` and `memory_update_longterm` are also available during deliberation for immediate effect.
 ```
 
 ### Working Memory Injection
