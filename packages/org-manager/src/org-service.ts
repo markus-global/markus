@@ -17,6 +17,7 @@ import {
 } from '@markus/shared';
 import { RoleLoader, type AgentManager, type CreateAgentRequest, type SkillRegistry, discoverSkillsInDir, WELL_KNOWN_SKILL_DIRS } from '@markus/core';
 import type { StorageBridge } from './storage-bridge.js';
+import type { DeliverableService } from './deliverable-service.ts';
 
 const log = createLogger('org-service');
 
@@ -28,11 +29,16 @@ export class OrganizationService {
   private pendingAgentStartIds: Array<{ id: string; dbStatus?: string }> = [];
   private roleLoader: RoleLoader;
   private storage?: StorageBridge;
+  private deliverableService?: DeliverableService;
 
   constructor(agentManager: AgentManager, roleLoader?: RoleLoader, storage?: StorageBridge) {
     this.agentManager = agentManager;
     this.roleLoader = roleLoader ?? new RoleLoader();
     this.storage = storage;
+  }
+
+  setDeliverableService(svc: DeliverableService): void {
+    this.deliverableService = svc;
   }
 
   // ─── Human User Management ───
@@ -664,6 +670,19 @@ export class OrganizationService {
   async fireAgent(agentId: string, opts?: { purgeFiles?: boolean }): Promise<void> {
     if (this.isProtectedAgent(agentId)) {
       throw new Error('The Secretary agent is a protected system agent and cannot be deleted.');
+    }
+
+    // Migrate deliverable files out of the agent's workspace before deletion
+    if (this.deliverableService) {
+      const agentDir = join(this.agentManager.getDataDir(), agentId);
+      const sharedDir = this.agentManager.getSharedDataDir();
+      if (sharedDir) {
+        try {
+          await this.deliverableService.migrateAgentFiles(agentId, agentDir, sharedDir);
+        } catch (err) {
+          log.warn('Failed to migrate deliverable files before agent removal', { agentId, error: String(err) });
+        }
+      }
     }
 
     const agentInfo = this.agentManager.listAgents().find(a => a.id === agentId);

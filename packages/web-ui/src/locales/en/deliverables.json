@@ -49,7 +49,8 @@
     "failedToOpenBrowser": "Failed to open file browser",
     "openInFileBrowser": "Open in file browser",
     "revealInFinder": "Reveal in Finder",
-    "copyPath": "Copy path to clipboard"
+    "copyPath": "Copy path to clipboard",
+    "fileMissing": "Referenced file no longer exists on disk"
   },
   "diffStats": {
     "title": "Diff Stats",

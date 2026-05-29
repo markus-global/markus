@@ -3085,6 +3085,14 @@ export class APIServer {
       return;
     }
 
+    if (path === '/api/deliverables/health' && req.method === 'GET') {
+      if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
+      const agentId = url.searchParams.get('agentId') ?? undefined;
+      const missingIds = this.deliverableService.checkFileHealth(agentId);
+      this.json(res, 200, { missingFiles: missingIds });
+      return;
+    }
+
     if (path === '/api/deliverables' && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
@@ -9888,6 +9896,7 @@ EXPLANATION_END`;
 
       // ── Deliverables / Knowledge ─────────────────────────────────────────
       exact('/api/deliverables', 'GET', 'POST'),
+      exact('/api/deliverables/health', 'GET'),
       regex(/^\/api\/deliverables\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
       exact('/api/knowledge', 'POST'),
       exact('/api/knowledge/search', 'GET'),

@@ -1508,6 +1508,11 @@ export const api = {
       request<{ status: string }>(`/deliverables/${id}`, { method: 'DELETE' }),
     verify: (id: string) =>
       request<{ deliverable: DeliverableInfo }>(`/deliverables/${id}`, { method: 'PUT', body: JSON.stringify({ status: 'verified' }) }),
+    checkHealth: (agentId?: string) => {
+      const params = new URLSearchParams();
+      if (agentId) params.set('agentId', agentId);
+      return request<{ missingFiles: string[] }>(`/deliverables/health?${params}`);
+    },
   },
 
   // ─── Code Reviews ──────────────────────────────────────────────────

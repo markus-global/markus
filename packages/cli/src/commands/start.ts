@@ -544,6 +544,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   apiServer.setDeliverableService(deliverableService);
   apiServer.setRequirementService(requirementService);
   taskService.setDeliverableService(deliverableService);
+  orgService.setDeliverableService(deliverableService);
 
   // Wire ProjectService into TaskService (workspace management is handled by agents)
   taskService.setProjectService(projectService);

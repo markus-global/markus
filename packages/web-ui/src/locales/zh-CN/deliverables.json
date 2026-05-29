@@ -39,7 +39,8 @@
     "failedToOpenBrowser": "无法打开文件浏览器",
     "openInFileBrowser": "在文件浏览器中打开",
     "revealInFinder": "在访达中显示",
-    "copyPath": "复制路径到剪贴板"
+    "copyPath": "复制路径到剪贴板",
+    "fileMissing": "引用的文件在磁盘上已不存在"
   },
   "diffStats": {
     "title": "差异统计",

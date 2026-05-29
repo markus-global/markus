@@ -98,6 +98,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
   const [showCopyPath, setShowCopyPath] = useState(false);
   const [copiedPath, setCopiedPath] = useState(false);
   const [sharedDir, setSharedDir] = useState('');
+  const [missingFileIds, setMissingFileIds] = useState<Set<string>>(new Set());
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -123,6 +124,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
     api.projects.list().then(r => setProjects(r.projects)).catch(() => {});
     api.agents.list().then(r => setAgents(r.agents ?? [])).catch(() => {});
     api.system.storage().then(info => setSharedDir(info.dataDir + '/shared')).catch(() => {});
+    api.deliverables.checkHealth().then(r => setMissingFileIds(new Set(r.missingFiles))).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -499,7 +501,17 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
                 {!isCollapsed && group.items.map(item => (
                   <button key={item.id} onClick={() => handleSelectItem(item)}
                     className={`w-full text-left p-3 rounded-lg transition-colors ${selected?.id === item.id ? 'bg-brand-600/20 border border-brand-500/30' : 'hover:bg-surface-elevated/60 border border-transparent'}`}>
-                    <div className="text-sm font-medium text-fg-primary truncate">{item.title}</div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm font-medium text-fg-primary truncate">{item.title}</span>
+                      {missingFileIds.has(item.id) && (
+                        <span className="shrink-0 text-amber-500" title={t('detail.fileMissing')}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                            <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+                          </svg>
+                        </span>
+                      )}
+                    </div>
                     <div className="flex items-center gap-2 mt-1">
                       {item.artifactType && ARTIFACT_META[item.artifactType] ? (
                         <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${ARTIFACT_META[item.artifactType].color}`}>
@@ -563,6 +575,16 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
           </div>
         ) : (
           <div className="p-6 space-y-5">
+            {/* File missing warning */}
+            {missingFileIds.has(selected.id) && (
+              <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-600 text-xs">
+                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                  <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+                <span>{t('detail.fileMissing')}</span>
+              </div>
+            )}
             {/* Header */}
             <div>
               <h2 className="text-xl font-semibold text-fg-primary">{selected.title}</h2>
