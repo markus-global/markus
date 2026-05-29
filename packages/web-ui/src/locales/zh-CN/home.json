@@ -90,13 +90,16 @@
     "done": "完成"
   },
   "ranking": {
-    "title": "智能体排行榜",
+    "title": "智能体总览",
+    "workingNow": "工作中",
     "subtitle": "共 {{count}} 个智能体",
     "agent": "智能体",
     "health": "健康分",
     "tasks": "任务",
+    "tokens": "Token",
     "errorRate": "错误率",
-    "noData": "暂无智能体数据。"
+    "noData": "暂无智能体数据。",
+    "sortBy": "排序"
   },
   "recentDeliverables": {
     "title": "最新交付物",

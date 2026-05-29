@@ -54,7 +54,8 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
   const [usageInfo, setUsageInfo] = useState<{ llmTokens: number; storageBytes: number } | null>(null);
   const [showCreateMenu, setShowCreateMenu] = useState(false);
-  const [showRankingModal, setShowRankingModal] = useState(false);
+  const [showWorkingModal, setShowWorkingModal] = useState(false);
+  const [showHealthModal, setShowHealthModal] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -73,7 +74,16 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
     api.ops.dashboard(opsPeriod).then(setOps).catch(() => {});
     api.requirements.list().then(d => setAllRequirements(d.requirements)).catch(() => {});
     api.projects.list().then(d => setProjects(d.projects)).catch(() => {});
-    api.deliverables.search({ limit: 5 }).then(d => { setDeliverableTotal(d.total); setRecentDeliverables(d.results); }).catch(() => {});
+    api.deliverables.search({ limit: 18 }).then(d => {
+      setDeliverableTotal(d.total);
+      const seen = new Map<string, DeliverableInfo>();
+      for (const item of d.results) {
+        const key = item.reference;
+        const prev = seen.get(key);
+        if (!prev || item.updatedAt > prev.updatedAt) seen.set(key, item);
+      }
+      setRecentDeliverables([...seen.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 6));
+    }).catch(() => {});
     api.system.storage().then(setStorageInfo).catch(() => {});
     api.usage.summary().then(d => setUsageInfo(d.usage)).catch(() => {});
   }, [opsPeriod]);
@@ -181,10 +191,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
 
     const rightPerf = topPerformers.length > 0 ? 2 + topPerformers.length : 0;
     const rightTeamsNatural = 2 + teamSummaries.length;
-    const healthCount = 1 + (ops ? 1 : 0) + (usageInfo ? 1 : 0) + (workingAgents > 0 ? 1 : 0) + (storageInfo ? 1 : 0);
-    const rightHealth = 2 + healthCount;
-    const rightGap = 2;
-    const rightNatural = rightPerf + rightTeamsNatural + rightGap + rightHealth;
+    const rightNatural = rightPerf + rightTeamsNatural;
 
     const wc = workingAgentsList.length;
     const naturalMax = wc > 0 ? 8 : 12;
@@ -203,7 +210,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
     }
 
     return { activityLimit: act, teamsLimit: teams };
-  }, [topPerformers, teamSummaries, totalRootTasks, projects, allRequirements, deliverableTotal, workingAgentsList, ops, usageInfo, workingAgents, storageInfo]);
+  }, [topPerformers, teamSummaries, totalRootTasks, projects, allRequirements, deliverableTotal, workingAgentsList]);
 
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -232,14 +239,14 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
         {/* ── Metric Cards ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <MetricCard label={t('metricCards.working')} value={String(workingAgents)} sub={`/${agents.length}`}
-            icon={<MetricIcon type="working" />} pulse={workingAgents > 0} onClick={() => navBus.navigate(PAGE.TEAM)} />
+            icon={<MetricIcon type="working" />} pulse={workingAgents > 0} onClick={() => setShowWorkingModal(true)} />
           <MetricCard label={t('metricCards.tasksDone')} value={`${completed}`} sub={`/${totalRootTasks}`}
             icon={<MetricIcon type="tasks" />} badge={urgentHighActive > 0 ? `${urgentHighActive} urgent/high` : undefined} onClick={() => navBus.navigate(PAGE.WORK)} />
           <MetricCard label={t('metricCards.projects')} value={String(activeProjects)}
             icon={<MetricIcon type="projects" />} onClick={() => navBus.navigate(PAGE.WORK)} />
           <MetricCard label={t('metricCards.health')} value={`${ops?.systemHealth.overallScore ?? '—'}`} sub={ops ? '%' : undefined}
             icon={<MetricIcon type="health" />} color={!ops ? undefined : ops.systemHealth.overallScore >= 80 ? 'green' : ops.systemHealth.overallScore >= 50 ? 'amber' : 'red'}
-            onClick={() => setShowRankingModal(true)} />
+            onClick={() => setShowHealthModal(true)} />
         </div>
 
         {/* ── Needs Your Attention ── */}
@@ -467,7 +474,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                 <div className="p-5 pb-4">
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-sm font-semibold text-fg-primary">{t('topPerformers.title')}</h3>
-                    <button onClick={() => setShowRankingModal(true)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
+                    <button onClick={() => setShowWorkingModal(true)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
                   </div>
                   <div className="space-y-0.5">
                     {topPerformers.map((agent, idx) => (
@@ -519,32 +526,20 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
               </div>
             </div>
 
-            {/* System Health */}
-            <div className="bg-surface-elevated shadow-sm rounded-2xl p-5">
-              <h3 className="text-sm font-semibold text-fg-primary mb-4">{t('systemHealth.title')}</h3>
-              <div className="space-y-3">
-                {ops && (
-                  <HealthRow label={t('systemHealth.successRate')} value={`${Math.round(ops.taskKPI.successRate)}%`}
-                    bar={Math.round(ops.taskKPI.successRate)} color="bg-green-500" />
-                )}
-                <HealthKV label={t('systemHealth.tasksTotal')} value={`${completed}/${totalRootTasks}`} />
-                {usageInfo && (
-                  <HealthKV label={t('systemHealth.tokenUsage')} value={formatTokenCount(usageInfo.llmTokens)} />
-                )}
-                {workingAgents > 0 && (
-                  <HealthKV label={t('systemHealth.currentWorking')} value={`${workingAgents}/${agents.length}`} accent />
-                )}
-                {storageInfo && (
-                  <HealthKV label={t('systemHealth.storage')} value={fmtBytes(storageInfo.totalSize)} />
-                )}
-              </div>
-            </div>
           </div>
         </div>
       </div>
 
-      {/* ── Ranking Modal ── */}
-      {showRankingModal && ops && <RankingModal agents={allRankedAgents} onClose={() => setShowRankingModal(false)} t={t} />}
+      {/* ── Working & Ranking Modal ── */}
+      {showWorkingModal && ops && <WorkingModal workingAgents={workingAgentsList} rankedAgents={allRankedAgents} onClose={() => setShowWorkingModal(false)} t={t} />}
+
+      {/* ── Health Modal ── */}
+      {showHealthModal && (
+        <HealthModal ops={ops} completed={completed} totalRootTasks={totalRootTasks}
+          workingAgents={workingAgents} totalAgents={agents.length}
+          usageInfo={usageInfo} storageInfo={storageInfo}
+          onClose={() => setShowHealthModal(false)} t={t} />
+      )}
     </div>
   );
 }
@@ -739,12 +734,47 @@ function DeliverableTypeIcon({ type, artifactType }: { type: string; artifactTyp
   );
 }
 
-// ── Ranking Modal ───────────────────────────────────────────────────────────
+// ── Working & Ranking Modal ─────────────────────────────────────────────────
 
-function RankingModal({ agents, onClose, t }: { agents: Array<{ agentId: string; agentName: string; role: string; agentRole: string; healthScore: number; taskMetrics: { completed: number; failed: number }; errorRate: number }>; onClose: () => void; t: TFunction }) {
+type RankSortKey = 'tasks' | 'health' | 'tokens' | 'errors';
+type RankedAgent = { agentId: string; agentName: string; role: string; agentRole: string; healthScore: number; tokenUsage: { input: number; output: number; cost: number }; taskMetrics: { completed: number; failed: number }; errorRate: number };
+
+function WorkingModal({ workingAgents, rankedAgents, onClose, t }: {
+  workingAgents: AgentInfo[];
+  rankedAgents: RankedAgent[];
+  onClose: () => void; t: TFunction;
+}) {
+  const [sortKey, setSortKey] = useState<RankSortKey>('tasks');
+  const [sortAsc, setSortAsc] = useState(false);
+
+  const toggleSort = useCallback((key: RankSortKey) => {
+    if (key === sortKey) { setSortAsc(prev => !prev); }
+    else { setSortKey(key); setSortAsc(false); }
+  }, [sortKey]);
+
+  const sorted = useMemo(() => {
+    const dir = sortAsc ? 1 : -1;
+    const cmp = (a: RankedAgent, b: RankedAgent): number => {
+      switch (sortKey) {
+        case 'tasks': return (b.taskMetrics.completed - a.taskMetrics.completed) * dir;
+        case 'health': return (b.healthScore - a.healthScore) * dir;
+        case 'tokens': return ((b.tokenUsage.input + b.tokenUsage.output) - (a.tokenUsage.input + a.tokenUsage.output)) * dir;
+        case 'errors': return (b.errorRate - a.errorRate) * dir;
+      }
+    };
+    return [...rankedAgents].sort(cmp);
+  }, [rankedAgents, sortKey, sortAsc]);
+
+  const colBtn = (key: RankSortKey, label: string, w: string) => (
+    <button onClick={() => toggleSort(key)}
+      className={`${w} text-center cursor-pointer transition-colors ${sortKey === key ? 'text-brand-400 font-bold' : ''}`}>
+      {label}{sortKey === key ? (sortAsc ? ' ↑' : ' ↓') : ''}
+    </button>
+  );
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-surface-elevated rounded-xl border border-border-default shadow-2xl w-[480px] max-w-[90vw] max-h-[80vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="bg-surface-elevated rounded-xl border border-border-default shadow-2xl w-[600px] max-w-[90vw] max-h-[80vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="px-5 py-4 border-b border-border-default flex items-center justify-between shrink-0">
           <h3 className="text-sm font-semibold">{t('ranking.title')}</h3>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-overlay transition-colors text-fg-tertiary hover:text-fg-primary">
@@ -752,14 +782,44 @@ function RankingModal({ agents, onClose, t }: { agents: Array<{ agentId: string;
           </button>
         </div>
         <div className="overflow-y-auto flex-1 scrollbar-thin">
-          <div className="px-4 py-2 flex items-center gap-3 text-[10px] text-fg-tertiary uppercase tracking-wider font-medium border-b border-border-default/50">
-            <span className="w-7 text-center">#</span><span className="flex-1">{t('ranking.agent')}</span>
-            <span className="w-14 text-center">{t('ranking.health')}</span><span className="w-14 text-center">{t('ranking.tasks')}</span><span className="w-14 text-center">{t('ranking.errorRate')}</span>
+          {/* Working agents section */}
+          {workingAgents.length > 0 && (
+            <div className="px-5 py-4 border-b border-border-default/50">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                <h4 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('ranking.workingNow')}</h4>
+                <span className="text-[10px] text-fg-muted">{workingAgents.length}</span>
+              </div>
+              <div className="space-y-0.5">
+                {workingAgents.map(a => (
+                  <div key={a.id} className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-surface-overlay/40 cursor-pointer transition-colors"
+                    onClick={() => { onClose(); navBus.navigate(PAGE.TEAM, { agentId: a.id, profileTab: 'overview' }); }}>
+                    <Avatar name={a.name} avatarUrl={(a as any).avatarUrl} size={26} bgClass="bg-brand-600/30 text-brand-300" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium text-fg-primary truncate">{a.name}</div>
+                      <div className="text-[10px] text-fg-tertiary truncate">{(a as any).currentActivity?.label ?? '—'}</div>
+                    </div>
+                    <span className="text-[10px] text-green-500 font-medium shrink-0">Working</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Sortable ranking table header */}
+          <div className="px-4 py-2 flex items-center gap-3 text-[10px] text-fg-tertiary uppercase tracking-wider font-medium border-b border-border-default/50 select-none">
+            <span className="w-7 text-center">#</span>
+            <span className="flex-1">{t('ranking.agent')}</span>
+            {colBtn('health', t('ranking.health'), 'w-14')}
+            {colBtn('tasks', t('ranking.tasks'), 'w-14')}
+            {colBtn('tokens', t('ranking.tokens'), 'w-16')}
+            {colBtn('errors', t('ranking.errorRate'), 'w-14')}
           </div>
-          {agents.map((agent, idx) => {
+          {sorted.map((agent, idx) => {
             const hc = agent.healthScore >= 80 ? 'text-green-500' : agent.healthScore >= 50 ? 'text-amber-500' : 'text-red-500';
             const ep = Math.round(agent.errorRate * 100);
             const medal = idx < 3 ? ['text-amber-400', 'text-gray-400', 'text-amber-600'][idx] : 'text-fg-tertiary';
+            const totalTokens = agent.tokenUsage.input + agent.tokenUsage.output;
             return (
               <div key={agent.agentId} className="px-4 py-2.5 flex items-center gap-3 hover:bg-surface-overlay/50 cursor-pointer transition-colors border-b border-border-default/30 last:border-0"
                 onClick={() => { onClose(); navBus.navigate(PAGE.TEAM, { selectAgent: agent.agentId }); }}>
@@ -770,11 +830,76 @@ function RankingModal({ agents, onClose, t }: { agents: Array<{ agentId: string;
                 </div>
                 <span className={`w-14 text-center text-xs font-semibold ${hc}`}>{agent.healthScore}%</span>
                 <span className="w-14 text-center text-xs text-fg-secondary">{agent.taskMetrics.completed}<span className="text-fg-tertiary">/{agent.taskMetrics.completed + agent.taskMetrics.failed}</span></span>
+                <span className="w-16 text-center text-xs text-fg-secondary tabular-nums">{formatTokenCount(totalTokens)}</span>
                 <span className={`w-14 text-center text-xs ${ep > 20 ? 'text-red-500' : ep > 5 ? 'text-amber-500' : 'text-green-500'}`}>{ep}%</span>
               </div>
             );
           })}
-          {agents.length === 0 && <div className="py-8 text-center text-xs text-fg-tertiary">{t('ranking.noData')}</div>}
+          {sorted.length === 0 && <div className="py-8 text-center text-xs text-fg-tertiary">{t('ranking.noData')}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Health Modal ────────────────────────────────────────────────────────────
+
+function HealthModal({ ops, completed, totalRootTasks, workingAgents, totalAgents, usageInfo, storageInfo, onClose, t }: {
+  ops: OpsDashboard | null; completed: number; totalRootTasks: number;
+  workingAgents: number; totalAgents: number;
+  usageInfo: { llmTokens: number; storageBytes: number } | null;
+  storageInfo: StorageInfo | null;
+  onClose: () => void; t: TFunction;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-surface-elevated rounded-xl border border-border-default shadow-2xl w-[400px] max-w-[90vw] overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-border-default flex items-center justify-between">
+          <h3 className="text-sm font-semibold">{t('systemHealth.title')}</h3>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-overlay transition-colors text-fg-tertiary hover:text-fg-primary">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+          </button>
+        </div>
+        <div className="p-5 space-y-4">
+          {ops && (
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-fg-secondary">{t('systemHealth.successRate')}</span>
+                <span className="text-sm font-bold text-fg-primary">{Math.round(ops.taskKPI.successRate)}%</span>
+              </div>
+              <div className="h-2 rounded-full bg-surface-overlay/60 overflow-hidden">
+                <div className="h-full rounded-full bg-green-500 transition-all duration-500" style={{ width: `${Math.round(ops.taskKPI.successRate)}%` }} />
+              </div>
+            </div>
+          )}
+          {ops && (
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-fg-secondary">{t('metricCards.health')}</span>
+              <span className={`text-sm font-bold ${ops.systemHealth.overallScore >= 80 ? 'text-green-500' : ops.systemHealth.overallScore >= 50 ? 'text-amber-500' : 'text-red-500'}`}>{ops.systemHealth.overallScore}%</span>
+            </div>
+          )}
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-fg-secondary">{t('systemHealth.tasksTotal')}</span>
+            <span className="text-xs font-semibold text-fg-primary">{completed}/{totalRootTasks}</span>
+          </div>
+          {usageInfo && (
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-fg-secondary">{t('systemHealth.tokenUsage')}</span>
+              <span className="text-xs font-semibold text-fg-primary">{formatTokenCount(usageInfo.llmTokens)}</span>
+            </div>
+          )}
+          {workingAgents > 0 && (
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-fg-secondary">{t('systemHealth.currentWorking')}</span>
+              <span className="text-xs font-semibold text-green-500">{workingAgents}/{totalAgents}</span>
+            </div>
+          )}
+          {storageInfo && (
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-fg-secondary">{t('systemHealth.storage')}</span>
+              <span className="text-xs font-semibold text-fg-primary">{fmtBytes(storageInfo.totalSize)}</span>
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -90,13 +90,16 @@
     "done": "done"
   },
   "ranking": {
-    "title": "Agent Ranking",
+    "title": "Agents & Ranking",
+    "workingNow": "Working Now",
     "subtitle": "{{count}} agents total",
     "agent": "Agent",
     "health": "Health",
     "tasks": "Tasks",
+    "tokens": "Tokens",
     "errorRate": "Errors",
-    "noData": "No agent data available yet."
+    "noData": "No agent data available yet.",
+    "sortBy": "Sort by"
   },
   "recentDeliverables": {
     "title": "Recent Deliverables",
