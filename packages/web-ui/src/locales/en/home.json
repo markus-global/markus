@@ -40,6 +40,7 @@
   },
   "attention": {
     "title": "Needs Your Attention",
+    "allClear": "All clear — nothing needs your attention right now.",
     "approvals": "approval(s) waiting",
     "requirements": "requirement(s) to review",
     "tasksReview": "task(s) need your review",
@@ -47,7 +48,10 @@
     "blocked": "task(s) stuck/blocked",
     "viewBlocked": "View blocked tasks →",
     "report": "report",
-    "planItems": "items"
+    "planItems": "items",
+    "goReview": "Review",
+    "goApprove": "Approve",
+    "viewDetails": "View"
   },
   "globalOverview": {
     "title": "Overview",
@@ -86,13 +90,22 @@
     "done": "done"
   },
   "ranking": {
-    "title": "Agent Ranking",
+    "title": "Agents & Ranking",
+    "workingNow": "Working Now",
     "subtitle": "{{count}} agents total",
     "agent": "Agent",
     "health": "Health",
     "tasks": "Tasks",
+    "tokens": "Tokens",
     "errorRate": "Errors",
-    "noData": "No agent data available yet."
+    "noData": "No agent data available yet.",
+    "sortBy": "Sort by"
+  },
+  "recentDeliverables": {
+    "title": "Recent Deliverables",
+    "empty": "No deliverables yet.",
+    "file": "File",
+    "directory": "Directory"
   },
   "createMenu": {
     "agent": "Create Agent",

@@ -166,6 +166,12 @@ export class AgentMailbox {
       (item) => item.payload.requirementId,
     );
 
+    // 4. Merge a2a_messages by channelKey (group chat coalescing)
+    removed += this.mergeByEntity(
+      AgentMailbox.CHANNEL_DEDUP_TYPES,
+      (item) => item.payload.extra?.channelKey as string | undefined,
+    );
+
     return removed;
   }
 
@@ -328,6 +334,9 @@ export class AgentMailbox {
   ]);
   private static readonly REQ_COMMENT_DEDUP_TYPES: ReadonlySet<MailboxItemType> = new Set([
     'requirement_comment',
+  ]);
+  private static readonly CHANNEL_DEDUP_TYPES: ReadonlySet<MailboxItemType> = new Set([
+    'a2a_message',
   ]);
 
   enqueue(
@@ -728,11 +737,32 @@ export class AgentMailbox {
             && i.payload.requirementId === reqId,
         );
       }
+    } else if (AgentMailbox.CHANNEL_DEDUP_TYPES.has(sourceType)) {
+      const channelKey = payload.extra?.channelKey as string | undefined;
+      if (channelKey) {
+        existing = this.queue.find(
+          i => i.status === 'queued'
+            && AgentMailbox.CHANNEL_DEDUP_TYPES.has(i.sourceType)
+            && (i.payload.extra?.channelKey as string | undefined) === channelKey,
+        );
+      }
     }
 
     if (!existing) return undefined;
 
-    existing.payload.content += `\n\n---\n\n${payload.content}`;
+    // For channel-based merges, use structured messages array
+    if (AgentMailbox.CHANNEL_DEDUP_TYPES.has(sourceType) && payload.extra?.channelKey) {
+      const senderName = payload.extra?.senderName as string || 'unknown';
+      const newMsg = { senderId: payload.extra?.senderId as string | undefined, senderName, content: payload.content, timestamp: new Date().toISOString() };
+      if (!existing.payload.messages) {
+        const existingSender = existing.payload.extra?.senderName as string || 'unknown';
+        existing.payload.messages = [{ senderId: existing.payload.extra?.senderId as string | undefined, senderName: existingSender, content: existing.payload.content, timestamp: existing.queuedAt }];
+      }
+      existing.payload.messages.push(newMsg);
+      existing.payload.content += `\n\n---\n[${senderName}]: ${payload.content}`;
+    } else {
+      existing.payload.content += `\n\n---\n\n${payload.content}`;
+    }
     existing.payload.summary += ` (+1)`;
     this.persistence?.updateStatus(existing.id, 'queued', existing);
     log.debug('Mailbox enqueue-time dedup: merged into existing item', {

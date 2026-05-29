@@ -860,8 +860,8 @@ export class Agent {
    */
   private createAttentionDelegate(): AttentionDelegate {
     return {
-      processMailboxItem: async (item: MailboxItem) => {
-        return this.processMailboxItemInternal(item);
+      processMailboxItem: async (item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string) => {
+        return this.processMailboxItemInternal(item, batchItems, batchContext);
       },
       onDecisionMade: (decision: AttentionDecision) => {
         log.debug('Attention decision', {
@@ -916,6 +916,15 @@ export class Agent {
         if (!result) return;
         this.updateCognitionFromDeliberation(result);
       },
+      applyMemoryUpdates: (updates) => {
+        for (const u of updates) {
+          if (u.type === 'working') {
+            this.updateWorkingMemory(u.key, u.content);
+          } else if (u.type === 'longterm') {
+            this.memory.addLongTermMemory(u.key, u.content);
+          }
+        }
+      },
     };
   }
 
@@ -923,9 +932,22 @@ export class Agent {
    * Route a mailbox item to the appropriate Agent processing method.
    * Options like sessionId/images/scenario are forwarded from payload.extra
    * when present, falling back to type-appropriate defaults.
+   * When batchItems are provided (from deliberation batch processing), their
+   * content is composed into the primary item's message for unified handling.
    */
-  private async processMailboxItemInternal(item: MailboxItem): Promise<string | void> {
+  private async processMailboxItemInternal(item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string): Promise<string | void> {
     this.processingMailboxItemId = item.id;
+
+    // Compose batch content into primary item if batch processing
+    if (batchItems && batchItems.length > 0) {
+      const batchHeader = batchContext
+        ? `[BATCH PROCESSING — ${batchItems.length + 1} items]\n${batchContext}\n\n---\n\n`
+        : `[BATCH PROCESSING — ${batchItems.length + 1} items]\nProcess the following items together and respond comprehensively.\n\n---\n\n`;
+      const batchSuffix = batchItems.map((bi, idx) =>
+        `\n\n---\n[Item ${idx + 2}] (${bi.sourceType}) ${bi.payload.summary}:\n${bi.payload.content}`,
+      ).join('');
+      item.payload.content = batchHeader + `[Item 1] (${item.sourceType}) ${item.payload.summary}:\n${item.payload.content}` + batchSuffix;
+    }
     if (item.sourceType === 'human_chat' && item.metadata?.senderId) {
       this.currentInteractingUserId = item.metadata.senderId;
     }
@@ -2032,13 +2054,14 @@ export class Agent {
       '2. **Gather context**: `recall_activity`, `task_get`, `memory_search` for background.',
       '3. **Manage queue**: `defer_mailbox_item` to postpone, `drop_mailbox_item` to discard stale items.',
       '4. **Handle inline**: `notify_user`, `task_comment`, `agent_send_message` for trivial replies. Mark as inline_completed.',
-      '5. **Save awareness**: `update_working_memory` to record your assessment for future calls.',
+      '5. **Save awareness**: `update_working_memory` or `memory_save` to record observations.',
       '6. **Decide**: `complete_deliberation` with your final focus decision.',
       '',
       '## Guidelines',
       '- Human messages (priority 0) always take precedence.',
-      '- Items sharing a taskId/requirementId/channel → batch handle with one context lookup.',
+      '- **Batch processing**: Items sharing a taskId/requirementId/channel can be processed together — pass multiple IDs in `process_item_ids` and provide `batch_context` to guide unified handling.',
       '- Drop old informational items (heartbeats, status updates) aggressively.',
+      '- **Memory updates**: Use `memory_updates` in `complete_deliberation` to record team decisions, observations, or context that should persist across cycles.',
       '- Your working memory persists across processing cycles — use it for continuity.',
       '',
       'When ready, call `complete_deliberation`.',
@@ -5204,16 +5227,20 @@ export class Agent {
     // Handle complete_deliberation: captures the structured decision from deliberation mode
     if (toolCall.name === 'complete_deliberation') {
       const processItemId = toolCall.arguments.process_item_id as string;
-      if (!processItemId) {
-        return JSON.stringify({ status: 'error', message: 'process_item_id is required' });
+      const processItemIds = toolCall.arguments.process_item_ids as string[] | undefined;
+      if (!processItemId && (!processItemIds || processItemIds.length === 0)) {
+        return JSON.stringify({ status: 'error', message: 'process_item_id or process_item_ids is required' });
       }
       this.pendingDeliberationResult = {
-        processItemId,
+        processItemId: processItemId || processItemIds![0],
+        processItemIds: processItemIds && processItemIds.length > 1 ? processItemIds : undefined,
+        batchContext: toolCall.arguments.batch_context as string | undefined,
         deferItemIds: (toolCall.arguments.defer_item_ids as string[]) ?? [],
         dropItemIds: (toolCall.arguments.drop_item_ids as string[]) ?? [],
         inlineCompletedIds: (toolCall.arguments.inline_completed_ids as string[]) ?? [],
         reasoning: (toolCall.arguments.reasoning as string) ?? '',
         situationalAwareness: toolCall.arguments.situational_awareness as string | undefined,
+        memoryUpdates: toolCall.arguments.memory_updates as DeliberationResult['memoryUpdates'],
       };
       return JSON.stringify({ status: 'ok', message: 'Deliberation decision recorded. Proceeding to focused processing.' });
     }

@@ -254,18 +254,33 @@ export class ToolSelector {
 
     pushUnique({
       name: 'complete_deliberation',
-      description: 'Finalize your mailbox deliberation. Declare which item to process next, which to defer/drop, and which you handled inline. Only available in deliberation mode.',
+      description: 'Finalize your mailbox deliberation. Declare which item(s) to process next, which to defer/drop, and which you handled inline. Supports batch processing: pass multiple IDs in process_item_ids to handle related items together in one session. Only available in deliberation mode.',
       inputSchema: {
         type: 'object',
         properties: {
-          process_item_id: { type: 'string', description: 'ID of the mailbox item to process in full next' },
+          process_item_id: { type: 'string', description: 'ID of the primary mailbox item to process next. Required unless process_item_ids is provided.' },
+          process_item_ids: { type: 'array', items: { type: 'string' }, description: 'Batch mode: IDs of multiple items to process together in one session. Use for related items (same channel, same topic). Overrides process_item_id when length > 1.' },
+          batch_context: { type: 'string', description: 'When using batch mode, optional synthesis/instruction for how to handle the batch together.' },
           defer_item_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of items to defer for later' },
           drop_item_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of stale/redundant items to drop' },
           inline_completed_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of items you already handled inline during this deliberation (e.g., sent a notification, posted a comment)' },
           reasoning: { type: 'string', description: '1-2 sentence explanation of your decision' },
           situational_awareness: { type: 'string', description: 'Your current understanding of the situation — injected into future prompts for continuity' },
+          memory_updates: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                type: { type: 'string', enum: ['working', 'longterm'], description: 'working = volatile per-session memory, longterm = persisted to MEMORY.md' },
+                key: { type: 'string', description: 'Memory key/section name' },
+                content: { type: 'string', description: 'Content to store' },
+              },
+              required: ['type', 'key', 'content'],
+            },
+            description: 'Memory updates to apply after deliberation. Use to record observations, team decisions, or context for future cycles.',
+          },
         },
-        required: ['process_item_id', 'reasoning'],
+        required: ['reasoning'],
       },
     });
 
