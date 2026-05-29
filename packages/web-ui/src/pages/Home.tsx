@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, useRef, useCallback, forwardRef } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { api, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo, type ProjectInfo, type StorageInfo } from '../api.ts';
+import { api, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo, type ProjectInfo, type StorageInfo, type DeliverableInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
@@ -50,6 +50,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
   const [allRequirements, setAllRequirements] = useState<RequirementInfo[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [deliverableTotal, setDeliverableTotal] = useState(0);
+  const [recentDeliverables, setRecentDeliverables] = useState<DeliverableInfo[]>([]);
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
   const [usageInfo, setUsageInfo] = useState<{ llmTokens: number; storageBytes: number } | null>(null);
   const [showCreateMenu, setShowCreateMenu] = useState(false);
@@ -72,7 +73,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
     api.ops.dashboard(opsPeriod).then(setOps).catch(() => {});
     api.requirements.list().then(d => setAllRequirements(d.requirements)).catch(() => {});
     api.projects.list().then(d => setProjects(d.projects)).catch(() => {});
-    api.deliverables.search({ limit: 1 }).then(d => setDeliverableTotal(d.total)).catch(() => {});
+    api.deliverables.search({ limit: 5 }).then(d => { setDeliverableTotal(d.total); setRecentDeliverables(d.results); }).catch(() => {});
     api.system.storage().then(setStorageInfo).catch(() => {});
     api.usage.summary().then(d => setUsageInfo(d.usage)).catch(() => {});
   }, [opsPeriod]);
@@ -129,6 +130,81 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
 
   const workingAgentsList = agents.filter(a => a.status === 'working');
 
+  const attentionItems = useMemo(() => {
+    const items: Array<{ type: 'review' | 'approval' | 'blocked'; count: number; tasks?: TaskInfo[]; urgent?: number }> = [];
+    const reviewTasks = (board['review'] ?? []).filter(tk => tk.reviewerType === 'human');
+    if (reviewTasks.length > 0) {
+      const urg = reviewTasks.filter(tk => tk.priority === 'urgent' || tk.priority === 'high').length;
+      items.push({ type: 'review', count: reviewTasks.length, tasks: reviewTasks, urgent: urg });
+    }
+    const pendingReqs = allRequirements.filter(r => r.status === 'pending');
+    if (pendingReqs.length > 0) items.push({ type: 'approval', count: pendingReqs.length });
+    const blockedTasks = [...(board['blocked'] ?? []), ...(board['failed'] ?? [])];
+    if (blockedTasks.length > 0) {
+      const urg = blockedTasks.filter(tk => tk.priority === 'urgent' || tk.priority === 'high').length;
+      items.push({ type: 'blocked', count: blockedTasks.length, tasks: blockedTasks, urgent: urg });
+    }
+    return items;
+  }, [board, allRequirements]);
+
+  const taskPriorityMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const tasks of Object.values(board)) {
+      for (const tk of tasks) if (tk.priority) m.set(tk.id, tk.priority);
+    }
+    return m;
+  }, [board]);
+
+  const urgentHighActive = useMemo(() => {
+    let count = 0;
+    for (const [status, tasks] of Object.entries(board)) {
+      if (status === 'completed' || status === 'archived' || status === 'cancelled') continue;
+      count += tasks.filter(tk => tk.priority === 'urgent' || tk.priority === 'high').length;
+    }
+    return count;
+  }, [board]);
+
+  const agentNameMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const a of agents) m.set(a.id, a.name);
+    return m;
+  }, [agents]);
+
+  const { activityLimit, teamsLimit } = useMemo(() => {
+    // Approximate each section's height in "slot units" (1 slot ~ one list row ≈ 38px).
+    // Card chrome (header + padding) ≈ 2 slots.
+    const entityCount = (projects.length > 0 ? 1 : 0) + (allRequirements.length > 0 ? 1 : 0) + (deliverableTotal > 0 ? 1 : 0);
+    const leftOverview = totalRootTasks > 0 ? 6 + entityCount : 0;
+    const leftGap = leftOverview > 0 ? 2 : 0;
+    const leftActHeader = 2;
+    const leftFixed = leftOverview + leftGap + leftActHeader;
+
+    const rightPerf = topPerformers.length > 0 ? 2 + topPerformers.length : 0;
+    const rightTeamsNatural = 2 + teamSummaries.length;
+    const healthCount = 1 + (ops ? 1 : 0) + (usageInfo ? 1 : 0) + (workingAgents > 0 ? 1 : 0) + (storageInfo ? 1 : 0);
+    const rightHealth = 2 + healthCount;
+    const rightGap = 2;
+    const rightNatural = rightPerf + rightTeamsNatural + rightGap + rightHealth;
+
+    const wc = workingAgentsList.length;
+    const naturalMax = wc > 0 ? 8 : 12;
+    const spaceForAct = Math.max(0, rightNatural - leftFixed);
+    let act = wc > 0 ? Math.max(wc, spaceForAct) : spaceForAct;
+    act = Math.max(3, Math.min(naturalMax, act));
+
+    const leftFinal = leftFixed + Math.max(wc, act);
+    let teams = teamSummaries.length;
+    if (rightNatural > leftFinal + 2) {
+      const excess = rightNatural - leftFinal;
+      teams = Math.max(2, teamSummaries.length - excess);
+    } else if (leftFinal > rightNatural + 2) {
+      const deficit = leftFinal - rightNatural;
+      act = Math.max(3, act - deficit);
+    }
+
+    return { activityLimit: act, teamsLimit: teams };
+  }, [topPerformers, teamSummaries, totalRootTasks, projects, allRequirements, deliverableTotal, workingAgentsList, ops, usageInfo, workingAgents, storageInfo]);
+
   // ═══════════════════════════════════════════════════════════════════════════
 
   return (
@@ -158,13 +234,99 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
           <MetricCard label={t('metricCards.working')} value={String(workingAgents)} sub={`/${agents.length}`}
             icon={<MetricIcon type="working" />} pulse={workingAgents > 0} onClick={() => navBus.navigate(PAGE.TEAM)} />
           <MetricCard label={t('metricCards.tasksDone')} value={`${completed}`} sub={`/${totalRootTasks}`}
-            icon={<MetricIcon type="tasks" />} onClick={() => navBus.navigate(PAGE.WORK)} />
+            icon={<MetricIcon type="tasks" />} badge={urgentHighActive > 0 ? `${urgentHighActive} urgent/high` : undefined} onClick={() => navBus.navigate(PAGE.WORK)} />
           <MetricCard label={t('metricCards.projects')} value={String(activeProjects)}
             icon={<MetricIcon type="projects" />} onClick={() => navBus.navigate(PAGE.WORK)} />
           <MetricCard label={t('metricCards.health')} value={`${ops?.systemHealth.overallScore ?? '—'}`} sub={ops ? '%' : undefined}
             icon={<MetricIcon type="health" />} color={!ops ? undefined : ops.systemHealth.overallScore >= 80 ? 'green' : ops.systemHealth.overallScore >= 50 ? 'amber' : 'red'}
             onClick={() => setShowRankingModal(true)} />
         </div>
+
+        {/* ── Needs Your Attention ── */}
+        {attentionItems.length > 0 && (
+          <div className="bg-gradient-to-r from-amber-500/5 via-surface-elevated to-surface-elevated border border-amber-500/20 rounded-2xl overflow-hidden">
+            <div className="flex items-center justify-between px-5 pt-4 pb-2">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                <h3 className="text-sm font-semibold text-fg-primary">{t('attention.title')}</h3>
+              </div>
+            </div>
+            <div className="px-3 pb-3 space-y-1">
+              {attentionItems.map(item => (
+                <div key={item.type} className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface-overlay/40 cursor-pointer transition-colors"
+                  onClick={() => {
+                    if (item.type === 'review') navBus.navigate(PAGE.WORK, { statusFilter: 'review' });
+                    else if (item.type === 'approval') navBus.navigate(PAGE.WORK);
+                    else navBus.navigate(PAGE.WORK, { statusFilter: 'blocked' });
+                  }}>
+                  <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                    item.type === 'review' ? 'bg-blue-500/15' : item.type === 'approval' ? 'bg-amber-500/15' : 'bg-red-500/15'
+                  }`}>
+                    <AttentionIcon type={item.type} />
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <span className="text-xs font-medium text-fg-primary">
+                      {item.count} {t(item.type === 'review' ? 'attention.tasksReview' : item.type === 'approval' ? 'attention.requirements' : 'attention.blocked')}
+                    </span>
+                    {(item.urgent ?? 0) > 0 && (
+                      <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-500/15 text-red-500">{item.urgent} urgent</span>
+                    )}
+                  </div>
+                  <button className={`text-[11px] font-medium px-3 py-1 rounded-lg transition-colors shrink-0 ${
+                    item.type === 'review' ? 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20'
+                    : item.type === 'approval' ? 'bg-amber-500/10 text-amber-600 hover:bg-amber-500/20'
+                    : 'bg-red-500/10 text-red-500 hover:bg-red-500/20'
+                  }`}>
+                    {t(item.type === 'review' ? 'attention.goReview' : item.type === 'approval' ? 'attention.goApprove' : 'attention.viewDetails')}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── Recent Deliverables (full-width, high priority) ── */}
+        {recentDeliverables.length > 0 && (
+          <div className="bg-surface-elevated shadow-sm rounded-2xl overflow-hidden">
+            <div className="flex items-center justify-between px-5 pt-5 pb-3">
+              <h3 className="text-sm font-semibold text-fg-primary">{t('recentDeliverables.title')}</h3>
+              <button onClick={() => navBus.navigate(PAGE.DELIVERABLES)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
+            </div>
+            <div className="px-3 pb-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1">
+                {recentDeliverables.map(d => (
+                  <div key={d.id} className="flex items-start gap-3 px-3 py-2.5 rounded-xl hover:bg-surface-overlay/40 cursor-pointer transition-colors"
+                    onClick={() => navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: d.id })}>
+                    <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
+                      d.artifactType ? 'bg-brand-500/10' : d.type === 'directory' ? 'bg-blue-500/10' : 'bg-green-500/10'
+                    }`}>
+                      <DeliverableTypeIcon type={d.type} artifactType={d.artifactType} />
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium text-fg-primary truncate">{d.title}</div>
+                      <div className="text-[11px] text-fg-tertiary truncate mt-0.5">{d.summary}</div>
+                      <div className="flex items-center gap-2 mt-1">
+                        {d.agentId && agentNameMap.get(d.agentId) && (
+                          <span className="text-[10px] text-fg-muted">{agentNameMap.get(d.agentId)}</span>
+                        )}
+                        <span className="text-[10px] text-fg-muted">{formatRelativeTime(d.updatedAt, t)}</span>
+                        {d.status === 'verified' && (
+                          <span className="text-[10px] text-blue-500 font-medium">Verified</span>
+                        )}
+                      </div>
+                    </div>
+                    {d.diffStats && (
+                      <div className="text-[10px] text-fg-muted shrink-0 mt-1 tabular-nums">
+                        <span className="text-green-500">+{d.diffStats.additions}</span>{' '}
+                        <span className="text-red-500">-{d.diffStats.deletions}</span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── Getting Started (empty state) ── */}
         {totalRootTasks === 0 && (!ops || ops.taskKPI.recentActivity.length === 0) && (
@@ -271,16 +433,22 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                         <button onClick={() => navBus.navigate(PAGE.WORK)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
                       </div>
                       <div className={`${workingAgentsList.length > 0 ? '' : 'grid grid-cols-1 sm:grid-cols-2 gap-x-4'}`}>
-                        {ops.taskKPI.recentActivity.slice(0, workingAgentsList.length > 0 ? 8 : 12).map(act => (
+                        {ops.taskKPI.recentActivity.slice(0, activityLimit).map(act => {
+                          const pri = taskPriorityMap.get(act.taskId);
+                          return (
                           <div key={act.taskId} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-overlay/40 cursor-pointer transition-colors"
                             onClick={() => navBus.navigate(PAGE.WORK, { openTask: act.taskId })}>
                             <span className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${ACTIVITY_ICON_BG[act.status] ?? 'bg-gray-500/15'}`}>
                               <ActivityIcon status={act.status} />
                             </span>
                             <span className="text-[11px] text-fg-secondary truncate flex-1">{act.title}</span>
+                            {(pri === 'urgent' || pri === 'high') && (
+                              <PriorityBadge priority={pri} />
+                            )}
                             <span className="text-[10px] text-fg-muted shrink-0">{formatRelativeTime(act.updatedAt, t)}</span>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -325,7 +493,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                   <div className="text-xs text-fg-tertiary py-4 text-center cursor-pointer" onClick={() => navBus.navigate(PAGE.TEAM)}>{t('teamStatus.noTeams')}</div>
                 ) : (
                   <div className="space-y-0.5">
-                    {teamSummaries.map(ts => (
+                    {teamSummaries.slice(0, teamsLimit).map(ts => (
                       <div key={ts.team.id} className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-surface-overlay/40 cursor-pointer transition-colors"
                         onClick={() => navBus.navigate(PAGE.TEAM, { selectTeam: ts.team.id })}>
                         <div className="w-7 h-7 rounded-md bg-brand-600/15 flex items-center justify-center text-[10px] font-bold text-brand-400 shrink-0">{ts.team.name.charAt(0)}</div>
@@ -340,6 +508,12 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                         {ts.working > 0 && <span className="text-[10px] text-green-500 font-medium shrink-0">{ts.working}/{ts.total}</span>}
                       </div>
                     ))}
+                    {teamsLimit < teamSummaries.length && (
+                      <button onClick={() => navBus.navigate(PAGE.TEAM)}
+                        className="w-full text-center text-[11px] text-brand-400 hover:text-brand-300 font-medium py-1.5">
+                        +{teamSummaries.length - teamsLimit} more
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -379,8 +553,8 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
 // Sub-components
 // ═════════════════════════════════════════════════════════════════════════════
 
-function MetricCard({ label, value, sub, icon, pulse, color, onClick }: {
-  label: string; value: string; sub?: string; icon: React.ReactNode; pulse?: boolean; color?: 'green' | 'amber' | 'red'; onClick?: () => void;
+function MetricCard({ label, value, sub, icon, pulse, color, badge, onClick }: {
+  label: string; value: string; sub?: string; icon: React.ReactNode; pulse?: boolean; color?: 'green' | 'amber' | 'red'; badge?: string; onClick?: () => void;
 }) {
   const colorClass = color === 'green' ? 'text-green-500' : color === 'amber' ? 'text-amber-500' : color === 'red' ? 'text-red-500' : 'text-fg-primary';
   return (
@@ -391,6 +565,7 @@ function MetricCard({ label, value, sub, icon, pulse, color, onClick }: {
           <span className={`text-2xl sm:text-3xl font-bold ${colorClass} leading-none`}>{value}</span>
           {sub && <span className="text-sm text-fg-muted font-medium">{sub}</span>}
         </div>
+        {badge && <div className="text-[10px] text-amber-500 font-medium mt-1.5">{badge}</div>}
       </div>
       <div className="relative">
         <div className="w-10 h-10 rounded-xl bg-surface-overlay/60 flex items-center justify-center text-fg-tertiary">{icon}</div>
@@ -513,6 +688,53 @@ function ActivityIcon({ status }: { status: string }) {
       {(status === 'failed' || status === 'rejected') && <><circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" /></>}
       {status === 'blocked' && <><circle cx="12" cy="12" r="10" /><line x1="4.93" y1="4.93" x2="19.07" y2="19.07" /></>}
       {status === 'cancelled' && <><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></>}
+    </svg>
+  );
+}
+
+// ── Attention Icon ──────────────────────────────────────────────────────────
+
+function AttentionIcon({ type }: { type: 'review' | 'approval' | 'blocked' }) {
+  const color = type === 'review' ? '#3b82f6' : type === 'approval' ? '#f59e0b' : '#ef4444';
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      {type === 'review' && <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></>}
+      {type === 'approval' && <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="12" y1="18" x2="12" y2="12" /><line x1="9" y1="15" x2="15" y2="15" /></>}
+      {type === 'blocked' && <><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></>}
+    </svg>
+  );
+}
+
+// ── Priority Badge ──────────────────────────────────────────────────────────
+
+function PriorityBadge({ priority }: { priority: string }) {
+  if (priority === 'urgent') {
+    return <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-red-500/15 text-red-500 shrink-0 uppercase tracking-wide">!</span>;
+  }
+  if (priority === 'high') {
+    return <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/15 text-amber-600 shrink-0 uppercase tracking-wide">H</span>;
+  }
+  return null;
+}
+
+// ── Deliverable Type Icon ───────────────────────────────────────────────────
+
+function DeliverableTypeIcon({ type, artifactType }: { type: string; artifactType?: string }) {
+  if (artifactType) {
+    const c = artifactType === 'agent' ? '#8b5cf6' : artifactType === 'team' ? '#3b82f6' : '#f59e0b';
+    return (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
+      </svg>
+    );
+  }
+  const c = type === 'directory' ? '#3b82f6' : '#22c55e';
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      {type === 'directory'
+        ? <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        : <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></>
+      }
     </svg>
   );
 }

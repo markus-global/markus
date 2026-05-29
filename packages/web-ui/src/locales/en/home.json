@@ -40,6 +40,7 @@
   },
   "attention": {
     "title": "Needs Your Attention",
+    "allClear": "All clear — nothing needs your attention right now.",
     "approvals": "approval(s) waiting",
     "requirements": "requirement(s) to review",
     "tasksReview": "task(s) need your review",
@@ -47,7 +48,10 @@
     "blocked": "task(s) stuck/blocked",
     "viewBlocked": "View blocked tasks →",
     "report": "report",
-    "planItems": "items"
+    "planItems": "items",
+    "goReview": "Review",
+    "goApprove": "Approve",
+    "viewDetails": "View"
   },
   "globalOverview": {
     "title": "Overview",
@@ -93,6 +97,12 @@
     "tasks": "Tasks",
     "errorRate": "Errors",
     "noData": "No agent data available yet."
+  },
+  "recentDeliverables": {
+    "title": "Recent Deliverables",
+    "empty": "No deliverables yet.",
+    "file": "File",
+    "directory": "Directory"
   },
   "createMenu": {
     "agent": "Create Agent",

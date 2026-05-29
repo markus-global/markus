@@ -40,6 +40,7 @@
   },
   "attention": {
     "title": "需要你的关注",
+    "allClear": "一切正常 — 当前没有需要你处理的事项。",
     "approvals": "项审批等待处理",
     "requirements": "条需求待审核",
     "tasksReview": "个任务需要你审查",
@@ -47,7 +48,10 @@
     "blocked": "个任务阻塞/卡住",
     "viewBlocked": "查看阻塞任务 →",
     "report": "报告",
-    "planItems": "项"
+    "planItems": "项",
+    "goReview": "审查",
+    "goApprove": "审批",
+    "viewDetails": "查看"
   },
   "globalOverview": {
     "title": "全局概览",
@@ -93,6 +97,12 @@
     "tasks": "任务",
     "errorRate": "错误率",
     "noData": "暂无智能体数据。"
+  },
+  "recentDeliverables": {
+    "title": "最新交付物",
+    "empty": "暂无交付物。",
+    "file": "文件",
+    "directory": "目录"
   },
   "createMenu": {
     "agent": "创建智能体",
