@@ -1289,9 +1289,9 @@ export const api = {
       }
     },
     stopConcurrentBrowserTest: () => request<{ ok: boolean }>('/settings/browser/test-concurrent', { method: 'DELETE' }),
-    getSearch: () => request<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search'),
-    updateSearch: (keys: { serperApiKey?: string; braveApiKey?: string; bochaApiKey?: string }) =>
-      request<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search', { method: 'POST', body: JSON.stringify(keys) }),
+    getSearch: () => request<{ serper: { configured: boolean; preview: string }; tavily: { configured: boolean; preview: string }; bing: { configured: boolean; preview: string }; google: { configured: boolean; preview: string }; serpapi: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; exa: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search'),
+    updateSearch: (keys: { serperApiKey?: string; tavilyApiKey?: string; bingApiKey?: string; googleSearchApiKey?: string; googleSearchCx?: string; serpApiKey?: string; braveApiKey?: string; exaApiKey?: string; bochaApiKey?: string }) =>
+      request<{ serper: { configured: boolean; preview: string }; tavily: { configured: boolean; preview: string }; bing: { configured: boolean; preview: string }; google: { configured: boolean; preview: string }; serpapi: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; exa: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search', { method: 'POST', body: JSON.stringify(keys) }),
     getRemote: () => request<RemoteStatus>('/settings/remote'),
     enableRemote: () => request<{ ok: boolean; status: RemoteStatus }>('/settings/remote/enable', { method: 'POST' }),
     disableRemote: () => request<{ ok: boolean }>('/settings/remote/disable', { method: 'POST' }),
