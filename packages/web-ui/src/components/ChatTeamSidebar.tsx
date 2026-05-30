@@ -997,7 +997,10 @@ export function ChatTeamSidebar({
               </button>
             )}
 
-            {humans.filter(h => h.id !== authUser?.id).map(h => (
+            {humans.filter(h => h.id !== authUser?.id).map(h => {
+              const dmChKey = authUser?.id ? `dm:${[authUser.id, h.id].sort().join(':')}` : '';
+              const dmUnread = dmChKey && unreadByChannel ? (unreadByChannel[dmChKey] ?? 0) : 0;
+              return (
               <button
                 key={h.id}
                 onClick={() => onSelectDm(h.id)}
@@ -1023,9 +1026,14 @@ export function ChatTeamSidebar({
                   <div className="truncate font-medium text-[12px] leading-tight">{h.name}</div>
                   <div className="text-fg-secondary truncate text-[10px] leading-tight mt-0.5">{h.email || h.role}</div>
                 </div>
-                <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />
+                {dmUnread > 0 ? (
+                  <span className="min-w-[16px] h-[16px] flex items-center justify-center text-[9px] font-semibold text-white bg-red-500 rounded-full px-1 leading-none shrink-0">{dmUnread}</span>
+                ) : (
+                  <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />
+                )}
               </button>
-            ))}
+              );
+            })}
           </div>
 
           {/* Custom group chats */}
