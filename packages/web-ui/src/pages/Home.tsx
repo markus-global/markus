@@ -275,7 +275,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
         </div>
 
         {/* ── Needs Your Attention ── */}
-        {attentionItems.length > 0 && (
+        {!previewMode && attentionItems.length > 0 && (
           <div className="bg-gradient-to-r from-amber-500/5 via-surface-elevated to-surface-elevated border border-amber-500/20 rounded-2xl overflow-hidden">
             <div className="flex items-center justify-between px-5 pt-4 pb-2">
               <div className="flex items-center gap-2">
