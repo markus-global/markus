@@ -1,10 +1,10 @@
 {
   "humans": {
-    "alex": { "name": "陈奕" },
-    "sarah": { "name": "刘思远" },
-    "james": { "name": "王嘉明" },
-    "emily": { "name": "张雨桐" },
-    "michael": { "name": "李博文" }
+    "alex": { "name": "Alex Chen" },
+    "sarah": { "name": "Sarah Liu" },
+    "james": { "name": "James Wang" },
+    "emily": { "name": "Emily Zhang" },
+    "michael": { "name": "Michael Li" }
   },
   "agents": {
     "secretary": { "name": "秘书", "role": "行政协调员", "activity": "协调日常运营" },
