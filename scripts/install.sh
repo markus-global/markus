@@ -321,8 +321,11 @@ LAUNCH_SCRIPT
       cp "$logo_src" "$app_dir/Contents/Resources/markus.png"
     fi
 
-    # Remove legacy .command shortcut if present
-    rm -f "$HOME/Desktop/Markus.command"
+    # Remove legacy .command shortcut only if it actually exists
+    # (avoids triggering macOS TCC permission dialog for ~/Desktop access)
+    if [ -f "$HOME/Desktop/Markus.command" ]; then
+      rm -f "$HOME/Desktop/Markus.command"
+    fi
 
     ok "App bundle created: /Applications/Markus.app"
 

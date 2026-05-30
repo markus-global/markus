@@ -341,13 +341,13 @@ if [ -f "$INSTALL_DIR/markus.icns" ]; then
   cp "$INSTALL_DIR/markus.icns" "$APP_DIR/Contents/Resources/markus.icns"
 fi
 
-# Remove legacy Desktop shortcut if present
-rm -rf "$REAL_HOME/Desktop/Markus.app"
+# Remove legacy Desktop shortcut if present (only if it actually exists,
+# to avoid triggering macOS TCC permission dialog for ~/Desktop access)
+if [ -e "$REAL_HOME/Desktop/Markus.app" ]; then
+  rm -rf "$REAL_HOME/Desktop/Markus.app"
+fi
 
 # ── Auto-start on login (launchd) ─────────────────────────────────────────
-# Unload any existing plist before replacing it
-sudo -u "$CONSOLE_USER" launchctl unload "$REAL_HOME/Library/LaunchAgents/global.markus.plist" 2>/dev/null || true
-
 PLIST_DIR="$REAL_HOME/Library/LaunchAgents"
 mkdir -p "$PLIST_DIR"
 cat > "$PLIST_DIR/global.markus.plist" << PLIST
@@ -389,23 +389,19 @@ chown "$CONSOLE_USER" "$PLIST_DIR/global.markus.plist"
 mkdir -p "$REAL_HOME/.markus/logs"
 chown -R "$CONSOLE_USER" "$REAL_HOME/.markus"
 
-# Load the LaunchAgent immediately so the server starts right after install
-sudo -u "$CONSOLE_USER" launchctl load "$PLIST_DIR/global.markus.plist" 2>/dev/null || true
+# Load the LaunchAgent so the server auto-starts on next login
+CONSOLE_UID=$(id -u "$CONSOLE_USER" 2>/dev/null || echo "")
+if [ -n "$CONSOLE_UID" ]; then
+  launchctl bootout "gui/$CONSOLE_UID/global.markus" 2>/dev/null || true
+  launchctl bootstrap "gui/$CONSOLE_UID" "$PLIST_DIR/global.markus.plist" 2>/dev/null || true
+fi
 
-# ── Auto-open browser after install ───────────────────────────────────────
-# Wait for the server (just started via launchd) to become healthy, then open browser.
+# ── Launch Markus.app immediately after install ───────────────────────────
+# Open the .app bundle which handles server start + browser open + tray icon.
 # Run in background so postinstall doesn't block the installer UI.
 (
-  TRIES=0
-  MAX_TRIES=60
-  while [ $TRIES -lt $MAX_TRIES ]; do
-    if curl -s --max-time 2 -o /dev/null "http://localhost:$PORT/api/health" 2>/dev/null; then
-      sudo -u "$CONSOLE_USER" open "http://localhost:$PORT"
-      exit 0
-    fi
-    sleep 1
-    TRIES=$((TRIES + 1))
-  done
+  sleep 2
+  sudo -u "$CONSOLE_USER" open /Applications/Markus.app
 ) &
 
 exit 0
