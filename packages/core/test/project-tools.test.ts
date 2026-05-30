@@ -81,13 +81,18 @@ describe('list_projects', () => {
 });
 
 describe('get_project', () => {
-  it('returns project details', async () => {
+  it('returns full project details with repositories', async () => {
     const ctx = createMockContext();
     const tool = findTool(ctx, 'get_project');
     const result = JSON.parse(await tool.execute({ project_id: 'proj_001' }));
     expect(result.status).toBe('success');
     expect(result.project.id).toBe('proj_001');
-    expect(result.project.governance).toBe('standard');
+    expect(result.project.repositories).toHaveLength(1);
+    expect(result.project.repositories[0].path).toBe('/repo');
+    expect(result.project.repositories[0].branch).toBe('main');
+    expect(result.project.repositories[0].role).toBe('primary');
+    expect(result.project.teamIds).toEqual(['team_001']);
+    expect(result.project.governancePolicy).toEqual({ enabled: true, defaultTier: 'standard' });
   });
 
   it('returns error for missing project', async () => {
@@ -95,6 +100,14 @@ describe('get_project', () => {
     const tool = findTool(ctx, 'get_project');
     const result = JSON.parse(await tool.execute({ project_id: 'proj_missing' }));
     expect(result.status).toBe('error');
+  });
+
+  it('falls back to getProjectInfo when no project_id', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'get_project');
+    const result = JSON.parse(await tool.execute({}));
+    expect(result.status).toBe('success');
+    expect(result.project.name).toBe('Web App');
   });
 });
 
@@ -119,30 +132,83 @@ describe('create_project', () => {
 });
 
 describe('update_project', () => {
-  it('updates a project', async () => {
-    const ctx = createMockContext();
+  it('updates a project with description only (no approval needed)', async () => {
+    const approval = vi.fn(async () => ({ approved: true }));
+    const ctx = createMockContext({ requestApproval: approval });
+    const tool = findTool(ctx, 'update_project');
+    const result = JSON.parse(await tool.execute({ project_id: 'proj_001', description: 'Updated desc' }));
+    expect(result.status).toBe('success');
+    expect(approval).not.toHaveBeenCalled();
+  });
+
+  it('requires approval for status change', async () => {
+    const approval = vi.fn(async () => ({ approved: true }));
+    const ctx = createMockContext({ requestApproval: approval });
     const tool = findTool(ctx, 'update_project');
     const result = JSON.parse(await tool.execute({ project_id: 'proj_001', status: 'paused' }));
     expect(result.status).toBe('success');
+    expect(approval).toHaveBeenCalledOnce();
+  });
+
+  it('requires approval for repositories change', async () => {
+    const approval = vi.fn(async () => ({ approved: false, comment: 'Not now' }));
+    const ctx = createMockContext({ requestApproval: approval });
+    const tool = findTool(ctx, 'update_project');
+    const result = JSON.parse(await tool.execute({
+      project_id: 'proj_001',
+      repositories: [{ localPath: '/new-repo', defaultBranch: 'main', role: 'primary' }],
+    }));
+    expect(result.status).toBe('rejected');
+    expect(approval).toHaveBeenCalledOnce();
   });
 });
 
-describe('project_info', () => {
-  it('returns current project info', async () => {
-    const ctx = createMockContext();
-    const tool = findTool(ctx, 'project_info');
-    const result = JSON.parse(await tool.execute({}));
+describe('delete_project', () => {
+  it('requires approval and deletes', async () => {
+    const approval = vi.fn(async () => ({ approved: true }));
+    const deleteProject = vi.fn();
+    const ctx = createMockContext({
+      requestApproval: approval,
+      projectService: {
+        ...createMockContext().projectService!,
+        deleteProject,
+      },
+    });
+    const tool = findTool(ctx, 'delete_project');
+    const result = JSON.parse(await tool.execute({ project_id: 'proj_001', reason: 'No longer needed' }));
     expect(result.status).toBe('success');
-    expect(result.project.name).toBe('Web App');
+    expect(approval).toHaveBeenCalledOnce();
+    expect(deleteProject).toHaveBeenCalledWith('proj_001');
   });
 
-  it('returns error when no project found', async () => {
+  it('rejects when approval denied', async () => {
+    const approval = vi.fn(async () => ({ approved: false, comment: 'Keep it' }));
     const ctx = createMockContext({
-      getProjectInfo: vi.fn(async () => null),
+      requestApproval: approval,
+      projectService: {
+        ...createMockContext().projectService!,
+        deleteProject: vi.fn(),
+      },
     });
-    const tool = findTool(ctx, 'project_info');
-    const result = JSON.parse(await tool.execute({}));
-    expect(result.status).toBe('error');
+    const tool = findTool(ctx, 'delete_project');
+    const result = JSON.parse(await tool.execute({ project_id: 'proj_001', reason: 'Cleanup' }));
+    expect(result.status).toBe('rejected');
+  });
+});
+
+describe('project_stats', () => {
+  it('returns project statistics', async () => {
+    const ctx = createMockContext({
+      getProjectStats: vi.fn(async () => ({
+        totalTasks: 10, completed: 3, inProgress: 2, inReview: 1, blocked: 0, pending: 4, failed: 0,
+        totalRequirements: 4, completedRequirements: 1,
+      })),
+    } as any);
+    const tool = findTool(ctx, 'project_stats');
+    const result = JSON.parse(await tool.execute({ project_id: 'proj_001' }));
+    expect(result.status).toBe('success');
+    expect(result.totalTasks).toBe(10);
+    expect(result.completed).toBe(3);
   });
 });
 

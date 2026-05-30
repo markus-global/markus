@@ -1,5 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
-import { createLogger } from '@markus/shared';
+import { createLogger, generateId } from '@markus/shared';
 import type { TaskDelegation, DelegationResult } from '@markus/a2a';
 
 const log = createLogger('a2a-tools');
@@ -22,11 +22,10 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
       name: 'agent_send_message',
       description: [
         'Send a message to another agent (colleague) in your organization.',
-        'This tool is for STATUS NOTIFICATIONS, QUICK COORDINATION, and SIMPLE QUESTIONS only.',
-        'Two modes: (1) wait_for_reply=true — block until the target agent responds, then return their reply.',
-        'Use this when you need feedback, an answer, or a decision (e.g., asking a question, requesting a review opinion).',
-        '(2) wait_for_reply=false (default) — fire-and-forget notification.',
-        'Use this for one-way announcements (e.g., "I submitted task X for review", status updates).',
+        'This tool is ALWAYS asynchronous (fire-and-forget): the message enters the target agent\'s mailbox and you continue working.',
+        'The recipient will process it on their own schedule and may reply via their own agent_send_message.',
+        'Use conversation_id to correlate multi-turn exchanges — you and the recipient will both see this ID.',
+        'Record what you asked in your working memory so you recognize the reply when it arrives.',
         'IMPORTANT: Do NOT use this tool to request substantial work from another agent.',
         'If you need another agent to perform multi-step work, file changes, or extended execution,',
         'use requirement_propose + task_create instead — tasks provide tracking, review, and audit trail.',
@@ -36,9 +35,13 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
         properties: {
           agent_id: { type: 'string', description: 'The ID of the agent to message' },
           message: { type: 'string', description: 'The message to send' },
+          conversation_id: {
+            type: 'string',
+            description: 'Optional correlation ID for multi-turn exchanges. Auto-generated if omitted. Include this when replying to a previous message to maintain context.',
+          },
           wait_for_reply: {
             type: 'boolean',
-            description: 'If true, wait for the target agent to process the message and return their reply. Use for questions/requests. Default: false (notification mode).',
+            description: '[DEPRECATED — ignored] A2A is always async. Record your question in working memory and process the reply when it arrives.',
           },
         },
         required: ['agent_id', 'message'],
@@ -46,29 +49,27 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
       async execute(args: Record<string, unknown>): Promise<string> {
         const targetId = args['agent_id'] as string;
         const message = args['message'] as string;
-        const waitForReply = (args['wait_for_reply'] as boolean) ?? false;
+        const conversationId = (args['conversation_id'] as string) || generateId('conv');
+        const waitForReply = args['wait_for_reply'] as boolean | undefined;
 
         if (targetId === ctx.selfId) {
           return JSON.stringify({ status: 'error', error: 'Cannot send a message to yourself' });
         }
 
         if (waitForReply) {
-          log.info(`A2A request (sync): ${ctx.selfName} → ${targetId}`, { messageLen: message.length });
-          try {
-            const reply = await ctx.sendMessage(targetId, message, ctx.selfId, ctx.selfName, 0, true);
-            log.info(`A2A reply received: ${targetId} → ${ctx.selfName}`, { replyLen: reply.length });
-            return JSON.stringify({ status: 'replied', from: targetId, reply });
-          } catch (err: unknown) {
-            log.warn(`A2A sync message to ${targetId} failed`, { error: String(err) });
-            return JSON.stringify({ status: 'error', error: `Failed to get reply: ${String(err)}` });
-          }
+          log.warn(`A2A wait_for_reply=true is deprecated and ignored (deadlock risk). Sending async. Sender: ${ctx.selfName} → ${targetId}`);
         }
 
-        log.info(`A2A notify (async): ${ctx.selfName} → ${targetId}`, { messageLen: message.length });
-        ctx.sendMessage(targetId, message, ctx.selfId, ctx.selfName, undefined, false).catch((err: unknown) => {
+        const taggedMessage = `[conversation:${conversationId}]\n${message}`;
+        log.info(`A2A send (async): ${ctx.selfName} → ${targetId}`, { messageLen: message.length, conversationId });
+        ctx.sendMessage(targetId, taggedMessage, ctx.selfId, ctx.selfName, undefined, false).catch((err: unknown) => {
           log.warn(`A2A async message to ${targetId} failed in background`, { error: String(err) });
         });
-        return JSON.stringify({ status: 'dispatched', message: 'Notification sent. The agent will process it independently.' });
+        return JSON.stringify({
+          status: 'dispatched',
+          conversation_id: conversationId,
+          message: 'Message sent asynchronously. The agent will process it on their schedule. Record your question in working memory to recognize the reply.',
+        });
       },
     },
     {

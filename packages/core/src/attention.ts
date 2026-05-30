@@ -19,6 +19,7 @@ import {
   PRIORITY_LABELS,
   TRIAGE_PROMPT_MAX_ITEMS,
   MAILBOX_PROCESSING_TIMEOUT_MS,
+  MAILBOX_COALESCE_WINDOW_MS,
   APPROVAL_WAIT_TIMEOUT_MS,
   WATCHDOG_INTERVAL_MS,
   WATCHDOG_DRIFT_THRESHOLD_MS,
@@ -79,7 +80,7 @@ const log = createLogger('attention');
  * using its existing handleMessage / executeTask / handleHeartbeat paths.
  */
 export interface AttentionDelegate {
-  processMailboxItem(item: MailboxItem): Promise<string | void>;
+  processMailboxItem(item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string): Promise<string | void>;
   onDecisionMade(decision: AttentionDecision): void;
   onFocusChanged(item: MailboxItem | undefined): void;
   evaluateInterrupt(
@@ -91,6 +92,8 @@ export interface AttentionDelegate {
   /** Full-session deliberation: the agent reasons over all queued items as itself. */
   performDeliberation?(headItem: MailboxItem, allItems: MailboxItem[]): Promise<DeliberationResult | null>;
   onDeliberationCompleted?(result: DeliberationResult | null): void;
+  /** Apply memory updates from deliberation (working + longterm). */
+  applyMemoryUpdates?(updates: Array<{ type: 'working' | 'longterm'; key: string; content: string }>): void;
 }
 
 export interface DecisionPersistence {
@@ -150,6 +153,8 @@ export class AttentionController {
   private lastTriageResult?: TriageResult & { timestamp: string };
   /** True while a full-session deliberation is in progress (suppresses yield points). */
   private isDeliberating = false;
+  /** Set to true when a human_chat arrives during deliberation, causing early abort. */
+  private deliberationAbortSignal = false;
   /** Tracks whether the last yield-point decision was 'cancel' vs 'preempt'. */
   private lastYieldDecision?: DecisionType;
   private unsubscribeNewItem?: () => void;
@@ -279,8 +284,9 @@ export class AttentionController {
       // items stuck in 'processing' status, mark them as completed.
       // This catches edge cases where complete()/requeue()/defer() failed
       // silently or the process was interrupted between activity end and
-      // status update.
-      if (this.running && !this.currentFocus && this.state === 'idle') {
+      // status update.  Also triggers during 'deciding' (triage/deliberation)
+      // because no item is actively being processed at that point either.
+      if (this.running && !this.currentFocus && (this.state === 'idle' || this.state === 'deciding')) {
         try {
           const cleaned = this.mailbox.cleanStaleProcessing();
           if (cleaned > 0) {
@@ -369,6 +375,13 @@ export class AttentionController {
             // skip pre-triage cleanup and deliberation to process them immediately.
             const isUserMessage = AttentionController.USER_INTERACTION_TYPES.has(item.sourceType);
 
+            // Coalescing window: for non-user items with pending queue items,
+            // pause briefly to let burst messages (rapid-fire group chat) arrive
+            // and merge via enqueue-time dedup. Skip when queue is empty (no burst).
+            if (!isUserMessage && MAILBOX_COALESCE_WINDOW_MS > 0 && this.mailbox.depth > 0) {
+              await new Promise(r => setTimeout(r, MAILBOX_COALESCE_WINDOW_MS));
+            }
+
             // Pre-triage cleanup: drop stale informational items, then consolidate
             // items sharing the same task/requirement into single rich-context items.
             if (this.mailbox.depth > 0 && !isUserMessage) {
@@ -410,14 +423,25 @@ export class AttentionController {
                 deliberationAttempted = true;
                 const allItems = [item, ...this.mailbox.getQueuedItems()];
                 this.isDeliberating = true;
+                this.deliberationAbortSignal = false;
                 try {
                   const deliberationResult = await this.delegate.performDeliberation(item, allItems);
-                  if (deliberationResult) {
+                  if (this.deliberationAbortSignal) {
+                    // A human_chat arrived during deliberation — discard result,
+                    // put item back so the user message gets processed first.
+                    log.info('Deliberation aborted: human_chat arrived', { agentId: this.agentId });
+                    this.mailbox.putBack(item);
+                    const userItem = this.mailbox.dequeue();
+                    if (userItem) {
+                      item = userItem;
+                    }
+                  } else if (deliberationResult) {
                     triaged = true;
                     item = this.applyDeliberationResult(item, deliberationResult);
                   }
                 } finally {
                   this.isDeliberating = false;
+                  this.deliberationAbortSignal = false;
                 }
               } else {
                 deliberationAttempted = true;
@@ -497,6 +521,12 @@ export class AttentionController {
     this.processingStartedAt = Date.now();
     this.delegate?.onFocusChanged(item);
 
+    // Capture and reset batch state set by applyDeliberationResult
+    const batchItems = this.pendingBatchItems.length > 0 ? [...this.pendingBatchItems] : undefined;
+    const batchContext = this.pendingBatchContext;
+    this.pendingBatchItems = [];
+    this.pendingBatchContext = undefined;
+
     let reply: string | void = undefined;
     let timedOut = false;
     try {
@@ -504,7 +534,7 @@ export class AttentionController {
       // each of which has its own transport-level timeout. This outer timeout
       // is a generous backstop — by the time it fires, all underlying I/O has
       // surely completed or failed, so requeuing is safe.
-      const processing = this.delegate?.processMailboxItem(item);
+      const processing = this.delegate?.processMailboxItem(item, batchItems, batchContext);
       const backstopMs = this.waitingForHumanApproval ? APPROVAL_WAIT_TIMEOUT_MS : MAILBOX_PROCESSING_TIMEOUT_MS;
       const backstop = new Promise<undefined>(resolve =>
         setTimeout(() => resolve(undefined), backstopMs),
@@ -612,6 +642,20 @@ export class AttentionController {
       this.mailbox.complete(item.id);
     }
 
+    // Complete batch items that were processed together with the primary item.
+    // If the primary was preempted/cancelled/timed-out, batch items are requeued.
+    if (batchItems && batchItems.length > 0) {
+      const wasSuccessful = !timedOut && reply !== '[cancelled]' && reply !== '[preempted]'
+        && this.lastYieldDecision !== 'cancel' && this.lastYieldDecision !== 'preempt';
+      for (const bi of batchItems) {
+        if (wasSuccessful) {
+          this.mailbox.complete(bi.id);
+        } else {
+          this.mailbox.requeue(bi);
+        }
+      }
+    }
+
     this.currentFocus = undefined;
     this.interruptSignal = false;
     this.pendingInterruptItem = undefined;
@@ -633,6 +677,11 @@ export class AttentionController {
       const peeked = this.mailbox.peek();
       if (peeked) {
         this.pendingInterruptItem = peeked;
+
+        // If a human_chat arrives during deliberation, signal early abort
+        if (this.isDeliberating && AttentionController.USER_INTERACTION_TYPES.has(peeked.sourceType)) {
+          this.deliberationAbortSignal = true;
+        }
 
         const wouldPreempt = this.currentFocus
           ? this.heuristicDecision(this.currentFocus, peeked) === 'preempt'
@@ -672,6 +721,11 @@ export class AttentionController {
    */
   clearLastYieldDecision(): void {
     this.lastYieldDecision = undefined;
+  }
+
+  /** True if a human_chat arrived during deliberation, signalling early abort. */
+  get shouldAbortDeliberation(): boolean {
+    return this.deliberationAbortSignal;
   }
 
   /**
@@ -795,6 +849,17 @@ export class AttentionController {
   heuristicDecision(currentItem: MailboxItem, newItem: MailboxItem): DecisionType {
     const isNewUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(newItem.sourceType);
     const isCurrentUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(currentItem.sourceType);
+
+    // R0: Same-user follow-up during active chat → merge (inject into session)
+    // This lets the user send multiple messages without each one preempting the previous.
+    if (
+      newItem.sourceType === 'human_chat' &&
+      currentItem.sourceType === 'human_chat' &&
+      newItem.metadata?.senderId &&
+      newItem.metadata.senderId === currentItem.metadata?.senderId
+    ) {
+      return 'merge';
+    }
 
     // R1: User chat/comments ALWAYS preempt non-user work — users are top priority
     if (isNewUserInteraction && !isCurrentUserInteraction) {
@@ -1144,6 +1209,10 @@ export class AttentionController {
    * Apply a DeliberationResult to the mailbox: handle inline completions, reorder, defer, drop.
    * Returns the item to process next.
    */
+  /** Batch items dequeued for the current processing cycle (set by applyDeliberationResult). */
+  private pendingBatchItems: MailboxItem[] = [];
+  private pendingBatchContext?: string;
+
   private applyDeliberationResult(currentItem: MailboxItem, result: DeliberationResult): MailboxItem {
     let item = currentItem;
 
@@ -1157,14 +1226,16 @@ export class AttentionController {
       return false;
     };
 
+    // Resolve effective process IDs (batch takes precedence over single)
+    const effectiveProcessIds = (result.processItemIds && result.processItemIds.length > 0)
+      ? result.processItemIds
+      : [result.processItemId];
+
     // Mark inline-completed items (these were handled during deliberation, NOT discarded).
-    // Never complete the item chosen for full processing — if the LLM
-    // inconsistently lists it in both inlineCompletedIds and processItemId,
-    // the full-processing decision wins.
     for (const completedId of result.inlineCompletedIds) {
       if (isProtected(completedId)) continue;
       if (completedId === currentItem.id) continue;
-      if (completedId === result.processItemId) continue;
+      if (effectiveProcessIds.includes(completedId)) continue;
       const completedItem = queueSnapshot.find(i => i.id === completedId);
       this.mailbox.complete(completedId);
       if (completedItem) {
@@ -1172,20 +1243,35 @@ export class AttentionController {
       }
     }
 
-    // Select the chosen item to process
-    if (result.processItemId !== item.id) {
+    // Select the primary item to process
+    const primaryId = effectiveProcessIds[0];
+    if (primaryId !== item.id) {
       this.mailbox.putBack(item);
-      const chosen = this.mailbox.dequeueById(result.processItemId);
+      const chosen = this.mailbox.dequeueById(primaryId);
       if (chosen) {
         item = chosen;
       } else {
         log.warn('Deliberation chose item that is no longer in queue, falling back to head', {
           agentId: this.agentId,
-          chosenId: result.processItemId,
+          chosenId: primaryId,
           fallbackId: currentItem.id,
         });
         const redequeued = this.mailbox.dequeueById(currentItem.id);
         if (redequeued) item = redequeued;
+      }
+    }
+
+    // Dequeue additional batch items (if batch processing)
+    this.pendingBatchItems = [];
+    this.pendingBatchContext = result.batchContext;
+    if (effectiveProcessIds.length > 1) {
+      for (let i = 1; i < effectiveProcessIds.length; i++) {
+        const batchId = effectiveProcessIds[i];
+        if (isProtected(batchId)) continue;
+        const batchItem = this.mailbox.dequeueById(batchId);
+        if (batchItem) {
+          this.pendingBatchItems.push(batchItem);
+        }
       }
     }
 
@@ -1199,9 +1285,14 @@ export class AttentionController {
       this.mailbox.drop(dropId);
     }
 
+    // Apply memory updates from deliberation
+    if (result.memoryUpdates && result.memoryUpdates.length > 0) {
+      this.delegate?.applyMemoryUpdates?.(result.memoryUpdates);
+    }
+
     // Emit events and update cognition
     const triageEquivalent: TriageResult = {
-      processItemId: result.processItemId,
+      processItemId: primaryId,
       deferItemIds: result.deferItemIds,
       dropItemIds: result.dropItemIds,
       inlineCompletedIds: result.inlineCompletedIds,
@@ -1342,6 +1433,7 @@ export class AttentionController {
     const queued = this.mailbox.getQueuedItems();
     return {
       attentionState: this.state,
+      isDeliberating: this.isDeliberating || undefined,
       currentFocus: this.currentFocus
         ? {
             mailboxItemId: this.currentFocus.id,

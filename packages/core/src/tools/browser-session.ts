@@ -69,6 +69,12 @@ export class BrowserSessionManager {
    */
   private reconnectors = new Map<string, Map<string, () => Promise<void>>>();
 
+  /** ownerKeys where a browser tool succeeded (excluding close_page / list_pages). */
+  private browserUsedKeys = new Set<string>();
+
+  /** ownerKeys that already received a session-end close-tabs reminder. */
+  private remindedKeys = new Set<string>();
+
   private _bringToFront = false;
   private _autoCloseTabs = true;
 
@@ -270,6 +276,57 @@ export class BrowserSessionManager {
     return `Your owned tab IDs: [${ids}] (${owned.size} total). You can only operate on these.`;
   }
 
+  private ownerKeyFor(agentId: string, sessionId?: string): string {
+    return sessionId ? `${agentId}::${sessionId}` : agentId;
+  }
+
+  private isToolError(result: string): boolean {
+    if (this.isStalePageError(result)) return true;
+    if (result.startsWith('Cannot ') || result.startsWith('Failed to auto-create')) return true;
+    try {
+      const parsed = JSON.parse(result) as { error?: unknown };
+      if (parsed?.error) return true;
+    } catch { /* not JSON — treat as success text */ }
+    return false;
+  }
+
+  /** Mark that this session successfully used the browser (called from tool wrappers). */
+  markBrowserUsed(ownerKey: string): void {
+    this.browserUsedKeys.add(ownerKey);
+  }
+
+  private markBrowserUsedIfSuccess(ownerKey: string, result: string): void {
+    if (!this.isToolError(result)) {
+      this.markBrowserUsed(ownerKey);
+    }
+  }
+
+  /** Return owned tab IDs for an agent session (for reminder text). */
+  getOwnedTabIds(agentId: string, sessionId?: string): number[] {
+    const ownerKey = this.ownerKeyFor(agentId, sessionId);
+    return [...this.getOwned(ownerKey)];
+  }
+
+  /**
+   * Consume a one-time session-end reminder if the session used the browser,
+   * has remaining owned tabs, and has not been reminded yet.
+   */
+  consumeCloseTabsReminder(agentId: string, sessionId?: string): string | null {
+    const ownerKey = this.ownerKeyFor(agentId, sessionId);
+    if (!this.browserUsedKeys.has(ownerKey)) return null;
+    if (this.remindedKeys.has(ownerKey)) return null;
+
+    const owned = this.getOwned(ownerKey);
+    if (owned.size === 0) return null;
+
+    this.remindedKeys.add(ownerKey);
+    const ids = [...owned].join(', ');
+    return [
+      '[SYSTEM] You used the browser in this session. Before finishing, close any tabs you no longer need with chrome-devtools__close_page.',
+      `Your owned tab IDs: [${ids}] (${owned.size} total).`,
+    ].join(' ');
+  }
+
   // ─── Public API ───────────────────────────────────────────────────────────
 
   wrapToolHandlers(handlers: AgentToolHandler[], agentId: string): AgentToolHandler[] {
@@ -352,6 +409,7 @@ export class BrowserSessionManager {
             } else {
               log.warn(`new_page response contained no pages for ${ownerKey}`);
             }
+            this.markBrowserUsedIfSuccess(ownerKey, result);
           }
           return this.annotateResponse(result, ownerKey);
         });
@@ -416,6 +474,7 @@ export class BrowserSessionManager {
             this.currentPage.set(ownerKey, pageId);
             this.lastActiveSession.set(agentId, { ownerKey, pageId });
           }
+          this.markBrowserUsedIfSuccess(ownerKey, result);
           return this.annotateResponse(result, ownerKey);
         });
       },
@@ -504,6 +563,7 @@ export class BrowserSessionManager {
             }
           }
 
+          this.markBrowserUsedIfSuccess(ownerKey, result);
           return this.annotateResponse(result, ownerKey);
         });
       },
@@ -568,6 +628,7 @@ export class BrowserSessionManager {
         }
       }
 
+      this.markBrowserUsedIfSuccess(ownerKey, result);
       return this.annotateResponse(result, ownerKey);
     } catch (err) {
       return JSON.stringify({ error: `Failed to auto-create new tab: ${err}` });
@@ -614,6 +675,7 @@ export class BrowserSessionManager {
             }
           }
 
+          this.markBrowserUsedIfSuccess(ownerKey, result);
           return this.annotateResponse(result, ownerKey);
         });
       },
@@ -630,6 +692,16 @@ export class BrowserSessionManager {
         total += owned.size;
         this.ownedPages.delete(key);
         this.currentPage.delete(key);
+      }
+    }
+    for (const key of [...this.browserUsedKeys]) {
+      if (key === agentId || key.startsWith(prefix)) {
+        this.browserUsedKeys.delete(key);
+      }
+    }
+    for (const key of [...this.remindedKeys]) {
+      if (key === agentId || key.startsWith(prefix)) {
+        this.remindedKeys.delete(key);
       }
     }
     this.agentLocks.delete(agentId);

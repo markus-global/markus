@@ -2347,7 +2347,7 @@ export class APIServer {
       return;
     }
 
-    if (path.match(/^\/api\/agents\/[^/]+\/(start|stop|daily-report|a2a|message)$/) && req.method === 'POST') {
+    if (path.match(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message)$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
       const parts = path.split('/');
@@ -2364,6 +2364,29 @@ export class APIServer {
         await this.orgService.getAgentManager().stopAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'offline');
         this.json(res, 200, { status: 'stopped' });
+        return;
+      }
+      if (action === 'pause') {
+        const body = await this.readBody(req);
+        const reason = body['reason'] as string | undefined;
+        const agent = this.orgService.getAgentManager().getAgent(agentId!);
+        agent.pause(reason);
+        this.ws.broadcastAgentUpdate(agentId!, 'paused');
+        this.json(res, 200, { status: 'paused' });
+        return;
+      }
+      if (action === 'resume') {
+        const agent = this.orgService.getAgentManager().getAgent(agentId!);
+        agent.resume();
+        const newStatus = agent.getState().status;
+        this.ws.broadcastAgentUpdate(agentId!, newStatus);
+        this.json(res, 200, { status: newStatus });
+        return;
+      }
+      if (action === 'cancel-processing') {
+        const agent = this.orgService.getAgentManager().getAgent(agentId!);
+        agent.cancelActiveStream();
+        this.json(res, 200, { status: 'cancelled' });
         return;
       }
       if (action === 'daily-report') {
@@ -3059,6 +3082,14 @@ export class APIServer {
       const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
       const { results, total } = this.deliverableService.search({ query: q, projectId, agentId, taskId, type, status, artifactType, offset, limit });
       this.json(res, 200, { results, total });
+      return;
+    }
+
+    if (path === '/api/deliverables/health' && req.method === 'GET') {
+      if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
+      const agentId = url.searchParams.get('agentId') ?? undefined;
+      const missingIds = this.deliverableService.checkFileHealth(agentId);
+      this.json(res, 200, { missingFiles: missingIds });
       return;
     }
 
@@ -7306,7 +7337,12 @@ EXPLANATION_END`;
       const mask = (key?: string) => key ? '***' + key.slice(-4) : '';
       this.json(res, 200, {
         serper: { configured: !!search.serperApiKey || !!process.env['SERPER_API_KEY'], preview: mask(search.serperApiKey || process.env['SERPER_API_KEY']) },
+        tavily: { configured: !!search.tavilyApiKey || !!process.env['TAVILY_API_KEY'], preview: mask(search.tavilyApiKey || process.env['TAVILY_API_KEY']) },
+        bing: { configured: !!search.bingApiKey || !!process.env['BING_SEARCH_API_KEY'], preview: mask(search.bingApiKey || process.env['BING_SEARCH_API_KEY']) },
+        google: { configured: !!(search.googleSearchApiKey && search.googleSearchCx) || !!(process.env['GOOGLE_SEARCH_API_KEY'] && process.env['GOOGLE_SEARCH_CX']), preview: mask(search.googleSearchApiKey || process.env['GOOGLE_SEARCH_API_KEY']) },
+        serpapi: { configured: !!search.serpApiKey || !!process.env['SERPAPI_API_KEY'], preview: mask(search.serpApiKey || process.env['SERPAPI_API_KEY']) },
         brave: { configured: !!search.braveApiKey || !!process.env['BRAVE_SEARCH_API_KEY'], preview: mask(search.braveApiKey || process.env['BRAVE_SEARCH_API_KEY']) },
+        exa: { configured: !!search.exaApiKey || !!process.env['EXA_API_KEY'], preview: mask(search.exaApiKey || process.env['EXA_API_KEY']) },
         bocha: { configured: !!search.bochaApiKey || !!process.env['BOCHA_API_KEY'], preview: mask(search.bochaApiKey || process.env['BOCHA_API_KEY']) },
       });
       return;
@@ -7322,10 +7358,40 @@ EXPLANATION_END`;
         if (body['serperApiKey']) process.env['SERPER_API_KEY'] = body['serperApiKey'] as string;
         else delete process.env['SERPER_API_KEY'];
       }
+      if (typeof body['tavilyApiKey'] === 'string') {
+        updates.tavilyApiKey = body['tavilyApiKey'] || undefined;
+        if (body['tavilyApiKey']) process.env['TAVILY_API_KEY'] = body['tavilyApiKey'] as string;
+        else delete process.env['TAVILY_API_KEY'];
+      }
+      if (typeof body['bingApiKey'] === 'string') {
+        updates.bingApiKey = body['bingApiKey'] || undefined;
+        if (body['bingApiKey']) process.env['BING_SEARCH_API_KEY'] = body['bingApiKey'] as string;
+        else delete process.env['BING_SEARCH_API_KEY'];
+      }
+      if (typeof body['googleSearchApiKey'] === 'string') {
+        updates.googleSearchApiKey = body['googleSearchApiKey'] || undefined;
+        if (body['googleSearchApiKey']) process.env['GOOGLE_SEARCH_API_KEY'] = body['googleSearchApiKey'] as string;
+        else delete process.env['GOOGLE_SEARCH_API_KEY'];
+      }
+      if (typeof body['googleSearchCx'] === 'string') {
+        updates.googleSearchCx = body['googleSearchCx'] || undefined;
+        if (body['googleSearchCx']) process.env['GOOGLE_SEARCH_CX'] = body['googleSearchCx'] as string;
+        else delete process.env['GOOGLE_SEARCH_CX'];
+      }
+      if (typeof body['serpApiKey'] === 'string') {
+        updates.serpApiKey = body['serpApiKey'] || undefined;
+        if (body['serpApiKey']) process.env['SERPAPI_API_KEY'] = body['serpApiKey'] as string;
+        else delete process.env['SERPAPI_API_KEY'];
+      }
       if (typeof body['braveApiKey'] === 'string') {
         updates.braveApiKey = body['braveApiKey'] || undefined;
         if (body['braveApiKey']) process.env['BRAVE_SEARCH_API_KEY'] = body['braveApiKey'] as string;
         else delete process.env['BRAVE_SEARCH_API_KEY'];
+      }
+      if (typeof body['exaApiKey'] === 'string') {
+        updates.exaApiKey = body['exaApiKey'] || undefined;
+        if (body['exaApiKey']) process.env['EXA_API_KEY'] = body['exaApiKey'] as string;
+        else delete process.env['EXA_API_KEY'];
       }
       if (typeof body['bochaApiKey'] === 'string') {
         updates.bochaApiKey = body['bochaApiKey'] || undefined;
@@ -7352,7 +7418,12 @@ EXPLANATION_END`;
       const mask = (key?: string) => key ? '***' + key.slice(-4) : '';
       this.json(res, 200, {
         serper: { configured: !!search.serperApiKey || !!process.env['SERPER_API_KEY'], preview: mask(search.serperApiKey || process.env['SERPER_API_KEY']) },
+        tavily: { configured: !!search.tavilyApiKey || !!process.env['TAVILY_API_KEY'], preview: mask(search.tavilyApiKey || process.env['TAVILY_API_KEY']) },
+        bing: { configured: !!search.bingApiKey || !!process.env['BING_SEARCH_API_KEY'], preview: mask(search.bingApiKey || process.env['BING_SEARCH_API_KEY']) },
+        google: { configured: !!(search.googleSearchApiKey && search.googleSearchCx) || !!(process.env['GOOGLE_SEARCH_API_KEY'] && process.env['GOOGLE_SEARCH_CX']), preview: mask(search.googleSearchApiKey || process.env['GOOGLE_SEARCH_API_KEY']) },
+        serpapi: { configured: !!search.serpApiKey || !!process.env['SERPAPI_API_KEY'], preview: mask(search.serpApiKey || process.env['SERPAPI_API_KEY']) },
         brave: { configured: !!search.braveApiKey || !!process.env['BRAVE_SEARCH_API_KEY'], preview: mask(search.braveApiKey || process.env['BRAVE_SEARCH_API_KEY']) },
+        exa: { configured: !!search.exaApiKey || !!process.env['EXA_API_KEY'], preview: mask(search.exaApiKey || process.env['EXA_API_KEY']) },
         bocha: { configured: !!search.bochaApiKey || !!process.env['BOCHA_API_KEY'], preview: mask(search.bochaApiKey || process.env['BOCHA_API_KEY']) },
       });
       return;
@@ -9735,7 +9806,7 @@ EXPLANATION_END`;
       exact('/api/agents', 'GET', 'POST'),
       exact('/api/agents/role-updates', 'GET'),
       regex(/^\/api\/agents\/[^/]+\/sessions$/, 'GET'),
-      regex(/^\/api\/agents\/[^/]+\/(start|stop|daily-report|a2a|message)$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message)$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+$/, 'GET', 'DELETE'),
       regex(/^\/api\/agents\/[^/]+\/mind$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/mailbox$/, 'GET'),
@@ -9825,6 +9896,7 @@ EXPLANATION_END`;
 
       // ── Deliverables / Knowledge ─────────────────────────────────────────
       exact('/api/deliverables', 'GET', 'POST'),
+      exact('/api/deliverables/health', 'GET'),
       regex(/^\/api\/deliverables\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
       exact('/api/knowledge', 'POST'),
       exact('/api/knowledge/search', 'GET'),

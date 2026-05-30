@@ -255,6 +255,12 @@ export const CHANNEL_CONTEXT_MESSAGES = 40;
  *  timely, and processing them would confuse agents with outdated information. */
 export const MAILBOX_QUEUED_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 
+/** Coalescing window (ms) after dequeuing a non-user item.
+ *  The attention loop pauses this long before starting triage, giving
+ *  burst messages (e.g. rapid-fire group chat) time to arrive and merge
+ *  via enqueue-time dedup.  Set to 0 to disable. */
+export const MAILBOX_COALESCE_WINDOW_MS = 200;
+
 // ─── Mailbox Processing ─────────────────────────────────────────────────────
 
 /** Maximum time (ms) allowed for processing a single mailbox item.
@@ -361,6 +367,8 @@ export const DELIBERATION_ALLOWED_TOOLS: readonly string[] = [
   'check_mailbox', 'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item',
   // Working memory
   'update_working_memory', 'clear_working_memory',
+  // Long-term memory (allows recording observations during deliberation)
+  'memory_save', 'memory_update_longterm',
   // Inline action (lightweight communication)
   'notify_user', 'task_comment', 'requirement_comment',
   'agent_send_message', 'agent_send_group_message',

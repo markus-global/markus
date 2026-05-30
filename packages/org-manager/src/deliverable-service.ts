@@ -1,7 +1,13 @@
+import { existsSync, cpSync, mkdirSync } from 'node:fs';
+import { join, basename } from 'node:path';
 import { createLogger, generateId, type Deliverable, type TaskDeliverable, type Task } from '@markus/shared';
 import type { DeliverableRepo } from '@markus/storage';
 import type { WSBroadcaster } from './ws-server.ts';
 const log = createLogger('deliverable-service');
+
+function isUrl(s: string): boolean {
+  return /^https?:\/\//i.test(s);
+}
 
 export class DeliverableService {
   private cache = new Map<string, Deliverable>();
@@ -55,6 +61,8 @@ export class DeliverableService {
         if (opts.artifactData !== undefined) patch.artifactData = opts.artifactData;
         if (opts.diffStats !== undefined) patch.diffStats = opts.diffStats;
         if (opts.testResults !== undefined) patch.testResults = opts.testResults;
+        // Link taskId if the existing deliverable doesn't have one yet
+        if (opts.taskId && !existing.taskId) patch.taskId = opts.taskId;
         const updated = await this.update(existing.id, patch);
         log.info('Deliverable upserted (updated existing)', { id: existing.id, reference: ref });
         this.ws?.broadcastDeliverableUpdate(existing.id, 'updated', {
@@ -191,6 +199,9 @@ export class DeliverableService {
     format: string;
     tags: string[];
     status: Deliverable['status'];
+    taskId: string;
+    agentId: string;
+    projectId: string;
     artifactType: Deliverable['artifactType'];
     artifactData: Deliverable['artifactData'];
     diffStats: Deliverable['diffStats'];
@@ -198,6 +209,29 @@ export class DeliverableService {
   }>): Promise<Deliverable | undefined> {
     const d = this.cache.get(id);
     if (!d) return undefined;
+
+    // No-op detection: only proceed if at least one field actually changes
+    const arrEq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+    const changed: string[] = [];
+    if (data.type !== undefined && data.type !== d.type) changed.push('type');
+    if (data.title !== undefined && data.title !== d.title) changed.push('title');
+    if (data.summary !== undefined && data.summary !== d.summary) changed.push('summary');
+    if (data.reference !== undefined && data.reference !== d.reference) changed.push('reference');
+    if (data.format !== undefined && data.format !== d.format) changed.push('format');
+    if (data.tags !== undefined && !arrEq(data.tags, d.tags)) changed.push('tags');
+    if (data.status !== undefined && data.status !== d.status) changed.push('status');
+    if (data.taskId !== undefined && data.taskId !== d.taskId) changed.push('taskId');
+    if (data.agentId !== undefined && data.agentId !== d.agentId) changed.push('agentId');
+    if (data.projectId !== undefined && data.projectId !== d.projectId) changed.push('projectId');
+    if (data.artifactType !== undefined && data.artifactType !== d.artifactType) changed.push('artifactType');
+    if (data.artifactData !== undefined && !arrEq(data.artifactData, d.artifactData)) changed.push('artifactData');
+    if (data.diffStats !== undefined && !arrEq(data.diffStats, d.diffStats)) changed.push('diffStats');
+    if (data.testResults !== undefined && !arrEq(data.testResults, d.testResults)) changed.push('testResults');
+
+    if (changed.length === 0) {
+      log.debug('Deliverable update skipped (no-op)', { id });
+      return d;
+    }
 
     const now = new Date().toISOString();
     if (data.type !== undefined) d.type = data.type;
@@ -207,6 +241,9 @@ export class DeliverableService {
     if (data.format !== undefined) d.format = data.format;
     if (data.tags !== undefined) d.tags = data.tags;
     if (data.status !== undefined) d.status = data.status;
+    if (data.taskId !== undefined) d.taskId = data.taskId;
+    if (data.agentId !== undefined) d.agentId = data.agentId;
+    if (data.projectId !== undefined) d.projectId = data.projectId;
     if (data.artifactType !== undefined) d.artifactType = data.artifactType;
     if (data.artifactData !== undefined) d.artifactData = data.artifactData;
     if (data.diffStats !== undefined) d.diffStats = data.diffStats;
@@ -214,7 +251,7 @@ export class DeliverableService {
     d.updatedAt = now;
 
     await this.repo?.update(id, data);
-    log.info('Deliverable updated', { id, fields: Object.keys(data) });
+    log.info('Deliverable updated', { id, fields: changed });
     this.ws?.broadcastDeliverableUpdate(id, 'updated', {
       type: d.type,
       title: d.title,
@@ -304,6 +341,61 @@ export class DeliverableService {
       log.info('Deduplicated deliverables by reference', { cleaned });
     }
     return cleaned;
+  }
+
+  /**
+   * Migrate deliverable files from an agent's workspace to the shared directory
+   * before the agent is deleted. Updates each deliverable's reference to point
+   * at the new shared location.
+   */
+  async migrateAgentFiles(agentId: string, agentDir: string, sharedDataDir: string): Promise<number> {
+    const deliverables = this.findByAgent(agentId);
+    if (deliverables.length === 0) return 0;
+
+    const sharedDeliverables = join(sharedDataDir, 'deliverables');
+    let migrated = 0;
+
+    for (const d of deliverables) {
+      if (!d.reference || isUrl(d.reference)) continue;
+      // Only migrate files that are inside the agent's directory
+      if (!d.reference.startsWith(agentDir + '/') && d.reference !== agentDir) continue;
+      if (!existsSync(d.reference)) continue;
+
+      try {
+        const destDir = join(sharedDeliverables, d.id);
+        mkdirSync(destDir, { recursive: true });
+        const fileName = basename(d.reference);
+        const destPath = join(destDir, fileName);
+        cpSync(d.reference, destPath, { recursive: true });
+
+        await this.update(d.id, { reference: destPath });
+        migrated++;
+        log.info('Deliverable file migrated to shared', { id: d.id, from: d.reference, to: destPath });
+      } catch (err) {
+        log.warn('Failed to migrate deliverable file', { id: d.id, reference: d.reference, error: String(err) });
+      }
+    }
+
+    if (migrated > 0) {
+      log.info('Migrated agent deliverable files to shared directory', { agentId, migrated, total: deliverables.length });
+    }
+    return migrated;
+  }
+
+  /**
+   * Check file health for deliverables: returns IDs of deliverables whose
+   * referenced files no longer exist on disk.
+   */
+  checkFileHealth(agentId?: string): string[] {
+    const deliverables = agentId ? this.findByAgent(agentId) : this.getAll();
+    const missing: string[] = [];
+    for (const d of deliverables) {
+      if (!d.reference || isUrl(d.reference)) continue;
+      if (!existsSync(d.reference)) {
+        missing.push(d.id);
+      }
+    }
+    return missing;
   }
 
   /**

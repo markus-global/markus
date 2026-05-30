@@ -995,17 +995,17 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
 
         {/* Version bump notification */}
         {!readOnly && contentDirty && !showVersionBump && (
-          <div className="mb-4 px-4 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-between">
-            <span className="text-xs text-amber-300">{t('versionBump.contentModified')}</span>
-            <button onClick={() => setShowVersionBump(true)} className="text-xs px-3 py-1 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition-colors">
+          <div className="mb-4 px-4 py-2.5 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/20 flex items-center justify-between">
+            <span className="text-xs text-amber-800 dark:text-amber-300">{t('versionBump.contentModified')}</span>
+            <button onClick={() => setShowVersionBump(true)} className="text-xs px-3 py-1 rounded bg-amber-200 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 hover:bg-amber-300 dark:hover:bg-amber-500/30 transition-colors">
               {t('versionBump.bumpVersion')}
             </button>
           </div>
         )}
         {!readOnly && showVersionBump && (
-          <div className="mb-4 px-4 py-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+          <div className="mb-4 px-4 py-3 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/20">
             <div className="flex items-center gap-3">
-              <span className="text-xs text-amber-300">{t('versionBump.newVersion')}</span>
+              <span className="text-xs text-amber-800 dark:text-amber-300">{t('versionBump.newVersion')}</span>
               <input
                 type="text"
                 defaultValue={(() => {
@@ -1023,7 +1023,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
               <button onClick={(e) => {
                 const input = (e.target as HTMLElement).parentElement?.querySelector('input');
                 if (input) handleFieldChange('version', input.value);
-              }} className="text-xs px-3 py-1 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition-colors">
+              }} className="text-xs px-3 py-1 rounded bg-amber-200 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 hover:bg-amber-300 dark:hover:bg-amber-500/30 transition-colors">
                 {t('common:confirm')}
               </button>
               <button onClick={() => setShowVersionBump(false)} className="text-xs text-fg-tertiary hover:text-fg-secondary">
@@ -1057,7 +1057,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
                 {!readOnly && showIconPicker && (
                   <>
                   <div className="fixed inset-0 z-40" onClick={() => setShowIconPicker(false)} />
-                  <div className="absolute top-full left-0 mt-2 z-50 bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl w-80">
+                  <div className="absolute top-full left-0 mt-2 z-50 bg-surface-secondary border border-border-default rounded-xl p-3 shadow-xl w-80">
                     <div className="flex items-center gap-2 mb-3">
                       <input
                         type="text" placeholder={t('detail.pasteEmojiOrUrl')}
@@ -1100,7 +1100,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
                     <div className="max-h-64 overflow-y-auto">
                       {EMOJI_GROUPS.map(g => (
                         <div key={g.label} className="mb-2.5">
-                          <div className="text-[10px] text-fg-tertiary mb-1 sticky top-0 bg-gray-900 py-0.5">{g.label}</div>
+                          <div className="text-[10px] text-fg-tertiary mb-1 sticky top-0 bg-surface-secondary py-0.5">{g.label}</div>
                           <div className="flex flex-wrap gap-0.5">
                             {g.emojis.map(e => (
                               <button key={e} onClick={() => { handleFieldChange('icon', e); setShowIconPicker(false); }}
@@ -1336,7 +1336,7 @@ function ShareModeDialog({ onClose, onConfirm, isUpdate }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-sm w-full mx-4 p-6" onClick={e => e.stopPropagation()}>
+      <div className="bg-surface-secondary border border-border-default rounded-xl max-w-sm w-full mx-4 p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
         <h3 className="text-base font-semibold text-fg-primary mb-4">
           {isUpdate ? t('shareMode.titleUpdate') : t('share.toHub')}
         </h3>

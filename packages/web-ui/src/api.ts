@@ -419,6 +419,12 @@ export interface ActivityRecord {
 
 export interface AgentMindState {
   attentionState: string;
+  isDeliberating?: boolean;
+  deliberationActivity?: {
+    activityId: string;
+    label: string;
+    startedAt: string;
+  };
   currentFocus?: {
     mailboxItemId: string;
     type: string;
@@ -868,6 +874,9 @@ export const api = {
       request('/agents', { method: 'POST', body: JSON.stringify({ name, ...(roleName ? { roleName } : {}), agentRole, teamId }) }),
     start: (id: string) => request(`/agents/${id}/start`, { method: 'POST' }),
     stop: (id: string) => request(`/agents/${id}/stop`, { method: 'POST' }),
+    pause: (id: string, reason?: string) => request(`/agents/${id}/pause`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    resume: (id: string) => request<{ status: string }>(`/agents/${id}/resume`, { method: 'POST' }),
+    cancelProcessing: (id: string) => request(`/agents/${id}/cancel-processing`, { method: 'POST' }),
     remove: (id: string, opts?: { purgeFiles?: boolean }) =>
       request(`/agents/${id}${opts?.purgeFiles ? '?purgeFiles=true' : ''}`, { method: 'DELETE' }),
     updateConfig: (id: string, patch: Record<string, unknown>) =>
@@ -1280,9 +1289,9 @@ export const api = {
       }
     },
     stopConcurrentBrowserTest: () => request<{ ok: boolean }>('/settings/browser/test-concurrent', { method: 'DELETE' }),
-    getSearch: () => request<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search'),
-    updateSearch: (keys: { serperApiKey?: string; braveApiKey?: string; bochaApiKey?: string }) =>
-      request<{ serper: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search', { method: 'POST', body: JSON.stringify(keys) }),
+    getSearch: () => request<{ serper: { configured: boolean; preview: string }; tavily: { configured: boolean; preview: string }; bing: { configured: boolean; preview: string }; google: { configured: boolean; preview: string }; serpapi: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; exa: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search'),
+    updateSearch: (keys: { serperApiKey?: string; tavilyApiKey?: string; bingApiKey?: string; googleSearchApiKey?: string; googleSearchCx?: string; serpApiKey?: string; braveApiKey?: string; exaApiKey?: string; bochaApiKey?: string }) =>
+      request<{ serper: { configured: boolean; preview: string }; tavily: { configured: boolean; preview: string }; bing: { configured: boolean; preview: string }; google: { configured: boolean; preview: string }; serpapi: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; exa: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search', { method: 'POST', body: JSON.stringify(keys) }),
     getRemote: () => request<RemoteStatus>('/settings/remote'),
     enableRemote: () => request<{ ok: boolean; status: RemoteStatus }>('/settings/remote/enable', { method: 'POST' }),
     disableRemote: () => request<{ ok: boolean }>('/settings/remote/disable', { method: 'POST' }),
@@ -1499,6 +1508,11 @@ export const api = {
       request<{ status: string }>(`/deliverables/${id}`, { method: 'DELETE' }),
     verify: (id: string) =>
       request<{ deliverable: DeliverableInfo }>(`/deliverables/${id}`, { method: 'PUT', body: JSON.stringify({ status: 'verified' }) }),
+    checkHealth: (agentId?: string) => {
+      const params = new URLSearchParams();
+      if (agentId) params.set('agentId', agentId);
+      return request<{ missingFiles: string[] }>(`/deliverables/health?${params}`);
+    },
   },
 
   // ─── Code Reviews ──────────────────────────────────────────────────

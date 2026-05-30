@@ -3353,6 +3353,9 @@ export class SqliteDeliverableRepo {
     if (patch.reference !== undefined) { sets.push('reference = ?'); vals.push(patch.reference as SQLInputValue); }
     if (patch.format !== undefined) { sets.push('format = ?'); vals.push(patch.format as SQLInputValue); }
     if (patch.type !== undefined) { sets.push('type = ?'); vals.push(patch.type as SQLInputValue); }
+    if (patch.taskId !== undefined) { sets.push('task_id = ?'); vals.push(patch.taskId as SQLInputValue); }
+    if (patch.agentId !== undefined) { sets.push('agent_id = ?'); vals.push(patch.agentId as SQLInputValue); }
+    if (patch.projectId !== undefined) { sets.push('project_id = ?'); vals.push(patch.projectId as SQLInputValue); }
     if (patch.artifactType !== undefined) { sets.push('artifact_type = ?'); vals.push(patch.artifactType as SQLInputValue); }
     if (patch.artifactData !== undefined) { sets.push('artifact_data = ?'); vals.push(toJson(patch.artifactData)); }
     if (patch.diffStats !== undefined) { sets.push('diff_stats = ?'); vals.push(toJson(patch.diffStats)); }

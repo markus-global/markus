@@ -349,61 +349,13 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className={`max-w-4xl mx-auto w-full ${isMobile ? 'px-4 py-5' : 'px-6 py-10'}`}>
-        {/* Builder prompts → navigate to Secretary */}
-        <div className="mb-10">
-          <h1 className="text-2xl font-bold text-fg-primary">{t('title')}</h1>
-          <p className="text-sm text-fg-tertiary mt-2">
-            {t('subtitle')}
-          </p>
-        </div>
-
-        <div className="grid gap-5">
-          {BUILDER_PROMPTS.map(b => {
-            const examplesRaw = t(`prompts.${b.id}Examples`, { returnObjects: true });
-            const examples = Array.isArray(examplesRaw) ? examplesRaw : [];
-            const promptPrefix = t(`prompts.${b.id}Prompt`);
-            return (
-            <button
-              key={b.id}
-              onClick={() => navigateToSecretary(promptPrefix)}
-              className={`group text-left w-full rounded-xl border ${b.borderColor} bg-surface-secondary/60 ${isMobile ? 'p-4' : 'p-6'} transition-all hover:bg-surface-secondary/80 hover:shadow-lg`}
-            >
-              <div className={`flex items-start ${isMobile ? 'gap-3' : 'gap-5'}`}>
-                <div className={`${isMobile ? 'w-10 h-10 text-xl' : 'w-14 h-14 text-2xl'} rounded-xl ${b.bgColor} flex items-center justify-center shrink-0`}>
-                  {b.icon}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <h3 className={`${isMobile ? 'text-base' : 'text-lg'} font-semibold bg-gradient-to-r ${b.color} bg-clip-text text-transparent`}>
-                      {t(`prompts.${b.id}`)}
-                    </h3>
-                  </div>
-                  <p className="text-sm text-fg-secondary leading-relaxed">{t(`prompts.${b.id}Desc`)}</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {examples.map((ex, i) => (
-                      <span key={i} className="text-[11px] text-fg-tertiary bg-surface-elevated/60 rounded-full px-3 py-1 border border-border-default cursor-pointer hover:bg-surface-elevated/80 hover:text-fg-secondary transition-colors"
-                        onClick={(e) => { e.stopPropagation(); navigateToSecretary(promptPrefix + ex); }}>
-                        &ldquo;{ex}&rdquo;
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <svg className="w-5 h-5 text-fg-muted group-hover:text-fg-secondary transition-colors shrink-0 mt-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="9 18 15 12 9 6" />
-                </svg>
-              </div>
-            </button>
-            );
-          })}
-        </div>
-
-        {/* Artifact management section */}
-        <div className="mt-14 mb-4">
-          <div className="flex items-center justify-between">
+      <div className={`max-w-5xl mx-auto w-full ${isMobile ? 'px-4 py-5' : 'px-6 py-6'}`}>
+        {/* Header + quick-create prompts */}
+        <div className="mb-6">
+          <div className="flex items-center justify-between mb-4">
             <div>
-              <h2 className="text-lg font-semibold text-fg-primary">{t('myCreations.title')}</h2>
-              <p className="text-xs text-fg-tertiary mt-1">{t('myCreations.subtitle')}</p>
+              <h1 className="text-xl font-bold text-fg-primary">{t('title')}</h1>
+              <p className="text-xs text-fg-tertiary mt-1">{t('subtitle')}</p>
             </div>
             <button
               onClick={loadAll}
@@ -413,26 +365,69 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
             </button>
           </div>
 
-          <div className="flex gap-2 mt-4">
-            {(['all', 'agent', 'team', 'skill'] as const).map(ft => (
+          <div className={`grid ${isMobile ? 'grid-cols-1 gap-2' : 'grid-cols-3 gap-3'}`}>
+            {BUILDER_PROMPTS.map(b => {
+              const promptPrefix = t(`prompts.${b.id}Prompt`);
+              const examplesRaw = t(`prompts.${b.id}Examples`, { returnObjects: true });
+              const examples = Array.isArray(examplesRaw) ? examplesRaw : [];
+              return (
               <button
-                key={ft}
-                onClick={() => setFilterType(ft)}
-                className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-                  filterType === ft
-                    ? 'border-gray-600 bg-surface-elevated text-fg-primary'
-                    : 'border-border-default text-fg-tertiary hover:text-fg-secondary hover:border-gray-600'
-                }`}
+                key={b.id}
+                onClick={() => navigateToSecretary(promptPrefix)}
+                className={`group text-left w-full rounded-xl border ${b.borderColor} bg-surface-secondary/60 p-4 transition-all hover:bg-surface-secondary/80 hover:shadow-lg`}
               >
-                {ft === 'all'
-                  ? t('myCreations.filterAll')
-                  : ft === 'agent'
-                    ? t('myCreations.filterAgents')
-                    : ft === 'team'
-                      ? t('myCreations.filterTeams')
-                      : t('myCreations.filterSkills')}
+                <div className="flex items-start gap-3">
+                  <div className={`w-10 h-10 text-xl rounded-lg ${b.bgColor} flex items-center justify-center shrink-0`}>
+                    {b.icon}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className={`text-sm font-semibold bg-gradient-to-r ${b.color} bg-clip-text text-transparent`}>
+                      {t(`prompts.${b.id}`)}
+                    </h3>
+                    <p className="text-[11px] text-fg-tertiary mt-1 leading-relaxed">{t(`prompts.${b.id}Desc`)}</p>
+                    {examples.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {examples.slice(0, 2).map((ex, i) => (
+                          <span key={i} className="text-[10px] text-fg-muted bg-surface-elevated/60 rounded-full px-2 py-0.5 border border-border-default"
+                            onClick={(e) => { e.stopPropagation(); navigateToSecretary(promptPrefix + ex); }}>
+                            &ldquo;{ex}&rdquo;
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </button>
-            ))}
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Artifact management section */}
+        <div className="mb-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-fg-secondary">{t('myCreations.title')}</h2>
+            <div className="flex gap-1.5">
+              {(['all', 'agent', 'team', 'skill'] as const).map(ft => (
+                <button
+                  key={ft}
+                  onClick={() => setFilterType(ft)}
+                  className={`text-xs px-2.5 py-1 rounded-lg transition-colors ${
+                    filterType === ft
+                      ? 'bg-brand-600 text-white'
+                      : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
+                  }`}
+                >
+                  {ft === 'all'
+                    ? t('myCreations.filterAll')
+                    : ft === 'agent'
+                      ? t('myCreations.filterAgents')
+                      : ft === 'team'
+                        ? t('myCreations.filterTeams')
+                        : t('myCreations.filterSkills')}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -577,13 +572,13 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
         )}
         {sharePrompt && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setSharePrompt(null)}>
-            <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-sm w-full mx-4 p-6" onClick={e => e.stopPropagation()}>
+            <div className="bg-surface-secondary border border-border-default rounded-xl max-w-sm w-full mx-4 p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
               <h3 className="text-base font-semibold text-fg-primary mb-2">{t('common:share')}</h3>
               <p className="text-sm text-fg-secondary mb-5">{t('share.imagePrompt')}</p>
               <div className="flex gap-3">
                 <button
                   onClick={() => { const art = sharePrompt; setSharePrompt(null); PAYMENTS_ENABLED ? setShareModeTarget(art) : void handleShare(art); }}
-                  className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-gray-600 transition-colors">
+                  className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-fg-tertiary transition-colors">
                   {t('share.directly')}
                 </button>
                 <button
@@ -597,7 +592,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
         )}
         {shareModeTarget && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShareModeTarget(null)}>
-            <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-sm w-full mx-4 p-6" onClick={e => e.stopPropagation()}>
+            <div className="bg-surface-secondary border border-border-default rounded-xl max-w-sm w-full mx-4 p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
               <ShareModeSelect
                 isUpdate={sharedMap.has(`${shareModeTarget.type}/${shareModeTarget.name}`)}
                 onCancel={() => setShareModeTarget(null)}

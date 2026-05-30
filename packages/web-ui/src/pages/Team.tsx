@@ -653,13 +653,14 @@ function AgentMessageBody({
       : undefined;
     const textSegments = segments.filter(s => s.type === 'text');
     const allText = !isStreaming ? textSegments.map(s => s.content).join('') : null;
-    const displayText = allText
-      ? allText
-          .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
-          .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
-          .replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '')
-          .trim() || null
-      : null;
+    const stripMarkup = (t: string) => t
+      .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
+      .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
+      .replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '')
+      .trim() || null;
+    const segmentText = allText ? stripMarkup(allText) : null;
+    const displayText = segmentText
+      || (!isStreaming && msg.text ? stripMarkup(msg.text) : null);
 
     // For the full execution log, prefer server-committed clean segments
     // (populated from thinking_commit/text_commit SSE events) over fragmented
@@ -1001,7 +1002,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [streamingVisual, setStreamingVisual] = useState(!!previewData?.streamLastMessage);
   const streamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const STREAMING_MIN_DISPLAY_MS = 1500;
+  const STREAMING_MIN_DISPLAY_MS = 400;
   useEffect(() => {
     if (sending) {
       if (streamingTimerRef.current) { clearTimeout(streamingTimerRef.current); streamingTimerRef.current = null; }
@@ -1330,9 +1331,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (previewMode) return;
     if (!isActive) return;
     refreshAgents();
+    refreshTeams();
     const timer = setInterval(refreshAgents, 30_000);
     const teamTimer = setInterval(refreshTeams, 60_000);
-    const unsub = wsClient.on('agent:update', throttledRefreshAgents);
+    const unsub = wsClient.on('agent:update', () => { throttledRefreshAgents(); throttledRefreshTeams(); });
     const unsubTeamUpdate = wsClient.on('team:update', throttledRefreshTeams);
     const unsubTeamOnAgentRemoved = wsClient.on('agent:removed', throttledRefreshTeams);
     const unsubGroup = wsClient.on('chat:group_created', () => { throttledRefreshGroupChats(); throttledRefreshTeams(); });
@@ -1377,7 +1379,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         }
         if (detail.params?.prefillMessage) {
           setInput(detail.params.prefillMessage);
-          setTimeout(() => textareaRef.current?.focus(), 100);
+          setTimeout(() => {
+            const el = textareaRef.current;
+            if (el) {
+              el.focus();
+              el.setSelectionRange(el.value.length, el.value.length);
+            }
+          }, 100);
         }
         if (detail.params?.dm) {
           setChatMode('dm');
@@ -2301,6 +2309,28 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   .join('');
               }
               u[idx] = { ...u[idx]!, text: finalText, segments: finalSegs, committedSegments: finalSegs };
+              return u;
+            });
+          }
+
+          // Fallback for pure text responses where the server sends text_commit
+          // events (no text_delta, no done.segments) — build final segments
+          // from the committedSegments that were accumulated during streaming.
+          if (!streamResult.segments?.length) {
+            updateConvMsgs(sendKey, prev => {
+              const u = [...prev];
+              const idx = u.findIndex(m => m.id === agentMsgId);
+              if (idx < 0) return prev;
+              const msg = u[idx]!;
+              const committed = msg.committedSegments ?? [];
+              const committedText = committed
+                .filter((s): s is MsgSegment & { type: 'text' } => s.type === 'text' && !!s.content)
+                .map(s => s.content)
+                .join('');
+              const finalText = committedText || streamResult.content || msg.text;
+              if (committed.length > 0 || finalText) {
+                u[idx] = { ...msg, text: finalText, segments: committed.length > 0 ? committed : msg.segments };
+              }
               return u;
             });
           }

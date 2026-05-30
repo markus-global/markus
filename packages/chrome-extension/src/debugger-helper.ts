@@ -30,4 +30,15 @@ export async function ensureDebugger(pm: PageManager, tabId: number): Promise<vo
   pm.setDebuggerAttached(tabId, true);
   await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
   await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable');
+
+  // Auto-suppress beforeunload dialogs on all future documents in this tab.
+  // Runs before any page script, so even dynamically added handlers are overridden.
+  try {
+    await chrome.debugger.sendCommand({ tabId }, 'Page.addScriptToEvaluateOnNewDocument', {
+      source: `window.addEventListener('beforeunload', e => {
+        delete e.returnValue;
+        e.stopImmediatePropagation();
+      }, true);`,
+    });
+  } catch { /* non-critical */ }
 }

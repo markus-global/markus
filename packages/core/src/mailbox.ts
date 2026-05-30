@@ -52,7 +52,8 @@ export interface MailboxPersistence {
 
 /**
  * Priority queue mailbox for an individual agent.
- * Items are ordered by priority (lower number = higher priority), then by arrival time (FIFO).
+ * Items are ordered by priority (lower number = higher priority), then by arrival time (LIFO
+ * within the same priority so the most recent message is processed first).
  * Emits 'mailbox:new-item' on the EventBus whenever a new item is enqueued,
  * which the AttentionController listens to for event-driven interrupts.
  */
@@ -163,6 +164,12 @@ export class AgentMailbox {
     removed += this.mergeByEntity(
       AgentMailbox.REQ_COMMENT_DEDUP_TYPES,
       (item) => item.payload.requirementId,
+    );
+
+    // 4. Merge a2a_messages by channelKey (group chat coalescing)
+    removed += this.mergeByEntity(
+      AgentMailbox.CHANNEL_DEDUP_TYPES,
+      (item) => item.payload.extra?.channelKey as string | undefined,
     );
 
     return removed;
@@ -327,6 +334,9 @@ export class AgentMailbox {
   ]);
   private static readonly REQ_COMMENT_DEDUP_TYPES: ReadonlySet<MailboxItemType> = new Set([
     'requirement_comment',
+  ]);
+  private static readonly CHANNEL_DEDUP_TYPES: ReadonlySet<MailboxItemType> = new Set([
+    'a2a_message',
   ]);
 
   enqueue(
@@ -727,11 +737,32 @@ export class AgentMailbox {
             && i.payload.requirementId === reqId,
         );
       }
+    } else if (AgentMailbox.CHANNEL_DEDUP_TYPES.has(sourceType)) {
+      const channelKey = payload.extra?.channelKey as string | undefined;
+      if (channelKey) {
+        existing = this.queue.find(
+          i => i.status === 'queued'
+            && AgentMailbox.CHANNEL_DEDUP_TYPES.has(i.sourceType)
+            && (i.payload.extra?.channelKey as string | undefined) === channelKey,
+        );
+      }
     }
 
     if (!existing) return undefined;
 
-    existing.payload.content += `\n\n---\n\n${payload.content}`;
+    // For channel-based merges, use structured messages array
+    if (AgentMailbox.CHANNEL_DEDUP_TYPES.has(sourceType) && payload.extra?.channelKey) {
+      const senderName = payload.extra?.senderName as string || 'unknown';
+      const newMsg = { senderId: payload.extra?.senderId as string | undefined, senderName, content: payload.content, timestamp: new Date().toISOString() };
+      if (!existing.payload.messages) {
+        const existingSender = existing.payload.extra?.senderName as string || 'unknown';
+        existing.payload.messages = [{ senderId: existing.payload.extra?.senderId as string | undefined, senderName: existingSender, content: existing.payload.content, timestamp: existing.queuedAt }];
+      }
+      existing.payload.messages.push(newMsg);
+      existing.payload.content += `\n\n---\n[${senderName}]: ${payload.content}`;
+    } else {
+      existing.payload.content += `\n\n---\n\n${payload.content}`;
+    }
     existing.payload.summary += ` (+1)`;
     this.persistence?.updateStatus(existing.id, 'queued', existing);
     log.debug('Mailbox enqueue-time dedup: merged into existing item', {
@@ -743,12 +774,15 @@ export class AgentMailbox {
   }
 
   /**
-   * Insert item into the queue maintaining priority + FIFO order.
+   * Insert item into the queue maintaining priority order.
+   * Within the same priority, newer items go first (LIFO) so the most
+   * recent message is processed before older ones — a user's latest
+   * instruction may supersede earlier ones.
    */
   private insertSorted(item: MailboxItem): void {
     let insertIdx = this.queue.length;
     for (let i = 0; i < this.queue.length; i++) {
-      if (this.queue[i].priority > item.priority) {
+      if (this.queue[i].priority >= item.priority) {
         insertIdx = i;
         break;
       }
