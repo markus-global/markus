@@ -267,7 +267,7 @@ create_desktop_shortcut() {
   <key>CFBundleIconFile</key>
   <string>markus</string>
   <key>LSUIElement</key>
-  <false/>
+  <true/>
 </dict>
 </plist>
 PLIST_APP
@@ -285,11 +285,24 @@ if curl -s --max-time 2 -o /dev/null "http://localhost:\$PORT/api/health" 2>/dev
   exit 0
 fi
 
-# Check if port is occupied by another process
+# If port is bound but health isn't responding, it might be Markus still starting
 if lsof -i ":\$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-  OCCUPANT=\$(lsof -i ":\$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)
-  OCCUPANT_NAME=\$(ps -p "\$OCCUPANT" -o comm= 2>/dev/null || echo "unknown")
-  osascript -e "display dialog \"Port \$PORT is already in use by '\$OCCUPANT_NAME' (PID \$OCCUPANT).\nMarkus cannot start.\n\nFree the port or change it in ~/.markus/markus.json\" with title \"Markus\" buttons {\"OK\"} default button \"OK\" with icon stop"
+  OCCUPANT_PID=\$(lsof -i ":\$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)
+  OCCUPANT_CMD=\$(ps -p "\$OCCUPANT_PID" -o command= 2>/dev/null || echo "")
+  IS_MARKUS=false
+  case "\$OCCUPANT_CMD" in *markus*|*node*) IS_MARKUS=true ;; esac
+
+  if \$IS_MARKUS; then
+    for i in \$(seq 1 20); do
+      if curl -s --max-time 2 -o /dev/null "http://localhost:\$PORT/api/health" 2>/dev/null; then
+        open "http://localhost:\$PORT"
+        exit 0
+      fi
+      sleep 1
+    done
+  fi
+  OCCUPANT_NAME=\$(ps -p "\$OCCUPANT_PID" -o comm= 2>/dev/null || echo "unknown")
+  osascript -e "display dialog \"Port \$PORT is already in use by '\$OCCUPANT_NAME' (PID \$OCCUPANT_PID).\nMarkus cannot start.\n\nFree the port or change it in ~/.markus/markus.json\" with title \"Markus\" buttons {\"OK\"} default button \"OK\" with icon stop"
   exit 1
 fi
 

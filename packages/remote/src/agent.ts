@@ -3,16 +3,28 @@ import { WebSocket } from 'ws';
 import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { createHmac } from 'node:crypto';
-import {
+import type {
   PeerConnection,
-  type DataChannel,
-  initLogger as initRtcLogger,
-  type RtcConfig,
-  type IceServer,
-  DescriptionType,
+  DataChannel,
+  RtcConfig,
+  IceServer,
 } from 'node-datachannel';
 
 const log = createLogger('remote');
+
+// Lazy-load node-datachannel to avoid crashing the entire CLI on module load
+// when the native addon isn't available (e.g. unsupported platform).
+let _rtcModule: typeof import('node-datachannel') | null = null;
+async function loadRtcModule(): Promise<typeof import('node-datachannel')> {
+  if (!_rtcModule) {
+    _rtcModule = await import('node-datachannel');
+  }
+  return _rtcModule;
+}
+function getRtcModule(): typeof import('node-datachannel') {
+  if (!_rtcModule) throw new Error('node-datachannel not loaded — call loadRtcModule() first');
+  return _rtcModule;
+}
 
 function base64url(buf: Buffer): string {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -103,7 +115,6 @@ export class RemoteAccessAgent {
 
   constructor(config: RemoteAccessConfig) {
     this.config = config;
-    initRtcLogger('Warning');
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
@@ -111,6 +122,9 @@ export class RemoteAccessAgent {
   async start(): Promise<void> {
     this.destroyed = false;
     log.info('Starting remote access agent...');
+
+    const rtc = await loadRtcModule();
+    rtc.initLogger('Warning');
 
     await this.discoverLocalOwner();
 
@@ -401,7 +415,7 @@ export class RemoteAccessAgent {
       log.info('Received offer for existing peer (ICE restart)', { peerId });
     }
 
-    session.pc!.setRemoteDescription(sdp, DescriptionType.Offer);
+    session.pc!.setRemoteDescription(sdp, getRtcModule().DescriptionType.Offer);
   }
 
   private handleIce(peerId: string, candidate: string, mid?: string): void {
@@ -438,6 +452,7 @@ export class RemoteAccessAgent {
         }
       }
     }
+    const { PeerConnection } = getRtcModule();
     const pc = new PeerConnection(`markus-${peerId}`, {
       iceServers,
     } satisfies RtcConfig);
@@ -458,7 +473,7 @@ export class RemoteAccessAgent {
       log.info('ICE gathering', { peerId, state });
     });
 
-    pc.onLocalDescription((sdp: string, type: DescriptionType) => {
+    pc.onLocalDescription((sdp: string, type: import('node-datachannel').DescriptionType) => {
       log.info('Sending local description', { peerId, type: type as string });
       this.send({ type: type as string, peerId, sdp });
     });

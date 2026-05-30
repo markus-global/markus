@@ -1,10 +1,10 @@
 /**
  * Cross-platform system tray controller for Markus.
- * Provides start/stop controls and quick access to the Web UI.
+ * Launches the server on start, provides "Open Console" and "Quit" controls.
  */
 
 import { spawn, exec, execSync, type ChildProcess } from 'node:child_process';
-import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, appendFileSync, openSync } from 'node:fs';
 import { get as httpGet } from 'node:http';
 import { createConnection } from 'node:net';
 import { resolve, dirname, join } from 'node:path';
@@ -25,49 +25,26 @@ const APP_DIR = resolve(BIN_DIR, '..');
 const LOG_DIR = resolve(homedir(), '.markus', 'logs');
 const LOG_FILE = join(LOG_DIR, 'tray-stderr.log');
 
-// Resolve the markus command: prefer the symlink in /usr/local/bin,
-// then fall back to the bundled wrapper script, then to direct node invocation.
-function resolveMarkusCommand(): { cmd: string; args: string[] } {
-  const symlink = '/usr/local/bin/markus';
-  if (existsSync(symlink)) {
-    return { cmd: symlink, args: ['start'] };
-  }
-  const wrapper = resolve(APP_DIR, 'markus');
-  if (existsSync(wrapper)) {
-    return { cmd: wrapper, args: ['start'] };
-  }
-  const nodeBin = resolve(BIN_DIR, platform() === 'win32' ? 'node.exe' : 'node');
-  const markusMjs = resolve(BIN_DIR, 'markus.mjs');
-  return { cmd: nodeBin, args: [markusMjs, 'start'] };
-}
-
 // ── i18n ──────────────────────────────────────────────────────────────────────
 
 type Locale = 'en' | 'zh';
 
 const STRINGS: Record<Locale, {
-  openUI: string; startServer: string; stopServer: string; quit: string;
-  tooltipRunning: string; tooltipStopped: string;
+  openUI: string; quit: string; tooltip: string;
   portConflictTitle: string; portConflictMsg: (port: number, occupant: string) => string;
 }> = {
   en: {
-    openUI: 'Open Web UI',
-    startServer: 'Start Server',
-    stopServer: 'Stop Server',
+    openUI: 'Open Console',
     quit: 'Quit Markus',
-    tooltipRunning: 'Markus (running)',
-    tooltipStopped: 'Markus (stopped)',
+    tooltip: 'Markus',
     portConflictTitle: 'Markus',
     portConflictMsg: (port, occupant) =>
       `Port ${port} is already in use by "${occupant}".\\nMarkus cannot start.\\n\\nFree the port or change it in ~/.markus/markus.json`,
   },
   zh: {
     openUI: '打开控制台',
-    startServer: '启动服务',
-    stopServer: '停止服务',
     quit: '退出 Markus',
-    tooltipRunning: 'Markus (运行中)',
-    tooltipStopped: 'Markus (已停止)',
+    tooltip: 'Markus',
     portConflictTitle: 'Markus',
     portConflictMsg: (port, occupant) =>
       `端口 ${port} 已被 "${occupant}" 占用。\\nMarkus 无法启动。\\n\\n请释放端口或在 ~/.markus/markus.json 中修改端口`,
@@ -97,7 +74,6 @@ function trayLog(msg: string): void {
     mkdirSync(LOG_DIR, { recursive: true });
     appendFileSync(LOG_FILE, line);
   } catch { /* ignore */ }
-  console.error(line.trimEnd());
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -150,45 +126,47 @@ function waitForHealth(url: string, intervalMs = 500, maxMs = 30000): Promise<bo
   });
 }
 
+function resolveMarkusCommand(): { cmd: string; args: string[] } {
+  const symlink = '/usr/local/bin/markus';
+  if (existsSync(symlink)) return { cmd: symlink, args: ['start'] };
+  const wrapper = resolve(APP_DIR, 'markus');
+  if (existsSync(wrapper)) return { cmd: wrapper, args: ['start'] };
+  const nodeBin = resolve(BIN_DIR, platform() === 'win32' ? 'node.exe' : 'node');
+  const markusMjs = resolve(BIN_DIR, 'markus.mjs');
+  return { cmd: nodeBin, args: [markusMjs, 'start'] };
+}
+
 // ── Server process management ────────────────────────────────────────────────
 
 let serverProcess: ChildProcess | null = null;
-let serverRunning = false;
 
-async function startServer(): Promise<void> {
-  if (serverRunning) return;
-
+async function ensureServerRunning(): Promise<void> {
   if (await isPortListening(WEB_UI_PORT)) {
     const isMarkus = await checkHealthOnce(`${WEB_UI_URL}/api/health`);
     if (isMarkus) {
-      trayLog(`Port ${WEB_UI_PORT} is Markus — opening browser`);
-      serverRunning = true;
-      updateTrayMenu();
+      trayLog(`Server already running on port ${WEB_UI_PORT}`);
       openBrowser(WEB_UI_URL);
       return;
     }
-    // Port occupied by something else
+    // Port occupied by a non-Markus process
     let occupant = 'unknown';
     try {
       occupant = execSync(`lsof -i :${WEB_UI_PORT} -sTCP:LISTEN -t 2>/dev/null | head -1 | xargs ps -p -o comm= 2>/dev/null`, { encoding: 'utf-8' }).trim() || 'unknown';
     } catch { /* ignore */ }
-    trayLog(`Port ${WEB_UI_PORT} occupied by "${occupant}" — showing conflict dialog`);
+    trayLog(`Port ${WEB_UI_PORT} occupied by "${occupant}"`);
     if (platform() === 'darwin') {
       exec(`osascript -e 'display dialog "${t.portConflictMsg(WEB_UI_PORT, occupant)}" with title "${t.portConflictTitle}" buttons {"OK"} default button "OK" with icon stop'`, () => {});
     }
     return;
   }
 
+  // Start the server
   mkdirSync(LOG_DIR, { recursive: true });
-
   const { cmd, args } = resolveMarkusCommand();
   trayLog(`Starting server: ${cmd} ${args.join(' ')}`);
 
-  const stdoutLog = join(LOG_DIR, 'stdout.log');
-  const stderrLog = join(LOG_DIR, 'stderr.log');
-  const { openSync } = await import('node:fs');
-  const outFd = openSync(stdoutLog, 'a');
-  const errFd = openSync(stderrLog, 'a');
+  const outFd = openSync(join(LOG_DIR, 'stdout.log'), 'a');
+  const errFd = openSync(join(LOG_DIR, 'stderr.log'), 'a');
 
   serverProcess = spawn(cmd, args, {
     stdio: ['ignore', outFd, errFd],
@@ -196,94 +174,99 @@ async function startServer(): Promise<void> {
     env: { ...process.env, NO_BROWSER: '1' },
   });
 
-  serverRunning = true;
-  updateTrayMenu();
-
   serverProcess.on('exit', (code) => {
-    serverRunning = false;
+    if (code && code !== 0) trayLog(`Server exited with code ${code}`);
     serverProcess = null;
-    updateTrayMenu();
-    if (code && code !== 0) {
-      trayLog(`Server exited with code ${code} — check ${stderrLog}`);
-    }
   });
 
   serverProcess.on('error', (err) => {
-    serverRunning = false;
-    serverProcess = null;
-    updateTrayMenu();
     trayLog(`Failed to spawn server: ${err.message}`);
+    serverProcess = null;
   });
 
-  waitForHealth(`${WEB_UI_URL}/api/health`).then((ok) => {
-    if (ok && serverRunning) {
-      trayLog('Server healthy — opening browser');
-      openBrowser(WEB_UI_URL);
-    } else if (!ok) {
-      trayLog(`Server did not become healthy within 30s — check ${stderrLog}`);
-    }
-  });
+  const healthy = await waitForHealth(`${WEB_UI_URL}/api/health`);
+  if (healthy) {
+    trayLog('Server healthy — opening browser');
+    openBrowser(WEB_UI_URL);
+  } else {
+    trayLog('Server did not become healthy within 30s');
+  }
 }
 
-function stopServer(): void {
-  if (!serverProcess) return;
+/** Stop all Markus server processes and prevent LaunchAgent from restarting. */
+function killServer(): void {
   trayLog('Stopping server...');
-  serverProcess.kill('SIGTERM');
-  const forceTimer = setTimeout(() => {
-    if (serverProcess && !serverProcess.killed) {
-      serverProcess.kill('SIGKILL');
-    }
-  }, 5000);
-  serverProcess.on('exit', () => clearTimeout(forceTimer));
+
+  // Unload LaunchAgent first so launchd won't auto-restart the process
+  if (platform() === 'darwin') {
+    try {
+      const uid = execSync('id -u', { encoding: 'utf-8' }).trim();
+      execSync(`launchctl bootout gui/${uid}/global.markus 2>/dev/null`, { encoding: 'utf-8' });
+      trayLog('LaunchAgent unloaded');
+    } catch { /* not loaded or already unloaded */ }
+  }
+
+  // Kill the child process we spawned (if any)
+  if (serverProcess) {
+    serverProcess.kill('SIGTERM');
+    serverProcess = null;
+  }
+
+  // Also find and kill any Markus process on the port (may have been started
+  // externally, by LaunchAgent, or a previous tray session)
+  const killByPort = (signal: NodeJS.Signals) => {
+    try {
+      const pids = execSync(`lsof -i :${WEB_UI_PORT} -sTCP:LISTEN -t 2>/dev/null`, { encoding: 'utf-8' }).trim();
+      if (!pids) return;
+      for (const pid of pids.split('\n')) {
+        const p = pid.trim();
+        if (p && p !== String(process.pid)) {
+          trayLog(`Sending ${signal} to server process ${p}`);
+          process.kill(Number(p), signal);
+        }
+      }
+    } catch { /* no process on port */ }
+  };
+
+  killByPort('SIGTERM');
+
+  // Force kill after 3 seconds if still alive
+  setTimeout(() => killByPort('SIGKILL'), 3000);
 }
 
 // ── Tray setup ───────────────────────────────────────────────────────────────
 
-const SEPARATOR = { title: '<SEPARATOR>', tooltip: '', enabled: true };
-
 let tray: SysTrayInstance | null = null;
-
-function buildMenu() {
-  return {
-    icon: loadIconBase64(),
-    title: '',
-    tooltip: serverRunning ? t.tooltipRunning : t.tooltipStopped,
-    items: [
-      { title: t.openUI, tooltip: t.openUI, enabled: serverRunning },
-      SEPARATOR,
-      { title: t.startServer, tooltip: t.startServer, enabled: !serverRunning },
-      { title: t.stopServer, tooltip: t.stopServer, enabled: serverRunning },
-      SEPARATOR,
-      { title: t.quit, tooltip: t.quit, enabled: true },
-    ],
-  };
-}
-
-function updateTrayMenu(): void {
-  if (!tray) return;
-  tray.sendAction({ type: 'update-menu', menu: buildMenu() });
-}
 
 async function main() {
   trayLog(`Tray starting (locale=${detectLocale()}, pid=${process.pid})`);
 
-  tray = new SysTray({ menu: buildMenu(), copyDir: false });
+  tray = new SysTray({
+    menu: {
+      icon: loadIconBase64(),
+      title: '',
+      tooltip: t.tooltip,
+      items: [
+        { title: t.openUI, tooltip: t.openUI, enabled: true },
+        { title: '<SEPARATOR>', tooltip: '', enabled: true },
+        { title: t.quit, tooltip: t.quit, enabled: true },
+      ],
+    },
+    copyDir: false,
+  });
   await tray.ready();
 
   tray.onClick(async (action: { item: { title: string }; seq_id: number }) => {
     const title = action.item.title;
     if (title === t.openUI) {
       openBrowser(WEB_UI_URL);
-    } else if (title === t.startServer) {
-      await startServer();
-    } else if (title === t.stopServer) {
-      stopServer();
     } else if (title === t.quit) {
-      stopServer();
+      trayLog('Quit requested');
+      killServer();
       setTimeout(async () => {
         if (tray) await tray.kill(false);
         process.exit(0);
-      }, 1000);
+      }, 4000);
     }
   });
 
@@ -291,7 +274,7 @@ async function main() {
     trayLog(`Tray error: ${err.message}`);
   });
 
-  await startServer();
+  await ensureServerRunning();
 }
 
 main().catch((err) => {
