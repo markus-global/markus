@@ -50,7 +50,10 @@
     "openInFileBrowser": "Open in file browser",
     "revealInFinder": "Reveal in Finder",
     "copyPath": "Copy path to clipboard",
-    "fileMissing": "Referenced file no longer exists on disk"
+    "fileMissing": "Referenced file no longer exists on disk",
+    "confirmRemoveTitle": "Remove deliverable",
+    "confirmRemoveMessage": "\"{{name}}\" will be removed. This action cannot be undone.",
+    "openUrl": "Open in New Tab"
   },
   "diffStats": {
     "title": "Diff Stats",

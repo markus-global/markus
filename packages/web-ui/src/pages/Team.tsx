@@ -1306,7 +1306,13 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         }
         if (detail.params?.prefillMessage) {
           setInput(detail.params.prefillMessage);
-          setTimeout(() => textareaRef.current?.focus(), 100);
+          setTimeout(() => {
+            const el = textareaRef.current;
+            if (el) {
+              el.focus();
+              el.setSelectionRange(el.value.length, el.value.length);
+            }
+          }, 100);
         }
         if (detail.params?.dm) {
           setChatMode('dm');

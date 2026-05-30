@@ -97,6 +97,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
   const [previewLoading, setPreviewLoading] = useState(false);
   const [showCopyPath, setShowCopyPath] = useState(false);
   const [copiedPath, setCopiedPath] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState<DeliverableInfo | null>(null);
   const [sharedDir, setSharedDir] = useState('');
   const [missingFileIds, setMissingFileIds] = useState<Set<string>>(new Set());
 
@@ -431,12 +432,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
               {projects.map(p => <FilterPill key={p.id} label={p.name} value={p.id} current={filterProject} onClick={setFilterProject} />)}
             </div>
           )}
-          {/* Status filter */}
-          <div className="flex gap-1 overflow-x-auto scrollbar-hide">
-            <FilterPill label={t('filters.active')} value="" current={filterStatus} onClick={setFilterStatus} />
-            <FilterPill label={t('filters.verified')} value="verified" current={filterStatus} onClick={setFilterStatus} />
-            <FilterPill label={t('filters.outdated')} value="outdated" current={filterStatus} onClick={setFilterStatus} />
-          </div>
+          {/* Status filter (active/verified/outdated only relevant for legacy data) */}
           {/* Group by */}
           <div className="flex gap-1.5 items-center">
             <span className="text-[10px] text-fg-tertiary">{t('filters.group')}</span>
@@ -500,28 +496,25 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
                 </button>
                 {!isCollapsed && group.items.map(item => (
                   <button key={item.id} onClick={() => handleSelectItem(item)}
-                    className={`w-full text-left p-3 rounded-lg transition-colors ${selected?.id === item.id ? 'bg-brand-600/20 border border-brand-500/30' : 'hover:bg-surface-elevated/60 border border-transparent'}`}>
-                    <div className="flex items-center gap-1.5">
+                    className={`w-full text-left px-3 py-2 rounded-lg transition-colors ${selected?.id === item.id ? 'bg-brand-600/20 border border-brand-500/30' : 'hover:bg-surface-elevated/60 border border-transparent'}`}>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      {item.artifactType && ARTIFACT_META[item.artifactType] ? (
+                        <span className={`text-[10px] px-1 py-0.5 rounded font-medium shrink-0 ${ARTIFACT_META[item.artifactType].color}`}>
+                          {ARTIFACT_META[item.artifactType].icon}
+                        </span>
+                      ) : (
+                        <span className={`text-[10px] px-1 py-0.5 rounded font-medium uppercase shrink-0 ${TYPE_META[item.type]?.color ?? 'bg-surface-overlay text-fg-secondary'}`}>{TYPE_META[item.type]?.icon ?? item.type.charAt(0)}</span>
+                      )}
                       <span className="text-sm font-medium text-fg-primary truncate">{item.title}</span>
                       {missingFileIds.has(item.id) && (
                         <span className="shrink-0 text-amber-500" title={t('detail.fileMissing')}>
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
                             <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
                           </svg>
                         </span>
                       )}
-                    </div>
-                    <div className="flex items-center gap-2 mt-1">
-                      {item.artifactType && ARTIFACT_META[item.artifactType] ? (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${ARTIFACT_META[item.artifactType].color}`}>
-                          {ARTIFACT_META[item.artifactType].icon} {t(`artifactTypes.${item.artifactType}`)}
-                        </span>
-                      ) : (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium uppercase ${TYPE_META[item.type]?.color ?? 'bg-surface-overlay text-fg-secondary'}`}>{item.type}</span>
-                      )}
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${STATUS_META[item.status]?.color ?? 'bg-surface-elevated text-fg-tertiary'}`}>{t(`common:status.${item.status}`, { defaultValue: item.status })}</span>
-                      {item.agentId && <span className="text-[10px] text-fg-tertiary truncate">{agentMap.get(item.agentId)?.name ?? t('groupBy.agent')}</span>}
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${STATUS_META[item.status]?.color ?? 'bg-surface-elevated text-fg-tertiary'}`}>{t(`common:status.${item.status}`, { defaultValue: item.status })}</span>
                     </div>
                   </button>
                 ))}
@@ -574,7 +567,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
             </div>
           </div>
         ) : (
-          <div className="p-6 space-y-5">
+          <div className="p-6 space-y-4">
             {/* File missing warning */}
             {missingFileIds.has(selected.id) && (
               <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-600 text-xs">
@@ -585,56 +578,92 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
                 <span>{t('detail.fileMissing')}</span>
               </div>
             )}
-            {/* Header */}
-            <div>
-              <h2 className="text-xl font-semibold text-fg-primary">{selected.title}</h2>
-              <div className="flex items-center gap-2 mt-2">
-                {selected.status !== 'verified' && (
-                  <button onClick={() => handleVerify(selected)} disabled={!!actionLoading}
-                    className="px-3 py-1.5 text-xs rounded-lg bg-green-600/20 text-green-600 hover:bg-green-600/30 disabled:opacity-50 transition-colors">
-                    {actionLoading === 'verify' ? t('common:verifying') : t('detail.verify')}
-                  </button>
-                )}
-                {selected.status !== 'outdated' && (
-                  <button onClick={() => handleFlagOutdated(selected)} disabled={!!actionLoading}
-                    className="px-3 py-1.5 text-xs rounded-lg bg-amber-600/20 text-amber-600 hover:bg-amber-600/30 disabled:opacity-50 transition-colors">
-                    {actionLoading === 'flag' ? t('detail.flagging') : t('detail.flagOutdated')}
-                  </button>
-                )}
-                <button onClick={() => handleRemove(selected)} disabled={!!actionLoading}
-                  className="px-3 py-1.5 text-xs rounded-lg bg-red-600/20 text-red-500 hover:bg-red-600/30 disabled:opacity-50 transition-colors">
-                  {actionLoading === 'remove' ? t('common:removing') : t('common:remove')}
+
+            {/* Header: title + badges + actions — all info at the top */}
+            <div className="space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <h2 className="text-xl font-semibold text-fg-primary">{selected.title}</h2>
+                <button
+                  onClick={() => setConfirmRemove(selected)}
+                  disabled={!!actionLoading}
+                  className="p-1.5 rounded-lg text-fg-tertiary hover:text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-50 shrink-0"
+                  title={t('common:remove')}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                  </svg>
                 </button>
               </div>
-              <div className="flex items-center gap-3 mt-2 flex-wrap">
+
+              {/* All badges and info in one block */}
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className={`px-2 py-0.5 rounded text-xs font-medium uppercase ${TYPE_META[selected.type]?.color ?? 'bg-surface-overlay text-fg-secondary'}`}>{TYPE_META[selected.type]?.icon ?? ''} {selected.type}</span>
-                <span className={`px-2 py-0.5 rounded text-xs ${STATUS_META[selected.status]?.color ?? 'bg-surface-elevated text-fg-tertiary'}`}>{t(`common:status.${selected.status}`, { defaultValue: selected.status })}</span>
                 {selected.artifactType && ARTIFACT_META[selected.artifactType] && (
                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${ARTIFACT_META[selected.artifactType].color}`}>
                     {ARTIFACT_META[selected.artifactType].icon} {t('detail.builderWithType', { type: t(`artifactTypes.${selected.artifactType}`) })}
                   </span>
                 )}
+                {selected.tags.length > 0 && selected.tags.map(tag => (
+                  <span key={tag} className="px-2 py-0.5 text-xs bg-surface-elevated text-fg-secondary rounded">{tag}</span>
+                ))}
               </div>
-              {selected.reference && isUrl(selected.reference) && (
-                <div className="flex items-center gap-2 mt-2 bg-surface-elevated rounded-lg px-3 py-2">
-                  <a
-                    href={selected.reference}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs font-mono text-brand-500 hover:text-brand-500 hover:underline truncate flex-1 text-left cursor-pointer"
-                  >{selected.reference}</a>
-                  <button
-                    onClick={() => window.open(selected.reference, '_blank', 'noopener,noreferrer')}
-                    className="px-2 py-1 text-[10px] rounded bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0"
-                  >{t('common:open')}</button>
-                  <button
-                    onClick={() => copyPath(selected.reference)}
-                    className={`px-2 py-1 text-[10px] rounded transition-colors shrink-0 ${copiedPath ? 'bg-green-500/20 text-green-600' : 'bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay'}`}
-                  >{copiedPath ? t('common:copied') : t('common:copy')}</button>
+
+              {/* Association links inline */}
+              {(selected.taskId || selected.agentId || selected.projectId) && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  {selected.taskId && (
+                    <button onClick={() => navBus.navigate(PAGE.WORK, { openTask: selected.taskId! })}
+                      className="text-xs text-brand-500 hover:underline bg-brand-500/10 px-2 py-0.5 rounded">
+                      {t('links.task', { id: `${selected.taskId.slice(0, 12)}...` })}
+                    </button>
+                  )}
+                  {selected.agentId && (
+                    <button onClick={() => navBus.navigate(PAGE.TEAM, { selectAgent: selected.agentId! })}
+                      className="text-xs text-blue-600 hover:underline bg-blue-500/10 px-2 py-0.5 rounded">
+                      {t('links.agent', { name: agentMap.get(selected.agentId)?.name ?? selected.agentId.slice(0, 12) })}
+                    </button>
+                  )}
+                  {selected.projectId && (
+                    <button onClick={() => navBus.navigate(PAGE.WORK, { projectId: selected.projectId! })}
+                      className="text-xs text-blue-600 hover:underline bg-blue-500/10 px-2 py-0.5 rounded">
+                      {t('links.project', { name: projectMap.get(selected.projectId)?.name ?? selected.projectId.slice(0, 12) })}
+                    </button>
+                  )}
                 </div>
               )}
-              {selected.reference && !isUrl(selected.reference) && (selected.type === 'file' || selected.type === 'directory') && (
-                <div className="flex items-center gap-2 mt-2 bg-surface-elevated rounded-lg px-3 py-2">
+
+              {/* Diff stats / test results */}
+              {(selected.diffStats || selected.testResults) && (
+                <div className="flex gap-3 flex-wrap">
+                  {selected.diffStats && (
+                    <div className="bg-surface-elevated rounded-lg px-3 py-2 text-xs flex items-center gap-2">
+                      <span className="text-fg-tertiary font-medium">{t('diffStats.title')}:</span>
+                      <span className="text-fg-secondary">{t('diffStats.files', { count: selected.diffStats.filesChanged })}</span>
+                      <span className="text-green-600">+{selected.diffStats.additions}</span>
+                      <span className="text-red-500">-{selected.diffStats.deletions}</span>
+                    </div>
+                  )}
+                  {selected.testResults && (
+                    <div className="bg-surface-elevated rounded-lg px-3 py-2 text-xs flex items-center gap-2">
+                      <span className="text-fg-tertiary font-medium">{t('testResults.title')}:</span>
+                      <span className="text-green-600">{t('testResults.passed', { count: selected.testResults.passed })}</span>
+                      <span className="text-red-500">{t('testResults.failed', { count: selected.testResults.failed })}</span>
+                      <span className="text-fg-secondary">{t('testResults.skipped', { count: selected.testResults.skipped })}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Metadata */}
+              <div className="flex items-center gap-4 text-[10px] text-fg-tertiary flex-wrap">
+                <span>{t('metadata.created')} {new Date(selected.createdAt).toLocaleDateString()}</span>
+                <span>{t('metadata.updated')} {new Date(selected.updatedAt).toLocaleDateString()}</span>
+                <span className="text-fg-muted select-all">{selected.id.slice(0, 12)}</span>
+              </div>
+
+              {/* Reference/path — inline for files only; directories get a centered button in preview area */}
+              {selected.reference && !isUrl(selected.reference) && selected.type === 'file' && (
+                <div className="flex items-center gap-2 bg-surface-elevated rounded-lg px-3 py-2">
                   <button
                     onClick={() => { api.files.reveal(selected.reference).catch(() => flashMsg('error', t('detail.failedToOpenBrowser'))); }}
                     className="text-xs font-mono text-brand-500 hover:text-brand-500 hover:underline truncate flex-1 text-left cursor-pointer"
@@ -653,9 +682,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
                 </div>
               )}
               {selected.reference && !isUrl(selected.reference) && selected.type !== 'file' && selected.type !== 'directory' && (
-                <div className="mt-2">
-                  <span className="text-xs text-fg-tertiary font-mono break-all">{selected.reference}</span>
-                </div>
+                <span className="text-xs text-fg-tertiary font-mono break-all">{selected.reference}</span>
               )}
             </div>
 
@@ -685,6 +712,42 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
                   </div>
                 )}
               </div>
+            ) : selected.reference && isUrl(selected.reference) ? (
+              <div className="space-y-4">
+                {selected.summary && (
+                  <div className="bg-surface-elevated rounded-xl p-5">
+                    <MarkdownMessage content={selected.summary} className="text-fg-secondary text-sm" />
+                  </div>
+                )}
+                <div className="flex flex-col items-center justify-center py-10">
+                  <svg className="w-10 h-10 text-fg-muted mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
+                  </svg>
+                  <p className="text-xs text-fg-tertiary font-mono mb-4 px-4 text-center break-all select-all">{selected.reference}</p>
+                  <button
+                    onClick={() => window.open(selected.reference, '_blank', 'noopener,noreferrer')}
+                    className="px-6 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium rounded-lg transition-colors"
+                  >{t('detail.openUrl')}</button>
+                </div>
+              </div>
+            ) : selected.type === 'directory' && selected.reference ? (
+              <div className="space-y-4">
+                {selected.summary && (
+                  <div className="bg-surface-elevated rounded-xl p-5">
+                    <MarkdownMessage content={selected.summary} className="text-fg-secondary text-sm" />
+                  </div>
+                )}
+                <div className="flex flex-col items-center justify-center py-10">
+                  <svg className="w-10 h-10 text-fg-muted mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                  </svg>
+                  <p className="text-xs text-fg-tertiary font-mono mb-4 px-4 text-center break-all select-all">{selected.reference}</p>
+                  <button
+                    onClick={() => { api.files.reveal(selected.reference).catch(() => flashMsg('error', t('detail.failedToOpenBrowser'))); }}
+                    className="px-6 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium rounded-lg transition-colors"
+                  >{t('detail.openInFileBrowser')}</button>
+                </div>
+              </div>
             ) : (
               <div className="bg-surface-elevated rounded-xl p-5">
                 {previewLoading ? (
@@ -700,28 +763,13 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
                   <div className="space-y-3">
                     <p className="text-sm text-fg-secondary">{t('detail.cannotPreview', { type: selected.type })}</p>
                     <div className="flex items-center gap-2">
-                      {isUrl(selected.reference) ? (
-                        <>
-                          <a
-                            href={selected.reference}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-xs bg-surface-elevated px-3 py-2 rounded text-brand-500 hover:text-brand-500 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
-                          >{selected.reference}</a>
-                          <button onClick={() => window.open(selected!.reference, '_blank', 'noopener,noreferrer')}
-                            className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0">{t('common:open')}</button>
-                        </>
-                      ) : (
-                        <>
-                          <button
-                            onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
-                            className="text-xs bg-surface-elevated px-3 py-2 rounded text-brand-500 hover:text-brand-500 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
-                            title={t('detail.openInFileBrowser')}
-                          >{selected.reference}</button>
-                          <button onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
-                            className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0">{t('common:open')}</button>
-                        </>
-                      )}
+                      <button
+                        onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
+                        className="text-xs bg-surface-elevated px-3 py-2 rounded text-brand-500 hover:text-brand-500 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
+                        title={t('detail.openInFileBrowser')}
+                      >{selected.reference}</button>
+                      <button onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
+                        className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0">{t('common:open')}</button>
                       <button onClick={() => copyPath(selected!.reference)}
                         className={`px-3 py-2 text-xs rounded-lg transition-colors shrink-0 ${copiedPath ? 'bg-green-500/20 text-green-600' : 'bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay'}`}>{copiedPath ? t('common:copied') : t('common:copy')}</button>
                     </div>
@@ -733,78 +781,35 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
                 )}
               </div>
             )}
-
-            {/* Diff stats / test results */}
-            {(selected.diffStats || selected.testResults) && (
-              <div className="flex gap-4 flex-wrap">
-                {selected.diffStats && (
-                  <div className="bg-surface-elevated rounded-lg px-4 py-3 text-xs space-y-1">
-                    <div className="text-fg-tertiary font-medium">{t('diffStats.title')}</div>
-                    <div className="flex gap-3">
-                      <span className="text-fg-secondary">{t('diffStats.files', { count: selected.diffStats.filesChanged })}</span>
-                      <span className="text-green-600">+{selected.diffStats.additions}</span>
-                      <span className="text-red-500">-{selected.diffStats.deletions}</span>
-                    </div>
-                  </div>
-                )}
-                {selected.testResults && (
-                  <div className="bg-surface-elevated rounded-lg px-4 py-3 text-xs space-y-1">
-                    <div className="text-fg-tertiary font-medium">{t('testResults.title')}</div>
-                    <div className="flex gap-3">
-                      <span className="text-green-600">{t('testResults.passed', { count: selected.testResults.passed })}</span>
-                      <span className="text-red-500">{t('testResults.failed', { count: selected.testResults.failed })}</span>
-                      <span className="text-fg-secondary">{t('testResults.skipped', { count: selected.testResults.skipped })}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Tags */}
-            {selected.tags.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {selected.tags.map(tag => (
-                  <span key={tag} className="px-2 py-0.5 text-xs bg-surface-elevated text-fg-secondary rounded">{tag}</span>
-                ))}
-              </div>
-            )}
-
-            {/* Association links */}
-            <div className="border-t border-border-default pt-4 space-y-2">
-              <div className="text-xs text-fg-tertiary font-medium">{t('links.title')}</div>
-              <div className="flex gap-3 flex-wrap">
-                {selected.taskId && (
-                  <button onClick={() => navBus.navigate(PAGE.WORK, { openTask: selected.taskId! })}
-                    className="text-xs text-brand-500 hover:underline bg-brand-500/10 px-2.5 py-1 rounded">
-                    {t('links.task', { id: `${selected.taskId.slice(0, 12)}...` })}
-                  </button>
-                )}
-                {selected.agentId && (
-                  <button onClick={() => navBus.navigate(PAGE.TEAM, { selectAgent: selected.agentId! })}
-                    className="text-xs text-blue-600 hover:underline bg-blue-500/10 px-2.5 py-1 rounded">
-                    {t('links.agent', { name: agentMap.get(selected.agentId)?.name ?? selected.agentId.slice(0, 12) })}
-                  </button>
-                )}
-                {selected.projectId && (
-                  <button onClick={() => navBus.navigate(PAGE.WORK, { projectId: selected.projectId! })}
-                    className="text-xs text-blue-600 hover:underline bg-blue-500/10 px-2.5 py-1 rounded">
-                    {t('links.project', { name: projectMap.get(selected.projectId)?.name ?? selected.projectId.slice(0, 12) })}
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Metadata */}
-            <div className="text-xs text-fg-tertiary space-y-1 border-t border-border-default pt-4">
-              <div className="flex gap-6 flex-wrap">
-                <span>{t('metadata.created')} <span className="text-fg-secondary">{new Date(selected.createdAt).toLocaleString()}</span></span>
-                <span>{t('metadata.updated')} <span className="text-fg-secondary">{new Date(selected.updatedAt).toLocaleString()}</span></span>
-              </div>
-              <div className="text-fg-muted select-all">{t('metadata.id', { id: selected.id })}</div>
-            </div>
           </div>
         )}
       </div>
+      )}
+
+      {/* Remove Confirmation */}
+      {confirmRemove && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setConfirmRemove(null)}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 max-w-sm mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-red-500/15 flex items-center justify-center shrink-0">
+                <svg className="w-5 h-5 text-red-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                </svg>
+              </div>
+              <div>
+                <div className="text-sm font-medium text-fg-primary">{t('detail.confirmRemoveTitle')}</div>
+                <div className="text-xs text-fg-secondary mt-0.5">{t('detail.confirmRemoveMessage', { name: confirmRemove.title })}</div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setConfirmRemove(null)}
+                className="px-4 py-1.5 text-xs text-fg-secondary hover:text-fg-primary border border-border-default hover:border-gray-600 rounded-lg transition-colors">{t('common:cancel')}</button>
+              <button onClick={() => { const d = confirmRemove; setConfirmRemove(null); handleRemove(d); }}
+                disabled={!!actionLoading}
+                className="px-4 py-1.5 text-xs bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors disabled:opacity-50">{t('common:remove')}</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Create Modal */}
