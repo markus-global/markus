@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react';
+import { createContext, useContext, useSyncExternalStore } from 'react';
 
 const MOBILE_QUERY = '(max-width: 767px)';
 
@@ -23,6 +23,10 @@ function getServerSnapshot(): boolean {
   return false;
 }
 
+export const ForceDesktopContext = createContext(false);
+
 export function useIsMobile(): boolean {
-  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  const forceDesktop = useContext(ForceDesktopContext);
+  const mediaResult = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  return forceDesktop ? false : mediaResult;
 }

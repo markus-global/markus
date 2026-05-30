@@ -10,7 +10,8 @@ function notify() {
   for (const fn of _listeners) fn();
 }
 
-export function useUnreadCounts() {
+export function useUnreadCounts(opts?: { enabled?: boolean }) {
+  const enabled = opts?.enabled ?? true;
   const [counts, setCounts] = useState<Record<string, number>>(_globalCounts);
   const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
@@ -43,6 +44,7 @@ export function useUnreadCounts() {
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
     refresh();
     pollRef.current = setInterval(refresh, POLL_INTERVAL_MS);
 
@@ -63,7 +65,7 @@ export function useUnreadCounts() {
       unsub();
       _listeners.delete(listener);
     };
-  }, [refresh]);
+  }, [enabled, refresh]);
 
   const totalUnread = useMemo(() => {
     return Object.values(counts).reduce((sum, n) => sum + n, 0);

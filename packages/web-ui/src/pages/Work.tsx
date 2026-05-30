@@ -3243,7 +3243,17 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
 
 // ─── Main Page ──────────────────────────────────────────────────────────────────
 
-export function WorkPage({ authUser }: { authUser?: AuthUser }) {
+export interface WorkPreviewData {
+  projects?: ProjectInfo[];
+  board?: Record<string, TaskInfo[]>;
+  agents?: AgentInfo[];
+  users?: HumanUserInfo[];
+  allRequirements?: RequirementInfo[];
+  initialBoardType?: 'backlog' | 'kanban' | 'dag';
+  initialSelectedReqId?: string;
+}
+
+export function WorkPage({ authUser, previewMode, previewData }: { authUser?: AuthUser; previewMode?: boolean; previewData?: WorkPreviewData } = {}) {
   const { t } = useTranslation(['work', 'common']);
   const isActive = usePageActive(PAGE.WORK);
   const boardColumns = useMemo(() => BOARD_COLUMNS_BASE.map(c => ({ ...c, label: t(`work:boardColumn.${c.id}`) })), [t]);
@@ -3273,14 +3283,14 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   const mobileShowDetailRef = useRef(mobileShowDetail);
   mobileShowDetailRef.current = mobileShowDetail;
   // ── State ──
-  const [projects, setProjects] = useState<ProjectInfo[]>([]);
+  const [projects, setProjects] = useState<ProjectInfo[]>(previewData?.projects ?? []);
   const [viewMode, setViewMode] = useState<ViewMode>('all');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [board, setBoard] = useState<Record<string, TaskInfo[]>>({});
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [users, setUsers] = useState<HumanUserInfo[]>([]);
-  const [allRequirements, setAllRequirements] = useState<RequirementInfo[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [board, setBoard] = useState<Record<string, TaskInfo[]>>(previewData?.board ?? {});
+  const [agents, setAgents] = useState<AgentInfo[]>(previewData?.agents ?? []);
+  const [users, setUsers] = useState<HumanUserInfo[]>(previewData?.users ?? []);
+  const [allRequirements, setAllRequirements] = useState<RequirementInfo[]>(previewData?.allRequirements ?? []);
+  const [loading, setLoading] = useState(previewData ? false : true);
   const [flash, setFlash] = useState('');
   const [showProjectSettings, setShowProjectSettings] = useState(false);
   const [settingsProjectId, setSettingsProjectId] = useState<string | null>(null);
@@ -3306,14 +3316,19 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   const [taskCreateError, setTaskCreateError] = useState('');
 
   const [selectedTask, setSelectedTask] = useState<TaskInfo | null>(null);
-  const [selectedReq, setSelectedReq] = useState<RequirementInfo | null>(null);
+  const [selectedReq, setSelectedReq] = useState<RequirementInfo | null>(() => {
+    if (previewData?.initialSelectedReqId && previewData.allRequirements) {
+      return previewData.allRequirements.find(r => r.id === previewData.initialSelectedReqId) ?? null;
+    }
+    return null;
+  });
   const [agentFilter, setAgentFilter] = useState<Set<string>>(new Set());
   const [myTasksOnly, setMyTasksOnly] = useState(false);
   const [projectFilter, setProjectFilter] = useState<Set<string>>(new Set());
   const savedProjectFilterRef = useRef<Set<string>>(new Set());
   const projectFilterRef = useRef<Set<string>>(new Set());
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
-  const [boardType, setBoardType] = useState<'backlog' | 'kanban' | 'dag'>('backlog');
+  const [boardType, setBoardType] = useState<'backlog' | 'kanban' | 'dag'>(previewData?.initialBoardType ?? 'backlog');
   const boardTabs = useMemo(() => [{ id: 'backlog' as const }, { id: 'kanban' as const }, { id: 'dag' as const }], []);
   const boardSwipe = useSwipeTabs(boardTabs, boardType, setBoardType);
   const kanbanScrollRef = useRef<HTMLDivElement>(null);
@@ -3392,7 +3407,16 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     setLoading(false);
   }, [refreshProjects, refreshBoard, refreshAgents, refreshUsers, refreshRequirements]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { if (previewMode) return; refresh(); }, [previewMode, refresh]);
+
+  useEffect(() => {
+    if (!previewMode || !previewData) return;
+    setProjects(previewData.projects ?? []);
+    setBoard(previewData.board ?? {});
+    setAgents(previewData.agents ?? []);
+    setUsers(previewData.users ?? []);
+    setAllRequirements(previewData.allRequirements ?? []);
+  }, [previewMode, previewData]);
 
   const handleSelectTask = useCallback((task: TaskInfo) => {
     setSelectedTask(prev => {
@@ -3470,6 +3494,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   }, []);
 
   useEffect(() => {
+    if (previewMode) return;
     if (!isActive) return;
     const pollMs = selectedTaskRef.current ? 120000 : 45000;
     const i = setInterval(() => { refreshBoard(); refreshAgents(); refreshRequirements(); }, pollMs);
@@ -3512,7 +3537,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     const onDataChanged = () => { invalidateApiCache('/taskboard'); refreshBoard(); refreshRequirements(); };
     window.addEventListener('markus:data-changed', onDataChanged);
     return () => { clearInterval(i); unsub(); unsubTaskCreate(); reqUnsubs.forEach(u => u()); window.removeEventListener('markus:data-changed', onDataChanged); if (boardDebounce) clearTimeout(boardDebounce); if (reqDebounce) clearTimeout(reqDebounce); };
-  }, [isActive, refreshBoard, refreshAgents, refreshRequirements]);
+  }, [previewMode, isActive, refreshBoard, refreshAgents, refreshRequirements]);
 
   // Refs for event handlers that need current state without re-registering
   const boardRef = useRef(board);
@@ -3586,6 +3611,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
   // Hash change & custom navigation events
   const prevHashPageRef = useRef(resolvePageId(window.location.hash.slice(1).split('/')[0]));
   useEffect(() => {
+    if (previewMode) return;
     const onHashChange = () => {
       const parts = window.location.hash.slice(1).split('/');
       const newPage = resolvePageId(parts[0]);
@@ -3646,7 +3672,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
     window.addEventListener('hashchange', onHashChange);
     return () => { window.removeEventListener('markus:navigate', handler); window.removeEventListener('hashchange', onHashChange); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [previewMode]);
 
   // ── Actions ──
 
@@ -4221,8 +4247,15 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
         ) : boardType === 'dag' ? (
           <div className="flex-1 min-h-0 flex flex-col relative" onTouchStart={isMobile ? boardSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? boardSwipe.onTouchEnd : undefined}>
           <TaskDAG
-            tasks={filterTasks(Object.values(board).flat(), true)}
-            requirements={filteredReqs}
+            tasks={(() => {
+              const allDagTasks = filterTasks(Object.values(board).flat(), true);
+              if (previewMode && selectedReq) {
+                const reqTaskIds = new Set(selectedReq.taskIds ?? []);
+                return allDagTasks.filter(t => reqTaskIds.has(t.id));
+              }
+              return allDagTasks;
+            })()}
+            requirements={previewMode && selectedReq ? [selectedReq] : filteredReqs}
             agents={agents}
             showArchived={showClosed}
             onShowArchivedChange={setShowClosed}
@@ -4233,6 +4266,8 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
             selectedTaskId={selectedTask?.id}
             selectedReqId={selectedReq?.id}
             hasDetailPanel={hasDetail}
+            defaultExpandedNodeId={previewMode && selectedReq ? `req-${selectedReq.id}` : undefined}
+            previewMode={previewMode}
           />
           {isMobile && (
             <button onClick={() => setBoardType('kanban')} className="absolute left-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-brand-500 border border-brand-400/60 shadow-xl shadow-brand-500/30 flex items-center justify-center text-white active:bg-brand-400 backdrop-blur-sm z-10" title={t('work:task.backToKanban')}>
@@ -4418,6 +4453,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
                     setShowCreateTask(true);
                   }}
                   onProjectClick={toggleProjectFilter}
+                  previewMode={previewMode}
                 />
               </div>
               <div className="w-px shrink-0 bg-border-default" />
@@ -4483,6 +4519,7 @@ export function WorkPage({ authUser }: { authUser?: AuthUser }) {
                 setShowCreateTask(true);
               }}
               onProjectClick={toggleProjectFilter}
+              previewMode={previewMode}
             />
           ) : null}
         </div>
@@ -4961,7 +4998,7 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
 // ─── Requirement Detail Modal ────────────────────────────────────────────────────
 
 function RequirementDetailPanel({
-  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange, onRefresh, authUser, scrollToComments, onScrollToCommentsDone, onTaskClick, onCreateTask, onProjectClick,
+  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange, onRefresh, authUser, scrollToComments, onScrollToCommentsDone, onTaskClick, onCreateTask, onProjectClick, previewMode,
 }: {
   req: RequirementInfo;
   agents: AgentInfo[];
@@ -4980,6 +5017,7 @@ function RequirementDetailPanel({
   onTaskClick?: (task: TaskInfo) => void;
   onCreateTask?: (reqId: string, projectId?: string) => void;
   onProjectClick?: (projectId: string) => void;
+  previewMode?: boolean;
 }) {
   const { t } = useTranslation(['work', 'common']);
   const reqBadges = useMemo(() => buildReqStatusBadges(t), [t]);
@@ -5233,10 +5271,10 @@ function RequirementDetailPanel({
           </div>
 
           {/* Requirement Comments Thread */}
-          <RequirementCommentThread requirementId={req.id} createdBy={req.createdBy} agents={agents} users={users} authUser={authUser} />
+          {!previewMode && <RequirementCommentThread requirementId={req.id} createdBy={req.createdBy} agents={agents} users={users} authUser={authUser} />}
 
           {/* Status History */}
-          <StatusHistoryTimeline entityType="requirement" entityId={req.id} />
+          {!previewMode && <StatusHistoryTimeline entityType="requirement" entityId={req.id} />}
         </div>
         {scrollState !== 'none' && scrollState !== 'top' && (
           <button

@@ -3,6 +3,10 @@
   "version": "0.7.2",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.css",
+    "./showcase": "./src/showcase/index.ts"
+  },
   "scripts": {
     "build": "vite build",
     "dev": "vite",

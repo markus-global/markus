@@ -38,21 +38,33 @@ const ACTIVITY_LABEL_KEYS: Record<string, string> = {
 
 // ═════════════════════════════════════════════════════════════════════════════
 
-export function HomePage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } } = {}) {
+export interface HomePreviewData {
+  agents?: AgentInfo[];
+  teams?: TeamInfo[];
+  board?: Record<string, TaskInfo[]>;
+  ops?: OpsDashboard | null;
+  requirements?: RequirementInfo[];
+  projects?: ProjectInfo[];
+  deliverableTotal?: number;
+  storageInfo?: StorageInfo | null;
+  usageInfo?: { llmTokens: number; storageBytes: number } | null;
+}
+
+export function HomePage({ authUser, previewMode, previewData }: { authUser?: { id: string; name: string; role: string; orgId: string }; previewMode?: boolean; previewData?: HomePreviewData } = {}) {
   const { t } = useTranslation(['home', 'common', 'team']);
   const isMobile = useIsMobile();
   const isActive = usePageActive(PAGE.HOME);
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [teams, setTeams] = useState<TeamInfo[]>([]);
-  const [board, setBoard] = useState<Record<string, TaskInfo[]>>({});
-  const [ops, setOps] = useState<OpsDashboard | null>(null);
+  const [agents, setAgents] = useState<AgentInfo[]>(previewData?.agents ?? []);
+  const [teams, setTeams] = useState<TeamInfo[]>(previewData?.teams ?? []);
+  const [board, setBoard] = useState<Record<string, TaskInfo[]>>(previewData?.board ?? {});
+  const [ops, setOps] = useState<OpsDashboard | null>(previewData?.ops ?? null);
   const opsPeriod = '7d' as const;
-  const [allRequirements, setAllRequirements] = useState<RequirementInfo[]>([]);
-  const [projects, setProjects] = useState<ProjectInfo[]>([]);
-  const [deliverableTotal, setDeliverableTotal] = useState(0);
+  const [allRequirements, setAllRequirements] = useState<RequirementInfo[]>(previewData?.requirements ?? []);
+  const [projects, setProjects] = useState<ProjectInfo[]>(previewData?.projects ?? []);
+  const [deliverableTotal, setDeliverableTotal] = useState(previewData?.deliverableTotal ?? 0);
   const [recentDeliverables, setRecentDeliverables] = useState<DeliverableInfo[]>([]);
-  const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
-  const [usageInfo, setUsageInfo] = useState<{ llmTokens: number; storageBytes: number } | null>(null);
+  const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(previewData?.storageInfo ?? null);
+  const [usageInfo, setUsageInfo] = useState<{ llmTokens: number; storageBytes: number } | null>(previewData?.usageInfo ?? null);
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [showWorkingModal, setShowWorkingModal] = useState(false);
   const [showHealthModal, setShowHealthModal] = useState(false);
@@ -66,6 +78,19 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [showCreateMenu]);
+
+  useEffect(() => {
+    if (!previewMode || !previewData) return;
+    if (previewData.agents) setAgents(previewData.agents);
+    if (previewData.teams) setTeams(previewData.teams);
+    if (previewData.board) setBoard(previewData.board);
+    setOps(previewData.ops ?? null);
+    setAllRequirements(previewData.requirements ?? []);
+    setProjects(previewData.projects ?? []);
+    setDeliverableTotal(previewData.deliverableTotal ?? 0);
+    if (previewData.storageInfo) setStorageInfo(previewData.storageInfo);
+    if (previewData.usageInfo) setUsageInfo(previewData.usageInfo);
+  }, [previewMode, previewData]);
 
   const refresh = useCallback(() => {
     api.agents.list().then(d => setAgents(d.agents)).catch(() => {});
@@ -89,13 +114,13 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
   }, [opsPeriod]);
 
   useEffect(() => {
-    if (!isActive) return;
+    if (previewMode || !isActive) return;
     refresh();
     const i = setInterval(refresh, 30000);
     const onDataChanged = () => refresh();
     window.addEventListener('markus:data-changed', onDataChanged);
     return () => { clearInterval(i); window.removeEventListener('markus:data-changed', onDataChanged); };
-  }, [opsPeriod, isActive, refresh]);
+  }, [previewMode, opsPeriod, isActive, refresh]);
 
   // ── Computed ──
   const rootStatusCounts: Record<string, number> = {};
@@ -140,6 +165,8 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
 
   const workingAgentsList = agents.filter(a => a.status === 'working');
 
+  const nav = previewMode ? (() => {}) as typeof navBus.navigate : navBus.navigate;
+
   const attentionItems = useMemo(() => {
     const items: Array<{ type: 'review' | 'approval' | 'blocked'; count: number; tasks?: TaskInfo[]; urgent?: number }> = [];
     const reviewTasks = (board['review'] ?? []).filter(tk => tk.reviewerType === 'human');
@@ -181,8 +208,6 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
   }, [agents]);
 
   const { activityLimit, teamsLimit } = useMemo(() => {
-    // Approximate each section's height in "slot units" (1 slot ~ one list row ≈ 38px).
-    // Card chrome (header + padding) ≈ 2 slots.
     const entityCount = (projects.length > 0 ? 1 : 0) + (allRequirements.length > 0 ? 1 : 0) + (deliverableTotal > 0 ? 1 : 0);
     const leftOverview = totalRootTasks > 0 ? 6 + entityCount : 0;
     const leftGap = leftOverview > 0 ? 2 : 0;
@@ -217,7 +242,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
   return (
     <div className="flex-1 overflow-y-auto scrollbar-thin">
       {/* ── Header ── */}
-      <div className="flex items-center justify-between px-4 sm:px-6 lg:px-8 h-14 sm:h-16 max-w-7xl mx-auto w-full">
+      <div className={`flex items-center justify-between px-4 sm:px-6 lg:px-8 h-14 sm:h-16 ${previewMode ? '' : 'max-w-7xl mx-auto'} w-full`}>
         <div className="flex items-center gap-2">
           {isMobile && <MobileMenuButton />}
           <div>
@@ -226,7 +251,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
           </div>
         </div>
         <div className="flex items-center gap-1.5">
-          <button onClick={() => isMobile ? navBus.navigate(PAGE.SEARCH) : window.dispatchEvent(new CustomEvent('markus:open-search'))}
+          <button onClick={() => previewMode ? undefined : isMobile ? navBus.navigate(PAGE.SEARCH) : window.dispatchEvent(new CustomEvent('markus:open-search'))}
             className="p-2 rounded-lg hover:bg-surface-overlay transition-colors text-fg-tertiary" aria-label="Search">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
           </button>
@@ -234,7 +259,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
         </div>
       </div>
 
-      <div className="px-4 sm:px-6 lg:px-8 pb-8 space-y-6 max-w-7xl mx-auto w-full">
+      <div className={`px-4 sm:px-6 lg:px-8 pb-8 space-y-6 ${previewMode ? '' : 'max-w-7xl mx-auto'} w-full`}>
 
         {/* ── Metric Cards ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -250,7 +275,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
         </div>
 
         {/* ── Needs Your Attention ── */}
-        {attentionItems.length > 0 && (
+        {!previewMode && attentionItems.length > 0 && (
           <div className="bg-gradient-to-r from-amber-500/5 via-surface-elevated to-surface-elevated border border-amber-500/20 rounded-2xl overflow-hidden">
             <div className="flex items-center justify-between px-5 pt-4 pb-2">
               <div className="flex items-center gap-2">

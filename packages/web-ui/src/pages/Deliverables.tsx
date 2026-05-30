@@ -36,7 +36,14 @@ const ARTIFACT_META: Record<string, { icon: string; color: string }> = {
   skill: { icon: '\u2B21', color: 'bg-amber-500/10 text-amber-600' },
 };
 
-export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser } = {}) {
+export interface DeliverablesPreviewData {
+  items?: DeliverableInfo[];
+  projects?: ProjectInfo[];
+  agents?: AgentInfo[];
+  initialSelectedId?: string;
+}
+
+export function DeliverablesPage({ authUser: _authUser, previewMode, previewData }: { authUser?: AuthUser; previewMode?: boolean; previewData?: DeliverablesPreviewData } = {}) {
   const { t } = useTranslation(['deliverables', 'common']);
   const isMobile = useIsMobile();
   const isActive = usePageActive(PAGE.DELIVERABLES);
@@ -57,12 +64,12 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
   }, [isMobile]);
 
   const PAGE_SIZE = 100;
-  const [items, setItems] = useState<DeliverableInfo[]>([]);
-  const [totalCount, setTotalCount] = useState(0);
+  const [items, setItems] = useState<DeliverableInfo[]>(previewData?.items ?? []);
+  const [totalCount, setTotalCount] = useState(previewData?.items?.length ?? 0);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [projects, setProjects] = useState<ProjectInfo[]>([]);
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [projects, setProjects] = useState<ProjectInfo[]>(previewData?.projects ?? []);
+  const [agents, setAgents] = useState<AgentInfo[]>(previewData?.agents ?? []);
+  const [loading, setLoading] = useState(previewData ? false : true);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [filterType, setFilterType] = useState('');
@@ -71,7 +78,12 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
   const [filterStatus, setFilterStatus] = useState('');
   const [filterArtifact, setFilterArtifact] = useState('');
   const [groupBy, setGroupBy] = useState<'project' | 'agent' | 'date' | 'type'>('date');
-  const [selected, setSelected] = useState<DeliverableInfo | null>(null);
+  const [selected, setSelected] = useState<DeliverableInfo | null>(() => {
+    if (previewData?.initialSelectedId && previewData.items) {
+      return previewData.items.find(d => d.id === previewData.initialSelectedId) ?? previewData.items[0] ?? null;
+    }
+    return previewData?.items?.[0] ?? null;
+  });
   const [flash, setFlash] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [actionLoading, setActionLoading] = useState('');
   const [showCreate, setShowCreate] = useState(false);
@@ -122,11 +134,12 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
   const projectMap = useMemo(() => new Map(projects.map(p => [p.id, p])), [projects]);
 
   useEffect(() => {
+    if (previewMode) return;
     api.projects.list().then(r => setProjects(r.projects)).catch(() => {});
     api.agents.list().then(r => setAgents(r.agents ?? [])).catch(() => {});
     api.system.storage().then(info => setSharedDir(info.dataDir + '/shared')).catch(() => {});
     api.deliverables.checkHealth().then(r => setMissingFileIds(new Set(r.missingFiles))).catch(() => {});
-  }, []);
+  }, [previewMode]);
 
   useEffect(() => {
     debounceRef.current = setTimeout(() => setDebouncedQuery(searchQuery), 300);
@@ -163,15 +176,27 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
     setLoadingMore(false);
   }, [searchParams, items.length, totalCount, loadingMore]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { if (previewMode) return; refresh(); }, [refresh, previewMode]);
 
   useEffect(() => {
+    if (!previewMode || !previewData) return;
+    setItems(previewData.items ?? []);
+    setTotalCount(previewData.items?.length ?? 0);
+    setProjects(previewData.projects ?? []);
+    setAgents(previewData.agents ?? []);
+    if (previewData.initialSelectedId) {
+      setSelected(previewData.items?.find(d => d.id === previewData.initialSelectedId) ?? previewData.items?.[0] ?? null);
+    }
+  }, [previewMode, previewData]);
+
+  useEffect(() => {
+    if (previewMode) return;
     if (!isActive) return;
     const unsub1 = wsClient.on('deliverable:created', () => refresh());
     const unsub2 = wsClient.on('deliverable:updated', () => refresh());
     const unsub3 = wsClient.on('deliverable:removed', () => refresh());
     return () => { unsub1(); unsub2(); unsub3(); };
-  }, [refresh, isActive]);
+  }, [refresh, isActive, previewMode]);
 
   // Handle deep navigation to a specific deliverable
   const pendingOpenRef = useRef<string | null>(null);
@@ -192,6 +217,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
   }, [isMobile]);
 
   useEffect(() => {
+    if (previewMode) return;
     const navId = localStorage.getItem('markus_nav_openDeliverable');
     if (navId) {
       localStorage.removeItem('markus_nav_openDeliverable');
@@ -210,7 +236,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
     };
     window.addEventListener('markus:navigate', handler);
     return () => window.removeEventListener('markus:navigate', handler);
-  }, [openDeliverableById]);
+  }, [openDeliverableById, previewMode]);
 
   useEffect(() => {
     const id = pendingOpenRef.current;
@@ -347,13 +373,14 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
   };
 
   useEffect(() => {
+    if (previewMode) return;
     setPreviewContent(null);
     setPreviewFormat('markdown');
     setPreviewImage(null);
     setShowCopyPath(false);
     if (selected) loadPreview(selected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.id]);
+  }, [selected?.id, previewMode]);
 
   const toggleGroup = useCallback((key: string) => {
     setCollapsedGroups(prev => {
@@ -569,7 +596,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
         ) : (
           <div className="p-6 space-y-4">
             {/* File missing warning */}
-            {missingFileIds.has(selected.id) && (
+            {!previewMode && missingFileIds.has(selected.id) && (
               <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-600 text-xs">
                 <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
@@ -583,6 +610,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
             <div className="space-y-3">
               <div className="flex items-start justify-between gap-3">
                 <h2 className="text-xl font-semibold text-fg-primary">{selected.title}</h2>
+                {!previewMode && (
                 <button
                   onClick={() => setConfirmRemove(selected)}
                   disabled={!!actionLoading}
@@ -593,6 +621,7 @@ export function DeliverablesPage({ authUser: _authUser }: { authUser?: AuthUser 
                     <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                   </svg>
                 </button>
+                )}
               </div>
 
               {/* All badges and info in one block */}
