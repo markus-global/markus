@@ -1,5 +1,36 @@
 # Release Log
 
+## v0.7.2
+
+Mailbox 系统重构（健壮多 Agent 协作）；首页重设计（行动导向信息架构）；多搜索引擎后端（Tavily/Google/SerpAPI/Exa）；MindTab 暂停/恢复/取消控制；项目工具增强；交付物 UX 改进。
+
+### New Features
+
+- **Mailbox 系统重构** — 全面重构 mailbox 以支持健壮的多 Agent 协作，同优先级 LIFO 排序
+- **首页重设计** — 行动导向信息架构，排名弹窗增加 token 用量和可排序列
+- **多搜索引擎后端** — 新增 Tavily、Google、SerpAPI、Exa 搜索后端，丰富 web_search 选项
+- **MindTab 控制按钮** — Agent Mind Tab 新增暂停/恢复/取消按钮，优先处理较新消息
+- **项目工具增强** — project tools 新增审批、统计、删除功能，移除冗余 knowledge 工具
+- **浏览器标签页关闭提醒** — Agent 会话结束时一次性提醒关闭浏览器标签页
+
+### Bug Fixes
+
+- **修复纯文本流式输出空白** — 流式输出完成后从 committedSegments 正确构建 segments 回退
+- **修复 beforeunload 对话框阻塞** — 主动抑制 beforeunload 弹窗，防止 Agent 导航被阻塞
+- **修复 triage 期间状态显示** — 分诊/审议期间正确显示 deciding 状态而非 idle
+- **修复交付物启动迁移时间戳** — 启动迁移不再刷新旧交付物时间戳；Agent 删除时正确迁移文件
+- **修复侧边栏/交付物/Builder UX** — 侧边栏滚动条改进，交付物页面优化，Builder 布局修正，DM 通知修复
+
+### Improvements
+
+- **DAG UI 更新** — DAG 可视化界面优化
+
+### Stats
+
+- 52 files changed, +3,050 / −704 lines
+
+---
+
 ## v0.7.1
 
 修复流式气泡结束后空白、Team 页显示 Agent 而非 Team、亮色模式下版本横幅与 Builder 分享弹窗颜色问题；beforeunload 弹窗自动关闭防止 Agent 导航阻塞；暂停/恢复按钮移入管理下拉菜单。
