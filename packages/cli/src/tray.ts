@@ -5,7 +5,7 @@
  * Launched by the desktop shortcut / .app instead of `markus start` directly.
  */
 
-import { spawn, exec, type ChildProcess } from 'node:child_process';
+import { spawn, exec, execSync, type ChildProcess } from 'node:child_process';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { get as httpGet } from 'node:http';
 import { createConnection } from 'node:net';
@@ -103,14 +103,43 @@ function waitForHealth(url: string, intervalMs = 500, maxMs = 30000): Promise<bo
   });
 }
 
+function checkHealthOnce(url: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = httpGet(url, (res) => {
+      res.resume();
+      resolve(res.statusCode !== undefined && res.statusCode >= 200 && res.statusCode < 400);
+    });
+    req.on('error', () => resolve(false));
+    req.setTimeout(2000, () => { req.destroy(); resolve(false); });
+  });
+}
+
+function showPortConflictDialog(port: number): void {
+  if (platform() === 'darwin') {
+    let occupant = 'unknown';
+    try {
+      occupant = execSync(`lsof -i :${port} -sTCP:LISTEN -t 2>/dev/null | head -1 | xargs ps -p -o comm= 2>/dev/null`, { encoding: 'utf-8' }).trim() || 'unknown';
+    } catch { /* ignore */ }
+    exec(`osascript -e 'display dialog "Port ${port} is already in use by \\"${occupant}\\".\nMarkus cannot start.\n\nFree the port or change it in ~/.markus/markus.json" with title "Markus" buttons {"OK"} default button "OK" with icon stop'`, () => {});
+  } else {
+    console.error(`Port ${port} is already in use by another process. Markus cannot start.`);
+  }
+}
+
 async function startServer(): Promise<void> {
   if (serverRunning) return;
 
-  // If the port is already in use, the server is running externally — just open the browser
   if (await isPortListening(WEB_UI_PORT)) {
-    serverRunning = true;
-    updateTrayMenu();
-    openBrowser(WEB_UI_URL);
+    // Port is occupied — verify it's actually Markus via health endpoint
+    const isMarkus = await checkHealthOnce(`${WEB_UI_URL}/api/health`);
+    if (isMarkus) {
+      serverRunning = true;
+      updateTrayMenu();
+      openBrowser(WEB_UI_URL);
+      return;
+    }
+    // Port occupied by a non-Markus process
+    showPortConflictDialog(WEB_UI_PORT);
     return;
   }
 
@@ -141,7 +170,6 @@ async function startServer(): Promise<void> {
     console.error('Failed to start Markus server:', err.message);
   });
 
-  // Wait for backend health check before opening browser
   waitForHealth(`${WEB_UI_URL}/api/health`).then((ok) => {
     if (ok && serverRunning) openBrowser(WEB_UI_URL);
   });

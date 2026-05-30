@@ -121,6 +121,11 @@ PKGJSON
 (cd "$STAGE_DIR/bin" && npm install --no-save ws sharp rfb2 systray2 2>&1) \
   || die "Failed to install native dependencies"
 rm -f "$STAGE_DIR/bin/package.json" "$STAGE_DIR/bin/package-lock.json"
+
+# Ensure systray2 tray binaries have execute permission (npm install doesn't always set +x)
+find "$STAGE_DIR/bin/node_modules/systray2/traybin" -type f 2>/dev/null | while read -r tb; do
+  chmod +x "$tb"
+done
 ok "Native dependencies installed"
 
 # Version marker so the bundled CLI can detect its own version
@@ -199,12 +204,13 @@ if [[ "$PLATFORM" == "darwin" ]]; then
     ok "Generated markus.icns"
   fi
 
-  # Post-install script: create symlink + desktop shortcut + launchd
+  # Post-install script: symlink + codesign + app bundle + launchd + auto-open
   SCRIPTS_DIR="$OUT_DIR/_pkg_scripts_$$"
   mkdir -p "$SCRIPTS_DIR"
   cat > "$SCRIPTS_DIR/postinstall" << 'POSTINSTALL'
 #!/bin/bash
 INSTALL_DIR="/usr/local/lib/markus"
+PORT=8056
 ln -sf "$INSTALL_DIR/markus" /usr/local/bin/markus
 
 # Detect the real console user (postinstall runs as root, so $USER == root)
@@ -214,14 +220,41 @@ if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "loginwindow" ]; then
 fi
 REAL_HOME=$(eval echo ~"$CONSOLE_USER")
 
-# Desktop shortcut (Markus.app bundle with icon)
-if [ -d "$REAL_HOME/Desktop" ]; then
-  APP_DIR="$REAL_HOME/Desktop/Markus.app"
-  rm -rf "$APP_DIR"
-  mkdir -p "$APP_DIR/Contents/MacOS"
-  mkdir -p "$APP_DIR/Contents/Resources"
+# ── Re-codesign Node.js binary with JIT entitlements ──────────────────────
+# macOS can strip ad-hoc signatures during .pkg extraction; re-sign to ensure
+# V8 JIT works correctly (prevents "Check failed" / SIGKILL crashes).
+ENTITLEMENTS_TMP=$(mktemp /tmp/markus-entitlements-XXXXXX.plist)
+cat > "$ENTITLEMENTS_TMP" << 'ENTXML'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>
+ENTXML
 
-  cat > "$APP_DIR/Contents/Info.plist" << PLIST_APP
+for bin_file in "$INSTALL_DIR/bin/node" "$INSTALL_DIR/bin/node_modules/systray2/traybin/tray_darwin_release"; do
+  if [ -f "$bin_file" ]; then
+    chmod +x "$bin_file"
+    codesign --force --options runtime --entitlements "$ENTITLEMENTS_TMP" --sign - "$bin_file" 2>/dev/null || true
+  fi
+done
+rm -f "$ENTITLEMENTS_TMP"
+
+# ── Markus.app in /Applications ───────────────────────────────────────────
+APP_DIR="/Applications/Markus.app"
+rm -rf "$APP_DIR"
+mkdir -p "$APP_DIR/Contents/MacOS"
+mkdir -p "$APP_DIR/Contents/Resources"
+
+cat > "$APP_DIR/Contents/Info.plist" << PLIST_APP
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -247,7 +280,7 @@ if [ -d "$REAL_HOME/Desktop" ]; then
 </plist>
 PLIST_APP
 
-  cat > "$APP_DIR/Contents/MacOS/launch" << 'LAUNCH_SCRIPT'
+cat > "$APP_DIR/Contents/MacOS/launch" << 'LAUNCH_SCRIPT'
 #!/bin/bash
 MARKUS_DIR="/usr/local/lib/markus"
 NODE="$MARKUS_DIR/bin/node"
@@ -255,10 +288,18 @@ LOG_DIR="$HOME/.markus/logs"
 PORT=8056
 mkdir -p "$LOG_DIR"
 
-# If the server is already running, just open the browser
+# Check if Markus is already running (health endpoint responds)
 if curl -s --max-time 2 -o /dev/null "http://localhost:$PORT/api/health" 2>/dev/null; then
   open "http://localhost:$PORT"
   exit 0
+fi
+
+# Check if the port is occupied by another process
+if lsof -i ":$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  OCCUPANT=$(lsof -i ":$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)
+  OCCUPANT_NAME=$(ps -p "$OCCUPANT" -o comm= 2>/dev/null || echo "unknown")
+  osascript -e "display dialog \"Port $PORT is already in use by '$OCCUPANT_NAME' (PID $OCCUPANT).\nMarkus cannot start.\n\nFree the port or change the Markus port in ~/.markus/markus.json\" with title \"Markus\" buttons {\"OK\"} default button \"OK\" with icon stop"
+  exit 1
 fi
 
 # Try tray controller first; fall back to direct server start
@@ -294,15 +335,19 @@ done
 
 wait "$SERVER_PID"
 LAUNCH_SCRIPT
-  chmod +x "$APP_DIR/Contents/MacOS/launch"
+chmod +x "$APP_DIR/Contents/MacOS/launch"
 
-  if [ -f "$INSTALL_DIR/markus.icns" ]; then
-    cp "$INSTALL_DIR/markus.icns" "$APP_DIR/Contents/Resources/markus.icns"
-  fi
-  chown -R "$CONSOLE_USER" "$APP_DIR"
+if [ -f "$INSTALL_DIR/markus.icns" ]; then
+  cp "$INSTALL_DIR/markus.icns" "$APP_DIR/Contents/Resources/markus.icns"
 fi
 
-# Auto-start on login (launchd) — use direct paths, not symlinks
+# Remove legacy Desktop shortcut if present
+rm -rf "$REAL_HOME/Desktop/Markus.app"
+
+# ── Auto-start on login (launchd) ─────────────────────────────────────────
+# Unload any existing plist before replacing it
+sudo -u "$CONSOLE_USER" launchctl unload "$REAL_HOME/Library/LaunchAgents/global.markus.plist" 2>/dev/null || true
+
 PLIST_DIR="$REAL_HOME/Library/LaunchAgents"
 mkdir -p "$PLIST_DIR"
 cat > "$PLIST_DIR/global.markus.plist" << PLIST
@@ -319,10 +364,20 @@ cat > "$PLIST_DIR/global.markus.plist" << PLIST
     <string>/usr/local/lib/markus/bin/markus.mjs</string>
     <string>start</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NO_BROWSER</key>
+    <string>1</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <false/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
   <key>StandardOutPath</key>
   <string>${REAL_HOME}/.markus/logs/stdout.log</string>
   <key>StandardErrorPath</key>
@@ -333,6 +388,25 @@ PLIST
 chown "$CONSOLE_USER" "$PLIST_DIR/global.markus.plist"
 mkdir -p "$REAL_HOME/.markus/logs"
 chown -R "$CONSOLE_USER" "$REAL_HOME/.markus"
+
+# Load the LaunchAgent immediately so the server starts right after install
+sudo -u "$CONSOLE_USER" launchctl load "$PLIST_DIR/global.markus.plist" 2>/dev/null || true
+
+# ── Auto-open browser after install ───────────────────────────────────────
+# Wait for the server (just started via launchd) to become healthy, then open browser.
+# Run in background so postinstall doesn't block the installer UI.
+(
+  TRIES=0
+  MAX_TRIES=60
+  while [ $TRIES -lt $MAX_TRIES ]; do
+    if curl -s --max-time 2 -o /dev/null "http://localhost:$PORT/api/health" 2>/dev/null; then
+      sudo -u "$CONSOLE_USER" open "http://localhost:$PORT"
+      exit 0
+    fi
+    sleep 1
+    TRIES=$((TRIES + 1))
+  done
+) &
 
 exit 0
 POSTINSTALL

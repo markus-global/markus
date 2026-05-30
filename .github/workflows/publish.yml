@@ -12,8 +12,24 @@ permissions:
 jobs:
   publish-npm:
     runs-on: ubuntu-latest
+    outputs:
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
+      version: ${{ steps.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Determine release metadata
+        id: meta
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$VERSION" == *"-"* ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: pnpm/action-setup@v4
         with:
@@ -43,7 +59,7 @@ jobs:
           ls -d packages/cli/templates || echo "Warning: templates not bundled"
 
       - name: Publish to npm
-        run: cd packages/cli && npm publish --access public
+        run: cd packages/cli && npm publish --access public --tag ${{ steps.meta.outputs.npm_tag }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -233,10 +249,12 @@ jobs:
       - name: List artifacts
         run: ls -lhR artifacts/ || echo "No artifacts"
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release (stable)
+        if: needs.publish-npm.outputs.is_prerelease == 'false'
         uses: softprops/action-gh-release@v2
         with:
           name: v${{ steps.version.outputs.VERSION }}
+          prerelease: false
           generate_release_notes: true
           files: artifacts/*
           body: |
@@ -262,3 +280,34 @@ jobs:
             # npm (if you already have Node.js 22+)
             npm install -g @markus-global/cli@${{ steps.version.outputs.VERSION }}
             ```
+
+      - name: Create GitHub Release (pre-release)
+        if: needs.publish-npm.outputs.is_prerelease == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: v${{ steps.version.outputs.VERSION }} (Pre-release)
+          prerelease: true
+          generate_release_notes: true
+          files: artifacts/*
+          body: |
+            > **Pre-release** — this version is for testing. Use `npm i -g @markus-global/cli@next` to install.
+            > The `install.sh` one-liner always installs the latest stable release.
+
+            ## Install (testers)
+
+            ```bash
+            # npm (recommended for RC testing)
+            npm install -g @markus-global/cli@${{ steps.version.outputs.VERSION }}
+
+            # or use the @next tag
+            npm install -g @markus-global/cli@next
+            ```
+
+            ## Binary installers
+
+            | Platform | Installer |
+            |----------|-----------|
+            | Windows x64 | [markus-setup-win-x64.exe](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-win-x64.exe) |
+            | macOS Apple Silicon | [markus-setup-darwin-arm64.pkg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-darwin-arm64.pkg) |
+            | macOS Intel | [markus-setup-darwin-x64.pkg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-darwin-x64.pkg) |
+            | Linux x64 (.deb) | [markus-setup-linux-x64.deb](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-linux-x64.deb) |

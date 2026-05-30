@@ -7,6 +7,14 @@
 #   ./scripts/quick-release.sh minor "feat: A2A protocol support"
 #   ./scripts/quick-release.sh 0.3.0 "feat: new agent builder"
 #
+# Pre-release (RC / preview):
+#   ./scripts/quick-release.sh rc "fix: test mac installer"    # 0.7.2 → 0.7.3-rc.0
+#   ./scripts/quick-release.sh rc "fix: another tweak"         # 0.7.3-rc.0 → 0.7.3-rc.1
+#   ./scripts/quick-release.sh promote "release: stable 0.7.3" # 0.7.3-rc.1 → 0.7.3
+#
+# RC versions are published to npm with --tag next (won't affect `npm i @markus-global/cli`).
+# GitHub releases are marked as pre-release. install.sh always resolves the latest stable.
+#
 # If direct push to main is blocked (branch protection), the script
 # automatically creates a release/<version> branch, pushes it, and
 # opens a PR. Merge the PR to trigger CI publish.
@@ -22,28 +30,48 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
 # ── Args ───────────────────────────────────────────────────────────────────
-[[ -z "${1:-}" ]] && die "Usage: $0 <version|patch|minor|major> <message>"
-[[ -z "${2:-}" ]] && die "Usage: $0 <version|patch|minor|major> <message>"
+[[ -z "${1:-}" ]] && die "Usage: $0 <version|patch|minor|major|rc|promote> <message>"
+[[ -z "${2:-}" ]] && die "Usage: $0 <version|patch|minor|major|rc|promote> <message>"
 
 BUMP="$1"
 MSG="$2"
 
 # ── Compute version ───────────────────────────────────────────────────────
 CURRENT="$(node -p "require('./package.json').version")"
-IFS='.' read -r MA MI PA <<< "$CURRENT"
+# Strip any prerelease suffix for base version arithmetic
+BASE_VER="${CURRENT%%-*}"
+IFS='.' read -r MA MI PA <<< "$BASE_VER"
 
-if [[ "$BUMP" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+if [[ "$BUMP" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
   VER="$BUMP"
+elif [[ "$BUMP" == "rc" ]]; then
+  if [[ "$CURRENT" == *"-rc."* ]]; then
+    # Already on an RC — increment the RC number
+    RC_NUM="${CURRENT##*-rc.}"
+    VER="${BASE_VER}-rc.$((RC_NUM + 1))"
+  else
+    # First RC — bump patch and start at rc.0
+    VER="$MA.$MI.$((PA + 1))-rc.0"
+  fi
+elif [[ "$BUMP" == "promote" ]]; then
+  if [[ "$CURRENT" != *"-rc."* ]]; then
+    die "Cannot promote: current version ($CURRENT) is not an RC"
+  fi
+  VER="$BASE_VER"
 else
   case "$BUMP" in
     patch) VER="$MA.$MI.$((PA + 1))" ;;
     minor) VER="$MA.$((MI + 1)).0" ;;
     major) VER="$((MA + 1)).0.0" ;;
-    *) die "Invalid: $BUMP (use patch, minor, major, or x.y.z)" ;;
+    *) die "Invalid: $BUMP (use patch, minor, major, rc, promote, or x.y.z)" ;;
   esac
 fi
 
+IS_PRERELEASE=false
+[[ "$VER" == *"-"* ]] && IS_PRERELEASE=true
+
 printf "${BLUE}→${NC} ${BOLD}v${CURRENT}${NC} → ${BOLD}v${VER}${NC}  ${MSG}\n"
+$IS_PRERELEASE && printf "  ${YELLOW}pre-release${NC} — will publish to npm with --tag next\n"
 
 # ── Check git status ──────────────────────────────────────────────────────
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
