@@ -81,9 +81,9 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
 
   useEffect(() => {
     if (!previewMode || !previewData) return;
-    setAgents(previewData.agents);
-    setTeams(previewData.teams);
-    setBoard(previewData.board);
+    if (previewData.agents) setAgents(previewData.agents);
+    if (previewData.teams) setTeams(previewData.teams);
+    if (previewData.board) setBoard(previewData.board);
     setOps(previewData.ops ?? null);
     setAllRequirements(previewData.requirements ?? []);
     setProjects(previewData.projects ?? []);

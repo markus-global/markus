@@ -103,7 +103,7 @@ export function createMockData(t: TFunction) {
     skills: [],
     agentRole: d.agentRole ?? 'worker',
     teamId: d.teamId,
-    currentActivity: d.status === 'working' ? { label: ts(d.activityKey), startedAt: new Date(Date.now() - Math.random() * 3600000).toISOString() } : undefined,
+    currentActivity: d.status === 'working' ? { id: `act-${d.id}`, type: 'task' as const, label: ts(d.activityKey), startedAt: new Date(Date.now() - Math.random() * 3600000).toISOString() } : undefined,
   }));
 
   // ── Teams ──────────────────────────────────────────────────────────────
