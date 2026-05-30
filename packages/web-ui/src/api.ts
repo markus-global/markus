@@ -1698,15 +1698,18 @@ let HUB_URL = (window as unknown as Record<string, string>).__MARKUS_HUB_URL__ ?
 
 // Fetch hub URL from server config (overrides default if available),
 // and sync existing Hub token to backend for agent tool access.
-request<{ hubUrl: string }>('/settings/hub')
-  .then(r => {
-    if (r.hubUrl) HUB_URL = r.hubUrl;
-    const existingToken = localStorage.getItem('markus_hub_token');
-    if (existingToken) {
-      request('/settings/hub-token', { method: 'POST', body: JSON.stringify({ token: existingToken }) }).catch(() => {});
-    }
-  })
-  .catch(() => {});
+// Skip in preview/showcase mode (no backend available).
+if (!(window as unknown as Record<string, boolean>).__MARKUS_PREVIEW__) {
+  request<{ hubUrl: string }>('/settings/hub')
+    .then(r => {
+      if (r.hubUrl) HUB_URL = r.hubUrl;
+      const existingToken = localStorage.getItem('markus_hub_token');
+      if (existingToken) {
+        request('/settings/hub-token', { method: 'POST', body: JSON.stringify({ token: existingToken }) }).catch(() => {});
+      }
+    })
+    .catch(() => {});
+}
 
 const HUB_TOKEN_KEY = 'markus_hub_token';
 const HUB_USER_KEY = 'markus_hub_user';
