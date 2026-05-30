@@ -1261,7 +1261,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [previewMode, chatMode, selectedAgent, markAgentNotificationsRead]);
 
   // ── Chat unread counts (message-level read cursors) ──────────────────────────
-  const { counts: chatUnreadCounts, markRead: markChatRead } = useUnreadCounts();
+  const { counts: chatUnreadCounts, markRead: markChatRead } = useUnreadCounts({ enabled: !previewMode });
   const unreadByChannel = useMemo(() => {
     const result: Record<string, number> = {};
     for (const [key, count] of Object.entries(chatUnreadCounts)) {

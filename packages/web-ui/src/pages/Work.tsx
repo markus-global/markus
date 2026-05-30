@@ -4453,6 +4453,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                     setShowCreateTask(true);
                   }}
                   onProjectClick={toggleProjectFilter}
+                  previewMode={previewMode}
                 />
               </div>
               <div className="w-px shrink-0 bg-border-default" />
@@ -4518,6 +4519,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 setShowCreateTask(true);
               }}
               onProjectClick={toggleProjectFilter}
+              previewMode={previewMode}
             />
           ) : null}
         </div>
@@ -4996,7 +4998,7 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
 // ─── Requirement Detail Modal ────────────────────────────────────────────────────
 
 function RequirementDetailPanel({
-  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange, onRefresh, authUser, scrollToComments, onScrollToCommentsDone, onTaskClick, onCreateTask, onProjectClick,
+  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange, onRefresh, authUser, scrollToComments, onScrollToCommentsDone, onTaskClick, onCreateTask, onProjectClick, previewMode,
 }: {
   req: RequirementInfo;
   agents: AgentInfo[];
@@ -5015,6 +5017,7 @@ function RequirementDetailPanel({
   onTaskClick?: (task: TaskInfo) => void;
   onCreateTask?: (reqId: string, projectId?: string) => void;
   onProjectClick?: (projectId: string) => void;
+  previewMode?: boolean;
 }) {
   const { t } = useTranslation(['work', 'common']);
   const reqBadges = useMemo(() => buildReqStatusBadges(t), [t]);
@@ -5268,10 +5271,10 @@ function RequirementDetailPanel({
           </div>
 
           {/* Requirement Comments Thread */}
-          <RequirementCommentThread requirementId={req.id} createdBy={req.createdBy} agents={agents} users={users} authUser={authUser} />
+          {!previewMode && <RequirementCommentThread requirementId={req.id} createdBy={req.createdBy} agents={agents} users={users} authUser={authUser} />}
 
           {/* Status History */}
-          <StatusHistoryTimeline entityType="requirement" entityId={req.id} />
+          {!previewMode && <StatusHistoryTimeline entityType="requirement" entityId={req.id} />}
         </div>
         {scrollState !== 'none' && scrollState !== 'top' && (
           <button

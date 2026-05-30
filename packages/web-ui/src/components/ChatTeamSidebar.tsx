@@ -398,8 +398,9 @@ export function ChatTeamSidebar({
 
   // ── Data loading ──────────────────────────────────────────────────────────
   const refreshUngrouped = useCallback(() => {
+    if (previewMode) return;
     api.teams.list().then(d => setUngrouped(d.ungrouped)).catch(() => {});
-  }, []);
+  }, [previewMode]);
 
   useEffect(() => {
     refreshUngrouped();
