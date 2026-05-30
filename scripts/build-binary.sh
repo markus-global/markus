@@ -118,7 +118,7 @@ info "Installing native dependencies into staging dir..."
 cat > "$STAGE_DIR/bin/package.json" << 'PKGJSON'
 { "private": true, "type": "module" }
 PKGJSON
-(cd "$STAGE_DIR/bin" && npm install --no-save ws sharp rfb2 systray2 2>&1) \
+(cd "$STAGE_DIR/bin" && npm install --no-save ws sharp rfb2 systray2 node-datachannel 2>&1) \
   || die "Failed to install native dependencies"
 rm -f "$STAGE_DIR/bin/package.json" "$STAGE_DIR/bin/package-lock.json"
 
@@ -204,9 +204,53 @@ if [[ "$PLATFORM" == "darwin" ]]; then
     ok "Generated markus.icns"
   fi
 
-  # Post-install script: symlink + codesign + app bundle + launchd + auto-open
+  # Pre-install script: gracefully stop running Markus before upgrade
   SCRIPTS_DIR="$OUT_DIR/_pkg_scripts_$$"
   mkdir -p "$SCRIPTS_DIR"
+  cat > "$SCRIPTS_DIR/preinstall" << 'PREINSTALL'
+#!/bin/bash
+# Gracefully stop any running Markus server before files are overwritten.
+CONSOLE_USER=$(/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ { print $3 }')
+if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "loginwindow" ]; then
+  CONSOLE_USER=$(stat -f "%Su" /dev/console 2>/dev/null)
+fi
+CONSOLE_UID=$(id -u "$CONSOLE_USER" 2>/dev/null || echo "")
+
+# Unload LaunchAgent first (prevents auto-restart while we're upgrading)
+if [ -n "$CONSOLE_UID" ]; then
+  launchctl bootout "gui/$CONSOLE_UID/global.markus" 2>/dev/null || true
+fi
+
+# Try graceful shutdown via CLI
+if [ -x /usr/local/bin/markus ]; then
+  sudo -u "$CONSOLE_USER" /usr/local/bin/markus stop 2>/dev/null || true
+fi
+
+# Wait up to 5 seconds for the server to stop
+PORT=8056
+for i in $(seq 1 10); do
+  if ! lsof -i ":$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.5
+done
+
+# Force kill if still running
+PIDS=$(lsof -i ":$PORT" -sTCP:LISTEN -t 2>/dev/null || true)
+if [ -n "$PIDS" ]; then
+  echo "$PIDS" | xargs kill -9 2>/dev/null || true
+  sleep 1
+fi
+
+# Kill tray process if still running
+pkill -f "tray.mjs" 2>/dev/null || true
+pkill -f "tray_darwin_release" 2>/dev/null || true
+
+exit 0
+PREINSTALL
+  chmod +x "$SCRIPTS_DIR/preinstall"
+
+  # Post-install script: symlink + codesign + app bundle + launchd + auto-open
   cat > "$SCRIPTS_DIR/postinstall" << 'POSTINSTALL'
 #!/bin/bash
 INSTALL_DIR="/usr/local/lib/markus"
@@ -275,7 +319,7 @@ cat > "$APP_DIR/Contents/Info.plist" << PLIST_APP
   <key>CFBundleIconFile</key>
   <string>markus</string>
   <key>LSUIElement</key>
-  <false/>
+  <true/>
 </dict>
 </plist>
 PLIST_APP
@@ -288,39 +332,24 @@ LOG_DIR="$HOME/.markus/logs"
 PORT=8056
 mkdir -p "$LOG_DIR"
 
-# Check if Markus is already running (health endpoint responds)
+# Always launch the tray controller — it handles server start, existing server
+# detection, port conflicts, browser open, and keeps the menu bar icon alive.
+if [ -f "$MARKUS_DIR/bin/tray.mjs" ]; then
+  exec "$NODE" "$MARKUS_DIR/bin/tray.mjs" 2>>"$LOG_DIR/tray-stderr.log"
+fi
+
+# Fallback if tray.mjs is missing: start server directly
 if curl -s --max-time 2 -o /dev/null "http://localhost:$PORT/api/health" 2>/dev/null; then
   open "http://localhost:$PORT"
   exit 0
 fi
 
-# Check if the port is occupied by another process
-if lsof -i ":$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-  OCCUPANT=$(lsof -i ":$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)
-  OCCUPANT_NAME=$(ps -p "$OCCUPANT" -o comm= 2>/dev/null || echo "unknown")
-  osascript -e "display dialog \"Port $PORT is already in use by '$OCCUPANT_NAME' (PID $OCCUPANT).\nMarkus cannot start.\n\nFree the port or change the Markus port in ~/.markus/markus.json\" with title \"Markus\" buttons {\"OK\"} default button \"OK\" with icon stop"
-  exit 1
-fi
-
-# Try tray controller first; fall back to direct server start
-if [ -f "$MARKUS_DIR/bin/tray.mjs" ]; then
-  "$NODE" "$MARKUS_DIR/bin/tray.mjs" 2>"$LOG_DIR/tray-stderr.log"
-  EXIT_CODE=$?
-  if [ $EXIT_CODE -ne 0 ]; then
-    echo "Tray exited with code $EXIT_CODE, falling back to direct start" >> "$LOG_DIR/tray-stderr.log"
-  else
-    exit 0
-  fi
-fi
-
-# Fallback: start server directly + open browser after health check
 "$NODE" "$MARKUS_DIR/bin/markus.mjs" start \
   >> "$LOG_DIR/stdout.log" 2>> "$LOG_DIR/stderr.log" &
 SERVER_PID=$!
 
 TRIES=0
-MAX_TRIES=60
-while [ $TRIES -lt $MAX_TRIES ]; do
+while [ $TRIES -lt 60 ]; do
   if ! kill -0 "$SERVER_PID" 2>/dev/null; then
     osascript -e 'display dialog "Markus failed to start.\nCheck logs at ~/.markus/logs/" with title "Markus" buttons {"OK"} default button "OK" with icon stop'
     exit 1
@@ -332,7 +361,6 @@ while [ $TRIES -lt $MAX_TRIES ]; do
   sleep 0.5
   TRIES=$((TRIES + 1))
 done
-
 wait "$SERVER_PID"
 LAUNCH_SCRIPT
 chmod +x "$APP_DIR/Contents/MacOS/launch"
@@ -389,12 +417,10 @@ chown "$CONSOLE_USER" "$PLIST_DIR/global.markus.plist"
 mkdir -p "$REAL_HOME/.markus/logs"
 chown -R "$CONSOLE_USER" "$REAL_HOME/.markus"
 
-# Load the LaunchAgent so the server auto-starts on next login
-CONSOLE_UID=$(id -u "$CONSOLE_USER" 2>/dev/null || echo "")
-if [ -n "$CONSOLE_UID" ]; then
-  launchctl bootout "gui/$CONSOLE_UID/global.markus" 2>/dev/null || true
-  launchctl bootstrap "gui/$CONSOLE_UID" "$PLIST_DIR/global.markus.plist" 2>/dev/null || true
-fi
+# The LaunchAgent plist is now in ~/Library/LaunchAgents/ with RunAtLoad=true.
+# macOS automatically loads all plists in this directory on login, so we don't
+# need to explicitly `bootstrap` or `load` it. The server will auto-start on
+# next login. For immediate startup after install, we use open Markus.app below.
 
 # ── Launch Markus.app immediately after install ───────────────────────────
 # Open the .app bundle which handles server start + browser open + tray icon.
