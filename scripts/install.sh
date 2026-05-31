@@ -242,7 +242,9 @@ create_desktop_shortcut() {
   if [ "$os" = "darwin" ]; then
     # Create a proper .app bundle in /Applications (visible in Spotlight & Launchpad)
     local app_dir="/Applications/Markus.app"
-    rm -rf "$app_dir"
+    if [ -d "$app_dir" ] && ! rm -rf "$app_dir" 2>/dev/null; then
+      sudo rm -rf "$app_dir"
+    fi
     mkdir -p "$app_dir/Contents/MacOS"
     mkdir -p "$app_dir/Contents/Resources"
 
