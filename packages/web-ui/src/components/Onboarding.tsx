@@ -55,6 +55,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
   const [configuredProviders, setConfiguredProviders] = useState<Array<{ name: string; displayName: string; model: string; apiKeyPreview?: string }>>([]);
   const [setupMsg, setSetupMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [autoFallback, setAutoFallback] = useState(true);
+  const [defaultProvider, setDefaultProvider] = useState<string>('');
   const envDetected = useRef(false);
 
   // Search API key state
@@ -83,6 +84,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
             setConfiguredProviders(active);
           }
         }
+        if (d?.defaultProvider) setDefaultProvider(d.defaultProvider);
         if (typeof d?.autoFallback === 'boolean') setAutoFallback(d.autoFallback);
       })
       .catch(() => {});
@@ -136,7 +138,26 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
         }),
       });
       if (res.ok) {
-        const data = await res.json() as { applied: string[]; message: string };
+        const data = await res.json() as { applied: string[]; message: string; settings?: { defaultProvider?: string; providers?: Record<string, { configured: boolean; displayName?: string; model?: string; apiKeyPreview?: string }> } };
+        // Refresh configured providers from returned settings
+        if (data.settings?.providers) {
+          const active = Object.entries(data.settings.providers)
+            .filter(([, p]) => p.configured)
+            .map(([k, p]) => ({ name: k, displayName: p.displayName ?? k, model: p.model ?? '', apiKeyPreview: p.apiKeyPreview }));
+          setConfiguredProviders(active);
+        } else {
+          setConfiguredProviders(selected.map(d => ({ name: d.provider, displayName: d.displayName, model: d.model, apiKeyPreview: d.apiKeyPreview })));
+        }
+        // Set default provider: use returned default or first applied
+        const resolvedDefault = data.settings?.defaultProvider || data.applied[0] || selected[0]?.provider || '';
+        setDefaultProvider(resolvedDefault);
+        // Persist the default provider choice
+        if (resolvedDefault) {
+          fetch('/api/settings/llm', {
+            method: 'POST', headers: authHeaders(),
+            body: JSON.stringify({ defaultProvider: resolvedDefault }),
+          }).catch(() => {});
+        }
         setSetupMsg({ type: 'ok', text: data.message });
         setLlmConfigured(true);
       } else {
@@ -159,6 +180,22 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
     finally { setOpenclawLoading(false); }
   };
 
+  const refreshLlmSettings = async () => {
+    try {
+      const res = await fetch('/api/settings/llm');
+      if (!res.ok) return;
+      const d = await res.json() as { defaultProvider?: string; autoFallback?: boolean; providers?: Record<string, { configured: boolean; displayName?: string; model?: string; apiKeyPreview?: string }> };
+      if (d.providers) {
+        const active = Object.entries(d.providers)
+          .filter(([, p]) => p.configured)
+          .map(([k, p]) => ({ name: k, displayName: p.displayName ?? k, model: p.model ?? '', apiKeyPreview: p.apiKeyPreview }));
+        if (active.length > 0) setConfiguredProviders(active);
+      }
+      if (d.defaultProvider) setDefaultProvider(d.defaultProvider);
+      if (typeof d.autoFallback === 'boolean') setAutoFallback(d.autoFallback);
+    } catch { /* ignore */ }
+  };
+
   const importOpenclaw = async () => {
     setOpenclawLoading(true); setSetupMsg(null);
     try {
@@ -172,6 +209,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
       } else {
         setSetupMsg({ type: 'ok', text: t('llm.importedModels', { count: data.appliedModels }) });
         setLlmConfigured(true);
+        await refreshLlmSettings();
       }
     } catch { setSetupMsg({ type: 'err', text: t('llm.importFailed') }); }
     finally { setOpenclawLoading(false); }
@@ -394,16 +432,44 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
             <span>&#10003;</span>
             <span>{t('llm.configured')}</span>
           </div>
-          {configuredProviders.map(p => (
-            <div key={p.name} className="flex items-center justify-between bg-green-500/10 border border-green-500/30 rounded-lg px-4 py-2.5">
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-green-400" />
-                <span className="text-sm text-fg-primary font-medium">{p.displayName}</span>
-                {p.model && <span className="text-xs text-fg-tertiary">{p.model}</span>}
-              </div>
-              {p.apiKeyPreview && <code className="text-[10px] text-fg-tertiary">{p.apiKeyPreview}</code>}
-            </div>
-          ))}
+          {configuredProviders.length > 1 && (
+            <div className="text-xs text-fg-secondary mb-1">{t('llm.selectDefault')}</div>
+          )}
+          {configuredProviders.map(p => {
+            const isDefault = defaultProvider === p.name;
+            return (
+              <button
+                key={p.name}
+                onClick={async () => {
+                  const prev = defaultProvider;
+                  setDefaultProvider(p.name);
+                  try {
+                    await fetch('/api/settings/llm', {
+                      method: 'POST', headers: authHeaders(),
+                      body: JSON.stringify({ defaultProvider: p.name }),
+                    });
+                  } catch { setDefaultProvider(prev); }
+                }}
+                className={`w-full flex items-center justify-between rounded-lg px-4 py-2.5 text-left transition-colors ${
+                  isDefault
+                    ? 'bg-brand-500/15 border-2 border-brand-500'
+                    : 'bg-green-500/10 border border-green-500/30 hover:border-brand-500/50'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                    isDefault ? 'border-brand-500' : 'border-fg-tertiary'
+                  }`}>
+                    {isDefault && <span className="w-1.5 h-1.5 rounded-full bg-brand-500" />}
+                  </span>
+                  <span className="text-sm text-fg-primary font-medium">{p.displayName}</span>
+                  {p.model && <span className="text-xs text-fg-tertiary">{p.model}</span>}
+                  {isDefault && <span className="text-[10px] text-brand-500 font-medium">{t('llm.default')}</span>}
+                </div>
+                {p.apiKeyPreview && <code className="text-[10px] text-fg-tertiary">{p.apiKeyPreview}</code>}
+              </button>
+            );
+          })}
           <div className="text-xs text-fg-secondary mt-1">{t('llm.configuredHint')}</div>
 
           <div className="flex items-center justify-between bg-surface-elevated/40 rounded-lg px-4 py-3 mt-3">

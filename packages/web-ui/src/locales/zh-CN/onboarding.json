@@ -33,6 +33,8 @@
     "subtitle": "智能体需要 LLM 来思考与行动",
     "configured": "已配置 LLM 提供商",
     "configuredHint": "可随时在设置中管理提供商。",
+    "selectDefault": "点击选择智能体的默认模型：",
+    "default": "默认",
     "fromEnv": "来自环境变量",
     "detectingKeys": "正在检测 API keys...",
     "noKeysFound": "未发现 API keys。请在 <code>.env</code> 中设置 <code>ANTHROPIC_API_KEY</code>、<code>OPENAI_API_KEY</code> 等，然后重启。",

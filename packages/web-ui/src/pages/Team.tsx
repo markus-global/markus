@@ -792,11 +792,6 @@ if (typeof window !== 'undefined') {
   window.addEventListener('hashchange', () => _hashSubs.forEach(fn => fn()));
 }
 
-// Guards against sending the intro message twice within the same page session.
-// The real "first time" check is DB-based: intro is only sent when loadSessions
-// returns zero sessions for this agent (i.e., the user has never chatted with it).
-const _introSentGlobal = new Set<string>();
-
 export interface TeamPreviewData {
   agents?: AgentInfo[];
   humans?: HumanUserInfo[];
@@ -1768,14 +1763,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           } else {
             setActiveSessionId(null);
             if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
-            // Only auto-send intro when DB confirms no sessions ever existed for this agent
-            if (!_introSentGlobal.has(selectedAgent)) {
-              _introSentGlobal.add(selectedAgent);
-              const agentInfo = agents.find(a => a.id === selectedAgent);
-              const introNs = agentInfo?.role === 'secretary' ? 'secretary' : 'agent';
-              const introMsg = t(`intro.${introNs}`);
-              setTimeout(() => sendRef.current?.(introMsg), 150);
-            }
           }
         });
       }

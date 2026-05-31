@@ -297,7 +297,7 @@ export function App() {
         setShowOnboarding(false);
         setSkipOnboardingProfile(false);
         checkLlmConfig();
-        navigate(PAGE.TEAM);
+        navigate(PAGE.HOME);
       }}
     />;
   }
