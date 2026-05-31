@@ -51,91 +51,30 @@ program
 
 // Lazy-load command modules to keep startup fast
 async function registerCommands() {
-  // ── 1. start ───────────────────────────────────────────────────────
   const { registerStartCommand } = await import('./commands/start.js');
   registerStartCommand(program);
 
-  // ── 1b. model ──────────────────────────────────────────────────────
   const { registerModelCommand } = await import('./commands/model.js');
   registerModelCommand(program);
 
-  // ── 1e. models ────────────────────────────────────────────────────
   const { registerModelsCommand } = await import('./commands/models.js');
   registerModelsCommand(program);
 
-  // ── 1c. doctor ──────────────────────────────────────────────────────
   const { registerDoctorCommand } = await import('./commands/doctor.js');
   registerDoctorCommand(program);
 
-  // ── 1d. auth ───────────────────────────────────────────────────────
   const { registerAuthCommand } = await import('./commands/auth.js');
   registerAuthCommand(program);
-
-  // ── 1f. channel ───────────────────────────────────────────────────
-  const { registerChannelCommand } = await import('./commands/channel.js');
-  registerChannelCommand(program);
-
-  // ── 1g. gateway ───────────────────────────────────────────────────
-  const { registerGatewayCommand } = await import('./commands/gateway.js');
-  registerGatewayCommand(program);
-
-  // ── 2. agent ───────────────────────────────────────────────────────
-  const { registerAgentCommands } = await import('./commands/agent.js');
-  registerAgentCommands(program);
-
-  // ── 3. project (+ task, requirement, deliverable, report, review, approval)
-  const { registerProjectCommands } = await import('./commands/project.js');
-  const { registerTaskCommands } = await import('./commands/task.js');
-  const { registerRequirementCommands } = await import('./commands/requirement.js');
-  const { registerDeliverableCommands } = await import('./commands/deliverable.js');
-  const { registerReportCommands } = await import('./commands/report.js');
-  const { registerReviewCommands } = await import('./commands/review.js');
-  const { registerApprovalCommands } = await import('./commands/approval.js');
-
-  const projectCmd = registerProjectCommands(program);
-  registerTaskCommands(projectCmd);
-  registerRequirementCommands(projectCmd);
-  registerDeliverableCommands(projectCmd);
-  registerReportCommands(projectCmd);
-  registerReviewCommands(projectCmd);
-  registerApprovalCommands(projectCmd);
-
-  // ── 4. team ────────────────────────────────────────────────────────
-  const { registerTeamCommands } = await import('./commands/team.js');
-  registerTeamCommands(program);
-
-  // ── 4b. connect + install ─────────────────────────────────────────
-  const { registerConnectCommands } = await import('./commands/connect.js');
-  registerConnectCommands(program);
 
   const { registerInstallAgentCommands } = await import('./commands/install-agent.js');
   registerInstallAgentCommands(program);
 
-  // ── 5. skill ───────────────────────────────────────────────────────
-  const { registerSkillCommands } = await import('./commands/skill.js');
-  registerSkillCommands(program);
+  const { registerAgentCommands } = await import('./commands/agent.js');
+  registerAgentCommands(program);
 
-  // ── 6. admin (+ system, audit, user, key, role, template, builder, gateway, external-agent, settings)
-  const admin = program.command('admin').description('Platform administration and system controls');
+  const admin = program.command('admin').description('System administration');
   const { registerSystemCommands } = await import('./commands/system.js');
-  const { registerAuditCommands } = await import('./commands/audit.js');
-  const { registerUserCommands } = await import('./commands/user.js');
-  const { registerKeyCommands } = await import('./commands/key.js');
-  const { registerRoleCommands } = await import('./commands/role.js');
-  const { registerTemplateCommands } = await import('./commands/template.js');
-  const { registerBuilderCommands } = await import('./commands/builder.js');
-  const { registerExternalAgentCommands } = await import('./commands/external-agent.js');
-  const { registerSettingsCommands } = await import('./commands/settings.js');
-
-  const systemCmd = registerSystemCommands(admin);
-  registerAuditCommands(systemCmd);
-  registerUserCommands(admin);
-  registerKeyCommands(admin);
-  registerRoleCommands(admin);
-  registerTemplateCommands(admin);
-  registerBuilderCommands(admin);
-  registerExternalAgentCommands(admin);
-  registerSettingsCommands(admin);
+  registerSystemCommands(admin);
 }
 
 registerCommands()

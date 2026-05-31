@@ -1,7 +1,7 @@
 /**
  * Startup logger for markus start command.
  * Writes all startup logs to ~/.markus/logs/ AND prints to console.
- * Run `markus gateway logs` to view the log file.
+ * Log files are stored in ~/.markus/logs/.
  */
 
 import { createWriteStream, existsSync, mkdirSync, appendFileSync } from 'node:fs';

@@ -32,6 +32,43 @@
     "createProject": "创建项目",
     "createProjectDesc": "设定需求，让智能体规划、执行并交付"
   },
+  "checklist": {
+    "title": "开始使用 Markus",
+    "subtitle": "按照以下步骤快速上手，让你的 AI 团队开始工作。",
+    "progress": "{{done}}/{{total}} 步已完成",
+    "setup": {
+      "title": "系统配置",
+      "llm": "配置 AI 模型",
+      "llmDesc": "设置 LLM 提供商的 API Key，这是智能体工作的基础",
+      "llmAction": "前往配置",
+      "search": "配置搜索引擎",
+      "searchDesc": "设置搜索 API Key，让智能体能够搜索互联网获取信息",
+      "searchAction": "前往配置",
+      "browser": "设置浏览器自动化",
+      "browserDesc": "安装 Chrome 扩展，让智能体能够自动操控浏览器",
+      "browserAction": "前往设置",
+      "optional": "可选",
+      "update": "更新配置"
+    },
+    "explore": {
+      "title": "开始探索",
+      "greet": "与秘书打个招呼",
+      "greetDesc": "认识你的 AI 秘书，了解它能帮你做什么",
+      "greetAction": "开始对话",
+      "project": "创建第一个项目",
+      "projectDesc": "让秘书帮你创建一个探索项目，体验完整工作流",
+      "projectAction": "让秘书创建",
+      "requirements": "添加需求",
+      "requirementsDesc": "为项目添加需求，智能体会自动拆解为可执行的任务",
+      "requirementsAction": "让秘书添加",
+      "agent": "招聘一个智能体",
+      "agentDesc": "从模板招聘专业智能体，如研究员、开发者、分析师等",
+      "agentAction": "让秘书招聘",
+      "team": "组建团队",
+      "teamDesc": "将智能体组成团队，协同完成更复杂的任务",
+      "teamAction": "让秘书组建"
+    }
+  },
   "heroBanner": {
     "title": "构建，协作，扩展。",
     "subtitle": "Markus 是你的 AI 协作平台。部署专业智能体，自动化复杂任务，达成更多目标。",

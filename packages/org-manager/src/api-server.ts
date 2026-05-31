@@ -2451,6 +2451,16 @@ export class APIServer {
         }
 
         const userText = body['text'] as string;
+        const inject = body['inject'] as boolean | undefined;
+
+        if (inject) {
+          if (this.storage && sessionId) {
+            await this.persistUserMessage(agentId!, userText, senderId, images, sessionId);
+          }
+          agent.injectFollowUp(userText, senderId, senderInfo, images);
+          this.json(res, 200, { injected: true });
+          return;
+        }
 
         // Wrap persistUserMessage to bind DB session → memory session on first message
         const bindingPersist = async (

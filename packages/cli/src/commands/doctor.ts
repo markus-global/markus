@@ -277,7 +277,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
       checkFail('Skills directory not readable');
     }
   } else {
-    checkWarn('Skills directory not found', `${skillsDir} — run: markus skill install <name>`);
+    checkWarn('Skills directory not found', `${skillsDir} — skills can be installed via Web UI or the Secretary agent`);
   }
 
   // ── 7. Network connectivity ─────────────────────────────────────────────

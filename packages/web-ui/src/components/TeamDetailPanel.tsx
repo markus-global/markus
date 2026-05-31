@@ -147,7 +147,7 @@ export function TeamDetailPanel({
                 <div className="flex-1 min-w-0 text-left">
                   <span className="truncate font-medium text-[12px] leading-tight block">{team.name}</span>
                   <div className="text-[10px] text-fg-secondary leading-tight mt-0.5">
-                    {t('chat.members_other', { count: groupChat.memberCount ?? (teamAgents.length + teamHumans.length) })}
+                    {t('chat.members_other', { count: groupChat.memberCount || (teamAgents.length + teamHumans.length) })}
                   </div>
                 </div>
               </button>

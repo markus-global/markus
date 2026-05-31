@@ -423,6 +423,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       invalidateApiCache('/taskboard');
       invalidateApiCache('/requirements');
       window.dispatchEvent(new CustomEvent('markus:data-changed'));
+      window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
       setTimeout(() => fetchData(), 800);
     } catch { /* */ }
     setResponding(null);

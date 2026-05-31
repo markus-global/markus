@@ -852,11 +852,14 @@ export class AttentionController {
 
     // R0: Same-user follow-up during active chat → merge (inject into session)
     // This lets the user send multiple messages without each one preempting the previous.
+    // Skip merge when the current stream is being cancelled (user aborted) —
+    // the new message should be processed as a fresh turn after cancellation.
     if (
       newItem.sourceType === 'human_chat' &&
       currentItem.sourceType === 'human_chat' &&
       newItem.metadata?.senderId &&
-      newItem.metadata.senderId === currentItem.metadata?.senderId
+      newItem.metadata.senderId === currentItem.metadata?.senderId &&
+      !(currentItem.payload.extra?.cancelToken as { cancelled?: boolean } | undefined)?.cancelled
     ) {
       return 'merge';
     }

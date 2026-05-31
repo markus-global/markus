@@ -77,11 +77,11 @@ export function registerInstallAgentCommands(program: Command) {
         console.log(`  [3/5] Connection skipped (--skip-connect).`);
         console.log(`  [4/5] Token generation skipped.`);
         console.log(`  [5/5] Config write skipped.`);
-        console.log(`\n  ${connector.displayName} installed. Run \`markus connect add ${platform}\` to connect later.\n`);
+        console.log(`\n  ${connector.displayName} installed. Run \`markus install ${platform}\` again without --skip-connect to connect later.\n`);
         return;
       }
 
-      // Step 3-5: Register, authenticate, and configure (same as `markus connect add`)
+      // Step 3-5: Register, authenticate, and configure
       const client = createClient(g);
       const serverUrl = g.server || process.env['MARKUS_API_URL'] || 'http://localhost:8056';
       const agentId = `${platform}-${randomBytes(4).toString('hex')}`;
@@ -145,15 +145,14 @@ export function registerInstallAgentCommands(program: Command) {
           console.log(`    ${connector.installation.startCommand}`);
         }
 
-        console.log(`\n  To verify connection:`);
-        console.log(`    markus connect status`);
+        console.log(`\n  To verify connection, check the Web UI or ask the Secretary agent.`);
         console.log('');
       } catch (e) {
         if (e instanceof ApiError) {
           console.error(`\n  Connection failed: ${e.message}`);
           console.log(`  ${connector!.displayName} was installed but could not connect to Markus.`);
           console.log(`  Make sure the Markus server is running (\`markus start\`), then run:`);
-          console.log(`    markus connect add ${platform}\n`);
+          console.log(`    markus install ${platform}\n`);
           return;
         }
         throw e;

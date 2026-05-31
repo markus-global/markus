@@ -1351,7 +1351,7 @@ export class AgentManager {
           }
           return stats;
         } : undefined,
-        ...this.buildDeliverableCallbacks(id, config.orgId),
+        ...this.buildDeliverableCallbacks(id),
       })) {
         agent.registerTool(tool);
       }
@@ -2088,7 +2088,7 @@ export class AgentManager {
           }
           return stats;
         } : undefined,
-        ...this.buildDeliverableCallbacks(id, config.orgId),
+        ...this.buildDeliverableCallbacks(id),
       })) {
         agent.registerTool(tool);
       }

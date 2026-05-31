@@ -386,9 +386,9 @@ export async function quickInit(options?: InitOptions) {
     for (const p of detectedPlatforms) {
       console.log(`    - ${p.displayName} (${p.platform})`);
     }
-    console.log(`\n  Connect them after starting the server:`);
+    console.log(`\n  Install them after starting the server:`);
     for (const p of detectedPlatforms) {
-      console.log(`    markus connect add ${p.platform}`);
+      console.log(`    markus install ${p.platform}`);
     }
     console.log('');
   }
