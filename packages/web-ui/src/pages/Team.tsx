@@ -132,6 +132,9 @@ function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
         : { type: 'text' as const, content: s.content, thinking: s.thinking, createdAt: s.createdAt }
     );
   }
+  if (m.role === 'assistant' && (m.content === '[cancelled]' || m.content === '[Stream cancelled]')) {
+    base.text = '';
+  }
   if (m.metadata?.isError || (m.role === 'assistant' && m.content.startsWith('⚠'))) {
     base.isError = true;
   }
@@ -1335,7 +1338,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     const timer = setInterval(refreshAgents, 30_000);
     const teamTimer = setInterval(refreshTeams, 60_000);
     const unsub = wsClient.on('agent:update', () => { throttledRefreshAgents(); throttledRefreshTeams(); });
-    const unsubTeamUpdate = wsClient.on('team:update', throttledRefreshTeams);
+    const unsubTeamUpdate = wsClient.on('team:update', () => { throttledRefreshTeams(); throttledRefreshGroupChats(); });
     const unsubTeamOnAgentRemoved = wsClient.on('agent:removed', throttledRefreshTeams);
     const unsubGroup = wsClient.on('chat:group_created', () => { throttledRefreshGroupChats(); throttledRefreshTeams(); });
     const unsubGroupUpdate = wsClient.on('chat:group_updated', throttledRefreshGroupChats);
@@ -1378,14 +1381,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           handleViewProfile(detail.params.selectAgent);
         }
         if (detail.params?.prefillMessage) {
-          setInput(detail.params.prefillMessage);
-          setTimeout(() => {
-            const el = textareaRef.current;
-            if (el) {
-              el.focus();
-              el.setSelectionRange(el.value.length, el.value.length);
-            }
-          }, 100);
+          const msg = detail.params.prefillMessage;
+          setMainTab('chat');
+          if (detail.params?.autoSend === 'true') {
+            setTimeout(() => sendRef.current?.(msg), 300);
+          } else {
+            setInput(msg);
+            setTimeout(() => {
+              const el = textareaRef.current;
+              if (el) {
+                el.focus();
+                el.setSelectionRange(el.value.length, el.value.length);
+              }
+            }, 100);
+          }
         }
         if (detail.params?.dm) {
           setChatMode('dm');
@@ -1418,7 +1427,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       localStorage.removeItem('markus_nav_agentId');
       const pTab = localStorage.getItem('markus_nav_profileTab');
       localStorage.removeItem('markus_nav_profileTab');
-      handleViewProfile(navAgent, pTab ? { tab: pTab as 'overview' } : undefined);
+      const navPrefill = localStorage.getItem('markus_nav_prefillMessage');
+      if (navPrefill) {
+        setChatMode('direct');
+        setSelectedAgent(navAgent);
+        setMainTab('chat');
+        if (isMobile) enterMobileDetail();
+      } else {
+        handleViewProfile(navAgent, pTab ? { tab: pTab as 'overview' } : undefined);
+      }
     }
     const navDm = localStorage.getItem('markus_nav_dm');
     if (navDm) {
@@ -1431,6 +1448,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       localStorage.removeItem('markus_nav_channel');
       setChatMode('channel'); setActiveChannel(navChannel); setMainTab('chat');
       if (isMobile) enterMobileDetail();
+    }
+    const navPrefillMsg = localStorage.getItem('markus_nav_prefillMessage');
+    if (navPrefillMsg) {
+      localStorage.removeItem('markus_nav_prefillMessage');
+      localStorage.removeItem('markus_nav_autoSend');
+      setMainTab('chat');
+      setInput(navPrefillMsg);
+      setTimeout(() => {
+        const el = textareaRef.current;
+        if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+      }, 150);
     }
     const selectAgent = localStorage.getItem('markus_nav_selectAgent');
     if (selectAgent) {
@@ -1570,7 +1598,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     loadingSessionRef.current = sessionId;
     try {
       const result = await api.sessions.getMessages(sessionId, 50);
-      const msgs = result.messages.map(dbMsgToChat);
+      const msgs = result.messages.map(dbMsgToChat).filter(m =>
+        m.sender !== 'agent' || m.text || (m.segments && m.segments.length > 0)
+      );
       msgBuffers.current.set(convKey, msgs);
       if (currentConvKeyRef.current === convKey && loadingSessionRef.current === sessionId) {
         setMessages(msgs);
@@ -1860,6 +1890,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const sessionId = (p['sessionId'] as string) ?? '';
       const meta = (p['metadata'] as Record<string, unknown>) ?? {};
       if (!agentId || !message) return;
+      if (message === '[cancelled]' || message === '[Stream cancelled]') return;
 
       const isActivity = !!meta.activityLog || message.startsWith('[ACTIVITY:');
 
@@ -1943,16 +1974,24 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const prevKey = currentConvKeyRef.current;
       sendingConvs.current.delete(prevKey);
       actBuffers.current.delete(prevKey);
-      // Mark the current agent message as stopped
+      // Mark the current agent message as stopped, keeping any partial content.
+      // If the agent hadn't produced any content yet, remove the empty bubble entirely.
       updateConvMsgs(prevKey, prev => {
         const u = [...prev];
         for (let i = u.length - 1; i >= 0; i--) {
           if (u[i]!.sender === 'agent' && !u[i]!.isStopped && !u[i]!.isError) {
             const msg = u[i]!;
-            const segs = (msg.segments ?? []).map(s =>
-              s.type === 'tool' && s.status === 'running' ? { ...s, status: 'stopped' as const } : s
+            const hasContent = msg.text?.trim() || (msg.segments ?? []).some(s =>
+              (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
             );
-            u[i] = { ...msg, isStopped: true, segments: segs };
+            if (!hasContent) {
+              u.splice(i, 1);
+            } else {
+              const segs = (msg.segments ?? []).map(s =>
+                s.type === 'tool' && s.status === 'running' ? { ...s, status: 'stopped' as const } : s
+              );
+              u[i] = { ...msg, isStopped: true, segments: segs };
+            }
             break;
           }
         }
@@ -2284,11 +2323,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           fileNamesToSend,
         );
         if (currentConvKeyRef.current === sendKey) {
+          // Message was merged into the agent's active processing — remove the
+          // empty agent placeholder bubble since no separate reply will arrive.
+          if (streamResult.merged) {
+            updateConvMsgs(sendKey, prev => prev.filter(m => m.id !== agentMsgId));
+          }
+
           // Apply server's authoritative final segments and content so the
           // rendered state matches the DB-persisted data.  This prevents a
           // blank bubble when delta-built segments have empty content (e.g.
           // thinking-only responses before text_delta arrives).
-          if (streamResult.segments?.length) {
+          if (!streamResult.merged && streamResult.segments?.length) {
             updateConvMsgs(sendKey, prev => {
               const u = [...prev];
               const idx = u.findIndex(m => m.id === agentMsgId);
@@ -2316,7 +2361,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           // Fallback for pure text responses where the server sends text_commit
           // events (no text_delta, no done.segments) — build final segments
           // from the committedSegments that were accumulated during streaming.
-          if (!streamResult.segments?.length) {
+          if (!streamResult.merged && !streamResult.segments?.length) {
             updateConvMsgs(sendKey, prev => {
               const u = [...prev];
               const idx = u.findIndex(m => m.id === agentMsgId);
@@ -2399,7 +2444,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               const msg = u[idx]!;
               const hasContent = msg.text
                 || (msg.segments && msg.segments.length > 0 && msg.segments.some(s =>
-                  (s.type === 'text' && (s as { content: string }).content) || s.type === 'tool'
+                  (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
                 ));
               if (!hasContent) {
                 return prev.filter(m => m.id !== agentMsgId);
@@ -2434,7 +2479,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             const msg = u[idx]!;
             const hasContent = msg.text
               || (msg.segments && msg.segments.length > 0 && msg.segments.some(s =>
-                (s.type === 'text' && (s as { content: string }).content) || s.type === 'tool'
+                (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
               ));
             if (!hasContent) {
               return prev.filter(m => m.id !== agentMsgId);

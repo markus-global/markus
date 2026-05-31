@@ -16,6 +16,7 @@ const external = [
   'sharp',
   'rfb2',
   'ws',
+  'node-datachannel',
 ];
 
 const trayExternal = [
@@ -40,8 +41,8 @@ async function main() {
     banner: {
       js: [
         '#!/usr/bin/env -S node --disable-warning=ExperimentalWarning',
-        "import { createRequire } from 'module';",
-        'const require = createRequire(import.meta.url);',
+        "import { createRequire as _createRequire } from 'module';",
+        'const require = _createRequire(import.meta.url);',
       ].join('\n'),
     },
     sourcemap: false,

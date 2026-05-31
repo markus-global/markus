@@ -1,5 +1,47 @@
 # Release Log
 
+## v0.7.3
+
+macOS 安装包全面修复（签名、公证、TCC、升级流程）；系统托盘简化（仅"打开控制台"+"退出"）；新用户引导清单；CLI 精简（移除 15 个废弃命令）；聊天流式健壮性改进；预览模式增强。
+
+### New Features
+
+- **新用户引导清单** — 首页新增分步引导（系统配置 + 探索步骤），引导用户配置 LLM、搜索引擎、浏览器自动化，并通过秘书完成首个项目、需求、招聘和团队组建
+- **消息注入 API** — 新增 `inject` 模式，允许在 Agent 活跃处理期间追加消息并合并到当前上下文，避免创建空响应气泡
+- **RC/预览版发布流程** — 新增 `quick-release.sh rc` 和 `promote` 命令，支持 npm `@next` 标签和 GitHub 预发布，CI 自动区分稳定版和预览版
+
+### Bug Fixes
+
+- **修复 macOS 安装包启动失败** — 重写 postinstall 脚本：JIT entitlements 重签名、端口冲突检测、`/Applications/Markus.app` 自动放置
+- **修复 macOS TCC 弹窗显示 "node"** — 打包时将 Node.js 二进制重命名为 `Markus`，保留 `node` 符号链接兼容 node_modules
+- **修复 macOS Dock 图标持续跳动** — `Info.plist` 设置 `LSUIElement=true`，Markus 作为纯菜单栏应用运行
+- **修复托盘退出不终止服务** — `killServer()` 先 `launchctl bootout` 卸载 LaunchAgent，再通过 `lsof` 查找并终止占用端口的进程
+- **修复托盘菜单状态不同步** — 改用 `update-item` 逐项刷新菜单状态
+- **修复 esbuild 打包 createRequire 冲突** — Banner 注入的 `createRequire` 重命名为 `_createRequire`，避免与 node-datachannel 冲突
+- **修复 node-datachannel 原生模块加载失败** — 标记为 esbuild external，改为懒加载 `await import()`
+- **修复取消流式后空白气泡** — 移除无内容的 Agent 消息气泡，而非显示空白
+- **修复 WS 回退广播空内容** — SSE 断连后仅在有实际内容时才通过 WebSocket 推送
+- **修复 `[merged]` 响应持久化** — 消息合并到活跃处理时跳过数据库持久化
+- **修复 Desktop 目录访问 TCC 弹窗** — 删除桌面快捷方式前先检查文件是否存在
+
+### Improvements
+
+- **系统托盘简化** — 菜单精简为"打开控制台"和"退出 Markus"两项；启动时自动开启服务并打开浏览器；托盘支持中英双语
+- **CLI 精简** — 移除 15 个废弃的 admin 命令（approval、audit、builder、channel、connect、deliverable、gateway、key、project、report、requirement、review、role、settings、skill、task、team、template、user），Agent 应使用内置工具而非 CLI
+- **macOS 安装包签名与公证** — CI 支持 Developer ID Application/Installer 签名、notarytool 公证、stapler 装订
+- **macOS 升级流程** — 新增 preinstall 脚本：优雅停止运行中的服务和托盘，卸载 LaunchAgent，确保干净升级
+- **隐藏 default 项目名** — Work 和 Deliverables 页面不再显示名为 "default" 的项目
+- **预览模式增强** — 隐藏 attention 区域、抑制 API 调用和头像 404、中文 locale 使用英文名
+- **Team 页面增强** — `team:update` 事件同步刷新群聊列表；支持 `prefillMessage` 和 `autoSend` 导航参数
+- **交付物页面简化** — 移除手动创建表单，空状态引导用户跳转工作台
+
+### Stats
+
+- 46 files changed, +466 / −3,638 lines (this commit)
+- Total across all v0.7.3 RC iterations: ~100 files changed
+
+---
+
 ## v0.7.2
 
 Mailbox 系统重构（健壮多 Agent 协作）；首页重设计（行动导向信息架构）；多搜索引擎后端（Tavily/Google/SerpAPI/Exa）；MindTab 暂停/恢复/取消控制；项目工具增强；交付物 UX 改进。

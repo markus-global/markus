@@ -29,8 +29,8 @@
   },
   "empty": {
     "title": "No deliverables yet",
-    "subtitle": "Deliverables are created when tasks complete or manually",
-    "createFirst": "+ Create first"
+    "subtitle": "Deliverables are automatically created when agents complete tasks",
+    "goToWork": "Go to Workbench"
   },
   "detail": {
     "selectToView": "Select a deliverable to view details",

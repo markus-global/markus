@@ -939,7 +939,9 @@ export const api = {
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
     message: (id: string, text: string, images?: string[], sessionId?: string | null, fileNames?: string[]) =>
       request<{ reply: string; sessionId?: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, fileNames, sessionId: sessionId ?? undefined }) }),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[]): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[] }> => {
+    injectMessage: (id: string, text: string, images?: string[], sessionId?: string | null) =>
+      request<{ injected: boolean }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, sessionId: sessionId ?? undefined, inject: true }) }),
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[]): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean }> => {
       return new Promise(async (resolve, reject) => {
         let fullContent = '';
         let resultSessionId: string | undefined;
@@ -981,7 +983,8 @@ export const api = {
                   if (event.sessionId) resultSessionId = event.sessionId;
                   const doneSegments = (event as Record<string, unknown>).segments as StoredSegment[] | undefined;
                   if (doneSegments?.length) resultSegments = doneSegments;
-                  resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments });
+                  const merged = !!(event as Record<string, unknown>).merged;
+                  resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, merged });
                   reader.cancel().catch(() => {});
                   return;
                 } else if (event.type === 'error') {

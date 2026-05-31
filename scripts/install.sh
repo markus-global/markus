@@ -240,20 +240,107 @@ create_desktop_shortcut() {
   local os="$1" markus_cmd="$2"
 
   if [ "$os" = "darwin" ]; then
-    local shortcut="$HOME/Desktop/Markus.command"
-    cat > "$shortcut" << SCRIPT
+    # Create a proper .app bundle in /Applications (visible in Spotlight & Launchpad)
+    local app_dir="/Applications/Markus.app"
+    rm -rf "$app_dir"
+    mkdir -p "$app_dir/Contents/MacOS"
+    mkdir -p "$app_dir/Contents/Resources"
+
+    cat > "$app_dir/Contents/Info.plist" << 'PLIST_APP'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Markus</string>
+  <key>CFBundleDisplayName</key>
+  <string>Markus</string>
+  <key>CFBundleIdentifier</key>
+  <string>global.markus.desktop</string>
+  <key>CFBundleVersion</key>
+  <string>1.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleExecutable</key>
+  <string>launch</string>
+  <key>CFBundleIconFile</key>
+  <string>markus</string>
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>
+PLIST_APP
+
+    cat > "$app_dir/Contents/MacOS/launch" << LAUNCH_SCRIPT
 #!/bin/bash
-# Markus — AI Digital Workforce Platform
-# If the server is already running, just open the browser
+MARKUS_CMD="${markus_cmd}"
+LOG_DIR="\$HOME/.markus/logs"
 PORT=8056
+mkdir -p "\$LOG_DIR"
+
+# Check if Markus is already running
 if curl -s --max-time 2 -o /dev/null "http://localhost:\$PORT/api/health" 2>/dev/null; then
   open "http://localhost:\$PORT"
   exit 0
 fi
-${markus_cmd} start
-SCRIPT
-    chmod +x "$shortcut"
-    ok "Desktop shortcut created: Markus.command"
+
+# If port is bound but health isn't responding, it might be Markus still starting
+if lsof -i ":\$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  OCCUPANT_PID=\$(lsof -i ":\$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)
+  OCCUPANT_CMD=\$(ps -p "\$OCCUPANT_PID" -o command= 2>/dev/null || echo "")
+  IS_MARKUS=false
+  case "\$OCCUPANT_CMD" in *markus*|*node*) IS_MARKUS=true ;; esac
+
+  if \$IS_MARKUS; then
+    for i in \$(seq 1 20); do
+      if curl -s --max-time 2 -o /dev/null "http://localhost:\$PORT/api/health" 2>/dev/null; then
+        open "http://localhost:\$PORT"
+        exit 0
+      fi
+      sleep 1
+    done
+  fi
+  OCCUPANT_NAME=\$(ps -p "\$OCCUPANT_PID" -o comm= 2>/dev/null || echo "unknown")
+  osascript -e "display dialog \"Port \$PORT is already in use by '\$OCCUPANT_NAME' (PID \$OCCUPANT_PID).\nMarkus cannot start.\n\nFree the port or change it in ~/.markus/markus.json\" with title \"Markus\" buttons {\"OK\"} default button \"OK\" with icon stop"
+  exit 1
+fi
+
+\$MARKUS_CMD start >> "\$LOG_DIR/stdout.log" 2>> "\$LOG_DIR/stderr.log" &
+SERVER_PID=\$!
+
+TRIES=0
+MAX_TRIES=60
+while [ \$TRIES -lt \$MAX_TRIES ]; do
+  if ! kill -0 "\$SERVER_PID" 2>/dev/null; then
+    osascript -e 'display dialog "Markus failed to start.\nCheck logs at ~/.markus/logs/" with title "Markus" buttons {"OK"} default button "OK" with icon stop'
+    exit 1
+  fi
+  if curl -s --max-time 2 -o /dev/null "http://localhost:\$PORT/api/health" 2>/dev/null; then
+    open "http://localhost:\$PORT"
+    break
+  fi
+  sleep 0.5
+  TRIES=\$((TRIES + 1))
+done
+
+wait "\$SERVER_PID"
+LAUNCH_SCRIPT
+    chmod +x "$app_dir/Contents/MacOS/launch"
+
+    # Copy logo as icon if available
+    local logo_src="$HOME/.markus/app/logo.png"
+    if [ -f "$logo_src" ]; then
+      cp "$logo_src" "$app_dir/Contents/Resources/markus.png"
+    fi
+
+    # Remove legacy .command shortcut only if it actually exists
+    # (avoids triggering macOS TCC permission dialog for ~/Desktop access)
+    if [ -f "$HOME/Desktop/Markus.command" ]; then
+      rm -f "$HOME/Desktop/Markus.command"
+    fi
+
+    ok "App bundle created: /Applications/Markus.app"
 
   elif [ "$os" = "linux" ]; then
     local desktop_dir="${XDG_DESKTOP_DIR:-$HOME/Desktop}"

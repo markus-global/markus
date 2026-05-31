@@ -86,21 +86,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   });
   const [flash, setFlash] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [actionLoading, setActionLoading] = useState('');
-  const [showCreate, setShowCreate] = useState(false);
-  const [creating, setCreating] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const groupTabs = useMemo(() => [{ id: 'date' as const }, { id: 'project' as const }, { id: 'agent' as const }, { id: 'type' as const }], []);
   const handleGroupSwipe = useCallback((g: 'project' | 'agent' | 'date' | 'type') => { setGroupBy(g); setCollapsedGroups(new Set()); }, []);
   const groupSwipe = useSwipeTabs(groupTabs, groupBy, handleGroupSwipe);
   const listRef = useRef<HTMLDivElement>(null);
-
-  // Create form
-  const [newType, setNewType] = useState<string>('file');
-  const [newTitle, setNewTitle] = useState('');
-  const [newSummary, setNewSummary] = useState('');
-  const [newReference, setNewReference] = useState('');
-  const [newProjectId, setNewProjectId] = useState('');
-  const [newTags, setNewTags] = useState('');
 
   // File preview
   const [previewContent, setPreviewContent] = useState<string | null>(null);
@@ -132,6 +122,13 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
   const agentMap = useMemo(() => new Map(agents.map(a => [a.id, a])), [agents]);
   const projectMap = useMemo(() => new Map(projects.map(p => [p.id, p])), [projects]);
+
+  const resolveProjectName = useCallback((projectId: string | undefined): string | null => {
+    if (!projectId || projectId === 'default') return null;
+    const name = projectMap.get(projectId)?.name;
+    if (!name || name === 'default') return null;
+    return name;
+  }, [projectMap]);
 
   useEffect(() => {
     if (previewMode) return;
@@ -273,8 +270,9 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
       let key: string;
       let label: string;
       if (groupBy === 'project') {
-        key = item.projectId ?? '_none';
-        label = item.projectId ? (projectMap.get(item.projectId)?.name ?? item.projectId) : t('noProject');
+        const pName = resolveProjectName(item.projectId);
+        key = pName ? (item.projectId ?? '_none') : '_none';
+        label = pName ?? t('noProject');
       } else if (groupBy === 'agent') {
         key = item.agentId ?? '_none';
         label = item.agentId ? (agentMap.get(item.agentId)?.name ?? item.agentId) : t('common:unknown');
@@ -294,25 +292,6 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     else sorted.sort((a, b) => a[1].label.localeCompare(b[1].label));
     return sorted;
   }, [items, groupBy, projectMap, agentMap, t]);
-
-  const handleCreate = async () => {
-    if (!newTitle.trim() || !newSummary.trim()) return;
-    setCreating(true);
-    try {
-      await api.deliverables.create({
-        type: newType as DeliverableInfo['type'],
-        title: newTitle,
-        summary: newSummary,
-        reference: newReference,
-        projectId: newProjectId || undefined,
-        tags: newTags.split(',').map(s => s.trim()).filter(Boolean),
-      });
-      setShowCreate(false);
-      flashMsg('success', t('createModal.created'));
-      refresh();
-    } catch (e) { flashMsg('error', t('common:error', { message: String(e) })); }
-    setCreating(false);
-  };
 
   const handleVerify = async (d: DeliverableInfo) => {
     setActionLoading('verify');
@@ -399,13 +378,6 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     }
   }, [collapsedGroups.size, grouped]);
 
-  const openContributeForm = () => {
-    setNewTitle(''); setNewSummary(''); setNewReference(''); setNewTags('');
-    setNewType('file');
-    if (projects.length > 0) setNewProjectId(projects[0]!.id);
-    setShowCreate(true);
-  };
-
   const handleSelectItem = (item: DeliverableInfo) => {
     setSelected(item);
     if (isMobile) {
@@ -427,7 +399,6 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 {t('title')}{totalCount > 0 && <span className="ml-1.5 text-fg-tertiary font-normal">({totalCount})</span>}
               </h2>
             </div>
-            <button onClick={openContributeForm} className="text-xs px-2.5 py-1 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors shrink-0">{t('create')}</button>
           </div>
           <input
             value={searchQuery}
@@ -502,7 +473,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
               </svg>
               <p className="text-sm text-fg-secondary">{t('empty.title')}</p>
               <p className="text-xs text-fg-tertiary mt-1 mb-3">{t('empty.subtitle')}</p>
-              <button onClick={openContributeForm} className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">{t('empty.createFirst')}</button>
+              <button onClick={() => navBus.navigate(PAGE.WORK)} className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">{t('empty.goToWork')}</button>
             </div>
           ) : grouped.map(([key, group]) => {
             const isCollapsed = collapsedGroups.has(key);
@@ -638,7 +609,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
               </div>
 
               {/* Association links inline */}
-              {(selected.taskId || selected.agentId || selected.projectId) && (
+              {(selected.taskId || selected.agentId || resolveProjectName(selected.projectId)) && (
                 <div className="flex items-center gap-2 flex-wrap">
                   {selected.taskId && (
                     <button onClick={() => navBus.navigate(PAGE.WORK, { openTask: selected.taskId! })}
@@ -652,10 +623,10 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                       {t('links.agent', { name: agentMap.get(selected.agentId)?.name ?? selected.agentId.slice(0, 12) })}
                     </button>
                   )}
-                  {selected.projectId && (
+                  {resolveProjectName(selected.projectId) && (
                     <button onClick={() => navBus.navigate(PAGE.WORK, { projectId: selected.projectId! })}
                       className="text-xs text-blue-600 hover:underline bg-blue-500/10 px-2 py-0.5 rounded">
-                      {t('links.project', { name: projectMap.get(selected.projectId)?.name ?? selected.projectId.slice(0, 12) })}
+                      {t('links.project', { name: resolveProjectName(selected.projectId) })}
                     </button>
                   )}
                 </div>
@@ -841,68 +812,6 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         </div>
       )}
 
-      {/* Create Modal */}
-      {showCreate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => !creating && setShowCreate(false)}>
-          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[36rem] space-y-4" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-fg-primary">{t('createModal.title')}</h3>
-
-            <div>
-              <label className="text-xs text-fg-tertiary block mb-1">{t('createModal.type')}</label>
-              <select value={newType} onChange={e => setNewType(e.target.value)}
-                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary">
-                {ALL_TYPES.map(ty => <option key={ty} value={ty}>{TYPE_META[ty]?.icon ?? ''} {ty}</option>)}
-              </select>
-            </div>
-
-            <div>
-              <label className="text-xs text-fg-tertiary block mb-1">{t('createModal.titleField')} <span className="text-red-500">{t('createModal.required')}</span></label>
-              <input value={newTitle} onChange={e => setNewTitle(e.target.value)} placeholder={t('createModal.titlePlaceholder')}
-                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary focus:border-brand-500 focus:outline-none transition-colors" />
-            </div>
-
-            <div>
-              <label className="text-xs text-fg-tertiary block mb-1">{t('createModal.reference')} <span className="text-fg-tertiary">({t('createModal.referenceHint')})</span></label>
-              <input value={newReference} onChange={e => setNewReference(e.target.value)} placeholder={t('createModal.referencePlaceholder')}
-                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary focus:border-brand-500 focus:outline-none transition-colors font-mono" />
-            </div>
-
-            <div>
-              <label className="text-xs text-fg-tertiary block mb-1">{t('createModal.summary')} <span className="text-red-500">{t('createModal.required')}</span> <span className="text-fg-tertiary">({t('createModal.summaryHint')})</span></label>
-              <textarea value={newSummary} onChange={e => setNewSummary(e.target.value)}
-                placeholder={t('createModal.summaryPlaceholder')}
-                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary h-36 resize-none focus:border-brand-500 focus:outline-none transition-colors font-mono" />
-            </div>
-
-            <div className="flex gap-4">
-              <div className="flex-1">
-                <label className="text-xs text-fg-tertiary block mb-1">{t('createModal.tags')} <span className="text-fg-tertiary">({t('createModal.tagsHint')})</span></label>
-                <input value={newTags} onChange={e => setNewTags(e.target.value)} placeholder={t('createModal.tagsPlaceholder')}
-                  className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary focus:border-brand-500 focus:outline-none transition-colors" />
-              </div>
-              <div className="flex-1">
-                <label className="text-xs text-fg-tertiary block mb-1">{t('createModal.project')}</label>
-                <select value={newProjectId} onChange={e => setNewProjectId(e.target.value)}
-                  className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary">
-                  <option value="">{t('common:none')}</option>
-                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-3 pt-1 border-t border-border-default">
-              <button onClick={() => setShowCreate(false)} disabled={creating}
-                className="text-sm text-fg-tertiary hover:text-fg-secondary disabled:opacity-50 transition-colors py-2">{t('common:cancel')}</button>
-              <button onClick={handleCreate}
-                disabled={creating || !newTitle.trim() || !newSummary.trim()}
-                className="bg-brand-600 hover:bg-brand-500 text-white text-sm px-4 py-2 rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
-                {creating && <Spinner />}
-                {creating ? t('common:creating') : t('common:create')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

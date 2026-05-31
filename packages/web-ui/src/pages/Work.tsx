@@ -1810,7 +1810,10 @@ function TaskDetailPanel({
   const isScheduled = task.taskType === 'scheduled' && !!task.scheduleConfig;
   const schedPaused = isScheduled && !!task.scheduleConfig?.paused;
 
-  const taskProject = projects.find(p => p.id === task.projectId);
+  const taskProject = (() => {
+    const p = projects.find(p => p.id === task.projectId);
+    return p && p.name !== 'default' ? p : undefined;
+  })();
   const taskRequirement = requirements.find(r => r.id === task.requirementId);
   const assignedAgent = agents.find(a => a.id === task.assignedAgentId);
 
@@ -1859,19 +1862,16 @@ function TaskDetailPanel({
         <div className="flex-1 min-h-0 relative">
         <div ref={scrollContainerRef} className="h-full overflow-y-auto overflow-x-hidden" onTouchStart={detailSwipe.onTouchStart} onTouchEnd={detailSwipe.onTouchEnd}>
 
-          {activeTab === 'logs' && (
-            <div className="min-w-0 min-h-full">
+          <div className={activeTab === 'logs' ? 'min-w-0 min-h-full' : 'hidden'}>
               {runError && (
                 <div className="mx-4 mt-3 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-500">
                   <span className="font-medium">{t('work:task.failedToStart')}</span> {runError}
                 </div>
               )}
               <TaskExecutionLogs task={task} isRunning={task.status === 'in_progress'} authUser={authUser} agents={agents} />
-            </div>
-          )}
+          </div>
 
-          {activeTab === 'details' && (
-            <>
+          <div className={activeTab === 'details' ? '' : 'hidden'}>
               {/* Description */}
               <div className="px-6 pt-4 pb-3 border-b border-border-default">
                 {editingDesc ? (
@@ -2190,16 +2190,14 @@ function TaskDetailPanel({
                 {/* Unified Activity & Comments — notes + comments chronologically */}
                 <TaskActivitySection task={task} agents={agents} users={users} authUser={authUser} />
               </div>
-            </>
-          )}
+          </div>
 
           {/* Deliverables tab — full paginated list (newest first) */}
-          {activeTab === 'history' && (
+          <div className={activeTab === 'history' ? '' : 'hidden'}>
             <StatusHistoryTimeline entityType="task" entityId={task.id} />
-          )}
+          </div>
 
-          {activeTab === 'deliverables' && (
-            <div className="px-6 py-4">
+          <div className={activeTab === 'deliverables' ? 'px-6 py-4' : 'hidden'}>
               {(() => {
                 const validDeliverables = (task.deliverables ?? []).filter(
                   d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0
@@ -2264,8 +2262,7 @@ function TaskDetailPanel({
                   </>
                 );
               })()}
-            </div>
-          )}
+          </div>
         </div>
         {/* Floating scroll buttons — both bottom-right, fixed positions */}
         {scrollState !== 'none' && scrollState !== 'top' && (
@@ -2942,7 +2939,10 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   const status = row.data.status;
   const priority = row.data.priority;
   const assignee = row.kind === 'task' ? agentMap.get(row.data.assignedAgentId ?? '') : undefined;
-  const proj = projMap.get(row.kind === 'task' ? (row.data.projectId ?? '') : (row.data.projectId ?? ''));
+  const proj = (() => {
+    const p = projMap.get(row.kind === 'task' ? (row.data.projectId ?? '') : (row.data.projectId ?? ''));
+    return p && p.name !== 'default' ? p : undefined;
+  })();
 
   const typeBadge = row.kind === 'req' ? (
     <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-600">{t('work:task.requirementShort')}</span>
@@ -4352,7 +4352,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                             const isApprovalTask = task.status === 'pending';
                             const isSchedTask = task.taskType === 'scheduled' && !!task.scheduleConfig;
                             const schedLabel = isSchedTask ? (task.scheduleConfig!.every ? t('work:task.everyInterval', { interval: task.scheduleConfig!.every }) : task.scheduleConfig!.cron ? t('work:task.cronLabel') : t('work:task.scheduledShort')) : null;
-                            const taskProjName = viewMode === 'all' && task.projectId ? projects.find(p => p.id === task.projectId)?.name : null;
+                            const taskProjName = viewMode === 'all' && task.projectId ? (() => { const n = projects.find(p => p.id === task.projectId)?.name; return n && n !== 'default' ? n : null; })() : null;
                             const taskReqTitle = task.requirementId ? allRequirements.find(r => r.id === task.requirementId)?.title : null;
                             const taskCreatorName = task.createdBy ? (resolveActorName(task.createdBy, agents, users) ?? task.createdBy) : null;
                             const isSelected = selectedTask?.id === task.id;

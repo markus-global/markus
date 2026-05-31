@@ -692,6 +692,33 @@ export class Agent {
   }
 
   /**
+   * Fire-and-forget follow-up injection.  Enqueues a `human_chat` item into
+   * the mailbox without a response promise.  Used when the user sends a
+   * follow-up while the agent is already streaming — the attention controller
+   * will merge it at the next yield point via R0 heuristic.
+   */
+  injectFollowUp(
+    userMessage: string,
+    senderId?: string,
+    senderInfo?: { name: string; role: string },
+    images?: string[],
+  ): void {
+    const payload: MailboxPayload = {
+      summary: userMessage.slice(0, 100),
+      content: userMessage,
+      extra: { images },
+    };
+    this.mailbox.enqueue('human_chat', payload, {
+      priority: 0,
+      metadata: {
+        senderId,
+        senderName: senderInfo?.name,
+        senderRole: senderInfo?.role,
+      },
+    });
+  }
+
+  /**
    * Streaming counterpart of `sendMessage`.  Routes the request through the
    * mailbox, but passes the SSE event callback and cancel token so that
    * `processMailboxItemInternal` can delegate to `handleMessageStream`.
@@ -3073,6 +3100,9 @@ export class Agent {
         if (chatYield.decision === 'merge' && chatYield.item) {
           const mergeMsg = `[LIVE UPDATE] ${chatYield.item.payload.summary}\n\n${chatYield.item.payload.content}`;
           this.memory.appendMessage(sessionId, { role: 'user', content: mergeMsg });
+          if (typeof chatYield.item.metadata?.responsePromise?.resolve === 'function') {
+            chatYield.item.metadata.responsePromise.resolve('[merged]');
+          }
         }
 
         const updatedSessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
@@ -3398,7 +3428,7 @@ export class Agent {
     if (cancelToken?.cancelled) {
       log.info('Stream cancelled before processing started', { agentId: this.id });
       if (this.activeTasks.size === 0) this.setStatus('idle');
-      return '';
+      return '[cancelled]';
     }
 
     if (this.activeTasks.size === 0) {
@@ -3565,7 +3595,7 @@ export class Agent {
           }
           if (streamChatActivityId) this.endActivity(streamChatActivityId);
           if (this.activeTasks.size === 0) this.setStatus('idle');
-          return lastResponseContent || '';
+          return '[cancelled]';
         }
 
         // Handle max_tokens continuation
@@ -3590,7 +3620,7 @@ export class Agent {
             });
             if (streamChatActivityId) this.endActivity(streamChatActivityId);
             if (this.activeTasks.size === 0) this.setStatus('idle');
-            return response.content || lastResponseContent || '';
+            return '[cancelled]';
           }
 
           this.memory.appendMessage(this.currentSessionId, {
@@ -3684,6 +3714,9 @@ export class Agent {
         if (streamYield.decision === 'merge' && streamYield.item) {
           const mergeMsg = `[LIVE UPDATE] ${streamYield.item.payload.summary}\n\n${streamYield.item.payload.content}`;
           this.memory.appendMessage(this.currentSessionId!, { role: 'user', content: mergeMsg });
+          if (typeof streamYield.item.metadata?.responsePromise?.resolve === 'function') {
+            streamYield.item.metadata.responsePromise.resolve('[merged]');
+          }
         } else if (streamYield.decision === 'preempt' || streamYield.decision === 'cancel') {
           // Can't preempt streaming chat — restore signal so it's not lost.
           this.attentionController.restoreInterruptSignal(streamYield.item);
@@ -3748,6 +3781,20 @@ export class Agent {
       }
 
       streamMarkerDelta.flush();
+      // If cancelled during the final LLM call (e.g. SSE disconnect mid-stream),
+      // the response may be truncated. Treat as intentional cancellation.
+      if (cancelToken?.cancelled) {
+        if (this.currentSessionId && response.content) {
+          this.memory.appendMessage(this.currentSessionId, {
+            role: 'assistant',
+            content: sanitizeLLMReply(response.content) + '\n\n[interrupted by user]',
+            reasoningContent: response.reasoningContent,
+          });
+        }
+        if (streamChatActivityId) this.endActivity(streamChatActivityId);
+        if (this.activeTasks.size === 0) this.setStatus('idle');
+        return '[cancelled]';
+      }
       const rawReply = sanitizeLLMReply(response.content);
       const displayReply = stripCompletionMarker(rawReply);
       const outputCheck = await this.guardrails.checkOutput(displayReply, { agentId: this.id });
@@ -3791,7 +3838,7 @@ export class Agent {
           } catch { /* avoid masking */ }
         }
         if (this.activeTasks.size === 0) this.setStatus('idle');
-        return lastResponseContent || '';
+        return '[cancelled]';
       }
 
       // Append error as assistant message so the next conversation turn has full context
@@ -4302,6 +4349,9 @@ export class Agent {
             role: 'user',
             content: `[LIVE UPDATE] ${yieldResult.item.payload.summary}\n\n${yieldResult.item.payload.content}`,
           });
+          if (typeof yieldResult.item.metadata?.responsePromise?.resolve === 'function') {
+            yieldResult.item.metadata.responsePromise.resolve('[merged]');
+          }
           log.debug('Merged mailbox item into active task session', {
             taskId,
             mergedType: yieldResult.item.sourceType,
@@ -4742,6 +4792,9 @@ export class Agent {
             role: 'user',
             content: `[LIVE UPDATE] ${risYield.item.payload.summary}\n\n${risYield.item.payload.content}`,
           });
+          if (typeof risYield.item.metadata?.responsePromise?.resolve === 'function') {
+            risYield.item.metadata.responsePromise.resolve('[merged]');
+          }
         }
 
         const preparedCont = await this.contextEngine.prepareMessages({

@@ -32,6 +32,43 @@
     "createProject": "Create a Project",
     "createProjectDesc": "Set up requirements and let agents plan, execute, and deliver"
   },
+  "checklist": {
+    "title": "Get Started with Markus",
+    "subtitle": "Follow these steps to set up your AI workforce and start working.",
+    "progress": "{{done}}/{{total}} completed",
+    "setup": {
+      "title": "System Setup",
+      "llm": "Configure AI Model",
+      "llmDesc": "Set up your LLM provider API key — this is required for agents to work",
+      "llmAction": "Configure",
+      "search": "Configure Search Engine",
+      "searchDesc": "Set up a search API key so agents can search the internet",
+      "searchAction": "Configure",
+      "browser": "Set Up Browser Automation",
+      "browserDesc": "Install the Chrome extension to let agents control the browser",
+      "browserAction": "Set Up",
+      "optional": "Optional",
+      "update": "Update"
+    },
+    "explore": {
+      "title": "Start Exploring",
+      "greet": "Say Hello to Secretary",
+      "greetDesc": "Meet your AI secretary and learn what it can do for you",
+      "greetAction": "Start Chat",
+      "project": "Create Your First Project",
+      "projectDesc": "Let Secretary create an exploration project for you",
+      "projectAction": "Ask Secretary",
+      "requirements": "Add Requirements",
+      "requirementsDesc": "Add requirements to your project — agents will break them into tasks",
+      "requirementsAction": "Ask Secretary",
+      "agent": "Hire an Agent",
+      "agentDesc": "Hire a specialized agent like a researcher, developer, or analyst",
+      "agentAction": "Ask Secretary",
+      "team": "Build a Team",
+      "teamDesc": "Group agents into a team to collaborate on complex tasks",
+      "teamAction": "Ask Secretary"
+    }
+  },
   "heroBanner": {
     "title": "Build. Collaborate. Scale.",
     "subtitle": "Markus is your AI workforce platform. Deploy specialized agents, automate complex tasks, and achieve more together.",

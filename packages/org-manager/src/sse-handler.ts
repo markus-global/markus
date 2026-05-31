@@ -108,6 +108,18 @@ export class SSEHandler {
         this.options.fileNames,
       );
 
+      if (reply === '[merged]') {
+        log.info('Message was merged into active processing — closing SSE without persisting', {
+          agentId: this.options.agentId,
+        });
+        if (this.sseBuffer && !this.sseDisconnected) {
+          this.sseBuffer.send({ type: 'done', content: '', merged: true, sessionId: this.sessionId, segments: [] });
+          setTimeout(() => { if (this.sseBuffer) this.sseBuffer.close(); }, 100);
+        }
+        this.isComplete = true;
+        return;
+      }
+
       const finalNow = new Date().toISOString();
       let finalThinking: string | undefined;
       if (this.thinkingBuf) {
@@ -134,33 +146,38 @@ export class SSEHandler {
 
       // Build the best available reply content for persistence.
       // If the agent returned empty/cancelled, reconstruct from accumulated segments.
+      const isCancelledReply = !reply || reply === '[Stream cancelled]' || reply === '[cancelled]';
       let persistReply = reply;
-      if (!reply || reply === '[Stream cancelled]') {
+      if (isCancelledReply) {
         const segText = this.msgSegments
           .filter(s => s.type === 'text')
           .map(s => (s as { content: string }).content)
           .join('');
-        if (segText) persistReply = segText;
+        persistReply = segText || '';
       }
       // Strip completion marker from persisted/displayed reply
       persistReply = persistReply.replaceAll(COMPLETION_MARKER, '').trim() || persistReply;
 
       if (this.sseDisconnected) {
-        log.info('Agent finished but SSE was disconnected — delivering reply via WebSocket fallback', {
-          agentId: this.options.agentId,
-          replyLength: persistReply.length,
-        });
-        if (this.options.wsBroadcaster) {
-          if (this.options.wsBroadcaster.broadcastProactiveMessage && this.sessionId) {
-            const agentName = this.options.agent.config?.name ?? this.options.agentId;
-            this.options.wsBroadcaster.broadcastProactiveMessage(
-              this.options.agentId, agentName, this.sessionId,
-              `ws_fallback_${Date.now()}`, persistReply,
-              { isMainSession: true },
-              this.options.senderId,
-            );
-          } else {
-            this.options.wsBroadcaster.broadcastChat(this.options.agentId, persistReply, 'agent');
+        // Only send WS fallback if there is real content — don't broadcast
+        // empty/cancelled markers when the user aborted the stream.
+        if (persistReply && !isCancelledReply) {
+          log.info('Agent finished but SSE was disconnected — delivering reply via WebSocket fallback', {
+            agentId: this.options.agentId,
+            replyLength: persistReply.length,
+          });
+          if (this.options.wsBroadcaster) {
+            if (this.options.wsBroadcaster.broadcastProactiveMessage && this.sessionId) {
+              const agentName = this.options.agent.config?.name ?? this.options.agentId;
+              this.options.wsBroadcaster.broadcastProactiveMessage(
+                this.options.agentId, agentName, this.sessionId,
+                `ws_fallback_${Date.now()}`, persistReply,
+                { isMainSession: true },
+                this.options.senderId,
+              );
+            } else {
+              this.options.wsBroadcaster.broadcastChat(this.options.agentId, persistReply, 'agent');
+            }
           }
         }
       } else {
@@ -180,7 +197,10 @@ export class SSEHandler {
         }
       }
 
-      if (this.options.persistAssistantMessage && this.sessionId) {
+      const hasSegments = this.msgSegments.length > 0 && this.msgSegments.some(s =>
+        (s.type === 'text' && ((s as { content?: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
+      );
+      if (this.options.persistAssistantMessage && this.sessionId && (persistReply || hasSegments)) {
         const msgMeta: Record<string, unknown> = {};
         if (this.msgSegments.length > 0) msgMeta.segments = this.msgSegments;
         if (wasCancelled) msgMeta.isStopped = true;

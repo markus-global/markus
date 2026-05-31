@@ -68,6 +68,10 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [showWorkingModal, setShowWorkingModal] = useState(false);
   const [showHealthModal, setShowHealthModal] = useState(false);
+  const [llmConfigured, setLlmConfigured] = useState<boolean | null>(null);
+  const [searchConfigured, setSearchConfigured] = useState<boolean | null>(null);
+  const [browserConnected, setBrowserConnected] = useState<boolean | null>(null);
+  const [checklistDismissed, setChecklistDismissed] = useState(() => localStorage.getItem('markus_checklist_dismissed') === 'true');
   const createMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -111,6 +115,15 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     }).catch(() => {});
     api.system.storage().then(setStorageInfo).catch(() => {});
     api.usage.summary().then(d => setUsageInfo(d.usage)).catch(() => {});
+    api.settings.getLlm().then(d => {
+      setLlmConfigured(Object.values(d.providers).some(p => p.configured));
+    }).catch(() => {});
+    api.settings.getSearch().then(d => {
+      setSearchConfigured(Object.values(d).some(p => p?.configured));
+    }).catch(() => {});
+    api.settings.getBrowser().then(d => {
+      setBrowserConnected(d.extensionConnected);
+    }).catch(() => {});
   }, [opsPeriod]);
 
   useEffect(() => {
@@ -360,25 +373,102 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
           </div>
         )}
 
-        {/* ── Getting Started (empty state) ── */}
-        {totalRootTasks === 0 && (!ops || ops.taskKPI.recentActivity.length === 0) && (
-          <div className="bg-gradient-to-br from-brand-600/10 via-surface-secondary to-surface-secondary border border-brand-500/20 rounded-2xl p-5 sm:p-6">
-            <h3 className="text-sm font-semibold text-fg-primary mb-1">{t('gettingStarted.title')}</h3>
-            <p className="text-xs text-fg-secondary mb-4">{t('gettingStarted.subtitle')}</p>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {[
-                { labelKey: 'gettingStarted.describeGoal', descKey: 'gettingStarted.describeGoalDesc', page: PAGE.TEAM },
-                { labelKey: 'gettingStarted.hireAgents', descKey: 'gettingStarted.hireAgentsDesc', page: PAGE.STORE },
-                { labelKey: 'gettingStarted.createProject', descKey: 'gettingStarted.createProjectDesc', page: PAGE.WORK },
-              ].map(item => (
-                <button key={item.labelKey} onClick={() => navBus.navigate(item.page)} className="text-left bg-surface-elevated/50 hover:bg-surface-elevated border border-border-default/50 hover:border-brand-500/30 rounded-xl p-4 transition-all hover:shadow-lg hover:shadow-brand-500/5">
-                  <div className="text-xs font-medium text-fg-primary">{t(item.labelKey)}</div>
-                  <div className="text-[11px] text-fg-tertiary mt-1">{t(item.descKey)}</div>
+        {/* ── Onboarding Checklist ── */}
+        {!checklistDismissed && (() => {
+          const navigateToSecretary = (prompt: string) => {
+            const secretary = agents.find(a => a.role === 'secretary') ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));
+            navBus.navigate(PAGE.TEAM, {
+              ...(secretary ? { agentId: secretary.id } : {}),
+              prefillMessage: prompt,
+            });
+          };
+
+          const setupSteps = [
+            { id: 'llm', done: llmConfigured === true, isSetup: true, label: t('checklist.setup.llm'), desc: t('checklist.setup.llmDesc'), action: t('checklist.setup.llmAction'), onClick: () => { window.location.hash = '#settings/providers'; } },
+            { id: 'search', done: searchConfigured === true, isSetup: true, optional: true, label: t('checklist.setup.search'), desc: t('checklist.setup.searchDesc'), action: t('checklist.setup.searchAction'), onClick: () => { window.location.hash = '#settings/search'; } },
+            { id: 'browser', done: browserConnected === true, isSetup: true, optional: true, label: t('checklist.setup.browser'), desc: t('checklist.setup.browserDesc'), action: t('checklist.setup.browserAction'), onClick: () => { window.location.hash = '#settings/browser'; } },
+          ];
+
+          const exploreSteps = [
+            { id: 'greet', done: totalRootTasks > 0 || (ops?.taskKPI.recentActivity.length ?? 0) > 0, label: t('checklist.explore.greet'), desc: t('checklist.explore.greetDesc'), action: t('checklist.explore.greetAction'), onClick: () => navigateToSecretary('你好！我是新用户，请简单介绍一下你能帮我做什么？') },
+            { id: 'project', done: projects.length > 0, label: t('checklist.explore.project'), desc: t('checklist.explore.projectDesc'), action: t('checklist.explore.projectAction'), onClick: () => navigateToSecretary('帮我创建一个名为「Markus探索」的项目，用于了解和体验Markus的各项能力') },
+            { id: 'requirements', done: allRequirements.length > 0, label: t('checklist.explore.requirements'), desc: t('checklist.explore.requirementsDesc'), action: t('checklist.explore.requirementsAction'), onClick: () => navigateToSecretary('在「Markus探索」项目中创建两个需求：1. 了解Markus开源项目的架构和设计理念 2. 探索Markus智能体的能力和使用方式') },
+            { id: 'agent', done: agents.length > 1, label: t('checklist.explore.agent'), desc: t('checklist.explore.agentDesc'), action: t('checklist.explore.agentAction'), onClick: () => navigateToSecretary('帮我招聘一个研究员（Researcher）智能体，用于信息收集和分析') },
+            { id: 'team', done: teams.length > 0, label: t('checklist.explore.team'), desc: t('checklist.explore.teamDesc'), action: t('checklist.explore.teamAction'), onClick: () => navigateToSecretary('帮我组建一个探索团队，包含秘书和研究员，团队名称为「探索小队」') },
+          ];
+
+          const allSteps = [...setupSteps, ...exploreSteps];
+          const doneCount = allSteps.filter(s => s.done).length;
+          const totalSteps = allSteps.length;
+          const allRequiredDone = setupSteps.filter(s => !s.optional).every(s => s.done) && exploreSteps.every(s => s.done);
+
+          if (allRequiredDone) return null;
+
+          const renderStep = (step: typeof allSteps[0] & { optional?: boolean; isSetup?: boolean }) => (
+            <div key={step.id} className="flex items-start gap-3 py-2.5 px-3 rounded-lg hover:bg-surface-elevated/50 transition-colors group">
+              <div className={`mt-0.5 shrink-0 w-5 h-5 rounded-full flex items-center justify-center ${step.done ? 'bg-green-500' : 'border-2 border-border-default'}`}>
+                {step.done && (
+                  <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className={`text-xs font-medium ${step.done ? 'text-fg-tertiary line-through' : 'text-fg-primary'}`}>{step.label}</span>
+                  {'optional' in step && step.optional && (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-surface-elevated text-fg-muted font-medium">{t('checklist.setup.optional')}</span>
+                  )}
+                </div>
+                <p className={`text-[11px] mt-0.5 ${step.done ? 'text-fg-muted' : 'text-fg-tertiary'}`}>{step.desc}</p>
+              </div>
+              {step.done && step.isSetup ? (
+                <button onClick={step.onClick} className="shrink-0 text-[11px] px-3 py-1.5 rounded-lg border border-border-default hover:bg-surface-elevated text-fg-secondary font-medium transition-colors opacity-0 group-hover:opacity-100">
+                  {t('checklist.setup.update')}
                 </button>
-              ))}
+              ) : !step.done ? (
+                <button onClick={step.onClick} className="shrink-0 text-[11px] px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white font-medium transition-colors opacity-80 group-hover:opacity-100">
+                  {step.action}
+                </button>
+              ) : null}
             </div>
-          </div>
-        )}
+          );
+
+          return (
+            <div className="bg-gradient-to-br from-brand-600/10 via-surface-secondary to-surface-secondary border border-brand-500/20 rounded-2xl p-5 sm:p-6">
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-fg-primary mb-1">{t('checklist.title')}</h3>
+                  <p className="text-xs text-fg-secondary">{t('checklist.subtitle')}</p>
+                </div>
+                <button onClick={() => { setChecklistDismissed(true); localStorage.setItem('markus_checklist_dismissed', 'true'); }} className="text-fg-muted hover:text-fg-secondary transition-colors p-1 -mr-1 -mt-1" title="Dismiss">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+              </div>
+
+              {/* Progress bar */}
+              <div className="flex items-center gap-3 mb-5">
+                <div className="flex-1 h-1.5 bg-surface-elevated rounded-full overflow-hidden">
+                  <div className="h-full bg-brand-500 rounded-full transition-all duration-500" style={{ width: `${(doneCount / totalSteps) * 100}%` }} />
+                </div>
+                <span className="text-[11px] text-fg-secondary font-medium shrink-0">{t('checklist.progress', { done: doneCount, total: totalSteps })}</span>
+              </div>
+
+              {/* Group A: System Setup */}
+              <div className="mb-4">
+                <p className="text-[10px] font-semibold text-fg-muted uppercase tracking-wider mb-1 px-3">{t('checklist.setup.title')}</p>
+                <div className="space-y-0.5">{setupSteps.map(renderStep)}</div>
+              </div>
+
+              {/* Divider */}
+              <div className="border-t border-border-default/50 my-3" />
+
+              {/* Group B: Start Exploring */}
+              <div>
+                <p className="text-[10px] font-semibold text-fg-muted uppercase tracking-wider mb-1 px-3">{t('checklist.explore.title')}</p>
+                <div className="space-y-0.5">{exploreSteps.map(renderStep)}</div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ── Main Content: 2-column layout ── */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -515,40 +605,38 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                 </div>
               )}
 
-              {/* Teams section */}
+              {/* Teams section — only show when teams exist */}
+              {teamSummaries.length > 0 && (
               <div className={`p-5 ${topPerformers.length > 0 ? 'pt-3 border-t border-border-subtle/50' : ''}`}>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-fg-primary">{t('teamOverview.title')}</h3>
                   <button onClick={() => navBus.navigate(PAGE.TEAM)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
                 </div>
-                {teamSummaries.length === 0 && agents.length === 0 ? (
-                  <div className="text-xs text-fg-tertiary py-4 text-center cursor-pointer" onClick={() => navBus.navigate(PAGE.TEAM)}>{t('teamStatus.noTeams')}</div>
-                ) : (
-                  <div className="space-y-0.5">
-                    {teamSummaries.slice(0, teamsLimit).map(ts => (
-                      <div key={ts.team.id} className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-surface-overlay/40 cursor-pointer transition-colors"
-                        onClick={() => navBus.navigate(PAGE.TEAM, { selectTeam: ts.team.id })}>
-                        <div className="w-7 h-7 rounded-md bg-brand-600/15 flex items-center justify-center text-[10px] font-bold text-brand-400 shrink-0">{ts.team.name.charAt(0)}</div>
-                        <div className="flex-1 min-w-0">
-                          <div className="text-xs font-medium text-fg-primary truncate">{ts.team.name}</div>
-                        </div>
-                        <div className="flex items-center -space-x-1 shrink-0">
-                          {ts.agents.slice(0, 3).map(a => (
-                            <Avatar key={a.id} name={a.name} avatarUrl={(a as any).avatarUrl} size={18} bgClass="bg-surface-overlay text-fg-secondary ring-1 ring-surface-elevated" />
-                          ))}
-                        </div>
-                        {ts.working > 0 && <span className="text-[10px] text-green-500 font-medium shrink-0">{ts.working}/{ts.total}</span>}
+                <div className="space-y-0.5">
+                  {teamSummaries.slice(0, teamsLimit).map(ts => (
+                    <div key={ts.team.id} className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-surface-overlay/40 cursor-pointer transition-colors"
+                      onClick={() => navBus.navigate(PAGE.TEAM, { selectTeam: ts.team.id })}>
+                      <div className="w-7 h-7 rounded-md bg-brand-600/15 flex items-center justify-center text-[10px] font-bold text-brand-400 shrink-0">{ts.team.name.charAt(0)}</div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-medium text-fg-primary truncate">{ts.team.name}</div>
                       </div>
-                    ))}
-                    {teamsLimit < teamSummaries.length && (
-                      <button onClick={() => navBus.navigate(PAGE.TEAM)}
-                        className="w-full text-center text-[11px] text-brand-400 hover:text-brand-300 font-medium py-1.5">
-                        +{teamSummaries.length - teamsLimit} more
-                      </button>
-                    )}
-                  </div>
-                )}
+                      <div className="flex items-center -space-x-1 shrink-0">
+                        {ts.agents.slice(0, 3).map(a => (
+                          <Avatar key={a.id} name={a.name} avatarUrl={(a as any).avatarUrl} size={18} bgClass="bg-surface-overlay text-fg-secondary ring-1 ring-surface-elevated" />
+                        ))}
+                      </div>
+                      {ts.working > 0 && <span className="text-[10px] text-green-500 font-medium shrink-0">{ts.working}/{ts.total}</span>}
+                    </div>
+                  ))}
+                  {teamsLimit < teamSummaries.length && (
+                    <button onClick={() => navBus.navigate(PAGE.TEAM)}
+                      className="w-full text-center text-[11px] text-brand-400 hover:text-brand-300 font-medium py-1.5">
+                      +{teamSummaries.length - teamsLimit} more
+                    </button>
+                  )}
+                </div>
               </div>
+              )}
             </div>
 
           </div>

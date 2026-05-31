@@ -1155,8 +1155,8 @@ export function ChatTeamSidebar({
             </div>
           )}
 
-          {/* No teams — flat agent list */}
-          {teams.length === 0 && agents.length > 0 && agents.map(a => renderAgentItem(a))}
+          {/* No teams and no ungrouped agents — flat agent list as fallback */}
+          {teams.length === 0 && agentsByTeam.ungrouped.length === 0 && agents.length > 0 && agents.map(a => renderAgentItem(a))}
         </div>
       </div>
 

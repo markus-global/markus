@@ -8,6 +8,11 @@
 #   ./scripts/release.sh major    # 0.1.0 → 1.0.0
 #   ./scripts/release.sh 0.3.0    # explicit version
 #
+# Pre-release:
+#   ./scripts/release.sh rc       # 0.7.2 → 0.7.3-rc.0 (first RC)
+#   ./scripts/release.sh rc       # 0.7.3-rc.0 → 0.7.3-rc.1 (next RC)
+#   ./scripts/release.sh promote  # 0.7.3-rc.1 → 0.7.3 (stable)
+#
 set -euo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -24,7 +29,7 @@ cd "$ROOT_DIR"
 
 # ── Preflight checks ────────────────────────────────────────────────────────
 
-[[ -z "${1:-}" ]] && die "Usage: $0 <patch|minor|major|x.y.z>"
+[[ -z "${1:-}" ]] && die "Usage: $0 <patch|minor|major|rc|promote|x.y.z>"
 
 # Must be on main branch with clean working tree
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
@@ -43,15 +48,31 @@ fi
 
 CURRENT_VERSION="$(node -p "require('./package.json').version")"
 BUMP="$1"
+BASE_VERSION="${CURRENT_VERSION%%-*}"
+IFS='.' read -r V_MAJOR V_MINOR V_PATCH <<< "$BASE_VERSION"
 
-if [[ "$BUMP" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+IS_PRERELEASE=false
+
+if [[ "$BUMP" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
   NEW_VERSION="$BUMP"
+elif [[ "$BUMP" == "rc" ]]; then
+  IS_PRERELEASE=true
+  if [[ "$CURRENT_VERSION" == *"-rc."* ]]; then
+    RC_NUM="${CURRENT_VERSION##*-rc.}"
+    NEW_VERSION="${BASE_VERSION}-rc.$((RC_NUM + 1))"
+  else
+    NEW_VERSION="$V_MAJOR.$V_MINOR.$((V_PATCH + 1))-rc.0"
+  fi
+elif [[ "$BUMP" == "promote" ]]; then
+  if [[ "$CURRENT_VERSION" != *"-rc."* ]]; then
+    die "Cannot promote: current version ($CURRENT_VERSION) is not an RC"
+  fi
+  NEW_VERSION="$BASE_VERSION"
 else
   case "$BUMP" in
     patch|minor|major) ;;
-    *) die "Invalid bump type: $BUMP (use patch, minor, major, or x.y.z)" ;;
+    *) die "Invalid bump type: $BUMP (use patch, minor, major, rc, promote, or x.y.z)" ;;
   esac
-  IFS='.' read -r V_MAJOR V_MINOR V_PATCH <<< "$CURRENT_VERSION"
   case "$BUMP" in
     patch) NEW_VERSION="$V_MAJOR.$V_MINOR.$((V_PATCH + 1))" ;;
     minor) NEW_VERSION="$V_MAJOR.$((V_MINOR + 1)).0" ;;
@@ -59,7 +80,10 @@ else
   esac
 fi
 
+[[ "$NEW_VERSION" == *"-"* ]] && IS_PRERELEASE=true
+
 info "Version bump: ${BOLD}$CURRENT_VERSION${NC} → ${BOLD}$NEW_VERSION${NC}"
+$IS_PRERELEASE && warn "Pre-release: will publish to npm with --tag next"
 printf "\nProceed? (y/n) "
 read -r CONFIRM
 [[ "$CONFIRM" != "y" ]] && die "Aborted."
@@ -142,21 +166,34 @@ printf "\nPublish to npm? (y/n) "
 read -r PUB_CONFIRM
 if [[ "$PUB_CONFIRM" != "y" ]]; then
   warn "Skipping npm publish. You can publish manually:"
-  printf "  cd packages/cli && npm publish --access public\n"
+  if $IS_PRERELEASE; then
+    printf "  cd packages/cli && npm publish --access public --tag next\n"
+  else
+    printf "  cd packages/cli && npm publish --access public\n"
+  fi
 else
   # ── Step 5: Publish to npm ────────────────────────────────────────────────
-  info "Publishing @markus-global/cli@$NEW_VERSION to npm..."
+  NPM_TAG="latest"
+  if $IS_PRERELEASE; then
+    NPM_TAG="next"
+    info "Publishing @markus-global/cli@$NEW_VERSION to npm (tag: next)..."
+  else
+    info "Publishing @markus-global/cli@$NEW_VERSION to npm..."
+  fi
   cd packages/cli
-  npm publish --access public
+  npm publish --access public --tag "$NPM_TAG"
   cd "$ROOT_DIR"
-  ok "Published @markus-global/cli@$NEW_VERSION"
+  ok "Published @markus-global/cli@$NEW_VERSION (tag: $NPM_TAG)"
 fi
 
 # ── Step 6: Git tag & commit ────────────────────────────────────────────────
 
+COMMIT_PREFIX="release"
+$IS_PRERELEASE && COMMIT_PREFIX="prerelease"
+
 info "Creating git commit and tag..."
 git add -A
-git commit -m "release: v$NEW_VERSION"
+git commit -m "${COMMIT_PREFIX}: v$NEW_VERSION"
 git tag -a "v$NEW_VERSION" -m "v$NEW_VERSION"
 
 printf "\nPush to origin? (y/n) "
@@ -170,4 +207,10 @@ fi
 
 printf "\n${GREEN}${BOLD}Release v$NEW_VERSION complete!${NC}\n\n"
 printf "  npm:     https://www.npmjs.com/package/@markus-global/cli\n"
-printf "  install: curl -fsSL https://markus.global/install.sh | bash\n\n"
+if $IS_PRERELEASE; then
+  printf "  install: npm i -g @markus-global/cli@next\n"
+  printf "  ${YELLOW}Note: this is a pre-release. install.sh still resolves the latest stable.${NC}\n"
+else
+  printf "  install: curl -fsSL https://markus.global/install.sh | bash\n"
+fi
+printf "\n"

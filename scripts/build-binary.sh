@@ -96,8 +96,9 @@ if [[ "$NODE_EXT" == "zip" ]]; then
   cp "$TMPEXT/${NODE_DIST_NAME}/node.exe" "$STAGE_DIR/bin/node.exe"
 else
   tar -xzf "$NODE_CACHED" -C "$TMPEXT"
-  cp "$TMPEXT/${NODE_DIST_NAME}/bin/node" "$STAGE_DIR/bin/node"
-  chmod +x "$STAGE_DIR/bin/node"
+  cp "$TMPEXT/${NODE_DIST_NAME}/bin/node" "$STAGE_DIR/bin/Markus"
+  chmod +x "$STAGE_DIR/bin/Markus"
+  ln -sf Markus "$STAGE_DIR/bin/node"
 fi
 rm -rf "$TMPEXT"
 ok "Node.js binary extracted"
@@ -118,9 +119,14 @@ info "Installing native dependencies into staging dir..."
 cat > "$STAGE_DIR/bin/package.json" << 'PKGJSON'
 { "private": true, "type": "module" }
 PKGJSON
-(cd "$STAGE_DIR/bin" && npm install --no-save ws sharp rfb2 systray2 2>&1) \
+(cd "$STAGE_DIR/bin" && npm install --no-save ws sharp rfb2 systray2 node-datachannel 2>&1) \
   || die "Failed to install native dependencies"
 rm -f "$STAGE_DIR/bin/package.json" "$STAGE_DIR/bin/package-lock.json"
+
+# Ensure systray2 tray binaries have execute permission (npm install doesn't always set +x)
+find "$STAGE_DIR/bin/node_modules/systray2/traybin" -type f 2>/dev/null | while read -r tb; do
+  chmod +x "$tb"
+done
 ok "Native dependencies installed"
 
 # Version marker so the bundled CLI can detect its own version
@@ -199,12 +205,57 @@ if [[ "$PLATFORM" == "darwin" ]]; then
     ok "Generated markus.icns"
   fi
 
-  # Post-install script: create symlink + desktop shortcut + launchd
+  # Pre-install script: gracefully stop running Markus before upgrade
   SCRIPTS_DIR="$OUT_DIR/_pkg_scripts_$$"
   mkdir -p "$SCRIPTS_DIR"
+  cat > "$SCRIPTS_DIR/preinstall" << 'PREINSTALL'
+#!/bin/bash
+# Gracefully stop any running Markus server before files are overwritten.
+CONSOLE_USER=$(/usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ { print $3 }')
+if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "loginwindow" ]; then
+  CONSOLE_USER=$(stat -f "%Su" /dev/console 2>/dev/null)
+fi
+CONSOLE_UID=$(id -u "$CONSOLE_USER" 2>/dev/null || echo "")
+
+# Unload LaunchAgent first (prevents auto-restart while we're upgrading)
+if [ -n "$CONSOLE_UID" ]; then
+  launchctl bootout "gui/$CONSOLE_UID/global.markus" 2>/dev/null || true
+fi
+
+# Try graceful shutdown via CLI
+if [ -x /usr/local/bin/markus ]; then
+  sudo -u "$CONSOLE_USER" /usr/local/bin/markus stop 2>/dev/null || true
+fi
+
+# Wait up to 5 seconds for the server to stop
+PORT=8056
+for i in $(seq 1 10); do
+  if ! lsof -i ":$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.5
+done
+
+# Force kill if still running
+PIDS=$(lsof -i ":$PORT" -sTCP:LISTEN -t 2>/dev/null || true)
+if [ -n "$PIDS" ]; then
+  echo "$PIDS" | xargs kill -9 2>/dev/null || true
+  sleep 1
+fi
+
+# Kill tray process if still running
+pkill -f "tray.mjs" 2>/dev/null || true
+pkill -f "tray_darwin_release" 2>/dev/null || true
+
+exit 0
+PREINSTALL
+  chmod +x "$SCRIPTS_DIR/preinstall"
+
+  # Post-install script: symlink + codesign + app bundle + launchd + auto-open
   cat > "$SCRIPTS_DIR/postinstall" << 'POSTINSTALL'
 #!/bin/bash
 INSTALL_DIR="/usr/local/lib/markus"
+PORT=8056
 ln -sf "$INSTALL_DIR/markus" /usr/local/bin/markus
 
 # Detect the real console user (postinstall runs as root, so $USER == root)
@@ -214,14 +265,41 @@ if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "loginwindow" ]; then
 fi
 REAL_HOME=$(eval echo ~"$CONSOLE_USER")
 
-# Desktop shortcut (Markus.app bundle with icon)
-if [ -d "$REAL_HOME/Desktop" ]; then
-  APP_DIR="$REAL_HOME/Desktop/Markus.app"
-  rm -rf "$APP_DIR"
-  mkdir -p "$APP_DIR/Contents/MacOS"
-  mkdir -p "$APP_DIR/Contents/Resources"
+# ── Re-codesign Node.js binary with JIT entitlements ──────────────────────
+# macOS can strip ad-hoc signatures during .pkg extraction; re-sign to ensure
+# V8 JIT works correctly (prevents "Check failed" / SIGKILL crashes).
+ENTITLEMENTS_TMP=$(mktemp /tmp/markus-entitlements-XXXXXX.plist)
+cat > "$ENTITLEMENTS_TMP" << 'ENTXML'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>
+ENTXML
 
-  cat > "$APP_DIR/Contents/Info.plist" << PLIST_APP
+for bin_file in "$INSTALL_DIR/bin/Markus" "$INSTALL_DIR/bin/node_modules/systray2/traybin/tray_darwin_release"; do
+  if [ -f "$bin_file" ]; then
+    chmod +x "$bin_file"
+    codesign --force --options runtime --entitlements "$ENTITLEMENTS_TMP" --sign - "$bin_file" 2>/dev/null || true
+  fi
+done
+rm -f "$ENTITLEMENTS_TMP"
+
+# ── Markus.app in /Applications ───────────────────────────────────────────
+APP_DIR="/Applications/Markus.app"
+rm -rf "$APP_DIR"
+mkdir -p "$APP_DIR/Contents/MacOS"
+mkdir -p "$APP_DIR/Contents/Resources"
+
+cat > "$APP_DIR/Contents/Info.plist" << PLIST_APP
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -242,44 +320,37 @@ if [ -d "$REAL_HOME/Desktop" ]; then
   <key>CFBundleIconFile</key>
   <string>markus</string>
   <key>LSUIElement</key>
-  <false/>
+  <true/>
 </dict>
 </plist>
 PLIST_APP
 
-  cat > "$APP_DIR/Contents/MacOS/launch" << 'LAUNCH_SCRIPT'
+cat > "$APP_DIR/Contents/MacOS/launch" << 'LAUNCH_SCRIPT'
 #!/bin/bash
 MARKUS_DIR="/usr/local/lib/markus"
-NODE="$MARKUS_DIR/bin/node"
+NODE="$MARKUS_DIR/bin/Markus"
 LOG_DIR="$HOME/.markus/logs"
 PORT=8056
 mkdir -p "$LOG_DIR"
 
-# If the server is already running, just open the browser
+# Always launch the tray controller — it handles server start, existing server
+# detection, port conflicts, browser open, and keeps the menu bar icon alive.
+if [ -f "$MARKUS_DIR/bin/tray.mjs" ]; then
+  exec "$NODE" "$MARKUS_DIR/bin/tray.mjs" 2>>"$LOG_DIR/tray-stderr.log"
+fi
+
+# Fallback if tray.mjs is missing: start server directly
 if curl -s --max-time 2 -o /dev/null "http://localhost:$PORT/api/health" 2>/dev/null; then
   open "http://localhost:$PORT"
   exit 0
 fi
 
-# Try tray controller first; fall back to direct server start
-if [ -f "$MARKUS_DIR/bin/tray.mjs" ]; then
-  "$NODE" "$MARKUS_DIR/bin/tray.mjs" 2>"$LOG_DIR/tray-stderr.log"
-  EXIT_CODE=$?
-  if [ $EXIT_CODE -ne 0 ]; then
-    echo "Tray exited with code $EXIT_CODE, falling back to direct start" >> "$LOG_DIR/tray-stderr.log"
-  else
-    exit 0
-  fi
-fi
-
-# Fallback: start server directly + open browser after health check
 "$NODE" "$MARKUS_DIR/bin/markus.mjs" start \
   >> "$LOG_DIR/stdout.log" 2>> "$LOG_DIR/stderr.log" &
 SERVER_PID=$!
 
 TRIES=0
-MAX_TRIES=60
-while [ $TRIES -lt $MAX_TRIES ]; do
+while [ $TRIES -lt 60 ]; do
   if ! kill -0 "$SERVER_PID" 2>/dev/null; then
     osascript -e 'display dialog "Markus failed to start.\nCheck logs at ~/.markus/logs/" with title "Markus" buttons {"OK"} default button "OK" with icon stop'
     exit 1
@@ -291,18 +362,21 @@ while [ $TRIES -lt $MAX_TRIES ]; do
   sleep 0.5
   TRIES=$((TRIES + 1))
 done
-
 wait "$SERVER_PID"
 LAUNCH_SCRIPT
-  chmod +x "$APP_DIR/Contents/MacOS/launch"
+chmod +x "$APP_DIR/Contents/MacOS/launch"
 
-  if [ -f "$INSTALL_DIR/markus.icns" ]; then
-    cp "$INSTALL_DIR/markus.icns" "$APP_DIR/Contents/Resources/markus.icns"
-  fi
-  chown -R "$CONSOLE_USER" "$APP_DIR"
+if [ -f "$INSTALL_DIR/markus.icns" ]; then
+  cp "$INSTALL_DIR/markus.icns" "$APP_DIR/Contents/Resources/markus.icns"
 fi
 
-# Auto-start on login (launchd) — use direct paths, not symlinks
+# Remove legacy Desktop shortcut if present (only if it actually exists,
+# to avoid triggering macOS TCC permission dialog for ~/Desktop access)
+if [ -e "$REAL_HOME/Desktop/Markus.app" ]; then
+  rm -rf "$REAL_HOME/Desktop/Markus.app"
+fi
+
+# ── Auto-start on login (launchd) ─────────────────────────────────────────
 PLIST_DIR="$REAL_HOME/Library/LaunchAgents"
 mkdir -p "$PLIST_DIR"
 cat > "$PLIST_DIR/global.markus.plist" << PLIST
@@ -315,14 +389,24 @@ cat > "$PLIST_DIR/global.markus.plist" << PLIST
   <string>global.markus</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/lib/markus/bin/node</string>
+    <string>/usr/local/lib/markus/bin/Markus</string>
     <string>/usr/local/lib/markus/bin/markus.mjs</string>
     <string>start</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NO_BROWSER</key>
+    <string>1</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <false/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
   <key>StandardOutPath</key>
   <string>${REAL_HOME}/.markus/logs/stdout.log</string>
   <key>StandardErrorPath</key>
@@ -333,6 +417,19 @@ PLIST
 chown "$CONSOLE_USER" "$PLIST_DIR/global.markus.plist"
 mkdir -p "$REAL_HOME/.markus/logs"
 chown -R "$CONSOLE_USER" "$REAL_HOME/.markus"
+
+# The LaunchAgent plist is now in ~/Library/LaunchAgents/ with RunAtLoad=true.
+# macOS automatically loads all plists in this directory on login, so we don't
+# need to explicitly `bootstrap` or `load` it. The server will auto-start on
+# next login. For immediate startup after install, we use open Markus.app below.
+
+# ── Launch Markus.app immediately after install ───────────────────────────
+# Open the .app bundle which handles server start + browser open + tray icon.
+# Run in background so postinstall doesn't block the installer UI.
+(
+  sleep 2
+  sudo -u "$CONSOLE_USER" open /Applications/Markus.app
+) &
 
 exit 0
 POSTINSTALL
