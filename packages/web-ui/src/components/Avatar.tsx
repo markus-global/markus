@@ -96,7 +96,7 @@ export function AvatarUpload({ currentUrl, name, size = 64, targetType = 'user',
         onClick={() => fileRef.current?.click()}
         className="relative rounded-full overflow-hidden focus:outline-none focus:ring-2 focus:ring-brand-500/50"
         style={{ width: size, height: size }}
-        title="Click to upload avatar"
+        title="Click to set avatar"
       >
         {displayUrl ? (
           <img src={displayUrl} alt={name ?? ''} className="w-full h-full object-cover" />

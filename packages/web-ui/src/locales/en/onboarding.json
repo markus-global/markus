@@ -33,6 +33,8 @@
     "subtitle": "Agents need an LLM to think and act",
     "configured": "LLM provider configured",
     "configuredHint": "You can manage providers anytime in Settings.",
+    "selectDefault": "Click to set the default model for agents:",
+    "default": "Default",
     "fromEnv": "From Environment Variables",
     "detectingKeys": "Detecting API keys...",
     "noKeysFound": "No API keys found. Set <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, etc. in your <code>.env</code> file and restart.",

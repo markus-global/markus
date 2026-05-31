@@ -72,6 +72,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [searchConfigured, setSearchConfigured] = useState<boolean | null>(null);
   const [browserConnected, setBrowserConnected] = useState<boolean | null>(null);
   const [checklistDismissed, setChecklistDismissed] = useState(() => localStorage.getItem('markus_checklist_dismissed') === 'true');
+  const [secretaryHasChat, setSecretaryHasChat] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -97,7 +98,19 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   }, [previewMode, previewData]);
 
   const refresh = useCallback(() => {
-    api.agents.list().then(d => setAgents(d.agents)).catch(() => {});
+    api.agents.list().then(d => {
+      setAgents(d.agents);
+      const sec = d.agents.find(a => a.role === 'secretary') ?? d.agents.find(a => a.name?.toLowerCase().includes('secretary'));
+      if (sec) {
+        api.sessions.listByAgent(sec.id, 1).then(r => {
+          if (r.sessions.length > 0) {
+            api.sessions.getMessages(r.sessions[0]!.id, 1).then(m => {
+              setSecretaryHasChat(m.messages.length > 0);
+            }).catch(() => {});
+          }
+        }).catch(() => {});
+      }
+    }).catch(() => {});
     api.teams.list().then(d => setTeams(d.teams)).catch(() => {});
     api.tasks.board().then(d => setBoard(d.board)).catch(() => {});
     api.ops.dashboard(opsPeriod).then(setOps).catch(() => {});
@@ -390,7 +403,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
           ];
 
           const exploreSteps = [
-            { id: 'greet', done: totalRootTasks > 0 || (ops?.taskKPI.recentActivity.length ?? 0) > 0, label: t('checklist.explore.greet'), desc: t('checklist.explore.greetDesc'), action: t('checklist.explore.greetAction'), onClick: () => navigateToSecretary('你好！我是新用户，请简单介绍一下你能帮我做什么？') },
+            { id: 'greet', done: secretaryHasChat, label: t('checklist.explore.greet'), desc: t('checklist.explore.greetDesc'), action: t('checklist.explore.greetAction'), onClick: () => navigateToSecretary('你好！我是新用户，请简单介绍一下你能帮我做什么？') },
             { id: 'project', done: projects.length > 0, label: t('checklist.explore.project'), desc: t('checklist.explore.projectDesc'), action: t('checklist.explore.projectAction'), onClick: () => navigateToSecretary('帮我创建一个名为「Markus探索」的项目，用于了解和体验Markus的各项能力') },
             { id: 'requirements', done: allRequirements.length > 0, label: t('checklist.explore.requirements'), desc: t('checklist.explore.requirementsDesc'), action: t('checklist.explore.requirementsAction'), onClick: () => navigateToSecretary('在「Markus探索」项目中创建两个需求：1. 了解Markus开源项目的架构和设计理念 2. 探索Markus智能体的能力和使用方式') },
             { id: 'agent', done: agents.length > 1, label: t('checklist.explore.agent'), desc: t('checklist.explore.agentDesc'), action: t('checklist.explore.agentAction'), onClick: () => navigateToSecretary('帮我招聘一个研究员（Researcher）智能体，用于信息收集和分析') },
