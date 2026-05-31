@@ -96,8 +96,9 @@ if [[ "$NODE_EXT" == "zip" ]]; then
   cp "$TMPEXT/${NODE_DIST_NAME}/node.exe" "$STAGE_DIR/bin/node.exe"
 else
   tar -xzf "$NODE_CACHED" -C "$TMPEXT"
-  cp "$TMPEXT/${NODE_DIST_NAME}/bin/node" "$STAGE_DIR/bin/node"
-  chmod +x "$STAGE_DIR/bin/node"
+  cp "$TMPEXT/${NODE_DIST_NAME}/bin/node" "$STAGE_DIR/bin/Markus"
+  chmod +x "$STAGE_DIR/bin/Markus"
+  ln -sf Markus "$STAGE_DIR/bin/node"
 fi
 rm -rf "$TMPEXT"
 ok "Node.js binary extracted"
@@ -284,7 +285,7 @@ cat > "$ENTITLEMENTS_TMP" << 'ENTXML'
 </plist>
 ENTXML
 
-for bin_file in "$INSTALL_DIR/bin/node" "$INSTALL_DIR/bin/node_modules/systray2/traybin/tray_darwin_release"; do
+for bin_file in "$INSTALL_DIR/bin/Markus" "$INSTALL_DIR/bin/node_modules/systray2/traybin/tray_darwin_release"; do
   if [ -f "$bin_file" ]; then
     chmod +x "$bin_file"
     codesign --force --options runtime --entitlements "$ENTITLEMENTS_TMP" --sign - "$bin_file" 2>/dev/null || true
@@ -327,7 +328,7 @@ PLIST_APP
 cat > "$APP_DIR/Contents/MacOS/launch" << 'LAUNCH_SCRIPT'
 #!/bin/bash
 MARKUS_DIR="/usr/local/lib/markus"
-NODE="$MARKUS_DIR/bin/node"
+NODE="$MARKUS_DIR/bin/Markus"
 LOG_DIR="$HOME/.markus/logs"
 PORT=8056
 mkdir -p "$LOG_DIR"
@@ -388,7 +389,7 @@ cat > "$PLIST_DIR/global.markus.plist" << PLIST
   <string>global.markus</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/lib/markus/bin/node</string>
+    <string>/usr/local/lib/markus/bin/Markus</string>
     <string>/usr/local/lib/markus/bin/markus.mjs</string>
     <string>start</string>
   </array>

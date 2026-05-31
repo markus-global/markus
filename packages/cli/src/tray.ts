@@ -90,7 +90,9 @@ function openBrowser(url: string): void {
   const cmd = sys === 'darwin' ? `open "${url}"`
     : sys === 'win32' ? `start "" "${url}"`
     : `xdg-open "${url}"`;
-  exec(cmd, () => {});
+  exec(cmd, (err) => {
+    if (err) trayLog(`openBrowser failed: ${err.message}`);
+  });
 }
 
 function isPortListening(port: number): Promise<boolean> {
@@ -131,7 +133,8 @@ function resolveMarkusCommand(): { cmd: string; args: string[] } {
   if (existsSync(symlink)) return { cmd: symlink, args: ['start'] };
   const wrapper = resolve(APP_DIR, 'markus');
   if (existsSync(wrapper)) return { cmd: wrapper, args: ['start'] };
-  const nodeBin = resolve(BIN_DIR, platform() === 'win32' ? 'node.exe' : 'node');
+  const markusBin = resolve(BIN_DIR, 'Markus');
+  const nodeBin = platform() === 'darwin' && existsSync(markusBin) ? markusBin : resolve(BIN_DIR, platform() === 'win32' ? 'node.exe' : 'node');
   const markusMjs = resolve(BIN_DIR, 'markus.mjs');
   return { cmd: nodeBin, args: [markusMjs, 'start'] };
 }
