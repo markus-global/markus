@@ -1377,6 +1377,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         }
         if (detail.params?.prefillMessage) {
           const msg = detail.params.prefillMessage;
+          localStorage.removeItem('markus_nav_prefillMessage');
+          localStorage.removeItem('markus_nav_autoSend');
           setMainTab('chat');
           if (detail.params?.autoSend === 'true') {
             setTimeout(() => sendRef.current?.(msg), 300);

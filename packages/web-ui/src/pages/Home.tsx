@@ -73,6 +73,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [browserConnected, setBrowserConnected] = useState<boolean | null>(null);
   const [checklistDismissed, setChecklistDismissed] = useState(() => localStorage.getItem('markus_checklist_dismissed') === 'true');
   const [secretaryHasChat, setSecretaryHasChat] = useState(false);
+  const [checklistReady, setChecklistReady] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -98,24 +99,24 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   }, [previewMode, previewData]);
 
   const refresh = useCallback(() => {
-    api.agents.list().then(d => {
+    const agentsP = api.agents.list().then(async d => {
       setAgents(d.agents);
       const sec = d.agents.find(a => a.role === 'secretary') ?? d.agents.find(a => a.name?.toLowerCase().includes('secretary'));
       if (sec) {
-        api.sessions.listByAgent(sec.id, 1).then(r => {
+        try {
+          const r = await api.sessions.listByAgent(sec.id, 1);
           if (r.sessions.length > 0) {
-            api.sessions.getMessages(r.sessions[0]!.id, 1).then(m => {
-              setSecretaryHasChat(m.messages.length > 0);
-            }).catch(() => {});
+            const m = await api.sessions.getMessages(r.sessions[0]!.id, 1);
+            setSecretaryHasChat(m.messages.length > 0);
           }
-        }).catch(() => {});
+        } catch { /* ignore */ }
       }
     }).catch(() => {});
-    api.teams.list().then(d => setTeams(d.teams)).catch(() => {});
+    const teamsP = api.teams.list().then(d => setTeams(d.teams)).catch(() => {});
     api.tasks.board().then(d => setBoard(d.board)).catch(() => {});
     api.ops.dashboard(opsPeriod).then(setOps).catch(() => {});
-    api.requirements.list().then(d => setAllRequirements(d.requirements)).catch(() => {});
-    api.projects.list().then(d => setProjects(d.projects)).catch(() => {});
+    const reqsP = api.requirements.list().then(d => setAllRequirements(d.requirements)).catch(() => {});
+    const projsP = api.projects.list().then(d => setProjects(d.projects)).catch(() => {});
     api.deliverables.search({ limit: 18 }).then(d => {
       setDeliverableTotal(d.total);
       const seen = new Map<string, DeliverableInfo>();
@@ -128,15 +129,18 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     }).catch(() => {});
     api.system.storage().then(setStorageInfo).catch(() => {});
     api.usage.summary().then(d => setUsageInfo(d.usage)).catch(() => {});
-    api.settings.getLlm().then(d => {
+    const llmP = api.settings.getLlm().then(d => {
       setLlmConfigured(Object.values(d.providers).some(p => p.configured));
     }).catch(() => {});
-    api.settings.getSearch().then(d => {
+    const searchP = api.settings.getSearch().then(d => {
       setSearchConfigured(Object.values(d).some(p => p?.configured));
     }).catch(() => {});
-    api.settings.getBrowser().then(d => {
+    const browserP = api.settings.getBrowser().then(d => {
       setBrowserConnected(d.extensionConnected);
     }).catch(() => {});
+    Promise.allSettled([agentsP, teamsP, reqsP, projsP, llmP, searchP, browserP]).then(() => {
+      setChecklistReady(true);
+    });
   }, [opsPeriod]);
 
   useEffect(() => {
@@ -387,7 +391,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
         )}
 
         {/* ── Onboarding Checklist ── */}
-        {!checklistDismissed && (() => {
+        {!checklistDismissed && checklistReady && (() => {
           const navigateToSecretary = (prompt: string) => {
             const secretary = agents.find(a => a.role === 'secretary') ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));
             navBus.navigate(PAGE.TEAM, {
