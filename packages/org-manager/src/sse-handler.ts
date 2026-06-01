@@ -47,7 +47,7 @@ export class SSEHandler {
   private isProcessing = false;
   private isComplete = false;
   private sseDisconnected = false;
-  private cancelToken = { cancelled: false };
+  private cancelToken: { cancelled: boolean; userStopped?: boolean } = { cancelled: false };
   private sessionId: string | null = null;
   constructor(options: SSEMessageHandlerOptions) {
     this.options = options;
@@ -141,7 +141,7 @@ export class SSEHandler {
         this.msgSegments.push({ type: 'text', content: '', thinking: finalThinking, createdAt: finalNow });
       }
 
-      const wasCancelled = this.cancelToken.cancelled;
+      const wasCancelled = !!this.cancelToken.userStopped;
       this.finalizeRunningTools();
 
       // Build the best available reply content for persistence.
@@ -444,6 +444,7 @@ export class SSEHandler {
    */
   cancel(): void {
     this.cancelToken.cancelled = true;
+    this.cancelToken.userStopped = true;
     if (this.sseBuffer) {
       this.sseBuffer.close();
       this.sseBuffer = null;

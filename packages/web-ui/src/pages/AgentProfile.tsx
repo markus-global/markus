@@ -686,6 +686,14 @@ function FilesTab({ agentId }: { agentId: string }) {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
+  const [roleDir, setRoleDir] = useState('');
+  const [pathCopied, setPathCopied] = useState(false);
+
+  useEffect(() => {
+    api.system.storage().then(info => {
+      setRoleDir(info.dataDir + '/agents/' + agentId + '/role');
+    }).catch(() => {});
+  }, [agentId]);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [roleStatus, setRoleStatus] = useState<RoleUpdateStatus | null>(null);
@@ -844,7 +852,7 @@ function FilesTab({ agentId }: { agentId: string }) {
 
         {selected && (
           <div>
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between mb-1">
               <div className="text-xs text-fg-secondary">{fileLabel(selected)}</div>
               <div className="flex gap-2 items-center">
                 {selectedFileStale && (
@@ -870,6 +878,32 @@ function FilesTab({ agentId }: { agentId: string }) {
                 {saving && <span className="text-[10px] text-fg-tertiary">{t('common:saving')}</span>}
               </div>
             </div>
+
+            {roleDir && (
+              <div className="flex items-center gap-2 mb-3 bg-surface-elevated/40 rounded-lg px-3 py-2">
+                <code className="text-[10px] text-fg-tertiary font-mono flex-1 truncate select-all" title={`${roleDir}/${selected}`}>
+                  {roleDir}/{selected}
+                </code>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(`${roleDir}/${selected}`);
+                    setPathCopied(true);
+                    setTimeout(() => setPathCopied(false), 2000);
+                  }}
+                  className="shrink-0 px-2 py-1 text-[10px] text-fg-tertiary hover:text-fg-secondary border border-border-default hover:border-border-hover rounded-md transition-colors"
+                  title={t('agent:profilePage.filesTab.copyPath')}
+                >
+                  {pathCopied ? t('agent:profilePage.filesTab.pathCopied') : t('agent:profilePage.filesTab.copyPath')}
+                </button>
+                <button
+                  onClick={() => void api.system.openPath(roleDir)}
+                  className="shrink-0 px-2 py-1 text-[10px] text-fg-tertiary hover:text-fg-secondary border border-border-default hover:border-border-hover rounded-md transition-colors"
+                  title={t('agent:profilePage.filesTab.openInFinder')}
+                >
+                  {t('agent:profilePage.filesTab.openInFinder')}
+                </button>
+              </div>
+            )}
 
             {diffView?.file === selected && (
               <InlineDiff agent={diffView.agent} template={diffView.template} templateId={roleStatus?.templateId ?? ''} />

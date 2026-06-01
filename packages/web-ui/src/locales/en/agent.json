@@ -241,6 +241,9 @@
       "reviewAndSave": "— review and save to apply",
       "roleMdHint": "Changes to ROLE.md will update the agent's runtime system prompt immediately.",
       "noConfigFiles": "No configuration files found for this role",
+      "copyPath": "Copy path",
+      "pathCopied": "Copied",
+      "openInFinder": "Open in file browser",
       "fileLabels": {
         "roleMd": "System Prompt / Role Definition",
         "heartbeatMd": "Heartbeat Tasks",

@@ -241,6 +241,9 @@
       "reviewAndSave": "— 请审阅并保存以应用",
       "roleMdHint": "修改 ROLE.md 将立即更新智能体运行时的系统提示。",
       "noConfigFiles": "该角色下未找到配置文件",
+      "copyPath": "复制路径",
+      "pathCopied": "已复制",
+      "openInFinder": "在文件管理器中打开",
       "fileLabels": {
         "roleMd": "系统提示 / 角色定义",
         "heartbeatMd": "心跳任务",
