@@ -7366,6 +7366,7 @@ EXPLANATION_END`;
         // Search order: dev workspace → binary install → cwd fallback
         const zipCandidates = [
           jn(rslv(thisDir, '..', '..', 'chrome-extension'), 'dist', 'markus-browser-extension.zip'),
+          jn(rslv(thisDir, '..', 'chrome-extension'), 'markus-browser-extension.zip'),
           jn(rslv(thisDir, '..', '..', '..', 'chrome-extension'), 'markus-browser-extension.zip'),
           jn(rslv(process.cwd(), 'packages', 'chrome-extension'), 'dist', 'markus-browser-extension.zip'),
           jn(rslv(process.cwd(), 'chrome-extension'), 'markus-browser-extension.zip'),

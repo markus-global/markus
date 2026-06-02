@@ -160,6 +160,17 @@ if [[ "$PLATFORM" == "win" ]]; then
 @echo off
 "%~dp0\bin\node.exe" "%~dp0\bin\markus.mjs" %*
 LAUNCHER
+
+  # VBS launcher to run tray.mjs without a console window (wscript hides it)
+  cat > "$STAGE_DIR/markus-tray.vbs" << 'VBS'
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set shell = CreateObject("WScript.Shell")
+appDir = fso.GetParentFolderName(WScript.ScriptFullName)
+nodeExe = fso.BuildPath(appDir, "bin\node.exe")
+trayMjs = fso.BuildPath(appDir, "bin\tray.mjs")
+shell.Run """" & nodeExe & """ """ & trayMjs & """", 0, False
+VBS
+  ok "VBS tray launcher created"
 else
   cat > "$STAGE_DIR/markus" << 'LAUNCHER'
 #!/usr/bin/env bash
@@ -613,14 +624,17 @@ ${WIN_ICON_LINE}
 [Files]
 Source: "${WIN_STAGE_DIR}\\*"; DestDir: "{app}"; Flags: recursesubdirs
 
+[Tasks]
+Name: "autostart"; Description: "Start Markus automatically on login"; GroupDescription: "Additional options:"; Flags: checkedonce
+
 [Icons]
-Name: "{userdesktop}\\Markus"; Filename: "{app}\\bin\\node.exe"; Parameters: """{app}\\bin\\tray.mjs"""; WorkingDir: "{app}"; Comment: "Markus - AI Digital Workforce Platform"${WIN_ICON_REF}
-Name: "{userstartup}\\Markus"; Filename: "{app}\\bin\\node.exe"; Parameters: """{app}\\bin\\tray.mjs"""; WorkingDir: "{app}"; Comment: "Markus auto-start"${WIN_ICON_REF}
-Name: "{group}\\Markus"; Filename: "{app}\\bin\\node.exe"; Parameters: """{app}\\bin\\tray.mjs"""; WorkingDir: "{app}"${WIN_ICON_REF}
+Name: "{userdesktop}\\Markus"; Filename: "wscript.exe"; Parameters: """{app}\\markus-tray.vbs"""; WorkingDir: "{app}"; Comment: "Markus - AI Digital Workforce Platform"${WIN_ICON_REF}
+Name: "{userstartup}\\Markus"; Filename: "wscript.exe"; Parameters: """{app}\\markus-tray.vbs"""; WorkingDir: "{app}"; Comment: "Markus auto-start"${WIN_ICON_REF}; Tasks: autostart
+Name: "{group}\\Markus"; Filename: "wscript.exe"; Parameters: """{app}\\markus-tray.vbs"""; WorkingDir: "{app}"${WIN_ICON_REF}
 Name: "{group}\\Uninstall Markus"; Filename: "{uninstallexe}"
 
-[Registry]
-Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Check: NeedsAddPath(ExpandConstant('{app}'))
+[Run]
+Filename: "wscript.exe"; Parameters: """{app}\\markus-tray.vbs"""; Description: "Launch Markus"; Flags: postinstall nowait skipifsilent
 
 [Code]
 function NeedsAddPath(Param: string): boolean;
@@ -633,6 +647,32 @@ begin
     exit;
   end;
   Result := Pos(';' + Param + ';', ';' + OrigPath + ';') = 0;
+end;
+
+procedure AddToPath();
+var
+  AppDir, OrigPath, NewPath: string;
+begin
+  AppDir := ExpandConstant('{app}');
+  if NeedsAddPath(AppDir) then
+  begin
+    if not RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', OrigPath) then
+      OrigPath := '';
+    if OrigPath = '' then
+      NewPath := AppDir
+    else
+      NewPath := OrigPath + ';' + AppDir;
+    if not RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', NewPath) then
+    begin
+      Log('Warning: Could not add to PATH (registry write failed). This is not critical.');
+    end;
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    AddToPath();
 end;
 
 [UninstallDelete]
