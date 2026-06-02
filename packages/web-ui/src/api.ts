@@ -8,7 +8,7 @@ export interface SubagentProgressEvent {
 
 export interface AgentToolEvent {
   tool: string;
-  phase: 'start' | 'end' | 'output' | 'subagent_progress';
+  phase: 'start' | 'end' | 'output' | 'subagent_progress' | 'heartbeat';
   success?: boolean;
   arguments?: unknown;
   result?: string;
@@ -1059,6 +1059,8 @@ export const api = {
                   onActivity?.({ tool: event.tool, phase: 'output', output: event.text });
                 } else if (event.type === 'subagent_progress' && event.tool) {
                   onActivity?.({ tool: event.tool, phase: 'subagent_progress', subagentEvent: (event as Record<string, unknown>).subagentEvent as SubagentProgressEvent });
+                } else if (event.type === 'heartbeat') {
+                  onActivity?.({ tool: '', phase: 'heartbeat' });
                 }
               } catch { /* skip */ }
             }

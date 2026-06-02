@@ -6,6 +6,7 @@
  * to keep this file components-only for Vite HMR Fast Refresh compatibility.
  */
 import { useState, useRef, useEffect, useCallback, memo, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api, wsClient, type TaskLogEntry } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
@@ -32,10 +33,11 @@ export {
 
 // ─── ThinkingDots ─────────────────────────────────────────────────────────────
 
-export function ThinkingDots({ label = 'Thinking' }: { label?: string }) {
+export function ThinkingDots({ label }: { label?: string }) {
+  const { t } = useTranslation('common');
   return (
     <div className="flex items-center gap-1.5 text-xs text-fg-secondary py-0.5">
-      <span>{label}</span>
+      <span>{label ?? t('execution.thinking')}</span>
       <span className="flex gap-0.5">
         {[0, 150, 300].map(d => (
           <span key={d} className="w-1 h-1 rounded-full bg-brand-400 animate-bounce"
@@ -85,6 +87,7 @@ export function StreamingText({ content, className }: { content: string; classNa
 // ─── Tool Detail Modal ────────────────────────────────────────────────────────
 
 function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () => void }) {
+  const { t } = useTranslation('common');
   const meta = getToolMeta(info.tool);
   const argEntries = formatArgsDetail(info.args);
   const isRunning = info.status === 'running';
@@ -106,7 +109,7 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
             <span className="opacity-60 text-sm">{meta.icon}</span>
             <span className={`text-sm font-semibold ${isRunning ? 'text-brand-500' : success ? 'text-fg-primary' : 'text-red-500'}`}>{meta.label}</span>
             <span className={`text-xs px-1.5 py-0.5 rounded ${isRunning ? 'bg-brand-500/15 text-brand-500' : success ? 'bg-green-500/15 text-green-600' : 'bg-red-500/15 text-red-500'}`}>
-              {isRunning ? 'Running' : success ? 'Success' : 'Failed'}
+              {isRunning ? t('execution.toolRunning') : success ? t('execution.toolSuccess') : t('execution.toolFailed')}
             </span>
           </div>
           <div className="flex items-center gap-3">
@@ -117,7 +120,7 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
           {argEntries.length > 0 && (
             <div>
-              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Arguments</h4>
+              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">{t('execution.arguments')}</h4>
               <div className="space-y-2">
                 {argEntries.map(({ key, value }) => (
                   <div key={key}>
@@ -130,19 +133,19 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
           )}
           {!isRunning && info.result && (
             <div>
-              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Result</h4>
+              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">{t('execution.result')}</h4>
               <pre className="text-xs text-fg-secondary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto overflow-y-auto max-h-[60vh] whitespace-pre-wrap break-all font-mono">{prettyJson(info.result)}</pre>
             </div>
           )}
           {!isRunning && info.error && (
             <div>
-              <h4 className="text-[10px] font-semibold text-red-500 uppercase tracking-wider mb-2">Error</h4>
+              <h4 className="text-[10px] font-semibold text-red-500 uppercase tracking-wider mb-2">{t('execution.error')}</h4>
               <pre className="text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 overflow-x-auto max-h-40 whitespace-pre-wrap break-all font-mono">{prettyJson(String(info.error))}</pre>
             </div>
           )}
           {info.subagentLogs && info.subagentLogs.length > 0 && (
             <div>
-              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Sub-agent Execution</h4>
+              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">{t('execution.subagentExecution')}</h4>
               <div className="bg-surface-elevated/50 rounded-lg px-3 py-2 space-y-1 max-h-[50vh] overflow-y-auto">
                 {info.subagentLogs.map((log, idx) => {
                   const icon = log.eventType === 'started' ? '▶' : log.eventType === 'completed' ? '✓' : log.eventType === 'error' ? '✗' : log.eventType === 'tool_start' ? '◎' : log.eventType === 'tool_end' ? '●' : log.eventType === 'thinking' ? '💭' : '→';
@@ -158,7 +161,7 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
             </div>
           )}
           {!argEntries.length && !isRunning && !info.result && !info.error && !(info.subagentLogs?.length) && (
-            <div className="text-sm text-fg-tertiary italic py-4 text-center">No detailed data recorded for this tool call.</div>
+            <div className="text-sm text-fg-tertiary italic py-4 text-center">{t('execution.noToolDetail')}</div>
           )}
         </div>
       </div>
@@ -188,21 +191,22 @@ const TASK_STATUS_TO_CARD_STATE: Record<string, TaskCardState> = {
   archived: 'archived',
 };
 
-const TASK_STATUS_CONFIG: Record<string, { icon: string; label: string; borderClass: string; bgClass: string; badgeClass: string; textClass: string }> = {
-  pending:     { icon: '⏳', label: 'Pending Approval', borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
-  approving:   { icon: '⏳', label: 'Approving…',       borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
-  rejecting:   { icon: '⏳', label: 'Rejecting…',       borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
-  in_progress: { icon: '▶',  label: 'In Progress',      borderClass: 'border-blue-500/40',        bgClass: 'bg-blue-500/5',           badgeClass: 'bg-blue-500/15 text-blue-500',   textClass: 'text-blue-500' },
-  completed:   { icon: '✅', label: 'Completed',         borderClass: 'border-green-500/30',       bgClass: 'bg-green-500/5',          badgeClass: 'bg-green-500/15 text-green-500', textClass: 'text-green-500' },
-  review:      { icon: '👀', label: 'In Review',         borderClass: 'border-purple-500/40',      bgClass: 'bg-purple-500/5',         badgeClass: 'bg-purple-500/15 text-purple-500', textClass: 'text-purple-500' },
-  blocked:     { icon: '🚫', label: 'Blocked',           borderClass: 'border-orange-500/40',      bgClass: 'bg-orange-500/5',         badgeClass: 'bg-orange-500/15 text-orange-500', textClass: 'text-orange-500' },
-  failed:      { icon: '❌', label: 'Failed',            borderClass: 'border-red-500/30',         bgClass: 'bg-red-500/5',            badgeClass: 'bg-red-500/15 text-red-500',     textClass: 'text-red-500' },
-  cancelled:   { icon: '⊘',  label: 'Cancelled',        borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
-  archived:    { icon: '📦', label: 'Archived',          borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
-  loading:     { icon: '⏳', label: 'Loading…',          borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: '' },
+const TASK_STATUS_CONFIG: Record<string, { icon: string; labelKey: string; borderClass: string; bgClass: string; badgeClass: string; textClass: string }> = {
+  pending:     { icon: '⏳', labelKey: 'execution.card.pendingApproval', borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
+  approving:   { icon: '⏳', labelKey: 'execution.card.approving',      borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
+  rejecting:   { icon: '⏳', labelKey: 'execution.card.rejecting',      borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
+  in_progress: { icon: '▶',  labelKey: 'execution.card.inProgress',     borderClass: 'border-blue-500/40',        bgClass: 'bg-blue-500/5',           badgeClass: 'bg-blue-500/15 text-blue-500',   textClass: 'text-blue-500' },
+  completed:   { icon: '✅', labelKey: 'execution.card.completed',      borderClass: 'border-green-500/30',       bgClass: 'bg-green-500/5',          badgeClass: 'bg-green-500/15 text-green-500', textClass: 'text-green-500' },
+  review:      { icon: '👀', labelKey: 'execution.card.inReview',       borderClass: 'border-purple-500/40',      bgClass: 'bg-purple-500/5',         badgeClass: 'bg-purple-500/15 text-purple-500', textClass: 'text-purple-500' },
+  blocked:     { icon: '🚫', labelKey: 'execution.card.blocked',        borderClass: 'border-orange-500/40',      bgClass: 'bg-orange-500/5',         badgeClass: 'bg-orange-500/15 text-orange-500', textClass: 'text-orange-500' },
+  failed:      { icon: '❌', labelKey: 'execution.card.failed',         borderClass: 'border-red-500/30',         bgClass: 'bg-red-500/5',            badgeClass: 'bg-red-500/15 text-red-500',     textClass: 'text-red-500' },
+  cancelled:   { icon: '⊘',  labelKey: 'execution.card.cancelled',     borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
+  archived:    { icon: '📦', labelKey: 'execution.card.archived',       borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
+  loading:     { icon: '⏳', labelKey: 'execution.card.loading',        borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: '' },
 };
 
 export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
+  const { t } = useTranslation('common');
   const [cardState, setCardState] = useState<TaskCardState>('loading');
 
   useEffect(() => {
@@ -225,11 +229,16 @@ export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
     });
   }, [info.taskId]);
 
+  const markNotifRead = () => {
+    window.dispatchEvent(new CustomEvent('markus:mark-read-by-ref', { detail: { taskId: info.taskId } }));
+  };
+
   const handleApprove = async () => {
     setCardState('approving');
     try {
       await api.tasks.approve(info.taskId);
       setCardState('in_progress');
+      markNotifRead();
     } catch {
       setCardState('pending');
     }
@@ -240,6 +249,7 @@ export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
     try {
       await api.tasks.reject(info.taskId);
       setCardState('cancelled');
+      markNotifRead();
     } catch {
       setCardState('pending');
     }
@@ -256,9 +266,9 @@ export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
         <span className="text-sm mt-0.5">{cfg.icon}</span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
-            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${cfg.badgeClass}`}>Task</span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${cfg.badgeClass}`}>{t('execution.taskBadge')}</span>
             {!isPending && cardState !== 'loading' && (
-              <span className={`text-[10px] font-medium ${cfg.textClass}`}>{cfg.label}</span>
+              <span className={`text-[10px] font-medium ${cfg.textClass}`}>{t(cfg.labelKey)}</span>
             )}
           </div>
           <div className={`text-sm font-medium truncate mt-1 group-hover:underline ${!isPending && cardState !== 'loading' ? 'text-fg-secondary' : 'text-fg-primary'}`}>{info.title}</div>
@@ -268,10 +278,10 @@ export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
           <div className="flex items-center gap-2 mt-1.5 text-[11px] text-fg-tertiary">
             {info.priority && (
               <span className={APPROVAL_PRIORITY_COLORS[info.priority] ?? 'text-fg-tertiary'}>
-                {info.priority}
+                {t(`priority.${info.priority}`, { defaultValue: info.priority })}
               </span>
             )}
-            <span className="opacity-50">ID: {info.taskId.slice(0, 8)}...</span>
+            <span className="opacity-50">{t('execution.idPrefix', { id: info.taskId.slice(0, 8) })}</span>
           </div>
         </div>
       </div>
@@ -283,14 +293,14 @@ export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
             disabled={cardState !== 'pending'}
             className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-green-600 hover:bg-green-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {cardState === 'approving' ? 'Approving…' : 'Approve'}
+            {cardState === 'approving' ? t('execution.card.approving') : t('approve')}
           </button>
           <button
             onClick={handleReject}
             disabled={cardState !== 'pending'}
             className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-surface-elevated hover:bg-surface-overlay text-fg-secondary border border-border-default transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {cardState === 'rejecting' ? 'Rejecting…' : 'Reject'}
+            {cardState === 'rejecting' ? t('execution.card.rejecting') : t('reject')}
           </button>
         </div>
       )}
@@ -311,16 +321,16 @@ const REQ_STATUS_TO_CARD_STATE: Record<string, ReqCardState> = {
   archived: 'archived',
 };
 
-const REQ_STATUS_CONFIG: Record<string, { icon: string; label: string; borderClass: string; bgClass: string; badgeClass: string; textClass: string }> = {
-  pending:     { icon: '📋', label: 'Pending Approval', borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
-  approving:   { icon: '⏳', label: 'Approving…',       borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
-  rejecting:   { icon: '⏳', label: 'Rejecting…',       borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
-  in_progress: { icon: '▶',  label: 'In Progress',      borderClass: 'border-blue-500/40',        bgClass: 'bg-blue-500/5',           badgeClass: 'bg-blue-500/15 text-blue-500',   textClass: 'text-blue-500' },
-  completed:   { icon: '✅', label: 'Completed',         borderClass: 'border-green-500/30',       bgClass: 'bg-green-500/5',          badgeClass: 'bg-green-500/15 text-green-500', textClass: 'text-green-500' },
-  rejected:    { icon: '❌', label: 'Rejected',          borderClass: 'border-red-500/30',         bgClass: 'bg-red-500/5',            badgeClass: 'bg-red-500/15 text-red-500',     textClass: 'text-red-500' },
-  cancelled:   { icon: '⊘',  label: 'Cancelled',        borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
-  archived:    { icon: '📦', label: 'Archived',          borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
-  loading:     { icon: '⏳', label: 'Loading…',          borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: '' },
+const REQ_STATUS_CONFIG: Record<string, { icon: string; labelKey: string; borderClass: string; bgClass: string; badgeClass: string; textClass: string }> = {
+  pending:     { icon: '📋', labelKey: 'execution.card.pendingApproval', borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
+  approving:   { icon: '⏳', labelKey: 'execution.card.approving',      borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
+  rejecting:   { icon: '⏳', labelKey: 'execution.card.rejecting',      borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
+  in_progress: { icon: '▶',  labelKey: 'execution.card.inProgress',     borderClass: 'border-blue-500/40',        bgClass: 'bg-blue-500/5',           badgeClass: 'bg-blue-500/15 text-blue-500',   textClass: 'text-blue-500' },
+  completed:   { icon: '✅', labelKey: 'execution.card.completed',      borderClass: 'border-green-500/30',       bgClass: 'bg-green-500/5',          badgeClass: 'bg-green-500/15 text-green-500', textClass: 'text-green-500' },
+  rejected:    { icon: '❌', labelKey: 'execution.card.rejected',       borderClass: 'border-red-500/30',         bgClass: 'bg-red-500/5',            badgeClass: 'bg-red-500/15 text-red-500',     textClass: 'text-red-500' },
+  cancelled:   { icon: '⊘',  labelKey: 'execution.card.cancelled',     borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
+  archived:    { icon: '📦', labelKey: 'execution.card.archived',       borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
+  loading:     { icon: '⏳', labelKey: 'execution.card.loading',        borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: '' },
 };
 
 const REQ_WS_EVENTS = [
@@ -329,6 +339,7 @@ const REQ_WS_EVENTS = [
 ] as const;
 
 export function RequirementApprovalCard({ info }: { info: RequirementApprovalInfo }) {
+  const { t } = useTranslation('common');
   const [cardState, setCardState] = useState<ReqCardState>('loading');
   const [rejectReason, setRejectReason] = useState('');
   const [showRejectInput, setShowRejectInput] = useState(false);
@@ -356,11 +367,16 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
     return () => unsubs.forEach(fn => fn());
   }, [info.requirementId]);
 
+  const markNotifRead = () => {
+    window.dispatchEvent(new CustomEvent('markus:mark-read-by-ref', { detail: { requirementId: info.requirementId } }));
+  };
+
   const handleApprove = async () => {
     setCardState('approving');
     try {
       await api.requirements.approve(info.requirementId);
       setCardState('in_progress');
+      markNotifRead();
     } catch {
       setCardState('pending');
     }
@@ -376,6 +392,7 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
     try {
       await api.requirements.reject(info.requirementId, rejectReason.trim());
       setCardState('rejected');
+      markNotifRead();
     } catch {
       setCardState('pending');
     }
@@ -392,9 +409,9 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
         <span className="text-sm mt-0.5">{cfg.icon}</span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
-            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${cfg.badgeClass}`}>REQ</span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${cfg.badgeClass}`}>{t('execution.reqBadge')}</span>
             {!isPending && cardState !== 'loading' && (
-              <span className={`text-[10px] font-medium ${cfg.textClass}`}>{cfg.label}</span>
+              <span className={`text-[10px] font-medium ${cfg.textClass}`}>{t(cfg.labelKey)}</span>
             )}
           </div>
           <div className={`text-sm font-medium truncate mt-1 group-hover:underline ${!isPending && cardState !== 'loading' ? 'text-fg-secondary' : 'text-fg-primary'}`}>{info.title}</div>
@@ -404,10 +421,10 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
           <div className="flex items-center gap-2 mt-1.5 text-[11px] text-fg-tertiary">
             {info.priority && (
               <span className={APPROVAL_PRIORITY_COLORS[info.priority] ?? 'text-fg-tertiary'}>
-                {info.priority}
+                {t(`priority.${info.priority}`, { defaultValue: info.priority })}
               </span>
             )}
-            <span className="opacity-50">ID: {info.requirementId.slice(0, 8)}...</span>
+            <span className="opacity-50">{t('execution.idPrefix', { id: info.requirementId.slice(0, 8) })}</span>
           </div>
         </div>
       </div>
@@ -419,7 +436,7 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
               type="text"
               value={rejectReason}
               onChange={e => setRejectReason(e.target.value)}
-              placeholder="Rejection reason..."
+              placeholder={t('execution.rejectionReasonPlaceholder')}
               className="w-full px-2 py-1.5 text-xs rounded-md bg-surface-secondary border border-border-default text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:border-brand-500"
               onKeyDown={e => e.key === 'Enter' && handleReject()}
               autoFocus
@@ -431,14 +448,14 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
               disabled={cardState !== 'pending'}
               className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-green-600 hover:bg-green-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {cardState === 'approving' ? 'Approving…' : 'Approve'}
+              {cardState === 'approving' ? t('execution.card.approving') : t('approve')}
             </button>
             <button
               onClick={handleReject}
               disabled={cardState !== 'pending' || (showRejectInput && !rejectReason.trim())}
               className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-surface-elevated hover:bg-surface-overlay text-fg-secondary border border-border-default transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {cardState === 'rejecting' ? 'Rejecting…' : 'Reject'}
+              {cardState === 'rejecting' ? t('execution.card.rejecting') : t('reject')}
             </button>
           </div>
         </div>
@@ -455,6 +472,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
   time?: string;
   isLast?: boolean;
 }) {
+  const { t } = useTranslation('common');
   const meta = getToolMeta(info.tool);
   const [expanded, setExpanded] = useState(false);
   const isDone = info.status !== 'running';
@@ -510,7 +528,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
               <span className="text-[10px] text-fg-tertiary ml-0.5">{formatDuration(info.durationMs)}</span>
             )}
             {hasSubagentLogs && (
-              <span className="text-[10px] text-fg-tertiary ml-0.5 opacity-60">({info.subagentLogs!.filter(l => l.eventType === 'tool_end').length} steps)</span>
+              <span className="text-[10px] text-fg-tertiary ml-0.5 opacity-60">{t('execution.toolSteps', { count: info.subagentLogs!.filter(l => l.eventType === 'tool_end').length })}</span>
             )}
           </div>
           {/* Show shell command being executed */}
@@ -542,6 +560,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
 // ─── ThinkingRow — collapsible thinking content ───────────────────────────────
 
 function ThinkingRow({ content, time, showTime }: { content: string; time?: string; showTime?: boolean }) {
+  const { t } = useTranslation('common');
   const [expanded, setExpanded] = useState(false);
   const preview = content.split('\n')[0] ?? '';
   return (
@@ -555,7 +574,7 @@ function ThinkingRow({ content, time, showTime }: { content: string; time?: stri
           className="flex items-center gap-1.5 text-xs text-purple-400 w-full"
         >
           <svg className={`w-3 h-3 transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
-          <span className="font-medium shrink-0">Thinking</span>
+          <span className="font-medium shrink-0">{t('execution.thinking')}</span>
           {!expanded && <span className="text-fg-tertiary text-[11px] truncate">{preview}</span>}
         </button>
         {expanded && (
@@ -577,6 +596,7 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
   showTime?: boolean;
   isLast?: boolean;
 }) {
+  const { t } = useTranslation('common');
   if (entry.type === 'tool') {
     return <ToolCallRow info={entry.info} showTime={showTime} time={entry.time} isLast={isLast} key={entry.key} />;
   }
@@ -607,7 +627,7 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
           <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums hidden md:inline">{entry.time}</span>
         )}
         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
-        <span className={`text-xs capitalize ${color}`}>{entry.content}</span>
+        <span className={`text-xs capitalize ${color}`}>{t(`execution.statusKnown.${entry.content}`, { defaultValue: entry.content })}</span>
       </div>
     );
   }
@@ -618,7 +638,7 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
           <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-2 hidden md:inline">{entry.time}</span>
         )}
         <div className="flex-1 min-w-0 text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded px-2.5 py-2 my-1 leading-relaxed break-words overflow-hidden">
-          <span className="font-medium">Error:</span> {entry.content}
+          <span className="font-medium">{t('execution.errorPrefix')}</span> {entry.content}
         </div>
       </div>
     );
@@ -647,6 +667,7 @@ export interface CompactExecutionCardProps {
 }
 
 export function CompactExecutionCard({ entries, streamingText, isActive, onExpand, showRounds, embedded }: CompactExecutionCardProps) {
+  const { t } = useTranslation('common');
   const lastEntry = entries.length > 0 ? entries[entries.length - 1]! : null;
   const toolCount = entries.filter(e => e.type === 'tool_end').length;
   const errorCount = entries.filter(e => e.type === 'error').length;
@@ -666,21 +687,21 @@ export function CompactExecutionCard({ entries, streamingText, isActive, onExpan
   if (!isActive) {
     if (errorCount > 0 && lastEntry?.type === 'error') {
       statusIcon = '❌';
-      statusLabel = 'Failed';
+      statusLabel = t('execution.compact.failed');
     } else {
       const lastStatus = [...entries].reverse().find(e => e.type === 'status');
       const statusContent = lastStatus?.content ?? '';
       if (statusContent === 'completed' || statusContent === 'execution_finished') {
         statusIcon = '✅';
-        statusLabel = 'Completed';
+        statusLabel = t('execution.compact.completed');
       } else {
         statusIcon = '●';
-        statusLabel = `${toolCount} tool${toolCount !== 1 ? 's' : ''} executed`;
+        statusLabel = t('execution.compact.toolsExecuted', { count: toolCount });
       }
     }
   } else if (streamingText) {
     statusIcon = '✍';
-    statusLabel = 'Writing response...';
+    statusLabel = t('execution.compact.writingResponse');
     statusDetail = truncate(streamingText.split('\n').pop() ?? '', 80);
   } else if (lastEntry?.type === 'tool_start') {
     const meta = getToolMeta(lastEntry.content);
@@ -696,7 +717,7 @@ export function CompactExecutionCard({ entries, streamingText, isActive, onExpan
     statusLabel = meta.label;
   } else {
     statusIcon = '💭';
-    statusLabel = 'Thinking...';
+    statusLabel = t('execution.compact.thinking');
   }
 
   const elapsedStr = formatDuration(elapsed);
@@ -740,20 +761,20 @@ export function CompactExecutionCard({ entries, streamingText, isActive, onExpan
 
         <div className="flex items-center justify-between mt-2">
           <div className="flex items-center gap-2 text-[10px] text-fg-tertiary">
-            {toolCount > 0 && <span>🔧 {toolCount} tool{toolCount !== 1 ? 's' : ''}</span>}
-            {entries.some(e => e.type === 'text' && !e.metadata?.isThinking) && <span>💬 text</span>}
-            {entries.some(e => e.type === 'text' && e.metadata?.isThinking) && <span className="text-purple-400">💭 thinking</span>}
+            {toolCount > 0 && <span>🔧 {t('execution.compact.toolsLine', { count: toolCount })}</span>}
+            {entries.some(e => e.type === 'text' && !e.metadata?.isThinking) && <span>💬 {t('execution.compact.text')}</span>}
+            {entries.some(e => e.type === 'text' && e.metadata?.isThinking) && <span className="text-purple-400">💭 {t('execution.compact.thinkingTag')}</span>}
             {hasMultipleRounds && currentRound != null && (
               <>
                 <span className="opacity-30">·</span>
-                <span>Round #{currentRound}</span>
+                <span>{t('execution.compact.round', { n: currentRound })}</span>
                 <span className="opacity-30">·</span>
-                <span>{rounds.size} rounds</span>
+                <span>{t('execution.compact.rounds', { count: rounds.size })}</span>
               </>
             )}
           </div>
           <span className="text-[10px] text-brand-500 flex items-center gap-0.5">
-            Show Full Log
+            {t('execution.compact.showFullLog')}
             <svg className="w-3 h-3" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
           </span>
         </div>
@@ -793,6 +814,7 @@ export interface FullExecutionLogProps {
 }
 
 export function FullExecutionLog({ entries, streamingText, isActive, onCollapse, showRounds, embedded }: FullExecutionLogProps) {
+  const { t } = useTranslation('common');
   const scrollRef = useRef<HTMLDivElement>(null);
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
 
@@ -836,9 +858,9 @@ export function FullExecutionLog({ entries, streamingText, isActive, onCollapse,
           embedded ? 'justify-end py-0.5' : 'justify-between px-3 py-1.5 border-b border-border-default'
         }`}
       >
-        {!embedded && <span className="text-[10px] text-fg-tertiary font-medium uppercase tracking-wider">Execution Log</span>}
+        {!embedded && <span className="text-[10px] text-fg-tertiary font-medium uppercase tracking-wider">{t('execution.fullLog.title')}</span>}
         <span className="text-[10px] text-brand-500 flex items-center gap-0.5">
-          Collapse
+          {t('execution.fullLog.collapse')}
           <svg className="w-3 h-3 rotate-180" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
         </span>
       </div>
@@ -855,9 +877,9 @@ export function FullExecutionLog({ entries, streamingText, isActive, onCollapse,
                   onClick={() => toggleRound(rg.round)}
                   className="w-full flex items-center justify-between px-3 py-1.5 bg-surface-elevated/30 hover:bg-surface-elevated/50 transition-colors"
                 >
-                  <span className="text-xs text-fg-secondary font-medium">Round #{rg.round}</span>
+                  <span className="text-xs text-fg-secondary font-medium">{t('execution.compact.round', { n: rg.round })}</span>
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-fg-tertiary">{toolCount} tool{toolCount !== 1 ? 's' : ''}</span>
+                    <span className="text-[10px] text-fg-tertiary">{t('execution.compact.toolsLine', { count: toolCount })}</span>
                     <svg className={`w-3 h-3 text-fg-tertiary transition-transform ${isExpanded ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor">
                       <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
                     </svg>

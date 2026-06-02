@@ -731,6 +731,7 @@ export class Agent {
     cancelToken?: { cancelled: boolean; userStopped?: boolean },
     images?: string[],
     fileNames?: string[],
+    options?: { isResume?: boolean },
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: userMessage.slice(0, 100),
@@ -752,6 +753,7 @@ export class Agent {
           senderName: senderInfo?.name,
           senderRole: senderInfo?.role,
           isFirstConversation: senderInfo?.isFirstConversation,
+          isResume: options?.isResume,
           responsePromise: { resolve, reject },
         },
       });
@@ -3434,6 +3436,13 @@ export class Agent {
     images?: string[],
     fileNames?: string[],
   ): Promise<string> {
+    // Link the external cancel token to activeStreamToken so that
+    // cancelActiveStream() (called via the cancel-processing API)
+    // properly propagates userStopped to this stream.
+    if (cancelToken) {
+      this.activeStreamToken = cancelToken;
+    }
+
     // Early bail-out: only if the *user* explicitly stopped (not an SSE disconnect).
     // SSE disconnects set `cancelled` but not `userStopped`; in that case we
     // continue processing so the instruction isn't lost — the SSE handler's

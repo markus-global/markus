@@ -99,27 +99,12 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
       <div className="flex-1 overflow-y-auto bg-surface-primary">
         <div className="p-5">
           {effectiveTab === 'overview' && (
-            agent.state.status === 'working' || agent.state.status === 'idle' ? (
-              <>
+            <>
+              <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
+              <div className="mt-6">
                 <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} onAgentStateChange={reload} />
-                <details className="mt-6 group">
-                  <summary className="text-xs font-medium text-fg-tertiary uppercase tracking-wider cursor-pointer hover:text-fg-secondary transition-colors list-none flex items-center gap-1.5">
-                    <span className="text-fg-tertiary group-open:rotate-90 transition-transform">▸</span>
-                    {t('agent:profilePage.mind.agentDetails')}
-                  </summary>
-                  <div className="mt-3">
-                    <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
-                  </div>
-                </details>
-              </>
-            ) : (
-              <>
-                <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
-                <div className="mt-6">
-                  <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} onAgentStateChange={reload} />
-                </div>
-              </>
-            )
+              </div>
+            </>
           )}
           {effectiveTab === 'files' && <FilesTab agentId={agentId} />}
           {effectiveTab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}
@@ -192,27 +177,12 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
       </div>
       <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
         {tab === 'overview' && (
-          agent.state.status === 'working' || agent.state.status === 'idle' ? (
-            <>
+          <>
+            <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
+            <div className="mt-6">
               <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} onAgentStateChange={reload} />
-              <details className="mt-6 group">
-                <summary className="text-xs font-medium text-fg-tertiary uppercase tracking-wider cursor-pointer hover:text-fg-secondary transition-colors list-none flex items-center gap-1.5">
-                  <span className="text-fg-tertiary group-open:rotate-90 transition-transform">▸</span>
-                  {t('agent:profilePage.mind.agentDetails')}
-                </summary>
-                <div className="mt-3">
-                  <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
-                </div>
-              </details>
-            </>
-          ) : (
-            <>
-              <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
-              <div className="mt-6">
-                <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} onAgentStateChange={reload} />
-              </div>
-            </>
-          )
+            </div>
+          </>
         )}
         {tab === 'files' && <FilesTab agentId={agentId} />}
         {tab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}

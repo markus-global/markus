@@ -462,7 +462,8 @@ export class AttentionController {
                   queueDepth: this.mailbox.depth,
                 });
               }
-              const decision = this.recordDecision('pick', item, `Idle, processing ${item.sourceType}`);
+              const resumeLabel = item.metadata?.isResume ? 'Continuing' : 'Idle, processing';
+              const decision = this.recordDecision('pick', item, `${resumeLabel} ${item.sourceType}`);
               this.delegate?.onDecisionMade(decision);
             }
 

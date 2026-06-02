@@ -356,30 +356,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     return () => { timers.forEach(t => clearTimeout(t)); previewStreamRef.current.timers = []; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Safety net: detect SSE stall based on time since last received event.
-  // If no SSE event has arrived within the timeout and we're still in sending state,
-  // force-end the streaming to avoid stuck UI. This is more reliable than checking
-  // agent status, which can transition independently of the SSE stream.
+  // Track last SSE event time — used only for diagnostics / fallback polling,
+  // NOT for auto-aborting the stream.  The SSE connection is kept alive by
+  // server-side heartbeats; the browser / fetch API handles detecting a truly
+  // dead TCP connection.  Any timer-based abort is inherently fragile because
+  // tool executions can legitimately run for minutes or longer.
   const lastSseEventTimeRef = useRef<number>(0);
-  useEffect(() => {
-    if (!sending || chatMode !== 'direct' || !selectedAgent) return;
-    const SSE_STALL_TIMEOUT = 15000;
-    const CHECK_INTERVAL = 5000;
-    const timer = setInterval(() => {
-      if (!sendingConvs.current.has(currentConvKeyRef.current)) return;
-      const elapsed = Date.now() - lastSseEventTimeRef.current;
-      if (lastSseEventTimeRef.current > 0 && elapsed > SSE_STALL_TIMEOUT) {
-        abortControllerRef.current?.abort();
-        abortControllerRef.current = null;
-        const key = currentConvKeyRef.current;
-        sendingConvs.current.delete(key);
-        actBuffers.current.delete(key);
-        setSending(false);
-        setActivities([]);
-      }
-    }, CHECK_INTERVAL);
-    return () => clearInterval(timer);
-  }, [sending, chatMode, selectedAgent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [activities, setActivities] = useState<ActivityStep[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -1285,6 +1267,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     actBuffers.current.delete(sendKey);
     setSending(false);
     setActivities([]);
+    // Tell the backend to stop the agent's active stream so it doesn't keep
+    // processing after the SSE connection is torn down.
+    if (chatMode === 'direct' && selectedAgent) {
+      void api.agents.cancelProcessing(selectedAgent).catch(() => {});
+    }
   };
 
   const send = async (retryText?: string, options?: { isRetry?: boolean; isResume?: boolean }) => {
@@ -1298,6 +1285,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (sending) {
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
+      if (chatMode === 'direct' && selectedAgent) {
+        void api.agents.cancelProcessing(selectedAgent).catch(() => {});
+      }
       const prevKey = currentConvKeyRef.current;
       sendingConvs.current.delete(prevKey);
       actBuffers.current.delete(prevKey);
@@ -1543,6 +1533,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       /** Handle a tool event: start adds a 'running' segment, end updates it, output appends live text */
       const handleToolEvent = (event: AgentToolEvent) => {
         lastSseEventTimeRef.current = Date.now();
+        if (event.phase === 'heartbeat') return;
         if (event.phase === 'start' || event.phase === 'end') {
           appendConvActivity(sendKey, { ...event, phase: event.phase, ts: Date.now() });
         }
