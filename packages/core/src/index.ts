@@ -40,6 +40,7 @@ export { GoogleProvider } from './llm/google.js';
 export { OllamaProvider } from './llm/ollama.js';
 export { AuthProfileStore } from './llm/auth-profiles.js';
 export { OAuthManager } from './llm/oauth-manager.js';
+export { ModelCatalogService } from './llm/model-catalog.js';
 export { MemoryStore } from './memory/store.js';
 export type { IMemoryStore, MemoryEntry, ConversationSession } from './memory/types.js';
 

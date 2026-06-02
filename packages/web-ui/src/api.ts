@@ -327,6 +327,46 @@ export function invalidateApiCache(pathPrefix?: string) {
   }
 }
 
+// ── Model Catalog Types ───────────────────────────────────────────────────
+
+export interface CatalogModelCapabilities {
+  vision: boolean;
+  functionCalling: boolean;
+  reasoning: boolean;
+  promptCaching: boolean;
+  webSearch: boolean;
+  audioInput: boolean;
+  audioOutput: boolean;
+}
+
+export interface CatalogModel {
+  id: string;
+  provider: string;
+  mode: string;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  inputCostPer1MTokens: number;
+  outputCostPer1MTokens: number;
+  cacheReadCostPer1MTokens?: number;
+  cacheWriteCostPer1MTokens?: number;
+  capabilities: CatalogModelCapabilities;
+  deprecationDate?: string;
+}
+
+export interface CatalogStatus {
+  totalModels: number;
+  chatModels: number;
+  providers: string[];
+  lastUpdated: string | null;
+  source: 'cache' | 'remote' | 'baseline' | 'supplements';
+}
+
+export interface ValidateKeyResponse {
+  valid: boolean;
+  error?: string;
+  models: CatalogModel[];
+}
+
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   const method = opts?.method?.toUpperCase() ?? 'GET';
   const isGet = method === 'GET' && !opts?.body;
@@ -1309,6 +1349,21 @@ export const api = {
     getRemote: () => request<RemoteStatus>('/settings/remote'),
     enableRemote: () => request<{ ok: boolean; status: RemoteStatus }>('/settings/remote/enable', { method: 'POST' }),
     disableRemote: () => request<{ ok: boolean }>('/settings/remote/disable', { method: 'POST' }),
+  },
+  modelCatalog: {
+    getByProvider: (provider: string) => request<{ provider: string; models: CatalogModel[] }>(`/models/catalog/${provider}`),
+    getLive: (provider: string) => request<{ provider: string; models: CatalogModel[]; source: string }>(`/models/live/${provider}`),
+    getAll: (provider?: string) => {
+      const qs = provider ? `?provider=${provider}` : '';
+      return request<{ models?: CatalogModel[]; providers?: Record<string, CatalogModel[]> }>(`/models/catalog${qs}`);
+    },
+    getStatus: () => request<CatalogStatus>('/models/catalog/status'),
+    refresh: () => request<{ success: boolean; status: CatalogStatus }>('/models/catalog/refresh', { method: 'POST' }),
+    validateKey: (provider: string, apiKey: string, baseUrl?: string) =>
+      request<ValidateKeyResponse>('/models/validate-key', {
+        method: 'POST',
+        body: JSON.stringify({ provider, apiKey, baseUrl }),
+      }),
   },
   skills: {
     list: () => request<{ skills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; requiredPermissions?: string[]; type: 'builtin' | 'filesystem' | 'imported'; sourcePath?: string; agentIds: string[] }> }>('/skills'),

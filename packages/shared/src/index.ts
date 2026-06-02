@@ -11,6 +11,7 @@ export * from './types/connector.js';
 export * from './types/file-storage.js';
 export * from './types/mailbox.js';
 export * from './types/cognitive.js';
+export * from './types/model-catalog.js';
 export * from './utils/config.js';
 export * from './utils/logger.js';
 export * from './utils/id.js';

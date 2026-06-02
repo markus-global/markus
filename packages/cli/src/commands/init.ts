@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import { resolve } from 'node:path';
 import { readFileSync, existsSync, cpSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { saveConfig, getDefaultConfigPath, APP_VERSION } from '@markus/shared';
+import { saveConfig, getDefaultConfigPath, APP_VERSION, PROVIDERS } from '@markus/shared';
 import { resolveTemplatesDir } from '../paths.js';
 import { findConnector, scanInstalledPlatforms, readPlatformLLMProviders } from '../connector-service.js';
 
@@ -82,28 +82,16 @@ export async function quickInit(options?: InitOptions) {
     console.log('');
   }
 
-  const MODEL_MAP: Record<string, string> = {
-    anthropic: 'claude-opus-4-6',
-    openai: 'gpt-5.4',
-    google: 'gemini-3-1-pro',
-    minimax: 'MiniMax-M2.7',
-    siliconflow: 'Qwen/Qwen3.5-35B-A3B',
-    ollama: 'llama3',
-    openrouter: 'xiaomi/mimo-v2-pro',
-    zai: 'glm-5.1',
-    deepseek: 'deepseek-v4-flash',
-  };
+  const MODEL_MAP: Record<string, string> = Object.fromEntries(
+    PROVIDERS.map(p => [p.id, p.defaultModel])
+  );
 
-  const ENV_KEY_MAP: Array<{ provider: string; label: string; envKey: string; baseUrl?: string }> = [
-    { provider: 'anthropic', label: 'Anthropic', envKey: 'ANTHROPIC_API_KEY' },
-    { provider: 'openai', label: 'OpenAI', envKey: 'OPENAI_API_KEY' },
-    { provider: 'google', label: 'Google Gemini', envKey: 'GOOGLE_API_KEY' },
-    { provider: 'siliconflow', label: 'SiliconFlow', envKey: 'SILICONFLOW_API_KEY', baseUrl: 'https://api.siliconflow.cn/v1' },
-    { provider: 'minimax', label: 'MiniMax', envKey: 'MINIMAX_API_KEY', baseUrl: 'https://api.minimax.io/v1' },
-    { provider: 'openrouter', label: 'OpenRouter', envKey: 'OPENROUTER_API_KEY', baseUrl: 'https://openrouter.ai/api/v1' },
-    { provider: 'zai', label: 'ZAI', envKey: 'ZAI_API_KEY', baseUrl: 'https://api.z.ai/api/paas/v4' },
-    { provider: 'deepseek', label: 'DeepSeek', envKey: 'DEEPSEEK_API_KEY', baseUrl: 'https://api.deepseek.com' },
-  ];
+  const ENV_KEY_MAP = PROVIDERS.map(p => ({
+    provider: p.id,
+    label: p.label,
+    envKey: p.envKey,
+    baseUrl: p.baseUrl,
+  }));
 
   console.log('  [1/3] LLM Provider Configuration\n');
 

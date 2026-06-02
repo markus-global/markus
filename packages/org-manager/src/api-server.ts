@@ -27,6 +27,7 @@ import {
   discoverSkillsInDir,
   WELL_KNOWN_SKILL_DIRS,
   type AgentManager,
+  ModelCatalogService,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
@@ -200,6 +201,7 @@ export class APIServer {
   private fileStorage?: LocalFileStorageProvider;
   private remoteAgent?: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void };
   private remoteAgentFactory?: () => Promise<{ getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void } | null>;
+  private modelCatalog?: ModelCatalogService;
   // Custom group chats are now persisted in SQLite via storage.groupChatRepo
   constructor(
     private orgService: OrganizationService,
@@ -644,6 +646,10 @@ export class APIServer {
 
   setLLMRouter(router: LLMRouter): void {
     this.llmRouter = router;
+  }
+
+  setModelCatalog(catalog: ModelCatalogService): void {
+    this.modelCatalog = catalog;
   }
 
   setConfigPath(configPath: string): void {
@@ -7066,6 +7072,106 @@ EXPLANATION_END`;
       return;
     }
 
+    // ── Model Catalog API ──────────────────────────────────────────────────
+
+    if (path === '/api/models/catalog' && req.method === 'GET') {
+      if (!this.modelCatalog) {
+        this.json(res, 503, { error: 'Model catalog not available' });
+        return;
+      }
+      const provider = url.searchParams.get('provider');
+      if (provider) {
+        this.json(res, 200, { models: this.modelCatalog.getModelsByProvider(provider) });
+      } else {
+        const providers = this.modelCatalog.getAllProviders();
+        const allModels: Record<string, unknown[]> = {};
+        for (const p of providers) {
+          allModels[p] = this.modelCatalog.getModelsByProvider(p);
+        }
+        this.json(res, 200, { providers: allModels });
+      }
+      return;
+    }
+
+    if (path.startsWith('/api/models/catalog/') && req.method === 'GET') {
+      if (!this.modelCatalog) {
+        this.json(res, 503, { error: 'Model catalog not available' });
+        return;
+      }
+      const provider = path.replace('/api/models/catalog/', '');
+      if (provider === 'status') {
+        this.json(res, 200, this.modelCatalog.getStatus());
+        return;
+      }
+      const models = this.modelCatalog.getModelsByProvider(provider);
+      this.json(res, 200, { provider, models });
+      return;
+    }
+
+    if (path === '/api/models/catalog/refresh' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.modelCatalog) {
+        this.json(res, 503, { error: 'Model catalog not available' });
+        return;
+      }
+      const success = await this.modelCatalog.refresh();
+      this.json(res, 200, { success, status: this.modelCatalog.getStatus() });
+      return;
+    }
+
+    if (path === '/api/models/validate-key' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const { provider, apiKey, baseUrl } = body as { provider?: string; apiKey?: string; baseUrl?: string };
+      if (!provider || !apiKey) {
+        this.json(res, 400, { error: 'provider and apiKey are required' });
+        return;
+      }
+
+      try {
+        // Attempt to validate key by calling provider's models endpoint or a minimal chat request
+        const result = await this.validateProviderKey(provider, apiKey, baseUrl);
+        this.json(res, 200, result);
+      } catch (err) {
+        this.json(res, 200, { valid: false, error: err instanceof Error ? err.message : String(err), models: [] });
+      }
+      return;
+    }
+
+    // Fetch live models for a configured provider using its stored API key
+    if (path.startsWith('/api/models/live/') && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const providerName = path.replace('/api/models/live/', '');
+      if (!providerName) {
+        this.json(res, 400, { error: 'provider is required' });
+        return;
+      }
+
+      try {
+        // Get provider instance to access its API key
+        const providerInstance = this.llmRouter?.getProvider(providerName);
+        const apiKey = (providerInstance as any)?.apiKey ?? '';
+        const baseUrl = (providerInstance as any)?.baseUrl;
+
+        if (!apiKey) {
+          // No key available, fallback to catalog
+          const catalogModels = this.modelCatalog?.getModelsByProvider(providerName) ?? [];
+          this.json(res, 200, { provider: providerName, models: catalogModels, source: 'catalog' });
+          return;
+        }
+
+        const result = await this.validateProviderKey(providerName, apiKey, baseUrl);
+        this.json(res, 200, { provider: providerName, models: result.models, source: result.valid ? 'live' : 'catalog' });
+      } catch (err) {
+        const catalogModels = this.modelCatalog?.getModelsByProvider(providerName) ?? [];
+        this.json(res, 200, { provider: providerName, models: catalogModels, source: 'catalog', error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+
     // Settings — LLM configuration
     if (path === '/api/settings/llm' && req.method === 'GET') {
       if (!this.llmRouter) {
@@ -10016,6 +10122,12 @@ EXPLANATION_END`;
       regex(/^\/api\/skills\/[^/]+$/, 'GET'),
       regex(/^\/api\/skills\/[^/]+\/files$/, 'GET'),
       startsWith('/api/skills/installed/', 'DELETE'),
+      // ── Model Catalog ──────────────────────────────────────────────────────
+      exact('/api/models/catalog', 'GET'),
+      regex(/^\/api\/models\/catalog\/[^/]+$/, 'GET'),
+      exact('/api/models/catalog/refresh', 'POST'),
+      exact('/api/models/validate-key', 'POST'),
+      regex(/^\/api\/models\/live\/[^/]+$/, 'GET'),
       // ── Settings ─────────────────────────────────────────────────────────
       exact('/api/settings/hub', 'GET'),
       exact('/api/settings/hub-token', 'POST'),
@@ -10566,6 +10678,311 @@ EXPLANATION_END`;
       freedBytes: orphans.totalOrphanSize,
       failures,
     };
+  }
+
+  private async validateProviderKey(provider: string, apiKey: string, baseUrl?: string): Promise<{ valid: boolean; error?: string; models: unknown[] }> {
+    const PROVIDER_BASE_URLS: Record<string, string> = {
+      anthropic: 'https://api.anthropic.com',
+      openai: 'https://api.openai.com/v1',
+      google: 'https://generativelanguage.googleapis.com/v1beta',
+      deepseek: 'https://api.deepseek.com',
+      siliconflow: 'https://api.siliconflow.cn/v1',
+      minimax: 'https://api.minimax.io/v1',
+      openrouter: 'https://openrouter.ai/api/v1',
+      zai: 'https://api.z.ai/api/paas/v4',
+      xai: 'https://api.x.ai/v1',
+      mistral: 'https://api.mistral.ai/v1',
+      groq: 'https://api.groq.com/openai/v1',
+      perplexity: 'https://api.perplexity.ai',
+      cohere: 'https://api.cohere.ai/compatibility/v1',
+      together_ai: 'https://api.together.xyz/v1',
+      fireworks_ai: 'https://api.fireworks.ai/inference/v1',
+      moonshot: 'https://api.moonshot.cn/v1',
+      volcengine: 'https://ark.cn-beijing.volces.com/api/v3',
+      dashscope: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      ollama: 'http://localhost:11434/v1',
+    };
+
+    const providerBaseUrl = baseUrl || PROVIDER_BASE_URLS[provider];
+    if (!providerBaseUrl) {
+      return { valid: false, error: `Unknown provider: ${provider}`, models: [] };
+    }
+
+    // For Anthropic, use a lightweight models list call
+    if (provider === 'anthropic') {
+      try {
+        const resp = await fetch('https://api.anthropic.com/v1/models', {
+          headers: {
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!resp.ok) {
+          const errText = await resp.text().catch(() => '');
+          return { valid: false, error: `HTTP ${resp.status}: ${errText.slice(0, 200)}`, models: [] };
+        }
+        // Anthropic models endpoint returns { data: [...] }
+        const data = await resp.json() as { data?: Array<{ id: string }> };
+        const modelIds = (data.data ?? []).map((m: { id: string }) => m.id);
+        // Cross-reference with catalog (try both bare ID and prefixed)
+        const catalogModels = modelIds
+          .map((id: string) => this.modelCatalog?.getModelInfo(id) || this.modelCatalog?.getModelInfo(`anthropic/${id}`))
+          .filter(Boolean);
+        // Also include catalog entries not returned by API
+        const allAnthropicCatalog = this.modelCatalog?.getModelsByProvider('anthropic') ?? [];
+        const seenIds = new Set(modelIds);
+        const merged = [...catalogModels];
+        for (const cm of allAnthropicCatalog) {
+          const bareId = cm.id.startsWith('anthropic/') ? cm.id.slice('anthropic/'.length) : cm.id;
+          if (!seenIds.has(cm.id) && !seenIds.has(bareId)) {
+            merged.push(cm);
+          }
+        }
+        const result = merged.length > 0 ? merged : allAnthropicCatalog;
+        result.sort((a, b) => ((a as { id?: string }).id ?? '').localeCompare((b as { id?: string }).id ?? ''));
+        return { valid: true, models: result };
+      } catch (err) {
+        return { valid: false, error: err instanceof Error ? err.message : String(err), models: [] };
+      }
+    }
+
+    // For Google Gemini, use key-based auth and different models endpoint
+    if (provider === 'google') {
+      try {
+        const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`, {
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!resp.ok) {
+          const errText = await resp.text().catch(() => '');
+          return { valid: false, error: `HTTP ${resp.status}: ${errText.slice(0, 200)}`, models: [] };
+        }
+        const gData = await resp.json() as { models?: Array<{ name: string; displayName?: string; supportedGenerationMethods?: string[]; inputTokenLimit?: number; outputTokenLimit?: number }> };
+        const chatModelsRaw = (gData.models ?? [])
+          .filter(m => m.supportedGenerationMethods?.includes('generateContent'));
+        const catalogModels = this.modelCatalog?.getModelsByProvider('google') ?? [];
+        const catalogByStripped = new Map(catalogModels.map(m => [m.id.startsWith('gemini/') ? m.id.slice('gemini/'.length) : m.id, m]));
+        const models: Array<unknown> = [];
+        const seenIds = new Set<string>();
+        for (const gm of chatModelsRaw) {
+          const id = gm.name.replace('models/', '');
+          if (seenIds.has(id)) continue;
+          seenIds.add(id);
+          const match = catalogByStripped.get(id) || this.modelCatalog?.getModelInfo(`gemini/${id}`);
+          if (match) {
+            models.push({
+              ...match, id, provider: 'google',
+              maxInputTokens: match.maxInputTokens || gm.inputTokenLimit || 128000,
+              maxOutputTokens: match.maxOutputTokens || gm.outputTokenLimit || 8192,
+            });
+          } else {
+            models.push({
+              id, provider: 'google', mode: 'chat',
+              maxInputTokens: gm.inputTokenLimit || 128000,
+              maxOutputTokens: gm.outputTokenLimit || 8192,
+              inputCostPer1MTokens: 0,
+              outputCostPer1MTokens: 0,
+              capabilities: { vision: false, functionCalling: false, reasoning: false, promptCaching: false, webSearch: false, audioInput: false, audioOutput: false },
+            });
+          }
+        }
+        for (const cm of catalogModels) {
+          const bareId = cm.id.startsWith('gemini/') ? cm.id.slice('gemini/'.length) : cm.id;
+          if (!seenIds.has(cm.id) && !seenIds.has(bareId)) models.push(cm);
+        }
+        models.sort((a, b) => String((a as { id?: string }).id ?? '').localeCompare(String((b as { id?: string }).id ?? '')));
+        return { valid: true, models };
+      } catch (err) {
+        const catalogModels = this.modelCatalog?.getModelsByProvider('google') ?? [];
+        if (catalogModels.length > 0) return { valid: false, error: `Could not verify key (${err instanceof Error ? err.message : String(err)})`, models: catalogModels };
+        return { valid: false, error: err instanceof Error ? err.message : String(err), models: [] };
+      }
+    }
+
+    // For OpenAI-compatible providers, call /v1/models (or /models)
+    try {
+      let modelsUrl: string;
+      if (providerBaseUrl.endsWith('/v1') || providerBaseUrl.endsWith('/v1/')) {
+        modelsUrl = providerBaseUrl.replace(/\/+$/, '') + '/models';
+      } else if (providerBaseUrl.includes('/v1/') || providerBaseUrl.includes('/v3') || providerBaseUrl.includes('/v4') || providerBaseUrl.includes('/compatible-mode')) {
+        modelsUrl = providerBaseUrl.replace(/\/+$/, '') + '/models';
+      } else {
+        modelsUrl = providerBaseUrl.replace(/\/+$/, '') + '/v1/models';
+      }
+
+      const resp = await fetch(modelsUrl, {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        signal: AbortSignal.timeout(15000),
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => '');
+        return { valid: false, error: `HTTP ${resp.status}: ${errText.slice(0, 200)}`, models: [] };
+      }
+
+      const data = await resp.json() as { data?: Array<Record<string, unknown>> };
+      const remoteModels = (data.data ?? []) as Array<Record<string, unknown>>;
+
+      // Filter out obvious non-chat models (image/audio/video/embedding/tts/rerank)
+      const NON_CHAT_PATTERNS = /\b(image|img|video|audio|tts|speech|whisper|embed|rerank|moderat)/i;
+      const chatRemoteModels = remoteModels.filter(m => !NON_CHAT_PATTERNS.test(String(m.id ?? '')));
+
+      // Build multiple lookup indices for catalog matching
+      const catalogModels = this.modelCatalog?.getModelsByProvider(provider) ?? [];
+      const catalogByExactId = new Map(catalogModels.map(m => [m.id, m]));
+      // Index by stripped provider prefix (e.g. "minimax/MiniMax-M2.1" -> "MiniMax-M2.1")
+      const catalogByStrippedId = new Map<string, typeof catalogModels[0]>();
+      for (const m of catalogModels) {
+        if (m.id.startsWith(`${provider}/`)) {
+          catalogByStrippedId.set(m.id.slice(provider.length + 1), m);
+        }
+      }
+      // Case-insensitive index for stripped IDs
+      const catalogByStrippedIdLower = new Map<string, typeof catalogModels[0]>();
+      for (const [k, v] of catalogByStrippedId) {
+        catalogByStrippedIdLower.set(k.toLowerCase(), v);
+      }
+      // Also try to get models from other providers that may match (for aggregators like openrouter/siliconflow)
+      const allCatalogModels = this.modelCatalog ? (() => {
+        const all = new Map<string, typeof catalogModels[0]>();
+        for (const p of this.modelCatalog!.getAllProviders()) {
+          for (const m of this.modelCatalog!.getModelsByProvider(p)) {
+            all.set(m.id, m);
+          }
+        }
+        return all;
+      })() : new Map<string, typeof catalogModels[0]>();
+
+      // Common suffixes that can be stripped for fuzzy matching
+      const VARIANT_SUFFIXES = ['-highspeed', '-turbo', '-fast', '-latest', '-online', '-hd', '-preview', '-exp', '-free'];
+
+      const findCatalogMatch = (id: string): typeof catalogModels[0] | null => {
+        // 1. Exact match in provider catalog
+        if (catalogByExactId.has(id)) return catalogByExactId.get(id)!;
+        // 2. Match after stripping provider prefix from catalog IDs
+        if (catalogByStrippedId.has(id)) return catalogByStrippedId.get(id)!;
+        // 3. Case-insensitive match on stripped IDs
+        if (catalogByStrippedIdLower.has(id.toLowerCase())) return catalogByStrippedIdLower.get(id.toLowerCase())!;
+        // 4. Try adding provider prefix
+        const prefixed = `${provider}/${id}`;
+        if (catalogByExactId.has(prefixed)) return catalogByExactId.get(prefixed)!;
+        // 5. Fuzzy: strip variant suffixes and try again
+        const idLower = id.toLowerCase();
+        for (const suffix of VARIANT_SUFFIXES) {
+          if (idLower.endsWith(suffix)) {
+            const base = id.slice(0, -suffix.length);
+            if (catalogByStrippedId.has(base)) return catalogByStrippedId.get(base)!;
+            if (catalogByStrippedIdLower.has(base.toLowerCase())) return catalogByStrippedIdLower.get(base.toLowerCase())!;
+            const basePrefixed = `${provider}/${base}`;
+            if (catalogByExactId.has(basePrefixed)) return catalogByExactId.get(basePrefixed)!;
+          }
+        }
+        // 6. For aggregators, try matching model in its native provider catalog
+        const slashIdx = id.indexOf('/');
+        if (slashIdx > 0) {
+          const nativeId = id.slice(slashIdx + 1);
+          const globalMatch = allCatalogModels.get(id) || allCatalogModels.get(`${id.slice(0, slashIdx)}/${nativeId}`);
+          if (globalMatch) return globalMatch;
+        }
+        // 7. Try bare model name (last part after /) in global catalog — case-insensitive
+        const bareName = id.includes('/') ? id.split('/').pop()! : id;
+        const bareNameLower = bareName.toLowerCase();
+        for (const [cid, cm] of allCatalogModels) {
+          const cBareName = cid.includes('/') ? cid.split('/').pop()! : cid;
+          if (cBareName.toLowerCase() === bareNameLower) return cm;
+        }
+        // 8. Fuzzy: strip suffixes from bare name and try global catalog
+        for (const suffix of VARIANT_SUFFIXES) {
+          if (bareNameLower.endsWith(suffix)) {
+            const baseBare = bareName.slice(0, -suffix.length).toLowerCase();
+            for (const [cid, cm] of allCatalogModels) {
+              const cBareName = (cid.includes('/') ? cid.split('/').pop()! : cid).toLowerCase();
+              if (cBareName === baseBare) return cm;
+            }
+          }
+        }
+        return null;
+      };
+
+      // Extract metadata from API response if available (many providers return context_length, pricing)
+      const extractApiMetadata = (remoteModel: Record<string, unknown>) => {
+        const contextLength = (remoteModel.context_length ?? remoteModel.max_context_length ?? remoteModel.context_window ?? remoteModel.max_model_len ?? 0) as number;
+        const topProvider = remoteModel.top_provider as Record<string, unknown> | undefined;
+        const maxOutput = (remoteModel.max_output ?? topProvider?.max_completion_tokens ?? 0) as number;
+        // OpenRouter-style pricing
+        const pricing = remoteModel.pricing as Record<string, string> | undefined;
+        let inputCostPer1M = 0;
+        let outputCostPer1M = 0;
+        if (pricing) {
+          inputCostPer1M = parseFloat(pricing.prompt || '0') * 1_000_000;
+          outputCostPer1M = parseFloat(pricing.completion || '0') * 1_000_000;
+        }
+        return { contextLength, maxOutput, inputCostPer1M, outputCostPer1M };
+      };
+
+      // Compute a fallback context window from provider's known models
+      let providerFallbackContext = 128000;
+      if (catalogModels.length > 0) {
+        const contexts = catalogModels.map(m => m.maxInputTokens).filter(t => t > 0);
+        if (contexts.length > 0) {
+          providerFallbackContext = Math.round(contexts.reduce((a, b) => a + b, 0) / contexts.length);
+        }
+      }
+
+      const models: Array<unknown> = [];
+      const seenIds = new Set<string>();
+      for (const rm of chatRemoteModels) {
+        const id = String(rm.id ?? '');
+        if (!id || seenIds.has(id)) continue;
+        seenIds.add(id);
+        const match = findCatalogMatch(id);
+        const apiMeta = extractApiMetadata(rm);
+
+        if (match) {
+          models.push({
+            ...match,
+            id,
+            provider,
+            // Prefer catalog data but use API metadata if catalog has no data
+            maxInputTokens: match.maxInputTokens || apiMeta.contextLength || providerFallbackContext,
+            maxOutputTokens: match.maxOutputTokens || apiMeta.maxOutput || match.maxOutputTokens,
+            inputCostPer1MTokens: match.inputCostPer1MTokens || apiMeta.inputCostPer1M,
+            outputCostPer1MTokens: match.outputCostPer1MTokens || apiMeta.outputCostPer1M,
+          });
+        } else {
+          models.push({
+            id,
+            provider,
+            mode: 'chat',
+            maxInputTokens: apiMeta.contextLength || providerFallbackContext,
+            maxOutputTokens: apiMeta.maxOutput || 8192,
+            inputCostPer1MTokens: apiMeta.inputCostPer1M,
+            outputCostPer1MTokens: apiMeta.outputCostPer1M,
+            capabilities: { vision: false, functionCalling: false, reasoning: false, promptCaching: false, webSearch: false, audioInput: false, audioOutput: false },
+          });
+        }
+      }
+
+      // Also include catalog models not in remote list
+      for (const cm of catalogModels) {
+        const strippedId = cm.id.startsWith(`${provider}/`) ? cm.id.slice(provider.length + 1) : cm.id;
+        if (!seenIds.has(cm.id) && !seenIds.has(strippedId)) {
+          models.push(cm);
+        }
+      }
+
+      models.sort((a, b) => String((a as { id?: string }).id ?? '').localeCompare(String((b as { id?: string }).id ?? '')));
+      return { valid: true, models };
+    } catch (err) {
+      // If /v1/models fails, try to return catalog models and mark key as valid if catalog has data
+      const catalogModels = this.modelCatalog?.getModelsByProvider(provider) ?? [];
+      if (catalogModels.length > 0) {
+        return { valid: false, error: `Could not verify key (${err instanceof Error ? err.message : String(err)}), showing catalog models`, models: catalogModels };
+      }
+      return { valid: false, error: err instanceof Error ? err.message : String(err), models: [] };
+    }
   }
 }
 

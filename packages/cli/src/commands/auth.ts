@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import * as readline from 'node:readline';
-import { loadConfig, saveConfig } from '@markus/shared';
+import { loadConfig, saveConfig, PROVIDERS } from '@markus/shared';
 
 // ─── Color constants ──────────────────────────────────────────────────────────
 
@@ -32,24 +32,6 @@ function section(label: string) {
 
 // ─── Provider definitions ─────────────────────────────────────────────────────
 
-interface ProviderDef {
-  id: string;
-  label: string;
-  envKey: string;
-  baseUrl?: string;
-  defaultModel: string;
-}
-
-const PROVIDERS: ProviderDef[] = [
-  { id: 'anthropic', label: 'Anthropic', envKey: 'ANTHROPIC_API_KEY', defaultModel: 'claude-opus-4-6' },
-  { id: 'openai', label: 'OpenAI', envKey: 'OPENAI_API_KEY', defaultModel: 'gpt-5.4' },
-  { id: 'google', label: 'Google Gemini', envKey: 'GOOGLE_API_KEY', defaultModel: 'gemini-3-1-pro' },
-  { id: 'minimax', label: 'MiniMax', envKey: 'MINIMAX_API_KEY', baseUrl: 'https://api.minimax.io/v1', defaultModel: 'MiniMax-M2.7' },
-  { id: 'siliconflow', label: 'SiliconFlow', envKey: 'SILICONFLOW_API_KEY', baseUrl: 'https://api.siliconflow.cn/v1', defaultModel: 'Qwen/Qwen3.5-35B-A3B' },
-  { id: 'openrouter', label: 'OpenRouter', envKey: 'OPENROUTER_API_KEY', baseUrl: 'https://openrouter.ai/api/v1', defaultModel: 'xiaomi/mimo-v2-pro:free' },
-  { id: 'zai', label: 'ZAI', envKey: 'ZAI_API_KEY', baseUrl: 'https://api.z.ai/api/paas/v4', defaultModel: 'glm-5.1' },
-  { id: 'deepseek', label: 'DeepSeek', envKey: 'DEEPSEEK_API_KEY', baseUrl: 'https://api.deepseek.com', defaultModel: 'deepseek-v4-flash' },
-];
 
 // ─── Placeholder detection ────────────────────────────────────────────────────
 
