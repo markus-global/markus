@@ -4,6 +4,7 @@ import { api, wsClient } from '../api.ts';
 const POLL_INTERVAL_MS = 60_000;
 
 let _globalCounts: Record<string, number> = {};
+let _globalSessionAgentMap: Record<string, string> = {};
 const _listeners = new Set<() => void>();
 
 function notify() {
@@ -13,13 +14,16 @@ function notify() {
 export function useUnreadCounts(opts?: { enabled?: boolean }) {
   const enabled = opts?.enabled ?? true;
   const [counts, setCounts] = useState<Record<string, number>>(_globalCounts);
+  const [sessionAgentMap, setSessionAgentMap] = useState<Record<string, string>>(_globalSessionAgentMap);
   const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   const refresh = useCallback(async () => {
     try {
       const resp = await api.unread.getCounts();
       _globalCounts = resp.counts ?? {};
+      _globalSessionAgentMap = resp.sessionAgentMap ?? {};
       setCounts(_globalCounts);
+      setSessionAgentMap(_globalSessionAgentMap);
       notify();
     } catch { /* silent */ }
   }, []);
@@ -57,7 +61,7 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
       }
     });
 
-    const listener = () => setCounts({ ..._globalCounts });
+    const listener = () => { setCounts({ ..._globalCounts }); setSessionAgentMap({ ..._globalSessionAgentMap }); };
     _listeners.add(listener);
 
     return () => {
@@ -79,17 +83,16 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
     return counts[`channel:${channelKey}`] ?? 0;
   }, [counts]);
 
-  return { counts, totalUnread, getSessionUnread, getChannelUnread, markRead, markAllRead, refresh };
+  return { counts, totalUnread, sessionAgentMap, getSessionUnread, getChannelUnread, markRead, markAllRead, refresh };
 }
 
 /**
- * Get unread count for a specific agent by summing all session:* entries
- * that belong to sessions of that agent.
- * Since session keys encode the session ID (not the agent ID), the caller
- * must provide a mapping of sessionId -> agentId.
+ * Derive per-agent unread counts from session-level read cursors.
+ * Uses the sessionAgentMap (sessionId → agentId) returned by the server
+ * to aggregate session:* counts into agent-level totals.
  */
 export function useAgentUnread(
-  agentSessionMap: Map<string, string>,
+  sessionAgentMap: Record<string, string>,
   counts: Record<string, number>
 ): Map<string, number> {
   return useMemo(() => {
@@ -97,14 +100,14 @@ export function useAgentUnread(
     for (const [key, count] of Object.entries(counts)) {
       if (key.startsWith('session:')) {
         const sessionId = key.slice('session:'.length);
-        const agentId = agentSessionMap.get(sessionId);
+        const agentId = sessionAgentMap[sessionId];
         if (agentId) {
           result.set(agentId, (result.get(agentId) ?? 0) + count);
         }
       }
     }
     return result;
-  }, [agentSessionMap, counts]);
+  }, [sessionAgentMap, counts]);
 }
 
 /**

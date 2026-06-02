@@ -6,18 +6,14 @@ import {
   api, wsClient,
   type AgentInfo, type AgentToolEvent, type StreamCommitEvent, type HumanUserInfo, type ExternalAgentInfo,
   type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo, type ChannelMsgMetadata,
-  type TaskInfo, type TeamInfo, type AuthUser, type StoredSegment,
+  type TaskInfo, type TeamInfo, type AuthUser,
 } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import {
   ToolCallRow, ExecEntryRow, ThinkingDots,
   taskLogToEntry, activityLogToEntry, filterCompletedStarts, attachSubagentLogsToEntries,
-  CompactExecutionCard, FullExecutionLog,
-  TaskApprovalCard, RequirementApprovalCard,
-  parseTaskApprovalFromResult, parseRequirementApprovalFromResult,
   type ExecEntry, type ExecutionStreamEntryUI,
-  type TaskApprovalInfo, type RequirementApprovalInfo,
 } from '../components/ExecutionTimeline.tsx';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
@@ -29,737 +25,37 @@ import { TeamProfile, TABS as TEAM_TABS, type TeamTab } from './TeamProfile.tsx'
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
-import { useUnreadCounts } from '../hooks/useUnreadCounts.ts';
+import { useUnreadCounts, useAgentUnread } from '../hooks/useUnreadCounts.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { Avatar } from '../components/Avatar.tsx';
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function throttle<T extends (...args: unknown[]) => unknown>(fn: T, ms: number): T {
-  let last = 0;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  return ((...args: unknown[]) => {
-    const now = Date.now();
-    const remaining = ms - (now - last);
-    if (remaining <= 0) {
-      if (timer) { clearTimeout(timer); timer = null; }
-      last = now;
-      return fn(...args);
-    }
-    if (!timer) {
-      timer = setTimeout(() => {
-        last = Date.now();
-        timer = null;
-        fn(...args);
-      }, remaining);
-    }
-  }) as T;
-}
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-/** A single interleaved segment: either text or a tool call */
-export type MsgSegment =
-  | { type: 'text'; content: string; thinking?: string; createdAt?: string }
-  | { type: 'tool'; key: string; tool: string; status: 'running' | 'done' | 'error' | 'stopped'; args?: unknown; result?: string; error?: string; durationMs?: number; liveOutput?: string; subagentLogs?: import('../api.ts').SubagentProgressEvent[]; createdAt?: string };
-
-interface ChatMsg {
-  id: string;
-  sender: 'user' | 'agent';
-  text: string;
-  /** Server-committed clean per-turn segments (thinking/text/tools), populated from thinking_commit/text_commit SSE events */
-  committedSegments?: MsgSegment[];
-  time: string;
-  /** Raw ISO timestamp from DB */
-  rawCreatedAt?: string;
-  agentName?: string;
-  agentId?: string;
-  /** Chronologically interleaved segments (text + tool calls) — built during streaming */
-  segments?: MsgSegment[];
-  /** Legacy frozen activities for DB-loaded messages that predate the segments field */
-  activities?: ActivityStep[];
-  /** True when this message represents a failed AI response */
-  isError?: boolean;
-  /** True when this message was stopped by the user mid-stream */
-  isStopped?: boolean;
-  /** Attached image data URLs */
-  images?: string[];
-  /** Reply quote */
-  replyToId?: string;
-  replyToSender?: string;
-  replyToText?: string;
-  /** Activity log metadata — compact system card instead of bubble */
-  isActivityLog?: boolean;
-  activityType?: string;
-  outcome?: string;
-  mailboxItemId?: string;
-  taskId?: string;
-  requirementId?: string;
-  /** Proactive notification from agent */
-  isNotification?: boolean;
-  notifyPriority?: string;
-}
-
-const NOTIFY_CONTEXT_RE = /\n*<!-- notify_context:.*?-->/g;
-
-function stripNotifyContext(text: string): { cleaned: string; priority?: string } {
-  const match = text.match(/<!-- notify_context:([^>]*?)-->/);
-  let priority: string | undefined;
-  if (match) {
-    const priMatch = match[1].match(/priority=(\w+)/);
-    if (priMatch) priority = priMatch[1];
-  }
-  return { cleaned: text.replace(NOTIFY_CONTEXT_RE, '').trimEnd(), priority };
-}
-
-type ChatMode = 'channel' | 'direct' | 'dm';
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
-  const base: ChatMsg = {
-    id: m.id,
-    sender: m.role === 'user' ? 'user' : 'agent',
-    text: m.content,
-    time: new Date(m.createdAt).toLocaleTimeString(),
-    rawCreatedAt: m.createdAt,
-    agentId: m.role !== 'user' ? m.agentId : undefined,
-  };
-  if (m.role !== 'user' && m.metadata?.segments && m.metadata.segments.length > 0) {
-    base.segments = m.metadata.segments.map((s: StoredSegment, i: number) =>
-      s.type === 'tool'
-        ? { type: 'tool' as const, key: `${s.tool}_${i}`, tool: s.tool, status: s.status, args: s.arguments, result: s.result, error: s.error, durationMs: s.durationMs, createdAt: s.createdAt }
-        : { type: 'text' as const, content: s.content, thinking: s.thinking, createdAt: s.createdAt }
-    );
-  }
-  if (m.role === 'assistant' && (m.content === '[cancelled]' || m.content === '[Stream cancelled]')) {
-    base.text = '';
-  }
-  if (m.metadata?.isError || (m.role === 'assistant' && m.content.startsWith('⚠'))) {
-    base.isError = true;
-  }
-  if (m.metadata?.isStopped) {
-    base.isStopped = true;
-  }
-  if (m.metadata?.images?.length) {
-    base.images = m.metadata.images;
-  }
-  if (m.metadata?.notifyUser) {
-    base.isNotification = true;
-    base.notifyPriority = (m.metadata as Record<string, unknown>).priority as string | undefined;
-    if (m.metadata.taskId) base.taskId = m.metadata.taskId;
-    if (m.metadata.requirementId) base.requirementId = m.metadata.requirementId;
-  }
-  // Strip embedded notify_context HTML comments from display
-  if (base.text.includes('<!-- notify_context:')) {
-    const { cleaned, priority } = stripNotifyContext(base.text);
-    base.text = cleaned;
-    if (priority && !base.notifyPriority) base.notifyPriority = priority;
-    base.isNotification = true;
-  }
-  if (m.metadata?.activityLog) {
-    base.isActivityLog = true;
-    base.activityType = m.metadata.activityType;
-    base.outcome = m.metadata.outcome;
-    base.mailboxItemId = m.metadata.mailboxItemId;
-    base.taskId = m.metadata.taskId;
-    base.requirementId = m.metadata.requirementId;
-    // Legacy compat: old rows have [ACTIVITY: type] prefix and outcome baked into content
-    if (!base.outcome && base.text.startsWith('[ACTIVITY:')) {
-      const arrowIdx = base.text.lastIndexOf(' → ');
-      if (arrowIdx !== -1) base.outcome = base.text.slice(arrowIdx + 3);
-      base.text = base.text.replace(/^\[ACTIVITY:\s*\w+\]\s*/, '');
-    }
-  }
-  return base;
-}
-
-function channelMsgToChat(m: ChannelMessageInfo, authUserId?: string): ChatMsg {
-  const isError = m.senderType === 'system' || (m.senderType === 'agent' && m.text.startsWith('⚠'));
-  const isSelf = m.senderType === 'human' && (!authUserId || m.senderId === authUserId);
-  const base: ChatMsg = {
-    id: m.id,
-    sender: isSelf ? 'user' : 'agent',
-    text: m.text,
-    time: new Date(m.createdAt).toLocaleTimeString(),
-    rawCreatedAt: m.createdAt,
-    agentName: isSelf ? undefined : m.senderName,
-    agentId: isSelf ? undefined : m.senderId,
-    isError,
-    replyToId: m.replyToId,
-    replyToSender: m.replyToSender,
-    replyToText: m.replyToText,
-  };
-  // Build segments from metadata (thinking + tool calls)
-  if (m.metadata && m.senderType === 'agent') {
-    const segments: MsgSegment[] = [];
-    const meta = m.metadata as ChannelMsgMetadata;
-    if (meta.thinking?.length) {
-      segments.push({ type: 'text', content: '', thinking: meta.thinking.join('\n\n') });
-    }
-    if (meta.toolCalls?.length) {
-      for (let i = 0; i < meta.toolCalls.length; i++) {
-        const tc = meta.toolCalls[i]!;
-        segments.push({
-          type: 'tool',
-          key: `${tc.tool}_${i}`,
-          tool: tc.tool,
-          status: tc.status === 'error' ? 'error' : 'done',
-          args: tc.arguments,
-          result: tc.result,
-          durationMs: tc.durationMs,
-        });
-      }
-    }
-    if (segments.length > 0) {
-      segments.push({ type: 'text', content: m.text });
-      base.segments = segments;
-    }
-  }
-  return base;
-}
+import {
+  type MsgSegment, type ChatMsg, type ChatMode,
+  dbMsgToChat, channelMsgToChat, stripNotifyContext,
+  formatSmartTime, getDateKey, formatDateLabel, throttle,
+} from './ChatHelpers.ts';
+import {
+  NotificationBadge, ChatAgentLink, AvatarPopover, MessageActions,
+  AgentMessageBody, segmentsToStreamEntries, friendlyAgentError,
+} from './ChatComponents.tsx';
+export type { MsgSegment };
 
 function agentInitials(name: string) {
   return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
 }
 
-function NotificationBadge({ priority }: { priority?: string }) {
-  const isHigh = priority === 'high' || priority === 'critical';
-  return (
-    <div className={`inline-flex items-center gap-1 mt-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium ${
-      isHigh
-        ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20'
-        : 'bg-brand-500/10 text-brand-400 border border-brand-500/20'
-    }`}>
-      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-      </svg>
-      <span>Notification{priority && priority !== 'normal' ? ` · ${priority}` : ''}</span>
-    </div>
-  );
-}
+// Components extracted to ChatComponents.tsx:
+// NotificationBadge, ChatAgentLink, AvatarPopover, friendlyAgentError,
+// MessageActions, segmentsToStreamEntries, AgentMessageBody
 
-function ChatAgentLink({ name, agentId, agents, onViewProfile }: { name: string; agentId?: string; agents: AgentInfo[]; onViewProfile?: (agentId: string) => void }) {
-  const { t } = useTranslation(['team', 'common']);
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLSpanElement>(null);
-  const agent = agentId ? agents.find(a => a.id === agentId) : agents.find(a => a.name === name);
-
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [open]);
-
-  if (!agent) return <span>{name}</span>;
-
-  return (
-    <span ref={ref} className="relative inline-block">
-      <button onClick={() => setOpen(!open)} className="text-fg-tertiary hover:text-brand-500 cursor-pointer transition-colors">
-        {name}
-      </button>
-      {open && (
-        <div className="absolute left-0 top-full mt-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-40 w-56 p-3 space-y-2">
-          <div className="flex items-center gap-2">
-            <Avatar name={agent.name} avatarUrl={agent.avatarUrl} size={28} bgClass="bg-brand-500/15 text-brand-600" />
-            <div className="flex-1 min-w-0">
-              <div className="text-xs text-fg-primary font-medium truncate">{agent.name}</div>
-              <div className="text-[10px] text-fg-tertiary">{agent.role} · {agent.agentRole ?? t('page.workerRole')}</div>
-            </div>
-            <span className={`w-2 h-2 rounded-full shrink-0 ${
-              agent.status === 'working' ? 'bg-blue-400 animate-pulse'
-              : agent.status === 'error' ? 'bg-red-400'
-              : (agent.lastError && agent.lastErrorAt && (Date.now() - new Date(agent.lastErrorAt).getTime()) < 30 * 60 * 1000) ? 'bg-amber-400'
-              : 'bg-green-400'
-            }`} />
-          </div>
-          <button
-            onClick={() => { setOpen(false); onViewProfile?.(agent.id); }}
-            className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
-          >
-            {t('page.viewProfileArrow')}
-          </button>
-        </div>
-      )}
-    </span>
-  );
-}
-
-/** Agent avatar popover — shown when clicking an agent avatar in chat messages */
-function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
-  agent: AgentInfo;
-  anchorRect: { top: number; left: number };
-  onClose: () => void;
-  onViewProfile: (agentId: string) => void;
-}) {
-  const { t } = useTranslation(['common', 'team']);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [onClose]);
-
-  const hasRecentError = agent.status !== 'error' && !!agent.lastError && !!agent.lastErrorAt
-    && (Date.now() - new Date(agent.lastErrorAt).getTime()) < 30 * 60 * 1000;
-  const statusColor = agent.status === 'idle' && !hasRecentError ? 'bg-green-400'
-    : agent.status === 'working' && !hasRecentError ? 'bg-blue-400 animate-pulse'
-    : agent.status === 'error' ? 'bg-red-400'
-    : hasRecentError ? 'bg-amber-400'
-    : 'bg-gray-500';
-  const statusLabel = agent.status === 'idle' ? t('common:status.online') : agent.status === 'working' ? t('common:status.working') : agent.status === 'error' ? t('common:status.error') : agent.status === 'paused' ? t('common:status.paused') : t('common:status.offline');
-
-  const adjustRef = useCallback((el: HTMLDivElement | null) => {
-    if (!el) return;
-    (ref as React.MutableRefObject<HTMLDivElement | null>).current = el;
-    const rect = el.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const pad = 8;
-    if (rect.right > vw - pad) el.style.left = `${Math.max(pad, vw - rect.width - pad)}px`;
-    if (rect.left < pad) el.style.left = `${pad}px`;
-    if (rect.bottom > vh - pad) el.style.top = `${Math.max(pad, vh - rect.height - pad)}px`;
-  }, []);
-
-  return (
-    <div
-      ref={adjustRef}
-      className="fixed z-50 w-64 max-w-[calc(100vw-1rem)] bg-surface-secondary border border-border-default rounded-xl shadow-2xl p-4 space-y-3"
-      style={{ top: anchorRect.top + 40, left: anchorRect.left }}
-    >
-      <div className="flex items-center gap-3">
-        <Avatar name={agent.name} avatarUrl={agent.avatarUrl} size={40} bgClass="bg-brand-500/15 text-brand-600" />
-        <div className="flex-1 min-w-0">
-          <div className="text-sm text-fg-primary font-medium truncate">{agent.name}</div>
-          <div className="text-[11px] text-fg-tertiary">{agent.role}</div>
-          <div className="flex items-center gap-1.5 mt-0.5">
-            <span className={`w-1.5 h-1.5 rounded-full ${statusColor}`} />
-            <span className="text-[10px] text-fg-secondary">{statusLabel}</span>
-            {agent.agentRole && <span className="text-[10px] text-fg-tertiary">· {agent.agentRole}</span>}
-          </div>
-        </div>
-      </div>
-      <button
-        onClick={() => { onClose(); onViewProfile(agent.id); }}
-        className="w-full py-1.5 text-xs text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg transition-colors text-center"
-      >
-        {t('team:page.viewProfileArrow')}
-      </button>
-    </div>
-  );
-}
-
-/** Convert a raw LLM/network error into a user-friendly message with the actual reason */
-function friendlyAgentError(err: unknown, t: TFunction): string {
-  const raw = String(err);
-
-  if (raw.includes('AbortError') || raw.includes('abort'))
-    return '';  // user cancelled — show nothing
-
-  // Try to extract a clean message from JSON payloads like:
-  // Error: OpenAI API error 402: {"error":{"message":"Insufficient Balance",...}}
-  let detail = '';
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[0]) as { error?: { message?: string }; message?: string };
-      detail = parsed.error?.message ?? parsed.message ?? '';
-    } catch { /* ignore */ }
-  }
-  if (!detail) {
-    // Fall back to the text after the last colon (e.g. "OpenAI API error 402: Unauthorized")
-    const colonIdx = raw.lastIndexOf(': ');
-    if (colonIdx >= 0) detail = raw.slice(colonIdx + 2).trim();
-  }
-
-  if (raw.includes('402') || /insufficient.?balance/i.test(raw))
-    return t('errors.ai402', { detail: detail || t('errors.defaultInsufficientCredits') });
-  if (raw.includes('401') || /unauthorized|invalid.?api.?key/i.test(raw))
-    return t('errors.ai401', { detail: detail || t('errors.defaultInvalidApiKey') });
-  if (raw.includes('429') || /rate.?limit/i.test(raw))
-    return t('errors.ai429', { detail: detail || t('errors.defaultTooManyRequests') });
-  if (raw.includes('503') || /service.?unavailable/i.test(raw))
-    return t('errors.ai503', { detail: detail || t('errors.defaultServiceDown') });
-
-  return t('errors.aiGeneric', { detail: detail || raw.slice(0, 120) });
-}
-
-// ─── AgentMessageBody ──────────────────────────────────────────────────────────
-// Renders an agent message with tool calls and text interleaved in chronological order.
-
-/** Action toolbar shown on hover below a message bubble */
-function MessageActions({
-  msg, onCopy, onRetry, onResume, onReply, isCopied, isLastAgentMsg,
-}: {
-  msg: ChatMsg;
-  onCopy: (msg: ChatMsg) => void;
-  onRetry?: (msg: ChatMsg) => void;
-  onResume?: (msg: ChatMsg) => void;
-  onReply?: (msg: ChatMsg) => void;
-  isCopied: boolean;
-  /** Only the most recent agent message should offer Retry/Resume/Re-ask */
-  isLastAgentMsg?: boolean;
-}) {
-  const { t } = useTranslation(['team', 'common']);
-  const isError = msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'));
-  const isStopped = msg.isStopped;
-  const canRetry = isLastAgentMsg !== false;
-  return (
-    <div className="flex items-center gap-0.5 mt-1">
-      {/* Copy */}
-      <button
-        onClick={() => onCopy(msg)}
-        className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay/60 transition-colors"
-        title={t('copy')}
-      >
-        {isCopied ? (
-          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12" /></svg>
-        ) : (
-          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" /></svg>
-        )}
-        {isCopied ? t('copied') : t('copy')}
-      </button>
-      {/* Resume — for the last agent message (continue from where it left off) */}
-      {canRetry && onResume && (
-        <button
-          onClick={() => onResume(msg)}
-          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-green-500 hover:text-green-400 hover:bg-green-500/10 transition-colors"
-          title={t('page.messageActions.resumeTitle')}
-        >
-          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-          {t('page.messageActions.resumeTitle')}
-        </button>
-      )}
-      {/* Re-ask — for stopped messages (only on latest agent msg) */}
-      {canRetry && isStopped && onRetry && (
-        <button
-          onClick={() => onRetry(msg)}
-          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-brand-500 hover:text-brand-500 hover:bg-brand-500/10 transition-colors"
-          title={t('page.messageActions.reaskTitle')}
-        >
-          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
-          {t('page.messageActions.reaskTitle')}
-        </button>
-      )}
-      {/* Retry — for error messages (only on latest agent msg) */}
-      {canRetry && isError && !isStopped && onRetry && (
-        <button
-          onClick={() => onRetry(msg)}
-          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-amber-600 hover:text-amber-600 hover:bg-amber-500/10 transition-colors"
-          title={t('page.messageActions.retryTitle')}
-        >
-          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
-          {t('page.messageActions.retryTitle')}
-        </button>
-      )}
-      {/* Retry — for normal agent messages (only on latest agent msg) */}
-      {canRetry && !isError && !isStopped && msg.sender === 'agent' && onRetry && (
-        <button
-          onClick={() => onRetry(msg)}
-          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay/60 transition-colors"
-          title={t('page.messageActions.retryTitle')}
-        >
-          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
-          {t('page.messageActions.retryTitle')}
-        </button>
-      )}
-      {/* Reply */}
-      {onReply && (
-        <button
-          onClick={() => onReply(msg)}
-          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay/60 transition-colors"
-          title={t('page.messageActions.replyTitle')}
-        >
-          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 17 4 12 9 7" /><path d="M20 18v-2a4 4 0 00-4-4H4" /></svg>
-          {t('page.messageActions.replyTitle')}
-        </button>
-      )}
-    </div>
-  );
-}
-
-/**
- * Convert message segments to execution stream entries for the timeline.
- *
- * Uses a stateful parser that tracks whether we are inside a `<think>` block
- * across segment and tool-call boundaries. This ensures:
- * - `<think>` blocks that span multiple segments are properly merged
- * - Real (non-thinking) text between tool calls is shown at its natural position
- * - Thinking content that spans a tool call is preserved across the gap
- */
-function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string, msgTime?: string): ExecutionStreamEntryUI[] {
-  if (!segments) return [];
-  const entries: ExecutionStreamEntryUI[] = [];
-  let seq = 0;
-  const aid = agentId ?? '';
-
-  // For old segments without per-segment createdAt, build incremental timestamps
-  // starting from the message creation time.
-  const baseMs = msgTime ? new Date(msgTime).getTime() : Date.now();
-  let cursorMs = baseMs;
-  const hasRealTimestamps = segments.some(s => s.createdAt);
-
-  const getTimestamp = (seg: MsgSegment): string => {
-    if (seg.createdAt) return seg.createdAt;
-    if (hasRealTimestamps) return new Date(cursorMs).toISOString();
-    // For legacy data, advance cursor by 1s for text, or use durationMs for tools
-    const ts = new Date(cursorMs).toISOString();
-    if (seg.type === 'tool' && seg.durationMs) {
-      cursorMs += seg.durationMs;
-    } else {
-      cursorMs += 1000;
-    }
-    return ts;
-  };
-
-  let insideThink = false;
-  let thinkBuf = '';
-  let textBuf = '';
-  let currentSegTimestamp = '';
-
-  const emitThinking = () => {
-    const t = thinkBuf.trim();
-    if (t) {
-      entries.push({
-        id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
-        seq: seq++, type: 'text', content: t, createdAt: currentSegTimestamp,
-        metadata: { isThinking: true },
-      });
-    }
-    thinkBuf = '';
-  };
-
-  const emitText = () => {
-    const t = textBuf.trim();
-    if (t) {
-      entries.push({
-        id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
-        seq: seq++, type: 'text', content: t, createdAt: currentSegTimestamp,
-      });
-    }
-    textBuf = '';
-  };
-
-  const OPEN_TAG = '<think>';
-  const CLOSE_TAG = '</think>';
-
-  const processText = (content: string) => {
-    let pos = 0;
-    while (pos < content.length) {
-      if (insideThink) {
-        const closeIdx = content.indexOf(CLOSE_TAG, pos);
-        if (closeIdx === -1) {
-          thinkBuf += content.slice(pos);
-          pos = content.length;
-        } else {
-          thinkBuf += content.slice(pos, closeIdx);
-          insideThink = false;
-          emitThinking();
-          pos = closeIdx + CLOSE_TAG.length;
-        }
-      } else {
-        const openIdx = content.indexOf(OPEN_TAG, pos);
-        if (openIdx === -1) {
-          textBuf += content.slice(pos);
-          pos = content.length;
-        } else {
-          textBuf += content.slice(pos, openIdx);
-          emitText();
-          insideThink = true;
-          pos = openIdx + OPEN_TAG.length;
-        }
-      }
-    }
-  };
-
-  for (const seg of segments) {
-    currentSegTimestamp = getTimestamp(seg);
-
-    if (seg.type === 'tool') {
-      if (!insideThink) emitText();
-
-      const toolStartTs = seg.createdAt && seg.durationMs
-        ? new Date(new Date(seg.createdAt).getTime() - seg.durationMs).toISOString()
-        : currentSegTimestamp;
-
-      entries.push({
-        id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
-        seq: seq++, type: 'tool_start', content: seg.tool, metadata: { arguments: seg.args }, createdAt: toolStartTs,
-      });
-      if (seg.status !== 'running') {
-        entries.push({
-          id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
-          seq: seq++, type: 'tool_end', content: seg.tool,
-          metadata: {
-            arguments: seg.args, result: seg.result, error: seg.error, durationMs: seg.durationMs,
-            success: seg.status !== 'error',
-            ...(seg.subagentLogs?.length ? { subagentLogs: seg.subagentLogs } : {}),
-          },
-          createdAt: currentSegTimestamp,
-        });
-      }
-    } else {
-      if (seg.thinking) {
-        if (!insideThink) emitText();
-        thinkBuf += seg.thinking;
-        emitThinking();
-      }
-      processText(seg.content);
-    }
-  }
-
-  if (insideThink) {
-    emitThinking();
-  } else {
-    emitText();
-  }
-  return entries;
-}
-
-
-function AgentMessageBody({
-  msg, isStreaming, liveActivities, onViewModeChange,
-  onMentionClick,
-  knownNames,
-}: {
-  msg: ChatMsg;
-  isStreaming: boolean;
-  liveActivities: import('../components/ActivityIndicator.tsx').ActivityStep[];
-  onViewModeChange?: (mode: 'compact' | 'full') => void;
-  onMentionClick?: (name: string, event: ReactMouseEvent) => void;
-  knownNames?: string[];
-}) {
-  const { t } = useTranslation(['team', 'common']);
-  const segments = msg.segments;
-  const isStopped = msg.isStopped;
-  const [viewMode, setViewModeState] = useState<'compact' | 'full'>('compact');
-  const setViewMode = useCallback((m: 'compact' | 'full') => { setViewModeState(m); onViewModeChange?.(m); }, [onViewModeChange]);
-
-  // Messages with segment data: render compact card / full log + final text
-  // If segments is defined but empty, fall through to legacy path using msg.text
-  if (segments !== undefined && segments.length > 0) {
-    const hasTools = segments.some(s => s.type === 'tool');
-    const streamEntries = segmentsToStreamEntries(segments, msg.agentId, msg.rawCreatedAt);
-    const streamingText = isStreaming
-      ? (() => {
-          const raw = segments.filter(s => s.type === 'text').map(s => s.content).join('');
-          const cleaned = raw
-            .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
-            .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
-            .trim();
-          return cleaned ? cleaned.slice(-200) : undefined;
-        })()
-      : undefined;
-    const textSegments = segments.filter(s => s.type === 'text');
-    const allText = !isStreaming ? textSegments.map(s => s.content).join('') : null;
-    const stripMarkup = (t: string) => t
-      .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
-      .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
-      .replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '')
-      .trim() || null;
-    const segmentText = allText ? stripMarkup(allText) : null;
-    const displayText = segmentText
-      || (!isStreaming && msg.text ? stripMarkup(msg.text) : null);
-
-    // For the full execution log, prefer server-committed clean segments
-    // (populated from thinking_commit/text_commit SSE events) over fragmented
-    // delta-built segments.
-    const committed = msg.committedSegments;
-    const fullLogEntries = committed && committed.length > 0
-      ? segmentsToStreamEntries(committed, msg.agentId, msg.rawCreatedAt)
-      : streamEntries;
-
-    const inlineCards: Array<{ key: string } & ({ kind: 'task'; info: TaskApprovalInfo } | { kind: 'req'; info: RequirementApprovalInfo })> = [];
-    if (viewMode === 'compact') {
-      for (const seg of segments) {
-        if (seg.type !== 'tool') continue;
-        const ta = parseTaskApprovalFromResult(seg.tool, seg.result);
-        if (ta) { inlineCards.push({ key: `task-${ta.taskId}`, kind: 'task', info: ta }); continue; }
-        const ra = parseRequirementApprovalFromResult(seg.tool, seg.result);
-        if (ra) { inlineCards.push({ key: `req-${ra.requirementId}`, kind: 'req', info: ra }); }
-      }
-    }
-
-    return (
-      <div className="space-y-2 min-h-[1em] min-w-0 overflow-hidden">
-        {(hasTools || isStreaming) && (
-          viewMode === 'compact' ? (
-            <CompactExecutionCard
-              entries={streamEntries}
-              streamingText={streamingText}
-              isActive={isStreaming}
-              onExpand={() => setViewMode('full')}
-              embedded
-            />
-          ) : (
-            <FullExecutionLog
-              entries={fullLogEntries}
-              isActive={isStreaming}
-              onCollapse={() => setViewMode('compact')}
-              embedded
-            />
-          )
-        )}
-
-        {viewMode === 'compact' && inlineCards.map(c => c.kind === 'task'
-          ? <TaskApprovalCard key={c.key} info={c.info} />
-          : <RequirementApprovalCard key={c.key} info={c.info} />
-        )}
-
-        {viewMode === 'compact' && displayText && (
-          <MarkdownMessage content={displayText} onMentionClick={onMentionClick} knownNames={knownNames} />
-        )}
-
-        {isStopped && (
-          <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
-            <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
-            <span>{t('page.stopped')}</span>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // Fallback: old messages from DB (no segments) — use legacy ActivityIndicator + text
-  const hasActivities = (msg.activities?.length ?? 0) > 0;
-  const legacyText = msg.text
-    ? msg.text
-        .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
-        .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
-        .replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '')
-        .trim()
-    : '';
-  return (
-    <>
-      {(isStreaming || hasActivities) && (
-        <ActivityIndicator
-          activities={isStreaming ? liveActivities : (msg.activities ?? [])}
-          isActive={isStreaming}
-          persistent={!isStreaming && hasActivities}
-        />
-      )}
-      {legacyText ? <MarkdownMessage content={legacyText} onMentionClick={onMentionClick} knownNames={knownNames} /> : null}
-      {isStopped && (
-        <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
-          <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
-          <span>{t('page.stopped')}</span>
-        </div>
-      )}
-    </>
-  );
-}
+// (AvatarPopover, ChatAgentLink extracted to ChatComponents.tsx)
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 type MainTab = 'chat' | 'profile'
-  | 'overview' | 'files' | 'tools' | 'skills' | 'memory'
+  | 'overview' | 'files' | 'tools' | 'skills' | 'memory' | 'deliverables'
   | 'announcements' | 'norms' | 'settings';
 
-const AGENT_TABS: MainTab[] = ['chat', 'overview', 'files', 'tools', 'skills', 'memory'];
+const AGENT_TABS: MainTab[] = ['chat', 'overview', 'files', 'tools', 'skills', 'memory', 'deliverables'];
 const TEAM_TAB_SET: MainTab[] = ['chat', 'overview', 'announcements', 'norms', 'settings'];
 
 function tabLabel(tab: MainTab, t: TFunction): string {
@@ -976,6 +272,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   );
   const [activeDmUserId, setActiveDmUserId] = useState<string>('');
 
+  // ── Deduplication: track server message IDs we already inserted via HTTP ─────
+  const recentMsgIds = useRef<Set<string>>(new Set());
+  const addRecentMsgId = (id: string) => {
+    recentMsgIds.current.add(id);
+    if (recentMsgIds.current.size > 100) {
+      const first = recentMsgIds.current.values().next().value;
+      if (first) recentMsgIds.current.delete(first);
+    }
+  };
+
   // ── Per-conversation buffers ──────────────────────────────────────────────────
   // Each conversation (agentId / channelName) stores its own message array
   // so that switching away never destroys in-progress streaming content.
@@ -1049,25 +355,30 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     return () => { timers.forEach(t => clearTimeout(t)); previewStreamRef.current.timers = []; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Safety net: if the agent is no longer "working" but `sending` is still true,
-  // the SSE stream may have stalled (done event lost, connection silently dead, etc.).
-  // Force-end the streaming state after a grace period.
+  // Safety net: detect SSE stall based on time since last received event.
+  // If no SSE event has arrived within the timeout and we're still in sending state,
+  // force-end the streaming to avoid stuck UI. This is more reliable than checking
+  // agent status, which can transition independently of the SSE stream.
+  const lastSseEventTimeRef = useRef<number>(0);
   useEffect(() => {
     if (!sending || chatMode !== 'direct' || !selectedAgent) return;
-    const agent = agents.find(a => a.id === selectedAgent);
-    if (!agent || agent.status === 'working') return;
-    const timer = setTimeout(() => {
+    const SSE_STALL_TIMEOUT = 15000;
+    const CHECK_INTERVAL = 5000;
+    const timer = setInterval(() => {
       if (!sendingConvs.current.has(currentConvKeyRef.current)) return;
-      abortControllerRef.current?.abort();
-      abortControllerRef.current = null;
-      const key = currentConvKeyRef.current;
-      sendingConvs.current.delete(key);
-      actBuffers.current.delete(key);
-      setSending(false);
-      setActivities([]);
-    }, 5000);
-    return () => clearTimeout(timer);
-  }, [sending, chatMode, selectedAgent, agents]); // eslint-disable-line react-hooks/exhaustive-deps
+      const elapsed = Date.now() - lastSseEventTimeRef.current;
+      if (lastSseEventTimeRef.current > 0 && elapsed > SSE_STALL_TIMEOUT) {
+        abortControllerRef.current?.abort();
+        abortControllerRef.current = null;
+        const key = currentConvKeyRef.current;
+        sendingConvs.current.delete(key);
+        actBuffers.current.delete(key);
+        setSending(false);
+        setActivities([]);
+      }
+    }, CHECK_INTERVAL);
+    return () => clearInterval(timer);
+  }, [sending, chatMode, selectedAgent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [activities, setActivities] = useState<ActivityStep[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -1109,6 +420,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   groupChatsRef.current = groupChats;
   const pendingSelectTeamRef = useRef<string | null>(null);
   const [showMemberPanel, setShowMemberPanel] = useState(false);
+
+  // Message search
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<import('../api.ts').SearchResult[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Teams
   const [teams, setTeams] = useState<TeamInfo[]>(previewData?.teams ?? []);
@@ -1174,13 +492,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const MAX_BUFFERED_CONVERSATIONS = 5;
 
   /** Write to a conversation's message buffer and refresh display if currently viewing it */
+  const rafPendingRef = useRef<number | null>(null);
   const updateConvMsgs = useCallback((key: string, updater: (prev: ChatMsg[]) => ChatMsg[]) => {
     let next = updater(msgBuffers.current.get(key) ?? []);
     if (next.length > MAX_MESSAGES_PER_CONV) {
       next = next.slice(-MAX_MESSAGES_PER_CONV);
     }
     msgBuffers.current.set(key, next);
-    // Evict oldest conversation buffers when too many are cached
     if (msgBuffers.current.size > MAX_BUFFERED_CONVERSATIONS) {
       const keys = [...msgBuffers.current.keys()];
       const toEvict = keys
@@ -1196,6 +514,25 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (currentConvKeyRef.current === key) setMessages(next);
   }, []);
 
+  const updateConvMsgsRaf = useCallback((key: string, updater: (prev: ChatMsg[]) => ChatMsg[]) => {
+    let next = updater(msgBuffers.current.get(key) ?? []);
+    if (next.length > MAX_MESSAGES_PER_CONV) {
+      next = next.slice(-MAX_MESSAGES_PER_CONV);
+    }
+    msgBuffers.current.set(key, next);
+    if (currentConvKeyRef.current === key && rafPendingRef.current === null) {
+      rafPendingRef.current = requestAnimationFrame(() => {
+        rafPendingRef.current = null;
+        const latest = msgBuffers.current.get(key);
+        if (latest && currentConvKeyRef.current === key) setMessages([...latest]);
+      });
+    }
+  }, []);
+
+  useEffect(() => () => {
+    if (rafPendingRef.current !== null) cancelAnimationFrame(rafPendingRef.current);
+  }, []);
+
   /** Append an activity step to a conversation's activity buffer */
   const appendConvActivity = (key: string, step: ActivityStep) => {
     const next = [...(actBuffers.current.get(key) ?? []), step];
@@ -1208,58 +545,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   useEffect(() => { localStorage.setItem('markus_chat_agent', selectedAgent); }, [selectedAgent]);
   useEffect(() => { localStorage.setItem('markus_chat_channel', activeChannel); }, [activeChannel]);
 
-  // ── Per-agent unread notification counts + auto-read ────────────────────────
-  const [unreadByAgent, setUnreadByAgent] = useState<Map<string, number>>(new Map());
-  const unreadIdsByAgent = useRef<Map<string, string[]>>(new Map());
-  const agentIdsRef = useRef<Set<string>>(new Set());
-  useEffect(() => { agentIdsRef.current = new Set(agents.map(a => a.id)); }, [agents]);
-
-  const refreshUnreadCounts = useCallback(async () => {
-    try {
-      const { notifications } = await api.notifications.list(authUser?.id, true);
-      const counts = new Map<string, number>();
-      const ids = new Map<string, string[]>();
-      const knownAgents = agentIdsRef.current;
-      for (const n of notifications) {
-        const agentId = (n.metadata?.agentId as string) || undefined;
-        if (agentId && knownAgents.has(agentId)) {
-          counts.set(agentId, (counts.get(agentId) ?? 0) + 1);
-          const list = ids.get(agentId) ?? [];
-          list.push(n.id);
-          ids.set(agentId, list);
-        }
-      }
-      setUnreadByAgent(counts);
-      unreadIdsByAgent.current = ids;
-      // Broadcast total for BottomNav badge
-      let total = 0;
-      for (const v of counts.values()) total += v;
-      window.dispatchEvent(new CustomEvent('markus:team-unread-changed', { detail: { count: total } }));
-    } catch { /* */ }
-  }, [authUser?.id]);
-
-  const markAgentNotificationsRead = useCallback(async (agentId: string) => {
-    const ids = unreadIdsByAgent.current.get(agentId);
-    if (!ids || ids.length === 0) return;
-    unreadIdsByAgent.current.delete(agentId);
-    setUnreadByAgent(prev => {
-      const next = new Map(prev);
-      next.delete(agentId);
-      return next;
-    });
-    await Promise.all(ids.map(id => api.notifications.markRead(id).catch(() => {})));
-    window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
-  }, []);
-
-  useEffect(() => {
-    if (previewMode) return;
-    if (chatMode === 'direct' && selectedAgent) {
-      markAgentNotificationsRead(selectedAgent);
-    }
-  }, [previewMode, chatMode, selectedAgent, markAgentNotificationsRead]);
-
-  // ── Chat unread counts (message-level read cursors) ──────────────────────────
-  const { counts: chatUnreadCounts, markRead: markChatRead } = useUnreadCounts({ enabled: !previewMode });
+  // ── Chat unread counts (unified single-source read cursor system) ────────────
+  const { counts: chatUnreadCounts, sessionAgentMap, markRead: markChatRead } = useUnreadCounts({ enabled: !previewMode });
   const unreadByChannel = useMemo(() => {
     const result: Record<string, number> = {};
     for (const [key, count] of Object.entries(chatUnreadCounts)) {
@@ -1270,11 +557,35 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     return result;
   }, [chatUnreadCounts]);
 
-  // Auto mark-read when a conversation becomes visible
+  // Derive per-agent unread from session-level read cursors (unified source).
+  const unreadByAgentFromCursors = useAgentUnread(sessionAgentMap, chatUnreadCounts);
+
+  // ── Per-agent unread counts (derived from unified read cursor system) ────────
+  // Broadcast total unread for BottomNav badge
+  useEffect(() => {
+    let total = 0;
+    for (const v of unreadByAgentFromCursors.values()) total += v;
+    for (const v of Object.values(unreadByChannel)) total += v;
+    window.dispatchEvent(new CustomEvent('markus:team-unread-changed', { detail: { count: total } }));
+  }, [unreadByAgentFromCursors, unreadByChannel]);
+
+  const unreadByAgent = unreadByAgentFromCursors;
+  const markAgentNotificationsRead = useCallback(async (agentId: string) => {
+    for (const [sid, aid] of Object.entries(sessionAgentMap)) {
+      if (aid === agentId) markChatRead(`session:${sid}`);
+    }
+  }, [sessionAgentMap, markChatRead]);
+
+  // Auto mark-read when a conversation becomes visible (chat tab active on L3)
   useEffect(() => {
     if (previewMode) return;
     const isVisible = !isMobile || mobileLayer === 'chat';
     if (!isVisible) return;
+    const isChatTab = mainTab === 'chat';
+    if (!isChatTab) return;
+    if (chatMode === 'direct' && selectedAgent) {
+      markAgentNotificationsRead(selectedAgent);
+    }
     if (chatMode === 'channel' && activeChannel) {
       markChatRead(`channel:${activeChannel}`);
     } else if (chatMode === 'direct' && activeSessionId) {
@@ -1284,7 +595,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       markChatRead(`channel:${dmChannel}`);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewMode, chatMode, activeChannel, activeSessionId, activeDmUserId, mobileLayer]);
+  }, [previewMode, chatMode, activeChannel, activeSessionId, activeDmUserId, mobileLayer, mainTab]);
 
   // ── Data loading ─────────────────────────────────────────────────────────────
   const refreshAgents = useCallback(() => api.agents.list().then(d => setAgents(d.agents)).catch(() => {}), []);
@@ -1306,12 +617,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       refreshTeams(),
     ]).finally(() => setInitialLoading(false));
     refreshHumans();
-    refreshUnreadCounts();
     api.tasks.list().then(d => setTasks(d.tasks)).catch(() => {});
     api.externalAgents.list().then(d => setExternalAgents(d.agents)).catch(() => {});
     refreshGroupChats();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewMode, refreshHumans, refreshUnreadCounts]);
+  }, [previewMode, refreshHumans]);
 
   useEffect(() => {
     if (!previewMode || !previewData) return;
@@ -1339,12 +649,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     const unsubGroupUpdate = wsClient.on('chat:group_updated', throttledRefreshGroupChats);
     const unsubGroupDelete = wsClient.on('chat:group_deleted', () => { throttledRefreshGroupChats(); throttledRefreshTeams(); });
     const onDataChanged = () => { refreshAgents(); refreshTeams(); refreshHumans(); };
-    const onNotifChanged = () => { refreshUnreadCounts(); };
     window.addEventListener('markus:data-changed', onDataChanged);
-    window.addEventListener('markus:notifications-changed', onNotifChanged);
-    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeamUpdate(); unsubTeamOnAgentRemoved(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); window.removeEventListener('markus:data-changed', onDataChanged); window.removeEventListener('markus:notifications-changed', onNotifChanged); };
+    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeamUpdate(); unsubTeamOnAgentRemoved(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); window.removeEventListener('markus:data-changed', onDataChanged); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewMode, isActive, refreshHumans, refreshUnreadCounts]);
+  }, [previewMode, isActive, refreshHumans]);
 
   // Check for nav params (e.g., navigated here from AgentProfile or Team redirect)
   useEffect(() => {
@@ -1509,6 +817,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // Uses wheel/touch events to detect genuine user interaction (not programmatic scrolls),
   // and the scroll event to detect when the user scrolls back to the bottom.
   const userManuallyScrolledRef = useRef(false);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const newMsgCountRef = useRef(0);
+  const [newMsgCount, setNewMsgCount] = useState(0);
   useEffect(() => {
     const el = chatScrollRef.current;
     if (!el) return;
@@ -1518,60 +829,81 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (userManuallyScrolledRef.current && isAtBottom()) {
         userManuallyScrolledRef.current = false;
         userAtBottomRef.current = true;
+        setShowScrollBtn(false);
+        newMsgCountRef.current = 0;
+        setNewMsgCount(0);
       } else if (userManuallyScrolledRef.current) {
         userAtBottomRef.current = false;
+        setShowScrollBtn(true);
       }
     };
+    const SCROLL_KEYS = new Set(['PageUp','PageDown','ArrowUp','ArrowDown','Home','End',' ']);
+    const onKeyScroll = (e: KeyboardEvent) => { if (SCROLL_KEYS.has(e.key)) userManuallyScrolledRef.current = true; };
     el.addEventListener('wheel', onUserScroll, { passive: true });
     el.addEventListener('touchmove', onUserScroll, { passive: true });
+    el.addEventListener('keydown', onKeyScroll, { passive: true });
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => {
       el.removeEventListener('wheel', onUserScroll);
       el.removeEventListener('touchmove', onUserScroll);
+      el.removeEventListener('keydown', onKeyScroll);
       el.removeEventListener('scroll', onScroll);
     };
-  }, []);
+  }, [mobileLayer]);
+
+  // visibleMessages + virtualizer must be declared before scrollChatToBottom
+  const visibleMessages = useMemo(() =>
+    chatMode === 'channel' ? messages : messages.filter(m => !m.isActivityLog),
+    [messages, chatMode]
+  );
+  const chatVirtualizer = useVirtualizer({
+    count: visibleMessages.length,
+    getScrollElement: () => chatScrollRef.current,
+    estimateSize: () => 72,
+    overscan: 8,
+  });
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = 'instant') => {
-    const el = chatScrollRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior });
-  }, []);
+    if (visibleMessages.length > 0) {
+      chatVirtualizer.scrollToIndex(visibleMessages.length - 1, { align: 'end', behavior });
+    } else {
+      const el = chatScrollRef.current;
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior });
+    }
+  }, [visibleMessages.length, chatVirtualizer]);
+
+  // ── Preserve scroll position across page-level navigation ──
+  // PageSlot now uses visibility:hidden + position:absolute instead of
+  // display:none, so the scroll container keeps its dimensions and scrollTop.
+  // No save/restore logic needed — the browser preserves scroll position natively.
+  const isActiveRef = useRef(isActive);
+  useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
 
   // Snap to bottom after DOM updates, but only if user hasn't scrolled up.
+  // When items are prepended (loadMore), anchor scroll to the previously top-visible item.
   useLayoutEffect(() => {
     if (skipScrollRef.current) {
       skipScrollRef.current = false;
+      const count = prependCountRef.current;
+      if (count > 0) {
+        prependCountRef.current = 0;
+        chatVirtualizer.scrollToIndex(count, { align: 'start', behavior: 'instant' });
+      }
       return;
     }
+    if (!isActiveRef.current) return;
     if (!userAtBottomRef.current) return;
     scrollChatToBottom();
-  }, [messages, activities, scrollChatToBottom]);
+  }, [messages, activities, scrollChatToBottom, chatVirtualizer]);
 
+  const prevMainTabRef = useRef(mainTab);
   useEffect(() => {
-    if (mainTab === 'chat') {
-      requestAnimationFrame(() => {
-        scrollChatToBottom();
-        userAtBottomRef.current = true;
-      });
+    const wasProfile = prevMainTabRef.current !== 'chat';
+    prevMainTabRef.current = mainTab;
+    if (mainTab === 'chat' && wasProfile && userAtBottomRef.current) {
+      requestAnimationFrame(() => scrollChatToBottom());
     }
   }, [mainTab, scrollChatToBottom]);
-
-  useEffect(() => {
-    if (previewMode) return;
-    const scrollToLatest = () => {
-      if (resolvePageId(window.location.hash.slice(1).split('/')[0]) !== PAGE.TEAM) return;
-      if (mainTabRef.current !== 'chat') return;
-      requestAnimationFrame(() => {
-        scrollChatToBottom();
-      });
-    };
-    window.addEventListener('hashchange', scrollToLatest);
-    window.addEventListener('markus:navigate', scrollToLatest);
-    return () => {
-      window.removeEventListener('hashchange', scrollToLatest);
-      window.removeEventListener('markus:navigate', scrollToLatest);
-    };
-  }, []);
 
   // Load channel messages from DB → store in buffer + update display
   const loadChannelMessages = useCallback(async (channel: string, bufferKey?: string) => {
@@ -1622,17 +954,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, []);
 
   // Load more (pagination) — preserves scroll position after prepending
+  const prependCountRef = useRef(0);
   const loadMore = useCallback(async () => {
     if (loadingMore || !hasMore || !oldestMsgId.current) return;
     setLoadingMore(true);
-    const scrollEl = chatScrollRef.current;
-    const prevScrollHeight = scrollEl?.scrollHeight ?? 0;
     try {
       const convKey = currentConvKeyRef.current;
       if (chatMode === 'channel' || chatMode === 'dm') {
         const channelName = chatMode === 'dm' ? makeDmChannel(authUser?.id ?? '', activeDmUserId) : activeChannel;
         const result = await api.channels.getMessages(channelName, 50, oldestMsgId.current);
         const newMsgs = result.messages.map(m => channelMsgToChat(m, authUser?.id));
+        prependCountRef.current = newMsgs.length;
         skipScrollRef.current = true;
         setMessages(prev => {
           let combined = [...newMsgs, ...prev];
@@ -1645,6 +977,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       } else if (activeSessionId) {
         const result = await api.sessions.getMessages(activeSessionId, 50, oldestMsgId.current);
         const newMsgs = result.messages.map(dbMsgToChat);
+        prependCountRef.current = newMsgs.length;
         skipScrollRef.current = true;
         setMessages(prev => {
           let combined = [...newMsgs, ...prev];
@@ -1657,13 +990,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       }
     } catch { /* ignore */ } finally {
       setLoadingMore(false);
-      // Restore scroll position after React re-render
-      requestAnimationFrame(() => {
-        if (scrollEl) {
-          const newScrollHeight = scrollEl.scrollHeight;
-          scrollEl.scrollTop += newScrollHeight - prevScrollHeight;
-        }
-      });
     }
   }, [loadingMore, hasMore, chatMode, activeChannel, activeSessionId, authUser?.id, activeDmUserId]);
 
@@ -1785,9 +1111,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const wsSenderName = (p['senderName'] as string) ?? (p['agentId'] as string) ?? t('page.fallbackAgent');
       const wsMeta = p['metadata'] as ChannelMsgMetadata | undefined;
 
+      // Dedup: skip if we already inserted this message via HTTP response
+      const serverMsgId = (p['messageId'] as string) ?? (p['id'] as string) ?? '';
+      if (serverMsgId && recentMsgIds.current.has(serverMsgId)) return;
+
       const isSelf = senderType === 'human' && wsSenderId === (authUser?.id ?? '');
       const newMsg: ChatMsg = {
-        id: `ws_${Date.now()}_${wsSenderId}`,
+        id: serverMsgId || `ws_${Date.now()}_${wsSenderId}`,
         sender: isSelf ? 'user' : 'agent',
         text: wsText,
         time: new Date().toLocaleTimeString(),
@@ -1830,6 +1160,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         key = `ch:${msgChannel}`;
       }
       updateConvMsgs(key, prev => [...prev, newMsg]);
+
+      // Track new messages arriving while user is scrolled up
+      if (key === currentConvKeyRef.current && !userAtBottomRef.current) {
+        newMsgCountRef.current += 1;
+        setNewMsgCount(newMsgCountRef.current);
+        setShowScrollBtn(true);
+      }
 
       if (senderType === 'agent' && key === `ch:${activeChannel}`) {
         setThinkingAgents(prev => {
@@ -2027,6 +1364,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           mentions: [], orgId: 'default',
           humanOnly: true, // never route to agents
         });
+        if (result.userMessage) addRecentMsgId(result.userMessage.id);
         updateConvMsgs(sendKey, prev => {
           const without = prev.filter(m => m.id !== optId);
           const newMsgs: ChatMsg[] = [];
@@ -2075,6 +1413,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           orgId: 'default',
           replyToId: replyCtx?.id,
         });
+        if (result.userMessage) addRecentMsgId(result.userMessage.id);
+        if (result.agentMessage) addRecentMsgId(result.agentMessage.id);
         updateConvMsgs(sendKey, prev => {
           const without = prev.filter(m => m.id !== optId);
           const newMsgs: ChatMsg[] = [];
@@ -2119,9 +1459,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       /** Track whether we're inside a <think> block across streaming chunks */
       let insideThink = false;
 
-      /** Append a text chunk to the segment stream */
+      /** Append a text chunk to the segment stream (RAF-batched to reduce re-renders) */
       const appendTextChunk = (chunk: string) => {
-        updateConvMsgs(sendKey, prev => {
+        lastSseEventTimeRef.current = Date.now();
+        updateConvMsgsRaf(sendKey, prev => {
           const u = [...prev];
           const idx = u.findIndex(m => m.id === agentMsgId);
           if (idx < 0) return prev;
@@ -2171,6 +1512,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
       /** Handle server-committed per-turn text/thinking entries (clean, non-fragmented) */
       const handleCommitEvent = (event: StreamCommitEvent) => {
+        lastSseEventTimeRef.current = Date.now();
         // Capture sessionId early so subsequent messages continue in the same session
         // even if the stream is aborted before the final 'done' event.
         if (event.type === 'session_start' && event.sessionId) {
@@ -2199,6 +1541,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
       /** Handle a tool event: start adds a 'running' segment, end updates it, output appends live text */
       const handleToolEvent = (event: AgentToolEvent) => {
+        lastSseEventTimeRef.current = Date.now();
         if (event.phase === 'start' || event.phase === 'end') {
           appendConvActivity(sendKey, { ...event, phase: event.phase, ts: Date.now() });
         }
@@ -2298,6 +1641,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       abortControllerRef.current = abortCtrl;
 
       try {
+        lastSseEventTimeRef.current = Date.now();
         const effectiveSessionId = activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId;
         const streamResult = await api.agents.messageStream(
           selectedAgent, text,
@@ -2656,6 +2000,45 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   };
 
+  const executeSearch = useCallback(async (q: string) => {
+    if (q.length < 2) { setSearchResults([]); return; }
+    setSearchLoading(true);
+    try {
+      const scope = chatMode === 'channel' ? 'channel' : chatMode === 'direct' ? 'direct' : 'all';
+      const channel = chatMode === 'channel' ? activeChannel : undefined;
+      const { results } = await api.messages.search(q, { scope, channel, limit: 30 });
+      setSearchResults(results);
+    } catch { setSearchResults([]); }
+    setSearchLoading(false);
+  }, [chatMode, activeChannel]);
+
+  const handleSearchInput = useCallback((q: string) => {
+    setSearchQuery(q);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => executeSearch(q), 300);
+  }, [executeSearch]);
+
+  const handleSearchResultClick = useCallback((result: import('../api.ts').SearchResult) => {
+    setSearchOpen(false);
+    setSearchQuery('');
+    setSearchResults([]);
+    if (result.source === 'channel' && result.channel) {
+      setChatMode('channel');
+      setActiveChannel(result.channel);
+    } else if (result.source === 'direct' && result.agentId) {
+      setChatMode('direct');
+      setSelectedAgent(result.agentId);
+    }
+    setTimeout(() => {
+      const el = document.getElementById(`msg-${result.id}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('bg-brand-500/10');
+        setTimeout(() => el.classList.remove('bg-brand-500/10'), 2000);
+      }
+    }, 500);
+  }, []);
+
   const newConversation = () => {
     setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
     const key = currentConvKeyRef.current;
@@ -2805,7 +2188,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // ── Derived ───────────────────────────────────────────────────────────────────
   const currentAgent = agents.find(a => a.id === selectedAgent);
   const currentUserName = authUser?.name ?? t('page.fallbackYou');
-  const lastMsg = messages[messages.length - 1];
+  const lastMsg = visibleMessages[visibleMessages.length - 1];
   const isLastPending = sending && lastMsg?.sender === 'agent';
   const isLastVisualStreaming = streamingVisual && lastMsg?.sender === 'agent';
   const channelTeamMemberIds = useMemo(() => {
@@ -3080,6 +2463,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   }`}
                 >{chatMode === 'channel' ? t('page.teamTab') : t('page.profileTab')}</button>
                 <div className="flex-1" />
+                <button
+                  onClick={() => { setSearchOpen(!searchOpen); if (!searchOpen) { setSearchQuery(''); setSearchResults([]); } }}
+                  className={`p-1 rounded-md transition-colors shrink-0 ${searchOpen ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'}`}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+                </button>
                 {chatMode === 'channel' && activeGroupChat?.type === 'custom' && (
                   <button
                     onClick={() => setShowMemberPanel(!showMemberPanel)}
@@ -3248,6 +2637,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
                 {/* Right side buttons */}
                 <div className="ml-auto flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => { setSearchOpen(!searchOpen); if (!searchOpen) { setSearchQuery(''); setSearchResults([]); } }}
+                    className={`p-1.5 rounded-md transition-colors ${searchOpen ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
+                    title={t('page.searchMessages')}
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+                    </svg>
+                  </button>
                   {chatMode === 'channel' && activeGroupChat?.type === 'custom' && (
                     <button
                       onClick={() => setShowMemberPanel(!showMemberPanel)}
@@ -3306,6 +2704,62 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             </div>
             );
           })()
+          )}
+
+          {/* Search panel */}
+          {searchOpen && (
+            <div className="border-b border-border-default bg-surface-secondary/50 px-4 py-2 space-y-2 animate-in slide-in-from-top-2 duration-200">
+              <div className="flex items-center gap-2">
+                <div className="flex-1 relative">
+                  <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+                  </svg>
+                  <input
+                    autoFocus
+                    value={searchQuery}
+                    onChange={e => handleSearchInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Escape') { setSearchOpen(false); setSearchQuery(''); setSearchResults([]); } }}
+                    placeholder={t('page.searchPlaceholder')}
+                    className="w-full pl-8 pr-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg outline-none focus:border-brand-500/50 transition-colors"
+                  />
+                </div>
+                <button
+                  onClick={() => { setSearchOpen(false); setSearchQuery(''); setSearchResults([]); }}
+                  className="text-fg-tertiary hover:text-fg-secondary text-xs px-1"
+                >✕</button>
+              </div>
+              {searchLoading && (
+                <div className="flex items-center gap-2 text-xs text-fg-tertiary py-1">
+                  <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
+                  {t('page.searching')}
+                </div>
+              )}
+              {!searchLoading && searchQuery.length >= 2 && searchResults.length === 0 && (
+                <div className="text-xs text-fg-tertiary py-1">{t('page.noSearchResults')}</div>
+              )}
+              {searchResults.length > 0 && (
+                <div className="max-h-60 overflow-y-auto space-y-0.5">
+                  {searchResults.map(r => (
+                    <button
+                      key={r.id}
+                      onClick={() => handleSearchResultClick(r)}
+                      className="w-full text-left px-3 py-2 rounded-lg hover:bg-surface-elevated transition-colors group"
+                    >
+                      <div className="flex items-center gap-2 text-[11px] text-fg-tertiary mb-0.5">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${r.source === 'channel' ? 'bg-blue-500/10 text-blue-500' : 'bg-emerald-500/10 text-emerald-500'}`}>
+                          {r.source === 'channel' ? '#' : '1:1'}
+                        </span>
+                        {r.senderName && <span>{r.senderName}</span>}
+                        <span>{new Date(r.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
+                      </div>
+                      <div className="text-xs text-fg-secondary line-clamp-2 group-hover:text-fg-primary transition-colors">
+                        {r.text.length > 200 ? r.text.slice(0, 200) + '…' : r.text}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
 
           {/* Session tab bar (direct mode, chat tab) — hide when only 1 session */}
@@ -3547,9 +3001,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               <span className="text-xs text-fg-tertiary">{t('page.loadingEarlierMessages')}</span>
             </div>
           )}
-          <div ref={chatScrollRef} className={`flex-1 overflow-y-auto space-y-3 ${isMobile ? 'p-2.5' : 'p-5 2xl:pr-[280px]'}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
+          <div ref={chatScrollRef} className={`flex-1 overflow-y-auto ${isMobile ? 'p-2.5' : 'p-5 2xl:pr-[280px]'}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
 
-          {messages.length === 0 && !sending && (
+          {visibleMessages.length === 0 && !sending && (
             <div className="flex flex-col items-center justify-center h-full text-fg-tertiary text-sm space-y-2">
               <div className="opacity-40">
                 <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -3565,32 +3019,82 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             </div>
           )}
 
-          {chatMode === 'channel'
-            ? messages.map(msg => (
-                <div key={msg.id} id={`msg-${msg.id}`} className="group/msg flex gap-3 transition-colors rounded-lg">
-                  <div
-                    className="shrink-0 cursor-pointer"
-                    onClick={(e) => {
-                      if (msg.sender === 'agent' && msg.agentId) {
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        setAvatarPopover({ agentId: msg.agentId, top: rect.top, left: rect.right + 8 });
-                      }
-                    }}
-                  >
-                    <Avatar
-                      name={msg.sender === 'user' ? currentUserName : (msg.agentName ?? t('page.fallbackAgent'))}
-                      avatarUrl={msg.sender === 'user' ? authUser?.avatarUrl : agents.find(a => a.id === msg.agentId)?.avatarUrl}
-                      size={32}
-                      bgClass={msg.sender === 'user' ? 'bg-brand-600' : 'bg-brand-500/15 text-brand-600'}
-                      className={msg.sender === 'agent' ? 'hover:ring-1 hover:ring-brand-500/40 rounded-lg' : 'rounded-lg'}
-                    />
+          {visibleMessages.length > 0 && (
+          <div style={{ height: chatVirtualizer.getTotalSize(), width: '100%', position: 'relative' }}>
+            {chatVirtualizer.getVirtualItems().map(virtualRow => {
+              const vIdx = virtualRow.index;
+              const msg = visibleMessages[vIdx]!;
+              const prevMsg = vIdx > 0 ? visibleMessages[vIdx - 1] : null;
+              const curDate = getDateKey(msg.rawCreatedAt);
+              const prevDate = prevMsg ? getDateKey(prevMsg.rawCreatedAt) : '';
+              const showDateSep = curDate && curDate !== prevDate;
+              const isLastMsg = vIdx === visibleMessages.length - 1;
+              const isPending = isLastPending && isLastMsg;
+              const isStreamingMsg = isPending && sending;
+              const showStreamingBubble = (isLastVisualStreaming && isLastMsg) || isStreamingMsg;
+              const showActions = chatMode === 'channel' || (!isStreamingMsg || msg.isStopped);
+
+              return (
+                <div
+                  key={msg.id}
+                  data-index={vIdx}
+                  ref={chatVirtualizer.measureElement}
+                  style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${virtualRow.start}px)` }}
+                >
+                <div className="pb-3">
+                {showDateSep && (
+                  <div className="flex items-center gap-3 py-2 my-1">
+                    <div className="flex-1 h-px bg-border-default" />
+                    <span className="text-[10px] text-fg-tertiary font-medium uppercase tracking-wider shrink-0">{formatDateLabel(msg.rawCreatedAt!)}</span>
+                    <div className="flex-1 h-px bg-border-default" />
                   </div>
+                )}
+                <div id={`msg-${msg.id}`} className="group/msg flex gap-3 transition-colors rounded-lg">
+                  {chatMode === 'channel' ? (
+                    <div
+                      className="shrink-0 cursor-pointer"
+                      onClick={(e) => {
+                        if (msg.sender === 'agent' && msg.agentId) {
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          setAvatarPopover({ agentId: msg.agentId, top: rect.top, left: rect.right + 8 });
+                        }
+                      }}
+                    >
+                      <Avatar
+                        name={msg.sender === 'user' ? currentUserName : (msg.agentName ?? t('page.fallbackAgent'))}
+                        avatarUrl={msg.sender === 'user' ? authUser?.avatarUrl : agents.find(a => a.id === msg.agentId)?.avatarUrl}
+                        size={32}
+                        bgClass={msg.sender === 'user' ? 'bg-brand-600' : 'bg-brand-500/15 text-brand-600'}
+                        className={msg.sender === 'agent' ? 'hover:ring-1 hover:ring-brand-500/40 rounded-lg' : 'rounded-lg'}
+                      />
+                    </div>
+                  ) : (
+                    <div className="shrink-0">
+                      <Avatar
+                        name={msg.sender === 'user' ? currentUserName : (msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? t('page.fallbackAgent') : t('page.fallbackAgent')))}
+                        avatarUrl={msg.sender === 'user' ? authUser?.avatarUrl : (agents.find(a => a.id === (msg.agentId ?? (chatMode === 'direct' ? currentAgent?.id : undefined)))?.avatarUrl)}
+                        size={32}
+                        bgClass={msg.sender === 'user' ? 'bg-brand-600' : 'bg-brand-500/15 text-brand-600'}
+                        className="rounded-lg"
+                      />
+                    </div>
+                  )}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
                       <span className="text-sm font-medium text-fg-primary">
-                        {msg.sender === 'user' ? currentUserName : msg.agentName ?? t('page.fallbackAgent')}
+                        {msg.sender === 'user'
+                          ? currentUserName
+                          : chatMode === 'channel'
+                            ? (msg.agentName ?? t('page.fallbackAgent'))
+                            : <ChatAgentLink
+                                name={msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? t('page.fallbackAgent') : t('page.fallbackAgent'))}
+                                agentId={msg.agentId ?? (chatMode === 'direct' ? currentAgent?.id : undefined)}
+                                agents={agents}
+                                onViewProfile={handleViewProfile}
+                              />
+                        }
                       </span>
-                      <span className="text-xs text-fg-tertiary">{msg.time}</span>
+                      <span className="text-xs text-fg-tertiary" title={msg.rawCreatedAt ? new Date(msg.rawCreatedAt).toLocaleString() : ''}>{formatSmartTime(msg.time, msg.rawCreatedAt)}</span>
                     </div>
                     {msg.replyToId && msg.replyToSender && (
                       <button
@@ -3608,10 +3112,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
                         ? 'border-b-2 border-red-500/60'
                         : ''
-                    }`}>
-                      {msg.sender === 'agent'
-                        ? <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" onMentionClick={handleMentionClick} knownNames={agentNames} />
-                        : <div className="text-sm text-fg-secondary whitespace-pre-wrap">
+                    } ${showStreamingBubble && msg.sender === 'agent' ? 'streaming-bubble' : ''}`}>
+                      {msg.sender === 'user'
+                        ? <div className="text-sm text-fg-secondary whitespace-pre-wrap">
                             {msg.images && msg.images.length > 0 && (
                               <div className="flex flex-wrap gap-1.5 mb-1">
                                 {msg.images.map((src, idx) => (
@@ -3619,89 +3122,19 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                                 ))}
                               </div>
                             )}
-                            {renderMentionText(msg.text, agents, (agent, e) => {
-                              const rect = e.currentTarget.getBoundingClientRect();
-                              setAvatarPopover({ agentId: agent.id, top: rect.bottom, left: rect.left });
-                            })}
+                            {chatMode === 'channel'
+                              ? renderMentionText(msg.text, agents, (agent, e) => {
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  setAvatarPopover({ agentId: agent.id, top: rect.bottom, left: rect.left });
+                                })
+                              : (msg.text && <span className="leading-relaxed">{renderMentionText(msg.text, agents, (agent, e) => {
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  setAvatarPopover({ agentId: agent.id, top: rect.bottom, left: rect.left });
+                                })}</span>)
+                            }
                           </div>
-                      }
-                      {msg.isNotification && (
-                        <NotificationBadge priority={msg.notifyPriority} />
-                      )}
-                    </div>
-                    {!previewMode && (
-                    <div className={`transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'}`}>
-                      <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onResume={handleResume} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
-                    </div>
-                    )}
-                  </div>
-                </div>
-              ))
-            : messages.map((msg, i) => {
-                const isPending = isLastPending && i === messages.length - 1;
-                const isStreamingMsg = isPending && sending;
-                const showStreamingBubble = (isLastVisualStreaming && i === messages.length - 1) || isStreamingMsg;
-                const showActions = !isStreamingMsg || msg.isStopped;
-
-                if (msg.isActivityLog) return null;
-
-                return (
-                  <div key={msg.id} id={`msg-${msg.id}`} className="group/msg flex gap-3 transition-colors rounded-lg">
-                    <div className="shrink-0">
-                      <Avatar
-                        name={msg.sender === 'user' ? currentUserName : (msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? t('page.fallbackAgent') : t('page.fallbackAgent')))}
-                        avatarUrl={msg.sender === 'user' ? authUser?.avatarUrl : (agents.find(a => a.id === (msg.agentId ?? (chatMode === 'direct' ? currentAgent?.id : undefined)))?.avatarUrl)}
-                        size={32}
-                        bgClass={msg.sender === 'user' ? 'bg-brand-600' : 'bg-brand-500/15 text-brand-600'}
-                        className="rounded-lg"
-                      />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-baseline gap-2">
-                        <span className="text-sm font-medium text-fg-primary">
-                          {msg.sender === 'user'
-                            ? currentUserName
-                            : <ChatAgentLink
-                                name={msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? t('page.fallbackAgent') : t('page.fallbackAgent'))}
-                                agentId={msg.agentId ?? (chatMode === 'direct' ? currentAgent?.id : undefined)}
-                                agents={agents}
-                                onViewProfile={handleViewProfile}
-                              />
-                          }
-                        </span>
-                        <span className="text-xs text-fg-tertiary">{msg.time}</span>
-                      </div>
-                      {msg.replyToId && msg.replyToSender && (
-                        <button
-                          onClick={() => {
-                            const el = document.getElementById(`msg-${msg.replyToId}`);
-                            if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.classList.add('bg-brand-500/10'); setTimeout(() => el.classList.remove('bg-brand-500/10'), 1500); }
-                          }}
-                          className="flex items-center gap-1.5 mt-0.5 mb-1 pl-2 py-0.5 border-l-2 border-brand-500/40 text-xs text-fg-tertiary hover:text-fg-secondary transition-colors cursor-pointer"
-                        >
-                          <span className="font-medium text-brand-500">{msg.replyToSender}</span>
-                          <span className="truncate max-w-[250px]">{msg.replyToText ?? '...'}</span>
-                        </button>
-                      )}
-                      <div className={`mt-0.5 ${msg.sender === 'agent' ? 'bg-surface-chat-bubble rounded-2xl px-3.5 py-2.5' : ''} ${
-                        msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
-                          ? 'border-b-2 border-red-500/60'
-                          : ''
-                      } ${showStreamingBubble && msg.sender === 'agent' ? 'streaming-bubble' : ''}`}>
-                        {msg.sender === 'user'
-                          ? <div className="text-sm text-fg-secondary whitespace-pre-wrap">
-                              {msg.images && msg.images.length > 0 && (
-                                <div className="flex flex-wrap gap-1.5 mb-1">
-                                  {msg.images.map((src, idx) => (
-                                    <img key={idx} src={src} alt="" className="max-w-[200px] max-h-[150px] rounded-lg object-cover cursor-pointer hover:opacity-80 transition-opacity" onClick={() => window.open(src, '_blank')} />
-                                  ))}
-                                </div>
-                              )}
-                              {msg.text && <span className="leading-relaxed">{renderMentionText(msg.text, agents, (agent, e) => {
-                                const rect = e.currentTarget.getBoundingClientRect();
-                                setAvatarPopover({ agentId: agent.id, top: rect.bottom, left: rect.left });
-                              })}</span>}
-                            </div>
+                        : msg.sender === 'agent' && chatMode === 'channel' && !(msg.segments && msg.segments.length > 0)
+                          ? <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" onMentionClick={handleMentionClick} knownNames={agentNames} />
                           : <AgentMessageBody
                               msg={msg}
                               isStreaming={isStreamingMsg}
@@ -3714,21 +3147,24 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                               onMentionClick={handleMentionClick}
                               knownNames={agentNames}
                             />
-                        }
-                        {msg.isNotification && (
-                          <NotificationBadge priority={msg.notifyPriority} />
-                        )}
-                      </div>
-                      {showActions && !previewMode && (
-                        <div className={`transition-opacity ${msg.isStopped || isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'}`}>
-                          <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onResume={handleResume} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
-                        </div>
+                      }
+                      {msg.isNotification && (
+                        <NotificationBadge priority={msg.notifyPriority} />
                       )}
                     </div>
+                    {showActions && !previewMode && (
+                      <div className={`transition-opacity ${msg.isStopped || isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'}`}>
+                        <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onResume={handleResume} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
+                      </div>
+                    )}
                   </div>
-                );
-              })
-          }
+                </div>
+                </div>
+                </div>
+              );
+            })}
+          </div>
+          )}
           {chatMode === 'channel' && thinkingAgents.length > 0 && (
             <div className="flex flex-col gap-1.5 py-2">
               {thinkingAgents.map(ta => (
@@ -3757,6 +3193,26 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           )}
           <div ref={messagesEnd} />
         </div>
+
+          {/* Scroll to bottom button */}
+          {showScrollBtn && mainTab === 'chat' && (
+            <button
+              onClick={() => {
+                scrollChatToBottom('smooth');
+                userAtBottomRef.current = true;
+                userManuallyScrolledRef.current = false;
+                setShowScrollBtn(false);
+                newMsgCountRef.current = 0;
+                setNewMsgCount(0);
+              }}
+              className={`absolute ${isMobile ? 'bottom-4' : 'bottom-20'} left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3.5 py-2 bg-surface-secondary/95 backdrop-blur-sm border border-border-default rounded-full shadow-lg hover:bg-surface-elevated transition-colors text-xs text-fg-secondary`}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
+              {newMsgCount > 0
+                ? t('page.newMessages', { count: newMsgCount })
+                : t('page.scrollToBottom')}
+            </button>
+          )}
         </div>
 
         {/* Avatar popover */}

@@ -2151,6 +2151,21 @@ export class SqliteChatSessionRepo {
     return segments;
   }
 
+  searchMessages(query: string, limit = 30) {
+    const pattern = `%${query}%`;
+    const rows = this.db.prepare(
+      `SELECT cm.*, cs.agent_id as session_agent_id
+       FROM chat_messages cm
+       JOIN chat_sessions cs ON cm.session_id = cs.id
+       WHERE cm.content LIKE ?
+       ORDER BY cm.created_at DESC LIMIT ?`
+    ).all(pattern, limit) as Record<string, unknown>[];
+    return rows.map(r => ({
+      ...this._mapMsg(r),
+      sessionAgentId: r['session_agent_id'] as string,
+    }));
+  }
+
   private _mapMsg(r: Record<string, unknown>) {
     return {
       id: r['id'],
@@ -2253,6 +2268,28 @@ export class SqliteChannelMessageRepo {
       senderId: r['sender_id'] as string,
       text: r['text'] as string,
     };
+  }
+
+  searchMessages(query: string, channel?: string, limit = 30) {
+    const pattern = `%${query}%`;
+    let q = 'SELECT * FROM channel_messages WHERE text LIKE ?';
+    const vals: SqlParams = [pattern];
+    if (channel) {
+      q += ' AND channel = ?';
+      vals.push(channel);
+    }
+    q += ' ORDER BY created_at DESC LIMIT ?';
+    vals.push(limit);
+    const rows = (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => ({
+      id: r['id'] as string,
+      channel: r['channel'] as string,
+      senderId: r['sender_id'] as string,
+      senderType: r['sender_type'] as string,
+      senderName: r['sender_name'] as string,
+      text: r['text'] as string,
+      createdAt: toDate(r['created_at'] as string)!,
+    }));
+    return rows;
   }
 }
 
@@ -4388,6 +4425,15 @@ export class SqliteReadCursorRepo {
       }
     }
 
+    return result;
+  }
+
+  getSessionAgentMap(): Record<string, string> {
+    const rows = this.db.prepare(
+      `SELECT id, agent_id FROM chat_sessions`
+    ).all() as { id: string; agent_id: string }[];
+    const result: Record<string, string> = {};
+    for (const r of rows) result[r.id] = r.agent_id;
     return result;
   }
 

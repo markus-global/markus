@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { type PageId, PAGE, PAGE_ICONS, MOBILE_TABS } from '../routes.ts';
 import { api, type NotificationInfo } from '../api.ts';
+import { useUnreadCounts } from '../hooks/useUnreadCounts.ts';
 
 interface Props {
   currentPage: PageId;
@@ -12,7 +13,13 @@ interface Props {
 export function BottomNav({ currentPage, onNavigate, userId }: Props) {
   const { t } = useTranslation('nav');
   const [unreadCount, setUnreadCount] = useState(0);
-  const [teamUnread, setTeamUnread] = useState(0);
+
+  const { counts: chatUnreadCounts } = useUnreadCounts({ enabled: true });
+  const teamUnread = useMemo(() => {
+    let total = 0;
+    for (const count of Object.values(chatUnreadCounts)) total += count;
+    return total;
+  }, [chatUnreadCounts]);
 
   const fetchUnread = useCallback(async () => {
     try {
@@ -26,15 +33,9 @@ export function BottomNav({ currentPage, onNavigate, userId }: Props) {
     const timer = setInterval(fetchUnread, 15000);
     const onChanged = () => fetchUnread();
     window.addEventListener('markus:notifications-changed', onChanged);
-    const onTeamUnread = (e: Event) => {
-      const count = (e as CustomEvent).detail?.count ?? 0;
-      setTeamUnread(count);
-    };
-    window.addEventListener('markus:team-unread-changed', onTeamUnread);
     return () => {
       clearInterval(timer);
       window.removeEventListener('markus:notifications-changed', onChanged);
-      window.removeEventListener('markus:team-unread-changed', onTeamUnread);
     };
   }, [fetchUnread]);
 

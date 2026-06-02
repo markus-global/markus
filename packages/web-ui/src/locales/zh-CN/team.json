@@ -266,6 +266,8 @@
     "emptySelectAgent": "在侧边栏选择一名智能体以开始。",
     "emptyNewConversation": "开始与 {{name}} 的新对话。",
     "agentThinking": "智能体思考中…",
+    "scrollToBottom": "回到底部",
+    "newMessages": "{{count}} 条新消息",
     "mentionAgent": "提及智能体",
     "addMoreFiles": "添加更多文件",
     "attachFilesTitle": "附加文件（图片、PDF、Word、Excel、PowerPoint…）",
@@ -300,6 +302,10 @@
     "activityTask": "任务：{{label}}",
     "activityDescHeartbeat": "周期性签到任务",
     "activityDescChat": "回复对话中",
-    "activityDescFallback": "智能体正在思考或通信"
+    "activityDescFallback": "智能体正在思考或通信",
+    "searchMessages": "搜索消息",
+    "searchPlaceholder": "搜索消息…",
+    "searching": "搜索中…",
+    "noSearchResults": "未找到相关消息"
   }
 }

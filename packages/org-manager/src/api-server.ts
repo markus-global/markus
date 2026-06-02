@@ -6575,9 +6575,10 @@ EXPLANATION_END`;
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
       const repo = this.storage?.readCursorRepo;
-      if (!repo) { this.json(res, 200, { counts: {} }); return; }
+      if (!repo) { this.json(res, 200, { counts: {}, sessionAgentMap: {} }); return; }
       const counts = repo.getUnreadCounts(authUser.userId);
-      this.json(res, 200, { counts });
+      const sessionAgentMap = repo.getSessionAgentMap();
+      this.json(res, 200, { counts, sessionAgentMap });
       return;
     }
 
@@ -6601,6 +6602,51 @@ EXPLANATION_END`;
       if (!repo) { this.json(res, 200, { success: true }); return; }
       repo.markAllRead(authUser.userId);
       this.json(res, 200, { success: true });
+      return;
+    }
+
+    // ─── Message search ──────────────────────────────────────────────────────────
+    if (path === '/api/messages/search' && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const query = url.searchParams.get('q')?.trim();
+      if (!query || query.length < 2) {
+        this.json(res, 400, { error: 'Query must be at least 2 characters' });
+        return;
+      }
+      const channel = url.searchParams.get('channel') ?? undefined;
+      const scope = url.searchParams.get('scope') ?? 'all';
+      const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '30', 10), 100);
+      const results: { source: string; id: string; text: string; senderName?: string; channel?: string; sessionId?: string; agentId?: string; createdAt: string }[] = [];
+
+      if ((scope === 'all' || scope === 'channel') && this.storage?.channelMessageRepo) {
+        const channelResults = this.storage.channelMessageRepo.searchMessages(query, channel, limit);
+        for (const r of channelResults) {
+          results.push({
+            source: 'channel',
+            id: r.id,
+            text: r.text,
+            senderName: r.senderName,
+            channel: r.channel,
+            createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+          });
+        }
+      }
+      if ((scope === 'all' || scope === 'direct') && this.storage?.chatSessionRepo) {
+        const sessionResults = this.storage.chatSessionRepo.searchMessages(query, limit);
+        for (const r of sessionResults) {
+          results.push({
+            source: 'direct',
+            id: r.id as string,
+            text: r.content as string,
+            sessionId: r.sessionId as string,
+            agentId: r.sessionAgentId,
+            createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+          });
+        }
+      }
+      results.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      this.json(res, 200, { results: results.slice(0, limit) });
       return;
     }
 
@@ -9936,6 +9982,9 @@ EXPLANATION_END`;
       exact('/api/notifications', 'GET'),
       exact('/api/notifications/mark-all-read', 'POST'),
       startsWith('/api/notifications/', 'POST'),
+
+      // ── Message search ──────────────────────────────────────────────────
+      exact('/api/messages/search', 'GET'),
 
       // ── Activity feed ─────────────────────────────────────────────────
       exact('/api/activity', 'GET'),

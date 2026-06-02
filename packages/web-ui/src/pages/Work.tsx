@@ -1487,7 +1487,7 @@ function fmtSize(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function FilePreviewModal({ filePath: initialPath, onClose }: { filePath: string; onClose: () => void }) {
+function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { filePath: string; onClose: () => void; onOpenExternal?: () => void }) {
   const { t } = useTranslation(['work', 'common']);
   const [pathStack, setPathStack] = useState<string[]>([initialPath]);
   const currentPath = pathStack[pathStack.length - 1]!;
@@ -1555,7 +1555,7 @@ function FilePreviewModal({ filePath: initialPath, onClose }: { filePath: string
             {isDir && data.entries && <span className="text-[10px] text-fg-tertiary shrink-0">({data.entries.length})</span>}
           </div>
           <div className="flex items-center gap-1 shrink-0 ml-3">
-            <button onClick={() => openInFinder(currentPath)} className="text-fg-tertiary hover:text-fg-primary p-1.5 rounded hover:bg-surface-elevated/60 transition-colors" title={t('work:task.openInFinder')}>
+            <button onClick={() => onOpenExternal ? onOpenExternal() : openInFinder(currentPath)} className="text-fg-tertiary hover:text-fg-primary p-1.5 rounded hover:bg-surface-elevated/60 transition-colors" title={onOpenExternal ? t('work:task.openInDeliverables') : t('work:task.openInFinder')}>
               <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>
             </button>
             <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-lg shrink-0">×</button>
@@ -1801,6 +1801,10 @@ function TaskDetailPanel({
   const completedCount = subtasks.filter(s => s.status === 'completed').length;
   const isRunning = task.status === 'in_progress';
   const isBlocked = task.status === 'blocked';
+  const isAbnormallyBlocked = isBlocked && (!task.blockedBy || task.blockedBy.length === 0 || task.blockedBy.every(id => {
+    const dep = allTasks.find(t => t.id === id);
+    return dep && dep.status === 'completed';
+  }));
   const isCompleted = task.status === 'completed';
   const isFailed = task.status === 'failed';
   const isRejected = task.status === 'rejected';
@@ -1823,7 +1827,7 @@ function TaskDetailPanel({
       <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-3 border-b border-border-default shrink-0">
         <div className="flex items-center gap-2 flex-1 min-w-0">
           {isMobile && (
-            <button onClick={onClose} className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1 shrink-0">
+            <button onClick={() => history.back()} className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1 shrink-0">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
             </button>
           )}
@@ -1838,6 +1842,9 @@ function TaskDetailPanel({
                 <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap align-middle">{task.status.replace(/_/g, ' ')}</span>
               );
             })()}
+            {isAbnormallyBlocked && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap align-middle bg-red-500/15 text-red-500">{t('work:task.abnormalBlock')}</span>
+            )}
           </h3>
         </div>
         <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-xl leading-none shrink-0 mt-1">×</button>
@@ -1904,7 +1911,7 @@ function TaskDetailPanel({
                   <div
                     ref={descRef}
                     className="group relative cursor-pointer rounded-lg -mx-2 px-2 -my-1 py-1 hover:bg-surface-elevated/50 transition-colors"
-                    onClick={() => { descHeightRef.current = Math.max(descRef.current?.offsetHeight ?? 80, 60); setDescDraft(task.description); setEditingDesc(true); }}
+                    onClick={(e) => { if ((e.target as HTMLElement).closest('a, button, [data-entity-link]')) return; descHeightRef.current = Math.max(descRef.current?.offsetHeight ?? 80, 60); setDescDraft(task.description); setEditingDesc(true); }}
                     role="button"
                     tabIndex={0}
                     onKeyDown={e => e.key === 'Enter' && (setDescDraft(task.description), setEditingDesc(true))}
@@ -1989,6 +1996,15 @@ function TaskDetailPanel({
                   </div>
                 ) : (
                   <p className="text-[11px] text-fg-tertiary mb-2">{t('work:task.noDependencies')}</p>
+                )}
+                {isAbnormallyBlocked && (
+                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-500 mb-2">
+                    <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                      <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+                    </svg>
+                    <span>{t('work:task.abnormalBlockHint')}</span>
+                  </div>
                 )}
                 {!isTerminal && (
                   <select
@@ -2531,7 +2547,14 @@ function TaskDetailPanel({
           onCancel={() => setCancelConfirm(null)}
         />
       )}
-      {previewFile && <FilePreviewModal filePath={previewFile} onClose={() => setPreviewFile(null)} />}
+      {previewFile && <FilePreviewModal filePath={previewFile} onClose={() => setPreviewFile(null)} onOpenExternal={() => {
+        setPreviewFile(null);
+        api.deliverables.search({ taskId: task.id, limit: 100 }).then(({ results }) => {
+          const match = results.find(d => d.reference === previewFile);
+          if (match) navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: match.id });
+          else navBus.navigate(PAGE.DELIVERABLES);
+        }).catch(() => navBus.navigate(PAGE.DELIVERABLES));
+      }} />}
       {scheduleApproveModal && task.scheduleConfig && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60]" onClick={() => setScheduleApproveModal(false)}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[380px] shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -2922,7 +2945,7 @@ function TagPicker({ value, options, onSelect, allowedValues }: {
   );
 }
 
-function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onReqClick, onRowDragStart, onRowDragEnd, handleStatusChange, handlePriorityChange, selected, isMobile }: {
+function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onReqClick, onRowDragStart, onRowDragEnd, handleStatusChange, handlePriorityChange, selected, isMobile, isAbnormalBlocked }: {
   row: BacklogRow; idx: number; dragIdx: number | null;
   agentMap: Map<string, AgentInfo>; projMap: Map<string, ProjectInfo>;
   onTaskClick: (t: TaskInfo) => void; onReqClick: (r: RequirementInfo) => void;
@@ -2931,6 +2954,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   handlePriorityChange: (row: BacklogRow, val: string) => Promise<void>;
   selected?: boolean;
   isMobile?: boolean;
+  isAbnormalBlocked?: boolean;
 }) {
   const { t } = useTranslation(['work', 'common']);
   const taskStatusBadges = useMemo(() => buildTaskStatusBadges(t), [t]);
@@ -2960,6 +2984,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       >
         <div className="flex items-center gap-2 min-w-0">
           {typeBadge}
+          {isAbnormalBlocked && <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-red-500/15 text-red-500">⚠</span>}
           <span className="text-sm text-fg-primary truncate flex-1">{row.data.title}</span>
         </div>
         <div className="flex items-center gap-2 mt-1.5 flex-wrap">
@@ -3004,7 +3029,10 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       className={`flex items-center gap-2 px-6 py-2 border-b border-border-default/40 cursor-pointer transition-colors border-l-2 ${GROUP_ACCENT[row.group] ?? 'border-l-gray-700'} ${dragIdx === idx ? 'opacity-40' : ''} ${selected ? 'bg-brand-500/10 border-l-brand-500 hover:bg-brand-500/15' : 'hover:bg-surface-elevated/50'}`}
     >
       <div className="w-12 shrink-0">{typeBadge}</div>
-      <div className="flex-1 min-w-[200px] text-sm text-fg-primary truncate">{row.data.title}</div>
+      <div className="flex-1 min-w-[200px] text-sm text-fg-primary truncate flex items-center gap-1.5">
+        <span className="truncate">{row.data.title}</span>
+        {isAbnormalBlocked && <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-red-500/15 text-red-500 shrink-0">⚠</span>}
+      </div>
       <div className="w-[130px] shrink-0" onClick={e => e.stopPropagation()}>
         <TagPicker
           value={status}
@@ -3064,6 +3092,21 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
   const [sortMode, setSortMode] = useState<'status' | 'priority'>('status');
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
+
+  const taskMap = useMemo(() => {
+    const m = new Map<string, TaskInfo>();
+    for (const t of tasks) m.set(t.id, t);
+    return m;
+  }, [tasks]);
+
+  const checkAbnormalBlocked = useCallback((task: TaskInfo): boolean => {
+    if (task.status !== 'blocked') return false;
+    if (!task.blockedBy || task.blockedBy.length === 0) return true;
+    return task.blockedBy.every(id => {
+      const dep = taskMap.get(id);
+      return dep && dep.status === 'completed';
+    });
+  }, [taskMap]);
 
   const rows = useMemo(() => {
     const result: BacklogRow[] = [];
@@ -3222,14 +3265,14 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
                   <span className="text-[10px] text-fg-tertiary">{groupCounts[groupId] ?? 0}</span>
                 </div>
                 {groupRows.map(row => (
-                  <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={rowIndexMap.get(row) ?? 0} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} />
+                  <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={rowIndexMap.get(row) ?? 0} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} isAbnormalBlocked={row.kind === 'task' ? checkAbnormalBlocked(row.data) : false} />
                 ))}
               </div>
             );
           })
         ) : (
           rows.map((row, idx) => (
-            <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={idx} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} />
+            <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={idx} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} isAbnormalBlocked={row.kind === 'task' ? checkAbnormalBlocked(row.data) : false} />
           ))
         )}
         {rows.length === 0 && (
@@ -3560,36 +3603,61 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     setSelectedTask(task);
     setSelectedReq(null);
     if (opts?.scrollToComments) setScrollToComments(true);
-    if (isMobile) { setMobileShowDetail(true); history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash); }
+    if (isMobile) { setMobileShowDetail(true); }
   }, [isMobile]);
   const forceOpenReq = useCallback((req: RequirementInfo, opts?: { scrollToComments?: boolean }) => {
     setSelectedReq(req);
     setSelectedTask(null);
     if (opts?.scrollToComments) setScrollToComments(true);
-    if (isMobile) { setMobileShowDetail(true); history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash); }
+    if (isMobile) { setMobileShowDetail(true); }
   }, [isMobile]);
 
-  // Try to open a task from localStorage (set by other pages)
+  // Try to open a task from localStorage (set by other pages before mount).
+  // Uses API fallback when the task isn't in the board yet.
+  const pendingOpenTaskRef = useRef<string | null>(null);
   useEffect(() => {
-    const navTaskId = localStorage.getItem('markus_nav_openTask');
+    const navTaskId = pendingOpenTaskRef.current || localStorage.getItem('markus_nav_openTask');
     if (!navTaskId) return;
     const allTasks = Object.values(board).flat();
     const task = allTasks.find(t => t.id === navTaskId);
     if (task) {
+      pendingOpenTaskRef.current = null;
       ensureProjectVisible(task.projectId);
       forceOpenTask(task);
       localStorage.removeItem('markus_nav_openTask');
+    } else if (!pendingOpenTaskRef.current) {
+      pendingOpenTaskRef.current = navTaskId;
+      localStorage.removeItem('markus_nav_openTask');
+      api.tasks.get(navTaskId).then(resp => {
+        if (resp.task) {
+          pendingOpenTaskRef.current = null;
+          ensureProjectVisible(resp.task.projectId);
+          forceOpenTask(resp.task);
+        }
+      }).catch(() => { pendingOpenTaskRef.current = null; });
     }
   }, [board, forceOpenTask, ensureProjectVisible]);
 
+  const pendingOpenReqRef = useRef<string | null>(null);
   useEffect(() => {
-    const navReqId = localStorage.getItem('markus_nav_openRequirement');
+    const navReqId = pendingOpenReqRef.current || localStorage.getItem('markus_nav_openRequirement');
     if (!navReqId) return;
     const req = allRequirements.find(r => r.id === navReqId);
     if (req) {
+      pendingOpenReqRef.current = null;
       ensureProjectVisible(req.projectId);
       forceOpenReq(req);
       localStorage.removeItem('markus_nav_openRequirement');
+    } else if (!pendingOpenReqRef.current) {
+      pendingOpenReqRef.current = navReqId;
+      localStorage.removeItem('markus_nav_openRequirement');
+      api.requirements.get(navReqId).then(resp => {
+        if (resp.requirement) {
+          pendingOpenReqRef.current = null;
+          ensureProjectVisible(resp.requirement.projectId);
+          forceOpenReq(resp.requirement);
+        }
+      }).catch(() => { pendingOpenReqRef.current = null; });
     }
   }, [allRequirements, forceOpenReq, ensureProjectVisible]);
 
@@ -3895,6 +3963,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     if (myTasksOnly && authUser?.id) result = result.filter(t => t.createdBy === authUser.id);
     return result;
   };
+
+  const boardTaskMap = useMemo(() => {
+    const m = new Map<string, TaskInfo>();
+    for (const tasks of Object.values(board)) for (const t of tasks) m.set(t.id, t);
+    return m;
+  }, [board]);
 
   const agentIds = useMemo(() => new Set(agents.map(a => a.id)), [agents]);
 
@@ -4357,12 +4431,18 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                             const taskCreatorName = task.createdBy ? (resolveActorName(task.createdBy, agents, users) ?? task.createdBy) : null;
                             const isSelected = selectedTask?.id === task.id;
                             const priorityDot: Record<string, string> = { urgent: 'bg-red-500', high: 'bg-amber-500', medium: 'bg-blue-500', low: 'bg-gray-400' };
+                            const cardAbnormalBlocked = task.status === 'blocked' && (!task.blockedBy || task.blockedBy.length === 0 || task.blockedBy.every(id => {
+                              const dep = boardTaskMap.get(id);
+                              return dep && dep.status === 'completed';
+                            }));
                             return (
                               <div key={task.id} role="button" tabIndex={0} aria-label={task.title} draggable={!isApprovalTask}
                                 onDragStart={e => !isApprovalTask && onDragStartTask(e, task)} onDragEnd={onDragEnd}
                                 onClick={() => handleSelectTask(task)} onKeyDown={e => e.key === 'Enter' && handleSelectTask(task)}
                                 className={`group rounded-lg p-2.5 border border-transparent transition-all ${
-                                  isApprovalTask
+                                  cardAbnormalBlocked
+                                    ? 'bg-red-500/[0.06] border-red-500/30 ring-1 ring-red-500/15 cursor-pointer'
+                                    : isApprovalTask
                                     ? 'bg-amber-500/[0.06] border-amber-500/30 ring-1 ring-amber-500/15 cursor-pointer'
                                     : isSchedTask
                                       ? 'bg-blue-500/[0.04] border-blue-500/20 hover:border-blue-400/40 cursor-pointer'
@@ -4373,6 +4453,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                   {isSchedTask && <span className="text-blue-500 shrink-0" title={schedLabel ?? 'Scheduled'}><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg></span>}
                                   {isSchedTask && schedLabel && <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-500 whitespace-nowrap">{schedLabel}</span>}
                                   {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded-md ml-auto shrink-0 ${badge.cls}`}>{badge.label}</span>}
+                                  {cardAbnormalBlocked && <span className="text-[10px] px-1.5 py-0.5 rounded-md shrink-0 bg-red-500/15 text-red-500 font-medium">⚠</span>}
                                 </div>
                                 <div className="text-[13px] font-medium leading-snug text-fg-primary line-clamp-2 mb-1">{task.title}</div>
                                 {task.description && <div className="text-[11px] text-fg-tertiary line-clamp-1 mb-1.5">{task.description}</div>}
@@ -5084,7 +5165,7 @@ function RequirementDetailPanel({
       <div className="flex items-start justify-between gap-4 p-5 pb-0 border-b border-border-default">
         <div className="flex items-center gap-2 flex-1 min-w-0">
           {isMobile && (
-            <button onClick={onClose} className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1 shrink-0">
+            <button onClick={() => history.back()} className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1 shrink-0">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
             </button>
           )}
@@ -5145,7 +5226,7 @@ function RequirementDetailPanel({
               <div
                 ref={descRef}
                 className={`group relative rounded-lg -mx-2 px-2 -my-1 py-1 transition-colors ${!isTerminal ? 'cursor-pointer hover:bg-surface-elevated/50' : ''}`}
-                onClick={!isTerminal ? () => { descHeightRef.current = Math.max(descRef.current?.offsetHeight ?? 80, 60); setDescDraft(req.description); setEditingDesc(true); } : undefined}
+                onClick={!isTerminal ? (e: React.MouseEvent) => { if ((e.target as HTMLElement).closest('a, button, [data-entity-link]')) return; descHeightRef.current = Math.max(descRef.current?.offsetHeight ?? 80, 60); setDescDraft(req.description); setEditingDesc(true); } : undefined}
                 role={!isTerminal ? 'button' : undefined}
                 tabIndex={!isTerminal ? 0 : undefined}
                 onKeyDown={!isTerminal ? e => e.key === 'Enter' && (setDescDraft(req.description), setEditingDesc(true)) : undefined}

@@ -83,6 +83,8 @@
     "tasksReview": "task(s) need your review",
     "reportPlans": "report plan(s) pending",
     "blocked": "task(s) stuck/blocked",
+    "blockedAbnormal": "task(s) abnormally blocked",
+    "blockedNormal": "task(s) waiting on dependencies",
     "viewBlocked": "View blocked tasks →",
     "report": "report",
     "planItems": "items",

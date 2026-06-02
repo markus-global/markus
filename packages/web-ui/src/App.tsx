@@ -26,6 +26,14 @@ import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 import { useTranslation } from 'react-i18next';
 import { SearchModal } from './components/SearchModal.tsx';
 
+const HIDDEN_STYLE: React.CSSProperties = {
+  visibility: 'hidden',
+  position: 'absolute',
+  inset: 0,
+  pointerEvents: 'none',
+  zIndex: -1,
+};
+
 const PageSlot = memo(function PageSlot({
   id, activePage, children,
 }: {
@@ -33,8 +41,9 @@ const PageSlot = memo(function PageSlot({
   activePage: PageId;
   children: React.ReactNode;
 }) {
+  const active = id === activePage;
   return (
-    <div className="flex-1 overflow-hidden flex flex-col" style={{ display: id === activePage ? 'flex' : 'none' }}>
+    <div className="flex-1 overflow-hidden flex flex-col" style={active ? undefined : HIDDEN_STYLE}>
       {children}
     </div>
   );
@@ -202,7 +211,8 @@ export function App() {
       setMountedPages(prev => prev.has(p) ? prev : new Set([...prev, p]));
     };
     window.addEventListener('hashchange', onHash);
-    return () => { unsubNotif(); wsClient.disconnect(); window.removeEventListener('hashchange', onHash); };
+    window.addEventListener('popstate', onHash);
+    return () => { unsubNotif(); wsClient.disconnect(); window.removeEventListener('hashchange', onHash); window.removeEventListener('popstate', onHash); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -350,7 +360,7 @@ export function App() {
             <button onClick={() => { setUpdateBannerDismissed(updateInfo.latestVersion); localStorage.setItem('markus_update_dismissed', updateInfo.latestVersion); }} className="text-brand-400 hover:text-brand-300 text-xs shrink-0">{t('dismiss')}</button>
           </div>
         )}
-        <main className="flex-1 overflow-hidden flex flex-col">
+        <main className="flex-1 overflow-hidden flex flex-col relative">
           {(Object.keys(pageElements) as PageId[]).map(id => (
             mountedPages.has(id) ? (
               <PageSlot key={id} id={id} activePage={page}>

@@ -17,7 +17,8 @@
     "settings": "Settings",
     "files": "Files",
     "skills": "Skills",
-    "heartbeat": "Heartbeat"
+    "heartbeat": "Heartbeat",
+    "deliverables": "Deliverables"
   },
   "mind": {
     "title": "Agent Mind",
@@ -429,5 +430,17 @@
         "statusArrow": "{{from}} → {{to}}"
       }
     }
+  },
+  "deliverables": {
+    "empty": "No deliverables yet",
+    "emptyHint": "Deliverables created by this agent will appear here",
+    "count": "{{count}} deliverable(s)",
+    "summary": "Summary",
+    "reference": "Reference",
+    "format": "Format",
+    "created": "Created",
+    "updated": "Updated",
+    "accessed": "Accessed {{count}} time(s)",
+    "openInPage": "Open in Deliverables"
   }
 }

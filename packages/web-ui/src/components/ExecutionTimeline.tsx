@@ -731,7 +731,7 @@ export function CompactExecutionCard({ entries, streamingText, isActive, onExpan
         </div>
 
         {streamingText ? (
-          <div className="mt-1.5 ml-5.5 text-xs text-fg-secondary max-h-32 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed">
+          <div className={`mt-1.5 ml-5.5 text-xs text-fg-secondary whitespace-pre-wrap break-words leading-relaxed ${embedded && isActive ? '' : 'max-h-32 overflow-y-auto'}`}>
             <MarkdownMessage content={streamingText} className="text-xs" />
           </div>
         ) : statusDetail ? (

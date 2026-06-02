@@ -197,8 +197,22 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
 
   const nav = previewMode ? (() => {}) as typeof navBus.navigate : navBus.navigate;
 
+  const allTasksMap = useMemo(() => {
+    const m = new Map<string, TaskInfo>();
+    for (const tasks of Object.values(board)) for (const t of tasks) m.set(t.id, t);
+    return m;
+  }, [board]);
+
+  const isBlockedAbnormally = useCallback((task: TaskInfo): boolean => {
+    if (!task.blockedBy || task.blockedBy.length === 0) return true;
+    return task.blockedBy.every(id => {
+      const dep = allTasksMap.get(id);
+      return dep && dep.status === 'completed';
+    });
+  }, [allTasksMap]);
+
   const attentionItems = useMemo(() => {
-    const items: Array<{ type: 'review' | 'approval' | 'blocked'; count: number; tasks?: TaskInfo[]; urgent?: number }> = [];
+    const items: Array<{ type: 'review' | 'approval' | 'blocked' | 'blocked_abnormal'; count: number; tasks?: TaskInfo[]; urgent?: number }> = [];
     const reviewTasks = (board['review'] ?? []).filter(tk => tk.reviewerType === 'human');
     if (reviewTasks.length > 0) {
       const urg = reviewTasks.filter(tk => tk.priority === 'urgent' || tk.priority === 'high').length;
@@ -206,13 +220,22 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     }
     const pendingReqs = allRequirements.filter(r => r.status === 'pending');
     if (pendingReqs.length > 0) items.push({ type: 'approval', count: pendingReqs.length });
-    const blockedTasks = [...(board['blocked'] ?? []), ...(board['failed'] ?? [])];
-    if (blockedTasks.length > 0) {
-      const urg = blockedTasks.filter(tk => tk.priority === 'urgent' || tk.priority === 'high').length;
-      items.push({ type: 'blocked', count: blockedTasks.length, tasks: blockedTasks, urgent: urg });
+
+    const blockedTasks = [...(board['blocked'] ?? [])];
+    const failedTasks = [...(board['failed'] ?? [])];
+    const abnormal = blockedTasks.filter(t => isBlockedAbnormally(t));
+    const normal = blockedTasks.filter(t => !isBlockedAbnormally(t));
+    const allAbnormal = [...abnormal, ...failedTasks];
+
+    if (allAbnormal.length > 0) {
+      const urg = allAbnormal.filter(tk => tk.priority === 'urgent' || tk.priority === 'high').length;
+      items.push({ type: 'blocked_abnormal', count: allAbnormal.length, tasks: allAbnormal, urgent: urg });
+    }
+    if (normal.length > 0) {
+      items.push({ type: 'blocked', count: normal.length, tasks: normal });
     }
     return items;
-  }, [board, allRequirements]);
+  }, [board, allRequirements, isBlockedAbnormally]);
 
   const taskPriorityMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -314,35 +337,51 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
               </div>
             </div>
             <div className="px-3 pb-3 space-y-1">
-              {attentionItems.map(item => (
-                <div key={item.type} className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface-overlay/40 cursor-pointer transition-colors"
-                  onClick={() => {
-                    if (item.type === 'review') navBus.navigate(PAGE.WORK, { statusFilter: 'review' });
-                    else if (item.type === 'approval') navBus.navigate(PAGE.WORK);
-                    else navBus.navigate(PAGE.WORK, { statusFilter: 'blocked' });
-                  }}>
-                  <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
-                    item.type === 'review' ? 'bg-blue-500/15' : item.type === 'approval' ? 'bg-amber-500/15' : 'bg-red-500/15'
-                  }`}>
-                    <AttentionIcon type={item.type} />
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <span className="text-xs font-medium text-fg-primary">
-                      {item.count} {t(item.type === 'review' ? 'attention.tasksReview' : item.type === 'approval' ? 'attention.requirements' : 'attention.blocked')}
+              {attentionItems.map(item => {
+                const isAbnormal = item.type === 'blocked_abnormal';
+                const isBlocked = item.type === 'blocked' || isAbnormal;
+                const iconBg = item.type === 'review' ? 'bg-blue-500/15' : item.type === 'approval' ? 'bg-amber-500/15' : isAbnormal ? 'bg-red-500/15' : 'bg-amber-500/15';
+                const btnCls = item.type === 'review' ? 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20'
+                  : item.type === 'approval' ? 'bg-amber-500/10 text-amber-600 hover:bg-amber-500/20'
+                  : isAbnormal ? 'bg-red-500/10 text-red-500 hover:bg-red-500/20'
+                  : 'bg-amber-500/10 text-amber-600 hover:bg-amber-500/20';
+                const label = item.type === 'review' ? t('attention.tasksReview')
+                  : item.type === 'approval' ? t('attention.requirements')
+                  : isAbnormal ? t('attention.blockedAbnormal')
+                  : t('attention.blockedNormal');
+                const btnLabel = item.type === 'review' ? t('attention.goReview')
+                  : item.type === 'approval' ? t('attention.goApprove')
+                  : t('attention.viewDetails');
+                return (
+                  <div key={item.type} className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface-overlay/40 cursor-pointer transition-colors"
+                    onClick={() => {
+                      if (item.type === 'review') {
+                        navBus.navigate(PAGE.WORK, { statusFilter: 'review' });
+                      } else if (item.type === 'approval') {
+                        navBus.navigate(PAGE.WORK);
+                      } else if (isBlocked && item.tasks && item.tasks.length > 0) {
+                        navBus.navigate(PAGE.WORK, { openTask: item.tasks[0]!.id });
+                      } else {
+                        navBus.navigate(PAGE.WORK);
+                      }
+                    }}>
+                    <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${iconBg}`}>
+                      <AttentionIcon type={isBlocked ? 'blocked' : item.type as 'review' | 'approval' | 'blocked'} />
                     </span>
-                    {(item.urgent ?? 0) > 0 && (
-                      <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-500/15 text-red-500">{item.urgent} urgent</span>
-                    )}
+                    <div className="flex-1 min-w-0">
+                      <span className="text-xs font-medium text-fg-primary">
+                        {item.count} {label}
+                      </span>
+                      {(item.urgent ?? 0) > 0 && (
+                        <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-500/15 text-red-500">{item.urgent} urgent</span>
+                      )}
+                    </div>
+                    <button className={`text-[11px] font-medium px-3 py-1 rounded-lg transition-colors shrink-0 ${btnCls}`}>
+                      {btnLabel}
+                    </button>
                   </div>
-                  <button className={`text-[11px] font-medium px-3 py-1 rounded-lg transition-colors shrink-0 ${
-                    item.type === 'review' ? 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20'
-                    : item.type === 'approval' ? 'bg-amber-500/10 text-amber-600 hover:bg-amber-500/20'
-                    : 'bg-red-500/10 text-red-500 hover:bg-red-500/20'
-                  }`}>
-                    {t(item.type === 'review' ? 'attention.goReview' : item.type === 'approval' ? 'attention.goApprove' : 'attention.viewDetails')}
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
