@@ -1,11 +1,11 @@
-import type { ChatMessageInfo, ChannelMessageInfo, ChannelMsgMetadata, StoredSegment } from '../api.ts';
+import type { ChatMessageInfo, ChannelMessageInfo, ChannelMsgMetadata, StoredSegment, SubagentProgressEvent } from '../api.ts';
 import type { ActivityStep } from '../components/ActivityIndicator.tsx';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type MsgSegment =
   | { type: 'text'; content: string; thinking?: string; createdAt?: string }
-  | { type: 'tool'; key: string; tool: string; status: 'running' | 'done' | 'error' | 'stopped'; args?: unknown; result?: string; error?: string; durationMs?: number; liveOutput?: string; subagentLogs?: import('../api.ts').SubagentProgressEvent[]; createdAt?: string };
+  | { type: 'tool'; key: string; tool: string; status: 'running' | 'done' | 'error' | 'stopped'; args?: unknown; result?: string; error?: string; durationMs?: number; liveOutput?: string; subagentLogs?: SubagentProgressEvent[]; createdAt?: string };
 
 export interface ChatMsg {
   id: string;

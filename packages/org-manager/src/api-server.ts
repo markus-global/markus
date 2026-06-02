@@ -27,7 +27,7 @@ import {
   discoverSkillsInDir,
   WELL_KNOWN_SKILL_DIRS,
   type AgentManager,
-  ModelCatalogService,
+  type ModelCatalogService,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';

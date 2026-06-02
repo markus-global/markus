@@ -5,7 +5,7 @@
  * so that the Team component no longer needs 30+ individual useState/useRef hooks.
  */
 
-import { useSyncExternalStore, useCallback, useRef } from 'react';
+import { useSyncExternalStore } from 'react';
 import type { ChatMsg, ChatMode } from './ChatHelpers.ts';
 import type { ActivityStep } from '../components/ActivityIndicator.tsx';
 
