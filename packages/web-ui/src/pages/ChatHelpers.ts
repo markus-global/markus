@@ -150,7 +150,7 @@ export function channelMsgToChat(m: ChannelMessageInfo, authUserId?: string): Ch
   return base;
 }
 
-export function formatSmartTime(isoOrLocale: string, rawCreatedAt?: string): string {
+export function formatSmartTime(isoOrLocale: string, rawCreatedAt?: string, labels?: { yesterday?: string }): string {
   const d = rawCreatedAt ? new Date(rawCreatedAt) : new Date();
   if (isNaN(d.getTime())) return isoOrLocale;
   const now = new Date();
@@ -158,7 +158,7 @@ export function formatSmartTime(isoOrLocale: string, rawCreatedAt?: string): str
   const ts = d.getTime();
   const hhmm = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   if (ts >= todayStart) return hhmm;
-  if (ts >= todayStart - 86400000) return `Yesterday ${hhmm}`;
+  if (ts >= todayStart - 86400000) return `${labels?.yesterday ?? 'Yesterday'} ${hhmm}`;
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + hhmm;
 }
 
@@ -169,14 +169,14 @@ export function getDateKey(rawCreatedAt?: string): string {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
-export function formatDateLabel(rawCreatedAt: string): string {
+export function formatDateLabel(rawCreatedAt: string, labels?: { today?: string; yesterday?: string }): string {
   const d = new Date(rawCreatedAt);
   if (isNaN(d.getTime())) return '';
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const ts = d.getTime();
-  if (ts >= todayStart) return 'Today';
-  if (ts >= todayStart - 86400000) return 'Yesterday';
+  if (ts >= todayStart) return labels?.today ?? 'Today';
+  if (ts >= todayStart - 86400000) return labels?.yesterday ?? 'Yesterday';
   return d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 }
 

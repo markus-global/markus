@@ -101,6 +101,7 @@ export interface TeamPreviewData {
 
 export function TeamPage({ initialAgentId, authUser, previewMode, previewData }: { initialAgentId?: string; authUser?: AuthUser; previewMode?: boolean; previewData?: TeamPreviewData } = {}) {
   const { t, i18n } = useTranslation(['team', 'common']);
+  const dateLabels = useMemo(() => ({ today: t('page.dateToday'), yesterday: t('page.dateYesterday') }), [t]);
   const isActive = usePageActive(PAGE.TEAM);
   const [agents, setAgents] = useState<AgentInfo[]>(previewData?.agents ?? []);
   const [humans, setHumans] = useState<HumanUserInfo[]>(previewData?.humans ?? []);
@@ -3045,7 +3046,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 {showDateSep && (
                   <div className="flex items-center gap-3 py-2 my-1">
                     <div className="flex-1 h-px bg-border-default" />
-                    <span className="text-[10px] text-fg-tertiary font-medium uppercase tracking-wider shrink-0">{formatDateLabel(msg.rawCreatedAt!)}</span>
+                    <span className="text-[10px] text-fg-tertiary font-medium uppercase tracking-wider shrink-0">{formatDateLabel(msg.rawCreatedAt!, dateLabels)}</span>
                     <div className="flex-1 h-px bg-border-default" />
                   </div>
                 )}
@@ -3094,7 +3095,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                               />
                         }
                       </span>
-                      <span className="text-xs text-fg-tertiary" title={msg.rawCreatedAt ? new Date(msg.rawCreatedAt).toLocaleString() : ''}>{formatSmartTime(msg.time, msg.rawCreatedAt)}</span>
+                      <span className="text-xs text-fg-tertiary" title={msg.rawCreatedAt ? new Date(msg.rawCreatedAt).toLocaleString() : ''}>{formatSmartTime(msg.time, msg.rawCreatedAt, dateLabels)}</span>
                     </div>
                     {msg.replyToId && msg.replyToSender && (
                       <button
