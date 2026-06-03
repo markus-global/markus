@@ -365,10 +365,16 @@ async function main() {
   trayLog(`Tray starting (locale=${detectLocale()}, pid=${process.pid})`);
 
   if (!acquireLock()) {
-    trayLog('Another tray instance is already running — opening browser and exiting');
-    openBrowser(WEB_UI_URL);
-    setTimeout(() => process.exit(0), 1000);
-    return;
+    const serverUp = await checkHealthOnce(`${WEB_UI_URL}/api/health`);
+    if (serverUp) {
+      trayLog('Another tray instance is already running — opening browser and exiting');
+      openBrowser(WEB_UI_URL);
+      setTimeout(() => process.exit(0), 1000);
+      return;
+    }
+    trayLog('Stale lock file detected (server not healthy) — taking over');
+    try { unlinkSync(LOCK_FILE); } catch { /* ignore */ }
+    writeFileSync(LOCK_FILE, String(process.pid));
   }
 
   process.on('exit', releaseLock);

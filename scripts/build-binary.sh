@@ -163,12 +163,48 @@ LAUNCHER
 
   # VBS launcher to run tray.mjs without a console window (wscript hides it)
   cat > "$STAGE_DIR/markus-tray.vbs" << 'VBS'
+On Error Resume Next
+
 Set fso = CreateObject("Scripting.FileSystemObject")
-Set shell = CreateObject("WScript.Shell")
+Set wshShell = CreateObject("WScript.Shell")
+
 appDir = fso.GetParentFolderName(WScript.ScriptFullName)
 nodeExe = fso.BuildPath(appDir, "bin\node.exe")
 trayMjs = fso.BuildPath(appDir, "bin\tray.mjs")
-shell.Run """" & nodeExe & """ """ & trayMjs & """", 0, False
+logDir = fso.BuildPath(wshShell.ExpandEnvironmentStrings("%USERPROFILE%"), ".markus\logs")
+logFile = fso.BuildPath(logDir, "tray-vbs.log")
+
+Sub WriteLog(msg)
+    On Error Resume Next
+    If Not fso.FolderExists(logDir) Then fso.CreateFolder(logDir)
+    Set f = fso.OpenTextFile(logFile, 8, True)
+    f.WriteLine Now() & " " & msg
+    f.Close
+End Sub
+
+If Not fso.FileExists(nodeExe) Then
+    WriteLog "ERROR: node.exe not found at " & nodeExe
+    MsgBox "Markus cannot start: node.exe not found." & vbCrLf & vbCrLf & nodeExe, vbCritical, "Markus"
+    WScript.Quit 1
+End If
+
+If Not fso.FileExists(trayMjs) Then
+    WriteLog "ERROR: tray.mjs not found at " & trayMjs
+    MsgBox "Markus cannot start: tray.mjs not found." & vbCrLf & vbCrLf & trayMjs, vbCritical, "Markus"
+    WScript.Quit 1
+End If
+
+WriteLog "Launching: " & nodeExe & " " & trayMjs
+cmdLine = """" & nodeExe & """ """ & trayMjs & """"
+exitCode = wshShell.Run(cmdLine, 0, False)
+
+If Err.Number <> 0 Then
+    WriteLog "ERROR: Run failed: " & Err.Description
+    MsgBox "Markus failed to start:" & vbCrLf & Err.Description, vbCritical, "Markus"
+    WScript.Quit 1
+End If
+
+WriteLog "Process launched successfully"
 VBS
   ok "VBS tray launcher created"
 else
