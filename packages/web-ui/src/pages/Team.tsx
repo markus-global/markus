@@ -797,9 +797,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [agents, selectedAgent]);
 
   // Track whether the user is at the bottom of the chat scroll container.
-  // Uses wheel/touch events to detect genuine user interaction (not programmatic scrolls),
-  // and the scroll event to detect when the user scrolls back to the bottom.
-  const userManuallyScrolledRef = useRef(false);
+  // Every scroll event checks position; programmatic scrolls (from
+  // scrollChatToBottom) are flagged so they don't flip userAtBottomRef off.
+  const isProgrammaticScrollRef = useRef(false);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const newMsgCountRef = useRef(0);
   const [newMsgCount, setNewMsgCount] = useState(0);
@@ -807,29 +807,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     const el = chatScrollRef.current;
     if (!el) return;
     const isAtBottom = () => el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    const onUserScroll = () => { userManuallyScrolledRef.current = true; };
     const onScroll = () => {
-      if (userManuallyScrolledRef.current && isAtBottom()) {
-        userManuallyScrolledRef.current = false;
+      if (isProgrammaticScrollRef.current) return;
+      if (isAtBottom()) {
         userAtBottomRef.current = true;
         setShowScrollBtn(false);
         newMsgCountRef.current = 0;
         setNewMsgCount(0);
-      } else if (userManuallyScrolledRef.current) {
+      } else {
         userAtBottomRef.current = false;
         setShowScrollBtn(true);
       }
     };
-    const SCROLL_KEYS = new Set(['PageUp','PageDown','ArrowUp','ArrowDown','Home','End',' ']);
-    const onKeyScroll = (e: KeyboardEvent) => { if (SCROLL_KEYS.has(e.key)) userManuallyScrolledRef.current = true; };
-    el.addEventListener('wheel', onUserScroll, { passive: true });
-    el.addEventListener('touchmove', onUserScroll, { passive: true });
-    el.addEventListener('keydown', onKeyScroll, { passive: true });
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => {
-      el.removeEventListener('wheel', onUserScroll);
-      el.removeEventListener('touchmove', onUserScroll);
-      el.removeEventListener('keydown', onKeyScroll);
       el.removeEventListener('scroll', onScroll);
     };
   }, [mobileLayer]);
@@ -847,12 +838,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   });
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = 'instant') => {
+    isProgrammaticScrollRef.current = true;
     if (visibleMessages.length > 0) {
       chatVirtualizer.scrollToIndex(visibleMessages.length - 1, { align: 'end', behavior });
     } else {
       const el = chatScrollRef.current;
       if (el) el.scrollTo({ top: el.scrollHeight, behavior });
     }
+    requestAnimationFrame(() => { isProgrammaticScrollRef.current = false; });
   }, [visibleMessages.length, chatVirtualizer]);
 
   // ── Preserve scroll position across page-level navigation ──
@@ -1279,7 +1272,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (!text && pendingImages.length === 0) return;
     if (chatMode === 'direct' && !selectedAgent) return;
     userAtBottomRef.current = true;
-    userManuallyScrolledRef.current = false;
 
     // If agent is currently streaming, interrupt it first then proceed
     if (sending) {
@@ -3190,9 +3182,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           {showScrollBtn && mainTab === 'chat' && (
             <button
               onClick={() => {
-                scrollChatToBottom('smooth');
                 userAtBottomRef.current = true;
-                userManuallyScrolledRef.current = false;
+                scrollChatToBottom('smooth');
                 setShowScrollBtn(false);
                 newMsgCountRef.current = 0;
                 setNewMsgCount(0);

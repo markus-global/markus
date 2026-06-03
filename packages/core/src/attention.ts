@@ -469,7 +469,8 @@ export class AttentionController {
 
             await this.processFocusedItem(item);
           } catch (err) {
-            log.error('Attention loop iteration failed — requeueing item and continuing', {
+            const isUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(item.sourceType);
+            log.error(`Attention loop iteration failed — ${isUserInteraction ? 'completing' : 'requeueing'} item and continuing`, {
               agentId: this.agentId,
               itemId: item.id,
               type: item.sourceType,
@@ -480,7 +481,13 @@ export class AttentionController {
             this.interruptSignal = false;
             this.pendingInterruptItem = undefined;
             this.lastYieldDecision = undefined;
-            try { this.mailbox.requeue(item); } catch { /* item may already be back in queue */ }
+            if (isUserInteraction) {
+              // User-facing items may have already produced partial responses
+              // and tool-call side effects — restarting would duplicate them.
+              try { this.mailbox.complete(item.id); } catch { /* best effort */ }
+            } else {
+              try { this.mailbox.requeue(item); } catch { /* item may already be back in queue */ }
+            }
           }
         } catch (outerErr) {
           // Outermost safety net: catches exceptions from setState('idle'),
@@ -605,16 +612,40 @@ export class AttentionController {
     } else {
       const abnormalReason = detectAbnormalCompletion(reply, item);
       const retries = item.retryCount ?? 0;
+      const isUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(item.sourceType);
 
       if (abnormalReason && retries < MAILBOX_ITEM_MAX_RETRIES) {
-        log.warn('Abnormal completion detected, requeueing for retry', {
-          agentId: this.agentId,
-          itemId: item.id,
-          type: item.sourceType,
-          retryCount: retries + 1,
-          reason: abnormalReason,
-        });
-        this.mailbox.requeue(item);
+        if (abnormalReason === 'completion marker missing from reply') {
+          // In-session continuation was already attempted by the agent upstream.
+          // Requeuing would restart from scratch and duplicate all side effects.
+          log.warn('Completion marker still missing after in-session continuation — completing without retry', {
+            agentId: this.agentId,
+            itemId: item.id,
+            type: item.sourceType,
+          });
+          this.mailbox.complete(item.id);
+        } else if (isUserInteraction) {
+          // Empty reply / error for user-facing item — the user already saw
+          // partial results and tool calls may have produced side effects.
+          // Don't restart; the user can manually retry if needed.
+          log.warn('Abnormal completion for user interaction — completing without retry', {
+            agentId: this.agentId,
+            itemId: item.id,
+            type: item.sourceType,
+            reason: abnormalReason,
+          });
+          this.mailbox.complete(item.id);
+        } else {
+          // Empty reply for background type — transient errors may self-correct.
+          log.warn('Abnormal completion detected, requeueing for retry', {
+            agentId: this.agentId,
+            itemId: item.id,
+            type: item.sourceType,
+            retryCount: retries + 1,
+            reason: abnormalReason,
+          });
+          this.mailbox.requeue(item);
+        }
       } else {
         if (abnormalReason) {
           log.error('Abnormal completion persisted after max retries, completing anyway', {
