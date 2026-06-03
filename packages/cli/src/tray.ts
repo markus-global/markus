@@ -260,10 +260,6 @@ function resolveMarkusCommand(): { cmd: string; args: string[] } {
   if (existsSync(symlink)) return { cmd: symlink, args: ['start'] };
   const wrapper = resolve(APP_DIR, 'markus');
   if (existsSync(wrapper)) return { cmd: wrapper, args: ['start'] };
-  if (platform() === 'win32') {
-    const wrapperCmd = resolve(APP_DIR, 'markus.cmd');
-    if (existsSync(wrapperCmd)) return { cmd: wrapperCmd, args: ['start'] };
-  }
   const markusBin = resolve(BIN_DIR, 'Markus');
   const nodeBin = platform() === 'darwin' && existsSync(markusBin) ? markusBin : resolve(BIN_DIR, platform() === 'win32' ? 'node.exe' : 'node');
   const markusMjs = resolve(BIN_DIR, 'markus.mjs');
