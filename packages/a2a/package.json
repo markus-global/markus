@@ -1,6 +1,6 @@
 {
   "name": "@markus/a2a",
-  "version": "0.7.13",
+  "version": "0.7.14",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
