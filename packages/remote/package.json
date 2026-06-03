@@ -1,6 +1,6 @@
 {
   "name": "@markus/remote",
-  "version": "0.7.8-rc.1",
+  "version": "0.7.8-rc.2",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
