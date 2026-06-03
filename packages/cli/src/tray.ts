@@ -381,41 +381,53 @@ async function main() {
   process.on('SIGINT', () => { releaseLock(); process.exit(0); });
   process.on('SIGTERM', () => { releaseLock(); process.exit(0); });
 
-  tray = new SysTray({
-    menu: {
-      icon: loadIconBase64(),
-      title: '',
-      tooltip: t.tooltip,
-      items: [
-        { title: t.openUI, tooltip: t.openUI, enabled: true },
-        { title: '<SEPARATOR>', tooltip: '', enabled: true },
-        { title: t.quit, tooltip: t.quit, enabled: true },
-      ],
-    },
-    copyDir: false,
-  });
-  await tray.ready();
+  let trayOk = false;
+  try {
+    tray = new SysTray({
+      menu: {
+        icon: loadIconBase64(),
+        title: '',
+        tooltip: t.tooltip,
+        items: [
+          { title: t.openUI, tooltip: t.openUI, enabled: true },
+          { title: '<SEPARATOR>', tooltip: '', enabled: true },
+          { title: t.quit, tooltip: t.quit, enabled: true },
+        ],
+      },
+      copyDir: false,
+    });
+    await tray.ready();
+    trayOk = true;
 
-  tray.onClick(async (action: { item: { title: string }; seq_id: number }) => {
-    const title = action.item.title;
-    if (title === t.openUI) {
-      openBrowser(WEB_UI_URL);
-    } else if (title === t.quit) {
-      trayLog('Quit requested');
-      killServer();
-      setTimeout(async () => {
-        releaseLock();
-        if (tray) await tray.kill(false);
-        process.exit(0);
-      }, 4000);
-    }
-  });
+    tray.onClick(async (action: { item: { title: string }; seq_id: number }) => {
+      const title = action.item.title;
+      if (title === t.openUI) {
+        openBrowser(WEB_UI_URL);
+      } else if (title === t.quit) {
+        trayLog('Quit requested');
+        killServer();
+        setTimeout(async () => {
+          releaseLock();
+          if (tray) await tray.kill(false);
+          process.exit(0);
+        }, 4000);
+      }
+    });
 
-  tray.onError((err: Error) => {
-    trayLog(`Tray error: ${err.message}`);
-  });
+    tray.onError((err: Error) => {
+      trayLog(`Tray error: ${err.message}`);
+    });
+  } catch (trayErr) {
+    trayLog(`Tray icon unavailable (${trayErr}) — running in headless mode`);
+    tray = null;
+  }
 
   await ensureServerRunning();
+
+  if (!trayOk) {
+    trayLog('Running without tray icon — server is up, keeping process alive');
+    await new Promise(() => {});
+  }
 }
 
 main().catch((err) => {

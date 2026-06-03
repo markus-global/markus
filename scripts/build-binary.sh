@@ -127,7 +127,21 @@ rm -f "$STAGE_DIR/bin/package.json" "$STAGE_DIR/bin/package-lock.json"
 find "$STAGE_DIR/bin/node_modules/systray2/traybin" -type f 2>/dev/null | while read -r tb; do
   chmod +x "$tb"
 done
-ok "Native dependencies installed"
+
+# Verify systray2 tray binary exists for the target platform
+if [[ "$PLATFORM" == "win" ]]; then
+  TRAY_BIN="$STAGE_DIR/bin/node_modules/systray2/traybin/tray_windows_release.exe"
+elif [[ "$PLATFORM" == "darwin" ]]; then
+  TRAY_BIN="$STAGE_DIR/bin/node_modules/systray2/traybin/tray_darwin_release"
+else
+  TRAY_BIN="$STAGE_DIR/bin/node_modules/systray2/traybin/tray_linux_release"
+fi
+if [[ -f "$TRAY_BIN" ]]; then
+  ok "Native dependencies installed (tray binary: $(basename "$TRAY_BIN"))"
+else
+  warn "systray2 tray binary not found at $TRAY_BIN — tray icon will be unavailable"
+  ok "Native dependencies installed (without tray binary)"
+fi
 
 # Version marker so the bundled CLI can detect its own version
 # (version.ts looks for ../package.json relative to bin/markus.mjs)
