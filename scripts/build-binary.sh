@@ -119,7 +119,7 @@ info "Installing native dependencies into staging dir..."
 cat > "$STAGE_DIR/bin/package.json" << 'PKGJSON'
 { "private": true, "type": "module" }
 PKGJSON
-(cd "$STAGE_DIR/bin" && npm install --no-save ws sharp rfb2 systray2 node-datachannel 2>&1) \
+(cd "$STAGE_DIR/bin" && npm install --no-save ws sharp rfb2 systray2 node-datachannel@0.12.0 2>&1) \
   || die "Failed to install native dependencies"
 rm -f "$STAGE_DIR/bin/package.json" "$STAGE_DIR/bin/package-lock.json"
 
