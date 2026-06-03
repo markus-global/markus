@@ -958,6 +958,63 @@ export class Agent {
   }
 
   /**
+   * If the reply is missing the required completion marker, inject a
+   * continuation prompt into the existing session and make one more LLM
+   * call to obtain it — instead of letting the attention controller
+   * requeue the entire item from scratch (which duplicates side effects).
+   *
+   * Limited to a single attempt; if the marker is still missing afterwards
+   * the reply is returned as-is and the attention controller will complete
+   * the item without retry.
+   */
+  private async ensureCompletionMarker(reply: string, sessionId?: string): Promise<string> {
+    if (!reply || reply === '[cancelled]' || reply === '[preempted]' || reply === '[merged]') return reply;
+    if (reply.includes(COMPLETION_MARKER)) return reply;
+    if (!sessionId || !this.memory.getSession(sessionId)) return reply;
+
+    log.info('Completion marker missing — continuing in-session to obtain marker', {
+      agentId: this.id,
+      sessionId,
+      replyLength: reply.length,
+    });
+
+    this.memory.appendMessage(sessionId, {
+      role: 'user',
+      content: `[SYSTEM] Your previous response did not include the required completion marker. You MUST end your response with exactly: ${COMPLETION_MARKER}`,
+    });
+
+    try {
+      const sessionMessages = this.memory.getRecentMessages(sessionId, 50);
+      const prepared = await this.contextEngine.prepareMessages({
+        systemPrompt: 'You are completing a previous response. Finish any remaining work and end your response with the required completion marker.',
+        sessionMessages,
+        memory: this.memory,
+        sessionId,
+        agentId: this.id,
+        modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+        modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+        toolDefinitions: [],
+      });
+
+      const continuation = await this.llmRouter.chat(
+        { messages: prepared.messages },
+        this.getEffectiveProvider(),
+      );
+
+      const contReply = continuation.content ?? '';
+      this.memory.appendMessage(sessionId, { role: 'assistant', content: contReply });
+      return reply + contReply;
+    } catch (err) {
+      log.warn('Failed to obtain completion marker via continuation — returning original reply', {
+        agentId: this.id,
+        sessionId,
+        error: String(err),
+      });
+      return reply;
+    }
+  }
+
+  /**
    * Route a mailbox item to the appropriate Agent processing method.
    * Options like sessionId/images/scenario are forwarded from payload.extra
    * when present, falling back to type-appropriate defaults.
@@ -1030,7 +1087,7 @@ export class Agent {
                 agentId: this.id, itemId: item.id,
               });
             } else {
-              const reply = await this.handleMessageStream(
+              let reply = await this.handleMessageStream(
                 item.payload.content + markerSuffix,
                 extra.onEvent as (event: LLMStreamEvent & { agentEvent?: string }) => void,
                 item.metadata?.senderId,
@@ -1039,6 +1096,7 @@ export class Agent {
                 extra.images as string[] | undefined,
                 extra.fileNames as string[] | undefined,
               );
+              if (needsMarker) reply = await this.ensureCompletionMarker(reply, this.currentSessionId);
               resolveResponse(reply);
               return reply;
             }
@@ -1055,12 +1113,13 @@ export class Agent {
               : {};
           const opts = buildHandleOpts(defaults);
           if (item.sourceType === 'a2a_message') opts.scenario = 'a2a';
-          const reply = await this.handleMessage(
+          let reply = await this.handleMessage(
             item.payload.content + markerSuffix,
             item.metadata?.senderId,
             senderInfo,
             opts,
           );
+          if (needsMarker) reply = await this.ensureCompletionMarker(reply, opts.sessionId ?? this.currentSessionId);
           resolveResponse(reply);
           return reply;
         }
@@ -1108,12 +1167,14 @@ export class Agent {
         }
 
         case 'mention': {
-          const reply = await this.handleMessage(
+          const mentionSessionId = `sys_${this.id}_${ts}`;
+          let reply = await this.handleMessage(
             item.payload.content + markerSuffix,
             item.metadata?.senderId,
             senderInfo,
-            buildHandleOpts({ sessionId: `sys_${this.id}_${ts}`, scenario: 'a2a' }),
+            buildHandleOpts({ sessionId: mentionSessionId, scenario: 'a2a' }),
           );
+          if (needsMarker) reply = await this.ensureCompletionMarker(reply, mentionSessionId);
           resolveResponse(reply);
           return reply;
         }
@@ -1169,14 +1230,16 @@ export class Agent {
         }
 
         case 'review_request': {
-          const reply = await this.handleMessage(
+          const reviewSessionId = `review_${this.id}_${ts}`;
+          let reply = await this.handleMessage(
             item.payload.content + markerSuffix,
             item.metadata?.senderId,
             item.metadata?.senderName
               ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'worker' }
               : undefined,
-            buildHandleOpts({ sessionId: `review_${this.id}_${ts}`, scenario: 'review' }),
+            buildHandleOpts({ sessionId: reviewSessionId, scenario: 'review' }),
           );
+          if (needsMarker) reply = await this.ensureCompletionMarker(reply, reviewSessionId);
           resolveResponse(reply);
           return reply;
         }
@@ -1193,23 +1256,27 @@ export class Agent {
 
         case 'system_event':
         case 'daily_report': {
-          const reply = await this.handleMessage(
+          const sysSessionId = `sys_${this.id}_${ts}`;
+          let reply = await this.handleMessage(
             item.payload.content + markerSuffix,
             undefined,
             undefined,
-            buildHandleOpts({ sessionId: `sys_${this.id}_${ts}`, scenario: 'heartbeat' }),
+            buildHandleOpts({ sessionId: sysSessionId, scenario: 'heartbeat' }),
           );
+          if (needsMarker) reply = await this.ensureCompletionMarker(reply, sysSessionId);
           resolveResponse(reply);
           return reply;
         }
 
         case 'memory_consolidation': {
-          const reply = await this.handleMessage(
+          const memSessionId = `sys_${this.id}_${ts}`;
+          let reply = await this.handleMessage(
             item.payload.content + markerSuffix,
             undefined,
             undefined,
-            buildHandleOpts({ sessionId: `sys_${this.id}_${ts}`, scenario: 'memory_consolidation' }),
+            buildHandleOpts({ sessionId: memSessionId, scenario: 'memory_consolidation' }),
           );
+          if (needsMarker) reply = await this.ensureCompletionMarker(reply, memSessionId);
           resolveResponse(reply);
           return reply;
         }
@@ -1218,16 +1285,19 @@ export class Agent {
           const sessionId = extra.sessionId as string | undefined;
           const onLog = (extra.onLog as ((entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void)) ?? (() => {});
           if (sessionId) {
-            const reply = await this.respondInSession(sessionId, item.payload.content + markerSuffix, onLog);
+            let reply = await this.respondInSession(sessionId, item.payload.content + markerSuffix, onLog);
+            if (needsMarker) reply = await this.ensureCompletionMarker(reply, sessionId);
             resolveResponse(reply);
             return reply;
           }
-          const reply = await this.handleMessage(
+          const srFallbackSessionId = `sys_${this.id}_${ts}`;
+          let reply = await this.handleMessage(
             item.payload.content + markerSuffix,
             item.metadata?.senderId,
             senderInfo,
-            buildHandleOpts({ sessionId: `sys_${this.id}_${ts}` }),
+            buildHandleOpts({ sessionId: srFallbackSessionId }),
           );
+          if (needsMarker) reply = await this.ensureCompletionMarker(reply, srFallbackSessionId);
           resolveResponse(reply);
           return reply;
         }

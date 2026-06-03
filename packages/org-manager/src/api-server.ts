@@ -7411,7 +7411,7 @@ EXPLANATION_END`;
         if (platform === 'darwin') {
           execCb('open -a "Google Chrome" "chrome://extensions"', () => {});
         } else if (platform === 'win32') {
-          execCb('start chrome "chrome://extensions"', () => {});
+          execCb('start "" "chrome://extensions"', () => {});
         } else {
           execCb('xdg-open "chrome://extensions" 2>/dev/null || google-chrome "chrome://extensions"', () => {});
         }

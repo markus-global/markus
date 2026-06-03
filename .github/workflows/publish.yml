@@ -311,3 +311,45 @@ jobs:
             | macOS Apple Silicon | [markus-setup-darwin-arm64.pkg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-darwin-arm64.pkg) |
             | macOS Intel | [markus-setup-darwin-x64.pkg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-darwin-x64.pkg) |
             | Linux x64 (.deb) | [markus-setup-linux-x64.deb](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-linux-x64.deb) |
+
+  upload-to-hub:
+    runs-on: ubuntu-latest
+    needs: [publish-npm, build-binaries, github-release]
+    if: needs.publish-npm.outputs.is_prerelease == 'false'
+    steps:
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Upload binaries directly to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
+          VERSION: ${{ needs.publish-npm.outputs.version }}
+        run: |
+          set -e
+          uploaded=0
+          for file in artifacts/markus-setup-* artifacts/markus-v${VERSION}-*; do
+            [ -f "$file" ] || continue
+            filename=$(basename "$file")
+            echo "Uploading $filename to R2..."
+            aws s3 cp "$file" "s3://${R2_BUCKET}/releases/${filename}" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type "application/octet-stream"
+            uploaded=$((uploaded + 1))
+          done
+
+          if [ "$uploaded" -eq 0 ]; then
+            echo "::error::No binary artifacts found to upload"
+            exit 1
+          fi
+
+          echo "{\"version\":\"$VERSION\",\"updatedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > /tmp/meta.json
+          aws s3 cp /tmp/meta.json "s3://${R2_BUCKET}/releases/meta.json" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type "application/json"
+          echo "Uploaded $uploaded files + meta.json to R2"

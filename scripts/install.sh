@@ -114,12 +114,17 @@ check_npm() {
   command -v npm &>/dev/null
 }
 
-# ─── Resolve latest version tag from GitHub ──────────────────────────────────
+# ─── Resolve latest version tag from GitHub (fallback to hub mirror) ──────────
 
 resolve_latest_version() {
-  local api_url="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
   local tag
-  tag="$(curl -fsSL "$api_url" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/')"
+  # Try GitHub API first
+  tag="$(curl -fsSL --connect-timeout 5 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null \
+    | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/')"
+  if [ -n "$tag" ]; then echo "$tag"; return; fi
+  # Fallback to hub API
+  tag="$(curl -fsSL --connect-timeout 10 "https://markus.global/api/releases/latest" 2>/dev/null \
+    | grep '"version"' | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')"
   echo "$tag"
 }
 
@@ -164,7 +169,7 @@ binary_install() {
   local ver
   ver="$(resolve_latest_version)"
   if [ -z "$ver" ]; then
-    error "Could not determine latest release version from GitHub."
+    error "Could not determine latest release version."
     error "Check your network connection and try again."
     return 1
   fi
@@ -172,18 +177,24 @@ binary_install() {
 
   local archive_name="markus-v${ver}-${os}-${arch}"
   local ext="tar.gz"
-  local url="https://github.com/${GITHUB_REPO}/releases/download/v${ver}/${archive_name}.${ext}"
+  local github_url="https://github.com/${GITHUB_REPO}/releases/download/v${ver}/${archive_name}.${ext}"
+  local mirror_url="https://markus.global/releases/${archive_name}.${ext}"
 
   local tmpdir
   tmpdir="$(mktemp -d /tmp/markus-download-XXXXXX)"
 
   spinner_start "Downloading ${archive_name}.${ext}..."
-  if ! curl -fSL --progress-bar -o "$tmpdir/${archive_name}.${ext}" "$url" 2>/dev/null; then
+  if ! curl -fSL --connect-timeout 8 --max-time 120 -o "$tmpdir/${archive_name}.${ext}" "$github_url" 2>/dev/null; then
     spinner_stop
-    error "Download failed: $url"
-    error "Binary for ${os}-${arch} may not be available yet for v${ver}."
-    rm -rf "$tmpdir"
-    return 1
+    warn "GitHub download failed or timed out, trying mirror..."
+    spinner_start "Downloading from mirror..."
+    if ! curl -fSL --connect-timeout 15 --max-time 300 -o "$tmpdir/${archive_name}.${ext}" "$mirror_url" 2>/dev/null; then
+      spinner_stop
+      error "Download failed from both GitHub and mirror."
+      error "Binary for ${os}-${arch} may not be available yet for v${ver}."
+      rm -rf "$tmpdir"
+      return 1
+    fi
   fi
   spinner_stop
   ok "Downloaded ${archive_name}.${ext}"

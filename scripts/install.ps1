@@ -56,14 +56,20 @@ function Test-NpmInstalled {
     }
 }
 
-# ─── Resolve latest version from GitHub ──────────────────────────────────────
+# ─── Resolve latest version from GitHub (fallback to hub mirror) ──────────────
 
 function Get-LatestVersion {
     try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$GITHUB_REPO/releases/latest" -UseBasicParsing
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$GITHUB_REPO/releases/latest" -UseBasicParsing -TimeoutSec 10
         return $release.tag_name -replace '^v', ''
     } catch {
-        return $null
+        # Fallback to hub API
+        try {
+            $hubResp = Invoke-RestMethod -Uri "https://markus.global/api/releases/latest" -UseBasicParsing -TimeoutSec 15
+            return $hubResp.version
+        } catch {
+            return $null
+        }
     }
 }
 
@@ -108,7 +114,7 @@ function Install-ViaBinary {
 
     $ver = Get-LatestVersion
     if (-not $ver) {
-        Write-Err 'Could not determine latest release version from GitHub.'
+        Write-Err 'Could not determine latest release version.'
         Write-Err 'Check your network connection and try again.'
         return $false
     }
@@ -116,22 +122,31 @@ function Install-ViaBinary {
 
     $arch = if ([Environment]::Is64BitOperatingSystem) { 'x64' } else { 'x64' }
     $archiveName = "markus-v${ver}-win-${arch}"
-    $url = "https://github.com/$GITHUB_REPO/releases/download/v${ver}/${archiveName}.zip"
+    $githubUrl = "https://github.com/$GITHUB_REPO/releases/download/v${ver}/${archiveName}.zip"
+    $mirrorUrl = "https://markus.global/releases/${archiveName}.zip"
 
     $tmpDir = Join-Path $env:TEMP "markus-download-$(Get-Random)"
     New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
     $zipPath = Join-Path $tmpDir "${archiveName}.zip"
 
     Write-Info "Downloading ${archiveName}.zip..."
+    $downloaded = $false
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
+        Invoke-WebRequest -Uri $githubUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 60
+        $downloaded = $true
     } catch {
-        Write-Err "Download failed: $url"
-        Write-Err "Binary for win-${arch} may not be available yet for v${ver}."
-        Remove-Item $tmpDir -Recurse -ErrorAction SilentlyContinue
-        return $false
+        Write-Warn "GitHub download failed or timed out, trying mirror..."
+        try {
+            Invoke-WebRequest -Uri $mirrorUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
+            $downloaded = $true
+        } catch {
+            Write-Err "Download failed from both GitHub and mirror."
+            Write-Err "Binary for win-${arch} may not be available yet for v${ver}."
+            Remove-Item $tmpDir -Recurse -ErrorAction SilentlyContinue
+            return $false
+        }
     }
     Write-Ok "Downloaded ${archiveName}.zip"
 

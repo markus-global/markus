@@ -4,11 +4,12 @@
  *
  * Output: dist/markus-browser-extension.zip
  */
-import { createWriteStream, readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { createWriteStream, readFileSync, readdirSync, statSync, existsSync, mkdirSync } from 'node:fs';
+import { join, dirname, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createDeflateRaw } from 'node:zlib';
 
-const ROOT = new URL('.', import.meta.url).pathname.replace(/\/$/, '');
+const ROOT = dirname(fileURLToPath(import.meta.url));
 const OUT = join(ROOT, 'dist', 'markus-browser-extension.zip');
 
 const FILES = [
