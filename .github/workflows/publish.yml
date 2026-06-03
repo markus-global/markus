@@ -311,3 +311,31 @@ jobs:
             | macOS Apple Silicon | [markus-setup-darwin-arm64.pkg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-darwin-arm64.pkg) |
             | macOS Intel | [markus-setup-darwin-x64.pkg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-darwin-x64.pkg) |
             | Linux x64 (.deb) | [markus-setup-linux-x64.deb](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-linux-x64.deb) |
+
+  upload-to-hub:
+    runs-on: ubuntu-latest
+    needs: [publish-npm, build-binaries, github-release]
+    if: needs.publish-npm.outputs.is_prerelease == 'false'
+    steps:
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Upload binaries to markus.global mirror
+        env:
+          RELEASE_UPLOAD_SECRET: ${{ secrets.RELEASE_UPLOAD_SECRET }}
+          VERSION: ${{ needs.publish-npm.outputs.version }}
+        run: |
+          for file in artifacts/markus-setup-* artifacts/markus-v${VERSION}-*; do
+            [ -f "$file" ] || continue
+            filename=$(basename "$file")
+            echo "Uploading $filename to markus.global mirror..."
+            curl -fsSL -X POST "https://markus.global/api/releases/upload" \
+              -H "Authorization: Bearer $RELEASE_UPLOAD_SECRET" \
+              -F "file=@$file" \
+              -F "version=$VERSION" \
+              || echo "Warning: failed to upload $filename"
+          done
+          echo "Mirror upload complete"
