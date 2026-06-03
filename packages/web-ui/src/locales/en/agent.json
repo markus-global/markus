@@ -17,7 +17,8 @@
     "settings": "Settings",
     "files": "Files",
     "skills": "Skills",
-    "heartbeat": "Heartbeat"
+    "heartbeat": "Heartbeat",
+    "deliverables": "Deliverables"
   },
   "mind": {
     "title": "Agent Mind",
@@ -241,6 +242,9 @@
       "reviewAndSave": "— review and save to apply",
       "roleMdHint": "Changes to ROLE.md will update the agent's runtime system prompt immediately.",
       "noConfigFiles": "No configuration files found for this role",
+      "copyPath": "Copy path",
+      "pathCopied": "Copied",
+      "openInFinder": "Open in file browser",
       "fileLabels": {
         "roleMd": "System Prompt / Role Definition",
         "heartbeatMd": "Heartbeat Tasks",
@@ -426,5 +430,17 @@
         "statusArrow": "{{from}} → {{to}}"
       }
     }
+  },
+  "deliverables": {
+    "empty": "No deliverables yet",
+    "emptyHint": "Deliverables created by this agent will appear here",
+    "count": "{{count}} deliverable(s)",
+    "summary": "Summary",
+    "reference": "Reference",
+    "format": "Format",
+    "created": "Created",
+    "updated": "Updated",
+    "accessed": "Accessed {{count}} time(s)",
+    "openInPage": "Open in Deliverables"
   }
 }

@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { useTranslation, Trans } from 'react-i18next';
 import type { ThemeMode } from '../hooks/useTheme.ts';
-import { api } from '../api.ts';
+import { api, type CatalogModel } from '../api.ts';
 import { AvatarUpload } from './Avatar.tsx';
+import { ModelPicker } from './ModelPicker.tsx';
+import { PROVIDER_OPTIONS } from '../constants/providers.ts';
 
 interface Props {
   onComplete: () => void;
@@ -16,7 +18,7 @@ interface EnvModelDetected {
   model: string; baseUrl?: string; envVars: Record<string, string>;
 }
 interface EnvModelsResponse { detected: EnvModelDetected[]; timeoutMs?: number }
-interface OpenClawPreview { found: boolean; summary: { configPath: string; models?: { providerCount: number; providers: Array<{ name: string; modelCount: number; baseUrl?: string }> } } }
+
 
 const PROFILE_STEP_ID = 'profile';
 const LLM_STEP_ID = 'llm';
@@ -49,14 +51,24 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
   const [envLoading, setEnvLoading] = useState(false);
   const [envSelected, setEnvSelected] = useState<Record<string, boolean>>({});
   const [envApplying, setEnvApplying] = useState(false);
-  const [openclawPreview, setOpenclawPreview] = useState<OpenClawPreview | null>(null);
-  const [openclawLoading, setOpenclawLoading] = useState(false);
   const [llmConfigured, setLlmConfigured] = useState(false);
   const [configuredProviders, setConfiguredProviders] = useState<Array<{ name: string; displayName: string; model: string; apiKeyPreview?: string }>>([]);
   const [setupMsg, setSetupMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [autoFallback, setAutoFallback] = useState(true);
   const [defaultProvider, setDefaultProvider] = useState<string>('');
   const envDetected = useRef(false);
+
+  // Model catalog state (for env-detected providers)
+  const [catalogModels, setCatalogModels] = useState<Record<string, CatalogModel[]>>({});
+  const [selectedModels, setSelectedModels] = useState<Record<string, string>>({});
+
+  // Manual key input state (fallback when no env detected)
+  const [manualProvider, setManualProvider] = useState('anthropic');
+  const [manualKey, setManualKey] = useState('');
+  const [manualValidating, setManualValidating] = useState(false);
+  const [manualModels, setManualModels] = useState<CatalogModel[]>([]);
+  const [manualSelectedModel, setManualSelectedModel] = useState('');
+  const [manualError, setManualError] = useState('');
 
   // Search API key state
   const [searchKeys, setSearchKeys] = useState<{ serper: { configured: boolean; preview: string }; tavily: { configured: boolean; preview: string }; bing: { configured: boolean; preview: string }; google: { configured: boolean; preview: string }; serpapi: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; exa: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } } | null>(null);
@@ -117,12 +129,73 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
         setEnvModels(data);
         if (data.detected.length > 0) {
           const sel: Record<string, boolean> = {};
-          for (const d of data.detected) sel[d.provider] = true;
+          const modelSel: Record<string, string> = {};
+          for (const d of data.detected) {
+            sel[d.provider] = true;
+            modelSel[d.provider] = d.model;
+          }
           setEnvSelected(sel);
+          setSelectedModels(modelSel);
+          // Fetch catalog models for each detected provider
+          for (const d of data.detected) {
+            api.modelCatalog.getByProvider(d.provider)
+              .then(result => {
+                setCatalogModels(prev => ({ ...prev, [d.provider]: result.models }));
+              })
+              .catch(() => {});
+          }
         }
       }
     } catch { /* ignore */ }
     finally { setEnvLoading(false); }
+  };
+
+  const validateManualKey = async () => {
+    if (!manualKey.trim()) return;
+    setManualValidating(true);
+    setManualError('');
+    setManualModels([]);
+    try {
+      const result = await api.modelCatalog.validateKey(manualProvider, manualKey.trim());
+      if (result.valid) {
+        setManualModels(result.models);
+        if (result.models.length > 0) {
+          setManualSelectedModel(result.models[0].id);
+        }
+      } else {
+        setManualError(result.error || 'Invalid API key');
+        if (result.models.length > 0) {
+          setManualModels(result.models);
+          setManualSelectedModel(result.models[0].id);
+        }
+      }
+    } catch (err) {
+      setManualError(err instanceof Error ? err.message : 'Validation failed');
+    } finally {
+      setManualValidating(false);
+    }
+  };
+
+  const applyManualProvider = async () => {
+    if (!manualSelectedModel) return;
+    setEnvApplying(true);
+    setSetupMsg(null);
+    try {
+      const res = await fetch('/api/settings/llm/providers', {
+        method: 'POST', headers: authHeaders(),
+        body: JSON.stringify({ name: manualProvider, apiKey: manualKey.trim(), model: manualSelectedModel }),
+      });
+      if (res.ok) {
+        setLlmConfigured(true);
+        setDefaultProvider(manualProvider);
+        setConfiguredProviders([{ name: manualProvider, displayName: manualProvider, model: manualSelectedModel }]);
+        setSetupMsg({ type: 'ok', text: `Provider ${manualProvider} configured successfully` });
+      } else {
+        const data = await res.json() as { error?: string };
+        setSetupMsg({ type: 'err', text: data.error || 'Failed to add provider' });
+      }
+    } catch { setSetupMsg({ type: 'err', text: 'Network error' }); }
+    finally { setEnvApplying(false); }
   };
 
   const applyEnvModels = async () => {
@@ -134,7 +207,12 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
       const res = await fetch('/api/settings/env-models', {
         method: 'POST', headers: authHeaders(),
         body: JSON.stringify({
-          providers: selected.map(d => ({ provider: d.provider, model: d.model, baseUrl: d.baseUrl, enabled: true })),
+          providers: selected.map(d => ({
+            provider: d.provider,
+            model: selectedModels[d.provider] || d.model,
+            baseUrl: d.baseUrl,
+            enabled: true,
+          })),
         }),
       });
       if (res.ok) {
@@ -167,18 +245,6 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
     finally { setEnvApplying(false); }
   };
 
-  const detectOpenclaw = async () => {
-    setOpenclawLoading(true);
-    try {
-      const res = await fetch('/api/settings/import/openclaw', {
-        method: 'POST', headers: authHeaders(),
-        body: JSON.stringify({ preview: true }),
-      });
-      const data = await res.json() as OpenClawPreview | { error: string };
-      if (!('error' in data)) setOpenclawPreview(data);
-    } catch { /* ignore */ }
-    finally { setOpenclawLoading(false); }
-  };
 
   const refreshLlmSettings = async () => {
     try {
@@ -196,24 +262,6 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
     } catch { /* ignore */ }
   };
 
-  const importOpenclaw = async () => {
-    setOpenclawLoading(true); setSetupMsg(null);
-    try {
-      const res = await fetch('/api/settings/import/openclaw', {
-        method: 'POST', headers: authHeaders(),
-        body: JSON.stringify({ preview: false }),
-      });
-      const data = await res.json() as { applied: boolean; appliedModels: number } | { error: string };
-      if ('error' in data) {
-        setSetupMsg({ type: 'err', text: data.error });
-      } else {
-        setSetupMsg({ type: 'ok', text: t('llm.importedModels', { count: data.appliedModels }) });
-        setLlmConfigured(true);
-        await refreshLlmSettings();
-      }
-    } catch { setSetupMsg({ type: 'err', text: t('llm.importFailed') }); }
-    finally { setOpenclawLoading(false); }
-  };
 
   const detectSearchKeys = async () => {
     try {
@@ -496,68 +544,141 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
         </div>
       ) : (
         <div className="space-y-4">
-          <div className="space-y-2">
-            <div className="text-xs text-fg-secondary uppercase tracking-wider">{t('llm.fromEnv')}</div>
-            {envLoading && <div className="text-xs text-fg-tertiary animate-pulse">{t('llm.detectingKeys')}</div>}
-            {envModels && envModels.detected.length > 0 && (
-              <div className="space-y-2">
-                {envModels.detected.map(d => (
-                  <label key={d.provider} className="flex items-center gap-3 bg-surface-elevated/40 rounded-lg px-3 py-2.5 cursor-pointer hover:bg-surface-elevated/60 transition-colors">
+          {envLoading && (
+            <div className="flex items-center gap-2 text-xs text-fg-tertiary animate-pulse">
+              <div className="w-3 h-3 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+              {t('llm.detectingKeys')}
+            </div>
+          )}
+
+          {/* Case A: Environment variables detected */}
+          {envModels && envModels.detected.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-green-600 text-xs font-medium">
+                <span>&#10003;</span>
+                <span>{t('llm.fromEnv')}</span>
+              </div>
+
+              {envModels.detected.map(d => (
+                <div key={d.provider} className="border border-border-default rounded-lg overflow-hidden">
+                  <label className="flex items-center gap-3 px-3 py-2.5 bg-surface-elevated/40 cursor-pointer hover:bg-surface-elevated/60 transition-colors">
                     <input type="checkbox" checked={envSelected[d.provider] ?? false}
                       onChange={e => setEnvSelected({ ...envSelected, [d.provider]: e.target.checked })}
                       className="w-4 h-4 rounded bg-surface-overlay border-gray-600 text-brand-500 focus:ring-brand-500" />
                     <div className="flex-1 min-w-0">
-                      <span className="text-sm text-fg-primary">{d.displayName}</span>
-                      <span className="text-xs text-fg-tertiary ml-2">{d.model}</span>
+                      <span className="text-sm text-fg-primary font-medium">{d.displayName}</span>
                     </div>
                     <code className="text-[10px] text-fg-tertiary">{d.apiKeyPreview}</code>
                   </label>
-                ))}
-                <button onClick={() => void applyEnvModels()}
-                  disabled={envApplying || Object.values(envSelected).filter(Boolean).length === 0}
-                  className="w-full px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                  {envApplying ? t('common:applying') : t('llm.applyProviders', { count: Object.values(envSelected).filter(Boolean).length })}
-                </button>
-              </div>
-            )}
-            {envModels && envModels.detected.length === 0 && !envLoading && (
-              <div className="text-xs text-fg-tertiary bg-surface-elevated/30 rounded-lg p-3">
-                <Trans
-                  i18nKey="llm.noKeysFound"
-                  ns="onboarding"
-                  components={{ code: <code className="text-fg-secondary" /> }}
-                />
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="flex-1 h-px bg-border-default" />
-            <span className="text-xs text-fg-tertiary">{t('llm.or')}</span>
-            <div className="flex-1 h-px bg-border-default" />
-          </div>
-
-          <div className="space-y-2">
-            <div className="text-xs text-fg-secondary uppercase tracking-wider">{t('llm.fromOpenClaw')}</div>
-            {!openclawPreview ? (
-              <button onClick={() => void detectOpenclaw()} disabled={openclawLoading}
-                className="px-4 py-2 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-secondary text-sm rounded-lg transition-colors w-full">
-                {openclawLoading ? t('common:detecting') : t('llm.detectOpenClaw')}
-              </button>
-            ) : openclawPreview.found ? (
-              <div className="space-y-2">
-                <div className="text-xs text-green-600">{t('llm.openClawFoundLabel')} <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code>
-                  {openclawPreview.summary.models && <span className="text-fg-tertiary ml-1">{t('llm.openClawProviders', { count: openclawPreview.summary.models.providerCount })}</span>}
+                  {envSelected[d.provider] && (
+                    <div className="px-3 py-2 border-t border-border-default">
+                      <ModelPicker
+                        provider={d.provider}
+                        models={catalogModels[d.provider] ?? []}
+                        selectedModel={selectedModels[d.provider] || d.model}
+                        onSelect={(modelId) => setSelectedModels(prev => ({ ...prev, [d.provider]: modelId }))}
+                        loading={!catalogModels[d.provider]}
+                        compact
+                        maxVisible={4}
+                      />
+                    </div>
+                  )}
                 </div>
-                <button onClick={() => void importOpenclaw()} disabled={openclawLoading}
-                  className="w-full px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                  {openclawLoading ? t('common:importing') : t('llm.importModelConfigs')}
-                </button>
+              ))}
+
+              {envModels.detected.filter(d => envSelected[d.provider]).length > 1 && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-fg-secondary">Default:</span>
+                  <select
+                    value={defaultProvider || envModels.detected[0]?.provider || ''}
+                    onChange={e => setDefaultProvider(e.target.value)}
+                    className="px-2 py-1 bg-surface-overlay border border-border-default rounded text-xs text-fg-primary"
+                  >
+                    {envModels.detected.filter(d => envSelected[d.provider]).map(d => (
+                      <option key={d.provider} value={d.provider}>{d.displayName}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <button onClick={() => void applyEnvModels()}
+                disabled={envApplying || Object.values(envSelected).filter(Boolean).length === 0}
+                className="w-full px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
+                {envApplying ? t('common:applying') : t('llm.applyProviders', { count: Object.values(envSelected).filter(Boolean).length })}
+              </button>
+            </div>
+          )}
+
+          {/* Case B: No environment variables — manual key input */}
+          {envModels && envModels.detected.length === 0 && !envLoading && (
+            <div className="space-y-3">
+              <div className="text-xs text-fg-tertiary">
+                <Trans i18nKey="llm.noKeysFound" ns="onboarding" components={{ code: <code className="text-fg-secondary" /> }} />
               </div>
-            ) : (
-              <div className="text-xs text-fg-tertiary bg-surface-elevated/30 rounded-lg p-3">{t('llm.noOpenClawFound')}</div>
-            )}
-          </div>
+
+              <div className="space-y-2">
+                <label className="text-xs text-fg-secondary">Provider</label>
+                <select
+                  value={manualProvider}
+                  onChange={e => { setManualProvider(e.target.value); setManualModels([]); setManualError(''); setManualSelectedModel(''); }}
+                  className="w-full px-3 py-2 bg-surface-overlay border border-border-default rounded-lg text-sm text-fg-primary"
+                >
+                  {PROVIDER_OPTIONS.map(p => (
+                    <option key={p.id} value={p.id}>{p.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs text-fg-secondary">API Key</label>
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    value={manualKey}
+                    onChange={e => setManualKey(e.target.value)}
+                    onBlur={() => { if (manualKey.trim().length >= 8) void validateManualKey(); }}
+                    onKeyDown={e => { if (e.key === 'Enter' && manualKey.trim().length >= 8) void validateManualKey(); }}
+                    placeholder="sk-..."
+                    className="flex-1 px-3 py-2 bg-surface-overlay border border-border-default rounded-lg text-sm text-fg-primary placeholder:text-fg-tertiary"
+                  />
+                  <button
+                    onClick={() => void validateManualKey()}
+                    disabled={manualValidating || !manualKey.trim()}
+                    className="px-3 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-xs rounded-lg transition-colors whitespace-nowrap"
+                  >
+                    {manualValidating ? 'Validating...' : 'Validate'}
+                  </button>
+                </div>
+              </div>
+
+              {manualError && (
+                <div className="text-xs px-3 py-2 rounded-lg bg-red-500/10 text-red-500 border border-red-500/30">
+                  {manualError}
+                </div>
+              )}
+
+              {manualModels.length > 0 && (
+                <div className="border border-border-default rounded-lg p-3">
+                  <div className="text-xs text-fg-secondary mb-2">Select Model</div>
+                  <ModelPicker
+                    provider={manualProvider}
+                    models={manualModels}
+                    selectedModel={manualSelectedModel}
+                    onSelect={setManualSelectedModel}
+                    compact
+                    maxVisible={5}
+                  />
+                  <button
+                    onClick={() => void applyManualProvider()}
+                    disabled={envApplying || !manualSelectedModel}
+                    className="w-full mt-3 px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors"
+                  >
+                    {envApplying ? t('common:applying') : 'Activate Provider'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           {setupMsg && (
             <div className={`text-xs px-3 py-2 rounded-lg ${setupMsg.type === 'ok' ? 'bg-green-500/10 text-green-600 border border-green-500/30' : 'bg-red-500/10 text-red-500 border border-red-500/30'}`}>

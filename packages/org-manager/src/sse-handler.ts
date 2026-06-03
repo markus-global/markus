@@ -47,7 +47,7 @@ export class SSEHandler {
   private isProcessing = false;
   private isComplete = false;
   private sseDisconnected = false;
-  private cancelToken = { cancelled: false };
+  private cancelToken: { cancelled: boolean; userStopped?: boolean } = { cancelled: false };
   private sessionId: string | null = null;
   constructor(options: SSEMessageHandlerOptions) {
     this.options = options;
@@ -77,6 +77,9 @@ export class SSEHandler {
           log.warn('SSE client disconnected — cancelling agent', {
             agentId: this.options.agentId,
           });
+          // Persist partial content immediately so it survives a page refresh.
+          // The final persistence after agent completion will overwrite this.
+          void this.persistPartialOnDisconnect();
         }
       });
 
@@ -106,6 +109,7 @@ export class SSEHandler {
         this.cancelToken,
         this.options.images,
         this.options.fileNames,
+        this.options.isResume ? { isResume: true } : undefined,
       );
 
       if (reply === '[merged]') {
@@ -141,7 +145,7 @@ export class SSEHandler {
         this.msgSegments.push({ type: 'text', content: '', thinking: finalThinking, createdAt: finalNow });
       }
 
-      const wasCancelled = this.cancelToken.cancelled;
+      const wasCancelled = !!this.cancelToken.userStopped;
       this.finalizeRunningTools();
 
       // Build the best available reply content for persistence.
@@ -302,6 +306,58 @@ export class SSEHandler {
   }
 
   /**
+   * Persist whatever content has been accumulated so far when the SSE
+   * connection drops.  This is a best-effort snapshot — the final
+   * persistence after agent completion will overwrite it with the
+   * authoritative result.
+   */
+  private async persistPartialOnDisconnect(): Promise<void> {
+    if (!this.options.persistAssistantMessage || !this.sessionId) return;
+
+    const segments = [...this.msgSegments];
+    // Snapshot running tools as stopped
+    for (const rt of this.runningTools) {
+      segments.push({
+        type: 'tool',
+        tool: rt.tool,
+        status: 'stopped',
+        arguments: rt.arguments,
+        durationMs: Date.now() - rt.startedAt,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    // Include any buffered text
+    if (this.textBuf) {
+      segments.push({ type: 'text', content: this.textBuf, createdAt: new Date().toISOString() });
+    }
+
+    const partialText = segments
+      .filter(s => s.type === 'text')
+      .map(s => (s as { content: string }).content)
+      .join('');
+
+    if (!partialText && segments.length === 0) return;
+
+    const meta: Record<string, unknown> = { isStopped: true };
+    if (segments.length > 0) meta.segments = segments;
+
+    try {
+      await this.options.persistAssistantMessage(
+        this.sessionId, this.options.agentId, partialText, 0, meta,
+      );
+      log.info('Persisted partial content on SSE disconnect', {
+        agentId: this.options.agentId,
+        segmentCount: segments.length,
+        textLength: partialText.length,
+      });
+    } catch (e) {
+      log.error('Failed to persist partial content on disconnect', {
+        agentId: this.options.agentId, error: String(e),
+      });
+    }
+  }
+
+  /**
    * Convert any still-running tools into 'stopped' segments so they are persisted.
    */
   private finalizeRunningTools(): void {
@@ -444,6 +500,7 @@ export class SSEHandler {
    */
   cancel(): void {
     this.cancelToken.cancelled = true;
+    this.cancelToken.userStopped = true;
     if (this.sseBuffer) {
       this.sseBuffer.close();
       this.sseBuffer = null;

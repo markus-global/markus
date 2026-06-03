@@ -21,6 +21,7 @@ import {
   AgentManager,
   LLMRouter,
   LLMLogger,
+  ModelCatalogService,
   type LLMLogEntry,
   RoleLoader,
   createDefaultSkillRegistry,
@@ -575,6 +576,11 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // Expose LLM router to API server so settings can read/write it at runtime
   apiServer.setLLMRouter(llmRouter);
   apiServer.setConfigPath(values['config'] as string ?? getDefaultConfigPath());
+
+  // Initialize model catalog service (loads baseline, tries to fetch latest in background)
+  const modelCatalog = new ModelCatalogService();
+  await modelCatalog.initialize();
+  apiServer.setModelCatalog(modelCatalog);
   if (config.hub?.url) apiServer.setHubUrl(config.hub.url);
 
   // Serve pre-built Web UI if available

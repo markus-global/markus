@@ -8,7 +8,7 @@ export interface SubagentProgressEvent {
 
 export interface AgentToolEvent {
   tool: string;
-  phase: 'start' | 'end' | 'output' | 'subagent_progress';
+  phase: 'start' | 'end' | 'output' | 'subagent_progress' | 'heartbeat';
   success?: boolean;
   arguments?: unknown;
   result?: string;
@@ -82,6 +82,17 @@ export interface ChannelMessageInfo {
   replyToId?: string;
   replyToSender?: string;
   replyToText?: string;
+  createdAt: string;
+}
+
+export interface SearchResult {
+  source: 'channel' | 'direct';
+  id: string;
+  text: string;
+  senderName?: string;
+  channel?: string;
+  sessionId?: string;
+  agentId?: string;
   createdAt: string;
 }
 
@@ -314,6 +325,46 @@ export function invalidateApiCache(pathPrefix?: string) {
   for (const key of _dedupCache.keys()) {
     if (key.startsWith(pathPrefix)) _dedupCache.delete(key);
   }
+}
+
+// ── Model Catalog Types ───────────────────────────────────────────────────
+
+export interface CatalogModelCapabilities {
+  vision: boolean;
+  functionCalling: boolean;
+  reasoning: boolean;
+  promptCaching: boolean;
+  webSearch: boolean;
+  audioInput: boolean;
+  audioOutput: boolean;
+}
+
+export interface CatalogModel {
+  id: string;
+  provider: string;
+  mode: string;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  inputCostPer1MTokens: number;
+  outputCostPer1MTokens: number;
+  cacheReadCostPer1MTokens?: number;
+  cacheWriteCostPer1MTokens?: number;
+  capabilities: CatalogModelCapabilities;
+  deprecationDate?: string;
+}
+
+export interface CatalogStatus {
+  totalModels: number;
+  chatModels: number;
+  providers: string[];
+  lastUpdated: string | null;
+  source: 'cache' | 'remote' | 'baseline' | 'supplements';
+}
+
+export interface ValidateKeyResponse {
+  valid: boolean;
+  error?: string;
+  models: CatalogModel[];
 }
 
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
@@ -1008,6 +1059,8 @@ export const api = {
                   onActivity?.({ tool: event.tool, phase: 'output', output: event.text });
                 } else if (event.type === 'subagent_progress' && event.tool) {
                   onActivity?.({ tool: event.tool, phase: 'subagent_progress', subagentEvent: (event as Record<string, unknown>).subagentEvent as SubagentProgressEvent });
+                } else if (event.type === 'heartbeat') {
+                  onActivity?.({ tool: '', phase: 'heartbeat' });
                 }
               } catch { /* skip */ }
             }
@@ -1299,6 +1352,21 @@ export const api = {
     enableRemote: () => request<{ ok: boolean; status: RemoteStatus }>('/settings/remote/enable', { method: 'POST' }),
     disableRemote: () => request<{ ok: boolean }>('/settings/remote/disable', { method: 'POST' }),
   },
+  modelCatalog: {
+    getByProvider: (provider: string) => request<{ provider: string; models: CatalogModel[] }>(`/models/catalog/${provider}`),
+    getLive: (provider: string) => request<{ provider: string; models: CatalogModel[]; source: string }>(`/models/live/${provider}`),
+    getAll: (provider?: string) => {
+      const qs = provider ? `?provider=${provider}` : '';
+      return request<{ models?: CatalogModel[]; providers?: Record<string, CatalogModel[]> }>(`/models/catalog${qs}`);
+    },
+    getStatus: () => request<CatalogStatus>('/models/catalog/status'),
+    refresh: () => request<{ success: boolean; status: CatalogStatus }>('/models/catalog/refresh', { method: 'POST' }),
+    validateKey: (provider: string, apiKey: string, baseUrl?: string) =>
+      request<ValidateKeyResponse>('/models/validate-key', {
+        method: 'POST',
+        body: JSON.stringify({ provider, apiKey, baseUrl }),
+      }),
+  },
   skills: {
     list: () => request<{ skills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; requiredPermissions?: string[]; type: 'builtin' | 'filesystem' | 'imported'; sourcePath?: string; agentIds: string[] }> }>('/skills'),
     builtin: () => request<{ skills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags: string[]; hasMcpServers: boolean; hasInstructions: boolean; requiredPermissions: string[]; installed: boolean; installedVersion?: string | null }> }>('/skills/builtin'),
@@ -1433,11 +1501,22 @@ export const api = {
 
   // ─── Unread Tracking ───────────────────────────────────────────────
   unread: {
-    getCounts: () => request<{ counts: Record<string, number> }>('/unread'),
+    getCounts: () => request<{ counts: Record<string, number>; sessionAgentMap: Record<string, string> }>('/unread'),
     markRead: (conversationKey: string, lastReadAt: string, lastReadId?: string) =>
       request<{ success: boolean }>('/unread/mark-read', { method: 'POST', body: JSON.stringify({ conversationKey, lastReadAt, lastReadId }) }),
     markAllRead: () =>
       request<{ success: boolean }>('/unread/mark-all-read', { method: 'POST' }),
+  },
+
+  // ─── Message Search ───────────────────────────────────────────────
+  messages: {
+    search: (query: string, opts?: { scope?: 'all' | 'channel' | 'direct'; channel?: string; limit?: number }) => {
+      const params = new URLSearchParams({ q: query });
+      if (opts?.scope) params.set('scope', opts.scope);
+      if (opts?.channel) params.set('channel', opts.channel);
+      if (opts?.limit) params.set('limit', String(opts.limit));
+      return request<{ results: SearchResult[] }>(`/messages/search?${params}`);
+    },
   },
 
   // ─── Activity Feed ────────────────────────────────────────────────
@@ -1620,19 +1699,24 @@ class WSClient {
   private ws: WebSocket | null = null;
   private handlers = new Map<string, Set<WSEventHandler>>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Set to true by disconnect() to suppress auto-reconnect from the onclose handler */
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private intentionalClose = false;
   private currentUserId: string | undefined;
+  private reconnectAttempts = 0;
+  /** ISO timestamp of the last received event, used for message recovery after reconnection */
+  lastEventTimestamp: string | null = null;
+
+  private static BACKOFF_BASE = 1000;
+  private static BACKOFF_MAX = 30000;
+  private static HEARTBEAT_INTERVAL = 25000;
 
   connect(userId?: string): void {
     if (userId !== undefined) this.currentUserId = userId;
 
-    // Guard against duplicate connections in CONNECTING or OPEN state
     if (this.ws && (
       this.ws.readyState === WebSocket.CONNECTING ||
       this.ws.readyState === WebSocket.OPEN
     )) {
-      // If userId changed, reconnect with the new userId
       if (userId !== undefined && this.ws.url && !this.ws.url.includes(`userId=${userId}`)) {
         this.ws.onclose = null;
         this.ws.close();
@@ -1644,17 +1728,26 @@ class WSClient {
 
     this.intentionalClose = false;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const userParam = this.currentUserId ? `?userId=${encodeURIComponent(this.currentUserId)}` : '';
-    const wsUrl = `${protocol}//${window.location.host}/ws${userParam}`;
+    const params = new URLSearchParams();
+    if (this.currentUserId) params.set('userId', this.currentUserId);
+    if (this.lastEventTimestamp) params.set('since', this.lastEventTimestamp);
+    const qs = params.toString();
+    const wsUrl = `${protocol}//${window.location.host}/ws${qs ? `?${qs}` : ''}`;
 
     const ws = new WebSocket(wsUrl);
     this.ws = ws;
 
+    ws.onopen = () => {
+      this.reconnectAttempts = 0;
+      this.startHeartbeat(ws);
+    };
+
     ws.onmessage = (e) => {
-      // Ignore events from a stale connection that was superseded
       if (this.ws !== ws) return;
       try {
         const event = JSON.parse(e.data as string) as WSEvent;
+        if (event.timestamp) this.lastEventTimestamp = event.timestamp;
+        if (event.type === 'pong') return;
         const typeHandlers = this.handlers.get(event.type);
         if (typeHandlers) {
           for (const handler of typeHandlers) handler(event);
@@ -1667,8 +1760,14 @@ class WSClient {
     };
 
     ws.onclose = () => {
+      this.stopHeartbeat();
       if (this.intentionalClose) return;
-      this.reconnectTimer = setTimeout(() => this.connect(this.currentUserId), 3000);
+      const delay = Math.min(
+        WSClient.BACKOFF_BASE * Math.pow(2, this.reconnectAttempts),
+        WSClient.BACKOFF_MAX,
+      );
+      this.reconnectAttempts++;
+      this.reconnectTimer = setTimeout(() => this.connect(this.currentUserId), delay);
     };
 
     ws.onerror = () => {
@@ -1676,8 +1775,25 @@ class WSClient {
     };
   }
 
+  private startHeartbeat(ws: WebSocket): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'ping' }));
+      }
+    }, WSClient.HEARTBEAT_INTERVAL);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
   disconnect(): void {
     this.intentionalClose = true;
+    this.stopHeartbeat();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.ws) {
       this.ws.onclose = null;

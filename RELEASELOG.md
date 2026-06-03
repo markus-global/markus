@@ -1,5 +1,40 @@
 # Release Log
 
+## v0.7.8
+
+LiteLLM 模型目录集成（动态模型选择）；聊天与工作台 UX 全面优化；Windows 安装包修复；SSE 断连韧性增强；执行时间线 i18n 支持。
+
+### New Features
+
+- **LiteLLM 模型目录集成** — 集成 LiteLLM 模型目录，动态获取所有支持的模型及其元数据（定价、上下文窗口、能力标签），Settings 页支持模型搜索和选择
+- **聊天日期分隔标签** — 聊天消息按日期分组显示（今天/昨天/具体日期），支持中英双语
+- **聊天状态集中管理** — 新增 `useChatStore` 替代 30+ 个零散的 useState/useRef，提升 Team 页代码可维护性
+- **ModelPicker 组件** — 新增模型选择器组件，支持按提供商分组、搜索过滤和快速选择
+
+### Bug Fixes
+
+- **修复 SSE 断连丢失用户消息** — `human_chat` 类型消息在 SSE 断连时不再被丢弃，确保用户输入始终被处理
+- **修复聊天恢复作用域混淆** — 通过 `isResume` 标志区分恢复和新消息，防止 mailbox 误判
+- **修复 SSE 断线检测误报** — 移除前端脆弱的 SSE 超时检测器，改为在断连时持久化已有内容
+- **修复取消流式传播** — 外部 cancelToken 正确链接到 activeStreamToken，确保取消操作即时生效
+- **修复 deliverable_update 参数名不匹配** — `deliverable_id` 修正为 `id`
+- **修复 Windows 安装包权限错误** — 解决 Windows 安装器权限问题、控制台窗口闪烁和托盘生命周期管理
+- **修复 install.sh 权限问题** — 移除不属于 npm 安装的 .app 创建、LaunchAgent 和 init wizard
+
+### Improvements
+
+- **聊天与工作台 UX 全面优化** — 消息气泡、输入框、任务面板、工具执行卡片等多处交互细节改进
+- **执行时间线 i18n** — ExecutionTimeline 所有组件（聊天气泡、工具详情、审批卡片）完整国际化
+- **Agent Profile 布局优化** — Agent Details 移至 Overview 标签页顶部
+- **审批通知自动已读** — 在聊天内联审批卡片中操作后自动标记通知为已读
+- **Onboarding 流程改进** — LLM 检测覆盖所有提供商，首页引导清单优化
+
+### Stats
+
+- 62 files changed, +45,683 / −1,608 lines
+
+---
+
 ## v0.7.3
 
 macOS 安装包全面修复（签名、公证、TCC、升级流程）；系统托盘简化（仅"打开控制台"+"退出"）；新用户引导清单；CLI 精简（移除 15 个废弃命令）；聊天流式健壮性改进；预览模式增强。

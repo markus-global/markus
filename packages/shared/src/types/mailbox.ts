@@ -127,6 +127,8 @@ export interface MailboxItemMetadata {
   sessionId?: string;
   taskId?: string;
   channelContext?: string;
+  /** When true, this item is a continuation of a previous conversation — not a new request. */
+  isResume?: boolean;
   /** For streaming: a promise resolver the caller can await */
   responsePromise?: {
     resolve: (value: string) => void;

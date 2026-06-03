@@ -127,7 +127,21 @@ rm -f "$STAGE_DIR/bin/package.json" "$STAGE_DIR/bin/package-lock.json"
 find "$STAGE_DIR/bin/node_modules/systray2/traybin" -type f 2>/dev/null | while read -r tb; do
   chmod +x "$tb"
 done
-ok "Native dependencies installed"
+
+# Verify systray2 tray binary exists for the target platform
+if [[ "$PLATFORM" == "win" ]]; then
+  TRAY_BIN="$STAGE_DIR/bin/node_modules/systray2/traybin/tray_windows_release.exe"
+elif [[ "$PLATFORM" == "darwin" ]]; then
+  TRAY_BIN="$STAGE_DIR/bin/node_modules/systray2/traybin/tray_darwin_release"
+else
+  TRAY_BIN="$STAGE_DIR/bin/node_modules/systray2/traybin/tray_linux_release"
+fi
+if [[ -f "$TRAY_BIN" ]]; then
+  ok "Native dependencies installed (tray binary: $(basename "$TRAY_BIN"))"
+else
+  warn "systray2 tray binary not found at $TRAY_BIN — tray icon will be unavailable"
+  ok "Native dependencies installed (without tray binary)"
+fi
 
 # Version marker so the bundled CLI can detect its own version
 # (version.ts looks for ../package.json relative to bin/markus.mjs)
@@ -160,6 +174,53 @@ if [[ "$PLATFORM" == "win" ]]; then
 @echo off
 "%~dp0\bin\node.exe" "%~dp0\bin\markus.mjs" %*
 LAUNCHER
+
+  # VBS launcher to run tray.mjs without a console window (wscript hides it)
+  cat > "$STAGE_DIR/markus-tray.vbs" << 'VBS'
+On Error Resume Next
+
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set wshShell = CreateObject("WScript.Shell")
+
+appDir = fso.GetParentFolderName(WScript.ScriptFullName)
+nodeExe = fso.BuildPath(appDir, "bin\node.exe")
+trayMjs = fso.BuildPath(appDir, "bin\tray.mjs")
+logDir = fso.BuildPath(wshShell.ExpandEnvironmentStrings("%USERPROFILE%"), ".markus\logs")
+logFile = fso.BuildPath(logDir, "tray-vbs.log")
+
+Sub WriteLog(msg)
+    On Error Resume Next
+    If Not fso.FolderExists(logDir) Then fso.CreateFolder(logDir)
+    Set f = fso.OpenTextFile(logFile, 8, True)
+    f.WriteLine Now() & " " & msg
+    f.Close
+End Sub
+
+If Not fso.FileExists(nodeExe) Then
+    WriteLog "ERROR: node.exe not found at " & nodeExe
+    MsgBox "Markus cannot start: node.exe not found." & vbCrLf & vbCrLf & nodeExe, vbCritical, "Markus"
+    WScript.Quit 1
+End If
+
+If Not fso.FileExists(trayMjs) Then
+    WriteLog "ERROR: tray.mjs not found at " & trayMjs
+    MsgBox "Markus cannot start: tray.mjs not found." & vbCrLf & vbCrLf & trayMjs, vbCritical, "Markus"
+    WScript.Quit 1
+End If
+
+WriteLog "Launching: " & nodeExe & " " & trayMjs
+cmdLine = """" & nodeExe & """ """ & trayMjs & """"
+exitCode = wshShell.Run(cmdLine, 0, False)
+
+If Err.Number <> 0 Then
+    WriteLog "ERROR: Run failed: " & Err.Description
+    MsgBox "Markus failed to start:" & vbCrLf & Err.Description, vbCritical, "Markus"
+    WScript.Quit 1
+End If
+
+WriteLog "Process launched successfully"
+VBS
+  ok "VBS tray launcher created"
 else
   cat > "$STAGE_DIR/markus" << 'LAUNCHER'
 #!/usr/bin/env bash
@@ -613,14 +674,17 @@ ${WIN_ICON_LINE}
 [Files]
 Source: "${WIN_STAGE_DIR}\\*"; DestDir: "{app}"; Flags: recursesubdirs
 
+[Tasks]
+Name: "autostart"; Description: "Start Markus automatically on login"; GroupDescription: "Additional options:"; Flags: checkedonce
+
 [Icons]
-Name: "{userdesktop}\\Markus"; Filename: "{app}\\bin\\node.exe"; Parameters: """{app}\\bin\\tray.mjs"""; WorkingDir: "{app}"; Comment: "Markus - AI Digital Workforce Platform"${WIN_ICON_REF}
-Name: "{userstartup}\\Markus"; Filename: "{app}\\bin\\node.exe"; Parameters: """{app}\\bin\\tray.mjs"""; WorkingDir: "{app}"; Comment: "Markus auto-start"${WIN_ICON_REF}
-Name: "{group}\\Markus"; Filename: "{app}\\bin\\node.exe"; Parameters: """{app}\\bin\\tray.mjs"""; WorkingDir: "{app}"${WIN_ICON_REF}
+Name: "{userdesktop}\\Markus"; Filename: "wscript.exe"; Parameters: """{app}\\markus-tray.vbs"""; WorkingDir: "{app}"; Comment: "Markus - AI Digital Workforce Platform"${WIN_ICON_REF}
+Name: "{userstartup}\\Markus"; Filename: "wscript.exe"; Parameters: """{app}\\markus-tray.vbs"""; WorkingDir: "{app}"; Comment: "Markus auto-start"${WIN_ICON_REF}; Tasks: autostart
+Name: "{group}\\Markus"; Filename: "wscript.exe"; Parameters: """{app}\\markus-tray.vbs"""; WorkingDir: "{app}"${WIN_ICON_REF}
 Name: "{group}\\Uninstall Markus"; Filename: "{uninstallexe}"
 
-[Registry]
-Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Check: NeedsAddPath(ExpandConstant('{app}'))
+[Run]
+Filename: "wscript.exe"; Parameters: """{app}\\markus-tray.vbs"""; Description: "Launch Markus"; Flags: postinstall nowait skipifsilent
 
 [Code]
 function NeedsAddPath(Param: string): boolean;
@@ -633,6 +697,32 @@ begin
     exit;
   end;
   Result := Pos(';' + Param + ';', ';' + OrigPath + ';') = 0;
+end;
+
+procedure AddToPath();
+var
+  AppDir, OrigPath, NewPath: string;
+begin
+  AppDir := ExpandConstant('{app}');
+  if NeedsAddPath(AppDir) then
+  begin
+    if not RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', OrigPath) then
+      OrigPath := '';
+    if OrigPath = '' then
+      NewPath := AppDir
+    else
+      NewPath := OrigPath + ';' + AppDir;
+    if not RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', NewPath) then
+    begin
+      Log('Warning: Could not add to PATH (registry write failed). This is not critical.');
+    end;
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    AddToPath();
 end;
 
 [UninstallDelete]

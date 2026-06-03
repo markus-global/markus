@@ -1,105 +1,6 @@
 import type { Command } from 'commander';
 import * as readline from 'node:readline';
-import { loadConfig, saveConfig, APP_VERSION } from '@markus/shared';
-
-// ─── Provider definitions ────────────────────────────────────────────────────
-
-interface ProviderDef {
-  id: string;
-  label: string;
-  envKey: string;
-  baseUrl?: string;
-  defaultModel: string;
-  models: string[];
-}
-
-const PROVIDERS: ProviderDef[] = [
-  {
-    id: 'anthropic',
-    label: 'Anthropic',
-    envKey: 'ANTHROPIC_API_KEY',
-    baseUrl: 'https://api.anthropic.com/v1',
-    defaultModel: 'claude-opus-4-6',
-    models: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-3-6'],
-  },
-  {
-    id: 'openai',
-    label: 'OpenAI',
-    envKey: 'OPENAI_API_KEY',
-    baseUrl: 'https://api.openai.com/v1',
-    defaultModel: 'gpt-5.4',
-    models: ['gpt-5.4', 'gpt-4.1', 'gpt-4o', 'gpt-4o-mini', 'o3', 'o3-mini', 'o4-mini'],
-  },
-  {
-    id: 'google',
-    label: 'Google Gemini',
-    envKey: 'GOOGLE_API_KEY',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    defaultModel: 'gemini-3-1-pro',
-    models: ['gemini-3-1-pro', 'gemini-3-1-flash', 'gemini-3-0-flash', 'gemini-2-5-pro'],
-  },
-  {
-    id: 'minimax',
-    label: 'MiniMax',
-    envKey: 'MINIMAX_API_KEY',
-    baseUrl: 'https://api.minimax.io/v1',
-    defaultModel: 'MiniMax-M2.7',
-    models: ['MiniMax-M2.7', 'MiniMax-M3', 'MiniMax-M3-high'],
-  },
-  {
-    id: 'siliconflow',
-    label: 'SiliconFlow',
-    envKey: 'SILICONFLOW_API_KEY',
-    baseUrl: 'https://api.siliconflow.cn/v1',
-    defaultModel: 'Qwen/Qwen3.5-35B-A3B',
-    models: [
-      'Qwen/Qwen3.5-35B-A3B',
-      'Qwen/Qwen3.5-32B-A3B',
-      'deepseek-ai/DeepSeek-V3',
-      'deepseek-ai/DeepSeek-Coder-V2',
-      'moonshotai/Kimi-K2.5',
-    ],
-  },
-  {
-    id: 'openrouter',
-    label: 'OpenRouter',
-    envKey: 'OPENROUTER_API_KEY',
-    baseUrl: 'https://openrouter.ai/api/v1',
-    defaultModel: 'xiaomi/mimo-v2-pro:free',
-    models: [
-      'anthropic/claude-opus-4.6',
-      'anthropic/claude-sonnet-4.6',
-      'qwen/qwen3.6-plus',
-      'google/gemini-3-1-pro',
-      'xiaomi/mimo-v2-pro:free',
-      'deepseek-ai/DeepSeek-V3',
-    ],
-  },
-  {
-    id: 'zai',
-    label: 'ZAI',
-    envKey: 'ZAI_API_KEY',
-    baseUrl: 'https://api.z.ai/api/paas/v4',
-    defaultModel: 'glm-5.1',
-    models: ['glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-4.9', 'glm-4-turbo'],
-  },
-  {
-    id: 'ollama',
-    label: 'Ollama',
-    envKey: 'OLLAMA_BASE_URL',
-    baseUrl: 'http://localhost:11434/v1',
-    defaultModel: 'llama3',
-    models: ['llama3', 'llama3.1', 'llama3.2', 'mistral', 'qwen2.5', 'codellama'],
-  },
-  {
-    id: 'deepseek',
-    label: 'DeepSeek',
-    envKey: 'DEEPSEEK_API_KEY',
-    baseUrl: 'https://api.deepseek.com',
-    defaultModel: 'deepseek-v4-flash',
-    models: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'],
-  },
-];
+import { loadConfig, saveConfig, APP_VERSION, PROVIDERS } from '@markus/shared';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -503,7 +404,7 @@ export function registerModelCommand(program: Command) {
   program
     .command('model')
     .description('Configure LLM providers, API keys, model selection, and credential pooling')
-    .option('--provider <name>', 'Provider id (anthropic/openai/google/minimax/siliconflow/openrouter/zai/ollama/deepseek)')
+    .option('--provider <name>', 'Provider id (anthropic/openai/google/deepseek/siliconflow/minimax/openrouter/zai/xai/mistral/groq/together_ai/fireworks_ai/perplexity/cohere/moonshot/volcengine/dashscope/ollama)')
     .option('--api-key <key>', 'API key for the provider')
     .option('--model <model>', 'Model name to use')
     .option('--default', 'Set this provider as the default')

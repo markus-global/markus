@@ -83,6 +83,8 @@
     "tasksReview": "个任务需要你审查",
     "reportPlans": "份报告计划待批准",
     "blocked": "个任务阻塞/卡住",
+    "blockedAbnormal": "个任务异常阻塞",
+    "blockedNormal": "个任务等待依赖完成",
     "viewBlocked": "查看阻塞任务 →",
     "report": "报告",
     "planItems": "项",

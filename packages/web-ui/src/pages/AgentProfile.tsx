@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense } fro
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { api, wsClient, hubApi, kebab } from '../api.ts';
-import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem, AuthUser } from '../api.ts';
+import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem, AuthUser, DeliverableInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, taskLogToEntry, activityLogToEntry, filterCompletedStarts, attachSubagentLogsToEntries, CompactExecutionCard, FullExecutionLog, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
@@ -16,7 +16,7 @@ const LazyMarkdownMessage = lazy(() => import('../components/MarkdownMessage.tsx
 
 interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string; authUser?: AuthUser; headless?: boolean; activeTab?: ProfileTab }
 
-export type ProfileTab = 'overview' | 'tools' | 'skills' | 'memory' | 'files';
+export type ProfileTab = 'overview' | 'tools' | 'skills' | 'memory' | 'files' | 'deliverables';
 
 export const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
   { key: 'overview', icon: '▦' },
@@ -24,6 +24,7 @@ export const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
   { key: 'tools', icon: '⚒' },
   { key: 'skills', icon: '◆' },
   { key: 'memory', icon: '🧠' },
+  { key: 'deliverables', icon: '📦' },
 ];
 
 function taskStatusLabel(status: string, t: TFunction): string {
@@ -98,27 +99,12 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
       <div className="flex-1 overflow-y-auto bg-surface-primary">
         <div className="p-5">
           {effectiveTab === 'overview' && (
-            agent.state.status === 'working' || agent.state.status === 'idle' ? (
-              <>
+            <>
+              <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
+              <div className="mt-6">
                 <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} onAgentStateChange={reload} />
-                <details className="mt-6 group">
-                  <summary className="text-xs font-medium text-fg-tertiary uppercase tracking-wider cursor-pointer hover:text-fg-secondary transition-colors list-none flex items-center gap-1.5">
-                    <span className="text-fg-tertiary group-open:rotate-90 transition-transform">▸</span>
-                    {t('agent:profilePage.mind.agentDetails')}
-                  </summary>
-                  <div className="mt-3">
-                    <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
-                  </div>
-                </details>
-              </>
-            ) : (
-              <>
-                <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
-                <div className="mt-6">
-                  <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} onAgentStateChange={reload} />
-                </div>
-              </>
-            )
+              </div>
+            </>
           )}
           {effectiveTab === 'files' && <FilesTab agentId={agentId} />}
           {effectiveTab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}
@@ -131,6 +117,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
               </div>
             </>
           )}
+          {effectiveTab === 'deliverables' && <DeliverablesTab agentId={agentId} />}
         </div>
       </div>
     );
@@ -190,27 +177,12 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
       </div>
       <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
         {tab === 'overview' && (
-          agent.state.status === 'working' || agent.state.status === 'idle' ? (
-            <>
+          <>
+            <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
+            <div className="mt-6">
               <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} onAgentStateChange={reload} />
-              <details className="mt-6 group">
-                <summary className="text-xs font-medium text-fg-tertiary uppercase tracking-wider cursor-pointer hover:text-fg-secondary transition-colors list-none flex items-center gap-1.5">
-                  <span className="text-fg-tertiary group-open:rotate-90 transition-transform">▸</span>
-                  {t('agent:profilePage.mind.agentDetails')}
-                </summary>
-                <div className="mt-3">
-                  <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
-                </div>
-              </details>
-            </>
-          ) : (
-            <>
-              <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
-              <div className="mt-6">
-                <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} onAgentStateChange={reload} />
-              </div>
-            </>
-          )
+            </div>
+          </>
         )}
         {tab === 'files' && <FilesTab agentId={agentId} />}
         {tab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}
@@ -223,6 +195,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
             </div>
           </>
         )}
+        {tab === 'deliverables' && <DeliverablesTab agentId={agentId} />}
       </div>
     </div>
   );
@@ -686,6 +659,14 @@ function FilesTab({ agentId }: { agentId: string }) {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
+  const [roleDir, setRoleDir] = useState('');
+  const [pathCopied, setPathCopied] = useState(false);
+
+  useEffect(() => {
+    api.system.storage().then(info => {
+      setRoleDir(info.dataDir + '/agents/' + agentId + '/role');
+    }).catch(() => {});
+  }, [agentId]);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [roleStatus, setRoleStatus] = useState<RoleUpdateStatus | null>(null);
@@ -844,7 +825,7 @@ function FilesTab({ agentId }: { agentId: string }) {
 
         {selected && (
           <div>
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between mb-1">
               <div className="text-xs text-fg-secondary">{fileLabel(selected)}</div>
               <div className="flex gap-2 items-center">
                 {selectedFileStale && (
@@ -870,6 +851,32 @@ function FilesTab({ agentId }: { agentId: string }) {
                 {saving && <span className="text-[10px] text-fg-tertiary">{t('common:saving')}</span>}
               </div>
             </div>
+
+            {roleDir && (
+              <div className="flex items-center gap-2 mb-3 bg-surface-elevated/40 rounded-lg px-3 py-2">
+                <code className="text-[10px] text-fg-tertiary font-mono flex-1 truncate select-all" title={`${roleDir}/${selected}`}>
+                  {roleDir}/{selected}
+                </code>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(`${roleDir}/${selected}`);
+                    setPathCopied(true);
+                    setTimeout(() => setPathCopied(false), 2000);
+                  }}
+                  className="shrink-0 px-2 py-1 text-[10px] text-fg-tertiary hover:text-fg-secondary border border-border-default hover:border-border-hover rounded-md transition-colors"
+                  title={t('agent:profilePage.filesTab.copyPath')}
+                >
+                  {pathCopied ? t('agent:profilePage.filesTab.pathCopied') : t('agent:profilePage.filesTab.copyPath')}
+                </button>
+                <button
+                  onClick={() => void api.system.openPath(roleDir)}
+                  className="shrink-0 px-2 py-1 text-[10px] text-fg-tertiary hover:text-fg-secondary border border-border-default hover:border-border-hover rounded-md transition-colors"
+                  title={t('agent:profilePage.filesTab.openInFinder')}
+                >
+                  {t('agent:profilePage.filesTab.openInFinder')}
+                </button>
+              </div>
+            )}
 
             {diffView?.file === selected && (
               <InlineDiff agent={diffView.agent} template={diffView.template} templateId={roleStatus?.templateId ?? ''} />
@@ -2356,6 +2363,252 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+// ─── Deliverables Tab ────────────────────────────────────────────────────────
+
+const DELIVERABLE_TYPE_META: Record<string, { icon: string; color: string }> = {
+  file:      { icon: '📄', color: 'bg-green-500/10 text-green-600' },
+  directory: { icon: '📁', color: 'bg-blue-500/10 text-blue-600' },
+};
+
+const DELIVERABLE_STATUS_META: Record<string, { color: string }> = {
+  active:   { color: 'text-green-600 bg-green-500/10' },
+  verified: { color: 'text-blue-600 bg-blue-500/10' },
+  outdated: { color: 'text-fg-tertiary bg-surface-elevated/50' },
+};
+
+function DeliverablesTab({ agentId }: { agentId: string }) {
+  const { t } = useTranslation(['agent', 'common']);
+  const [items, setItems] = useState<DeliverableInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<DeliverableInfo | null>(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { results } = await api.deliverables.search({ agentId, limit: 200 });
+      setItems(results);
+    } catch { setItems([]); }
+    setLoading(false);
+  }, [agentId]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  useEffect(() => {
+    const unsub1 = wsClient.on('deliverable:created', () => refresh());
+    const unsub2 = wsClient.on('deliverable:updated', () => refresh());
+    const unsub3 = wsClient.on('deliverable:removed', () => refresh());
+    return () => { unsub1(); unsub2(); unsub3(); };
+  }, [refresh]);
+
+  if (loading) {
+    return (
+      <div className="space-y-3 py-4">
+        {[1, 2, 3].map(i => (
+          <div key={i} className="animate-pulse space-y-2">
+            <div className="h-4 bg-surface-elevated rounded w-3/4" />
+            <div className="h-3 bg-surface-elevated rounded w-1/2" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (items.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-center">
+        <span className="text-3xl mb-3">📦</span>
+        <p className="text-sm text-fg-secondary">{t('agent:deliverables.empty')}</p>
+        <p className="text-xs text-fg-tertiary mt-1">{t('agent:deliverables.emptyHint')}</p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="space-y-2">
+        <div className="text-xs text-fg-tertiary mb-3">
+          {t('agent:deliverables.count', { count: items.length })}
+        </div>
+        {items.map(item => {
+          const typeMeta = DELIVERABLE_TYPE_META[item.type] ?? { icon: '📎', color: 'bg-surface-elevated text-fg-secondary' };
+          const statusMeta = DELIVERABLE_STATUS_META[item.status] ?? DELIVERABLE_STATUS_META.active!;
+          return (
+            <button
+              key={item.id}
+              onClick={() => setSelected(item)}
+              className="w-full text-left rounded-xl border border-border-default bg-surface-elevated/30 overflow-hidden transition-colors hover:border-brand-500/40 hover:bg-surface-elevated/50 px-4 py-3 flex items-start gap-3"
+            >
+              <span className={`inline-flex items-center justify-center w-8 h-8 rounded-lg text-sm shrink-0 ${typeMeta.color}`}>
+                {typeMeta.icon}
+              </span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-medium text-fg-primary truncate">{item.title}</span>
+                  <span className={`px-1.5 py-0.5 text-[10px] rounded font-medium ${statusMeta.color}`}>{item.status}</span>
+                </div>
+                {item.summary && (
+                  <p className="text-xs text-fg-tertiary mt-0.5 line-clamp-1">{item.summary}</p>
+                )}
+                <div className="flex items-center gap-3 mt-1 text-[10px] text-fg-tertiary">
+                  <span>{new Date(item.createdAt).toLocaleDateString()}</span>
+                  {item.tags.length > 0 && <span>{item.tags.slice(0, 3).join(', ')}</span>}
+                </div>
+              </div>
+              <svg className="w-4 h-4 text-fg-tertiary shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          );
+        })}
+      </div>
+
+      {selected && (
+        <DeliverableDetailModal
+          item={selected}
+          onClose={() => setSelected(null)}
+          onOpenInPage={(id) => { setSelected(null); navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: id }); }}
+        />
+      )}
+    </>
+  );
+}
+
+function DeliverableDetailModal({ item, onClose, onOpenInPage }: {
+  item: DeliverableInfo;
+  onClose: () => void;
+  onOpenInPage: (id: string) => void;
+}) {
+  const { t } = useTranslation(['agent', 'common']);
+  const typeMeta = DELIVERABLE_TYPE_META[item.type] ?? { icon: '📎', color: 'bg-surface-elevated text-fg-secondary' };
+  const statusMeta = DELIVERABLE_STATUS_META[item.status] ?? DELIVERABLE_STATUS_META.active!;
+  const isUrl = /^https?:\/\//i.test(item.reference ?? '');
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+      <div
+        className="relative bg-surface-primary rounded-2xl shadow-2xl border border-border-default w-full max-w-lg max-h-[85vh] overflow-y-auto"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="sticky top-0 bg-surface-primary/95 backdrop-blur-sm border-b border-border-default px-5 py-4 flex items-start gap-3 rounded-t-2xl z-10">
+          <span className={`inline-flex items-center justify-center w-10 h-10 rounded-xl text-lg shrink-0 ${typeMeta.color}`}>
+            {typeMeta.icon}
+          </span>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-base font-semibold text-fg-primary">{item.title}</h3>
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
+              <span className={`px-1.5 py-0.5 text-[10px] rounded font-medium ${statusMeta.color}`}>{item.status}</span>
+              <span className="text-[10px] text-fg-tertiary">{item.type}</span>
+              {item.format && <span className="text-[10px] px-1.5 py-0.5 bg-surface-elevated rounded text-fg-secondary">{item.format}</span>}
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-overlay transition-colors shrink-0 text-fg-tertiary hover:text-fg-primary">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="px-5 py-4 space-y-4">
+          {/* Summary */}
+          {item.summary && (
+            <div>
+              <label className="text-[10px] text-fg-tertiary uppercase tracking-wider font-medium">{t('agent:deliverables.summary')}</label>
+              <div className="mt-1.5">
+                <Suspense fallback={<p className="text-sm text-fg-secondary">{item.summary}</p>}>
+                  <LazyMarkdownMessage content={item.summary} className="text-sm text-fg-secondary" />
+                </Suspense>
+              </div>
+            </div>
+          )}
+
+          {/* Reference */}
+          {item.reference && (
+            <div>
+              <label className="text-[10px] text-fg-tertiary uppercase tracking-wider font-medium">{t('agent:deliverables.reference')}</label>
+              <div className="mt-1.5 flex items-center gap-2 bg-surface-elevated rounded-lg px-3 py-2">
+                <span className="text-xs text-fg-secondary font-mono break-all flex-1 select-all">{item.reference}</span>
+                {isUrl ? (
+                  <button
+                    onClick={() => window.open(item.reference, '_blank', 'noopener,noreferrer')}
+                    className="px-2 py-1 text-[10px] rounded bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0"
+                  >{t('common:open')}</button>
+                ) : (
+                  <button
+                    onClick={() => { api.files.reveal(item.reference).catch(() => {}); }}
+                    className="px-2 py-1 text-[10px] rounded bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0"
+                  >{t('common:open')}</button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Diff stats */}
+          {item.diffStats && (
+            <div className="flex items-center gap-3 text-xs bg-surface-elevated rounded-lg px-3 py-2">
+              <span className="text-fg-tertiary font-medium">Diff:</span>
+              <span className="text-fg-secondary">{item.diffStats.filesChanged} file{item.diffStats.filesChanged !== 1 ? 's' : ''}</span>
+              <span className="text-green-500">+{item.diffStats.additions}</span>
+              <span className="text-red-500">-{item.diffStats.deletions}</span>
+            </div>
+          )}
+
+          {/* Test results */}
+          {item.testResults && (
+            <div className="flex items-center gap-3 text-xs bg-surface-elevated rounded-lg px-3 py-2">
+              <span className="text-fg-tertiary font-medium">Tests:</span>
+              <span className="text-green-500">{item.testResults.passed} passed</span>
+              {item.testResults.failed > 0 && <span className="text-red-500">{item.testResults.failed} failed</span>}
+              {item.testResults.skipped > 0 && <span className="text-fg-tertiary">{item.testResults.skipped} skipped</span>}
+            </div>
+          )}
+
+          {/* Tags */}
+          {item.tags.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {item.tags.map(tag => (
+                <span key={tag} className="px-2 py-0.5 text-[11px] bg-surface-elevated rounded-md text-fg-tertiary">{tag}</span>
+              ))}
+            </div>
+          )}
+
+          {/* Metadata */}
+          <div className="flex items-center gap-4 text-[10px] text-fg-tertiary flex-wrap pt-1 border-t border-border-default/50">
+            <span>{t('agent:deliverables.created')}: {new Date(item.createdAt).toLocaleString()}</span>
+            <span>{t('agent:deliverables.updated')}: {new Date(item.updatedAt).toLocaleString()}</span>
+            {item.accessCount > 0 && <span>{t('agent:deliverables.accessed', { count: item.accessCount })}</span>}
+          </div>
+        </div>
+
+        {/* Footer actions */}
+        <div className="sticky bottom-0 bg-surface-primary/95 backdrop-blur-sm border-t border-border-default px-5 py-3 flex items-center justify-end gap-2 rounded-b-2xl">
+          <button
+            onClick={() => onOpenInPage(item.id)}
+            className="px-3 py-1.5 text-xs font-medium text-brand-500 hover:bg-brand-500/10 rounded-lg transition-colors flex items-center gap-1.5"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
+            </svg>
+            {t('agent:deliverables.openInPage')}
+          </button>
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 text-xs font-medium text-fg-secondary bg-surface-elevated hover:bg-surface-overlay rounded-lg transition-colors"
+          >{t('common:close')}</button>
+        </div>
+      </div>
     </div>
   );
 }

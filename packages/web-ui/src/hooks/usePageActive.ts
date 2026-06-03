@@ -11,6 +11,7 @@ function notifyAll() {
 
 if (typeof window !== 'undefined') {
   window.addEventListener('hashchange', notifyAll);
+  window.addEventListener('popstate', notifyAll);
 }
 
 function subscribe(cb: () => void): () => void {

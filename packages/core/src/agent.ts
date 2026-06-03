@@ -291,7 +291,7 @@ export class Agent {
    * user messages between tool results (which is invalid message ordering).
    */
   private pendingInjections = new Map<string, string[]>();
-  private activeStreamToken?: { cancelled: boolean };
+  private activeStreamToken?: { cancelled: boolean; userStopped?: boolean };
   /** The mailbox item ID currently being processed – threaded into activity records. */
   private processingMailboxItemId?: string;
   /** Last activity type injected into main session — used to collapse consecutive duplicates like heartbeats. */
@@ -728,9 +728,10 @@ export class Agent {
     onEvent: (event: LLMStreamEvent & { agentEvent?: string }) => void,
     senderId?: string,
     senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
-    cancelToken?: { cancelled: boolean },
+    cancelToken?: { cancelled: boolean; userStopped?: boolean },
     images?: string[],
     fileNames?: string[],
+    options?: { isResume?: boolean },
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: userMessage.slice(0, 100),
@@ -752,6 +753,7 @@ export class Agent {
           senderName: senderInfo?.name,
           senderRole: senderInfo?.role,
           isFirstConversation: senderInfo?.isFirstConversation,
+          isResume: options?.isResume,
           responsePromise: { resolve, reject },
         },
       });
@@ -1019,18 +1021,27 @@ export class Agent {
       switch (item.sourceType) {
         case 'human_chat':
         case 'a2a_message': {
+          const ct = extra.cancelToken as { cancelled: boolean; userStopped?: boolean } | undefined;
           if (extra.stream && typeof extra.onEvent === 'function') {
-            const reply = await this.handleMessageStream(
-              item.payload.content + markerSuffix,
-              extra.onEvent as (event: LLMStreamEvent & { agentEvent?: string }) => void,
-              item.metadata?.senderId,
-              senderInfo,
-              extra.cancelToken as { cancelled: boolean } | undefined,
-              extra.images as string[] | undefined,
-              extra.fileNames as string[] | undefined,
-            );
-            resolveResponse(reply);
-            return reply;
+            if (ct?.cancelled && !ct.userStopped) {
+              // SSE disconnected while item was queued — fall through to
+              // non-streaming path so the message is still processed.
+              log.info('SSE disconnected while queued — falling back to non-streaming', {
+                agentId: this.id, itemId: item.id,
+              });
+            } else {
+              const reply = await this.handleMessageStream(
+                item.payload.content + markerSuffix,
+                extra.onEvent as (event: LLMStreamEvent & { agentEvent?: string }) => void,
+                item.metadata?.senderId,
+                senderInfo,
+                ct,
+                extra.images as string[] | undefined,
+                extra.fileNames as string[] | undefined,
+              );
+              resolveResponse(reply);
+              return reply;
+            }
           }
           const msgChannelKey = extra.channelKey as string | undefined;
           const channelSessionId = msgChannelKey ? `channel_${msgChannelKey}_${this.id}` : undefined;
@@ -1625,16 +1636,17 @@ export class Agent {
     return this.taskExecutor.cancelTask(taskId);
   }
 
-  /** Cancel any active streaming response */
+  /** Cancel any active streaming response (user-initiated) */
   cancelActiveStream(): void {
     if (this.activeStreamToken) {
       this.activeStreamToken.cancelled = true;
-      log.info('Active stream cancelled', { agentId: this.id });
+      this.activeStreamToken.userStopped = true;
+      log.info('Active stream cancelled by user', { agentId: this.id });
     }
   }
 
   /** Get a cancel token for the current stream */
-  getStreamCancelToken(): { cancelled: boolean } {
+  getStreamCancelToken(): { cancelled: boolean; userStopped?: boolean } {
     this.activeStreamToken = { cancelled: false };
     return this.activeStreamToken;
   }
@@ -3420,15 +3432,28 @@ export class Agent {
     onEvent: (event: LLMStreamEvent & { agentEvent?: string }) => void,
     senderId?: string,
     senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
-    cancelToken?: { cancelled: boolean },
+    cancelToken?: { cancelled: boolean; userStopped?: boolean },
     images?: string[],
     fileNames?: string[],
   ): Promise<string> {
-    // Early bail-out: if already cancelled (e.g. user stopped while item was queued)
-    if (cancelToken?.cancelled) {
-      log.info('Stream cancelled before processing started', { agentId: this.id });
+    // Link the external cancel token to activeStreamToken so that
+    // cancelActiveStream() (called via the cancel-processing API)
+    // properly propagates userStopped to this stream.
+    if (cancelToken) {
+      this.activeStreamToken = cancelToken;
+    }
+
+    // Early bail-out: only if the *user* explicitly stopped (not an SSE disconnect).
+    // SSE disconnects set `cancelled` but not `userStopped`; in that case we
+    // continue processing so the instruction isn't lost — the SSE handler's
+    // onEvent callback is already a no-op when the connection is gone.
+    if (cancelToken?.cancelled && cancelToken.userStopped) {
+      log.info('Stream cancelled by user before processing started', { agentId: this.id });
       if (this.activeTasks.size === 0) this.setStatus('idle');
       return '[cancelled]';
+    }
+    if (cancelToken?.cancelled && !cancelToken.userStopped) {
+      log.info('SSE disconnected before processing started — continuing without streaming', { agentId: this.id });
     }
 
     if (this.activeTasks.size === 0) {
@@ -3509,15 +3534,17 @@ export class Agent {
 
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
 
-    // Link cancelToken to an AbortController so we can abort in-flight LLM calls
+    // Link cancelToken to an AbortController so we can abort in-flight LLM calls.
+    // Only abort for explicit user stops (`userStopped`), not SSE disconnects —
+    // when SSE drops we still want the LLM to finish so the reply is persisted.
     const abortController = new AbortController();
     let cancelPollTimer: ReturnType<typeof setInterval> | undefined;
     if (cancelToken) {
-      if (cancelToken.cancelled) {
+      if (cancelToken.userStopped) {
         abortController.abort();
       } else {
         cancelPollTimer = setInterval(() => {
-          if (cancelToken.cancelled && !abortController.signal.aborted) {
+          if (cancelToken.userStopped && !abortController.signal.aborted) {
             abortController.abort();
           }
         }, 100);
@@ -3582,7 +3609,7 @@ export class Agent {
           break;
         }
 
-        if (cancelToken?.cancelled) {
+        if (cancelToken?.userStopped) {
           log.info('Stream cancelled by user during tool loop', { agentId: this.id });
           if (this.currentSessionId) {
             const content = lastResponseContent
@@ -3610,8 +3637,7 @@ export class Agent {
             content: '[Continue from where you left off. Do not repeat what you already said.]',
           });
         } else {
-          // Check cancel before executing tools (tools may be long-running)
-          if (cancelToken?.cancelled) {
+          if (cancelToken?.userStopped) {
             log.info('Stream cancelled before tool execution', { agentId: this.id });
             this.memory.appendMessage(this.currentSessionId, {
               role: 'assistant',
@@ -3736,7 +3762,7 @@ export class Agent {
         });
         const updatedMessages = preparedCont.messages;
 
-        if (cancelToken?.cancelled) {
+        if (cancelToken?.userStopped) {
           log.info('Stream cancelled before LLM re-call', { agentId: this.id });
           if (this.currentSessionId) {
             const content = lastResponseContent
@@ -3781,9 +3807,9 @@ export class Agent {
       }
 
       streamMarkerDelta.flush();
-      // If cancelled during the final LLM call (e.g. SSE disconnect mid-stream),
-      // the response may be truncated. Treat as intentional cancellation.
-      if (cancelToken?.cancelled) {
+      // Only treat as cancellation if the user explicitly stopped.
+      // SSE disconnects should not discard a completed response.
+      if (cancelToken?.userStopped) {
         if (this.currentSessionId && response.content) {
           this.memory.appendMessage(this.currentSessionId, {
             role: 'assistant',
@@ -3824,8 +3850,8 @@ export class Agent {
       return rawReply;
     } catch (error) {
       streamMarkerDelta.flush();
-      if (streamChatActivityId) this.endActivity(streamChatActivityId, { success: !cancelToken?.cancelled });
-      if (cancelToken?.cancelled) {
+      if (streamChatActivityId) this.endActivity(streamChatActivityId, { success: !cancelToken?.userStopped });
+      if (cancelToken?.userStopped) {
         if (this.currentSessionId) {
           try {
             const content = lastResponseContent

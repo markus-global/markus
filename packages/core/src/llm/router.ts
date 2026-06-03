@@ -1059,8 +1059,18 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   siliconflow: 'SiliconFlow',
   minimax: 'MiniMax',
   openrouter: 'OpenRouter',
-  zai: 'ZAI',
+  zai: 'ZAI (GLM)',
   deepseek: 'DeepSeek',
+  xai: 'xAI (Grok)',
+  mistral: 'Mistral AI',
+  groq: 'Groq',
+  perplexity: 'Perplexity',
+  cohere: 'Cohere',
+  together_ai: 'Together AI',
+  fireworks_ai: 'Fireworks AI',
+  moonshot: 'Moonshot (Kimi)',
+  volcengine: 'Volcengine (Doubao)',
+  dashscope: 'DashScope (Qwen)',
 };
 
 // Sources:

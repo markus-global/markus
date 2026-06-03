@@ -1,0 +1,66 @@
+export interface CatalogModelCapabilities {
+  vision: boolean;
+  functionCalling: boolean;
+  reasoning: boolean;
+  promptCaching: boolean;
+  webSearch: boolean;
+  audioInput: boolean;
+  audioOutput: boolean;
+}
+
+export interface CatalogModel {
+  id: string;
+  provider: string;
+  mode: string;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  inputCostPer1MTokens: number;
+  outputCostPer1MTokens: number;
+  cacheReadCostPer1MTokens?: number;
+  cacheWriteCostPer1MTokens?: number;
+  capabilities: CatalogModelCapabilities;
+  deprecationDate?: string;
+}
+
+export interface CatalogStatus {
+  totalModels: number;
+  chatModels: number;
+  providers: string[];
+  lastUpdated: string | null;
+  source: 'cache' | 'remote' | 'baseline' | 'supplements';
+}
+
+export interface ValidateKeyRequest {
+  provider: string;
+  apiKey: string;
+  baseUrl?: string;
+}
+
+export interface ValidateKeyResponse {
+  valid: boolean;
+  error?: string;
+  models: CatalogModel[];
+}
+
+/**
+ * Raw model entry shape from LiteLLM's model_prices_and_context_window.json
+ */
+export interface LiteLLMRawModelEntry {
+  litellm_provider: string;
+  mode?: string;
+  max_input_tokens?: number;
+  max_output_tokens?: number;
+  max_tokens?: number;
+  input_cost_per_token?: number;
+  output_cost_per_token?: number;
+  cache_read_input_token_cost?: number;
+  cache_creation_input_token_cost?: number;
+  supports_vision?: boolean;
+  supports_function_calling?: boolean;
+  supports_reasoning?: boolean;
+  supports_prompt_caching?: boolean;
+  supports_web_search?: boolean;
+  supports_audio_input?: boolean;
+  supports_audio_output?: boolean;
+  deprecation_date?: string;
+}

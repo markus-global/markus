@@ -17,7 +17,8 @@
     "settings": "设置",
     "files": "文件",
     "skills": "技能",
-    "heartbeat": "心跳"
+    "heartbeat": "心跳",
+    "deliverables": "交付物"
   },
   "mind": {
     "title": "智能体心智",
@@ -241,6 +242,9 @@
       "reviewAndSave": "— 请审阅并保存以应用",
       "roleMdHint": "修改 ROLE.md 将立即更新智能体运行时的系统提示。",
       "noConfigFiles": "该角色下未找到配置文件",
+      "copyPath": "复制路径",
+      "pathCopied": "已复制",
+      "openInFinder": "在文件管理器中打开",
       "fileLabels": {
         "roleMd": "系统提示 / 角色定义",
         "heartbeatMd": "心跳任务",
@@ -426,5 +430,17 @@
         "statusArrow": "{{from}} → {{to}}"
       }
     }
+  },
+  "deliverables": {
+    "empty": "暂无交付物",
+    "emptyHint": "该智能体创建的交付物将显示在这里",
+    "count": "共 {{count}} 个交付物",
+    "summary": "摘要",
+    "reference": "引用",
+    "format": "格式",
+    "created": "创建于",
+    "updated": "更新于",
+    "accessed": "访问 {{count}} 次",
+    "openInPage": "在交付物页面中打开"
   }
 }

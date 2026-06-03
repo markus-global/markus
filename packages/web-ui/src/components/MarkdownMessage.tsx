@@ -9,6 +9,8 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { FilePathLink, looksLikeFilePath } from './FilePathLink.tsx';
 import { copyPlainText, copyAsHtml } from './markdown-copy.ts';
+import { navBus } from '../navBus.ts';
+import { PAGE } from '../routes.ts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const REMARK_PLUGINS: any[] = [remarkGfm, remarkMath, remarkBreaks];
@@ -112,6 +114,36 @@ function preprocessMentions(text: string, knownNames?: string[]): string {
   return result;
 }
 
+// ─── Entity ID linking ───────────────────────────────────────────────────────
+
+const ENTITY_PREFIX = '#entity:';
+const ENTITY_ID_RE = /\b(tsk|req|proj|dlv|agt)_[a-f0-9]{6,}\b/gi;
+
+const ENTITY_META: Record<string, { icon: string; label: string }> = {
+  tsk:  { icon: '📋', label: 'Task' },
+  req:  { icon: '📝', label: 'Requirement' },
+  proj: { icon: '📁', label: 'Project' },
+  dlv:  { icon: '📦', label: 'Deliverable' },
+  agt:  { icon: '🤖', label: 'Agent' },
+};
+
+function navigateToEntity(id: string) {
+  if (id.startsWith('tsk_'))  navBus.navigate(PAGE.WORK, { openTask: id });
+  else if (id.startsWith('req_'))  navBus.navigate(PAGE.WORK, { openRequirement: id });
+  else if (id.startsWith('proj_')) navBus.navigate(PAGE.WORK, { projectId: id });
+  else if (id.startsWith('dlv_'))  navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: id });
+  else if (id.startsWith('agt_'))  navBus.navigate(PAGE.TEAM, { agentId: id });
+}
+
+function looksLikeEntityId(text: string): boolean {
+  return /^(tsk|req|proj|dlv|agt)_[a-f0-9]{6,}$/i.test(text);
+}
+
+/** Convert bare entity IDs (tsk_xxx, dlv_xxx, etc.) to markdown links with #entity: href. */
+function preprocessEntityIds(text: string): string {
+  return text.replace(ENTITY_ID_RE, (id) => `[${id}](${ENTITY_PREFIX}${id})`);
+}
+
 const mdComponents = {
   p: ({ children }: { children?: React.ReactNode }) => <p className="mb-2 last:mb-0 leading-relaxed text-fg-secondary">{children}</p>,
   h1: ({ children }: { children?: React.ReactNode }) => <h1 className="text-base font-bold mb-2 mt-3 first:mt-0 text-fg-primary">{children}</h1>,
@@ -128,6 +160,21 @@ const mdComponents = {
       return <code className="text-fg-secondary font-mono">{children}</code>;
     }
     const text = typeof children === 'string' ? children : String(children ?? '');
+    if (looksLikeEntityId(text)) {
+      const prefix = text.split('_')[0]!;
+      const meta = ENTITY_META[prefix];
+      return (
+        <span
+          data-entity-link={text}
+          className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-brand-500/10 text-brand-500 text-xs font-mono cursor-pointer hover:bg-brand-500/20 transition-colors"
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigateToEntity(text); }}
+          title={meta ? `${meta.label}: ${text}` : text}
+        >
+          {meta && <span className="text-[10px]">{meta.icon}</span>}
+          <span>{text.slice(0, prefix.length + 1 + 8)}…</span>
+        </span>
+      );
+    }
     if (looksLikeFilePath(text)) {
       return <FilePathLink path={text} />;
     }
@@ -357,6 +404,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
 
   const processedRest = useMemo(() => {
     let t = normalizeMathDelimiters(rest);
+    t = preprocessEntityIds(t);
     t = preprocessMentions(t, knownNames);
     return t;
   }, [rest, knownNames]);
@@ -377,6 +425,22 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
               title={name}
             >
               {children}
+            </span>
+          );
+        }
+        if (href?.startsWith(ENTITY_PREFIX)) {
+          const id = href.slice(ENTITY_PREFIX.length);
+          const prefix = id.split('_')[0]!;
+          const meta = ENTITY_META[prefix];
+          return (
+            <span
+              data-entity-link={id}
+              className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-brand-500/10 text-brand-500 text-xs font-mono cursor-pointer hover:bg-brand-500/20 transition-colors"
+              onClick={(e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); navigateToEntity(id); }}
+              title={meta ? `${meta.label}: ${id}` : id}
+            >
+              {meta && <span className="text-[10px]">{meta.icon}</span>}
+              <span>{id.slice(0, prefix.length + 1 + 8)}…</span>
             </span>
           );
         }

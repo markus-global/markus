@@ -562,7 +562,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
             inputSchema: {
               type: 'object',
               properties: {
-                deliverable_id: { type: 'string', description: 'The deliverable ID' },
+                id: { type: 'string', description: 'The deliverable ID' },
                 title: { type: 'string', description: 'New title (optional)' },
                 summary: { type: 'string', description: 'Updated brief summary (optional — not the full file content)' },
                 reference: { type: 'string', description: 'Updated file path or URL (optional)' },
@@ -573,12 +573,12 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 },
                 tags: { type: 'string', description: 'New comma-separated tags (optional)' },
               },
-              required: ['deliverable_id'],
+              required: ['id'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
                 const result = await ctx.deliverableUpdate!(
-                  args['deliverable_id'] as string,
+                  (args['id'] ?? args['deliverable_id']) as string,
                   {
                     title: args['title'] as string | undefined,
                     summary: args['summary'] as string | undefined,

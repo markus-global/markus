@@ -266,6 +266,8 @@
     "emptySelectAgent": "Select an agent from the sidebar to start.",
     "emptyNewConversation": "Start a new conversation with {{name}}.",
     "agentThinking": "Agent is thinking…",
+    "scrollToBottom": "Scroll to bottom",
+    "newMessages": "{{count}} new message(s)",
     "mentionAgent": "Mention an agent",
     "addMoreFiles": "Add more files",
     "attachFilesTitle": "Attach files (images, PDF, Word, Excel, PowerPoint...)",
@@ -300,6 +302,10 @@
     "activityTask": "Task: {{label}}",
     "activityDescHeartbeat": "Periodic check-in task",
     "activityDescChat": "Responding to conversation",
-    "activityDescFallback": "Agent is thinking or communicating"
+    "activityDescFallback": "Agent is thinking or communicating",
+    "searchMessages": "Search messages",
+    "searchPlaceholder": "Search messages...",
+    "searching": "Searching...",
+    "noSearchResults": "No messages found"
   }
 }
