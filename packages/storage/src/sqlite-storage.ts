@@ -594,6 +594,25 @@ CREATE TABLE IF NOT EXISTS user_read_cursors (
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, conversation_key)
 );
+
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  id TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL,
+  workflow_name TEXT NOT NULL,
+  run_number INTEGER NOT NULL,
+  requirement_id TEXT NOT NULL,
+  task_ids TEXT NOT NULL DEFAULT '[]',
+  params TEXT NOT NULL DEFAULT '{}',
+  role_mapping TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'running',
+  triggered_by TEXT NOT NULL DEFAULT 'manual',
+  project_id TEXT,
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_team ON workflow_runs(team_id, workflow_name);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_req ON workflow_runs(requirement_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -4484,6 +4503,101 @@ export class SqliteReadCursorRepo {
       JOIN group_chat_members gcm ON gcm.group_chat_id = gc.id
       WHERE gcm.member_id = '${userId}'
     `);
+  }
+}
+
+// ─── Workflow Run Repo ────────────────────────────────────────────────────────
+
+export interface WorkflowRunRow {
+  id: string;
+  team_id: string;
+  workflow_name: string;
+  run_number: number;
+  requirement_id: string;
+  task_ids: string;
+  params: string;
+  role_mapping: string;
+  status: string;
+  triggered_by: string;
+  project_id: string | null;
+  started_at: string;
+  completed_at: string | null;
+}
+
+export class SqliteWorkflowRunRepo {
+  constructor(private db: DatabaseSync) {}
+
+  async create(row: WorkflowRunRow): Promise<void> {
+    this.db.prepare(
+      `INSERT INTO workflow_runs (id, team_id, workflow_name, run_number, requirement_id, task_ids, params, role_mapping, status, triggered_by, project_id, started_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      row.id, row.team_id, row.workflow_name, row.run_number,
+      row.requirement_id, row.task_ids, row.params, row.role_mapping,
+      row.status, row.triggered_by, row.project_id,
+      row.started_at, row.completed_at,
+    );
+  }
+
+  async findById(id: string): Promise<WorkflowRunRow | null> {
+    const r = this.db.prepare('SELECT * FROM workflow_runs WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return r ? this._map(r) : null;
+  }
+
+  async findByTeamAndWorkflow(teamId: string, workflowName: string, limit = 20): Promise<WorkflowRunRow[]> {
+    return (this.db.prepare(
+      'SELECT * FROM workflow_runs WHERE team_id = ? AND workflow_name = ? ORDER BY run_number DESC LIMIT ?'
+    ).all(teamId, workflowName, limit) as Record<string, unknown>[]).map(r => this._map(r));
+  }
+
+  async findByRequirementId(requirementId: string): Promise<WorkflowRunRow | null> {
+    const r = this.db.prepare('SELECT * FROM workflow_runs WHERE requirement_id = ?').get(requirementId) as Record<string, unknown> | undefined;
+    return r ? this._map(r) : null;
+  }
+
+  async updateStatus(id: string, status: string, completedAt?: string): Promise<void> {
+    if (completedAt) {
+      this.db.prepare('UPDATE workflow_runs SET status = ?, completed_at = ? WHERE id = ?').run(status, completedAt, id);
+    } else {
+      this.db.prepare('UPDATE workflow_runs SET status = ? WHERE id = ?').run(status, id);
+    }
+  }
+
+  async getNextRunNumber(teamId: string, workflowName: string): Promise<number> {
+    const r = this.db.prepare(
+      'SELECT COALESCE(MAX(run_number), 0) as max_num FROM workflow_runs WHERE team_id = ? AND workflow_name = ?'
+    ).get(teamId, workflowName) as { max_num: number } | undefined;
+    return (r?.max_num ?? 0) + 1;
+  }
+
+  async findRunning(teamId: string, workflowName: string): Promise<WorkflowRunRow[]> {
+    return (this.db.prepare(
+      'SELECT * FROM workflow_runs WHERE team_id = ? AND workflow_name = ? AND status = ?'
+    ).all(teamId, workflowName, 'running') as Record<string, unknown>[]).map(r => this._map(r));
+  }
+
+  async findAllRunning(): Promise<WorkflowRunRow[]> {
+    return (this.db.prepare(
+      'SELECT * FROM workflow_runs WHERE status = ?'
+    ).all('running') as Record<string, unknown>[]).map(r => this._map(r));
+  }
+
+  private _map(r: Record<string, unknown>): WorkflowRunRow {
+    return {
+      id: r['id'] as string,
+      team_id: r['team_id'] as string,
+      workflow_name: r['workflow_name'] as string,
+      run_number: r['run_number'] as number,
+      requirement_id: r['requirement_id'] as string,
+      task_ids: r['task_ids'] as string,
+      params: r['params'] as string,
+      role_mapping: r['role_mapping'] as string,
+      status: r['status'] as string,
+      triggered_by: r['triggered_by'] as string,
+      project_id: (r['project_id'] as string) ?? null,
+      started_at: r['started_at'] as string,
+      completed_at: (r['completed_at'] as string) ?? null,
+    };
   }
 }
 

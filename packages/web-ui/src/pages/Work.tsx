@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo } from '../api.ts';
+import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, attachSubagentLogsToEntries, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
@@ -3276,7 +3276,11 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
           ))
         )}
         {rows.length === 0 && (
-          <div className="flex items-center justify-center py-16 text-sm text-fg-tertiary">{t('work:task.noItems')}</div>
+          <div className="flex flex-col items-center justify-center py-16 gap-3 max-w-sm mx-auto text-center">
+            <svg className="w-10 h-10 text-fg-quaternary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
+            <p className="text-sm font-medium text-fg-secondary">{t('work:task.backlogEmptyTitle')}</p>
+            <p className="text-xs text-fg-tertiary leading-relaxed">{t('work:task.backlogEmptyDesc')}</p>
+          </div>
         )}
       </div>
       </div>
@@ -3294,6 +3298,512 @@ export interface WorkPreviewData {
   allRequirements?: RequirementInfo[];
   initialBoardType?: 'backlog' | 'kanban' | 'dag';
   initialSelectedReqId?: string;
+}
+
+function slugify(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'workflow';
+}
+
+function generateWorkflowSteps(
+  tasks: TaskInfo[],
+  agentMap: Record<string, string>,
+): Array<{ id: string; name: string; role: string; prompt: string; depends_on: string[] }> {
+  const taskIdToStepId = new Map<string, string>();
+  const taskMap = new Map(tasks.map(t => [t.id, t]));
+
+  // Generate stable step IDs
+  const usedIds = new Set<string>();
+  for (const t of tasks) {
+    let base = slugify(t.title).replace(/[^a-z0-9-]/g, '').slice(0, 30) || `step`;
+    if (usedIds.has(base)) base = `${base}-${t.id.slice(-4)}`;
+    usedIds.add(base);
+    taskIdToStepId.set(t.id, base);
+  }
+
+  return tasks.map(t => ({
+    id: taskIdToStepId.get(t.id)!,
+    name: t.title,
+    role: agentMap[t.assignedAgentId] ?? 'worker',
+    prompt: t.description || t.title,
+    depends_on: (t.blockedBy ?? [])
+      .filter(depId => taskMap.has(depId))
+      .map(depId => taskIdToStepId.get(depId)!)
+      .filter(Boolean),
+  }));
+}
+
+function generateWorkflowYaml(
+  name: string,
+  description: string,
+  steps: Array<{ id: string; name: string; role: string; prompt: string; depends_on: string[] }>,
+): string {
+  const lines: string[] = [];
+  lines.push(`name: ${name}`);
+  lines.push(`description: ${description.replace(/\n/g, ' ').slice(0, 200)}`);
+  lines.push(`version: "1.0.0"`);
+  lines.push('');
+  lines.push('steps:');
+  for (const step of steps) {
+    lines.push(`  - id: ${step.id}`);
+    lines.push(`    name: ${step.name}`);
+    lines.push(`    type: agent_task`);
+    lines.push(`    role: ${step.role}`);
+    if (step.depends_on.length > 0) {
+      lines.push(`    depends_on: [${step.depends_on.join(', ')}]`);
+    }
+    lines.push(`    prompt: |`);
+    for (const pLine of step.prompt.split('\n')) {
+      lines.push(`      ${pLine}`);
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+function SaveAsWorkflowModal({
+  req, tasks, agents, teamId, onClose, onSaved,
+}: {
+  req: RequirementInfo;
+  tasks: TaskInfo[];
+  agents: AgentInfo[];
+  teamId: string;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { t } = useTranslation(['work']);
+  const agentMap = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const a of agents) m[a.id] = a.name;
+    return m;
+  }, [agents]);
+
+  const initialSteps = useMemo(() => generateWorkflowSteps(tasks, agentMap), [tasks, agentMap]);
+
+  const [name, setName] = useState(() => slugify(req.title));
+  const [description, setDescription] = useState(req.description || req.title);
+  const [steps, setSteps] = useState(initialSteps);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const updateStep = (idx: number, field: string, value: string) => {
+    setSteps(prev => prev.map((s, i) => i === idx ? { ...s, [field]: value } : s));
+  };
+
+  const removeStep = (idx: number) => {
+    const removedId = steps[idx]?.id;
+    setSteps(prev => prev.filter((_, i) => i !== idx).map(s => ({
+      ...s,
+      depends_on: s.depends_on.filter(d => d !== removedId),
+    })));
+  };
+
+  const handleSave = async () => {
+    if (!name.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const yaml = generateWorkflowYaml(name.trim(), description, steps);
+      await api.workflows.create(teamId, name.trim(), yaml);
+      onSaved();
+    } catch (err) {
+      setError(String(err));
+    }
+    setSaving(false);
+  };
+
+  const uniqueRoles = useMemo(() => [...new Set(steps.map(s => s.role))], [steps]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-surface-primary border border-border-default rounded-2xl shadow-2xl w-[640px] max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border-default">
+          <div>
+            <h2 className="text-base font-semibold text-fg-primary">{t('work:task.saveAsWorkflow', 'Save as Workflow')}</h2>
+            <p className="text-xs text-fg-tertiary mt-0.5">{t('work:task.saveAsWorkflowDesc', 'Turn this task structure into a reusable workflow template')}</p>
+          </div>
+          <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary p-1 rounded-lg hover:bg-surface-elevated transition-colors">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-auto px-6 py-4 space-y-4">
+          {/* Name & Description */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 block">{t('work:task.workflowName', 'Name')}</label>
+              <input
+                value={name}
+                onChange={e => setName(e.target.value)}
+                className="w-full text-sm bg-surface-secondary border border-border-default/50 rounded-lg px-3 py-2 text-fg-primary focus:outline-none focus:ring-1 focus:ring-brand-500"
+                placeholder="content-publishing"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 block">{t('work:task.roles', 'Roles')}</label>
+              <div className="flex flex-wrap gap-1 py-2">
+                {uniqueRoles.map(r => (
+                  <span key={r} className="px-2 py-0.5 text-[10px] font-medium bg-brand-500/10 text-brand-500 rounded-full">{r}</span>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div>
+            <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 block">{t('work:task.description', 'Description')}</label>
+            <input
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+              className="w-full text-sm bg-surface-secondary border border-border-default/50 rounded-lg px-3 py-2 text-fg-primary focus:outline-none focus:ring-1 focus:ring-brand-500"
+            />
+          </div>
+
+          {/* Steps visual list */}
+          <div>
+            <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2 block">
+              {t('work:task.workflowSteps', 'Steps')} ({steps.length})
+            </label>
+            <div className="space-y-2">
+              {steps.map((step, idx) => (
+                <div key={step.id} className="bg-surface-secondary border border-border-default/40 rounded-xl p-3 group">
+                  <div className="flex items-start gap-3">
+                    {/* Step number */}
+                    <div className="shrink-0 w-7 h-7 rounded-full bg-brand-500/15 flex items-center justify-center text-[11px] font-bold text-brand-500 mt-0.5">
+                      {idx + 1}
+                    </div>
+                    <div className="flex-1 min-w-0 space-y-2">
+                      {/* Step name + role */}
+                      <div className="flex items-center gap-2">
+                        <input
+                          value={step.name}
+                          onChange={e => updateStep(idx, 'name', e.target.value)}
+                          className="flex-1 text-sm font-medium bg-transparent border-b border-transparent hover:border-border-default focus:border-brand-500 text-fg-primary focus:outline-none px-0 py-0.5 transition-colors"
+                        />
+                        <input
+                          value={step.role}
+                          onChange={e => updateStep(idx, 'role', e.target.value)}
+                          className="w-28 text-[10px] bg-surface-elevated border border-border-default/40 rounded-md px-2 py-1 text-fg-secondary focus:outline-none focus:ring-1 focus:ring-brand-500"
+                          title={t('work:task.role', 'Role')}
+                        />
+                      </div>
+                      {/* Dependencies */}
+                      {step.depends_on.length > 0 && (
+                        <div className="flex items-center gap-1.5 text-[10px] text-fg-tertiary">
+                          <span>{t('work:task.dependsOn', 'Depends on')}:</span>
+                          {step.depends_on.map(depId => {
+                            const depStep = steps.find(s => s.id === depId);
+                            return <span key={depId} className="px-1.5 py-0.5 bg-surface-elevated rounded text-fg-secondary">{depStep?.name ?? depId}</span>;
+                          })}
+                        </div>
+                      )}
+                      {/* Prompt preview */}
+                      <div className="text-xs text-fg-tertiary line-clamp-2 leading-relaxed">{step.prompt}</div>
+                    </div>
+                    {/* Remove button */}
+                    <button
+                      onClick={() => removeStep(idx)}
+                      className="shrink-0 opacity-0 group-hover:opacity-100 text-fg-quaternary hover:text-red-500 p-1 rounded transition-all"
+                      title={t('work:task.removeStep', 'Remove step')}
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {error && <p className="text-xs text-red-500">{error}</p>}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-border-default">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated rounded-lg transition-colors">
+            {t('work:task.cancel', 'Cancel')}
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving || !name.trim() || steps.length === 0}
+            className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm rounded-lg font-medium transition-colors"
+          >
+            {saving ? t('work:task.saving', 'Saving...') : t('work:task.saveWorkflow', 'Save Workflow')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WorkflowEmptyState({ teamId, agents }: { teamId: string; agents: AgentInfo[] }) {
+  const { t } = useTranslation(['work']);
+
+  const manager = useMemo(
+    () => agents.find(a => a.teamId === teamId && a.agentRole === 'manager'),
+    [agents, teamId],
+  );
+
+  const handleAskManager = () => {
+    if (!manager) return;
+    navBus.navigate(PAGE.TEAM, {
+      agentId: manager.id,
+      prefillMessage: t('work:task.workflowCreatePrompt',
+        'Please create a workflow template for our team. Review the team composition, then design a multi-step process that matches our regular work. Use the workflow_create tool to save it.'),
+    });
+  };
+
+  return (
+    <div className="flex-1 flex items-center justify-center px-4">
+      <div className="max-w-lg w-full text-center space-y-5">
+        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-brand-500/10">
+          <svg className="w-8 h-8 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+              d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
+          </svg>
+        </div>
+
+        <div>
+          <h3 className="text-base font-semibold text-fg-primary mb-1.5">
+            {t('work:task.workflowEmptyTitle', 'No workflow templates yet')}
+          </h3>
+          <p className="text-sm text-fg-secondary leading-relaxed">
+            {t('work:task.workflowEmptyDesc',
+              'Workflows automate repeatable multi-step processes. Define a sequence of tasks as a DAG — the system handles dependencies, role assignment, and scheduling automatically.')}
+          </p>
+        </div>
+
+        <div className="bg-surface-secondary border border-border-default/40 rounded-xl p-4 text-left space-y-3">
+          <p className="text-xs font-medium text-fg-secondary uppercase tracking-wider">
+            {t('work:task.workflowHowItWorks', 'How it works')}
+          </p>
+          <div className="flex items-start gap-3">
+            <div className="shrink-0 w-6 h-6 rounded-full bg-brand-500/15 flex items-center justify-center text-[11px] font-bold text-brand-500">1</div>
+            <div className="text-xs text-fg-secondary leading-relaxed">
+              <span className="font-medium text-fg-primary">{t('work:task.workflowStep1Title', 'Requirement')}</span>
+              {' — '}
+              {t('work:task.workflowStep1Desc', 'A workflow run creates a Requirement to group all its tasks under one trackable goal.')}
+            </div>
+          </div>
+          <div className="flex items-start gap-3">
+            <div className="shrink-0 w-6 h-6 rounded-full bg-brand-500/15 flex items-center justify-center text-[11px] font-bold text-brand-500">2</div>
+            <div className="text-xs text-fg-secondary leading-relaxed">
+              <span className="font-medium text-fg-primary">{t('work:task.workflowStep2Title', 'Task DAG')}</span>
+              {' — '}
+              {t('work:task.workflowStep2Desc', 'Each step becomes a Task assigned to the right team member. Dependencies are tracked — downstream tasks wait for upstream ones to finish.')}
+            </div>
+          </div>
+          <div className="flex items-start gap-3">
+            <div className="shrink-0 w-6 h-6 rounded-full bg-brand-500/15 flex items-center justify-center text-[11px] font-bold text-brand-500">3</div>
+            <div className="text-xs text-fg-secondary leading-relaxed">
+              <span className="font-medium text-fg-primary">{t('work:task.workflowStep3Title', 'Auto-execution')}</span>
+              {' — '}
+              {t('work:task.workflowStep3Desc', 'Agents pick up tasks, pass deliverables downstream, and the workflow completes automatically. Optionally, schedule it to run on a recurring basis.')}
+            </div>
+          </div>
+        </div>
+
+        {manager && (
+          <button
+            onClick={handleAskManager}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg font-medium transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
+            {t('work:task.workflowAskManager', 'Ask {{name}} to create a workflow', { name: manager.name })}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WorkflowsPanel({ teamId: propTeamId, projectId, agents }: { teamId: string | null; projectId: string | null; agents: AgentInfo[] }) {
+  const { t } = useTranslation(['work']);
+  const [workflows, setWorkflows] = useState<WorkflowInfo[]>([]);
+  const [runs, setRuns] = useState<Record<string, WorkflowRunInfo[]>>({});
+  const [loading, setLoading] = useState(false);
+  const [runModal, setRunModal] = useState<WorkflowInfo | null>(null);
+  const [runParams, setRunParams] = useState<Record<string, string>>({});
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [teams, setTeams] = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
+
+  const teamId = propTeamId ?? selectedTeamId;
+
+  useEffect(() => {
+    if (propTeamId) return;
+    api.teams.list().then(({ teams: t }) => {
+      setTeams(t.map(tm => ({ id: tm.id, name: tm.name })));
+      if (t.length > 0 && !selectedTeamId) setSelectedTeamId(t[0].id);
+    }).catch(() => {});
+  }, [propTeamId, selectedTeamId]);
+
+  const agentMap = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const a of agents) m[a.id] = a.name;
+    return m;
+  }, [agents]);
+
+  const refresh = useCallback(async () => {
+    if (!teamId) return;
+    setLoading(true);
+    try {
+      const { workflows: wf } = await api.workflows.list(teamId);
+      setWorkflows(wf);
+      const runsMap: Record<string, WorkflowRunInfo[]> = {};
+      await Promise.all(wf.map(async w => {
+        try {
+          const { runs: r } = await api.workflows.listRuns(teamId, w.name, 5);
+          runsMap[w.name] = r;
+        } catch { /* ignore */ }
+      }));
+      setRuns(runsMap);
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, [teamId]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const openRunModal = (wf: WorkflowInfo) => {
+    const defaults: Record<string, string> = {};
+    for (const p of wf.params ?? []) {
+      if (p.default) defaults[p.name] = p.default;
+    }
+    setRunParams(defaults);
+    setError(null);
+    setRunModal(wf);
+  };
+
+  const startRun = async () => {
+    if (!runModal || !teamId || !projectId) return;
+    setStarting(true);
+    setError(null);
+    try {
+      await api.workflows.startRun(teamId, runModal.name, projectId, runParams);
+      setRunModal(null);
+      refresh();
+    } catch (err) {
+      setError(String(err));
+    }
+    setStarting(false);
+  };
+
+  if (!teamId && teams.length === 0) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm">
+        {t('work:task.selectProjectForWorkflows', 'Select a project with a team to view workflows')}
+      </div>
+    );
+  }
+
+  if (loading && workflows.length === 0) {
+    return <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm">Loading...</div>;
+  }
+
+  const statusBadge = (s: string) => {
+    const colors: Record<string, string> = { running: 'bg-blue-500/20 text-blue-400', completed: 'bg-green-500/20 text-green-400', failed: 'bg-red-500/20 text-red-400', cancelled: 'bg-gray-500/20 text-gray-400' };
+    return <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${colors[s] ?? 'bg-gray-500/20 text-gray-400'}`}>{s}</span>;
+  };
+
+  return (
+    <div className="flex-1 min-h-0 overflow-auto px-4 py-5">
+      {!propTeamId && teams.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 mb-4">
+          {teams.map(tm => (
+            <button
+              key={tm.id}
+              onClick={() => { if (selectedTeamId !== tm.id) { setSelectedTeamId(tm.id); setWorkflows([]); setRuns({}); } }}
+              className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${selectedTeamId === tm.id ? 'bg-brand-600 text-white' : 'bg-surface-secondary border border-border-default/50 text-fg-secondary hover:text-fg-primary hover:border-border-default'}`}
+            >
+              {tm.name}
+            </button>
+          ))}
+        </div>
+      )}
+      {workflows.length === 0 && !loading ? (
+        <WorkflowEmptyState teamId={teamId!} agents={agents} />
+      ) : (
+        <div className="grid gap-4 max-w-4xl">
+          {workflows.map(wf => (
+            <div key={wf.name} className="bg-surface-secondary border border-border-default/50 rounded-xl p-4">
+              <div className="flex items-start justify-between gap-3 mb-2">
+                <div>
+                  <h3 className="text-sm font-semibold text-fg-primary">{wf.displayName || wf.name}</h3>
+                  <p className="text-xs text-fg-tertiary mt-0.5">{wf.description}</p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {wf.hasSchedule && <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-500/20 text-purple-400">Scheduled</span>}
+                  <span className="text-[10px] text-fg-tertiary">v{wf.version}</span>
+                  <button onClick={() => openRunModal(wf)} className="px-3 py-1 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg font-medium transition-colors">
+                    Run
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center gap-4 text-[11px] text-fg-tertiary mb-3">
+                <span>{wf.stepCount} steps</span>
+                <span>{wf.roles.length} roles: {wf.roles.join(', ')}</span>
+                {wf.params && wf.params.length > 0 && <span>{wf.params.length} params</span>}
+              </div>
+              {(runs[wf.name] ?? []).length > 0 && (
+                <div className="border-t border-border-default/30 pt-2 mt-1">
+                  <p className="text-[10px] text-fg-tertiary font-medium mb-1.5 uppercase tracking-wider">Recent Runs</p>
+                  <div className="space-y-1">
+                    {(runs[wf.name] ?? []).map(run => (
+                      <div key={run.id} className="flex items-center gap-3 text-xs px-2 py-1 rounded hover:bg-surface-elevated/50">
+                        <span className="text-fg-secondary font-medium">#{run.runNumber}</span>
+                        {statusBadge(run.status)}
+                        <span className="text-fg-tertiary">{run.taskIds.length} tasks</span>
+                        <span className="text-fg-tertiary">{new Date(run.startedAt).toLocaleDateString()}</span>
+                        {run.triggeredBy === 'schedule' && <span className="text-[10px] text-purple-400">auto</span>}
+                        <span className="flex-1" />
+                        {Object.entries(run.roleMapping).slice(0, 3).map(([role, agentId]) => (
+                          <span key={role} className="text-[10px] text-fg-tertiary">{role}: {agentMap[agentId] ?? agentId.slice(0, 8)}</span>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Run modal */}
+      {runModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setRunModal(null)}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-fg-primary mb-1">Run: {runModal.displayName || runModal.name}</h3>
+            <p className="text-xs text-fg-tertiary mb-4">{runModal.description}</p>
+            {(runModal.params ?? []).length > 0 && (
+              <div className="space-y-3 mb-4">
+                {(runModal.params ?? []).map(p => (
+                  <div key={p.name}>
+                    <label className="block text-xs text-fg-secondary mb-1">{p.label || p.name}{p.required ? ' *' : ''}</label>
+                    <input
+                      type="text"
+                      value={runParams[p.name] ?? ''}
+                      onChange={e => setRunParams(prev => ({ ...prev, [p.name]: e.target.value }))}
+                      placeholder={p.default ?? ''}
+                      className="input-field text-xs"
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+            {error && <p className="text-xs text-red-400 mb-3">{error}</p>}
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setRunModal(null)} className="btn-secondary text-xs px-4 py-1.5">Cancel</button>
+              <button onClick={startRun} disabled={starting} className="btn-primary text-xs px-4 py-1.5">
+                {starting ? 'Starting...' : 'Start Run'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function WorkPage({ authUser, previewMode, previewData }: { authUser?: AuthUser; previewMode?: boolean; previewData?: WorkPreviewData } = {}) {
@@ -3371,8 +3881,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const savedProjectFilterRef = useRef<Set<string>>(new Set());
   const projectFilterRef = useRef<Set<string>>(new Set());
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
-  const [boardType, setBoardType] = useState<'backlog' | 'kanban' | 'dag'>(previewData?.initialBoardType ?? 'backlog');
-  const boardTabs = useMemo(() => [{ id: 'backlog' as const }, { id: 'kanban' as const }, { id: 'dag' as const }], []);
+  const [boardType, setBoardType] = useState<'backlog' | 'kanban' | 'dag' | 'workflows'>(previewData?.initialBoardType ?? 'backlog');
+  const boardTabs = useMemo(() => [{ id: 'backlog' as const }, { id: 'kanban' as const }, { id: 'dag' as const }, { id: 'workflows' as const }], []);
   const boardSwipe = useSwipeTabs(boardTabs, boardType, setBoardType);
   const kanbanScrollRef = useRef<HTMLDivElement>(null);
   const kanbanSwipeOpts = useMemo(() => ({ scrollContainerRef: kanbanScrollRef }), []);
@@ -3398,6 +3908,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const msg = (m: string) => { setFlash(m); setTimeout(() => setFlash(''), 3000); };
 
   const selectedProject = projects.find(p => p.id === selectedProjectId) ?? null;
+  const selectedProjectTeamId = selectedProject?.teamIds?.[0] ?? null;
   const settingsProject = selectedProject ?? projects.find(p => p.id === settingsProjectId) ?? null;
 
   const closeProjectSettings = useCallback(() => {
@@ -4167,10 +4678,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
 
           {/* View toggle */}
           <div className="flex items-center border border-border-default/60 rounded-md overflow-hidden shrink-0">
-            {(['backlog', 'kanban', 'dag'] as const).map(v => (
+            {(['backlog', 'kanban', 'dag', 'workflows'] as const).map(v => (
               <button key={v} onClick={() => setBoardType(v)}
                 className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${boardType === v ? 'bg-brand-600/25 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
-              >{v === 'backlog' ? t('work:task.backlog') : v === 'kanban' ? t('work:task.kanban') : t('work:task.dag')}</button>
+              >{v === 'backlog' ? t('work:task.backlog') : v === 'kanban' ? t('work:task.kanban') : v === 'dag' ? t('work:task.dag') : t('work:task.workflows', 'Workflows')}</button>
             ))}
           </div>
 
@@ -4318,6 +4829,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             selectedReqId={selectedReq?.id}
           />
           </div>
+        ) : boardType === 'workflows' ? (
+          <WorkflowsPanel teamId={selectedProjectTeamId} projectId={selectedProjectId} agents={agents} />
         ) : boardType === 'dag' ? (
           <div className="flex-1 min-h-0 flex flex-col relative" onTouchStart={isMobile ? boardSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? boardSwipe.onTouchEnd : undefined}>
           <TaskDAG
@@ -4350,8 +4863,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           )}
           </div>
         ) : (
-          <div ref={kanbanScrollRef} className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden px-4 py-5" onTouchStart={isMobile ? kanbanSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? kanbanSwipe.onTouchEnd : undefined}>
-            <div className="flex gap-3 h-full">
+          <div ref={kanbanScrollRef} className="flex-1 min-h-0 overflow-auto px-4 py-5" onTouchStart={isMobile ? kanbanSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? kanbanSwipe.onTouchEnd : undefined}>
+            <div className="flex gap-3 items-stretch">
               {visibleColumns.map(col => {
                 const colTasks = getColumnTasks(col);
                 const colReqs = getColumnReqs(col);
@@ -4359,16 +4872,16 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 const isOver = dragOverCol === col.id;
                 return (
                   <div key={col.id}
-                    className={`w-[280px] shrink-0 rounded-xl flex flex-col h-full transition-colors ${isOver ? 'bg-surface-elevated/60 ring-1 ring-brand-500/30' : 'bg-surface-secondary/50'}`}
+                    className={`w-[280px] shrink-0 rounded-xl flex flex-col transition-colors ${isOver ? 'bg-surface-elevated/60 ring-1 ring-brand-500/30' : 'bg-surface-secondary/50'}`}
                     onDragOver={e => onDragOver(e, col.id)} onDragLeave={e => onDragLeave(e, col.id)} onDrop={e => void onDrop(e, col.id)}>
-                    <div className={`flex justify-between items-center px-3 py-2.5 shrink-0 border-b border-border-default/30`}>
+                    <div className={`flex justify-between items-center px-3 py-2.5 shrink-0 border-b border-border-default/30 sticky top-0 z-10 rounded-t-xl ${isOver ? 'bg-surface-elevated/60' : 'bg-surface-secondary/50'}`}>
                       <div className="flex items-center gap-2">
                         <span className={`w-2 h-2 rounded-full ${col.accent.replace('border-t-', 'bg-')}`} />
                         <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{col.label}</span>
                       </div>
                       <span className="text-[11px] text-fg-tertiary font-medium tabular-nums">{itemCount}</span>
                     </div>
-                    <div className="space-y-2 flex-1 min-h-0 overflow-y-auto scrollbar-thin px-2 py-2">
+                    <div className="space-y-2 px-2 py-2">
                       {(() => {
                         type CardItem = { kind: 'req'; data: RequirementInfo; time: number } | { kind: 'task'; data: TaskInfo; time: number };
                         const items: CardItem[] = [
@@ -4486,7 +4999,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                       })()}
                     </div>
                     {isOver && (
-                      <div className="mx-2 mb-2 border-2 border-dashed border-brand-500/25 rounded-lg h-10 flex items-center justify-center shrink-0">
+                      <div className="sticky bottom-2 mx-2 mb-2 border-2 border-dashed border-brand-500/25 rounded-lg h-10 flex items-center justify-center shrink-0 bg-surface-secondary/80 backdrop-blur-sm">
                         <span className="text-[11px] text-brand-500/50">{t('work:task.dropHere')}</span>
                       </div>
                     )}
@@ -5108,6 +5621,7 @@ function RequirementDetailPanel({
   const [descDraft, setDescDraft] = useState(req.description);
   const [savingDesc, setSavingDesc] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [showWorkflowModal, setShowWorkflowModal] = useState(false);
   const reqScrollRef = useRef<HTMLDivElement>(null);
   const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
   const descRef = useRef<HTMLDivElement>(null);
@@ -5156,6 +5670,9 @@ function RequirementDetailPanel({
   const reqProject = req.projectId ? projects.find(p => p.id === req.projectId) : null;
   const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 12);
   const linkedTasks = allTasks.filter(t => req.taskIds.includes(t.id));
+  const reqTeamId = reqProject?.teamIds?.[0] ?? null;
+  const linkedTaskMap = useMemo(() => new Map(linkedTasks.map(t => [t.id, t])), [linkedTasks]);
+  const canSaveAsWorkflow = linkedTasks.length >= 2 && linkedTasks.some(t => t.blockedBy?.some(id => linkedTaskMap.has(id)));
 
   useEffect(() => { setDescDraft(req.description); setEditingDesc(false); }, [req.id, req.description]);
 
@@ -5287,12 +5804,20 @@ function RequirementDetailPanel({
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">{t('work:task.linkedTasks', { count: linkedTasks.length })}</label>
-              {!isTerminal && onCreateTask && (
-                <button onClick={() => onCreateTask(req.id, req.projectId)} className="text-[11px] text-amber-500 hover:text-amber-400 font-medium flex items-center gap-1">
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
-                  {t('work:requirement.createTask')}
-                </button>
-              )}
+              <div className="flex items-center gap-2">
+                {canSaveAsWorkflow && reqTeamId && (
+                  <button onClick={() => setShowWorkflowModal(true)} className="text-[11px] text-brand-500 hover:text-brand-400 font-medium flex items-center gap-1">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                    {t('work:task.saveAsWorkflow')}
+                  </button>
+                )}
+                {!isTerminal && onCreateTask && (
+                  <button onClick={() => onCreateTask(req.id, req.projectId)} className="text-[11px] text-amber-500 hover:text-amber-400 font-medium flex items-center gap-1">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                    {t('work:requirement.createTask')}
+                  </button>
+                )}
+              </div>
             </div>
             {linkedTasks.length > 0 ? (() => {
               const taskMap = new Map(linkedTasks.map(t => [t.id, t]));
@@ -5413,6 +5938,16 @@ function RequirementDetailPanel({
           confirmLabel={t('work:requirement.cancelConfirmLabel', 'Cancel Requirement')}
           onConfirm={() => { setShowCancelConfirm(false); onCancel(req.id); }}
           onCancel={() => setShowCancelConfirm(false)}
+        />
+      )}
+      {showWorkflowModal && reqTeamId && (
+        <SaveAsWorkflowModal
+          req={req}
+          tasks={linkedTasks}
+          agents={agents}
+          teamId={reqTeamId}
+          onClose={() => setShowWorkflowModal(false)}
+          onSaved={() => setShowWorkflowModal(false)}
         />
       )}
     </div>

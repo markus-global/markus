@@ -2890,7 +2890,7 @@ export class TaskService {
 
     // Human-created tasks and pre-approved plan tasks always skip governance
     if (request.creatorRole === 'human') return 'auto';
-    if (request.approvedVia === 'plan_approval') return 'auto';
+    if (request.approvedVia === 'plan_approval' || request.approvedVia === 'workflow') return 'auto';
 
     // Safe default when no policy is configured: agent-created tasks require human approval
     if (!policy?.enabled) {

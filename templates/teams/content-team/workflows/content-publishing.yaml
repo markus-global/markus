@@ -1,0 +1,101 @@
+name: content-publishing
+displayName: 内容发布流程
+description: Plan content strategy, write platform-specific drafts in parallel, then editorial review and publish
+version: "1.0.0"
+
+params:
+  - name: topic
+    type: string
+    label: 内容主题
+    required: true
+    description: The main topic or theme for this content batch
+  - name: target_platforms
+    type: text
+    label: 目标平台
+    default: "微信公众号, 知乎, 小红书"
+    description: Comma-separated list of platforms to publish on
+  - name: content_angle
+    type: text
+    label: 内容角度
+    description: Optional specific angle or perspective for the content
+
+steps:
+  - id: plan
+    name: 内容策划
+    type: agent_task
+    role: Editor
+    priority: high
+    prompt: |
+      制定内容策划方案，主题：{{topic}}
+      目标平台：{{target_platforms}}
+      内容角度：{{content_angle}}
+
+      请产出以下内容：
+      1. 内容定位与核心信息
+      2. 各平台适配策略（排版风格、长度、语气）
+      3. 目标受众画像
+      4. SEO关键词 / 平台标签建议
+      5. 参考素材与数据来源
+
+      将策划方案作为交付物提交。
+
+  - id: write_chinese
+    name: 中文长文写作
+    type: agent_task
+    role: Chinese Writer
+    depends_on: [plan]
+    inputs:
+      - from: plan
+        as: content_plan
+    prompt: |
+      根据内容策划方案，撰写关于"{{topic}}"的中文内容。
+
+      请产出：
+      - 微信公众号文章（2000-3000字，包含标题、摘要、正文）
+      - 知乎回答/文章版本（适配知乎排版风格）
+
+      注意遵循策划方案中的内容定位和语气要求。
+      将所有稿件作为交付物提交。
+
+  - id: write_xhs
+    name: 小红书笔记制作
+    type: agent_task
+    role: Xiaohongshu Operator
+    depends_on: [plan]
+    inputs:
+      - from: plan
+        as: content_plan
+    prompt: |
+      根据内容策划方案，制作关于"{{topic}}"的小红书笔记。
+
+      请产出 2-3 条笔记草稿，每条包含：
+      - 吸引眼球的标题（含emoji）
+      - 正文内容（300-500字，分段清晰）
+      - 话题标签（10-15个）
+      - 配图描述建议
+
+      风格要求：口语化、有亲和力、适合目标受众。
+      将所有笔记草稿作为交付物提交。
+
+  - id: review_and_publish
+    name: 编辑审核
+    type: agent_task
+    role: Editor
+    depends_on: [write_chinese, write_xhs]
+    inputs:
+      - from: write_chinese
+        as: chinese_drafts
+      - from: write_xhs
+        as: xhs_drafts
+    prompt: |
+      审核所有关于"{{topic}}"的内容稿件。
+
+      审核要点：
+      1. 内容与策划方案的一致性
+      2. 各平台调性和格式是否合适
+      3. 事实准确性和措辞规范
+      4. 品牌调性统一
+
+      如果稿件质量达标，给出发布审批；
+      如果需要修改，提出具体修改意见。
+      将审核结果和最终稿件作为交付物提交。

@@ -15,7 +15,8 @@
     "@markus/shared": "workspace:*",
     "@markus/storage": "workspace:*",
     "cron-parser": "^5.5.0",
-    "ws": "^8.19.0"
+    "ws": "^8.19.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1"

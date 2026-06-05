@@ -38,6 +38,7 @@ export interface StorageBridge {
   auditRepo?: any;
   statusTransitionRepo?: any;
   readCursorRepo?: any;
+  workflowRunRepo?: any;
 }
 
 function resolveSqlitePath(url?: string): string {
@@ -88,6 +89,7 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       auditRepo: new storage.SqliteAuditRepo(db),
       statusTransitionRepo: new storage.SqliteStatusTransitionRepo(db),
       readCursorRepo: new storage.SqliteReadCursorRepo(db),
+      workflowRunRepo: new storage.SqliteWorkflowRunRepo(db),
     };
     log.info('SQLite storage initialized', { path: dbPath });
     return bridge;

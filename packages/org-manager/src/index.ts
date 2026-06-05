@@ -24,3 +24,6 @@ export { initStorage, type StorageBridge } from './storage-bridge.js';
 export { searchRegistries, installSkill, type SkillSearchResult, type SkillInstallRequest, type SkillInstallResult } from './skill-service.js';
 export { BuilderService, type ArtifactInfo, type InstallResult } from './builder-service.js';
 export { LocalFileStorageProvider } from './file-storage-provider.js';
+export { WorkflowService } from './workflow-service.js';
+export { WorkflowRunner, type WorkflowRunRepo } from './workflow-runner.js';
+export { WorkflowScheduler } from './workflow-scheduler.js';

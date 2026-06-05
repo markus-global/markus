@@ -21,6 +21,8 @@ This skill teaches you how to create Markus team packages — self-contained dir
 ├── README.md                    # Public-facing team overview for Hub/Builder (REQUIRED)
 ├── ANNOUNCEMENT.md              # Team announcement (you write via file_write)
 ├── NORMS.md                     # Working norms (you write via file_write)
+├── workflows/                   # Workflow templates (optional)
+│   └── {workflow-name}.yaml     # YAML workflow DAG definition
 └── members/
     ├── {manager-slug}/
     │   ├── ROLE.md              # Identity and system prompt (REQUIRED)
@@ -46,10 +48,11 @@ This skill teaches you how to create Markus team packages — self-contained dir
 | `members/{name}/HEARTBEAT.md` | `~/.markus/agents/{agentId}/role/HEARTBEAT.md` | Periodic self-check checklist (every ~30 min) |
 | `members/{name}/POLICIES.md` | `~/.markus/agents/{agentId}/role/POLICIES.md` | Additional agent constraints |
 | `members/{name}/CONTEXT.md` | `~/.markus/agents/{agentId}/role/CONTEXT.md` | Domain context and references |
+| `workflows/*.yaml` | `~/.markus/teams/{teamId}/workflows/*.yaml` | Workflow templates (runnable as task DAGs) |
 
-## Two-Step Workflow
+## Creation Workflow
 
-Output the team in two steps — manifest first, then content files. **Never put file content inline in the JSON.**
+Output the team in up to three steps — manifest first, then content files, then optional workflow YAML. **Never put file content inline in the JSON.**
 
 ### Chat Mode vs Task Mode
 
@@ -94,7 +97,8 @@ This JSON contains ONLY metadata and structure — **no file content**.
       "parallelImplementation": true,
       "worktreeIsolation": true,
       "requireReviewBeforeComplete": true
-    }
+    },
+    "workflows": ["workflows/my-workflow.yaml"]
   }
 }
 ```
@@ -157,6 +161,65 @@ file_write("~/.markus/builder-artifacts/teams/research-team/members/senior-resea
 
 **IMPORTANT**: The member directory slug is derived from the member's `name` field — lowercased, spaces to hyphens, non-alphanumeric removed.
 
+### Step 3: Write Workflow YAML (optional)
+
+If the team has repeatable multi-step processes that should run as automated DAGs, add workflow templates. Each workflow is a YAML file that defines a sequence of tasks with dependencies, role assignments, and optional scheduling.
+
+**When to include workflows:**
+- The team has a process that runs repeatedly (e.g., weekly content publishing, daily reports)
+- Multiple members need to collaborate in a defined sequence
+- You want steps to run in parallel where possible and wait on dependencies automatically
+
+**Write each workflow YAML to `workflows/`:**
+
+```
+file_write("~/.markus/builder-artifacts/teams/{team-name}/workflows/content-publishing.yaml", "<YAML content>")
+```
+
+Make sure `team.workflows` in your manifest references the file:
+```json
+"workflows": ["workflows/content-publishing.yaml"]
+```
+
+**Minimal workflow example:**
+
+```yaml
+name: content-publishing
+displayName: Content Publishing
+description: Plan, write, and review content
+version: "1.0.0"
+
+params:
+  - name: topic
+    type: string
+    required: true
+
+steps:
+  - id: plan
+    name: Plan Content
+    type: agent_task
+    role: editor
+    prompt: "Create a content plan for: {{topic}}"
+
+  - id: write
+    name: Write Draft
+    type: agent_task
+    role: writer
+    depends_on: [plan]
+    inputs: [{ from: plan, as: content_plan }]
+    prompt: "Write content about {{topic}} following the plan."
+
+  - id: review
+    name: Review & Publish
+    type: agent_task
+    role: editor
+    depends_on: [write]
+    inputs: [{ from: write, as: draft }]
+    prompt: "Review the draft and finalize for publishing."
+```
+
+For the full YAML format reference, DAG patterns, scheduling, and more examples, activate the **`workflow-building`** skill.
+
 ## Field Reference
 
 ### Top-level fields
@@ -181,6 +244,11 @@ file_write("~/.markus/builder-artifacts/teams/research-team/members/senior-resea
 - **`parallelImplementation`**: `true` if multiple members work in parallel during implementation
 - **`worktreeIsolation`**: `true` if developers should work in isolated git worktrees (recommended for coding teams)
 - **`requireReviewBeforeComplete`**: `true` if tasks must pass review before completion
+
+### `team.workflows` — Workflow Template Files (optional)
+- Array of YAML file paths relative to the package root, e.g. `["workflows/content-publishing.yaml"]`
+- These files are copied to `~/.markus/teams/{teamId}/workflows/` on install and become runnable via the Workflows UI or `workflow_run` tool
+- See the `workflow-building` skill for the full YAML format
 
 ## After Creation
 

@@ -952,7 +952,7 @@ export class OrganizationService {
         roleName: 'secretary',
         orgId,
         agentRole: 'worker',
-        skills: ['agent-building', 'team-building', 'skill-building'],
+        skills: ['agent-building', 'team-building', 'skill-building', 'workflow-building'],
       });
 
       log.info('Secretary agent seeded', {
@@ -963,7 +963,7 @@ export class OrganizationService {
     }
   }
 
-  private static readonly BUILDING_SKILLS = new Set(['agent-building', 'team-building', 'skill-building']);
+  private static readonly BUILDING_SKILLS = new Set(['agent-building', 'team-building', 'skill-building', 'workflow-building']);
 
   /**
    * Register dynamic context providers on any agent with a building skill

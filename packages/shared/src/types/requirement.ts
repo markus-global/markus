@@ -5,7 +5,7 @@ export type RequirementStatus = ItemStatus;
 /** @deprecated Use ItemStatus. Kept for backward compat during migration. */
 export type LegacyRequirementStatus = 'pending_review' | 'approved' | RequirementStatus;
 
-export type RequirementSource = 'user' | 'agent';
+export type RequirementSource = 'user' | 'agent' | 'workflow';
 
 export interface Requirement {
   id: string;

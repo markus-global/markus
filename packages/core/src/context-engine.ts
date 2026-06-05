@@ -182,6 +182,20 @@ export class ContextEngine {
       recentDecisions?: Array<{ type: string; reasoning: string }>;
       mergedContent?: string;
     };
+    workflowContext?: {
+      activeRuns: Array<{
+        workflowName: string;
+        runNumber: number;
+        status: string;
+        taskCount: number;
+        startedAt: string;
+      }>;
+      availableWorkflows: Array<{
+        name: string;
+        description: string;
+        stepCount: number;
+      }>;
+    };
     cognitiveContext?: PreparedCognitiveContext;
   }): Promise<SystemPromptResult> {
     const isDream = opts.scenario === 'memory_consolidation';
@@ -486,6 +500,24 @@ export class ContextEngine {
       } else {
         dynamic.push('\n## Task Board');
         dynamic.push('No tasks on the board.');
+      }
+    }
+
+    if (opts.workflowContext) {
+      const wc = opts.workflowContext;
+      if (wc.activeRuns.length > 0) {
+        dynamic.push('\n## Active Workflow Runs');
+        for (const r of wc.activeRuns) {
+          dynamic.push(`- **${r.workflowName}** run #${r.runNumber} — ${r.status}, ${r.taskCount} tasks (started ${r.startedAt})`);
+        }
+        dynamic.push('Use `workflow_status` to check details or `workflow_cancel` to stop a run.');
+      }
+      if (wc.availableWorkflows.length > 0 && wc.activeRuns.length === 0) {
+        dynamic.push('\n## Available Workflows');
+        for (const w of wc.availableWorkflows) {
+          dynamic.push(`- **${w.name}** (${w.stepCount} steps): ${w.description}`);
+        }
+        dynamic.push('Use `workflow_list` for details or `workflow_run` to start a workflow.');
       }
     }
 
@@ -921,6 +953,20 @@ export class ContextEngine {
         lines.push('4. **Notify a human**: `notify_user` if the requirement outcome needs human attention or decision.');
         lines.push('');
         lines.push('**MANDATORY**: Before deciding, call `requirement_get` to understand the full current state of the requirement, including linked tasks, status, and comments.');
+        lines.push('');
+        lines.push('**CRITICAL**: You MUST call at least one action tool before finishing. Do NOT just output text — it will be lost.');
+        break;
+
+      case 'workflow_action':
+        lines.push('You are processing a **workflow update that requires action** (e.g., a workflow run completed, failed, or a step failed).');
+        lines.push('');
+        lines.push('**Communication channel**: Your text output is **NOT visible** to any human or agent. You MUST use tools to take action.');
+        lines.push('');
+        lines.push('**Typical actions**:');
+        lines.push('1. **Check status**: Use `workflow_status` to understand the current state of workflow runs.');
+        lines.push('2. **Review outputs**: If a run completed, check the task deliverables to verify quality.');
+        lines.push('3. **Handle failures**: If a step failed, use `task_get` to understand the failure, then decide: retry (update status back to in_progress), cancel the run (`workflow_cancel`), or notify a human (`notify_user`).');
+        lines.push('4. **Notify humans**: Use `notify_user` for important outcomes that need human attention.');
         lines.push('');
         lines.push('**CRITICAL**: You MUST call at least one action tool before finishing. Do NOT just output text — it will be lost.');
         break;
