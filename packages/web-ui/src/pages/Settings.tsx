@@ -3512,7 +3512,7 @@ function OrgLicenseSection() {
     try { await ensureHubAuth(); } catch { setLicMsg({ type: 'err', text: t('license.activationFailed') }); setActivating(false); return; }
     try {
       const result = await api.license.activate(licenseKey.trim());
-      if (result.success) { setLicMsg({ type: 'ok', text: t('license.activated') }); setLicenseKey(''); refreshLicense(); }
+      if (result.success) { setLicMsg({ type: 'ok', text: t('license.activated') }); setLicenseKey(''); refreshLicense(true); }
       else { setLicMsg({ type: 'err', text: localizeError(result.error ?? t('license.activationFailed')) }); }
     } catch (err) { setLicMsg({ type: 'err', text: localizeError((err instanceof Error && err.message) || t('license.activationFailed')) }); }
     finally { setActivating(false); }
@@ -3523,7 +3523,7 @@ function OrgLicenseSection() {
     try { await ensureHubAuth(); } catch { setLicMsg({ type: 'err', text: t('license.trialFailed') }); setActivating(false); return; }
     try {
       const result = await api.license.trial();
-      if (result.success) { setLicMsg({ type: 'ok', text: t('license.trialActivated') }); refreshLicense(); }
+      if (result.success) { setLicMsg({ type: 'ok', text: t('license.trialActivated') }); refreshLicense(true); }
       else { setLicMsg({ type: 'err', text: localizeError(result.error ?? t('license.trialFailed')) }); }
     } catch (err) { setLicMsg({ type: 'err', text: localizeError((err instanceof Error && err.message) || t('license.trialFailed')) }); }
     finally { setActivating(false); }
@@ -3536,7 +3536,7 @@ function OrgLicenseSection() {
       setLicMsg(null);
       try {
         const result = await api.license.import(reader.result as string);
-        if (result.success) { setLicMsg({ type: 'ok', text: t('license.imported') }); refreshLicense(); }
+        if (result.success) { setLicMsg({ type: 'ok', text: t('license.imported') }); refreshLicense(true); }
         else { setLicMsg({ type: 'err', text: result.error ?? t('license.importFailed') }); }
       } catch { setLicMsg({ type: 'err', text: t('license.importFailed') }); }
     };
@@ -3546,7 +3546,7 @@ function OrgLicenseSection() {
   const handleDeactivate = async () => {
     if (!window.confirm(t('license.deactivateConfirm'))) return;
     setLicMsg(null);
-    try { await api.license.deactivate(); setLicMsg({ type: 'ok', text: t('license.deactivated') }); refreshLicense(); }
+    try { await api.license.deactivate(); setLicMsg({ type: 'ok', text: t('license.deactivated') }); refreshLicense(true); }
     catch { setLicMsg({ type: 'err', text: t('license.deactivateFailed') }); }
   };
 
@@ -3575,10 +3575,11 @@ function OrgLicenseSection() {
     ) : null
   );
 
+  const effectiveOrgId = licenseInfo?.orgId || selectedOrgId;
   const idBlock = [
     licenseInfo?.username && `Username: ${licenseInfo.username}`,
     licenseInfo?.hubUserId && `User ID: ${licenseInfo.hubUserId}`,
-    licenseInfo?.orgId && `Org ID: ${licenseInfo.orgId}`,
+    effectiveOrgId && `Org ID: ${effectiveOrgId}`,
     licenseInfo?.instanceId && `Instance ID: ${licenseInfo.instanceId}`,
   ].filter(Boolean).join('\n');
 
@@ -3676,6 +3677,7 @@ function OrgLicenseSection() {
             daysRemaining={daysRemaining} effectiveValidUntil={effectiveValidUntil}
             effectiveMaxSeats={effectiveMaxSeats} effectiveUsedSeats={effectiveUsedSeats}
             effectiveOrgName={selectedOrg?.name ?? licenseInfo?.orgName}
+            hubMemberCount={selectedOrg?.memberCount}
             featureKeys={featureKeys} featureI18n={featureI18n} t={t} />
 
           {isEnterprise ? (
@@ -3890,11 +3892,13 @@ function OrgLicenseSection() {
 
 /* ─── License Plan Card (shared sub-component) ─── */
 
-function LicensePlanCard({ isEnterprise, licenseInfo, licenseOwnedBySelectedOrg, daysRemaining, effectiveValidUntil, effectiveMaxSeats, effectiveUsedSeats, effectiveOrgName, featureKeys, featureI18n, t }: {
+function LicensePlanCard({ isEnterprise, licenseInfo, licenseOwnedBySelectedOrg, daysRemaining, effectiveValidUntil, effectiveMaxSeats, effectiveUsedSeats, effectiveOrgName, hubMemberCount, featureKeys, featureI18n, t }: {
   isEnterprise: boolean | undefined; licenseInfo: any; licenseOwnedBySelectedOrg: boolean;
   daysRemaining: number | null; effectiveValidUntil?: string; effectiveMaxSeats?: number; effectiveUsedSeats: number; effectiveOrgName?: string;
+  hubMemberCount?: number;
   featureKeys: readonly string[]; featureI18n: Record<string, string>; t: (key: string, opts?: any) => string;
 }) {
+  const displayUsers = hubMemberCount ?? licenseInfo?.usage?.users ?? 0;
   if (isEnterprise) {
     return (
       <div className="rounded-lg border border-brand-500/20 overflow-hidden">
@@ -3918,7 +3922,7 @@ function LicensePlanCard({ isEnterprise, licenseInfo, licenseOwnedBySelectedOrg,
           <div className="mt-4 grid grid-cols-3 gap-px rounded-lg overflow-hidden border border-border-default/50">
             <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-sm font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.teams ?? 0} <span className="text-fg-tertiary font-normal">/ ∞</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitTeams')}</div></div>
             <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-sm font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.toolCallsToday ?? 0} <span className="text-fg-tertiary font-normal">/ ∞</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitToolCalls')}{t('license.perDay')}</div></div>
-            <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-sm font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.users ?? 0} <span className="text-fg-tertiary font-normal">/ {effectiveMaxSeats ?? '∞'}</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitUsers')}</div></div>
+            <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-sm font-semibold text-fg-primary tabular-nums">{displayUsers} <span className="text-fg-tertiary font-normal">/ {effectiveMaxSeats ?? '∞'}</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitUsers')}</div></div>
           </div>
           <div className="mt-3 flex flex-wrap gap-1.5">
             {featureKeys.map(f => (<span key={f} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-brand-500 bg-brand-600/6 border border-brand-500/10">{FEATURE_ICONS[f]} {featureI18n[f]}</span>))}
@@ -3946,7 +3950,7 @@ function LicensePlanCard({ isEnterprise, licenseInfo, licenseOwnedBySelectedOrg,
         <div className="mt-3 grid grid-cols-3 gap-px rounded-lg overflow-hidden border border-border-default/50">
           <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-lg font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.teams ?? 0} <span className="text-fg-tertiary font-normal text-xs">/ 1</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitTeams')}</div></div>
           <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-lg font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.toolCallsToday ?? 0} <span className="text-fg-tertiary font-normal text-xs">/ 500</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitToolCalls')}{t('license.perDay')}</div></div>
-          <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-lg font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.users ?? 0} <span className="text-fg-tertiary font-normal text-xs">/ 1</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitUsers')}</div></div>
+          <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-lg font-semibold text-fg-primary tabular-nums">{displayUsers} <span className="text-fg-tertiary font-normal text-xs">/ 1</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitUsers')}</div></div>
         </div>
       </div>
     </div>

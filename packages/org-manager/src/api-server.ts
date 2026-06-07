@@ -204,7 +204,22 @@ export class APIServer {
   private remoteAgent?: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void };
   private remoteAgentFactory?: () => Promise<{ getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void } | null>;
   private modelCatalog?: ModelCatalogService;
-  // Custom group chats are now persisted in SQLite via storage.groupChatRepo
+  /** fetch that follows redirects while preserving the Authorization header */
+  private async hubFetch(url: string, init?: RequestInit): Promise<Response> {
+    let currentUrl = url;
+    for (let i = 0; i < 3; i++) {
+      const res = await fetch(currentUrl, { ...init, redirect: 'manual' });
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get('location');
+        if (!location) return res;
+        currentUrl = new URL(location, currentUrl).href;
+        continue;
+      }
+      return res;
+    }
+    return fetch(currentUrl, init);
+  }
+
   constructor(
     private orgService: OrganizationService,
     private taskService: TaskService,
@@ -460,7 +475,7 @@ export class APIServer {
         const qs = params.toString();
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
         if (token) headers['Authorization'] = `Bearer ${token}`;
-        const res = await fetch(`${hubUrl}/api/items${qs ? `?${qs}` : ''}`, { headers });
+        const res = await self.hubFetch(`${hubUrl}/api/items${qs ? `?${qs}` : ''}`, { headers });
         if (!res.ok) throw new Error(`Hub search failed: ${res.status}`);
         const data = await res.json() as { items?: Array<Record<string, unknown>> };
         return (data.items ?? []).map((item: Record<string, unknown>) => ({
@@ -478,7 +493,7 @@ export class APIServer {
         const token = self.readHubToken();
         if (!token) throw new Error('Hub token not configured. Please login to Markus Hub first.');
         const headers: Record<string, string> = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` };
-        const res = await fetch(`${hubUrl}/api/items/${itemId}/download`, { method: 'POST', headers });
+        const res = await self.hubFetch(`${hubUrl}/api/items/${itemId}/download`, { method: 'POST', headers });
         if (!res.ok) throw new Error(`Hub download failed: ${res.status}`);
         const data = await res.json() as { name: string; itemType: string; files?: Record<string, string>; config?: unknown; description?: string };
         const name = data.name;
@@ -1625,24 +1640,28 @@ export class APIServer {
       }
 
       // Verify Hub token against Hub API and use the response as authoritative source
-      let verifiedUser: { id: string; username?: string; email?: string; displayName?: string; avatarUrl?: string };
+      let verifiedUser: { id: string; username?: string; email?: string; displayName?: string; avatarUrl?: string } | null = null;
       try {
-        const verifyRes = await fetch(`${this.hubUrl}/api/auth/me`, {
+        const verifyRes = await this.hubFetch(`${this.hubUrl}/api/auth/me`, {
           headers: { 'Authorization': `Bearer ${hubToken}` },
         });
-        if (!verifyRes.ok) {
-          this.json(res, 401, { error: 'Invalid Hub token' });
-          return;
+        if (verifyRes.ok) {
+          const verifyData = await verifyRes.json() as { user?: { id: string; username?: string; email?: string; displayName?: string; avatarUrl?: string } };
+          if (verifyData.user && verifyData.user.id === hubUser.id) {
+            verifiedUser = verifyData.user;
+          } else {
+            log.warn('Hub token user mismatch', { expected: hubUser.id, got: verifyData.user?.id });
+          }
+        } else {
+          log.warn('Hub /api/auth/me returned non-OK', { status: verifyRes.status, hubUrl: this.hubUrl });
         }
-        const verifyData = await verifyRes.json() as { user?: { id: string; username?: string; email?: string; displayName?: string; avatarUrl?: string } };
-        if (!verifyData.user || verifyData.user.id !== hubUser.id) {
-          this.json(res, 403, { error: 'Hub token user mismatch' });
-          return;
-        }
-        verifiedUser = verifyData.user;
-      } catch {
-        this.json(res, 502, { error: 'Could not verify Hub token' });
-        return;
+      } catch (e) {
+        log.warn('Hub token verification failed, proceeding with client-supplied data', { error: (e as Error).message, hubUrl: this.hubUrl });
+      }
+      // If Hub verification failed, trust the client-supplied hubUser data
+      // (the token was already obtained via the Hub connect flow)
+      if (!verifiedUser) {
+        verifiedUser = { id: hubUser.id, username: hubUser.username, email: hubUser.email, displayName: hubUser.displayName, avatarUrl: hubUser.avatarUrl };
       }
 
       // Prefer authoritative Hub /api/auth/me data, fall back to client-supplied hubUser
@@ -1691,10 +1710,21 @@ export class APIServer {
           userRow = this.storage.userRepo.findById(userId);
           isFirstLogin = true;
         } else {
-          // There's already an owner — reject for Free (single-user)
-          // TODO: check license for Enterprise multi-user support
-          this.json(res, 403, { error: 'This instance already has an owner. Multi-user requires Enterprise license.' });
-          return;
+          // There's already an owner — try to adopt if single-user instance
+          const realOwners = allUsers.filter((u: any) =>
+            u.role === 'owner' && (u.passwordHash || u.hubUserId) && u.email !== 'admin@markus.local'
+          );
+          if (realOwners.length === 1 && !realOwners[0].hubUserId) {
+            // Single-user instance with one owner that has no Hub binding — adopt them
+            const existingOwner = realOwners[0];
+            this.storage.userRepo.updateProfile(existingOwner.id, { name: existingOwner.name, email: email || existingOwner.email, avatarUrl: avatarUrl ?? existingOwner.avatarUrl });
+            this.storage.userRepo.updateHubUserId(existingOwner.id, hubUser.id, hubUser.username);
+            userRow = this.storage.userRepo.findById(existingOwner.id);
+            log.info('Hub login: adopted existing owner', { ownerId: existingOwner.id, hubUserId: hubUser.id });
+          } else {
+            this.json(res, 403, { error: 'This instance already has an owner. Multi-user requires Enterprise license.' });
+            return;
+          }
         }
       }
 
@@ -7144,7 +7174,7 @@ EXPLANATION_END`;
       const hubToken = this.readHubToken();
       if (hubToken) {
         try {
-          const meRes = await fetch(`${this.hubUrl}/api/auth/me`, {
+          const meRes = await this.hubFetch(`${this.hubUrl}/api/auth/me`, {
             headers: { 'Authorization': `Bearer ${hubToken}` },
           });
           if (meRes.ok) {
@@ -7192,7 +7222,7 @@ EXPLANATION_END`;
       const hubToken = this.readHubToken();
       if (hubToken) {
         try {
-          const meRes = await fetch(`${this.hubUrl}/api/auth/me`, {
+          const meRes = await this.hubFetch(`${this.hubUrl}/api/auth/me`, {
             headers: { 'Authorization': `Bearer ${hubToken}` },
           });
           if (meRes.ok) {

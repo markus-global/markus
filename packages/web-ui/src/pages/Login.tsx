@@ -38,7 +38,7 @@ export function Login({ onLogin, hasOwner, hasMultipleUsers }: HubLoginProps) {
         clearHubAuth();
         return handleHubLogin(method, true);
       } else {
-        setError(t('login.hubUnavailable'));
+        setError(msg || t('login.hubUnavailable'));
       }
     } finally {
       setLoading(null);

@@ -7,6 +7,22 @@ import { randomUUID, createVerify } from 'node:crypto';
 const log = createLogger('license');
 
 const LICENSE_FILE = join(homedir(), '.markus', 'license.json');
+
+/** fetch wrapper that follows redirects while preserving the Authorization header */
+async function hubFetch(url: string, init?: RequestInit, maxRedirects = 3): Promise<Response> {
+  let currentUrl = url;
+  for (let i = 0; i <= maxRedirects; i++) {
+    const res = await fetch(currentUrl, { ...init, redirect: 'manual' });
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location');
+      if (!location) break;
+      currentUrl = new URL(location, currentUrl).href;
+      continue;
+    }
+    return res;
+  }
+  return fetch(currentUrl, init);
+}
 const HEARTBEAT_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 const HUB_LICENSE_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
@@ -72,7 +88,7 @@ export class LicenseService {
     if (!hubToken) return;
 
     try {
-      const res = await fetch(`${this.hubUrl}/api/licenses/heartbeat`, {
+      const res = await hubFetch(`${this.hubUrl}/api/licenses/heartbeat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -178,7 +194,7 @@ export class LicenseService {
     }
 
     try {
-      const res = await fetch(`${this.hubUrl}/api/licenses/activate`, {
+      const res = await hubFetch(`${this.hubUrl}/api/licenses/activate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -223,7 +239,7 @@ export class LicenseService {
     }
 
     try {
-      const res = await fetch(`${this.hubUrl}/api/licenses/trial`, {
+      const res = await hubFetch(`${this.hubUrl}/api/licenses/trial`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -317,7 +333,7 @@ export class LicenseService {
       const hubToken = this.readHubToken();
       if (hubToken) {
         try {
-          await fetch(`${this.hubUrl}/api/licenses/deactivate`, {
+          await hubFetch(`${this.hubUrl}/api/licenses/deactivate`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -357,7 +373,7 @@ export class LicenseService {
     const hubToken = this.readHubToken();
     if (!hubToken) return;
     try {
-      const res = await fetch(`${this.hubUrl}/api/licenses/mine`, {
+      const res = await hubFetch(`${this.hubUrl}/api/licenses/mine`, {
         headers: { 'Authorization': `Bearer ${hubToken}` },
       });
       if (!res.ok) return;

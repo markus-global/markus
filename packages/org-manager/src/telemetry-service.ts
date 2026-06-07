@@ -5,6 +5,21 @@ import { homedir, platform, arch } from 'node:os';
 
 const log = createLogger('telemetry');
 
+async function hubFetch(url: string, init?: RequestInit): Promise<Response> {
+  let currentUrl = url;
+  for (let i = 0; i < 3; i++) {
+    const res = await fetch(currentUrl, { ...init, redirect: 'manual' });
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location');
+      if (!location) return res;
+      currentUrl = new URL(location, currentUrl).href;
+      continue;
+    }
+    return res;
+  }
+  return fetch(currentUrl, init);
+}
+
 const TELEMETRY_CONFIG_FILE = join(homedir(), '.markus', 'telemetry.json');
 const REPORT_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
@@ -100,7 +115,7 @@ export class TelemetryService {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (hubToken) headers['Authorization'] = `Bearer ${hubToken}`;
 
-      await fetch(`${this.hubUrl}/api/telemetry`, {
+      await hubFetch(`${this.hubUrl}/api/telemetry`, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
