@@ -1536,7 +1536,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   checkForUpdate().then(info => {
     if (info.updateAvailable) {
       console.log(`\n  \x1b[33m⬆ New version available: v${info.latestVersion} (current: v${info.currentVersion})\x1b[0m`);
-      console.log(`    Run \x1b[1mnpm i -g @markus-global/cli\x1b[0m to upgrade\n`);
+      console.log(`    Visit \x1b[1mhttps://markus.global/download\x1b[0m to download the latest version\n`);
     }
   }).catch(() => {});
 

@@ -232,5 +232,9 @@
     "writingResponse": "正在生成回复…"
   },
   "copyFailed": "失败",
-  "day": "天"
+  "day": "天",
+  "update": {
+    "available": "新版本可用：v{{latest}}（当前：v{{current}}）",
+    "download": "下载更新"
+  }
 }

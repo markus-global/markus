@@ -3331,6 +3331,7 @@ function OrgLicenseSection() {
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [orgMsg, setOrgMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [orgLoading, setOrgLoading] = useState(true);
+  const [hubConnecting, setHubConnecting] = useState(false);
 
   // ── License state ──
   const [licenseInfo, setLicenseInfo] = useState<{
@@ -3348,10 +3349,11 @@ function OrgLicenseSection() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   // ── Org data loading ──
-  const loadOrgs = useCallback(() => {
+  const loadOrgs = useCallback((showError = false) => {
     setOrgLoading(true);
+    let loadFailed = false;
     Promise.all([
-      api.hubOrgs.mine().catch(() => ({ orgs: [] })),
+      api.hubOrgs.mine().catch((e) => { loadFailed = true; if (showError) setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : t('org.loadFailed') }); return { orgs: [] }; }),
       api.hubOrgs.invitations().catch(() => ({ invitations: [] })),
     ]).then(([o, inv]) => {
       setOrgs(o.orgs);
@@ -3367,9 +3369,11 @@ function OrgLicenseSection() {
           const withLicense = o.orgs.find((org: any) => org.license?.plan === 'enterprise');
           return withLicense?.name ?? o.orgs[0].name;
         });
+      } else if (showError && !loadFailed) {
+        setOrgMsg({ type: 'err', text: t('org.noOrgAfterConnect') });
       }
     }).finally(() => setOrgLoading(false));
-  }, [setSelectedOrgId]);
+  }, [setSelectedOrgId, t]);
 
   useEffect(() => {
     if (!getHubUser() && !getHubToken()) { setOrgLoading(false); return; }
@@ -3592,16 +3596,18 @@ function OrgLicenseSection() {
         <div className="text-center py-8 space-y-4">
           <div className="text-3xl">🏢</div>
           <div className="text-sm text-fg-tertiary">{t('org.noOrg')}</div>
-          <button onClick={() => {
+          <button disabled={hubConnecting} onClick={() => {
             setOrgMsg(null);
-            ensureHubAuth().then(() => loadOrgs()).catch(e => {
+            setHubConnecting(true);
+            ensureHubAuth().then(() => loadOrgs(true)).catch(e => {
               const raw = e instanceof Error ? e.message : String(e);
               const text = raw.includes('Popup blocked') ? t('org.popupBlocked') : raw.includes('cancelled') ? t('org.loginCancelled') : raw;
               setOrgMsg({ type: 'err', text });
-            });
+            }).finally(() => setHubConnecting(false));
           }}
-            className="px-5 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium rounded-lg transition-colors inline-flex items-center gap-2">
-            {t('org.connectHub')}
+            className="px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-60 text-white text-sm font-medium rounded-lg transition-colors inline-flex items-center gap-2">
+            {hubConnecting && <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="30 70" strokeLinecap="round"/></svg>}
+            {hubConnecting ? t('org.connecting') : t('org.connectHub')}
           </button>
           {orgMsg && (
             <div className={`inline-block px-4 py-2 rounded-lg text-xs ${orgMsg.type === 'ok' ? 'bg-green-500/10 text-green-600 border border-green-500/20' : 'bg-red-500/10 text-red-500 border border-red-500/20'}`}>
@@ -3876,7 +3882,6 @@ function OrgLicenseSection() {
 
       <div className="flex items-center gap-4 text-[11px] text-fg-tertiary pt-1">
         <a href="https://markus.global" target="_blank" rel="noopener noreferrer" className="hover:text-fg-secondary transition-colors">{t('license.website')}</a>
-        <a href="https://markus.global/docs" target="_blank" rel="noopener noreferrer" className="hover:text-fg-secondary transition-colors">{t('license.docs')}</a>
         <a href={`mailto:${t('license.salesEmail')}`} className="hover:text-fg-secondary transition-colors">{t('license.salesEmail')}</a>
       </div>
     </div>

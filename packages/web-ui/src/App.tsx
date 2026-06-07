@@ -351,10 +351,12 @@ export function App() {
         {updateInfo && updateBannerDismissed !== updateInfo.latestVersion && (
           <div className="flex items-center justify-between px-4 py-2 bg-brand-500/10 border-b border-brand-500/30 text-brand-400 text-sm shrink-0">
             <span className={isMobile ? 'text-xs' : ''}>
-              New version available: <strong>v{updateInfo.latestVersion}</strong> (current: v{updateInfo.currentVersion})
-              {!isMobile && <span className="text-fg-tertiary ml-2">— run <code className="bg-surface-overlay px-1.5 py-0.5 rounded text-xs font-mono">npm i -g @markus-global/cli</code> to upgrade</span>}
+              {t('update.available', { latest: updateInfo.latestVersion, current: updateInfo.currentVersion })}
             </span>
-            <button onClick={() => { setUpdateBannerDismissed(updateInfo.latestVersion); localStorage.setItem('markus_update_dismissed', updateInfo.latestVersion); }} className="text-brand-400 hover:text-brand-300 text-xs shrink-0">{t('dismiss')}</button>
+            <span className="flex items-center gap-3 shrink-0">
+              <a href="https://markus.global/download" target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-brand-400 hover:text-brand-300 transition-colors">{t('update.download')}</a>
+              <button onClick={() => { setUpdateBannerDismissed(updateInfo.latestVersion); localStorage.setItem('markus_update_dismissed', updateInfo.latestVersion); }} className="text-fg-tertiary hover:text-fg-secondary text-xs shrink-0">{t('dismiss')}</button>
+            </span>
           </div>
         )}
         <main className="flex-1 overflow-hidden flex flex-col relative">

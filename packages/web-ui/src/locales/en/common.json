@@ -232,5 +232,9 @@
     "writingResponse": "Writing response…"
   },
   "copyFailed": "Failed",
-  "day": "day"
+  "day": "day",
+  "update": {
+    "available": "New version available: v{{latest}} (current: v{{current}})",
+    "download": "Download Update"
+  }
 }
