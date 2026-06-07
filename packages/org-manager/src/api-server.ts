@@ -204,6 +204,22 @@ export class APIServer {
   private remoteAgent?: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void };
   private remoteAgentFactory?: () => Promise<{ getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void } | null>;
   private modelCatalog?: ModelCatalogService;
+  /** Aggregate today's tool calls from all agents' persisted metrics (the single source of truth) */
+  private getToolCallsTodayFromAgents(): number {
+    try {
+      const agentManager = this.orgService.getAgentManager();
+      const allAgents = agentManager.listAgents();
+      let total = 0;
+      for (const a of allAgents) {
+        try {
+          const agent = agentManager.getAgent(a.id);
+          total += agent.getUsageStats().toolCallsToday;
+        } catch { /* agent not loaded */ }
+      }
+      return total;
+    } catch { return 0; }
+  }
+
   /** fetch that follows redirects while preserving the Authorization header */
   private async hubFetch(url: string, init?: RequestInit): Promise<Response> {
     let currentUrl = url;
@@ -7165,10 +7181,7 @@ EXPLANATION_END`;
         const orgId = defaultOrg?.id ?? 'default';
         const teams = this.orgService.listTeams(orgId);
         const humans = this.orgService.listHumanUsers(orgId);
-        const today = new Date().toISOString().slice(0, 10);
-        const todayToolCalls = this.billingService
-          ? this.billingService.getUsageSummary(orgId, today).toolCalls
-          : 0;
+        const todayToolCalls = this.getToolCallsTodayFromAgents();
         info.usage = { teams: teams.length, toolCallsToday: todayToolCalls, users: humans.length };
       } catch { /* non-critical */ }
       const hubToken = this.readHubToken();
@@ -7213,10 +7226,7 @@ EXPLANATION_END`;
         const orgId = defaultOrg?.id ?? 'default';
         const teams = this.orgService.listTeams(orgId);
         const humans = this.orgService.listHumanUsers(orgId);
-        const today = new Date().toISOString().slice(0, 10);
-        const todayToolCalls = this.billingService
-          ? this.billingService.getUsageSummary(orgId, today).toolCalls
-          : 0;
+        const todayToolCalls = this.getToolCallsTodayFromAgents();
         info.usage = { teams: teams.length, toolCallsToday: todayToolCalls, users: humans.length };
       } catch { /* non-critical */ }
       const hubToken = this.readHubToken();

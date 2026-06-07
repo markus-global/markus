@@ -177,6 +177,7 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
 
       const errMsg = errors.length > 0 ? ` (${errors.length} failed: ${errors[0]})` : '';
       setDeployResult({ ok: deployed > 0, message: `Team "${localizedTeamName(tpl, lang)}" deployed with ${deployed} agent(s)${errMsg}` });
+      window.dispatchEvent(new Event('markus:check-license-limits'));
     } catch (err) {
       setDeployResult({ ok: false, message: `Failed: ${err}` });
     } finally {

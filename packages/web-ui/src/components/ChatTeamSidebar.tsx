@@ -1351,6 +1351,7 @@ export function ChatTeamSidebar({
               setShowNewTeam(false);
               onRefreshTeams();
               setHighlightTeamId(newTeam.id);
+              window.dispatchEvent(new Event('markus:check-license-limits'));
               setTimeout(() => {
                 const el = document.querySelector(`[data-team-id="${newTeam.id}"]`);
                 el?.scrollIntoView({ behavior: 'smooth', block: 'center' });

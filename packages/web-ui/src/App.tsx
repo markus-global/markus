@@ -86,6 +86,28 @@ export function App() {
     const stored = localStorage.getItem('markus_update_dismissed');
     return stored ? stored : null;
   });
+  const [licenseLimit, setLicenseLimit] = useState<{ teams?: boolean; toolCalls?: boolean } | null>(null);
+  const [licenseLimitDismissed, setLicenseLimitDismissed] = useState(false);
+
+  const checkLicenseLimits = useCallback(() => {
+    api.license.get().then(lic => {
+      if (lic.plan === 'enterprise') { setLicenseLimit(null); return; }
+      if (lic.usage && lic.limits) {
+        const hitTeams = lic.limits.maxTeams > 0 && lic.usage.teams >= lic.limits.maxTeams;
+        const hitTools = lic.limits.maxToolCallsPerDay > 0 && lic.usage.toolCallsToday >= lic.limits.maxToolCallsPerDay;
+        if (hitTeams || hitTools) { setLicenseLimit({ teams: hitTeams || undefined, toolCalls: hitTools || undefined }); setLicenseLimitDismissed(false); }
+        else setLicenseLimit(null);
+      }
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === 'visible') checkLicenseLimits(); };
+    window.addEventListener('markus:check-license-limits', checkLicenseLimits);
+    document.addEventListener('visibilitychange', onVisible);
+    const interval = setInterval(checkLicenseLimits, 5 * 60 * 1000);
+    return () => { window.removeEventListener('markus:check-license-limits', checkLicenseLimits); document.removeEventListener('visibilitychange', onVisible); clearInterval(interval); };
+  }, [checkLicenseLimits]);
 
   const [showSearchModal, setShowSearchModal] = useState(false);
 
@@ -182,6 +204,7 @@ export function App() {
             setUpdateInfo({ latestVersion: h.latestVersion, currentVersion: h.version });
           }
         }).catch(() => {});
+        checkLicenseLimits();
         const doPrefetch = () => {
           prefetch(PREFETCH_KEYS.builderArtifacts, () => api.builder.artifacts.list());
           prefetch(PREFETCH_KEYS.builderAgents, () => api.agents.list());
@@ -356,6 +379,21 @@ export function App() {
             <span className="flex items-center gap-3 shrink-0">
               <a href="https://markus.global/download" target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-brand-400 hover:text-brand-300 transition-colors">{t('update.download')}</a>
               <button onClick={() => { setUpdateBannerDismissed(updateInfo.latestVersion); localStorage.setItem('markus_update_dismissed', updateInfo.latestVersion); }} className="text-fg-tertiary hover:text-fg-secondary text-xs shrink-0">{t('dismiss')}</button>
+            </span>
+          </div>
+        )}
+        {licenseLimit && !licenseLimitDismissed && page !== PAGE.SETTINGS && (
+          <div className="flex items-center justify-between px-4 py-2 bg-orange-500/10 border-b border-orange-500/30 text-orange-400 text-sm shrink-0">
+            <span className={isMobile ? 'text-xs' : ''}>
+              {licenseLimit.teams && licenseLimit.toolCalls
+                ? t('license.limitReachedBoth')
+                : licenseLimit.teams
+                  ? t('license.limitReachedTeams')
+                  : t('license.limitReachedToolCalls')}
+            </span>
+            <span className="flex items-center gap-3 shrink-0">
+              <button onClick={() => { window.location.hash = 'settings/account'; }} className="px-3 py-1 bg-orange-600/50 hover:bg-orange-600/70 text-white text-xs rounded-lg transition-colors">{t('license.upgradeLicense')}</button>
+              <button onClick={() => setLicenseLimitDismissed(true)} className="text-fg-tertiary hover:text-fg-secondary text-xs shrink-0">{t('dismiss')}</button>
             </span>
           </div>
         )}
