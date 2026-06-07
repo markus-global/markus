@@ -47,6 +47,9 @@
       "browser": "Set Up Browser Automation",
       "browserDesc": "Install the Chrome extension to let agents control the browser",
       "browserAction": "Set Up",
+      "license": "Account & License",
+      "licenseDesc": "Connect to Markus Hub and activate an enterprise license to unlock all features",
+      "licenseAction": "Set Up",
       "optional": "Optional",
       "update": "Update"
     },

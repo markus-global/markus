@@ -151,7 +151,7 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
 
   if (isPaid) {
     return (
-      <a href={`${hubApi.getUrl()}/${encodeURIComponent(item.author?.username ?? '')}/${encodeURIComponent(item.slug ?? item.id)}`}
+      <a href={`${hubApi.getUrl()}/@${encodeURIComponent(item.author?.username ?? '')}/${encodeURIComponent(item.slug ?? item.id)}`}
         target="_blank" rel="noopener noreferrer"
         className="px-2.5 py-1 text-[10px] bg-amber-600 hover:bg-amber-500 text-white rounded-lg inline-flex items-center gap-1"
       >{t('card.buy', { price: `$${((item.priceCents ?? 0) / 100).toFixed(2)}` })}</a>
@@ -187,7 +187,7 @@ function HubSkillCard({ item, installedSkills, onMsg, onRefresh, highlight, onHi
   }, [highlight, onHighlightDone]);
 
   const detailUrl = item.slug && item.author?.username
-    ? `${hubApi.getUrl()}/${encodeURIComponent(item.author.username)}/${encodeURIComponent(item.slug)}`
+    ? `${hubApi.getUrl()}/@${encodeURIComponent(item.author.username)}/${encodeURIComponent(item.slug)}`
     : null;
 
   const iconIsEmoji = item.icon && !item.icon.startsWith('/') && !item.icon.startsWith('http');

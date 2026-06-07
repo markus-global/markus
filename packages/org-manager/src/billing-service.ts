@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 
 const log = createLogger('billing');
 
-export type PlanTier = 'free' | 'pro' | 'enterprise';
+import type { PlanTier } from '@markus/shared';
 
 export interface UsageRecord {
   orgId: string;
@@ -52,17 +52,10 @@ export interface OrgPlan {
 const DEFAULT_PLANS: Record<PlanTier, OrgPlan['limits']> = {
   free: {
     maxAgents: -1,
-    maxTokensPerMonth: 100_000,
-    maxToolCallsPerDay: 100,
-    maxMessagesPerDay: 50,
-    maxStorageBytes: 50 * 1024 * 1024,
-  },
-  pro: {
-    maxAgents: 20,
-    maxTokensPerMonth: 5_000_000,
-    maxToolCallsPerDay: 5000,
-    maxMessagesPerDay: 2000,
-    maxStorageBytes: 5 * 1024 * 1024 * 1024,
+    maxTokensPerMonth: -1,
+    maxToolCallsPerDay: 500,
+    maxMessagesPerDay: -1,
+    maxStorageBytes: -1,
   },
   enterprise: {
     maxAgents: -1,

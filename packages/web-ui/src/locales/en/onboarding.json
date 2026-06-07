@@ -107,7 +107,28 @@
     "builder": "Builder",
     "builderDesc": "Hire new agents from templates or build custom roles",
     "settings": "Settings",
-    "settingsDesc": "Manage LLM providers, integrations, and governance"
+    "settingsDesc": "Manage LLM providers, integrations, and governance",
+    "telemetry": "Help improve Markus by sharing anonymous usage statistics (instance ID, agent count, task count, version, OS).",
+    "telemetryNote": "No code, prompts, or personal data is ever collected. You can change this in Settings at any time."
+  },
+  "usageType": {
+    "title": "How will you use Markus?",
+    "subtitle": "This helps us tailor your experience.",
+    "personal": "Personal",
+    "personalDesc": "Individual use with your own AI agents.",
+    "organization": "Team & Enterprise",
+    "organizationDesc": "For teams sharing licenses and collaborating.",
+    "orgNameLabel": "Organization Name",
+    "orgNamePlaceholder": "Your team's name",
+    "defaultOrgName": "{{name}}'s Team",
+    "setOrgName": "Set Organization Name",
+    "orgNameSaved": "Saved",
+    "pendingInvitations": "You have pending organization invitations",
+    "invitedBy": "Invited by: {{name}}",
+    "acceptAndJoin": "Accept & Join",
+    "accepting": "Joining...",
+    "accepted": "Joined",
+    "orCreateNew": "Or create a new organization"
   },
   "getStarted": "Get Started"
 }

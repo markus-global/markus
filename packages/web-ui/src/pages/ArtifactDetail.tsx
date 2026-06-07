@@ -963,7 +963,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
             {actionSlot}
             {!readOnly && hubStatus.shared && (() => {
               const hubUser = hubApi.getUser();
-              const link = hubUser && hubStatus.slug ? `${hubApi.getUrl()}/${encodeURIComponent(hubUser.username)}/${encodeURIComponent(hubStatus.slug)}` : null;
+              const link = hubUser && hubStatus.slug ? `${hubApi.getUrl()}/@${encodeURIComponent(hubUser.username)}/${encodeURIComponent(hubStatus.slug)}` : null;
               const localVersion = editVersion || manifest?.version || '1.0.0';
               const hasNewVersion = hubStatus.version !== localVersion;
               return (

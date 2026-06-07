@@ -20,6 +20,7 @@ interface EnvModelDetected {
 interface EnvModelsResponse { detected: EnvModelDetected[]; timeoutMs?: number }
 
 
+const USAGE_TYPE_STEP_ID = 'usageType';
 const PROFILE_STEP_ID = 'profile';
 const LLM_STEP_ID = 'llm';
 const SEARCH_STEP_ID = 'search';
@@ -43,7 +44,13 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
       if (user.name) setProfileName(user.name);
       if (user.email) setProfileEmail(user.email);
       if (user.avatarUrl) setProfileAvatarUrl(user.avatarUrl);
+      const username = user.name || user.email?.split('@')[0] || '';
+      if (username) setOrgName(t('usageType.defaultOrgName', { name: username }));
     }).catch(() => {});
+    api.hubOrgs.invitations().then(d => {
+      if (d.invitations?.length > 0) setPendingInvites(d.invitations);
+    }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // LLM setup state
@@ -69,6 +76,18 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
   const [manualModels, setManualModels] = useState<CatalogModel[]>([]);
   const [manualSelectedModel, setManualSelectedModel] = useState('');
   const [manualError, setManualError] = useState('');
+
+  // Usage type state
+  const [usageType, setUsageType] = useState<'personal' | 'organization' | null>(null);
+  const [orgName, setOrgName] = useState('');
+  const [orgNameSaving, setOrgNameSaving] = useState(false);
+  const [orgNameSaved, setOrgNameSaved] = useState(false);
+  const [pendingInvites, setPendingInvites] = useState<Array<{ orgId: string; orgName: string; invitedBy: string }>>([]);
+  const [acceptingInvite, setAcceptingInvite] = useState<string | null>(null);
+  const [acceptedInvite, setAcceptedInvite] = useState<string | null>(null);
+
+  // Telemetry opt-in state
+  const [telemetryEnabled, setTelemetryEnabled] = useState(true);
 
   // Search API key state
   const [searchKeys, setSearchKeys] = useState<{ serper: { configured: boolean; preview: string }; tavily: { configured: boolean; preview: string }; bing: { configured: boolean; preview: string }; google: { configured: boolean; preview: string }; serpapi: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; exa: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } } | null>(null);
@@ -102,7 +121,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
       .catch(() => {});
   }, []);
 
-  const earlyLlmStepIdx = skipProfile ? 2 : 3;
+  const earlyLlmStepIdx = skipProfile ? 3 : 4;
   useEffect(() => {
     if (step === earlyLlmStepIdx && !envDetected.current && !llmConfigured) {
       envDetected.current = true;
@@ -111,7 +130,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, llmConfigured, earlyLlmStepIdx]);
 
-  const earlySearchStepIdx = skipProfile ? 3 : 4;
+  const earlySearchStepIdx = skipProfile ? 4 : 5;
   useEffect(() => {
     if (step === earlySearchStepIdx && !searchDetected.current) {
       searchDetected.current = true;
@@ -368,7 +387,110 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
         </div>
       ),
     },
-    // Step 1: Profile Setup
+    // Step 1: Usage Type
+    {
+      id: USAGE_TYPE_STEP_ID,
+      title: t('usageType.title', { defaultValue: 'How will you use Markus?' }),
+      subtitle: t('usageType.subtitle', { defaultValue: 'This helps us tailor your experience.' }),
+      content: (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={() => { setUsageType('personal'); setOrgNameSaved(true); }}
+              className={`flex flex-col items-center gap-3 rounded-xl border-2 p-5 transition-all text-left ${
+                usageType === 'personal'
+                  ? 'border-brand-500 bg-brand-500/10'
+                  : 'border-border-default hover:border-fg-tertiary bg-surface-elevated/30'
+              }`}
+            >
+              <span className="text-2xl">👤</span>
+              <div>
+                <div className="font-medium text-fg-primary text-sm text-center">{t('usageType.personal', { defaultValue: 'Personal' })}</div>
+                <div className="text-[11px] text-fg-tertiary mt-1 text-center">{t('usageType.personalDesc', { defaultValue: 'Individual use with your own AI agents.' })}</div>
+              </div>
+            </button>
+            <button
+              onClick={() => { setUsageType('organization'); setOrgNameSaved(false); }}
+              className={`flex flex-col items-center gap-3 rounded-xl border-2 p-5 transition-all text-left ${
+                usageType === 'organization'
+                  ? 'border-brand-500 bg-brand-500/10'
+                  : 'border-border-default hover:border-fg-tertiary bg-surface-elevated/30'
+              }`}
+            >
+              <span className="text-2xl">🏢</span>
+              <div>
+                <div className="font-medium text-fg-primary text-sm text-center">{t('usageType.organization', { defaultValue: 'Team & Enterprise' })}</div>
+                <div className="text-[11px] text-fg-tertiary mt-1 text-center">{t('usageType.organizationDesc', { defaultValue: 'For teams sharing licenses and collaborating.' })}</div>
+              </div>
+            </button>
+          </div>
+
+          {usageType === 'organization' && (
+            <div className="space-y-4 mt-4">
+              {pendingInvites.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs text-fg-tertiary font-medium">{t('usageType.pendingInvitations')}</div>
+                  {pendingInvites.map(inv => (
+                    <div key={inv.orgId} className="flex items-center justify-between px-4 py-3 rounded-xl border border-amber-500/20 bg-amber-500/5">
+                      <div>
+                        <div className="text-sm font-medium text-fg-primary">{inv.orgName}</div>
+                        <div className="text-[11px] text-fg-tertiary">{t('usageType.invitedBy', { name: inv.invitedBy })}</div>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          setAcceptingInvite(inv.orgId);
+                          try {
+                            await api.hubOrgs.acceptInvitation(inv.orgId);
+                            setAcceptedInvite(inv.orgId);
+                            setOrgNameSaved(true);
+                          } catch { /* ignore */ }
+                          finally { setAcceptingInvite(null); }
+                        }}
+                        disabled={acceptingInvite === inv.orgId || acceptedInvite === inv.orgId}
+                        className="px-3 py-1.5 text-xs rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white transition-colors"
+                      >
+                        {acceptedInvite === inv.orgId ? t('usageType.accepted') : acceptingInvite === inv.orgId ? t('usageType.accepting') : t('usageType.acceptAndJoin')}
+                      </button>
+                    </div>
+                  ))}
+                  <div className="text-[11px] text-fg-tertiary text-center pt-1">{t('usageType.orCreateNew')}</div>
+                </div>
+              )}
+              <div className="space-y-1">
+                <label className="text-xs text-fg-tertiary font-medium">{t('usageType.orgNameLabel')}</label>
+                <input
+                  type="text"
+                  value={orgName}
+                  onChange={e => { setOrgName(e.target.value); setOrgNameSaved(false); }}
+                  placeholder={t('usageType.orgNamePlaceholder')}
+                  className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
+                />
+              </div>
+              <button
+                onClick={async () => {
+                  if (!orgName.trim()) return;
+                  setOrgNameSaving(true);
+                  try {
+                    const licData = await api.license.get();
+                    const defaultOrg = (licData as any).defaultOrg;
+                    if (defaultOrg?.id) {
+                      await api.hubOrgs.update(defaultOrg.id, { name: orgName.trim() });
+                    }
+                    setOrgNameSaved(true);
+                  } catch { /* ignore */ }
+                  finally { setOrgNameSaving(false); }
+                }}
+                disabled={orgNameSaving || !orgName.trim() || orgNameSaved}
+                className="w-full px-4 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
+              >
+                {orgNameSaving ? t('common:saving') : orgNameSaved ? t('usageType.orgNameSaved') : t('usageType.setOrgName')}
+              </button>
+            </div>
+          )}
+        </div>
+      ),
+    },
+    // Step 2: Profile Setup
     {
       id: PROFILE_STEP_ID,
       title: t('profile.title'),
@@ -793,7 +915,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
       title: t('done.title'),
       subtitle: t('done.subtitle'),
       content: (
-        <div className="space-y-2 text-fg-secondary text-sm">
+        <div className="space-y-3 text-fg-secondary text-sm">
           {[
             [t('done.chat'), t('done.chatDesc')],
             [t('done.projects'), t('done.projectsDesc')],
@@ -808,21 +930,44 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
               </div>
             </div>
           ))}
+
+          <label className="flex items-start gap-2.5 p-3 bg-surface-elevated/30 rounded-lg cursor-pointer group mt-2">
+            <input
+              type="checkbox"
+              checked={telemetryEnabled}
+              onChange={e => setTelemetryEnabled(e.target.checked)}
+              className="mt-0.5 accent-brand-500 shrink-0"
+            />
+            <div className="text-[11px] text-fg-tertiary leading-relaxed">
+              {t('done.telemetry')}
+              <br />
+              <span className="text-fg-quaternary">{t('done.telemetryNote')}</span>
+            </div>
+          </label>
         </div>
       ),
     },
   ];
 
   const steps = skipProfile ? allSteps.filter(s => s.id !== PROFILE_STEP_ID) : allSteps;
+  const usageTypeStepIdx = steps.findIndex(s => s.id === USAGE_TYPE_STEP_ID);
   const profileStepIdx = steps.findIndex(s => s.id === PROFILE_STEP_ID);
   const llmStepIdx = steps.findIndex(s => s.id === LLM_STEP_ID);
   const searchStepIdx = steps.findIndex(s => s.id === SEARCH_STEP_ID);
 
   const handleNext = () => {
+    if (step === usageTypeStepIdx && usageTypeStepIdx >= 0 && !usageType) return;
+    if (step === usageTypeStepIdx && usageType === 'organization' && !orgNameSaved) return;
     if (step === profileStepIdx && profileStepIdx >= 0 && !profileSaved) return;
     if (step < steps.length - 1) {
       setStep(step + 1);
     } else {
+      // Persist telemetry preference
+      fetch('/api/settings/telemetry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: telemetryEnabled }),
+      }).catch(() => {});
       onComplete();
     }
   };
@@ -855,6 +1000,11 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
               </button>
             )}
             <div className="flex items-center gap-3">
+              {usageTypeStepIdx >= 0 && step === usageTypeStepIdx && !usageType && (
+                <button onClick={() => { setUsageType('personal'); setOrgNameSaved(true); setStep(step + 1); }} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
+                  {t('llm.skipForNow')}
+                </button>
+              )}
               {profileStepIdx >= 0 && step === profileStepIdx && !profileSaved && (
                 <button onClick={() => setStep(step + 1)} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
                   {t('llm.skipForNow')}
@@ -872,9 +1022,9 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
               )}
               <button
                 onClick={handleNext}
-                disabled={profileStepIdx >= 0 && step === profileStepIdx && !profileSaved}
+                disabled={(profileStepIdx >= 0 && step === profileStepIdx && !profileSaved) || (usageTypeStepIdx >= 0 && step === usageTypeStepIdx && (!usageType || (usageType === 'organization' && !orgNameSaved)))}
                 className={`px-6 py-2.5 text-white text-sm rounded-xl transition-colors ${
-                  profileStepIdx >= 0 && step === profileStepIdx && !profileSaved
+                  (profileStepIdx >= 0 && step === profileStepIdx && !profileSaved) || (usageTypeStepIdx >= 0 && step === usageTypeStepIdx && (!usageType || (usageType === 'organization' && !orgNameSaved)))
                     ? 'bg-brand-600/40 cursor-not-allowed'
                     : 'bg-brand-600 hover:bg-brand-500'
                 }`}

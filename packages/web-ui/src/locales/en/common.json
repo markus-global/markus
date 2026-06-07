@@ -231,5 +231,6 @@
     "thinking": "Thinking",
     "writingResponse": "Writing response…"
   },
-  "copyFailed": "Failed"
+  "copyFailed": "Failed",
+  "day": "day"
 }

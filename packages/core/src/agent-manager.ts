@@ -342,6 +342,7 @@ export class AgentManager {
     agentId: string,
     request: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string }
   ) => Promise<{ approved: boolean; comment?: string }>;
+  private toolCallLimitChecker?: () => { allowed: boolean; reason?: string };
   private stateChangeHandler?: (
     agentId: string,
     state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
@@ -1500,6 +1501,9 @@ export class AgentManager {
           ah(id, req)
       );
     }
+    if (this.toolCallLimitChecker) {
+      agent.setToolCallLimitChecker(this.toolCallLimitChecker);
+    }
     agent.setStateChangeCallback(this.buildStateChangeCallback());
     if (this.activityCallbacks) {
       agent.setActivityCallbacks(this.activityCallbacks);
@@ -2207,6 +2211,9 @@ export class AgentManager {
           ah(id, req)
       );
     }
+    if (this.toolCallLimitChecker) {
+      agent.setToolCallLimitChecker(this.toolCallLimitChecker);
+    }
     agent.setStateChangeCallback(this.buildStateChangeCallback());
     if (this.activityCallbacks) {
       agent.setActivityCallbacks(this.activityCallbacks);
@@ -2385,6 +2392,13 @@ export class AgentManager {
         async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string }) =>
           handler(id, req)
       );
+    }
+  }
+
+  setToolCallLimitChecker(checker: () => { allowed: boolean; reason?: string }): void {
+    this.toolCallLimitChecker = checker;
+    for (const [, agent] of this.agents) {
+      agent.setToolCallLimitChecker(checker);
     }
   }
 

@@ -15,9 +15,9 @@ import { BottomNav } from './components/BottomNav.tsx';
 import { MobileBuilderTabs } from './components/MobileBuilderTabs.tsx';
 import { MobileDrawer } from './components/MobileDrawer.tsx';
 import { Onboarding } from './components/Onboarding.tsx';
-import { Login, InviteSetup, InitialSetup } from './pages/Login.tsx';
+import { Login, InviteSetup } from './pages/Login.tsx';
 import { ChangePassword } from './pages/ChangePassword.tsx';
-import { api, hubApi, type AuthUser, wsClient } from './api.ts';
+import { api, hubApi, clearHubAuth, type AuthUser, wsClient } from './api.ts';
 import { navBus } from './navBus.ts';
 import { useResizablePanel } from './hooks/useResizablePanel.ts';
 import { useTheme } from './hooks/useTheme.ts';
@@ -76,6 +76,7 @@ export function App() {
   const [mountedPages, setMountedPages] = useState<Set<PageId>>(() => new Set([getPageFromHash()]));
   const [authUser, setAuthUser] = useState<AuthUser | null | 'loading'>('loading');
   const [systemInitialized, setSystemInitialized] = useState<boolean | null>(null);
+  const [authStatus, setAuthStatus] = useState<{ hasOwner: boolean; hasMultipleUsers: boolean }>({ hasOwner: false, hasMultipleUsers: false });
   const [skipOnboardingProfile, setSkipOnboardingProfile] = useState(false);
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [llmConfigured, setLlmConfigured] = useState<boolean | null>(null);
@@ -198,7 +199,10 @@ export function App() {
       })
       .catch(() => {
         setAuthUser(null);
-        api.auth.status().then(({ initialized }) => setSystemInitialized(initialized)).catch(() => setSystemInitialized(true));
+        api.auth.status().then(({ initialized, hasOwner, hasMultipleUsers }) => {
+          setSystemInitialized(initialized);
+          setAuthStatus({ hasOwner, hasMultipleUsers });
+        }).catch(() => setSystemInitialized(true));
       });
 
     wsClient.connect();
@@ -223,7 +227,7 @@ export function App() {
         [PAGE.HOME]: <HomePage authUser={currentUser} />,
         [PAGE.TEAM]: <TeamPage authUser={currentUser} />,
         [PAGE.BUILDER]: <MobileBuilderTabs authUser={currentUser} />,
-        [PAGE.SETTINGS]: <Settings theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} onLogout={() => setAuthUser(null)} onUserUpdated={(u) => setAuthUser(u)} />,
+        [PAGE.SETTINGS]: <Settings theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} onLogout={() => { api.auth.logout().catch(() => {}); clearHubAuth(); setAuthUser(null); }} onUserUpdated={(u) => setAuthUser(u)} />,
         [PAGE.WORK]: <WorkPage authUser={currentUser} />,
         [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
         [PAGE.NOTIFICATIONS]: <NotificationsPage authUser={currentUser} />,
@@ -234,7 +238,7 @@ export function App() {
     return {
       [PAGE.HOME]: <HomePage authUser={currentUser} />,
       [PAGE.TEAM]: <TeamPage authUser={currentUser} />,
-      [PAGE.SETTINGS]: <Settings theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} onLogout={() => setAuthUser(null)} onUserUpdated={(u) => setAuthUser(u)} />,
+      [PAGE.SETTINGS]: <Settings theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} onLogout={() => { api.auth.logout().catch(() => {}); clearHubAuth(); setAuthUser(null); }} onUserUpdated={(u) => setAuthUser(u)} />,
       [PAGE.STORE]: <StorePage authUser={currentUser} />,
       [PAGE.BUILDER]: <AgentBuilder authUser={currentUser} />,
       [PAGE.WORK]: <WorkPage authUser={currentUser} />,
@@ -267,22 +271,15 @@ export function App() {
   }
 
   if (authUser === null) {
-    if (systemInitialized === false) {
-      return <InitialSetup onSetup={(user, needsOnboarding) => {
-        setAuthUser(user);
-        setSystemInitialized(true);
-        setSkipOnboardingProfile(true);
-        if (needsOnboarding) {
-          localStorage.removeItem('markus_onboarded');
-          setShowOnboarding(true);
-        }
-      }} />;
-    }
-    return <Login onLogin={(user, needsOnboarding) => {
+    return <Login
+      hasOwner={authStatus.hasOwner}
+      hasMultipleUsers={authStatus.hasMultipleUsers}
+      onLogin={(user, needsOnboarding, opts) => {
       setAuthUser(user);
       if (needsOnboarding) {
         localStorage.removeItem('markus_onboarded');
         setShowOnboarding(true);
+        if (opts?.fromHub) setSkipOnboardingProfile(true);
       } else if (!localStorage.getItem('markus_onboarded')) {
         localStorage.setItem('markus_onboarded', '1');
         setShowOnboarding(false);

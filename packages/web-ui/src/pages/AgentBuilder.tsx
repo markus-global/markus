@@ -455,7 +455,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
               const getHubLink = () => {
                 const hubUser = hubApi.getUser();
                 if (!hubItem || !hubUser) return null;
-                return `${hubApi.getUrl()}/${encodeURIComponent(hubUser.username)}/${encodeURIComponent(hubItem.slug)}`;
+                return `${hubApi.getUrl()}/@${encodeURIComponent(hubUser.username)}/${encodeURIComponent(hubItem.slug)}`;
               };
 
               const actionButtons = (

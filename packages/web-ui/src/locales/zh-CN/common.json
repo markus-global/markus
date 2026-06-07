@@ -231,5 +231,6 @@
     "thinking": "思考中",
     "writingResponse": "正在生成回复…"
   },
-  "copyFailed": "失败"
+  "copyFailed": "失败",
+  "day": "天"
 }

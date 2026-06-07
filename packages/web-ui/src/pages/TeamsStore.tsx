@@ -417,7 +417,7 @@ function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDo
   const rating = Math.round(parseFloat(item.avgRating));
 
   const hubDetailUrl = item.slug && item.author?.username
-    ? `${hubApi.getUrl()}/${encodeURIComponent(item.author.username)}/${encodeURIComponent(item.slug)}`
+    ? `${hubApi.getUrl()}/@${encodeURIComponent(item.author.username)}/${encodeURIComponent(item.slug)}`
     : null;
 
   const handleCardClick = () => {
@@ -477,7 +477,7 @@ function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDo
               {t('card.installed')}{localInfo?.localVersion ? ` v${localInfo.localVersion}` : ''}
             </span>
           ) : isPaid ? (
-            <a href={`${hubApi.getUrl()}/${encodeURIComponent(item.author?.username ?? '')}/${encodeURIComponent(item.slug ?? item.id)}`}
+            <a href={`${hubApi.getUrl()}/@${encodeURIComponent(item.author?.username ?? '')}/${encodeURIComponent(item.slug ?? item.id)}`}
               target="_blank" rel="noopener noreferrer"
               className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors inline-flex items-center gap-1">
               {t('card.buy', { price: priceLabel })}

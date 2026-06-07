@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation, Trans } from 'react-i18next';
-import { api, type StorageInfo, type OrphanInfo, type AuthUser, type HumanUserInfo, type RemoteStatus, type CatalogModel, hubApi, getHubUser, ensureHubAuth, wsClient } from '../api.ts';
+import { api, type StorageInfo, type OrphanInfo, type AuthUser, type HumanUserInfo, type RemoteStatus, type CatalogModel, hubApi, getHubUser, getHubToken, ensureHubAuth, wsClient } from '../api.ts';
 import { THEME_OPTIONS, type ThemeMode } from '../hooks/useTheme.ts';
 import { SUPPORTED_LANGUAGES } from '../i18n/index.ts';
 import { navBus } from '../navBus.ts';
@@ -39,7 +39,7 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
-type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'storage' | 'users' | 'remote';
+type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'storage' | 'users' | 'organization' | 'account' | 'remote' | 'license';
 
 const SETTINGS_TABS: Array<{ id: SettingsTab; labelKey: string; adminOnly?: boolean }> = [
   { id: 'appearance', labelKey: 'nav.appearance' },
@@ -48,15 +48,19 @@ const SETTINGS_TABS: Array<{ id: SettingsTab; labelKey: string; adminOnly?: bool
   { id: 'browser', labelKey: 'nav.browser', adminOnly: true },
   { id: 'search', labelKey: 'nav.search', adminOnly: true },
   { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
-  { id: 'users', labelKey: 'nav.users', adminOnly: true },
+  { id: 'account', labelKey: 'nav.account' },
   { id: 'remote', labelKey: 'nav.remote', adminOnly: true },
 ];
+
+const LEGACY_TAB_ALIASES: Record<string, SettingsTab> = { users: 'account', organization: 'account', license: 'account' };
 
 function getSettingsTab(): SettingsTab | null {
   const hash = window.location.hash.slice(1);
   const parts = hash.split('/');
   if (parts[0] === 'settings' && parts[1]) {
-    const tab = parts[1] as SettingsTab;
+    const raw = parts[1] as string;
+    const mapped = LEGACY_TAB_ALIASES[raw] ?? raw;
+    const tab = mapped as SettingsTab;
     if (SETTINGS_TABS.some(t => t.id === tab)) return tab;
   }
   return null;
@@ -2361,7 +2365,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         </>}
 
-        {resolvedTab === 'users' && <UserManagementSection authUser={authUser} />}
+        {(resolvedTab === 'account' || resolvedTab === 'users' || resolvedTab === 'organization' || resolvedTab === 'license') && <AccountSection authUser={authUser} />}
 
         {resolvedTab === 'remote' && <RemoteAccessSection />}
 
@@ -2397,6 +2401,11 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [showAddUser, setShowAddUser] = useState(false);
+  const [addName, setAddName] = useState('');
+  const [addEmail, setAddEmail] = useState('');
+  const [addRole, setAddRole] = useState<string>('member');
+  const [addPassword, setAddPassword] = useState('');
 
   const loadUsers = useCallback(() => {
     api.users.list(authUser?.orgId).then(d => setUsers(d.users)).catch(() => {});
@@ -2458,8 +2467,70 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
     }
   };
 
+  const handleAddUser = async () => {
+    if (!addName.trim()) return;
+    try {
+      const result = await api.users.create(addName.trim(), addRole, undefined, addEmail.trim() || undefined, addPassword || undefined);
+      setShowAddUser(false);
+      setAddName(''); setAddEmail(''); setAddRole('member'); setAddPassword('');
+      setMsg({ type: 'ok', text: t('settings:userManagement.addSuccess', { defaultValue: 'User created' }) });
+      if (result.inviteToken) {
+        setInviteLink(`${window.location.origin}/#invite?token=${result.inviteToken}`);
+      }
+      loadUsers();
+    } catch (e) {
+      setMsg({ type: 'err', text: `${t('settings:userManagement.error')}: ${e instanceof Error ? e.message : String(e)}` });
+    }
+  };
+
   return (
     <Section title={t('settings:userManagement.title')}>
+      <div className="mb-3">
+        <p className="text-xs text-fg-tertiary leading-relaxed">{t('settings:userManagement.sharedInstanceDesc')}</p>
+        <p className="text-xs text-fg-tertiary mt-1">{t('settings:userManagement.orgHint')}</p>
+      </div>
+
+      {!showAddUser ? (
+        <button onClick={() => setShowAddUser(true)}
+          className="mb-3 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium rounded-lg transition-colors">
+          {t('settings:userManagement.addUser', { defaultValue: 'Add User' })}
+        </button>
+      ) : (
+        <div className="mb-3 p-4 rounded-lg border border-border-default space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[11px] text-fg-tertiary mb-1 block">{t('settings:userManagement.name')}</label>
+              <input value={addName} onChange={e => setAddName(e.target.value)} autoFocus
+                className="w-full px-3 py-1.5 text-sm bg-surface-elevated border border-border-default rounded-md text-fg-primary" />
+            </div>
+            <div>
+              <label className="text-[11px] text-fg-tertiary mb-1 block">{t('settings:userManagement.email')}</label>
+              <input value={addEmail} onChange={e => setAddEmail(e.target.value)} type="email"
+                className="w-full px-3 py-1.5 text-sm bg-surface-elevated border border-border-default rounded-md text-fg-primary" />
+            </div>
+            <div>
+              <label className="text-[11px] text-fg-tertiary mb-1 block">{t('settings:userManagement.role')}</label>
+              <select value={addRole} onChange={e => setAddRole(e.target.value)}
+                className="w-full px-3 py-1.5 text-sm bg-surface-elevated border border-border-default rounded-md text-fg-primary">
+                {ROLE_OPTIONS.map(r => <option key={r} value={r}>{t(`settings:userManagement.roles.${r}`)}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[11px] text-fg-tertiary mb-1 block">{t('settings:userManagement.password', { defaultValue: 'Password' })}</label>
+              <input value={addPassword} onChange={e => setAddPassword(e.target.value)} type="password"
+                className="w-full px-3 py-1.5 text-sm bg-surface-elevated border border-border-default rounded-md text-fg-primary" />
+            </div>
+          </div>
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => { setShowAddUser(false); setAddName(''); setAddEmail(''); setAddRole('member'); setAddPassword(''); }}
+              className="px-3 py-1.5 text-xs text-fg-tertiary hover:text-fg-secondary">{t('settings:userManagement.cancel')}</button>
+            <button onClick={handleAddUser} disabled={!addName.trim()}
+              className="px-4 py-1.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-xs font-medium rounded-lg">
+              {t('settings:userManagement.save')}</button>
+          </div>
+        </div>
+      )}
+
       <div className="bg-surface-elevated rounded-xl overflow-hidden">
         {msg && (
           <div className={`px-4 py-2 text-xs border-b ${msg.type === 'ok' ? 'bg-green-500/10 text-green-600 border-green-500/20' : 'bg-red-500/10 text-red-500 border-red-500/20'}`}>
@@ -2731,7 +2802,7 @@ function Msg({ type, text }: { type: 'ok' | 'err'; text: string }) {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
   return (
     <section>
       <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider mb-4">{title}</h3>
@@ -3182,6 +3253,697 @@ function QRCode({ url }: { url: string }) {
   return (
     <div className="inline-block p-2 bg-white rounded-lg">
       <canvas ref={canvasRef} className="block" style={{ width: 160, height: 160 }} />
+    </div>
+  );
+}
+
+/* ─── Account (Organization & License + Local Markus) ─── */
+
+const FEATURE_ICONS: Record<string, string> = {
+  multi_user: '👥', unlimited_teams: '🏢', unlimited_tools: '⚡',
+  sso: '🔐', audit_enhanced: '📋', multi_instance: '🌐', offline_license: '📡',
+};
+
+function AccountSection({ authUser }: { authUser?: AuthUser }) {
+  const { t } = useTranslation(['settings', 'common']);
+  const getInitialSection = (): 'orgLicense' | 'users' => {
+    const hash = window.location.hash.slice(1);
+    const parts = hash.split('/');
+    if (parts[1] === 'users') return 'users';
+    return 'orgLicense';
+  };
+  const [activeSection, setActiveSection] = useState<'orgLicense' | 'users'>(getInitialSection);
+
+  const sections = [
+    { id: 'orgLicense' as const, label: t('account.sectionOrgLicense') },
+    { id: 'users' as const, label: t('account.sectionUsers') },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-lg font-semibold text-fg-primary mb-1">{t('account.title')}</h2>
+        <p className="text-xs text-fg-tertiary">{t('account.subtitle')}</p>
+      </div>
+
+      <div className="flex gap-1 p-1 bg-surface-elevated rounded-lg border border-border-default">
+        {sections.map(s => (
+          <button key={s.id} onClick={() => setActiveSection(s.id)}
+            className={`flex-1 px-3 py-2 text-xs font-medium rounded-md transition-all ${
+              activeSection === s.id
+                ? 'bg-surface-primary text-fg-primary shadow-sm border border-border-default'
+                : 'text-fg-tertiary hover:text-fg-secondary'
+            }`}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {activeSection === 'orgLicense' && <OrgLicenseSection />}
+      {activeSection === 'users' && <UserManagementSection authUser={authUser} />}
+    </div>
+  );
+}
+
+/* ─── Organization & License (merged) ─── */
+
+function OrgLicenseSection() {
+  const { t } = useTranslation(['settings', 'common']);
+
+  // ── Org state ──
+  const [orgs, setOrgs] = useState<Array<{ id: string; name: string; slug: string; role: string; memberCount: number; license: any }>>([]);
+  const [selectedOrgId, setSelectedOrgIdRaw] = useState<string | null>(() => {
+    try { return localStorage.getItem('markus_selected_org_id'); } catch { return null; }
+  });
+  const setSelectedOrgId = useCallback((v: string | null | ((prev: string | null) => string | null)) => {
+    setSelectedOrgIdRaw(prev => {
+      const next = typeof v === 'function' ? v(prev) : v;
+      try { if (next) localStorage.setItem('markus_selected_org_id', next); else localStorage.removeItem('markus_selected_org_id'); } catch {}
+      return next;
+    });
+  }, []);
+  const [members, setMembers] = useState<Array<{ id: string; userId: string; role: string; status: string; joinedAt: string; username: string; email: string | null; displayName: string | null; avatarUrl: string | null }>>([]);
+  const [invitations, setInvitations] = useState<Array<{ orgId: string; orgName: string; invitedBy: string }>>([]);
+  const [editName, setEditName] = useState('');
+  const [inviteValue, setInviteValue] = useState('');
+  const [inviteRole, setInviteRole] = useState<'member' | 'admin'>('member');
+  const [inviting, setInviting] = useState(false);
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
+  const [orgMsg, setOrgMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [orgLoading, setOrgLoading] = useState(true);
+
+  // ── License state ──
+  const [licenseInfo, setLicenseInfo] = useState<{
+    plan: string; licenseKey?: string; validUntil?: string; isTrial?: boolean; isOffline?: boolean;
+    features: string[]; limits: { maxTeams: number; maxToolCallsPerDay: number; maxUsers: number };
+    usage?: { teams: number; toolCallsToday: number; users: number };
+    instanceId: string; hubUserId?: string; username?: string;
+    orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number;
+  } | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [licenseKey, setLicenseKey] = useState('');
+  const [activating, setActivating] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [licMsg, setLicMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  // ── Org data loading ──
+  const loadOrgs = useCallback(() => {
+    setOrgLoading(true);
+    Promise.all([
+      api.hubOrgs.mine().catch(() => ({ orgs: [] })),
+      api.hubOrgs.invitations().catch(() => ({ invitations: [] })),
+    ]).then(([o, inv]) => {
+      setOrgs(o.orgs);
+      setInvitations(inv.invitations);
+      if (o.orgs.length > 0) {
+        setSelectedOrgId(prev => {
+          if (prev && o.orgs.some((org: any) => org.id === prev)) return prev;
+          const withLicense = o.orgs.find((org: any) => org.license?.plan === 'enterprise');
+          return withLicense?.id ?? o.orgs[0].id;
+        });
+        setEditName(prev => {
+          if (prev) return prev;
+          const withLicense = o.orgs.find((org: any) => org.license?.plan === 'enterprise');
+          return withLicense?.name ?? o.orgs[0].name;
+        });
+      }
+    }).finally(() => setOrgLoading(false));
+  }, [setSelectedOrgId]);
+
+  useEffect(() => {
+    if (!getHubUser() && !getHubToken()) { setOrgLoading(false); return; }
+    loadOrgs();
+  }, [loadOrgs]);
+
+  useEffect(() => {
+    if (!selectedOrgId) return;
+    api.hubOrgs.members(selectedOrgId).then(d => setMembers(d.members)).catch(() => {});
+    const org = orgs.find(o => o.id === selectedOrgId);
+    if (org) setEditName(org.name);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedOrgId]);
+
+  const selectedOrg = orgs.find(o => o.id === selectedOrgId);
+  const isOwner = selectedOrg?.role === 'owner';
+  const isAdmin = selectedOrg?.role === 'admin';
+  const canInvite = isOwner || isAdmin;
+
+  const ROLE_I18N: Record<string, string> = { owner: t('org.roleOwner'), admin: t('org.roleAdmin'), member: t('org.roleMember') };
+  const localizeRole = (role: string) => ROLE_I18N[role] ?? role;
+
+  // ── License data loading ──
+  const LICENSE_ERROR_I18N: Record<string, string> = {
+    'Trial already used for this account': 'license.trialAlreadyUsed',
+    'License not found or not active': 'license.licenseNotFound',
+    'Instance limit reached': 'license.instanceLimitReached',
+  };
+  const localizeError = (msg: string) => { const key = LICENSE_ERROR_I18N[msg]; return key ? t(key) : msg; };
+
+  const refreshLicense = useCallback((revalidate = false) => {
+    setRefreshing(true);
+    const req = revalidate ? api.license.refresh() : api.license.get();
+    req.then(data => setLicenseInfo(data))
+      .catch(() => {})
+      .finally(() => setTimeout(() => setRefreshing(false), 400));
+  }, []);
+
+  useEffect(() => { refreshLicense(true); }, [refreshLicense]);
+
+  // ── Derived license values ──
+  const orgsLoaded = orgs.length > 0;
+  const selectedOrgHasEnterprise = selectedOrg?.license?.plan === 'enterprise';
+  const isEnterprise = (selectedOrgId && orgsLoaded)
+    ? selectedOrgHasEnterprise
+    : licenseInfo?.plan === 'enterprise';
+  // Whether the local instance license data actually belongs to the selected org (for data source selection & badges)
+  const localLicenseMatchesOrg = !orgsLoaded || (isEnterprise && licenseInfo?.orgId != null && licenseInfo.orgId === selectedOrgId);
+  // Whether the current user can see license details & management (owner of selected org)
+  const canManageLicense = !orgsLoaded || isOwner;
+
+  const effectiveValidUntil = localLicenseMatchesOrg ? licenseInfo?.validUntil : selectedOrg?.license?.validUntil;
+  const effectiveMaxSeats = localLicenseMatchesOrg ? licenseInfo?.maxSeats : selectedOrg?.license?.maxSeats;
+  const effectiveUsedSeats = localLicenseMatchesOrg ? (licenseInfo?.usedSeats ?? 0) : (selectedOrg?.memberCount ?? 0);
+
+  const daysRemaining = effectiveValidUntil
+    ? Math.max(0, Math.ceil((new Date(effectiveValidUntil).getTime() - Date.now()) / 86400000))
+    : null;
+  const needsRenewal = isEnterprise && canManageLicense && daysRemaining !== null && daysRemaining <= 60;
+
+  const featureKeys = ['multi_user', 'multi_instance'] as const;
+  const featureI18n: Record<string, string> = {
+    multi_user: t('license.featureMultiUser'), multi_instance: t('license.featureMultiInstance'),
+  };
+
+  // ── Org handlers ──
+  const handleUpdateName = async () => {
+    if (!selectedOrgId || !editName.trim()) return;
+    try {
+      await api.hubOrgs.update(selectedOrgId, { name: editName.trim() });
+      setOrgs(prev => prev.map(o => o.id === selectedOrgId ? { ...o, name: editName.trim() } : o));
+      setOrgMsg({ type: 'ok', text: t('org.nameSaved') });
+    } catch (e) { setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : 'Failed' }); }
+  };
+
+  const seatsFull = selectedOrg?.license?.maxSeats != null && selectedOrg.memberCount >= selectedOrg.license.maxSeats;
+
+  const handleInvite = async () => {
+    if (!selectedOrgId || !inviteValue.trim()) return;
+    const email = inviteValue.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setOrgMsg({ type: 'err', text: t('org.invalidEmail') }); return; }
+    setInviting(true); setOrgMsg(null);
+    try {
+      await api.hubOrgs.invite(selectedOrgId, { email, role: inviteRole });
+      setInviteValue(''); setInviteRole('member');
+      setOrgMsg({ type: 'ok', text: t('org.invited') });
+      api.hubOrgs.members(selectedOrgId).then(d => setMembers(d.members)).catch(() => {});
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : '';
+      const ERR: Record<string, string> = {
+        'User not found': t('org.errorUserNotFound'),
+        'User is already a member or has a pending invitation': t('org.errorAlreadyMember'),
+        'An invitation has already been sent to this email': t('org.errorAlreadySent'),
+      };
+      setOrgMsg({ type: 'err', text: ERR[raw] ?? (raw || t('org.errorInviteFailed')) });
+    } finally { setInviting(false); }
+  };
+
+  const handleRemove = async (userId: string) => {
+    if (!selectedOrgId) return;
+    try { await api.hubOrgs.removeMember(selectedOrgId, userId); setMembers(prev => prev.filter(m => m.userId !== userId)); }
+    catch (e) { setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : 'Failed' }); }
+  };
+
+  const handleAcceptInvite = async (orgId: string) => {
+    try { await api.hubOrgs.acceptInvitation(orgId); setInvitations(prev => prev.filter(i => i.orgId !== orgId)); const res = await api.hubOrgs.mine(); setOrgs(res.orgs); }
+    catch (e) { setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : 'Failed' }); }
+  };
+
+  const handleLeave = async () => {
+    if (!selectedOrgId) return;
+    try {
+      await api.hubOrgs.leave(selectedOrgId);
+      setShowLeaveConfirm(false);
+      setOrgs(prev => prev.filter(o => o.id !== selectedOrgId));
+      setSelectedOrgId(orgs.length > 1 ? orgs.find(o => o.id !== selectedOrgId)!.id : null);
+    } catch (e) {
+      setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : 'Failed' });
+      setShowLeaveConfirm(false);
+    }
+  };
+
+  const handleRoleChange = async (userId: string, newRole: string) => {
+    if (!selectedOrgId) return;
+    try {
+      await api.hubOrgs.updateMemberRole(selectedOrgId, userId, newRole);
+      setMembers(prev => prev.map(m => m.userId === userId ? { ...m, role: newRole } : m));
+      setOrgMsg({ type: 'ok', text: t('org.roleUpdated') });
+    } catch (e) { setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : 'Failed' }); }
+  };
+
+  // ── License handlers ──
+  const handleActivate = async () => {
+    if (!licenseKey.trim()) return;
+    setActivating(true); setLicMsg(null);
+    try { await ensureHubAuth(); } catch { setLicMsg({ type: 'err', text: t('license.activationFailed') }); setActivating(false); return; }
+    try {
+      const result = await api.license.activate(licenseKey.trim());
+      if (result.success) { setLicMsg({ type: 'ok', text: t('license.activated') }); setLicenseKey(''); refreshLicense(); }
+      else { setLicMsg({ type: 'err', text: localizeError(result.error ?? t('license.activationFailed')) }); }
+    } catch (err) { setLicMsg({ type: 'err', text: localizeError((err instanceof Error && err.message) || t('license.activationFailed')) }); }
+    finally { setActivating(false); }
+  };
+
+  const handleTrial = async () => {
+    setActivating(true); setLicMsg(null);
+    try { await ensureHubAuth(); } catch { setLicMsg({ type: 'err', text: t('license.trialFailed') }); setActivating(false); return; }
+    try {
+      const result = await api.license.trial();
+      if (result.success) { setLicMsg({ type: 'ok', text: t('license.trialActivated') }); refreshLicense(); }
+      else { setLicMsg({ type: 'err', text: localizeError(result.error ?? t('license.trialFailed')) }); }
+    } catch (err) { setLicMsg({ type: 'err', text: localizeError((err instanceof Error && err.message) || t('license.trialFailed')) }); }
+    finally { setActivating(false); }
+  };
+
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      setLicMsg(null);
+      try {
+        const result = await api.license.import(reader.result as string);
+        if (result.success) { setLicMsg({ type: 'ok', text: t('license.imported') }); refreshLicense(); }
+        else { setLicMsg({ type: 'err', text: result.error ?? t('license.importFailed') }); }
+      } catch { setLicMsg({ type: 'err', text: t('license.importFailed') }); }
+    };
+    reader.readAsText(file); e.target.value = '';
+  };
+
+  const handleDeactivate = async () => {
+    if (!window.confirm(t('license.deactivateConfirm'))) return;
+    setLicMsg(null);
+    try { await api.license.deactivate(); setLicMsg({ type: 'ok', text: t('license.deactivated') }); refreshLicense(); }
+    catch { setLicMsg({ type: 'err', text: t('license.deactivateFailed') }); }
+  };
+
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text).then(() => { setCopied(label); setTimeout(() => setCopied(null), 2000); }).catch(() => {});
+  };
+
+  const copyAllDetails = () => {
+    const rows: [string, string | undefined][] = [
+      [t('license.username'), licenseInfo?.username],
+      [t('license.userId', { defaultValue: 'User ID' }), licenseInfo?.hubUserId],
+      [t('license.orgId', { defaultValue: 'Org ID' }), licenseInfo?.orgId],
+      [t('license.licenseKey'), licenseInfo?.licenseKey],
+      [t('license.instanceId'), licenseInfo?.instanceId],
+    ];
+    const text = rows.filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join('\n');
+    copyToClipboard(text, 'allDetails');
+  };
+
+  const InfoRow = ({ label, value }: { label: string; value?: string }) => (
+    value ? (
+      <div className="flex items-center gap-3 py-1.5">
+        <span className="text-xs text-fg-tertiary w-24 shrink-0">{label}</span>
+        <code className="text-xs text-fg-secondary font-mono bg-surface-primary/60 px-2 py-0.5 rounded select-all truncate max-w-[280px]">{value}</code>
+      </div>
+    ) : null
+  );
+
+  const idBlock = [
+    licenseInfo?.username && `Username: ${licenseInfo.username}`,
+    licenseInfo?.hubUserId && `User ID: ${licenseInfo.hubUserId}`,
+    licenseInfo?.orgId && `Org ID: ${licenseInfo.orgId}`,
+    licenseInfo?.instanceId && `Instance ID: ${licenseInfo.instanceId}`,
+  ].filter(Boolean).join('\n');
+
+  if (orgLoading) return <div className="text-center py-8 text-fg-tertiary text-sm">{t('common:loading')}</div>;
+
+  // ── No org state ──
+  if (orgs.length === 0 && invitations.length === 0) {
+    return (
+      <div className="space-y-6">
+        <LicensePlanCard isEnterprise={licenseInfo?.plan === 'enterprise'} licenseInfo={licenseInfo} licenseOwnedBySelectedOrg={true}
+          daysRemaining={licenseInfo?.validUntil ? Math.max(0, Math.ceil((new Date(licenseInfo.validUntil).getTime() - Date.now()) / 86400000)) : null}
+          effectiveValidUntil={licenseInfo?.validUntil} effectiveMaxSeats={licenseInfo?.maxSeats}
+          effectiveUsedSeats={licenseInfo?.usedSeats ?? 0} effectiveOrgName={licenseInfo?.orgName}
+          featureKeys={featureKeys} featureI18n={featureI18n} t={t} />
+        <div className="text-center py-8 space-y-4">
+          <div className="text-3xl">🏢</div>
+          <div className="text-sm text-fg-tertiary">{t('org.noOrg')}</div>
+          <button onClick={() => {
+            setOrgMsg(null);
+            ensureHubAuth().then(() => loadOrgs()).catch(e => {
+              const raw = e instanceof Error ? e.message : String(e);
+              const text = raw.includes('Popup blocked') ? t('org.popupBlocked') : raw.includes('cancelled') ? t('org.loginCancelled') : raw;
+              setOrgMsg({ type: 'err', text });
+            });
+          }}
+            className="px-5 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium rounded-lg transition-colors inline-flex items-center gap-2">
+            {t('org.connectHub')}
+          </button>
+          {orgMsg && (
+            <div className={`inline-block px-4 py-2 rounded-lg text-xs ${orgMsg.type === 'ok' ? 'bg-green-500/10 text-green-600 border border-green-500/20' : 'bg-red-500/10 text-red-500 border border-red-500/20'}`}>
+              {orgMsg.text}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {(orgMsg || licMsg) && (
+        <div className="space-y-2">
+          {[orgMsg, licMsg].filter(Boolean).map((m, i) => (
+            <div key={i} className={`flex items-center gap-2 text-sm px-4 py-3 rounded-lg ${
+              m!.type === 'ok' ? 'bg-green-500/10 text-green-600 border border-green-500/20' : 'bg-red-500/10 text-red-500 border border-red-500/20'
+            }`}>
+              <span>{m!.type === 'ok' ? '✓' : '✕'}</span><span>{m!.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {invitations.length > 0 && (
+        <div className="space-y-2">
+          {invitations.map(inv => (
+            <div key={inv.orgId} className="flex items-center justify-between px-4 py-3 rounded-lg border border-amber-500/20 bg-amber-500/5">
+              <div className="text-sm">
+                <span className="font-medium text-fg-primary">{inv.orgName}</span>
+                <span className="text-fg-tertiary ml-1">— {t('org.invitedBy')} {inv.invitedBy}</span>
+              </div>
+              <button onClick={() => void handleAcceptInvite(inv.orgId)} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium rounded-lg transition-colors">
+                {t('org.accept')}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {orgs.length > 1 && (
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-fg-secondary whitespace-nowrap font-medium">{t('org.switchOrg')}</span>
+          <select value={selectedOrgId ?? ''} onChange={e => setSelectedOrgId(e.target.value)}
+            className="flex-1 px-3 py-2 rounded-lg border border-border-default bg-surface-elevated text-sm text-fg-primary">
+            {orgs.map(o => <option key={o.id} value={o.id}>{o.name} ({localizeRole(o.role)})</option>)}
+          </select>
+        </div>
+      )}
+
+      {/* ═══ LICENSE ═══ */}
+      <div>
+        <div className="flex items-center mb-3">
+          <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider">{t('license.title')}</h3>
+          <button onClick={() => refreshLicense(true)} disabled={refreshing}
+            className="ml-auto flex items-center gap-1.5 text-xs text-fg-tertiary hover:text-fg-secondary disabled:opacity-50 transition-colors">
+            <svg className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h5M20 20v-5h-5M4.05 11A8 8 0 0119.95 9M19.95 13A8 8 0 014.05 15" />
+            </svg>
+            {t('license.refresh')}
+          </button>
+        </div>
+        <div className="space-y-4">
+          <LicensePlanCard isEnterprise={isEnterprise} licenseInfo={licenseInfo} licenseOwnedBySelectedOrg={localLicenseMatchesOrg}
+            daysRemaining={daysRemaining} effectiveValidUntil={effectiveValidUntil}
+            effectiveMaxSeats={effectiveMaxSeats} effectiveUsedSeats={effectiveUsedSeats}
+            effectiveOrgName={selectedOrg?.name ?? licenseInfo?.orgName}
+            featureKeys={featureKeys} featureI18n={featureI18n} t={t} />
+
+          {isEnterprise ? (
+            <>
+              {needsRenewal && (
+                <div className={`px-4 py-3 rounded-lg border ${daysRemaining === 0 ? 'bg-red-500/8 border-red-500/15 text-red-600' : daysRemaining! <= 7 ? 'bg-amber-500/8 border-amber-500/15 text-amber-600' : 'bg-amber-500/5 border-amber-500/10 text-amber-600'}`}>
+                  <div className="text-sm font-medium">{daysRemaining === 0 ? t('license.expiredWarning') : t('license.renewalWarning', { count: daysRemaining! })}</div>
+                  <div className="text-[11px] mt-1 opacity-75">{t('license.renewalHint')}</div>
+                  <div className="flex gap-2 mt-3">
+                    <input type="text" value={licenseKey} onChange={e => setLicenseKey(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleActivate()} placeholder={t('license.keyPlaceholder')}
+                      className="flex-1 px-3 py-1.5 bg-surface-primary border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors placeholder:text-fg-tertiary font-mono" />
+                    <button onClick={handleActivate} disabled={activating || !licenseKey.trim()}
+                      className="px-4 py-1.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-all whitespace-nowrap">{t('license.renew')}</button>
+                  </div>
+                </div>
+              )}
+              {canManageLicense ? (
+                <>
+                  <div className="rounded-lg border border-border-default">
+                    <div className="px-5 py-3 border-b border-border-default/50 flex items-center justify-between">
+                      <span className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('license.details')}</span>
+                      <button onClick={copyAllDetails} className="text-xs text-fg-tertiary hover:text-fg-secondary transition-colors flex items-center gap-1">
+                        {copied === 'allDetails' ? '✓ ' + t('license.copied') : '⧉ ' + t('license.copyInfo')}
+                      </button>
+                    </div>
+                    <div className="px-5 py-2 divide-y divide-border-default/30">
+                      <InfoRow label={t('license.username')} value={licenseInfo?.username} />
+                      {licenseInfo?.hubUserId && <InfoRow label={t('license.userId', { defaultValue: 'User ID' })} value={licenseInfo.hubUserId} />}
+                      {licenseInfo?.orgId && <InfoRow label={t('license.orgId', { defaultValue: 'Org ID' })} value={licenseInfo.orgId} />}
+                      <InfoRow label={t('license.licenseKey')} value={licenseInfo?.licenseKey} />
+                      <InfoRow label={t('license.instanceId')} value={licenseInfo?.instanceId} />
+                    </div>
+                  </div>
+                  {/* TODO: re-enable when offline import and deactivation are ready
+                  <div className="rounded-lg border border-border-default">
+                    <div className="px-5 py-3 border-b border-border-default/50">
+                      <span className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('license.manage')}</span>
+                    </div>
+                    <div className="p-5 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div><div className="text-xs text-fg-primary font-medium">{t('license.importFile')}</div><div className="text-[11px] text-fg-tertiary mt-0.5">{t('license.importDesc')}</div></div>
+                        <button onClick={() => fileRef.current?.click()} className="px-3 py-1.5 text-xs font-medium text-fg-secondary border border-border-default rounded-lg hover:bg-surface-overlay transition-colors whitespace-nowrap">{t('license.importBtn')}</button>
+                      </div>
+                      <input ref={fileRef} type="file" accept=".lic,.json" className="hidden" onChange={handleImport} />
+                      <div className="pt-3 border-t border-border-default/50">
+                        <div className="flex items-center justify-between">
+                          <div><div className="text-xs text-fg-primary font-medium">{t('license.deactivate')}</div><div className="text-[11px] text-fg-tertiary mt-0.5">{t('license.deactivateDesc')}</div></div>
+                          <button onClick={handleDeactivate} className="px-3 py-1.5 text-xs font-medium text-red-500 border border-red-500/20 rounded-lg hover:bg-red-500/8 transition-colors whitespace-nowrap">{t('license.deactivate')}</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  */}
+                </>
+              ) : (
+                <div className="px-4 py-3 rounded-lg bg-surface-elevated border border-border-default/50 text-xs text-fg-tertiary">{t('license.notOwnedHint')}</div>
+              )}
+            </>
+          ) : (
+            <>
+              <button onClick={handleTrial} disabled={activating}
+                className="w-full flex items-center justify-between px-5 py-4 rounded-lg border border-brand-500/20 bg-brand-600/5 hover:bg-brand-600/10 transition-all text-left disabled:opacity-50">
+                <div><div className="text-sm font-semibold text-fg-primary">{t('license.tryEnterprise')}</div><div className="text-[11px] text-fg-tertiary mt-0.5">{t('license.trialDesc')}</div></div>
+                <span className="text-brand-500 text-lg shrink-0 ml-4">→</span>
+              </button>
+              <div className="rounded-lg border border-border-default p-5">
+                <div className="text-sm font-medium text-fg-primary">{t('license.upgrade')}</div>
+                <div className="text-[11px] text-fg-tertiary mt-1">{t('license.activateDesc')}</div>
+                <div className="flex gap-2 mt-3">
+                  <input type="text" value={licenseKey} onChange={e => setLicenseKey(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleActivate()} placeholder={t('license.keyPlaceholder')}
+                    className="flex-1 px-3 py-2 bg-surface-primary border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors placeholder:text-fg-tertiary font-mono" />
+                  <button onClick={handleActivate} disabled={activating || !licenseKey.trim()}
+                    className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-all whitespace-nowrap">{t('license.activate')}</button>
+                </div>
+              </div>
+              <div className="rounded-lg border border-border-default p-5">
+                <div className="text-sm font-medium text-fg-primary">{t('license.contactSales')}</div>
+                <div className="text-[11px] text-fg-tertiary mt-1 mb-3">{t('license.contactSalesDesc', { email: t('license.salesEmail') })}</div>
+                {idBlock && (
+                  <div className="flex gap-2 items-start">
+                    <div className="relative flex-1">
+                      <pre className="text-[11px] text-fg-secondary font-mono bg-surface-primary border border-border-default/50 rounded-lg px-3 py-2.5 leading-relaxed select-all whitespace-pre-wrap">{idBlock}</pre>
+                      <button onClick={() => copyToClipboard(idBlock, 'salesInfo')} className="absolute top-1.5 right-1.5 text-xs text-fg-tertiary hover:text-fg-secondary transition-colors bg-surface-primary/90 border border-border-default/50 px-2 py-1 rounded-md">
+                        {copied === 'salesInfo' ? '✓ ' + t('license.copied') : t('license.copyInfo')}
+                      </button>
+                    </div>
+                    <a href={`mailto:${t('license.salesEmail')}?subject=Enterprise%20License%20Request&body=${encodeURIComponent(idBlock)}`}
+                      className="shrink-0 inline-flex items-center gap-1.5 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium rounded-lg transition-all no-underline whitespace-nowrap">{t('license.emailSales')}</a>
+                  </div>
+                )}
+              </div>
+              {/* TODO: re-enable when offline import is ready
+              <div className="flex items-center justify-between rounded-lg border border-border-default px-5 py-4">
+                <div><div className="text-xs font-medium text-fg-primary">{t('license.importFile')}</div><div className="text-[11px] text-fg-tertiary mt-0.5">{t('license.importDesc')}</div></div>
+                <button onClick={() => fileRef.current?.click()} className="px-3 py-1.5 text-xs font-medium text-fg-secondary border border-border-default rounded-lg hover:bg-surface-overlay transition-colors whitespace-nowrap shrink-0">{t('license.importBtn')}</button>
+              </div>
+              <input ref={fileRef} type="file" accept=".lic,.json" className="hidden" onChange={handleImport} />
+              */}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* ═══ ORGANIZATION ═══ */}
+      {selectedOrg && (
+        <div>
+          <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider mb-3">{t('org.title')}</h3>
+          <div className="space-y-4">
+            <div className="rounded-lg border border-border-default p-5 space-y-4">
+              <div className="space-y-2">
+                <label className="text-xs text-fg-tertiary font-medium">{t('org.nameLabel')}</label>
+                {isOwner ? (
+                  <div className="flex gap-2">
+                    <input value={editName} onChange={e => setEditName(e.target.value)} className="flex-1 px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary" />
+                    <button onClick={() => void handleUpdateName()} disabled={editName === selectedOrg.name || !editName.trim()}
+                      className="px-3 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-xs rounded-lg transition-colors">{t('common:save')}</button>
+                  </div>
+                ) : (<div className="text-sm text-fg-primary">{selectedOrg.name}</div>)}
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-fg-tertiary">{t('org.orgId')}</span>
+                <code className="px-1.5 py-0.5 rounded bg-surface-elevated text-fg-secondary">{selectedOrg.id}</code>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border-default overflow-hidden">
+              <div className="px-5 py-3 flex items-center justify-between" style={{ borderBottom: '1px solid var(--border-default, #e5e7eb)' }}>
+                <h3 className="text-sm font-medium text-fg-primary">{t('org.members')} ({members.filter(m => m.status === 'active').length})</h3>
+              </div>
+              <div className="divide-y divide-border-default">
+                {members.map(m => (
+                  <div key={m.id} className="flex items-center justify-between px-5 py-3">
+                    <div className="flex items-center gap-3">
+                      {m.avatarUrl ? (<img src={m.avatarUrl} alt="" className="w-8 h-8 rounded-full object-cover" />) : (
+                        <div className="w-8 h-8 rounded-full bg-brand-600/20 flex items-center justify-center text-xs font-bold text-brand-500">{(m.displayName ?? m.username)?.[0]?.toUpperCase()}</div>
+                      )}
+                      <div>
+                        <div className="text-sm font-medium text-fg-primary">{m.displayName ?? m.username}</div>
+                        <div className="text-[11px] text-fg-tertiary">@{m.username}{m.status === 'pending' ? ` (${t('org.pending')})` : ''}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {isOwner && m.role !== 'owner' ? (
+                        <select value={m.role} onChange={e => void handleRoleChange(m.userId, e.target.value)}
+                          className="px-2 py-1 rounded border border-border-default bg-surface-elevated text-xs text-fg-secondary">
+                          <option value="admin">{t('org.roleAdmin')}</option>
+                          <option value="member">{t('org.roleMember')}</option>
+                        </select>
+                      ) : (
+                        <span className="text-xs text-fg-tertiary">{localizeRole(m.role)}</span>
+                      )}
+                      {isOwner && m.role !== 'owner' && (<button onClick={() => void handleRemove(m.userId)} className="text-xs text-red-500 hover:text-red-400 transition-colors">{t('org.remove')}</button>)}
+                    </div>
+                  </div>
+                ))}
+                {members.length === 0 && (<div className="px-5 py-6 text-center text-xs text-fg-tertiary">{t('org.noMembers')}</div>)}
+              </div>
+            </div>
+
+            {canInvite && (
+              <div className="rounded-lg border border-border-default p-5 space-y-3">
+                <label className="text-xs text-fg-tertiary font-medium">{t('org.inviteLabel')}</label>
+                {seatsFull ? (<p className="text-xs text-amber-500">{t('org.seatsFullHint')}</p>) : (
+                  <div className="flex gap-2">
+                    <input value={inviteValue} onChange={e => setInviteValue(e.target.value)} type="email" placeholder={t('org.invitePlaceholder')}
+                      className="flex-1 px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary placeholder:text-fg-quaternary"
+                      onKeyDown={e => { if (e.key === 'Enter') void handleInvite(); }} />
+                    <select value={inviteRole} onChange={e => setInviteRole(e.target.value as 'member' | 'admin')}
+                      className="px-2 py-2 rounded-lg border border-border-default bg-surface-elevated text-xs text-fg-secondary">
+                      <option value="member">{t('org.roleMember')}</option>
+                      <option value="admin">{t('org.roleAdmin')}</option>
+                    </select>
+                    <button onClick={() => void handleInvite()} disabled={inviting || !inviteValue.trim()}
+                      className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors">{inviting ? t('common:saving') : t('org.invite')}</button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!isOwner && (<button onClick={() => setShowLeaveConfirm(true)} className="text-xs text-red-500 hover:text-red-400 transition-colors border border-red-500/30 rounded-lg px-3 py-1.5 hover:bg-red-500/5">{t('org.leave')}</button>)}
+          </div>
+        </div>
+      )}
+
+      {showLeaveConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowLeaveConfirm(false)}>
+          <div className="bg-surface-secondary border border-border-default rounded-2xl max-w-sm w-full mx-4 p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start gap-3 mb-4">
+              <span className="flex items-center justify-center w-10 h-10 rounded-xl bg-red-500/10 text-red-500 shrink-0">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              </span>
+              <div>
+                <h3 className="text-base font-semibold text-fg-primary">{t('org.leaveConfirmTitle')}</h3>
+                <p className="text-sm text-fg-secondary mt-1">{t('org.leaveConfirmMsg', { name: selectedOrg?.name ?? '' })}</p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2.5 pt-2 border-t border-border-default">
+              <button onClick={() => setShowLeaveConfirm(false)} className="px-4 py-2 text-xs font-medium rounded-lg border border-border-default text-fg-secondary hover:bg-surface-elevated transition-colors">{t('org.leaveCancel')}</button>
+              <button onClick={() => void handleLeave()} className="px-4 py-2 text-xs font-medium rounded-lg bg-red-600 hover:bg-red-500 text-white shadow-sm shadow-red-600/20 transition-colors">{t('org.leaveConfirmBtn')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center gap-4 text-[11px] text-fg-tertiary pt-1">
+        <a href="https://markus.global" target="_blank" rel="noopener noreferrer" className="hover:text-fg-secondary transition-colors">{t('license.website')}</a>
+        <a href="https://markus.global/docs" target="_blank" rel="noopener noreferrer" className="hover:text-fg-secondary transition-colors">{t('license.docs')}</a>
+        <a href={`mailto:${t('license.salesEmail')}`} className="hover:text-fg-secondary transition-colors">{t('license.salesEmail')}</a>
+      </div>
+    </div>
+  );
+}
+
+/* ─── License Plan Card (shared sub-component) ─── */
+
+function LicensePlanCard({ isEnterprise, licenseInfo, licenseOwnedBySelectedOrg, daysRemaining, effectiveValidUntil, effectiveMaxSeats, effectiveUsedSeats, effectiveOrgName, featureKeys, featureI18n, t }: {
+  isEnterprise: boolean | undefined; licenseInfo: any; licenseOwnedBySelectedOrg: boolean;
+  daysRemaining: number | null; effectiveValidUntil?: string; effectiveMaxSeats?: number; effectiveUsedSeats: number; effectiveOrgName?: string;
+  featureKeys: readonly string[]; featureI18n: Record<string, string>; t: (key: string, opts?: any) => string;
+}) {
+  if (isEnterprise) {
+    return (
+      <div className="rounded-lg border border-brand-500/20 overflow-hidden">
+        <div className="px-5 py-4 bg-gradient-to-r from-brand-600/5 to-transparent">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <span className="text-base font-semibold text-fg-primary">{t('license.planEnterprise')}</span>
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-500/12 text-green-600 border border-green-500/15">{t('license.statusActive')}</span>
+              {licenseOwnedBySelectedOrg && licenseInfo?.isTrial && (<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/12 text-amber-600 border border-amber-500/15">{t('license.trial')}</span>)}
+              {licenseOwnedBySelectedOrg && licenseInfo?.isOffline && (<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-cyan-500/12 text-cyan-600 border border-cyan-500/15">{t('license.offline')}</span>)}
+            </div>
+            {daysRemaining !== null && (
+              <div className="text-right">
+                <div className={`text-sm font-semibold tabular-nums ${daysRemaining === 0 ? 'text-red-500' : daysRemaining <= 7 ? 'text-amber-500' : daysRemaining <= 60 ? 'text-amber-600' : 'text-fg-primary'}`}>
+                  {daysRemaining > 0 ? t('license.daysRemaining', { count: daysRemaining }) : t('license.expired')}
+                </div>
+                <div className="text-[11px] text-fg-tertiary mt-0.5">{t('license.expiresOn', { date: new Date(effectiveValidUntil!).toLocaleDateString() })}</div>
+              </div>
+            )}
+          </div>
+          <div className="mt-4 grid grid-cols-3 gap-px rounded-lg overflow-hidden border border-border-default/50">
+            <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-sm font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.teams ?? 0} <span className="text-fg-tertiary font-normal">/ ∞</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitTeams')}</div></div>
+            <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-sm font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.toolCallsToday ?? 0} <span className="text-fg-tertiary font-normal">/ ∞</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitToolCalls')}{t('license.perDay')}</div></div>
+            <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-sm font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.users ?? 0} <span className="text-fg-tertiary font-normal">/ {effectiveMaxSeats ?? '∞'}</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitUsers')}</div></div>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {featureKeys.map(f => (<span key={f} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-brand-500 bg-brand-600/6 border border-brand-500/10">{FEATURE_ICONS[f]} {featureI18n[f]}</span>))}
+          </div>
+          {effectiveOrgName && (
+            <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+              <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-surface-primary/40 border border-border-default/30">
+                <span className="text-fg-tertiary">{t('license.organization')}</span><span className="font-medium text-fg-primary">{effectiveOrgName}</span>
+              </div>
+              {effectiveMaxSeats != null && (
+                <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-surface-primary/40 border border-border-default/30">
+                  <span className="text-fg-tertiary">{t('license.seats')}</span><span className="font-medium text-fg-primary">{effectiveUsedSeats} / {effectiveMaxSeats}</span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-border-default">
+      <div className="px-5 py-4">
+        <div className="flex items-center gap-2.5"><span className="text-base font-semibold text-fg-primary">{t('license.planFree')}</span><span className="text-[11px] text-fg-tertiary">{t('license.freeFeaturesDesc')}</span></div>
+        <div className="mt-3 grid grid-cols-3 gap-px rounded-lg overflow-hidden border border-border-default/50">
+          <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-lg font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.teams ?? 0} <span className="text-fg-tertiary font-normal text-xs">/ 1</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitTeams')}</div></div>
+          <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-lg font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.toolCallsToday ?? 0} <span className="text-fg-tertiary font-normal text-xs">/ 500</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitToolCalls')}{t('license.perDay')}</div></div>
+          <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-lg font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.users ?? 0} <span className="text-fg-tertiary font-normal text-xs">/ 1</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitUsers')}</div></div>
+        </div>
+      </div>
     </div>
   );
 }

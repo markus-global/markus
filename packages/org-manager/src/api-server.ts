@@ -183,6 +183,8 @@ export class APIServer {
   private hitlService?: HITLService;
   private billingService?: BillingService;
   private auditService?: AuditService;
+  private licenseService?: import('./license-service.js').LicenseService;
+  private telemetryService?: import('./telemetry-service.js').TelemetryService;
   private storage?: StorageBridge;
   private llmRouter?: LLMRouter;
   private markusConfigPath?: string;
@@ -510,6 +512,14 @@ export class APIServer {
 
   setBillingService(service: BillingService): void {
     this.billingService = service;
+  }
+
+  setLicenseService(service: import('./license-service.js').LicenseService): void {
+    this.licenseService = service;
+  }
+
+  setTelemetryService(service: import('./telemetry-service.js').TelemetryService): void {
+    this.telemetryService = service;
   }
 
   setAuditService(service: AuditService): void {
@@ -1461,12 +1471,20 @@ export class APIServer {
     // System initialization status — tells frontend whether to show Login or InitialSetup
     if (path === '/api/auth/status' && req.method === 'GET') {
       if (!this.storage || !this.authEnabled) {
-        this.json(res, 200, { initialized: true });
+        this.json(res, 200, { initialized: true, hasOwner: true, hasMultipleUsers: false });
         return;
       }
       const allUsers = await this.storage.userRepo.listByOrg('default');
-      const hasRealUsers = allUsers.some((u: any) => u.passwordHash && u.email !== 'admin@markus.local');
-      this.json(res, 200, { initialized: hasRealUsers });
+      const realUsers = allUsers.filter((u: any) =>
+        (u.passwordHash || u.hubUserId) && u.email !== 'admin@markus.local'
+      );
+      const hasOwner = realUsers.some((u: any) => u.role === 'owner');
+      const hasMultipleUsers = realUsers.length > 1;
+      this.json(res, 200, {
+        initialized: realUsers.length > 0,
+        hasOwner,
+        hasMultipleUsers,
+      });
       return;
     }
 
@@ -1586,6 +1604,148 @@ export class APIServer {
           role: userRow.role,
           orgId: userRow.orgId,
           avatarUrl: userRow.avatarUrl ?? undefined,
+        },
+        needsOnboarding: isFirstLogin,
+      });
+      return;
+    }
+
+    // Hub OAuth login — authenticate via Markus Hub token, auto-create local user
+    if (path === '/api/auth/hub-login' && req.method === 'POST') {
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Storage not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const hubToken = body['hubToken'] as string;
+      const hubUser = body['hubUser'] as { id: string; username: string; email?: string; displayName?: string; avatarUrl?: string } | undefined;
+      if (!hubToken || !hubUser?.id) {
+        this.json(res, 400, { error: 'hubToken and hubUser are required' });
+        return;
+      }
+
+      // Verify Hub token against Hub API and use the response as authoritative source
+      let verifiedUser: { id: string; username?: string; email?: string; displayName?: string; avatarUrl?: string };
+      try {
+        const verifyRes = await fetch(`${this.hubUrl}/api/auth/me`, {
+          headers: { 'Authorization': `Bearer ${hubToken}` },
+        });
+        if (!verifyRes.ok) {
+          this.json(res, 401, { error: 'Invalid Hub token' });
+          return;
+        }
+        const verifyData = await verifyRes.json() as { user?: { id: string; username?: string; email?: string; displayName?: string; avatarUrl?: string } };
+        if (!verifyData.user || verifyData.user.id !== hubUser.id) {
+          this.json(res, 403, { error: 'Hub token user mismatch' });
+          return;
+        }
+        verifiedUser = verifyData.user;
+      } catch {
+        this.json(res, 502, { error: 'Could not verify Hub token' });
+        return;
+      }
+
+      // Prefer authoritative Hub /api/auth/me data, fall back to client-supplied hubUser
+      const rawEmail = (verifiedUser.email ?? hubUser.email ?? '').trim().toLowerCase();
+      const email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail) ? rawEmail : '';
+      const name = verifiedUser.displayName || verifiedUser.username || hubUser.displayName || hubUser.username || (email && email.split('@')[0]) || 'User';
+      const avatarUrl = verifiedUser.avatarUrl ?? hubUser.avatarUrl ?? null;
+
+      // Look up existing local user: first by hub_user_id, then by email
+      let userRow = this.storage.userRepo.findByHubUserId(hubUser.id);
+      let isFirstLogin = false;
+
+      if (!userRow && email) {
+        userRow = this.storage.userRepo.findByEmail(email);
+        if (userRow) {
+          // Existing user found by email — bind Hub ID & username
+          this.storage.userRepo.updateHubUserId(userRow.id, hubUser.id, hubUser.username);
+          if (avatarUrl && !userRow.avatarUrl) {
+            this.storage.userRepo.updateAvatarUrl(userRow.id, avatarUrl);
+          }
+        }
+      }
+
+      if (!userRow) {
+        // Check if there's an unclaimed placeholder admin to adopt
+        const allUsers = await this.storage.userRepo.listByOrg('default');
+        const placeholder = allUsers.find((u: any) => u.role === 'owner' && u.email === 'admin@markus.local');
+        const hasRealOwner = allUsers.some((u: any) =>
+          u.role === 'owner' && (u.passwordHash || u.hubUserId) && u.email !== 'admin@markus.local'
+        );
+
+        if (placeholder && !hasRealOwner) {
+          // Adopt placeholder admin
+          this.storage.userRepo.updateProfile(placeholder.id, { name, email: email || undefined, avatarUrl });
+          this.storage.userRepo.updateHubUserId(placeholder.id, hubUser.id, hubUser.username);
+          userRow = this.storage.userRepo.findById(placeholder.id);
+          isFirstLogin = true;
+        } else if (!hasRealOwner) {
+          // Create new owner
+          const userId = genUserId();
+          this.storage.userRepo.create({
+            id: userId, orgId: 'default', name, email: email || undefined,
+            role: 'owner', hubUserId: hubUser.id, avatarUrl: avatarUrl ?? undefined,
+          });
+          this.storage.userRepo.updateHubUserId(userId, hubUser.id, hubUser.username);
+          userRow = this.storage.userRepo.findById(userId);
+          isFirstLogin = true;
+        } else {
+          // There's already an owner — reject for Free (single-user)
+          // TODO: check license for Enterprise multi-user support
+          this.json(res, 403, { error: 'This instance already has an owner. Multi-user requires Enterprise license.' });
+          return;
+        }
+      }
+
+      if (!userRow) {
+        this.json(res, 500, { error: 'Failed to create user' });
+        return;
+      }
+
+      // Sync all Hub profile fields on every login
+      const hubUsername = verifiedUser.username || hubUser.username;
+      if (hubUsername) {
+        this.storage.userRepo.updateHubUserId(userRow.id, hubUser.id, hubUsername);
+      }
+      const profileUpdates: { name?: string; email?: string; avatarUrl?: string | null } = {};
+      if (name && name !== userRow.name) profileUpdates.name = name;
+      if (email && email !== userRow.email) profileUpdates.email = email;
+      if (avatarUrl && avatarUrl !== userRow.avatarUrl) profileUpdates.avatarUrl = avatarUrl;
+      if (Object.keys(profileUpdates).length > 0) {
+        this.storage.userRepo.updateProfile(userRow.id, profileUpdates);
+        userRow = this.storage.userRepo.findById(userRow.id);
+      }
+
+      // Sync in-memory identity
+      this.orgService.syncHumanIdentity(userRow!.id, 'default', userRow!.name, userRow!.role, userRow!.email ?? undefined);
+
+      // Persist Hub token to ~/.markus/hub-token
+      try {
+        const tokenPath = join(homedir(), '.markus', 'hub-token');
+        mkdirSync(dirname(tokenPath), { recursive: true });
+        writeFileSync(tokenPath, hubToken, 'utf-8');
+      } catch { /* non-critical */ }
+
+      const finalUser = userRow!;
+      await this.storage.userRepo.updateLastLogin(finalUser.id);
+      const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
+      const token = await signToken(
+        { userId: finalUser.id, orgId: 'default', role: finalUser.role, exp },
+        this.jwtSecret
+      );
+      res.setHeader(
+        'Set-Cookie',
+        `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
+      );
+      this.json(res, 200, {
+        user: {
+          id: finalUser.id,
+          name: finalUser.name,
+          email: finalUser.email,
+          role: finalUser.role,
+          orgId: finalUser.orgId,
+          avatarUrl: finalUser.avatarUrl ?? undefined,
         },
         needsOnboarding: isFirstLogin,
       });
@@ -2782,6 +2942,17 @@ export class APIServer {
       if (!name) {
         this.json(res, 400, { error: 'name is required' });
         return;
+      }
+      // Feature gating: check team limit
+      if (this.licenseService) {
+        const limits = this.licenseService.getLimits();
+        if (limits.maxTeams > 0) {
+          const existingTeams = await this.orgService.listTeams(orgId);
+          if (existingTeams.length >= limits.maxTeams) {
+            this.json(res, 403, { error: `Team limit reached (${limits.maxTeams}). Upgrade to Enterprise for unlimited teams.` });
+            return;
+          }
+        }
       }
       const team = await this.orgService.createTeam(
         orgId,
@@ -4987,6 +5158,19 @@ EXPLANATION_END`;
     if (path === '/api/users' && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
+
+      // Feature gating: check multi-user limit
+      if (this.licenseService && this.storage) {
+        const limits = this.licenseService.getLimits();
+        if (limits.maxUsers > 0) {
+          const existingCount = this.storage.userRepo.countByOrg('default');
+          if (existingCount >= limits.maxUsers) {
+            this.json(res, 403, { error: `User limit reached (${limits.maxUsers}). Upgrade to Enterprise for multi-user support.` });
+            return;
+          }
+        }
+      }
+
       const body = await this.readBody(req);
       const orgId = (body['orgId'] as string) ?? 'default';
       const name = body['name'] as string;
@@ -5764,6 +5948,17 @@ EXPLANATION_END`;
         if (!this.builderService) {
           this.json(res, 500, { error: 'BuilderService not initialized' });
           return;
+        }
+
+        if (type === 'team' && this.licenseService) {
+          const limits = this.licenseService.getLimits();
+          if (limits.maxTeams > 0) {
+            const existingTeams = await this.orgService.listTeams('default');
+            if (existingTeams.length >= limits.maxTeams) {
+              this.json(res, 403, { error: `Team limit reached (${limits.maxTeams}). Upgrade to Enterprise for unlimited teams.` });
+              return;
+            }
+          }
         }
 
         try {
@@ -6859,7 +7054,7 @@ EXPLANATION_END`;
       const body = await this.readBody(req);
       const plan = this.billingService.setOrgPlan(
         (body['orgId'] as string) ?? 'default',
-        (body['tier'] as 'free' | 'pro' | 'enterprise') ?? 'free'
+        (body['tier'] as 'free' | 'enterprise') ?? 'free'
       );
       this.json(res, 200, { plan });
       return;
@@ -6921,6 +7116,180 @@ EXPLANATION_END`;
       return;
     }
 
+    // ── License Management ────────────────────────────────────────────────────
+    if (path === '/api/license' && req.method === 'GET') {
+      const raw = this.licenseService
+        ? this.licenseService.getInfo()
+        : { plan: 'free', features: [], limits: { maxTeams: 1, maxToolCallsPerDay: 500, maxUsers: 1 } };
+      const info: Record<string, unknown> = { ...raw };
+      const authUser = await this.getAuthUser(req);
+      if (authUser && this.storage) {
+        const userRow = this.storage.userRepo.findById(authUser.userId) as Record<string, unknown> | null;
+        if (userRow) {
+          if (userRow.hubUserId) info.hubUserId = userRow.hubUserId;
+          info.username = (userRow.hubUsername as string) || (userRow.name as string) || undefined;
+        }
+      }
+      try {
+        const defaultOrg = this.orgService.getDefaultOrganization();
+        const orgId = defaultOrg?.id ?? 'default';
+        const teams = this.orgService.listTeams(orgId);
+        const humans = this.orgService.listHumanUsers(orgId);
+        const today = new Date().toISOString().slice(0, 10);
+        const todayToolCalls = this.billingService
+          ? this.billingService.getUsageSummary(orgId, today).toolCalls
+          : 0;
+        info.usage = { teams: teams.length, toolCallsToday: todayToolCalls, users: humans.length };
+      } catch { /* non-critical */ }
+      const hubToken = this.readHubToken();
+      if (hubToken) {
+        try {
+          const meRes = await fetch(`${this.hubUrl}/api/auth/me`, {
+            headers: { 'Authorization': `Bearer ${hubToken}` },
+          });
+          if (meRes.ok) {
+            const meData = await meRes.json() as { user?: { id: string; username?: string }; defaultOrg?: { id: string; name: string; slug: string } };
+            if (meData.defaultOrg) {
+              info.defaultOrg = meData.defaultOrg;
+              if (!info.orgId) info.orgId = meData.defaultOrg.id;
+              if (!info.orgName) info.orgName = meData.defaultOrg.name;
+            }
+            if (meData.user?.id && !info.hubUserId) info.hubUserId = meData.user.id;
+          }
+        } catch { /* ignore */ }
+      }
+      this.json(res, 200, info);
+      return;
+    }
+
+    if (path === '/api/license/refresh' && req.method === 'POST') {
+      if (!this.licenseService) {
+        this.json(res, 503, { error: 'License service not available' });
+        return;
+      }
+      const raw = await this.licenseService.revalidate();
+      if (this.billingService) this.billingService.setOrgPlan('default', this.licenseService.getPlan());
+      const info: Record<string, unknown> = { ...raw };
+      const authUser = await this.getAuthUser(req);
+      if (authUser && this.storage) {
+        const userRow = this.storage.userRepo.findById(authUser.userId) as Record<string, unknown> | null;
+        if (userRow) {
+          if (userRow.hubUserId) info.hubUserId = userRow.hubUserId;
+          info.username = (userRow.hubUsername as string) || (userRow.name as string) || undefined;
+        }
+      }
+      try {
+        const defaultOrg = this.orgService.getDefaultOrganization();
+        const orgId = defaultOrg?.id ?? 'default';
+        const teams = this.orgService.listTeams(orgId);
+        const humans = this.orgService.listHumanUsers(orgId);
+        const today = new Date().toISOString().slice(0, 10);
+        const todayToolCalls = this.billingService
+          ? this.billingService.getUsageSummary(orgId, today).toolCalls
+          : 0;
+        info.usage = { teams: teams.length, toolCallsToday: todayToolCalls, users: humans.length };
+      } catch { /* non-critical */ }
+      const hubToken = this.readHubToken();
+      if (hubToken) {
+        try {
+          const meRes = await fetch(`${this.hubUrl}/api/auth/me`, {
+            headers: { 'Authorization': `Bearer ${hubToken}` },
+          });
+          if (meRes.ok) {
+            const meData = await meRes.json() as { user?: { id: string; username?: string }; defaultOrg?: { id: string; name: string; slug: string } };
+            if (meData.defaultOrg) {
+              info.defaultOrg = meData.defaultOrg;
+              if (!info.orgId) info.orgId = meData.defaultOrg.id;
+              if (!info.orgName) info.orgName = meData.defaultOrg.name;
+            }
+            if (meData.user?.id && !info.hubUserId) info.hubUserId = meData.user.id;
+          }
+        } catch { /* ignore */ }
+      }
+      this.json(res, 200, info);
+      return;
+    }
+
+    if (path === '/api/license/activate' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.licenseService) {
+        this.json(res, 503, { error: 'License service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const licenseKey = body['licenseKey'] as string;
+      if (!licenseKey) {
+        this.json(res, 400, { error: 'licenseKey is required' });
+        return;
+      }
+      const result = await this.licenseService.activateLicense(licenseKey);
+      if (result.success && this.billingService) this.billingService.setOrgPlan('default', this.licenseService.getPlan());
+      this.json(res, result.success ? 200 : 400, result);
+      return;
+    }
+
+    if (path === '/api/license/trial' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.licenseService) {
+        this.json(res, 503, { error: 'License service not available' });
+        return;
+      }
+      const result = await this.licenseService.activateTrial();
+      if (result.success && this.billingService) this.billingService.setOrgPlan('default', this.licenseService.getPlan());
+      this.json(res, result.success ? 200 : 400, result);
+      return;
+    }
+
+    if (path === '/api/license/import' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.licenseService) {
+        this.json(res, 503, { error: 'License service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const fileContent = body['fileContent'] as string;
+      if (!fileContent) {
+        this.json(res, 400, { error: 'fileContent is required' });
+        return;
+      }
+      const result = this.licenseService.importOfflineLicense(fileContent);
+      if (result.success && this.billingService) this.billingService.setOrgPlan('default', this.licenseService.getPlan());
+      this.json(res, result.success ? 200 : 400, result);
+      return;
+    }
+
+    if (path === '/api/license/deactivate' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.licenseService) {
+        this.json(res, 503, { error: 'License service not available' });
+        return;
+      }
+      await this.licenseService.deactivate();
+      if (this.billingService) this.billingService.setOrgPlan('default', this.licenseService.getPlan());
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
+    // ── Telemetry Settings ──────────────────────────────────────────────────
+    if (path === '/api/settings/telemetry' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const enabled = body['enabled'] as boolean;
+      if (this.telemetryService && typeof enabled === 'boolean') {
+        this.telemetryService.setEnabled(enabled);
+      }
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
+    if (path === '/api/settings/telemetry' && req.method === 'GET') {
+      this.json(res, 200, { enabled: this.telemetryService?.isEnabled() ?? false });
+      return;
+    }
+
     // ── Hub Proxy ─────────────────────────────────────────────────────────────
     if (path === '/api/hub/publish' && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
@@ -6970,7 +7339,15 @@ EXPLANATION_END`;
       if (!isMultipart) proxyHeaders['Content-Type'] = 'application/json';
       else proxyHeaders['Content-Type'] = req.headers['content-type']!;
       const authHeader = req.headers['authorization'];
-      if (authHeader) proxyHeaders['Authorization'] = authHeader;
+      if (authHeader) {
+        proxyHeaders['Authorization'] = authHeader;
+      } else {
+        const storedToken = this.readHubToken();
+        if (storedToken) proxyHeaders['Authorization'] = `Bearer ${storedToken}`;
+      }
+      if (req.headers['accept-language']) {
+        proxyHeaders['Accept-Language'] = req.headers['accept-language'];
+      }
 
       try {
         let body: string | Buffer | undefined;
@@ -7060,6 +7437,7 @@ EXPLANATION_END`;
         return;
       }
       this.remoteAgent.start().catch(() => {});
+      try { saveConfig({ remote: { enabled: true } } as any, this.markusConfigPath); } catch { /* non-critical */ }
       this.json(res, 200, { ok: true, status: this.remoteAgent.getStatus() });
       return;
     }
@@ -7068,6 +7446,7 @@ EXPLANATION_END`;
       if (this.remoteAgent) {
         await this.remoteAgent.stop();
       }
+      try { saveConfig({ remote: { enabled: false } } as any, this.markusConfigPath); } catch { /* non-critical */ }
       this.json(res, 200, { ok: true });
       return;
     }
@@ -9950,6 +10329,7 @@ EXPLANATION_END`;
     return [
       // ── Auth ─────────────────────────────────────────────────────────────
       exact('/api/auth/login', 'POST'),
+      exact('/api/auth/hub-login', 'POST'),
       exact('/api/auth/logout', 'POST'),
       exact('/api/auth/me', 'GET'),
       exact('/api/auth/change-password', 'POST'),
@@ -10130,6 +10510,13 @@ EXPLANATION_END`;
       exact('/api/models/validate-key', 'POST'),
       regex(/^\/api\/models\/live\/[^/]+$/, 'GET'),
       // ── Settings ─────────────────────────────────────────────────────────
+      exact('/api/license', 'GET'),
+      exact('/api/license/refresh', 'POST'),
+      exact('/api/license/activate', 'POST'),
+      exact('/api/license/trial', 'POST'),
+      exact('/api/license/import', 'POST'),
+      exact('/api/license/deactivate', 'POST'),
+      exact('/api/settings/telemetry', 'GET', 'POST'),
       exact('/api/settings/hub', 'GET'),
       exact('/api/settings/hub-token', 'POST'),
       exact('/api/settings/llm', 'GET', 'POST'),
