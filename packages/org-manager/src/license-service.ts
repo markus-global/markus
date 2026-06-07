@@ -110,8 +110,8 @@ export class LicenseService {
           this.license.features = data.plan === 'enterprise' ? [...ENTERPRISE_FEATURES] : [];
           if (data.orgId) this.license.orgId = data.orgId;
           if (data.orgName) this.license.orgName = data.orgName;
-          if (data.maxSeats != null) this.license.maxSeats = data.maxSeats;
-          if (data.usedSeats != null) this.license.usedSeats = data.usedSeats;
+          if (data.maxSeats !== null && data.maxSeats !== undefined) this.license.maxSeats = data.maxSeats;
+          if (data.usedSeats !== null && data.usedSeats !== undefined) this.license.usedSeats = data.usedSeats;
           this.saveLicense(this.license);
         } else {
           log.warn('License heartbeat returned invalid — reverting to free');
@@ -382,7 +382,7 @@ export class LicenseService {
 
       const currentKey = this.license.licenseKey;
       if (currentKey === data.license.licenseKey) {
-        if (data.license.usedSeats != null && data.license.usedSeats !== this.license.usedSeats) {
+        if (data.license.usedSeats !== null && data.license.usedSeats !== undefined && data.license.usedSeats !== this.license.usedSeats) {
           this.license.usedSeats = data.license.usedSeats;
           this.saveLicense(this.license);
         }
@@ -401,7 +401,7 @@ export class LicenseService {
       if (result.success) {
         if (data.license.orgId) this.license.orgId = data.license.orgId;
         if (data.license.orgName) this.license.orgName = data.license.orgName;
-        if (data.license.maxSeats != null) this.license.maxSeats = data.license.maxSeats;
+        if (data.license.maxSeats !== null && data.license.maxSeats !== undefined) this.license.maxSeats = data.license.maxSeats;
         this.saveLicense(this.license);
         log.info(`Upgraded license from Hub: ${data.license.licenseKey}`);
       }

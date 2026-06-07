@@ -36,6 +36,8 @@ import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
+import type { LicenseService } from './license-service.js';
+import type { TelemetryService } from './telemetry-service.js';
 import type { StorageBridge } from './storage-bridge.js';
 import type { ProjectService } from './project-service.js';
 import type { ReportService } from './report-service.js';
@@ -183,8 +185,8 @@ export class APIServer {
   private hitlService?: HITLService;
   private billingService?: BillingService;
   private auditService?: AuditService;
-  private licenseService?: import('./license-service.js').LicenseService;
-  private telemetryService?: import('./telemetry-service.js').TelemetryService;
+  private licenseService?: LicenseService;
+  private telemetryService?: TelemetryService;
   private storage?: StorageBridge;
   private llmRouter?: LLMRouter;
   private markusConfigPath?: string;
@@ -545,11 +547,11 @@ export class APIServer {
     this.billingService = service;
   }
 
-  setLicenseService(service: import('./license-service.js').LicenseService): void {
+  setLicenseService(service: LicenseService): void {
     this.licenseService = service;
   }
 
-  setTelemetryService(service: import('./telemetry-service.js').TelemetryService): void {
+  setTelemetryService(service: TelemetryService): void {
     this.telemetryService = service;
   }
 

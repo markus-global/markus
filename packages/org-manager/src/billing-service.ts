@@ -1,9 +1,7 @@
-import { createLogger } from '@markus/shared';
+import { createLogger, type PlanTier } from '@markus/shared';
 import { randomBytes } from 'node:crypto';
 
 const log = createLogger('billing');
-
-import type { PlanTier } from '@markus/shared';
 
 export interface UsageRecord {
   orgId: string;
