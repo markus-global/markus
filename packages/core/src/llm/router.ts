@@ -3,6 +3,7 @@ import { startSpan } from '../tracing.js';
 import type { LLMProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
 import { OpenAIProvider } from './openai.js';
+import { CodexResponsesProvider } from './openai-codex.js';
 import { GoogleProvider } from './google.js';
 import { OllamaProvider } from './ollama.js';
 import { AuthProfileStore } from './auth-profiles.js';
@@ -144,21 +145,37 @@ export class LLMRouter {
     const oauthMgr = this._oauthManager;
     const profileId = profile.id;
 
-    const providerConfig: LLMProviderConfig = {
-      provider: (config?.provider ?? name) as any,
-      model: config?.model ?? 'gpt-5.4',
-      baseUrl: config?.baseUrl ?? 'https://api.openai.com',
-      maxTokens: config?.maxTokens,
-      timeoutMs: config?.timeoutMs,
-    };
+    const tokenResolver = async () => oauthMgr.getValidToken(profileId);
+    let provider: LLMProviderInterface;
 
-    const provider = new OpenAIProvider(
-      { ...providerConfig, provider: name as any },
-      async () => oauthMgr.getValidToken(profileId),
-    );
+    if (name === 'openai-codex' || profile.provider === 'openai-codex') {
+      const providerConfig: LLMProviderConfig = {
+        provider: 'openai-codex',
+        model: config?.model ?? 'gpt-5.5',
+        baseUrl: config?.baseUrl ?? 'https://chatgpt.com/backend-api/codex',
+        timeoutMs: config?.timeoutMs,
+      };
+      provider = new CodexResponsesProvider(
+        providerConfig,
+        tokenResolver,
+        profile.oauth?.accountId,
+      );
+    } else {
+      const providerConfig: LLMProviderConfig = {
+        provider: (config?.provider ?? name) as any,
+        model: config?.model ?? 'gpt-5.5',
+        baseUrl: config?.baseUrl ?? 'https://api.openai.com',
+        maxTokens: config?.maxTokens,
+        timeoutMs: config?.timeoutMs,
+      };
+      provider = new OpenAIProvider(
+        { ...providerConfig, provider: name as any },
+        tokenResolver,
+      );
+    }
 
     this.registerProvider(name, provider);
-    log.info(`Registered OAuth-backed provider: ${name}`, { profileId, model: providerConfig.model });
+    log.info(`Registered OAuth-backed provider: ${name}`, { profileId, model: (provider as any).model });
   }
 
   get defaultProviderName(): string {
@@ -669,6 +686,25 @@ export class LLMRouter {
   }
 
   /**
+   * Direct chat with a specific provider — no fallback, no auto-select.
+   * Used by the test endpoint to verify a single provider's connectivity.
+   * Also returns the baseUrl used for diagnostics.
+   */
+  async chatDirect(request: LLMRequest, providerName: string): Promise<LLMResponse & { _providerBaseUrl?: string }> {
+    const provider = this.providers.get(providerName);
+    if (!provider) {
+      throw new Error(`Provider "${providerName}" not registered`);
+    }
+    if (this.disabledProviders.has(providerName)) {
+      throw new Error(`Provider "${providerName}" is disabled`);
+    }
+    request = this.resolveMaxTokens(request, providerName);
+    const response = await provider.chat(request);
+    const baseUrl = (provider as any).baseUrl ?? (provider as any).config?.baseUrl;
+    return Object.assign(response, { _providerBaseUrl: baseUrl });
+  }
+
+  /**
    * Try a streaming chat on a specific provider, optionally with an alternate model.
    */
   private async tryStream(
@@ -1088,8 +1124,9 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 2.5, output: 10 }, reasoning: false, inputTypes: ['text', 'image'] },
   { id: 'o4-mini', name: 'o4-mini', provider: 'openai', contextWindow: 200000, maxOutputTokens: 100000, cost: { input: 1.1, output: 4.4 }, reasoning: true, inputTypes: ['text', 'image'] },
   // OpenAI Codex (OAuth — uses ChatGPT subscription)
-  { id: 'gpt-5.4', name: 'GPT-5.4 (Codex)', provider: 'openai-codex', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 0, output: 0 }, reasoning: true, inputTypes: ['text', 'image'], description: 'Uses ChatGPT subscription via OAuth' },
-  { id: 'gpt-4o', name: 'GPT-4o (Codex)', provider: 'openai-codex', contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 0, output: 0 }, reasoning: false, inputTypes: ['text', 'image'], description: 'Uses ChatGPT subscription via OAuth' },
+  { id: 'gpt-5.5', name: 'GPT-5.5 (Codex)', provider: 'openai-codex', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 0, output: 0 }, reasoning: true, inputTypes: ['text', 'image'], description: 'Uses ChatGPT subscription via OAuth' },
+  { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini (Codex)', provider: 'openai-codex', contextWindow: 512000, maxOutputTokens: 64000, cost: { input: 0, output: 0 }, reasoning: true, inputTypes: ['text', 'image'], description: 'Uses ChatGPT subscription via OAuth — fast' },
+  { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Spark (Codex)', provider: 'openai-codex', contextWindow: 128000, maxOutputTokens: 64000, cost: { input: 0, output: 0 }, reasoning: false, inputTypes: ['text', 'image'], description: 'Uses ChatGPT subscription via OAuth — Pro only, real-time' },
   // Google — https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini
   { id: 'gemini-3-1-pro', name: 'Gemini 3.1 Pro', provider: 'google', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'google', contextWindow: 1048576, maxOutputTokens: 65536, cost: { input: 0.15, output: 0.6 }, reasoning: true, inputTypes: ['text', 'image'] },

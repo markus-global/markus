@@ -137,6 +137,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [ollamaApplying, setOllamaApplying] = useState(false);
   const [ollamaMsg, setOllamaMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
+  // Network / Proxy state
+  const [proxyUrl, setProxyUrl] = useState('');
+  const [proxyEnabled, setProxyEnabled] = useState(true);
+  const [proxyEffective, setProxyEffective] = useState<{ proxy: string | null; source: string } | null>(null);
+  const [proxySaving, setProxySaving] = useState(false);
+  const [proxyMsg, setProxyMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
   // OAuth state
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([]);
   const [authProfiles, setAuthProfiles] = useState<AuthProfileSafe[]>([]);
@@ -144,6 +151,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [oauthMsg, setOauthMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [manualCallbackUrl, setManualCallbackUrl] = useState('');
   const [pendingOAuthProvider, setPendingOAuthProvider] = useState<string | null>(null);
+  const [deviceCode, setDeviceCode] = useState<{ userCode: string; verificationUri: string; provider: string } | null>(null);
   const oauthPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Track whether we already triggered auto-detect for first-run
@@ -202,6 +210,17 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
       .catch(() => {});
   }, []);
 
+  const loadNetworkSettings = useCallback(() => {
+    fetch('/api/settings/network')
+      .then(r => r.ok ? r.json() as Promise<{ network: { proxy?: string; proxyEnabled?: boolean }; effective: { proxy: string | null; source: string } }> : Promise.reject(r.status))
+      .then(d => {
+        setProxyUrl(d.network?.proxy ?? '');
+        setProxyEnabled(d.network?.proxyEnabled !== false);
+        setProxyEffective(d.effective);
+      })
+      .catch(() => {});
+  }, []);
+
   const loadOAuthProviders = useCallback(() => {
     fetch('/api/settings/oauth/providers')
       .then(r => r.ok ? r.json() as Promise<{ providers: OAuthProvider[] }> : Promise.reject(r.status))
@@ -209,8 +228,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
       .catch(() => {});
   }, []);
 
-  const loadAuthProfiles = useCallback(() => {
-    fetch('/api/settings/oauth/profiles', { headers: authHeaders() })
+  const loadAuthProfiles = useCallback((validate = false) => {
+    const qs = validate ? '?validate=1' : '';
+    fetch(`/api/settings/oauth/profiles${qs}`, { headers: authHeaders() })
       .then(r => r.ok ? r.json() as Promise<{ profiles: AuthProfileSafe[] }> : Promise.reject(r.status))
       .then(d => setAuthProfiles(d.profiles ?? []))
       .catch(() => {});
@@ -256,7 +276,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     api.system.orphans().then(setOrphanInfo).catch(() => {});
   }, []);
 
-  useEffect(() => { loadSettings(); loadOAuthProviders(); loadAuthProfiles(); loadAgentSettings(); loadBrowserSettings(); loadSearchSettings(); loadStorage(); }, [loadSettings, loadOAuthProviders, loadAuthProfiles, loadAgentSettings, loadBrowserSettings, loadSearchSettings, loadStorage]);
+  useEffect(() => { loadSettings(); loadNetworkSettings(); loadOAuthProviders(); loadAuthProfiles(true); loadAgentSettings(); loadBrowserSettings(); loadSearchSettings(); loadStorage(); }, [loadSettings, loadNetworkSettings, loadOAuthProviders, loadAuthProfiles, loadAgentSettings, loadBrowserSettings, loadSearchSettings, loadStorage]);
 
   useEffect(() => {
     const handler = () => loadStorage();
@@ -484,6 +504,43 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             }
           } catch { /* continue polling */ }
         }, 2000);
+      }
+    } catch { setOauthMsg({ type: 'err', text: t('oauth.networkErrorDuringLogin') }); }
+    finally { setOauthLoading(null); }
+  };
+
+  const startDeviceCodeLogin = async (provider: string) => {
+    setOauthLoading(provider); setOauthMsg(null); setDeviceCode(null);
+    try {
+      const res = await fetch('/api/settings/oauth/device-code', {
+        method: 'POST', headers: authHeaders(),
+        body: JSON.stringify({ provider }),
+      });
+      const data = await res.json() as { userCode?: string; verificationUri?: string; error?: string };
+      if (!res.ok || data.error) {
+        setOauthMsg({ type: 'err', text: data.error ?? t('oauthAuth.deviceCodeFailed') });
+        return;
+      }
+      if (data.userCode && data.verificationUri) {
+        setDeviceCode({ userCode: data.userCode, verificationUri: data.verificationUri, provider });
+        setPendingOAuthProvider(provider);
+        setOauthMsg({ type: 'ok', text: t('oauthAuth.deviceInstructions') });
+        // Start polling for completion
+        if (oauthPollRef.current) clearInterval(oauthPollRef.current);
+        oauthPollRef.current = setInterval(async () => {
+          try {
+            const statusRes = await fetch(`/api/settings/oauth/status?provider=${provider}`, { headers: authHeaders() });
+            const statusData = await statusRes.json() as { pending: boolean; profiles: AuthProfileSafe[] };
+            if (!statusData.pending && statusData.profiles.some(p => p.provider === provider && p.hasOAuth)) {
+              if (oauthPollRef.current) clearInterval(oauthPollRef.current);
+              oauthPollRef.current = null;
+              setPendingOAuthProvider(null); setDeviceCode(null);
+              setAuthProfiles(statusData.profiles);
+              setOauthMsg({ type: 'ok', text: t('oauthConnected', { provider }) });
+              loadSettings();
+            }
+          } catch { /* continue polling */ }
+        }, 3000);
       }
     } catch { setOauthMsg({ type: 'err', text: t('oauth.networkErrorDuringLogin') }); }
     finally { setOauthLoading(null); }
@@ -748,7 +805,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   // Provider connectivity test state
   const [testingProvider, setTestingProvider] = useState<string | null>(null);
-  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; error?: string; errorCode?: number; durationMs?: number; reply?: string }>>({});
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; error?: string; errorCode?: number; durationMs?: number; reply?: string; model?: string; usage?: Record<string, number>; requestUrl?: string; requestBody?: unknown }>>({});
 
   const testProvider = async (providerName: string) => {
     setTestingProvider(providerName);
@@ -762,7 +819,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         setTestResults(prev => ({ ...prev, [providerName]: { ok: false, error: errData.error ?? `HTTP ${res.status}`, errorCode: res.status } }));
         return;
       }
-      const data = await res.json() as { ok: boolean; error?: string; errorCode?: number; durationMs?: number; reply?: string };
+      const data = await res.json() as { ok: boolean; error?: string; errorCode?: number; durationMs?: number; reply?: string; model?: string; usage?: Record<string, number>; requestUrl?: string; requestBody?: unknown };
       setTestResults(prev => ({ ...prev, [providerName]: data }));
     } catch {
       setTestResults(prev => ({ ...prev, [providerName]: { ok: false, error: t('common:networkError') } }));
@@ -1225,7 +1282,218 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           </div>
         </Section>
 
-        {/* OAuth Authentication section removed */}
+        {/* ───── Network / Proxy ───── */}
+        <Section title={t('networkProxy.title')}>
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs text-fg-tertiary">{t('networkProxy.description')}</p>
+              </div>
+              <button
+                onClick={async () => {
+                  const newVal = !proxyEnabled;
+                  setProxyEnabled(newVal);
+                  try {
+                    await fetch('/api/settings/network', {
+                      method: 'POST', headers: authHeaders(),
+                      body: JSON.stringify({ proxyEnabled: newVal }),
+                    });
+                    loadNetworkSettings();
+                  } catch { setProxyEnabled(!newVal); }
+                }}
+                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${proxyEnabled ? 'bg-green-500' : 'bg-gray-600'}`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${proxyEnabled ? 'translate-x-4' : 'translate-x-1'}`} />
+              </button>
+            </div>
+
+            {/* Effective proxy status */}
+            {proxyEffective && (
+              <div className={`flex items-center gap-2 px-3 py-2.5 rounded-lg bg-surface-secondary border border-border-default transition-opacity ${!proxyEnabled ? 'opacity-50' : ''}`}>
+                <span className={`w-2 h-2 rounded-full ${
+                  !proxyEnabled ? 'bg-gray-600' : proxyEffective.proxy ? 'bg-green-400' : 'bg-gray-600'
+                }`} />
+                <span className="text-xs text-fg-secondary">
+                  {!proxyEnabled ? t('networkProxy.disabled') :
+                   proxyEffective.proxy ? (
+                    <>{t('networkProxy.active')} <code className="text-fg-primary font-mono">{proxyEffective.proxy}</code></>
+                  ) : t('networkProxy.noProxy')}
+                </span>
+                {proxyEnabled && proxyEffective.source !== 'none' && proxyEffective.source !== 'disabled' && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium ${
+                    proxyEffective.source === 'config' ? 'bg-brand-500/15 text-brand-500' :
+                    proxyEffective.source === 'env' ? 'bg-amber-500/15 text-amber-600' :
+                    proxyEffective.source === 'system' ? 'bg-blue-500/15 text-blue-500' :
+                    'bg-gray-500/15 text-fg-muted'
+                  }`}>
+                    {proxyEffective.source === 'config' ? t('networkProxy.sourceConfig') :
+                     proxyEffective.source === 'env' ? t('networkProxy.sourceEnv') :
+                     proxyEffective.source === 'system' ? t('networkProxy.sourceSystem') : ''}
+                  </span>
+                )}
+                <button
+                  onClick={() => loadNetworkSettings()}
+                  className="ml-auto text-[10px] px-1.5 py-0.5 rounded-md text-fg-muted hover:text-fg-secondary hover:bg-surface-tertiary transition-colors"
+                  title={t('networkProxy.refresh')}
+                >
+                  ↻ {t('networkProxy.refresh')}
+                </button>
+              </div>
+            )}
+
+            <div className={`flex gap-2 items-center transition-opacity ${!proxyEnabled ? 'opacity-50 pointer-events-none' : ''}`}>
+              <input
+                type="text"
+                value={proxyUrl}
+                onChange={e => setProxyUrl(e.target.value)}
+                placeholder={t('networkProxy.placeholder')}
+                className="flex-1 px-3 py-2 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/50 focus:border-brand-500 outline-none"
+              />
+              <button
+                onClick={async () => {
+                  setProxySaving(true); setProxyMsg(null);
+                  try {
+                    const res = await fetch('/api/settings/network', {
+                      method: 'POST', headers: authHeaders(),
+                      body: JSON.stringify({ proxy: proxyUrl.trim() }),
+                    });
+                    if (res.ok) {
+                      setProxyMsg({ type: 'ok', text: t('networkProxy.saved') });
+                      loadNetworkSettings();
+                    } else {
+                      const d = await res.json() as { error?: string };
+                      setProxyMsg({ type: 'err', text: d.error ?? t('networkProxy.saveFailed') });
+                    }
+                  } catch { setProxyMsg({ type: 'err', text: t('networkProxy.networkError') }); }
+                  finally { setProxySaving(false); }
+                }}
+                disabled={proxySaving}
+                className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors"
+              >
+                {proxySaving ? t('networkProxy.saving') : t('networkProxy.save')}
+              </button>
+            </div>
+            {proxyMsg && <Msg type={proxyMsg.type} text={proxyMsg.text} />}
+          </div>
+        </Section>
+
+        {/* ───── OAuth Authentication ───── */}
+        <Section title={t('oauthAuth.title')}>
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+            <p className="text-xs text-fg-tertiary">
+              {t('oauthAuth.description')}
+            </p>
+
+            {/* OAuth provider login buttons */}
+            <div className="flex flex-wrap gap-2">
+              {oauthProviders.map(p => (
+                <div key={p.name} className="flex">
+                  <button
+                    onClick={() => startOAuthLogin(p.name)}
+                    disabled={!!oauthLoading}
+                    className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-l-lg transition-colors"
+                  >
+                    {oauthLoading === p.name ? t('oauthAuth.connecting') : t('oauthAuth.signInWith', { name: p.displayName })}
+                  </button>
+                  <button
+                    onClick={() => startDeviceCodeLogin(p.name)}
+                    disabled={!!oauthLoading}
+                    title={t('oauthAuth.deviceTitle')}
+                    className="px-2.5 py-2 text-xs bg-surface-secondary text-fg-secondary border border-border-default border-l-0 rounded-r-lg hover:bg-surface-tertiary disabled:opacity-40 transition-colors"
+                  >
+                    {t('oauthAuth.device')}
+                  </button>
+                </div>
+              ))}
+              {oauthProviders.length === 0 && (
+                <span className="text-xs text-fg-tertiary">{t('oauthAuth.noProviders')}</span>
+              )}
+            </div>
+
+            {/* Device Code display */}
+            {deviceCode && (
+              <div className="p-4 rounded-lg bg-surface-secondary border border-border-default space-y-2">
+                <p className="text-xs text-fg-primary font-medium">{t('oauthAuth.deviceCodeTitle')}</p>
+                <p className="text-xs text-fg-tertiary">
+                  {t('oauthAuth.deviceInstructions')}
+                </p>
+                <div className="flex items-center gap-3">
+                  <a href={deviceCode.verificationUri} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-500 underline hover:text-brand-400">
+                    {deviceCode.verificationUri}
+                  </a>
+                  <code className="px-2.5 py-1 text-sm font-mono font-bold bg-surface-elevated border border-border-default rounded-lg text-fg-primary select-all">
+                    {deviceCode.userCode}
+                  </code>
+                </div>
+                <p className="text-[10px] text-fg-muted">{t('oauthAuth.deviceWaiting')}</p>
+              </div>
+            )}
+
+            {/* Manual callback URL input for headless/remote scenarios */}
+            {pendingOAuthProvider && !deviceCode && (
+              <div className="p-4 rounded-lg bg-surface-secondary border border-border-default space-y-2">
+                <p className="text-xs text-fg-tertiary">
+                  {t('oauthAuth.manualCallbackHint')}
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={manualCallbackUrl}
+                    onChange={e => setManualCallbackUrl(e.target.value)}
+                    placeholder={t('oauthAuth.manualPlaceholder')}
+                    className="flex-1 px-3 py-2 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/50 focus:border-brand-500 outline-none"
+                  />
+                  <button
+                    onClick={handleManualCallback}
+                    disabled={!manualCallbackUrl.trim() || oauthLoading === 'manual'}
+                    className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors"
+                  >
+                    {t('oauthAuth.submit')}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Status message */}
+            {oauthMsg && <Msg type={oauthMsg.type} text={oauthMsg.text} />}
+
+            {/* Connected profiles */}
+            {authProfiles.filter(p => p.hasOAuth).length > 0 && (
+              <div className="space-y-2 border-t border-border-default pt-4">
+                <span className="text-xs font-medium text-fg-secondary">{t('oauthAuth.connectedAccounts')}</span>
+                {authProfiles.filter(p => p.hasOAuth).map(profile => (
+                  <div key={profile.id} className={`flex items-center justify-between px-4 py-3 rounded-lg border ${
+                    profile.oauthExpired ? 'bg-amber-500/5 border-amber-500/20' : 'bg-surface-secondary border-border-default'
+                  }`}>
+                    <div className="flex items-center gap-2.5">
+                      <span className={`w-2 h-2 rounded-full ${profile.oauthExpired ? 'bg-amber-400' : 'bg-green-400'}`} />
+                      <span className="text-xs text-fg-primary font-medium">{profile.label ?? profile.provider}</span>
+                      {profile.accountId && <span className="text-[10px] text-fg-muted">({profile.accountId.slice(0, 12)}...)</span>}
+                      {profile.oauthExpired && <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-600 font-medium">{t('oauthAuth.expired')}</span>}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {profile.oauthExpired && (
+                        <button
+                          onClick={() => startOAuthLogin(profile.provider)}
+                          disabled={!!oauthLoading}
+                          className="text-[10px] px-2 py-1 rounded-md text-brand-500 hover:text-brand-400 hover:bg-brand-500/10 transition-colors"
+                        >
+                          {t('oauthAuth.reconnect')}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => deleteAuthProfile(profile.id)}
+                        className="text-[10px] px-2 py-1 rounded-md text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                      >
+                        {t('oauthAuth.disconnect')}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Section>
 
         {/* ───── Model Providers ───── */}
         <Section title={t('modelProviders.title')}>
@@ -1397,13 +1665,36 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
                         {/* Test result detail */}
                         {testResults[name] && (
-                          <div className={`text-xs px-3 py-2 rounded-lg ${testResults[name].ok
-                            ? 'bg-green-500/10 text-green-600 border border-green-500/30'
-                            : 'bg-red-500/10 text-red-500 border border-red-500/30'}`}>
-                            {testResults[name].ok
-                              ? t('modelProviders.testSuccess', { ms: testResults[name].durationMs, reply: testResults[name].reply })
-                              : testResults[name].error}
-                          </div>
+                          <details className={`text-xs rounded-lg border ${testResults[name].ok
+                            ? 'bg-green-500/10 border-green-500/30'
+                            : 'bg-red-500/10 border-red-500/30'}`}>
+                            <summary className={`px-3 py-2 cursor-pointer select-none ${testResults[name].ok ? 'text-green-600' : 'text-red-500'}`}>
+                              {testResults[name].ok
+                                ? t('modelProviders.testSuccess', { ms: testResults[name].durationMs, reply: testResults[name].reply })
+                                : testResults[name].error}
+                            </summary>
+                            <div className="px-3 pb-2 pt-1 space-y-1 text-[11px] text-fg-muted border-t border-current/10">
+                              {testResults[name].requestUrl && (
+                                <div><span className="text-fg-secondary">{t('modelProviders.testDetail.requestUrl')}:</span> <code className="font-mono text-fg-primary">{testResults[name].requestUrl}</code></div>
+                              )}
+                              <div><span className="text-fg-secondary">{t('modelProviders.testDetail.model')}:</span> <code className="font-mono text-fg-primary">{testResults[name].model ?? info.model}</code></div>
+                              {!!testResults[name].requestBody && (
+                                <div>
+                                  <span className="text-fg-secondary">{t('modelProviders.testDetail.requestBody')}:</span>
+                                  <pre className="mt-0.5 p-1.5 rounded bg-surface-primary/50 font-mono overflow-x-auto whitespace-pre-wrap">{JSON.stringify(testResults[name].requestBody, null, 2)}</pre>
+                                </div>
+                              )}
+                              {testResults[name].ok && testResults[name].reply && (
+                                <div><span className="text-fg-secondary">{t('modelProviders.testDetail.response')}:</span> {testResults[name].reply}</div>
+                              )}
+                              {testResults[name].usage && (
+                                <div><span className="text-fg-secondary">{t('modelProviders.testDetail.tokens')}:</span> {t('modelProviders.testDetail.inputTokens')} {testResults[name].usage.inputTokens ?? testResults[name].usage.prompt_tokens ?? '-'} / {t('modelProviders.testDetail.outputTokens')} {testResults[name].usage.outputTokens ?? testResults[name].usage.completion_tokens ?? '-'}</div>
+                              )}
+                              {testResults[name].durationMs != null && (
+                                <div><span className="text-fg-secondary">{t('modelProviders.testDetail.duration')}:</span> {testResults[name].durationMs}ms</div>
+                              )}
+                            </div>
+                          </details>
                         )}
                       </>
                     )}
