@@ -27,6 +27,13 @@
     "noArtifactsHint": "使用上方构建器创建智能体、团队或技能。",
     "openInBuilder": "在构建器中打开"
   },
+  "orgAssets": {
+    "title": "组织资产",
+    "noItems": "该组织暂无共享资产。",
+    "noOrgs": "你还未加入任何组织。",
+    "loading": "加载中...",
+    "by": "作者"
+  },
   "removeFromHubTooltip": "从 Markus Hub 移除",
   "copyHubLinkTooltip": "复制 Hub 链接",
   "confirmDelete": "确认删除",
@@ -75,6 +82,20 @@
     "pricePlaceholder": "例如 4.99",
     "update": "更新",
     "share": "分享"
+  },
+  "visibility": {
+    "label": "可见性",
+    "public": "公开",
+    "publicDesc": "所有人可见，出现在 Hub 搜索中",
+    "org": "组织内",
+    "orgDesc": "仅所选组织的成员可见",
+    "unlisted": "有链接者",
+    "unlistedDesc": "不出现在搜索中，通过链接访问",
+    "orgSelect": "选择组织",
+    "orgNone": "未找到组织",
+    "shared": "已分享",
+    "sharedOrg": "组织内",
+    "sharedUnlisted": "有链接者"
   },
   "versionBump": {
     "contentModified": "内容已修改，建议更新版本号。",

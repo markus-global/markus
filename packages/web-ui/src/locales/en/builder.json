@@ -27,6 +27,13 @@
     "noArtifactsHint": "Use a builder above to create agents, teams, or skills.",
     "openInBuilder": "Open in Builder"
   },
+  "orgAssets": {
+    "title": "Org Assets",
+    "noItems": "No assets found in this organization.",
+    "noOrgs": "You are not a member of any organization.",
+    "loading": "Loading...",
+    "by": "by"
+  },
   "removeFromHubTooltip": "Remove from Markus Hub",
   "copyHubLinkTooltip": "Copy Hub link",
   "confirmDelete": "Confirm Delete",
@@ -75,6 +82,20 @@
     "pricePlaceholder": "e.g. 4.99",
     "update": "Update",
     "share": "Share"
+  },
+  "visibility": {
+    "label": "Visibility",
+    "public": "Public",
+    "publicDesc": "Visible to everyone, appears in Hub search",
+    "org": "Organization",
+    "orgDesc": "Only visible to members of the selected organization",
+    "unlisted": "Link Only",
+    "unlistedDesc": "Not listed in search, accessible via link",
+    "orgSelect": "Select organization",
+    "orgNone": "No organizations found",
+    "shared": "Shared",
+    "sharedOrg": "Org",
+    "sharedUnlisted": "Link Only"
   },
   "versionBump": {
     "contentModified": "Content has been modified. Consider updating the version number.",
