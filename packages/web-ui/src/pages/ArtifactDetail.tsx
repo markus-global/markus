@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
-import { api, hubApi, kebab, type AuthUser } from '../api.ts';
+import { api, hubApi, kebab, type AuthUser, type HubVisibility, type HubOrg } from '../api.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { PAYMENTS_ENABLED } from './AgentBuilder.tsx';
 
@@ -667,11 +667,12 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
   const [manifest, setManifest] = useState<ManifestData | null>(null);
   const [artPath, setArtPath] = useState('');
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const [hubStatus, setHubStatus] = useState<{ shared: boolean; id?: string; slug?: string; version?: string }>({ shared: false });
+  const [hubStatus, setHubStatus] = useState<{ shared: boolean; id?: string; slug?: string; version?: string; visibility?: HubVisibility }>({ shared: false });
   const [shareInProgress, setShareInProgress] = useState(false);
   const [contentDirty, setContentDirty] = useState(false);
   const [showVersionBump, setShowVersionBump] = useState(false);
   const [showShareMode, setShowShareMode] = useState(false);
+  const [showVisibility, setShowVisibility] = useState(false);
   const [showIconPicker, setShowIconPicker] = useState(false);
 
   const [editName, setEditName] = useState('');
@@ -738,7 +739,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
       const typeDir = type === 'agent' ? 'agent' : type === 'team' ? 'team' : 'skill';
       for (const hi of items) {
         if (hi.itemType === typeDir && (hi.slug === name || hi.name === name)) {
-          setHubStatus({ shared: true, id: hi.id, slug: hi.slug, version: hi.version });
+          setHubStatus({ shared: true, id: hi.id, slug: hi.slug, version: hi.version, visibility: (hi as any).visibility ?? 'public' });
           return;
         }
       }
@@ -794,7 +795,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
     }
   }, [files, type, manifest]);
 
-  const handleShareToHub = useCallback(async (opts?: { priceCents?: number; donationsEnabled?: boolean }) => {
+  const handleShareToHub = useCallback(async (opts?: { priceCents?: number; donationsEnabled?: boolean; visibility?: HubVisibility; orgId?: string }) => {
     if (!manifest) return;
     setShareInProgress(true);
     try {
@@ -856,9 +857,11 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
         images: hubImages.length > 0 ? hubImages : undefined,
         priceCents: opts?.priceCents,
         donationsEnabled: opts?.donationsEnabled,
+        visibility: opts?.visibility,
+        orgId: opts?.orgId,
       });
       if (result.id) {
-        setHubStatus({ shared: true, id: result.id, slug: result.slug ?? slug, version });
+        setHubStatus({ shared: true, id: result.id, slug: result.slug ?? slug, version, visibility: result.visibility ?? opts?.visibility ?? 'public' });
         setContentDirty(false);
       }
     } catch (err) {
@@ -970,13 +973,23 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
                 <>
                   {link && (
                     <a href={link} target="_blank" rel="noopener noreferrer"
-                      className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:text-green-500 hover:border-green-500/50 transition-colors inline-flex items-center gap-1.5">
-                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                      {t('share.viewOnHub')}
+                      className={`text-xs px-3 py-1.5 rounded-lg border transition-colors inline-flex items-center gap-1.5 ${
+                        hubStatus.visibility === 'org' ? 'border-blue-500/30 text-blue-500 hover:text-blue-400 hover:border-blue-400/50'
+                        : hubStatus.visibility === 'unlisted' ? 'border-gray-500/30 text-fg-tertiary hover:text-fg-secondary hover:border-gray-400/50'
+                        : 'border-green-600/30 text-green-600 hover:text-green-500 hover:border-green-500/50'
+                      }`}>
+                      {hubStatus.visibility === 'org' ? (
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18"/><path d="M9 8h1"/><path d="M9 12h1"/><path d="M9 16h1"/><path d="M14 8h1"/><path d="M14 12h1"/><path d="M14 16h1"/><path d="M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16"/></svg>
+                      ) : hubStatus.visibility === 'unlisted' ? (
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                      ) : (
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                      )}
+                      {hubStatus.visibility === 'org' ? t('visibility.sharedOrg') : hubStatus.visibility === 'unlisted' ? t('visibility.sharedUnlisted') : t('share.viewOnHub')}
                     </a>
                   )}
                   {hasNewVersion && (
-                    <button onClick={() => PAYMENTS_ENABLED ? setShowShareMode(true) : void handleShareToHub()} disabled={shareInProgress}
+                    <button onClick={() => void handleShareToHub({ visibility: hubStatus.visibility })} disabled={shareInProgress}
                       className="text-xs px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/50 transition-colors disabled:opacity-50">
                       {shareInProgress ? t('share.updating') : t('share.updateVersion', { version: localVersion })}
                     </button>
@@ -985,7 +998,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
               );
             })()}
             {!readOnly && !hubStatus.shared && (
-              <button onClick={() => PAYMENTS_ENABLED ? setShowShareMode(true) : void handleShareToHub()} disabled={shareInProgress}
+              <button onClick={() => setShowVisibility(true)} disabled={shareInProgress}
                 className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50">
                 {shareInProgress ? t('share.sharing') : t('share.toHub')}
               </button>
@@ -1321,6 +1334,102 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
           isUpdate={hubStatus.shared}
         />
       )}
+      {!readOnly && showVisibility && (
+        <VisibilityDialog
+          onClose={() => setShowVisibility(false)}
+          onConfirm={(visibility, orgId) => {
+            setShowVisibility(false);
+            void handleShareToHub({ visibility, orgId });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function VisibilityDialog({ onClose, onConfirm }: {
+  onClose: () => void;
+  onConfirm: (visibility: HubVisibility, orgId?: string) => void;
+}) {
+  const { t } = useTranslation(['builder', 'common']);
+  const [selected, setSelected] = useState<HubVisibility>('public');
+  const [orgs, setOrgs] = useState<HubOrg[]>([]);
+  const [selectedOrgId, setSelectedOrgId] = useState<string>('');
+  const [loadingOrgs, setLoadingOrgs] = useState(false);
+
+  useEffect(() => {
+    if (selected === 'org' && orgs.length === 0) {
+      setLoadingOrgs(true);
+      hubApi.myOrgs().then(d => {
+        setOrgs(d.memberships);
+        if (d.memberships.length > 0) setSelectedOrgId(d.memberships[0]!.id);
+      }).catch(() => {}).finally(() => setLoadingOrgs(false));
+    }
+  }, [selected, orgs.length]);
+
+  const options: Array<{ value: HubVisibility; icon: JSX.Element; label: string; desc: string }> = [
+    {
+      value: 'public',
+      icon: <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>,
+      label: t('visibility.public'),
+      desc: t('visibility.publicDesc'),
+    },
+    {
+      value: 'org',
+      icon: <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18"/><path d="M9 8h1"/><path d="M9 12h1"/><path d="M9 16h1"/><path d="M14 8h1"/><path d="M14 12h1"/><path d="M14 16h1"/><path d="M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16"/></svg>,
+      label: t('visibility.org'),
+      desc: t('visibility.orgDesc'),
+    },
+    {
+      value: 'unlisted',
+      icon: <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>,
+      label: t('visibility.unlisted'),
+      desc: t('visibility.unlistedDesc'),
+    },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-surface-secondary border border-border-default rounded-xl max-w-sm w-full mx-4 p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+        <h3 className="text-base font-semibold text-fg-primary mb-4">{t('visibility.label')}</h3>
+        <div className="space-y-2 mb-5">
+          {options.map(opt => (
+            <label key={opt.value} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selected === opt.value ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
+              <input type="radio" name="visibility" checked={selected === opt.value} onChange={() => setSelected(opt.value)} className="accent-brand-500" />
+              <div className="flex items-center gap-2 text-fg-secondary">{opt.icon}</div>
+              <div>
+                <div className="text-sm font-medium text-fg-primary">{opt.label}</div>
+                <div className="text-[11px] text-fg-tertiary">{opt.desc}</div>
+              </div>
+            </label>
+          ))}
+        </div>
+        {selected === 'org' && (
+          <div className="mb-5">
+            <label className="text-xs text-fg-secondary block mb-1.5">{t('visibility.orgSelect')}</label>
+            {loadingOrgs ? (
+              <div className="text-xs text-fg-tertiary py-2">Loading...</div>
+            ) : orgs.length === 0 ? (
+              <div className="text-xs text-fg-tertiary py-2">{t('visibility.orgNone')}</div>
+            ) : (
+              <select value={selectedOrgId} onChange={e => setSelectedOrgId(e.target.value)}
+                className="w-full text-sm px-3 py-2 rounded-lg bg-surface-elevated border border-border-default text-fg-primary">
+                {orgs.map(org => <option key={org.id} value={org.id}>{org.name}</option>)}
+              </select>
+            )}
+          </div>
+        )}
+        <div className="flex gap-3">
+          <button onClick={onClose} className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-gray-600 transition-colors">
+            {t('common:cancel')}
+          </button>
+          <button onClick={() => onConfirm(selected, selected === 'org' ? selectedOrgId : undefined)}
+            disabled={selected === 'org' && !selectedOrgId}
+            className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            {t('shareMode.share')}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, hubApi, type AgentInfo, type AuthUser } from '../api.ts';
+import { api, hubApi, type AgentInfo, type AuthUser, type HubVisibility, type HubOrg, type HubItem } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
@@ -115,30 +115,37 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
   const [actionInProgress, setActionInProgress] = useState<{ key: string; action: string } | null>(null);
   const [installedMap, setInstalledMap] = useState<Map<string, InstalledInfo>>(new Map());
   const [deleteTarget, setDeleteTarget] = useState<BuilderArtifact | null>(null);
-  const [sharedMap, setSharedMap] = useState<Map<string, { id: string; name: string; slug: string; version: string }>>(new Map());
+  const [sharedMap, setSharedMap] = useState<Map<string, { id: string; name: string; slug: string; version: string; visibility?: HubVisibility }>>(new Map());
   const [hubDeleteTarget, setHubDeleteTarget] = useState<{ key: string; name: string } | null>(null);
   const [sharePrompt, setSharePrompt] = useState<BuilderArtifact | null>(null);
   const [shareModeTarget, setShareModeTarget] = useState<BuilderArtifact | null>(null);
+  const [visibilityTarget, setVisibilityTarget] = useState<BuilderArtifact | null>(null);
+  const [activeTab, setActiveTab] = useState<'creations' | 'orgAssets'>('creations');
+  const [orgs, setOrgs] = useState<HubOrg[]>([]);
+  const [selectedOrgId, setSelectedOrgId] = useState<string>('');
+  const [orgItems, setOrgItems] = useState<HubItem[]>([]);
+  const [orgItemsLoading, setOrgItemsLoading] = useState(false);
+  const [orgFilterType, setOrgFilterType] = useState<string>('all');
 
   const loadAll = useCallback(() => {
     setLoading(true);
     Promise.all([
       (consume<{ artifacts: BuilderArtifact[] }>(PREFETCH_KEYS.builderArtifacts) ?? api.builder.artifacts.list()).then(d => d?.artifacts ?? []).catch(() => [] as BuilderArtifact[]),
       (consume<{ agents: AgentInfo[] }>(PREFETCH_KEYS.builderAgents) ?? api.agents.list()).then(d => d?.agents ?? []).catch(() => [] as AgentInfo[]),
-      (consume<{ items: Array<{ id: string; itemType: string; name: string; slug: string; version: string }> }>(PREFETCH_KEYS.builderHubMyItems) ?? hubApi.myItems()).then(d => d?.items ?? []).catch(() => [] as Array<{ id: string; itemType: string; name: string; slug: string; version: string }>),
+      (consume<{ items: Array<{ id: string; itemType: string; name: string; slug: string; version: string; visibility?: HubVisibility }> }>(PREFETCH_KEYS.builderHubMyItems) ?? hubApi.myItems()).then(d => d?.items ?? []).catch(() => [] as Array<{ id: string; itemType: string; name: string; slug: string; version: string; visibility?: HubVisibility }>),
       (consume<{ installed: Record<string, { agentId?: string; agentIds?: string[]; teamId?: string }> }>(PREFETCH_KEYS.builderInstalled) ?? api.builder.artifacts.installed()).then(d => d?.installed ?? {}).catch(() => ({} as Record<string, { agentId?: string; agentIds?: string[]; teamId?: string }>)),
     ]).then(([arts, agentList, hubItems, installedData]) => {
       setArtifacts(arts);
       setAgents(agentList);
 
-      // Populate shared status from Hub published items (key → { id, name, slug })
+      // Populate shared status from Hub published items
       if (hubItems.length > 0) {
-        const shared = new Map<string, { id: string; name: string; slug: string; version: string }>();
+        const shared = new Map<string, { id: string; name: string; slug: string; version: string; visibility?: HubVisibility }>();
         for (const hi of hubItems) {
           const typeDir = hi.itemType === 'agent' ? 'agent' : hi.itemType === 'team' ? 'team' : 'skill';
           for (const art of arts) {
             if (art.type === typeDir && (hi.slug === art.name || hi.name === ((art.meta.displayName as string) || (art.meta.name as string) || art.name))) {
-              shared.set(`${art.type}/${art.name}`, { id: hi.id, name: hi.name, slug: hi.slug || art.name, version: (hi as Record<string, string>).version || '1.0.0' });
+              shared.set(`${art.type}/${art.name}`, { id: hi.id, name: hi.name, slug: hi.slug || art.name, version: (hi as Record<string, string>).version || '1.0.0', visibility: (hi as any).visibility ?? 'public' });
             }
           }
         }
@@ -217,7 +224,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
     }
   };
 
-  const handleShare = async (art: BuilderArtifact, opts?: { priceCents?: number; donationsEnabled?: boolean }) => {
+  const handleShare = async (art: BuilderArtifact, opts?: { priceCents?: number; donationsEnabled?: boolean; visibility?: HubVisibility; orgId?: string }) => {
     const key = `${art.type}/${art.name}`;
     setActionInProgress({ key, action: 'share' });
     try {
@@ -279,8 +286,10 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
         images: hubImages.length > 0 ? hubImages : undefined,
         priceCents: opts?.priceCents,
         donationsEnabled: opts?.donationsEnabled,
+        visibility: opts?.visibility,
+        orgId: opts?.orgId,
       });
-      if (result.id) setSharedMap(prev => { const m = new Map(prev); m.set(key, { id: result.id!, name, slug: result.slug ?? slug, version }); return m; });
+      if (result.id) setSharedMap(prev => { const m = new Map(prev); m.set(key, { id: result.id!, name, slug: result.slug ?? slug, version, visibility: result.visibility ?? opts?.visibility ?? 'public' }); return m; });
     } catch (err) {
       console.error('Share failed:', err);
       alert(t('shareFailed', { error: String(err) }));
@@ -327,6 +336,27 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
   };
 
   const filtered = filterType === 'all' ? artifacts : artifacts.filter(a => a.type === filterType);
+
+  // Load orgs when switching to org assets tab
+  useEffect(() => {
+    if (activeTab !== 'orgAssets' || orgs.length > 0) return;
+    hubApi.myOrgs().then(d => {
+      setOrgs(d.memberships);
+      if (d.memberships.length > 0 && !selectedOrgId) setSelectedOrgId(d.memberships[0]!.id);
+    }).catch(() => {});
+  }, [activeTab, orgs.length, selectedOrgId]);
+
+  // Load items for selected org
+  useEffect(() => {
+    if (activeTab !== 'orgAssets' || !selectedOrgId) return;
+    setOrgItemsLoading(true);
+    hubApi.browseItems({ orgId: selectedOrgId, limit: 100 })
+      .then(d => setOrgItems(d.items ?? []))
+      .catch(() => setOrgItems([]))
+      .finally(() => setOrgItemsLoading(false));
+  }, [activeTab, selectedOrgId]);
+
+  const filteredOrgItems = orgFilterType === 'all' ? orgItems : orgItems.filter(i => i.itemType === orgFilterType);
 
   const navigateToDetail = (art: BuilderArtifact) => {
     history.pushState(null, '', `#builder/${art.type}/${encodeURIComponent(art.name)}`);
@@ -406,32 +436,139 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
         {/* Artifact management section */}
         <div className="mb-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-fg-secondary">{t('myCreations.title')}</h2>
-            <div className="flex gap-1.5">
-              {(['all', 'agent', 'team', 'skill'] as const).map(ft => (
-                <button
-                  key={ft}
-                  onClick={() => setFilterType(ft)}
-                  className={`text-xs px-2.5 py-1 rounded-lg transition-colors ${
-                    filterType === ft
-                      ? 'bg-brand-600 text-white'
-                      : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
-                  }`}
-                >
-                  {ft === 'all'
-                    ? t('myCreations.filterAll')
-                    : ft === 'agent'
-                      ? t('myCreations.filterAgents')
-                      : ft === 'team'
-                        ? t('myCreations.filterTeams')
-                        : t('myCreations.filterSkills')}
-                </button>
-              ))}
+            <div className="flex items-center gap-3">
+              <button onClick={() => setActiveTab('creations')}
+                className={`text-sm font-semibold transition-colors ${activeTab === 'creations' ? 'text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
+                {t('myCreations.title')}
+              </button>
+              <button onClick={() => setActiveTab('orgAssets')}
+                className={`text-sm font-semibold transition-colors ${activeTab === 'orgAssets' ? 'text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
+                {t('orgAssets.title')}
+              </button>
             </div>
+            {activeTab === 'creations' && (
+              <div className="flex gap-1.5">
+                {(['all', 'agent', 'team', 'skill'] as const).map(ft => (
+                  <button
+                    key={ft}
+                    onClick={() => setFilterType(ft)}
+                    className={`text-xs px-2.5 py-1 rounded-lg transition-colors ${
+                      filterType === ft
+                        ? 'bg-brand-600 text-white'
+                        : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
+                    }`}
+                  >
+                    {ft === 'all'
+                      ? t('myCreations.filterAll')
+                      : ft === 'agent'
+                        ? t('myCreations.filterAgents')
+                        : ft === 'team'
+                          ? t('myCreations.filterTeams')
+                          : t('myCreations.filterSkills')}
+                  </button>
+                ))}
+              </div>
+            )}
+            {activeTab === 'orgAssets' && (
+              <div className="flex gap-1.5">
+                {(['all', 'agent', 'team', 'skill'] as const).map(ft => (
+                  <button
+                    key={ft}
+                    onClick={() => setOrgFilterType(ft)}
+                    className={`text-xs px-2.5 py-1 rounded-lg transition-colors ${
+                      orgFilterType === ft
+                        ? 'bg-brand-600 text-white'
+                        : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
+                    }`}
+                  >
+                    {ft === 'all'
+                      ? t('myCreations.filterAll')
+                      : ft === 'agent'
+                        ? t('myCreations.filterAgents')
+                        : ft === 'team'
+                          ? t('myCreations.filterTeams')
+                          : t('myCreations.filterSkills')}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
-        {loading && artifacts.length === 0 ? (
+        {/* Org filter bar */}
+        {activeTab === 'orgAssets' && orgs.length > 0 && (
+          <div className="flex gap-2 mb-3 overflow-x-auto pb-1">
+            {orgs.map(org => (
+              <button key={org.id} onClick={() => setSelectedOrgId(org.id)}
+                className={`text-xs px-3 py-1.5 rounded-full whitespace-nowrap border transition-colors ${
+                  selectedOrgId === org.id
+                    ? 'bg-blue-500/15 border-blue-500/40 text-blue-400'
+                    : 'border-border-default text-fg-tertiary hover:text-fg-secondary hover:border-gray-600'
+                }`}>
+                {org.name}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Org assets content */}
+        {activeTab === 'orgAssets' && (
+          orgs.length === 0 && !orgItemsLoading ? (
+            <div className="text-center py-12">
+              <div className="text-fg-tertiary text-sm">{t('orgAssets.noOrgs')}</div>
+            </div>
+          ) : orgItemsLoading ? (
+            <div className="text-center text-fg-tertiary py-12 text-sm">{t('orgAssets.loading')}</div>
+          ) : filteredOrgItems.length === 0 ? (
+            <div className="text-center py-12">
+              <div className="text-fg-tertiary text-sm">{t('orgAssets.noItems')}</div>
+            </div>
+          ) : (
+            <div className="grid gap-3">
+              {filteredOrgItems.map(item => {
+                const style = TYPE_STYLES[item.itemType] ?? TYPE_STYLES.agent!;
+                const hubLink = item.author?.username && item.slug
+                  ? `${hubApi.getUrl()}/@${encodeURIComponent(item.author.username)}/${encodeURIComponent(item.slug)}`
+                  : null;
+                return (
+                  <div key={item.id} className="group rounded-lg bg-surface-elevated p-4 hover:bg-surface-overlay transition-all overflow-hidden">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <div className={`w-9 h-9 rounded-lg ${style.bg} flex items-center justify-center text-lg shrink-0 overflow-hidden`}>
+                        {item.icon && (item.icon.startsWith('http') || item.icon.startsWith('/'))
+                          ? <img src={item.icon} alt="" className="w-full h-full object-cover" />
+                          : item.icon ? <span>{item.icon}</span> : style.icon}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className="text-sm font-medium text-fg-primary truncate">{item.name}</span>
+                          <span className={`text-[10px] font-medium uppercase tracking-wider ${style.color}`}>{item.itemType}</span>
+                        </div>
+                        {item.description && <p className="text-xs text-fg-tertiary line-clamp-2">{item.description}</p>}
+                        <div className="flex items-center gap-3 mt-2 text-[10px] text-fg-tertiary">
+                          {item.author && <span>{t('orgAssets.by')} {item.author.displayName ?? item.author.username}</span>}
+                          <span>v{item.version}</span>
+                          {item.downloadCount > 0 && <span>{item.downloadCount} downloads</span>}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {hubLink && (
+                          <a href={hubLink} target="_blank" rel="noopener noreferrer"
+                            className="text-xs px-3 py-1.5 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-gray-600 transition-colors inline-flex items-center gap-1">
+                            <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                            Hub
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )
+        )}
+
+        {/* My creations content */}
+        {activeTab === 'creations' && (loading && artifacts.length === 0 ? (
           <div className="text-center text-fg-tertiary py-12 text-sm">{t('myCreations.loadingArtifacts')}</div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-12">
@@ -472,16 +609,29 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
                     </button>
                   )}
                   {isShared && hasNewVersion ? (
-                    <button onClick={() => setShareModeTarget(art)} disabled={!!busyAction}
+                    <button onClick={() => {
+                      const existingVis = hubItem?.visibility ?? 'public';
+                      void handleShare(art, { visibility: existingVis });
+                    }} disabled={!!busyAction}
                       className="text-xs px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/50 transition-colors disabled:opacity-50">
                       {busyAction === 'share' ? t('common:sharing') : t('share.updateVersion', { version: localVersion })}
                     </button>
                   ) : isShared ? (
                     <div className="flex items-center gap-1">
                       <a href={getHubLink() ?? '#'} target="_blank" rel="noopener noreferrer"
-                        className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:text-green-500 hover:border-green-500/40 transition-colors inline-flex items-center gap-1">
-                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                        {t('common:shared')}
+                        className={`text-xs px-3 py-1.5 rounded-lg border transition-colors inline-flex items-center gap-1 ${
+                          hubItem?.visibility === 'org' ? 'border-blue-500/30 text-blue-500 hover:text-blue-400 hover:border-blue-400/40'
+                          : hubItem?.visibility === 'unlisted' ? 'border-gray-500/30 text-fg-tertiary hover:text-fg-secondary hover:border-gray-400/40'
+                          : 'border-green-600/30 text-green-600 hover:text-green-500 hover:border-green-500/40'
+                        }`}>
+                        {hubItem?.visibility === 'org' ? (
+                          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18"/><path d="M9 8h1"/><path d="M9 12h1"/><path d="M9 16h1"/><path d="M14 8h1"/><path d="M14 12h1"/><path d="M14 16h1"/><path d="M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16"/></svg>
+                        ) : hubItem?.visibility === 'unlisted' ? (
+                          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                        ) : (
+                          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                        )}
+                        {hubItem?.visibility === 'org' ? t('visibility.sharedOrg') : hubItem?.visibility === 'unlisted' ? t('visibility.sharedUnlisted') : t('visibility.shared')}
                       </a>
                       <button onClick={() => setHubDeleteTarget({ key, name: displayName })} disabled={!!busyAction}
                         className="text-xs px-1.5 py-1.5 rounded-lg text-fg-tertiary hover:text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-50" title={t('removeFromHubTooltip')}>
@@ -492,8 +642,8 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
                     <button onClick={async () => {
                       await hubApi.ensureAuth();
                       const hasImages = Array.isArray(art.meta.screenshots) && art.meta.screenshots.length > 0;
-                      if (!PAYMENTS_ENABLED) { if (hasImages) { void handleShare(art); } else { setSharePrompt(art); } }
-                      else { if (hasImages) { setShareModeTarget(art); } else { setSharePrompt(art); } }
+                      if (!hasImages) { setSharePrompt(art); }
+                      else { setVisibilityTarget(art); }
                     }} disabled={!!busyAction}
                       className="text-xs px-3 py-1.5 rounded-lg border border-border-default text-fg-secondary hover:text-green-600 hover:border-green-500/30 transition-colors disabled:opacity-50">
                       {busyAction === 'share' ? t('common:sharing') : t('common:share')}
@@ -548,7 +698,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
               );
             })}
           </div>
-        )}
+        ))}
 
         {deleteTarget && (
           <ConfirmDialog
@@ -577,7 +727,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
               <p className="text-sm text-fg-secondary mb-5">{t('share.imagePrompt')}</p>
               <div className="flex gap-3">
                 <button
-                  onClick={() => { const art = sharePrompt; setSharePrompt(null); PAYMENTS_ENABLED ? setShareModeTarget(art) : void handleShare(art); }}
+                  onClick={() => { const art = sharePrompt; setSharePrompt(null); setVisibilityTarget(art); }}
                   className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-fg-tertiary transition-colors">
                   {t('share.directly')}
                 </button>
@@ -608,8 +758,107 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
             </div>
           </div>
         )}
+        {visibilityTarget && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setVisibilityTarget(null)}>
+            <div className="bg-surface-secondary border border-border-default rounded-xl max-w-sm w-full mx-4 p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+              <VisibilitySelect
+                onCancel={() => setVisibilityTarget(null)}
+                onConfirm={(visibility, orgId) => {
+                  const art = visibilityTarget;
+                  setVisibilityTarget(null);
+                  void handleShare(art, { visibility, orgId });
+                }}
+              />
+            </div>
+          </div>
+        )}
       </div>
     </div>
+  );
+}
+
+function VisibilitySelect({ onCancel, onConfirm }: {
+  onCancel: () => void;
+  onConfirm: (visibility: HubVisibility, orgId?: string) => void;
+}) {
+  const { t } = useTranslation(['builder', 'common']);
+  const [selected, setSelected] = useState<HubVisibility>('public');
+  const [orgs, setOrgs] = useState<HubOrg[]>([]);
+  const [selectedOrgId, setSelectedOrgId] = useState<string>('');
+  const [loadingOrgs, setLoadingOrgs] = useState(false);
+
+  useEffect(() => {
+    if (selected === 'org' && orgs.length === 0) {
+      setLoadingOrgs(true);
+      hubApi.myOrgs().then(d => {
+        setOrgs(d.memberships);
+        if (d.memberships.length > 0) setSelectedOrgId(d.memberships[0]!.id);
+      }).catch(() => {}).finally(() => setLoadingOrgs(false));
+    }
+  }, [selected, orgs.length]);
+
+  const options: Array<{ value: HubVisibility; icon: JSX.Element; label: string; desc: string }> = [
+    {
+      value: 'public',
+      icon: <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>,
+      label: t('visibility.public'),
+      desc: t('visibility.publicDesc'),
+    },
+    {
+      value: 'org',
+      icon: <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18"/><path d="M9 8h1"/><path d="M9 12h1"/><path d="M9 16h1"/><path d="M14 8h1"/><path d="M14 12h1"/><path d="M14 16h1"/><path d="M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16"/></svg>,
+      label: t('visibility.org'),
+      desc: t('visibility.orgDesc'),
+    },
+    {
+      value: 'unlisted',
+      icon: <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>,
+      label: t('visibility.unlisted'),
+      desc: t('visibility.unlistedDesc'),
+    },
+  ];
+
+  return (
+    <>
+      <h3 className="text-base font-semibold text-fg-primary mb-4">{t('visibility.label')}</h3>
+      <div className="space-y-2 mb-5">
+        {options.map(opt => (
+          <label key={opt.value} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selected === opt.value ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
+            <input type="radio" name="visibility" checked={selected === opt.value} onChange={() => setSelected(opt.value)} className="accent-brand-500" />
+            <div className="flex items-center gap-2 text-fg-secondary">{opt.icon}</div>
+            <div>
+              <div className="text-sm font-medium text-fg-primary">{opt.label}</div>
+              <div className="text-[11px] text-fg-tertiary">{opt.desc}</div>
+            </div>
+          </label>
+        ))}
+      </div>
+      {selected === 'org' && (
+        <div className="mb-5">
+          <label className="text-xs text-fg-secondary block mb-1.5">{t('visibility.orgSelect')}</label>
+          {loadingOrgs ? (
+            <div className="text-xs text-fg-tertiary py-2">Loading...</div>
+          ) : orgs.length === 0 ? (
+            <div className="text-xs text-fg-tertiary py-2">{t('visibility.orgNone')}</div>
+          ) : (
+            <select value={selectedOrgId} onChange={e => setSelectedOrgId(e.target.value)}
+              className="w-full text-sm px-3 py-2 rounded-lg bg-surface-elevated border border-border-default text-fg-primary">
+              {orgs.map(org => <option key={org.id} value={org.id}>{org.name}</option>)}
+            </select>
+          )}
+        </div>
+      )}
+      <div className="flex gap-3">
+        <button onClick={onCancel} className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-gray-600 transition-colors">
+          {t('common:cancel')}
+        </button>
+        <button onClick={() => onConfirm(selected, selected === 'org' ? selectedOrgId : undefined)}
+          disabled={selected === 'org' && !selectedOrgId}
+          className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          {t('shareMode.share')}
+        </button>
+      </div>
+    </>
   );
 }
 

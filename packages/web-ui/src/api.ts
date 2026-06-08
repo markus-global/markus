@@ -1868,6 +1868,8 @@ export interface HubUser {
   avatarUrl?: string;
 }
 
+export type HubVisibility = 'public' | 'org' | 'unlisted';
+
 export interface HubItem {
   id: string;
   itemType: 'agent' | 'team' | 'skill';
@@ -1879,6 +1881,8 @@ export interface HubItem {
   tags: string[];
   icon?: string;
   priceCents?: number;
+  visibility?: HubVisibility;
+  orgId?: string;
   downloadCount: number;
   avgRating: string;
   ratingCount: number;
@@ -1886,6 +1890,13 @@ export interface HubItem {
   author: { id: string; username: string; displayName?: string };
   config?: Record<string, unknown>;
   readme?: string;
+}
+
+export interface HubOrg {
+  id: string;
+  name: string;
+  slug: string;
+  role: string;
 }
 
 export function getHubToken(): string | null {
@@ -2063,18 +2074,34 @@ export const hubApi = {
       return await res.json() as { url: string; thumbnailUrl: string };
     } catch { return null; }
   },
-  publishViaProxy: async (payload: { itemType: string; name: string; slug?: string; description: string; category?: string; tags?: string[]; icon?: string; version?: string; config?: unknown; files?: Record<string, string>; readme?: string; thumbnailUrl?: string; images?: Array<{ url: string; alt: string; order: number }>; priceCents?: number; donationsEnabled?: boolean }) => {
+  publishViaProxy: async (payload: { itemType: string; name: string; slug?: string; description: string; category?: string; tags?: string[]; icon?: string; version?: string; config?: unknown; files?: Record<string, string>; readme?: string; thumbnailUrl?: string; images?: Array<{ url: string; alt: string; order: number }>; priceCents?: number; donationsEnabled?: boolean; visibility?: HubVisibility; orgId?: string }) => {
     await ensureHubAuth();
     try {
-      return await hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean }>('/items', { method: 'POST', body: JSON.stringify(payload) });
+      return await hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean; visibility?: HubVisibility }>('/items', { method: 'POST', body: JSON.stringify(payload) });
     } catch (e) {
-      if (!getHubToken()) { await ensureHubAuth(); return hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean }>('/items', { method: 'POST', body: JSON.stringify(payload) }); }
+      if (!getHubToken()) { await ensureHubAuth(); return hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean; visibility?: HubVisibility }>('/items', { method: 'POST', body: JSON.stringify(payload) }); }
       throw e;
     }
   },
   myItems: async () => {
-    if (!getHubToken()) return { items: [] as Array<{ id: string; itemType: string; name: string; slug: string; description: string; version: string; updatedAt: string }> };
-    return hubRequest<{ items: Array<{ id: string; itemType: string; name: string; slug: string; description: string; version: string; updatedAt: string }> }>('/items/mine');
+    if (!getHubToken()) return { items: [] as Array<{ id: string; itemType: string; name: string; slug: string; description: string; version: string; visibility?: HubVisibility; orgId?: string; updatedAt: string }> };
+    return hubRequest<{ items: Array<{ id: string; itemType: string; name: string; slug: string; description: string; version: string; visibility?: HubVisibility; orgId?: string; updatedAt: string }> }>('/items/mine');
+  },
+  browseItems: async (opts?: { type?: string; orgId?: string; q?: string; page?: number; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.type) params.set('type', opts.type);
+    if (opts?.orgId) params.set('orgId', opts.orgId);
+    if (opts?.q) params.set('q', opts.q);
+    if (opts?.page) params.set('page', String(opts.page));
+    if (opts?.limit) params.set('limit', String(opts.limit ?? 50));
+    const qs = params.toString();
+    return hubRequest<{ items: HubItem[]; total: number }>(`/items${qs ? `?${qs}` : ''}`);
+  },
+  myOrgs: async () => {
+    if (!getHubToken()) return { memberships: [] as HubOrg[] };
+    return hubRequest<{ orgs: Array<{ id: string; name: string; slug: string; role: string }> }>('/orgs/mine').then(data => ({
+      memberships: (data.orgs ?? []).map(o => ({ id: o.id, name: o.name, slug: o.slug, role: o.role })),
+    }));
   },
   deleteItem: async (id: string) => {
     await ensureHubAuth();
