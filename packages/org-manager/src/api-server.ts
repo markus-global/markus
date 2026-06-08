@@ -7721,6 +7721,7 @@ EXPLANATION_END`;
       const body = await this.readBody(req);
       const updates: Record<string, unknown> = {};
       if (typeof body['proxy'] === 'string') updates.proxy = body['proxy'] || undefined;
+      if (typeof body['proxyEnabled'] === 'boolean') updates.proxyEnabled = body['proxyEnabled'];
       try {
         saveConfig({ network: updates } as any, this.markusConfigPath);
         this.json(res, 200, { ok: true, network: updates });

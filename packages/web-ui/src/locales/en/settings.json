@@ -181,7 +181,7 @@
   },
   "networkProxy": {
     "title": "Network Proxy",
-    "description": "Configure an HTTP proxy for outbound API requests (OAuth, LLM calls). Auto-detects macOS system proxy if not set.",
+    "description": "Configure an HTTP proxy for ChatGPT OAuth login and Codex API calls. Other LLM providers use system/TUN proxy automatically.",
     "active": "Active:",
     "noProxy": "No proxy detected",
     "sourceConfig": "markus.json",
@@ -192,7 +192,9 @@
     "save": "Save",
     "saved": "Saved. Restart server to apply.",
     "saveFailed": "Save failed",
-    "networkError": "Network error"
+    "networkError": "Network error",
+    "refresh": "Re-detect",
+    "disabled": "Proxy disabled"
   },
   "oauthAuth": {
     "title": "OAuth Authentication",

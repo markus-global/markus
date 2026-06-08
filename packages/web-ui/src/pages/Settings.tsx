@@ -139,6 +139,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   // Network / Proxy state
   const [proxyUrl, setProxyUrl] = useState('');
+  const [proxyEnabled, setProxyEnabled] = useState(true);
   const [proxyEffective, setProxyEffective] = useState<{ proxy: string | null; source: string } | null>(null);
   const [proxySaving, setProxySaving] = useState(false);
   const [proxyMsg, setProxyMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -211,9 +212,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   const loadNetworkSettings = useCallback(() => {
     fetch('/api/settings/network')
-      .then(r => r.ok ? r.json() as Promise<{ network: { proxy?: string }; effective: { proxy: string | null; source: string } }> : Promise.reject(r.status))
+      .then(r => r.ok ? r.json() as Promise<{ network: { proxy?: string; proxyEnabled?: boolean }; effective: { proxy: string | null; source: string } }> : Promise.reject(r.status))
       .then(d => {
         setProxyUrl(d.network?.proxy ?? '');
+        setProxyEnabled(d.network?.proxyEnabled !== false);
         setProxyEffective(d.effective);
       })
       .catch(() => {});
@@ -1283,33 +1285,63 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         {/* ───── Network / Proxy ───── */}
         <Section title={t('networkProxy.title')}>
           <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
-            <p className="text-xs text-fg-tertiary">
-              {t('networkProxy.description')}
-            </p>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs text-fg-tertiary">{t('networkProxy.description')}</p>
+              </div>
+              <button
+                onClick={async () => {
+                  const newVal = !proxyEnabled;
+                  setProxyEnabled(newVal);
+                  try {
+                    await fetch('/api/settings/network', {
+                      method: 'POST', headers: authHeaders(),
+                      body: JSON.stringify({ proxyEnabled: newVal }),
+                    });
+                    loadNetworkSettings();
+                  } catch { setProxyEnabled(!newVal); }
+                }}
+                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${proxyEnabled ? 'bg-green-500' : 'bg-gray-600'}`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${proxyEnabled ? 'translate-x-4' : 'translate-x-1'}`} />
+              </button>
+            </div>
 
             {/* Effective proxy status */}
             {proxyEffective && (
-              <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-surface-secondary border border-border-default">
-                <span className={`w-2 h-2 rounded-full ${proxyEffective.proxy ? 'bg-green-400' : 'bg-gray-600'}`} />
+              <div className={`flex items-center gap-2 px-3 py-2.5 rounded-lg bg-surface-secondary border border-border-default transition-opacity ${!proxyEnabled ? 'opacity-50' : ''}`}>
+                <span className={`w-2 h-2 rounded-full ${
+                  !proxyEnabled ? 'bg-gray-600' : proxyEffective.proxy ? 'bg-green-400' : 'bg-gray-600'
+                }`} />
                 <span className="text-xs text-fg-secondary">
-                  {proxyEffective.proxy ? (
+                  {!proxyEnabled ? t('networkProxy.disabled') :
+                   proxyEffective.proxy ? (
                     <>{t('networkProxy.active')} <code className="text-fg-primary font-mono">{proxyEffective.proxy}</code></>
                   ) : t('networkProxy.noProxy')}
                 </span>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium ${
-                  proxyEffective.source === 'config' ? 'bg-brand-500/15 text-brand-500' :
-                  proxyEffective.source === 'env' ? 'bg-amber-500/15 text-amber-600' :
-                  proxyEffective.source === 'system' ? 'bg-blue-500/15 text-blue-500' :
-                  'bg-gray-500/15 text-fg-muted'
-                }`}>
-                  {proxyEffective.source === 'config' ? t('networkProxy.sourceConfig') :
-                   proxyEffective.source === 'env' ? t('networkProxy.sourceEnv') :
-                   proxyEffective.source === 'system' ? t('networkProxy.sourceSystem') : 'none'}
-                </span>
+                {proxyEnabled && proxyEffective.source !== 'none' && proxyEffective.source !== 'disabled' && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium ${
+                    proxyEffective.source === 'config' ? 'bg-brand-500/15 text-brand-500' :
+                    proxyEffective.source === 'env' ? 'bg-amber-500/15 text-amber-600' :
+                    proxyEffective.source === 'system' ? 'bg-blue-500/15 text-blue-500' :
+                    'bg-gray-500/15 text-fg-muted'
+                  }`}>
+                    {proxyEffective.source === 'config' ? t('networkProxy.sourceConfig') :
+                     proxyEffective.source === 'env' ? t('networkProxy.sourceEnv') :
+                     proxyEffective.source === 'system' ? t('networkProxy.sourceSystem') : ''}
+                  </span>
+                )}
+                <button
+                  onClick={() => loadNetworkSettings()}
+                  className="ml-auto text-[10px] px-1.5 py-0.5 rounded-md text-fg-muted hover:text-fg-secondary hover:bg-surface-tertiary transition-colors"
+                  title={t('networkProxy.refresh')}
+                >
+                  ↻ {t('networkProxy.refresh')}
+                </button>
               </div>
             )}
 
-            <div className="flex gap-2 items-center">
+            <div className={`flex gap-2 items-center transition-opacity ${!proxyEnabled ? 'opacity-50 pointer-events-none' : ''}`}>
               <input
                 type="text"
                 value={proxyUrl}
@@ -1646,7 +1678,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                                 <div><span className="text-fg-secondary">{t('modelProviders.testDetail.requestUrl')}:</span> <code className="font-mono text-fg-primary">{testResults[name].requestUrl}</code></div>
                               )}
                               <div><span className="text-fg-secondary">{t('modelProviders.testDetail.model')}:</span> <code className="font-mono text-fg-primary">{testResults[name].model ?? info.model}</code></div>
-                              {testResults[name].requestBody && (
+                              {!!testResults[name].requestBody && (
                                 <div>
                                   <span className="text-fg-secondary">{t('modelProviders.testDetail.requestBody')}:</span>
                                   <pre className="mt-0.5 p-1.5 rounded bg-surface-primary/50 font-mono overflow-x-auto whitespace-pre-wrap">{JSON.stringify(testResults[name].requestBody, null, 2)}</pre>

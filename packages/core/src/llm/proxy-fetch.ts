@@ -10,15 +10,17 @@ import { execSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir, platform } from 'node:os';
 
-function readProxyFromConfig(): string | undefined {
+function readNetworkConfig(): { proxy?: string; proxyEnabled?: boolean } {
   try {
     const configPath = join(homedir(), '.markus', 'markus.json');
-    if (!existsSync(configPath)) return undefined;
+    if (!existsSync(configPath)) return {};
     const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-    const proxy = raw?.network?.proxy;
-    return typeof proxy === 'string' && proxy.length > 0 ? proxy : undefined;
+    return {
+      proxy: typeof raw?.network?.proxy === 'string' && raw.network.proxy.length > 0 ? raw.network.proxy : undefined,
+      proxyEnabled: raw?.network?.proxyEnabled,
+    };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -98,7 +100,7 @@ function readLinuxProxy(): string | undefined {
   }
 }
 
-export type ProxySource = 'config' | 'env' | 'system' | 'none';
+export type ProxySource = 'config' | 'env' | 'system' | 'none' | 'disabled';
 
 export interface EffectiveProxy {
   url: string | undefined;
@@ -106,8 +108,14 @@ export interface EffectiveProxy {
 }
 
 export function getEffectiveProxy(): EffectiveProxy {
-  const fromConfig = readProxyFromConfig();
-  if (fromConfig) return { url: fromConfig, source: 'config' };
+  const cfg = readNetworkConfig();
+
+  // Explicit disable switch: proxyEnabled === false disables all proxy detection
+  if (cfg.proxyEnabled === false) {
+    return { url: undefined, source: 'disabled' };
+  }
+
+  if (cfg.proxy) return { url: cfg.proxy, source: 'config' };
 
   const fromEnv =
     process.env['HTTPS_PROXY'] || process.env['HTTP_PROXY'] ||

@@ -112,6 +112,8 @@ export interface MarkusConfig {
   network?: {
     /** HTTP/HTTPS proxy URL for outbound requests (e.g. "http://127.0.0.1:7890") */
     proxy?: string;
+    /** Set to false to disable proxy entirely (ignoring system/env detection) */
+    proxyEnabled?: boolean;
   };
 }
 

@@ -181,7 +181,7 @@
   },
   "networkProxy": {
     "title": "网络代理",
-    "description": "配置用于 API 请求（OAuth、LLM 调用）的 HTTP 代理。未设置时自动检测 macOS 系统代理。",
+    "description": "配置用于 ChatGPT OAuth 登录和 Codex API 调用的 HTTP 代理。其他 LLM 服务商通过系统/TUN 代理自动生效。",
     "active": "生效中：",
     "noProxy": "未检测到代理",
     "sourceConfig": "markus.json",
@@ -192,7 +192,9 @@
     "save": "保存",
     "saved": "已保存，重启服务后生效。",
     "saveFailed": "保存失败",
-    "networkError": "网络错误"
+    "networkError": "网络错误",
+    "refresh": "重新检测",
+    "disabled": "代理已禁用"
   },
   "oauthAuth": {
     "title": "OAuth 认证",
