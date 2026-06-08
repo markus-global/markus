@@ -167,7 +167,52 @@
     "testOk": "正常（{{ms}}ms）",
     "testFailed": "不可用",
     "testFailedCode": "错误 {{code}}",
-    "testSuccess": "连接成功，耗时 {{ms}}ms — 回复：{{reply}}"
+    "testSuccess": "连接成功，耗时 {{ms}}ms — 回复：{{reply}}",
+    "testDetail": {
+      "requestUrl": "请求地址",
+      "model": "模型",
+      "requestBody": "请求参数",
+      "response": "响应内容",
+      "duration": "耗时",
+      "tokens": "Token 用量",
+      "inputTokens": "输入",
+      "outputTokens": "输出"
+    }
+  },
+  "networkProxy": {
+    "title": "网络代理",
+    "description": "配置用于 API 请求（OAuth、LLM 调用）的 HTTP 代理。未设置时自动检测 macOS 系统代理。",
+    "active": "生效中：",
+    "noProxy": "未检测到代理",
+    "sourceConfig": "markus.json",
+    "sourceEnv": "环境变量",
+    "sourceSystem": "macOS 系统",
+    "placeholder": "http://127.0.0.1:7890（留空则自动检测）",
+    "saving": "保存中...",
+    "save": "保存",
+    "saved": "已保存，重启服务后生效。",
+    "saveFailed": "保存失败",
+    "networkError": "网络错误"
+  },
+  "oauthAuth": {
+    "title": "OAuth 认证",
+    "description": "使用 ChatGPT 账号登录，通过订阅额度使用 Codex 模型（无需 API Key）。",
+    "signInWith": "使用 {{name}} 登录",
+    "connecting": "连接中...",
+    "device": "设备码",
+    "deviceTitle": "设备码登录（适用于远程/无头环境）",
+    "deviceCodeTitle": "设备码登录",
+    "deviceInstructions": "请打开验证地址并输入以下代码：",
+    "deviceWaiting": "等待授权中...（15 分钟后过期）",
+    "manualCallbackHint": "如果浏览器未打开或您在远程机器上，请粘贴回调 URL：",
+    "manualPlaceholder": "http://localhost:1455/auth/callback?code=...",
+    "submit": "提交",
+    "connectedAccounts": "已连接账号",
+    "expired": "令牌已过期/失效",
+    "reconnect": "重新认证",
+    "disconnect": "断开",
+    "noProviders": "无可用 OAuth 提供商",
+    "deviceCodeFailed": "设备码登录失败"
   },
   "oauth": {
     "loginFailed": "登录失败",

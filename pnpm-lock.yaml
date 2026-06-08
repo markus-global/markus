@@ -14,6 +14,9 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+      undici:
+        specifier: ^8.4.0
+        version: 8.4.0
     devDependencies:
       '@types/node-cron':
         specifier: ^3.0.11
@@ -2892,6 +2895,10 @@ packages:
 
   undici-types@7.18.2:
     resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
+
+  undici@8.4.0:
+    resolution: {integrity: sha512-tDR4LgFBeV7YBWOFMlmbhtrnFVWuZ6HKbkG+88/csQdhK2tPlW78PnLI2VRjIQtTlslvgSZ4R43WBE+4g6rhng==}
+    engines: {node: '>=22.19.0'}
 
   unified@11.0.5:
     resolution: {integrity: sha512-xKvGhPWw3k84Qjh8bI3ZeJjqnyadK+GEFtazSfZv/rKeTkTjOJho6mFqh2SM96iIcZokxiOpg78GazTSg8+KHA==}
@@ -5794,6 +5801,8 @@ snapshots:
   uhyphen@0.2.0: {}
 
   undici-types@7.18.2: {}
+
+  undici@8.4.0: {}
 
   unified@11.0.5:
     dependencies:

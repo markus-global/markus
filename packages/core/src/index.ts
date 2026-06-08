@@ -36,6 +36,8 @@ export { LLMRouter } from './llm/router.js';
 export { LLMLogger, type LLMLogEntry } from './llm/llm-logger.js';
 export { AnthropicProvider } from './llm/anthropic.js';
 export { OpenAIProvider } from './llm/openai.js';
+export { CodexResponsesProvider } from './llm/openai-codex.js';
+export { getEffectiveProxy, type EffectiveProxy, type ProxySource } from './llm/proxy-fetch.js';
 export { GoogleProvider } from './llm/google.js';
 export { OllamaProvider } from './llm/ollama.js';
 export { AuthProfileStore } from './llm/auth-profiles.js';

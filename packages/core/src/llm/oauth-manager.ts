@@ -2,6 +2,7 @@ import { createServer, type Server } from 'node:http';
 import { randomBytes, createHash } from 'node:crypto';
 import { createLogger, type OAuthTokens, type OAuthProviderConfig, type AuthProfile } from '@markus/shared';
 import type { AuthProfileStore } from './auth-profiles.js';
+import { proxyFetch } from './proxy-fetch.js';
 
 const log = createLogger('oauth-manager');
 
@@ -33,15 +34,53 @@ function generatePKCE(): { verifier: string; challenge: string } {
   return { verifier, challenge };
 }
 
-function extractAccountId(accessToken: string): string | undefined {
+function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
   try {
-    const parts = accessToken.split('.');
+    const parts = token.split('.');
     if (parts.length !== 3) return undefined;
-    const payload = JSON.parse(Buffer.from(parts[1]!, 'base64url').toString());
-    return payload.sub ?? payload.account_id ?? payload.accountId;
+    return JSON.parse(Buffer.from(parts[1]!, 'base64url').toString());
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Extract accountId from tokens using a 3-level fallback:
+ * 1. Top-level chatgpt_account_id
+ * 2. https://api.openai.com/auth claim's chatgpt_account_id
+ * 3. organizations[0].id
+ * Tries id_token first (more reliable), then access_token.
+ */
+function extractAccountId(idToken?: string, accessToken?: string): string | undefined {
+  const tokens = [idToken, accessToken].filter(Boolean) as string[];
+  for (const token of tokens) {
+    const payload = decodeJwtPayload(token);
+    if (!payload) continue;
+
+    // Level 1: top-level chatgpt_account_id
+    if (payload.chatgpt_account_id && typeof payload.chatgpt_account_id === 'string') {
+      return payload.chatgpt_account_id;
+    }
+
+    // Level 2: nested under https://api.openai.com/auth
+    const authClaim = payload['https://api.openai.com/auth'] as Record<string, unknown> | undefined;
+    if (authClaim?.chatgpt_account_id && typeof authClaim.chatgpt_account_id === 'string') {
+      return authClaim.chatgpt_account_id;
+    }
+
+    // Level 3: organizations[0].id
+    const orgs = (payload.organizations ?? authClaim?.organizations) as Array<{ id: string }> | undefined;
+    if (Array.isArray(orgs) && orgs.length > 0 && orgs[0]?.id) {
+      return orgs[0].id;
+    }
+  }
+
+  // Fallback to sub from access_token
+  if (accessToken) {
+    const payload = decodeJwtPayload(accessToken);
+    if (payload?.sub && typeof payload.sub === 'string') return payload.sub;
+  }
+  return undefined;
 }
 
 export class OAuthManager {
@@ -167,6 +206,7 @@ export class OAuthManager {
       state,
       code_challenge: challenge,
       code_challenge_method: 'S256',
+      id_token_add_organizations: 'true',
     });
     if (config.scope) params.set('scope', config.scope);
 
@@ -209,7 +249,7 @@ export class OAuthManager {
       code_verifier: verifier,
     });
 
-    const res = await fetch(config.tokenUrl, {
+    const res = await proxyFetch(config.tokenUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
@@ -223,6 +263,7 @@ export class OAuthManager {
     const data = await res.json() as {
       access_token: string;
       refresh_token?: string;
+      id_token?: string;
       expires_in?: number;
       token_type?: string;
     };
@@ -230,8 +271,9 @@ export class OAuthManager {
     const tokens: OAuthTokens = {
       accessToken: data.access_token,
       refreshToken: data.refresh_token,
+      idToken: data.id_token,
       expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000,
-      accountId: extractAccountId(data.access_token),
+      accountId: extractAccountId(data.id_token, data.access_token),
     };
 
     log.info(`OAuth token exchange successful for ${provider}`, { accountId: tokens.accountId });
@@ -243,9 +285,16 @@ export class OAuthManager {
    * Returns the new access token (also persists to profile store).
    */
   async refreshToken(profileId: string): Promise<string> {
+    // Re-read from disk to get freshest tokens (another process may have refreshed)
     const profile = this.profileStore.getProfile(profileId);
     if (!profile?.oauth?.refreshToken) {
       throw new Error(`Profile ${profileId} has no refresh token`);
+    }
+
+    // If another process already refreshed and the token is now fresh, just use it
+    if (profile.oauth.expiresAt > Date.now() + 5 * 60_000) {
+      log.debug(`Token for ${profileId} already refreshed by another process`);
+      return profile.oauth.accessToken;
     }
 
     const config = this.getProviderConfig(profile.provider);
@@ -257,7 +306,7 @@ export class OAuthManager {
       client_id: config.clientId,
     });
 
-    const res = await fetch(config.tokenUrl, {
+    const res = await proxyFetch(config.tokenUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
@@ -265,30 +314,41 @@ export class OAuthManager {
 
     if (!res.ok) {
       const errText = await res.text();
+      // Handle refresh_token_reused: reload from disk in case another process refreshed
+      if (errText.includes('refresh_token_reused') || errText.includes('invalid_grant')) {
+        const freshProfile = this.profileStore.getProfile(profileId);
+        if (freshProfile?.oauth && freshProfile.oauth.expiresAt > Date.now()) {
+          log.info(`Recovered from refresh_token_reused for ${profileId} — using fresher stored token`);
+          return freshProfile.oauth.accessToken;
+        }
+      }
       throw new Error(`Token refresh failed (${res.status}): ${errText}`);
     }
 
     const data = await res.json() as {
       access_token: string;
       refresh_token?: string;
+      id_token?: string;
       expires_in?: number;
     };
 
     const newTokens: OAuthTokens = {
       accessToken: data.access_token,
       refreshToken: data.refresh_token ?? profile.oauth.refreshToken,
+      idToken: data.id_token ?? profile.oauth.idToken,
       expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000,
-      accountId: profile.oauth.accountId ?? extractAccountId(data.access_token),
+      accountId: extractAccountId(data.id_token, data.access_token) ?? profile.oauth.accountId,
     };
 
     this.profileStore.updateOAuthTokens(profileId, newTokens);
-    log.info(`Refreshed OAuth token for profile ${profileId}`);
+    log.info(`Refreshed OAuth token for profile ${profileId}, next expiry in ${data.expires_in ?? 3600}s`);
     return newTokens.accessToken;
   }
 
   /**
    * Get a valid access token for a profile, refreshing if needed.
-   * Refreshes proactively 60s before expiry.
+   * Refreshes proactively 10 minutes before expiry to avoid race conditions
+   * (aligned with OpenClaw's EXTERNAL_CLI_NEAR_EXPIRY_MS strategy).
    */
   async getValidToken(profileId: string): Promise<string> {
     const profile = this.profileStore.getProfile(profileId);
@@ -299,13 +359,24 @@ export class OAuthManager {
 
     if (!profile.oauth) throw new Error(`Profile ${profileId} has no OAuth tokens`);
 
-    if (profile.oauth.expiresAt > Date.now() + 60_000) {
+    const NEAR_EXPIRY_MS = 10 * 60_000; // 10 minutes buffer
+
+    if (profile.oauth.expiresAt > Date.now() + NEAR_EXPIRY_MS) {
       return profile.oauth.accessToken;
     }
 
     if (profile.oauth.refreshToken) {
-      log.debug(`Token expiring soon for ${profileId}, refreshing...`);
-      return this.refreshToken(profileId);
+      log.debug(`Token expiring within 10min for ${profileId}, refreshing...`);
+      try {
+        return await this.refreshToken(profileId);
+      } catch (err) {
+        // If refresh fails but token is still technically valid, use it as fallback
+        if (profile.oauth.expiresAt > Date.now()) {
+          log.warn(`Refresh failed for ${profileId}, using existing token (still valid): ${err}`);
+          return profile.oauth.accessToken;
+        }
+        throw err;
+      }
     }
 
     if (profile.oauth.expiresAt > Date.now()) {
@@ -313,6 +384,40 @@ export class OAuthManager {
     }
 
     throw new Error(`OAuth token expired for ${profileId} and no refresh token available`);
+  }
+
+  /**
+   * Validate an OAuth profile by attempting a token refresh.
+   * Returns true if the token is valid/refreshable, false if invalidated.
+   * When validation fails, marks the profile's expiresAt = 0 so it appears expired.
+   */
+  async validateProfile(profileId: string): Promise<boolean> {
+    const profile = this.profileStore.getProfile(profileId);
+    if (!profile?.oauth) return false;
+
+    // If token is still valid and not near expiry, skip refresh attempt
+    if (profile.oauth.expiresAt > Date.now() + 5 * 60_000) {
+      return true;
+    }
+
+    // Attempt a refresh to verify the token is still usable
+    if (!profile.oauth.refreshToken) {
+      if (profile.oauth.expiresAt > Date.now()) return true;
+      return false;
+    }
+
+    try {
+      await this.refreshToken(profileId);
+      return true;
+    } catch (err) {
+      log.warn(`OAuth token validation failed for ${profileId}: ${err}`);
+      // Mark as expired so UI reflects the invalidated state
+      this.profileStore.updateOAuthTokens(profileId, {
+        ...profile.oauth,
+        expiresAt: 0,
+      });
+      return false;
+    }
   }
 
   /**
@@ -330,6 +435,112 @@ export class OAuthManager {
     };
     this.profileStore.upsertProfile(profile);
     return profile;
+  }
+
+  /**
+   * Start Device Code login flow for headless/remote scenarios.
+   * Returns a userCode and verificationUri for the user to complete in any browser.
+   * The returned promise resolves when the device is authorized.
+   */
+  async startDeviceCodeLogin(provider: string): Promise<{
+    userCode: string;
+    verificationUri: string;
+    promise: Promise<AuthProfile>;
+  }> {
+    const config = this.getProviderConfig(provider);
+    if (!config) throw new Error(`Unknown OAuth provider: ${provider}`);
+
+    const issuer = new URL(config.authorizeUrl).origin;
+    const deviceUserCodeUrl = `${issuer}/api/accounts/deviceauth/usercode`;
+    const deviceTokenUrl = `${issuer}/api/accounts/deviceauth/token`;
+    const deviceRedirectUri = `${issuer}/deviceauth/callback`;
+    const verificationUri = `${issuer}/codex/device`;
+
+    const res = await proxyFetch(deviceUserCodeUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: config.clientId }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      if (res.status === 404) {
+        throw new Error('Device code login is not enabled. Enable it in ChatGPT Security Settings first.');
+      }
+      throw new Error(`Device code request failed (${res.status}): ${errText}`);
+    }
+
+    const deviceData = await res.json() as {
+      user_code?: string;
+      device_auth_id: string;
+      interval?: number;
+    };
+
+    const userCode = deviceData.user_code ?? '';
+    const deviceAuthId = deviceData.device_auth_id;
+    const pollInterval = (deviceData.interval ?? 5) * 1000;
+
+    log.info(`Device code login started for ${provider}`, { userCode, verificationUri });
+
+    const promise = new Promise<AuthProfile>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        clearInterval(pollHandle);
+        reject(new Error('Device code login timed out after 15 minutes'));
+      }, 15 * 60 * 1000);
+
+      const pollHandle = setInterval(async () => {
+        try {
+          const tokenRes = await proxyFetch(deviceTokenUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device_auth_id: deviceAuthId, user_code: userCode }),
+          });
+
+          if (tokenRes.status === 202 || tokenRes.status === 428) return; // still pending
+
+          if (!tokenRes.ok) {
+            const errText = await tokenRes.text();
+            if (tokenRes.status === 403 || tokenRes.status === 400) {
+              clearInterval(pollHandle);
+              clearTimeout(timeout);
+              reject(new Error(`Device code login rejected: ${errText}`));
+            }
+            return;
+          }
+
+          const codeData = await tokenRes.json() as {
+            authorization_code: string;
+            code_verifier: string;
+            code_challenge: string;
+          };
+
+          clearInterval(pollHandle);
+          clearTimeout(timeout);
+
+          // Exchange the authorization code for tokens
+          const tokens = await this.exchangeCode(
+            provider,
+            codeData.authorization_code,
+            codeData.code_verifier,
+            deviceRedirectUri,
+          );
+
+          const profile = this.profileStore.createOAuthProfile(
+            provider, tokens, `${provider} (${tokens.accountId ?? 'Device Code'})`
+          );
+          resolve(profile);
+        } catch (err) {
+          if (err instanceof Error && err.message.includes('rejected')) {
+            clearInterval(pollHandle);
+            clearTimeout(timeout);
+            reject(err);
+          }
+          // Otherwise continue polling
+        }
+      }, pollInterval);
+    });
+
+    return { userCode, verificationUri, promise };
   }
 
   hasPendingLogin(provider?: string): boolean {

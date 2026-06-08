@@ -109,6 +109,10 @@ export interface MarkusConfig {
     hubUrl?: string;
     instanceName?: string;
   };
+  network?: {
+    /** HTTP/HTTPS proxy URL for outbound requests (e.g. "http://127.0.0.1:7890") */
+    proxy?: string;
+  };
 }
 
 const DEFAULT_CONFIG: MarkusConfig = {

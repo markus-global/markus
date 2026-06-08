@@ -5,6 +5,7 @@ export type LLMAuthType = 'api-key' | 'oauth' | 'setup-token';
 export interface OAuthTokens {
   accessToken: string;
   refreshToken?: string;
+  idToken?: string;
   expiresAt: number;
   accountId?: string;
 }

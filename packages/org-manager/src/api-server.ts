@@ -7702,6 +7702,34 @@ EXPLANATION_END`;
       return;
     }
 
+    // Settings — Network / Proxy
+    if (path === '/api/settings/network' && req.method === 'GET') {
+      const { loadConfig: loadCfg } = await import('@markus/shared');
+      const { getEffectiveProxy } = await import('@markus/core');
+      const currentConfig = loadCfg(this.markusConfigPath);
+      const effective = getEffectiveProxy();
+      this.json(res, 200, {
+        network: currentConfig.network ?? {},
+        effective: { proxy: effective.url ?? null, source: effective.source },
+      });
+      return;
+    }
+
+    if (path === '/api/settings/network' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const updates: Record<string, unknown> = {};
+      if (typeof body['proxy'] === 'string') updates.proxy = body['proxy'] || undefined;
+      try {
+        saveConfig({ network: updates } as any, this.markusConfigPath);
+        this.json(res, 200, { ok: true, network: updates });
+      } catch (e) {
+        this.json(res, 500, { error: `Failed to save network settings: ${e}` });
+      }
+      return;
+    }
+
     // Settings — Browser automation
     if (path === '/api/settings/browser' && req.method === 'GET') {
       const { loadConfig: loadCfg } = await import('@markus/shared');
@@ -8429,7 +8457,7 @@ EXPLANATION_END`;
       return;
     }
 
-    // Settings — Test provider connectivity
+    // Settings — Test provider connectivity (direct, no fallback)
     if (path.match(/^\/api\/settings\/llm\/providers\/[^/]+\/test$/) && req.method === 'POST') {
       const auth = await this.requireAuth(req, res);
       if (!auth) return;
@@ -8443,21 +8471,26 @@ EXPLANATION_END`;
         this.json(res, 404, { ok: false, error: `Provider "${providerName}" not found or not configured` });
         return;
       }
+      const requestBody = {
+        messages: [{ role: 'user' as const, content: 'Reply with exactly one word: hello' }],
+        maxTokens: 32,
+        temperature: 0,
+      };
+      const baseUrl = (provider as any).baseUrl ?? (provider as any).config?.baseUrl ?? '';
       try {
         const startMs = Date.now();
-        const response = await this.llmRouter.chat({
-          messages: [{ role: 'user', content: 'Reply with exactly one word: hello' }],
-          maxTokens: 32,
-          temperature: 0,
-        }, providerName);
+        const response = await this.llmRouter.chatDirect(requestBody, providerName);
         const durationMs = Date.now() - startMs;
         const reply = (response.content ?? '').trim();
+        const requestUrl = response._providerBaseUrl ?? baseUrl;
         if (!reply) {
           this.json(res, 200, {
             ok: false,
             error: 'Model returned empty response — API key or model may be misconfigured',
             model: provider.model,
             durationMs,
+            requestUrl,
+            requestBody,
           });
         } else {
           this.json(res, 200, {
@@ -8466,16 +8499,15 @@ EXPLANATION_END`;
             model: provider.model,
             reply: reply.slice(0, 100),
             usage: response.usage,
+            requestUrl,
+            requestBody,
           });
         }
       } catch (err) {
         const raw = String(err);
-        // Extract HTTP status code if present (e.g. "OpenAI API error 401: ...")
         const statusMatch = raw.match(/(?:API error|status)\s+(\d{3})/i);
         const errorCode = statusMatch ? Number(statusMatch[1]) : undefined;
-        // Extract the most useful portion of the error
         let errorMsg = raw.replace(/^Error:\s*/, '');
-        // Try to parse JSON error body from the message
         const jsonStart = errorMsg.indexOf('{');
         if (jsonStart >= 0) {
           try {
@@ -8491,6 +8523,8 @@ EXPLANATION_END`;
           error: errorMsg.slice(0, 500),
           errorCode,
           model: provider.model,
+          requestUrl: baseUrl,
+          requestBody,
         });
       }
       return;
@@ -8716,7 +8750,7 @@ EXPLANATION_END`;
       return;
     }
 
-    // List auth profiles
+    // List auth profiles (with optional token validation)
     if (path === '/api/settings/oauth/profiles' && req.method === 'GET') {
       const auth = await this.requireAuth(req, res);
       if (!auth) return;
@@ -8726,6 +8760,17 @@ EXPLANATION_END`;
       }
       const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
       const provider = url.searchParams.get('provider') ?? undefined;
+      const validate = url.searchParams.get('validate') === '1';
+
+      // Proactively validate OAuth tokens if requested
+      if (validate && this.llmRouter.oauthManager) {
+        const profiles = this.llmRouter.profileStore.listProfiles(provider);
+        const oauthProfiles = profiles.filter(p => p.oauth);
+        await Promise.allSettled(
+          oauthProfiles.map(p => this.llmRouter!.oauthManager!.validateProfile(p.id))
+        );
+      }
+
       this.json(res, 200, { profiles: this.llmRouter.profileStore.listProfilesSafe(provider) });
       return;
     }
@@ -8754,7 +8799,7 @@ EXPLANATION_END`;
           if (this.llmRouter && !this.llmRouter.getProvider(provider)) {
             try {
               this.llmRouter.registerOAuthProvider(provider, profile, {
-                model: provider === 'openai-codex' ? 'gpt-5.4' : undefined,
+                model: provider === 'openai-codex' ? 'gpt-5.5' : undefined,
               });
             } catch (err) {
               log.warn(`Failed to auto-register OAuth provider after login`, { error: String(err) });
@@ -8764,6 +8809,43 @@ EXPLANATION_END`;
           log.warn(`OAuth login failed for ${provider}`, { error: String(err) });
         });
         this.json(res, 200, { authorizeUrl, provider });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // Start Device Code OAuth login flow (headless/remote)
+    if (path === '/api/settings/oauth/device-code' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter?.oauthManager) {
+        this.json(res, 503, { error: 'OAuth not initialized' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const { provider } = body as { provider?: string };
+      if (!provider) {
+        this.json(res, 400, { error: 'provider is required' });
+        return;
+      }
+      try {
+        const { userCode, verificationUri, promise } = await this.llmRouter.oauthManager.startDeviceCodeLogin(provider);
+        promise.then(profile => {
+          log.info(`Device code OAuth login completed for ${provider}`, { profileId: profile.id });
+          if (this.llmRouter && !this.llmRouter.getProvider(provider)) {
+            try {
+              this.llmRouter.registerOAuthProvider(provider, profile, {
+                model: provider === 'openai-codex' ? 'gpt-5.5' : undefined,
+              });
+            } catch (err) {
+              log.warn(`Failed to auto-register OAuth provider after device code login`, { error: String(err) });
+            }
+          }
+        }).catch(err => {
+          log.warn(`Device code OAuth login failed for ${provider}`, { error: String(err) });
+        });
+        this.json(res, 200, { userCode, verificationUri, provider });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
       }
@@ -8788,7 +8870,7 @@ EXPLANATION_END`;
         const profile = await this.llmRouter.oauthManager.handleManualCallback(callbackUrl);
         if (this.llmRouter && !this.llmRouter.getProvider(profile.provider)) {
           this.llmRouter.registerOAuthProvider(profile.provider, profile, {
-            model: profile.provider === 'openai-codex' ? 'gpt-5.4' : undefined,
+            model: profile.provider === 'openai-codex' ? 'gpt-5.5' : undefined,
           });
         }
         this.json(res, 200, {
@@ -10564,6 +10646,7 @@ EXPLANATION_END`;
       exact('/api/settings/llm', 'GET', 'POST'),
       exact('/api/settings/llm/models', 'GET'),
       exact('/api/settings/agent', 'GET', 'POST'),
+      exact('/api/settings/network', 'GET', 'POST'),
       exact('/api/settings/browser', 'GET', 'POST'),
       exact('/api/settings/browser/check', 'GET'),
       exact('/api/settings/browser/test-auto-click', 'POST'),
