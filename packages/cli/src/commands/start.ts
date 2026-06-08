@@ -36,6 +36,8 @@ import {
   HITLService,
   type NotificationPriority,
   BillingService,
+  LicenseService,
+  TelemetryService,
   AuditService,
   ProjectService,
   RequirementService,
@@ -324,8 +326,10 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   const hitlService = new HITLService();
   hitlService.setOrgService(orgService);
   taskService.setHITLService(hitlService);
+  const licenseService = new LicenseService(config.hub?.url);
+  const telemetryService = new TelemetryService(config.hub?.url ?? 'https://markus.global', licenseService.getInstanceId());
   const billingService = new BillingService();
-  billingService.setOrgPlan('default', 'free');
+  billingService.setOrgPlan('default', licenseService.getPlan());
   const auditService = new AuditService();
   taskService.setAuditService(auditService);
   if (storage?.auditRepo) {
@@ -341,6 +345,8 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     skillRegistry,
     hitlService,
     billingService,
+    licenseService,
+    telemetryService,
     auditService,
     bootstrapOwnerId,
   };
@@ -479,6 +485,8 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     skillRegistry,
     hitlService,
     billingService,
+    licenseService,
+    telemetryService,
     auditService,
     bootstrapOwnerId,
   } = await createServices(config);
@@ -489,6 +497,8 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   apiServer.setSkillRegistry(skillRegistry);
   apiServer.setHITLService(hitlService);
   apiServer.setBillingService(billingService);
+  apiServer.setLicenseService(licenseService);
+  apiServer.setTelemetryService(telemetryService);
   apiServer.setAuditService(auditService);
 
   const projectService = new ProjectService();
@@ -582,6 +592,19 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   await modelCatalog.initialize();
   apiServer.setModelCatalog(modelCatalog);
   if (config.hub?.url) apiServer.setHubUrl(config.hub.url);
+
+  // Telemetry: connect stats provider and start background reporting
+  telemetryService.setStatsProvider(() => {
+    const am = orgService.getAgentManager();
+    return {
+      agentCount: am ? am.listAgents().length : 0,
+      taskCount: taskService.listTasks().length,
+      toolCallCount: billingService.getUsageSummary('default').toolCalls,
+      teamCount: orgService.listTeams('default').length,
+      plan: licenseService.getPlan(),
+    };
+  });
+  telemetryService.start();
 
   // Serve pre-built Web UI if available
   const webUiDir = resolveWebUiDir();
@@ -944,7 +967,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
     apiServer.setRemoteAgentFactory(createRemoteAgent);
 
-    if (config.remote?.enabled !== false) {
+    if (config.remote?.enabled === true) {
       const remoteAgent = await createRemoteAgent();
       if (remoteAgent) {
         apiServer.setRemoteAgent(remoteAgent);
@@ -1044,6 +1067,15 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       });
     }
   });
+
+  billingService.setToolCallsTodayProvider(() => {
+    let total = 0;
+    for (const a of agentManager.listAgents()) {
+      try { total += agentManager.getAgent(a.id).getUsageStats().toolCallsToday; } catch { /* not loaded */ }
+    }
+    return total;
+  });
+  agentManager.setToolCallLimitChecker(() => billingService.checkLimit('default', 'tool_call'));
 
   // Wire agent state changes to DB persistence + WS broadcast
   if (storage) {
@@ -1511,7 +1543,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   checkForUpdate().then(info => {
     if (info.updateAvailable) {
       console.log(`\n  \x1b[33m⬆ New version available: v${info.latestVersion} (current: v${info.currentVersion})\x1b[0m`);
-      console.log(`    Run \x1b[1mnpm i -g @markus-global/cli\x1b[0m to upgrade\n`);
+      console.log(`    Visit \x1b[1mhttps://markus.global/download\x1b[0m to download the latest version\n`);
     }
   }).catch(() => {});
 

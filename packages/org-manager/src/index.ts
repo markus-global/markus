@@ -5,6 +5,8 @@ export { WSBroadcaster } from './ws-server.js';
 export { HITLService, type NotificationPriority } from './hitl-service.js';
 export type { ApprovalRequest, Notification } from './hitl-service.js';
 export { BillingService } from './billing-service.js';
+export { LicenseService } from './license-service.js';
+export { TelemetryService } from './telemetry-service.js';
 export { AuditService } from './audit-service.js';
 export type { AuditEntry, AuditEventType, TokenUsage } from './audit-service.js';
 export type { APIKey, UsageSummary, OrgPlan } from './billing-service.js';

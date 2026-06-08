@@ -651,6 +651,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'projects', column: 'created_by', sql: 'ALTER TABLE projects ADD COLUMN created_by TEXT' },
     { table: 'approvals', column: 'target_user_id', sql: 'ALTER TABLE approvals ADD COLUMN target_user_id TEXT' },
     { table: 'users', column: 'deleted_at', sql: 'ALTER TABLE users ADD COLUMN deleted_at TEXT' },
+    { table: 'users', column: 'hub_user_id', sql: 'ALTER TABLE users ADD COLUMN hub_user_id TEXT' },
+    { table: 'users', column: 'hub_username', sql: 'ALTER TABLE users ADD COLUMN hub_username TEXT' },
     { table: 'agents', column: 'deleted_at', sql: 'ALTER TABLE agents ADD COLUMN deleted_at TEXT' },
     { table: 'deliverables', column: 'format', sql: 'ALTER TABLE deliverables ADD COLUMN format TEXT' },
     { table: 'task_comments', column: 'reply_to_id', sql: 'ALTER TABLE task_comments ADD COLUMN reply_to_id TEXT' },
@@ -2304,10 +2306,12 @@ export class SqliteUserRepo {
     role?: string;
     teamId?: string;
     passwordHash?: string;
+    hubUserId?: string;
+    avatarUrl?: string;
   }) {
     this.db
       .prepare(
-        'INSERT INTO users (id, org_id, name, email, role, team_id, password_hash, created_at) VALUES (?,?,?,?,?,?,?,?)'
+        'INSERT INTO users (id, org_id, name, email, role, team_id, password_hash, hub_user_id, avatar_url, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
       )
       .run(
         data.id,
@@ -2317,6 +2321,8 @@ export class SqliteUserRepo {
         data.role ?? 'member',
         data.teamId ?? null,
         data.passwordHash ?? null,
+        data.hubUserId ?? null,
+        data.avatarUrl ?? null,
         now()
       );
     return this.findById(data.id)!;
@@ -2330,12 +2336,13 @@ export class SqliteUserRepo {
     role?: string;
     teamId?: string;
     passwordHash?: string;
+    hubUserId?: string;
   }) {
     this.db
       .prepare(
-        `INSERT INTO users (id, org_id, name, email, role, team_id, password_hash, created_at)
-       VALUES (?,?,?,?,?,?,?,?)
-       ON CONFLICT(id) DO UPDATE SET name = excluded.name, email = excluded.email, role = excluded.role, team_id = excluded.team_id, password_hash = COALESCE(excluded.password_hash, password_hash)`
+        `INSERT INTO users (id, org_id, name, email, role, team_id, password_hash, hub_user_id, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET name = excluded.name, email = excluded.email, role = excluded.role, team_id = excluded.team_id, password_hash = COALESCE(excluded.password_hash, password_hash), hub_user_id = COALESCE(excluded.hub_user_id, hub_user_id)`
       )
       .run(
         data.id,
@@ -2345,6 +2352,7 @@ export class SqliteUserRepo {
         data.role ?? 'member',
         data.teamId ?? null,
         data.passwordHash ?? null,
+        data.hubUserId ?? null,
         now()
       );
   }
@@ -2366,6 +2374,21 @@ export class SqliteUserRepo {
       | Record<string, unknown>
       | undefined;
     return r ? this._map(r) : null;
+  }
+
+  findByHubUserId(hubUserId: string) {
+    const r = this.db.prepare('SELECT * FROM users WHERE hub_user_id = ? AND deleted_at IS NULL').get(hubUserId) as
+      | Record<string, unknown>
+      | undefined;
+    return r ? this._map(r) : null;
+  }
+
+  updateHubUserId(id: string, hubUserId: string, hubUsername?: string) {
+    if (hubUsername) {
+      this.db.prepare('UPDATE users SET hub_user_id = ?, hub_username = ? WHERE id = ?').run(hubUserId, hubUsername, id);
+    } else {
+      this.db.prepare('UPDATE users SET hub_user_id = ? WHERE id = ?').run(hubUserId, id);
+    }
   }
 
   findById(id: string) {
@@ -2487,6 +2510,8 @@ export class SqliteUserRepo {
       teamId: r['team_id'],
       passwordHash: r['password_hash'],
       avatarUrl: r['avatar_url'] as string | null,
+      hubUserId: r['hub_user_id'] as string | null,
+      hubUsername: r['hub_username'] as string | null,
       inviteToken: r['invite_token'] as string | null,
       inviteExpiresAt: r['invite_expires_at'] as string | null,
       createdAt: toDate(r['created_at'] as string),

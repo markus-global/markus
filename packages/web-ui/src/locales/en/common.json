@@ -231,5 +231,16 @@
     "thinking": "Thinking",
     "writingResponse": "Writing response…"
   },
-  "copyFailed": "Failed"
+  "copyFailed": "Failed",
+  "day": "day",
+  "update": {
+    "available": "New version available: v{{latest}} (current: v{{current}})",
+    "download": "Download Update"
+  },
+  "license": {
+    "limitReachedTeams": "You've reached the free plan limit for AI Agent teams. Upgrade to Enterprise for unlimited teams.",
+    "limitReachedToolCalls": "You've reached the free plan daily tool call limit. Upgrade to Enterprise for unlimited usage.",
+    "limitReachedBoth": "You've reached the free plan limits for teams and daily tool calls. Upgrade to Enterprise for unlimited usage.",
+    "upgradeLicense": "Upgrade"
+  }
 }

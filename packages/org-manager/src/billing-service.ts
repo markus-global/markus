@@ -1,9 +1,7 @@
-import { createLogger } from '@markus/shared';
+import { createLogger, type PlanTier } from '@markus/shared';
 import { randomBytes } from 'node:crypto';
 
 const log = createLogger('billing');
-
-export type PlanTier = 'free' | 'pro' | 'enterprise';
 
 export interface UsageRecord {
   orgId: string;
@@ -52,17 +50,10 @@ export interface OrgPlan {
 const DEFAULT_PLANS: Record<PlanTier, OrgPlan['limits']> = {
   free: {
     maxAgents: -1,
-    maxTokensPerMonth: 100_000,
-    maxToolCallsPerDay: 100,
-    maxMessagesPerDay: 50,
-    maxStorageBytes: 50 * 1024 * 1024,
-  },
-  pro: {
-    maxAgents: 20,
-    maxTokensPerMonth: 5_000_000,
-    maxToolCallsPerDay: 5000,
-    maxMessagesPerDay: 2000,
-    maxStorageBytes: 5 * 1024 * 1024 * 1024,
+    maxTokensPerMonth: -1,
+    maxToolCallsPerDay: 500,
+    maxMessagesPerDay: -1,
+    maxStorageBytes: -1,
   },
   enterprise: {
     maxAgents: -1,
@@ -80,6 +71,11 @@ export class BillingService {
   private apiKeys = new Map<string, APIKey>();
   private apiKeysByKey = new Map<string, APIKey>();
   private orgPlans = new Map<string, OrgPlan>();
+  private toolCallsTodayProvider?: () => number;
+
+  setToolCallsTodayProvider(fn: () => number): void {
+    this.toolCallsTodayProvider = fn;
+  }
 
   setOrgPlan(orgId: string, tier: PlanTier): OrgPlan {
     const plan: OrgPlan = {
@@ -176,10 +172,9 @@ export class BillingService {
     }
 
     if (type === 'tool_call') {
-      const todayRecords = this.records.filter(
-        r => r.orgId === orgId && r.type === 'tool_call' && r.timestamp.startsWith(today)
-      );
-      const todayCount = todayRecords.reduce((s, r) => s + r.amount, 0);
+      const todayCount = this.toolCallsTodayProvider
+        ? this.toolCallsTodayProvider()
+        : this.records.filter(r => r.orgId === orgId && r.type === 'tool_call' && r.timestamp.startsWith(today)).reduce((s, r) => s + r.amount, 0);
       if (
         plan.limits.maxToolCallsPerDay > 0 &&
         todayCount + additionalAmount > plan.limits.maxToolCallsPerDay

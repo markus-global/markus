@@ -231,5 +231,16 @@
     "thinking": "思考中",
     "writingResponse": "正在生成回复…"
   },
-  "copyFailed": "失败"
+  "copyFailed": "失败",
+  "day": "天",
+  "update": {
+    "available": "新版本可用：v{{latest}}（当前：v{{current}}）",
+    "download": "下载更新"
+  },
+  "license": {
+    "limitReachedTeams": "已达免费版 AI Agent 团队数量上限，升级企业版可解锁无限团队。",
+    "limitReachedToolCalls": "已达免费版每日工具调用次数上限，升级企业版可解锁无限用量。",
+    "limitReachedBoth": "已达免费版团队数量和每日工具调用次数上限，升级企业版可解锁无限用量。",
+    "upgradeLicense": "升级"
+  }
 }

@@ -669,6 +669,8 @@ Compression=lzma2
 SolidCompression=yes
 PrivilegesRequired=lowest
 ChangesEnvironment=yes
+CloseApplications=force
+RestartApplications=yes
 ${WIN_ICON_LINE}
 
 [Files]

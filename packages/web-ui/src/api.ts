@@ -1414,11 +1414,13 @@ export const api = {
     },
   },
   auth: {
-    status: () => request<{ initialized: boolean }>('/auth/status'),
+    status: () => request<{ initialized: boolean; hasOwner: boolean; hasMultipleUsers: boolean }>('/auth/status'),
     init: (name: string, email: string, password: string) =>
       request<{ user: AuthUser; needsOnboarding?: boolean }>('/auth/init', { method: 'POST', body: JSON.stringify({ name, email, password }) }),
     login: (email: string, password: string) =>
       request<{ user: AuthUser; needsOnboarding?: boolean }>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+    hubLogin: (hubToken: string, hubUser: { id: string; username: string; email?: string; displayName?: string; avatarUrl?: string }) =>
+      request<{ user: AuthUser; needsOnboarding?: boolean }>('/auth/hub-login', { method: 'POST', body: JSON.stringify({ hubToken, hubUser }) }),
     logout: () => request('/auth/logout', { method: 'POST' }),
     me: () => request<{ user: AuthUser }>('/auth/me'),
     changePassword: (currentPassword: string, newPassword: string) =>
@@ -1431,6 +1433,18 @@ export const api = {
       request<{ name: string; email: string }>(`/auth/invite-info?token=${encodeURIComponent(token)}`),
     uploadAvatar: (image: string, type: 'user' | 'agent' = 'user', id?: string) =>
       request<{ avatarUrl: string }>('/avatars/upload', { method: 'POST', body: JSON.stringify({ image, type, id }) }),
+  },
+  license: {
+    get: () => request<{ plan: string; licenseKey?: string; validUntil?: string; isTrial?: boolean; isOffline?: boolean; features: string[]; limits: { maxTeams: number; maxToolCallsPerDay: number; maxUsers: number }; usage?: { teams: number; toolCallsToday: number; users: number }; instanceId: string; hubUserId?: string; username?: string; orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number; defaultOrg?: { id: string; name: string; slug: string } }>('/license'),
+    refresh: () => request<{ plan: string; licenseKey?: string; validUntil?: string; isTrial?: boolean; isOffline?: boolean; features: string[]; limits: { maxTeams: number; maxToolCallsPerDay: number; maxUsers: number }; usage?: { teams: number; toolCallsToday: number; users: number }; instanceId: string; hubUserId?: string; username?: string; orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number; defaultOrg?: { id: string; name: string; slug: string } }>('/license/refresh', { method: 'POST' }),
+    activate: (licenseKey: string) =>
+      request<{ success: boolean; error?: string }>('/license/activate', { method: 'POST', body: JSON.stringify({ licenseKey }) }),
+    trial: () =>
+      request<{ success: boolean; error?: string }>('/license/trial', { method: 'POST' }),
+    import: (fileContent: string) =>
+      request<{ success: boolean; error?: string }>('/license/import', { method: 'POST', body: JSON.stringify({ fileContent }) }),
+    deactivate: () =>
+      request<{ success: boolean; error?: string }>('/license/deactivate', { method: 'POST' }),
   },
   sessions: {
     hasAny: () =>
@@ -1653,6 +1667,19 @@ export const api = {
         body: JSON.stringify({ files, prefix }),
       }),
   },
+  hubOrgs: {
+    mine: () => hubRequest<{ orgs: Array<{ id: string; name: string; slug: string; role: string; memberCount: number; license: { id: string; plan: string; status: string; validUntil: string; maxSeats: number | null } | null }> }>('/orgs/mine'),
+    get: (id: string) => hubRequest<{ org: { id: string; name: string; slug: string; ownerId: string; memberCount: number; role: string } }>(`/orgs/${id}`),
+    update: (id: string, data: { name?: string }) => hubRequest<{ ok: boolean }>(`/orgs/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    create: (name: string) => hubRequest<{ id: string; name: string; slug: string }>('/orgs', { method: 'POST', body: JSON.stringify({ name }) }),
+    members: (id: string) => hubRequest<{ members: Array<{ id: string; userId: string; role: string; status: string; joinedAt: string; username: string; email: string | null; displayName: string | null; avatarUrl: string | null }> }>(`/orgs/${id}/members`),
+    invite: (id: string, data: { username?: string; email?: string; role?: string }) => hubRequest<{ ok: boolean; method: string }>(`/orgs/${id}/members`, { method: 'POST', body: JSON.stringify(data) }),
+    removeMember: (orgId: string, userId: string) => hubRequest<{ ok: boolean }>(`/orgs/${orgId}/members/${userId}`, { method: 'DELETE' }),
+    updateMemberRole: (orgId: string, userId: string, role: string) => hubRequest<{ ok: boolean }>(`/orgs/${orgId}/members/${userId}`, { method: 'PATCH', body: JSON.stringify({ role }) }),
+    invitations: () => hubRequest<{ invitations: Array<{ orgId: string; orgName: string; invitedBy: string }> }>('/orgs/invitations'),
+    acceptInvitation: (orgId: string) => hubRequest<{ ok: boolean }>(`/orgs/${orgId}/members/accept`, { method: 'POST' }),
+    leave: (orgId: string) => hubRequest<{ ok: boolean }>(`/orgs/${orgId}/leave`, { method: 'POST' }),
+  },
 };
 
 export interface ExecutionStreamEntryAPI {
@@ -1836,7 +1863,9 @@ const HUB_USER_KEY = 'markus_hub_user';
 export interface HubUser {
   id: string;
   username: string;
+  email?: string;
   displayName?: string;
+  avatarUrl?: string;
 }
 
 export interface HubItem {
@@ -1876,7 +1905,7 @@ export function clearHubAuth(): void {
   syncHubTokenToBackend(null);
 }
 
-function saveHubAuth(token: string, user: HubUser): void {
+export function saveHubAuth(token: string, user: HubUser): void {
   localStorage.setItem(HUB_TOKEN_KEY, token);
   localStorage.setItem(HUB_USER_KEY, JSON.stringify(user));
   syncHubTokenToBackend(token);
@@ -1895,18 +1924,25 @@ function syncHubTokenToBackend(token: string | null): void {
  * Resolves once the token is received and saved; rejects if popup is closed without auth.
  */
 let _hubAuthPromise: Promise<void> | null = null;
-export function ensureHubAuth(): Promise<void> {
+export function ensureHubAuth(method?: string): Promise<void> {
   if (getHubToken()) return Promise.resolve();
   if (_hubAuthPromise) return _hubAuthPromise;
 
   const sessionId = `cs_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
   _hubAuthPromise = new Promise<void>((resolve, reject) => {
-    const url = `${HUB_URL}/auth/connect?session=${encodeURIComponent(sessionId)}`;
+    let url = `${HUB_URL}/auth/connect?session=${encodeURIComponent(sessionId)}`;
+    if (method) url += `&method=${encodeURIComponent(method)}`;
     const w = 460, h = 580;
     const left = Math.round(window.screenX + (window.outerWidth - w) / 2);
     const top = Math.round(window.screenY + (window.outerHeight - h) / 2);
     const popup = window.open(url, 'markus_hub_auth', `popup=yes,width=${w},height=${h},left=${left},top=${top}`);
+
+    if (!popup) {
+      _hubAuthPromise = null;
+      reject(new Error('Popup blocked by browser. Please allow popups for this site.'));
+      return;
+    }
 
     let settled = false;
     const cleanup = () => {

@@ -269,6 +269,7 @@ export class Agent {
   }) => void;
   private escalationCallback?: (agentId: string, reason: string) => void;
   private approvalCallback?: ApprovalCallback;
+  private toolCallLimitChecker?: () => { allowed: boolean; reason?: string };
   private tasksFetcher?: () => Array<{
     id: string;
     title: string;
@@ -2434,6 +2435,10 @@ export class Agent {
 
   setEscalationCallback(cb: (agentId: string, reason: string) => void): void {
     this.escalationCallback = cb;
+  }
+
+  setToolCallLimitChecker(cb: () => { allowed: boolean; reason?: string }): void {
+    this.toolCallLimitChecker = cb;
   }
 
   setStateChangeCallback(
@@ -5476,6 +5481,16 @@ export class Agent {
         error: beforeResult.reason ?? 'Blocked by tool hook',
       });
     }
+    if (this.toolCallLimitChecker) {
+      const limitResult = this.toolCallLimitChecker();
+      if (!limitResult.allowed) {
+        return JSON.stringify({
+          status: 'denied',
+          error: limitResult.reason ?? 'Tool call limit reached',
+        });
+      }
+    }
+
     const baseArgs = beforeResult.modifiedArgs ?? toolCall.arguments;
     const effectiveArgs = sessionId
       ? { ...baseArgs, _browserSessionId: sessionId }

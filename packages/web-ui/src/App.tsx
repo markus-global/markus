@@ -15,9 +15,9 @@ import { BottomNav } from './components/BottomNav.tsx';
 import { MobileBuilderTabs } from './components/MobileBuilderTabs.tsx';
 import { MobileDrawer } from './components/MobileDrawer.tsx';
 import { Onboarding } from './components/Onboarding.tsx';
-import { Login, InviteSetup, InitialSetup } from './pages/Login.tsx';
+import { Login, InviteSetup } from './pages/Login.tsx';
 import { ChangePassword } from './pages/ChangePassword.tsx';
-import { api, hubApi, type AuthUser, wsClient } from './api.ts';
+import { api, hubApi, clearHubAuth, type AuthUser, wsClient } from './api.ts';
 import { navBus } from './navBus.ts';
 import { useResizablePanel } from './hooks/useResizablePanel.ts';
 import { useTheme } from './hooks/useTheme.ts';
@@ -76,6 +76,7 @@ export function App() {
   const [mountedPages, setMountedPages] = useState<Set<PageId>>(() => new Set([getPageFromHash()]));
   const [authUser, setAuthUser] = useState<AuthUser | null | 'loading'>('loading');
   const [systemInitialized, setSystemInitialized] = useState<boolean | null>(null);
+  const [authStatus, setAuthStatus] = useState<{ hasOwner: boolean; hasMultipleUsers: boolean }>({ hasOwner: false, hasMultipleUsers: false });
   const [skipOnboardingProfile, setSkipOnboardingProfile] = useState(false);
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [llmConfigured, setLlmConfigured] = useState<boolean | null>(null);
@@ -85,6 +86,28 @@ export function App() {
     const stored = localStorage.getItem('markus_update_dismissed');
     return stored ? stored : null;
   });
+  const [licenseLimit, setLicenseLimit] = useState<{ teams?: boolean; toolCalls?: boolean } | null>(null);
+  const [licenseLimitDismissed, setLicenseLimitDismissed] = useState(false);
+
+  const checkLicenseLimits = useCallback(() => {
+    api.license.get().then(lic => {
+      if (lic.plan === 'enterprise') { setLicenseLimit(null); return; }
+      if (lic.usage && lic.limits) {
+        const hitTeams = lic.limits.maxTeams > 0 && lic.usage.teams >= lic.limits.maxTeams;
+        const hitTools = lic.limits.maxToolCallsPerDay > 0 && lic.usage.toolCallsToday >= lic.limits.maxToolCallsPerDay;
+        if (hitTeams || hitTools) { setLicenseLimit({ teams: hitTeams || undefined, toolCalls: hitTools || undefined }); setLicenseLimitDismissed(false); }
+        else setLicenseLimit(null);
+      }
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === 'visible') checkLicenseLimits(); };
+    window.addEventListener('markus:check-license-limits', checkLicenseLimits);
+    document.addEventListener('visibilitychange', onVisible);
+    const interval = setInterval(checkLicenseLimits, 5 * 60 * 1000);
+    return () => { window.removeEventListener('markus:check-license-limits', checkLicenseLimits); document.removeEventListener('visibilitychange', onVisible); clearInterval(interval); };
+  }, [checkLicenseLimits]);
 
   const [showSearchModal, setShowSearchModal] = useState(false);
 
@@ -181,6 +204,7 @@ export function App() {
             setUpdateInfo({ latestVersion: h.latestVersion, currentVersion: h.version });
           }
         }).catch(() => {});
+        checkLicenseLimits();
         const doPrefetch = () => {
           prefetch(PREFETCH_KEYS.builderArtifacts, () => api.builder.artifacts.list());
           prefetch(PREFETCH_KEYS.builderAgents, () => api.agents.list());
@@ -198,7 +222,10 @@ export function App() {
       })
       .catch(() => {
         setAuthUser(null);
-        api.auth.status().then(({ initialized }) => setSystemInitialized(initialized)).catch(() => setSystemInitialized(true));
+        api.auth.status().then(({ initialized, hasOwner, hasMultipleUsers }) => {
+          setSystemInitialized(initialized);
+          setAuthStatus({ hasOwner, hasMultipleUsers });
+        }).catch(() => setSystemInitialized(true));
       });
 
     wsClient.connect();
@@ -223,7 +250,7 @@ export function App() {
         [PAGE.HOME]: <HomePage authUser={currentUser} />,
         [PAGE.TEAM]: <TeamPage authUser={currentUser} />,
         [PAGE.BUILDER]: <MobileBuilderTabs authUser={currentUser} />,
-        [PAGE.SETTINGS]: <Settings theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} onLogout={() => setAuthUser(null)} onUserUpdated={(u) => setAuthUser(u)} />,
+        [PAGE.SETTINGS]: <Settings theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} onLogout={() => { api.auth.logout().catch(() => {}); clearHubAuth(); setAuthUser(null); }} onUserUpdated={(u) => setAuthUser(u)} />,
         [PAGE.WORK]: <WorkPage authUser={currentUser} />,
         [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
         [PAGE.NOTIFICATIONS]: <NotificationsPage authUser={currentUser} />,
@@ -234,7 +261,7 @@ export function App() {
     return {
       [PAGE.HOME]: <HomePage authUser={currentUser} />,
       [PAGE.TEAM]: <TeamPage authUser={currentUser} />,
-      [PAGE.SETTINGS]: <Settings theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} onLogout={() => setAuthUser(null)} onUserUpdated={(u) => setAuthUser(u)} />,
+      [PAGE.SETTINGS]: <Settings theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} onLogout={() => { api.auth.logout().catch(() => {}); clearHubAuth(); setAuthUser(null); }} onUserUpdated={(u) => setAuthUser(u)} />,
       [PAGE.STORE]: <StorePage authUser={currentUser} />,
       [PAGE.BUILDER]: <AgentBuilder authUser={currentUser} />,
       [PAGE.WORK]: <WorkPage authUser={currentUser} />,
@@ -267,22 +294,15 @@ export function App() {
   }
 
   if (authUser === null) {
-    if (systemInitialized === false) {
-      return <InitialSetup onSetup={(user, needsOnboarding) => {
-        setAuthUser(user);
-        setSystemInitialized(true);
-        setSkipOnboardingProfile(true);
-        if (needsOnboarding) {
-          localStorage.removeItem('markus_onboarded');
-          setShowOnboarding(true);
-        }
-      }} />;
-    }
-    return <Login onLogin={(user, needsOnboarding) => {
+    return <Login
+      hasOwner={authStatus.hasOwner}
+      hasMultipleUsers={authStatus.hasMultipleUsers}
+      onLogin={(user, needsOnboarding, opts) => {
       setAuthUser(user);
       if (needsOnboarding) {
         localStorage.removeItem('markus_onboarded');
         setShowOnboarding(true);
+        if (opts?.fromHub) setSkipOnboardingProfile(true);
       } else if (!localStorage.getItem('markus_onboarded')) {
         localStorage.setItem('markus_onboarded', '1');
         setShowOnboarding(false);
@@ -354,10 +374,27 @@ export function App() {
         {updateInfo && updateBannerDismissed !== updateInfo.latestVersion && (
           <div className="flex items-center justify-between px-4 py-2 bg-brand-500/10 border-b border-brand-500/30 text-brand-400 text-sm shrink-0">
             <span className={isMobile ? 'text-xs' : ''}>
-              New version available: <strong>v{updateInfo.latestVersion}</strong> (current: v{updateInfo.currentVersion})
-              {!isMobile && <span className="text-fg-tertiary ml-2">— run <code className="bg-surface-overlay px-1.5 py-0.5 rounded text-xs font-mono">npm i -g @markus-global/cli</code> to upgrade</span>}
+              {t('update.available', { latest: updateInfo.latestVersion, current: updateInfo.currentVersion })}
             </span>
-            <button onClick={() => { setUpdateBannerDismissed(updateInfo.latestVersion); localStorage.setItem('markus_update_dismissed', updateInfo.latestVersion); }} className="text-brand-400 hover:text-brand-300 text-xs shrink-0">{t('dismiss')}</button>
+            <span className="flex items-center gap-3 shrink-0">
+              <a href="https://markus.global/download" target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-brand-400 hover:text-brand-300 transition-colors">{t('update.download')}</a>
+              <button onClick={() => { setUpdateBannerDismissed(updateInfo.latestVersion); localStorage.setItem('markus_update_dismissed', updateInfo.latestVersion); }} className="text-fg-tertiary hover:text-fg-secondary text-xs shrink-0">{t('dismiss')}</button>
+            </span>
+          </div>
+        )}
+        {licenseLimit && !licenseLimitDismissed && page !== PAGE.SETTINGS && (
+          <div className="flex items-center justify-between px-4 py-2 bg-orange-500/10 border-b border-orange-500/30 text-orange-400 text-sm shrink-0">
+            <span className={isMobile ? 'text-xs' : ''}>
+              {licenseLimit.teams && licenseLimit.toolCalls
+                ? t('license.limitReachedBoth')
+                : licenseLimit.teams
+                  ? t('license.limitReachedTeams')
+                  : t('license.limitReachedToolCalls')}
+            </span>
+            <span className="flex items-center gap-3 shrink-0">
+              <button onClick={() => { window.location.hash = 'settings/account'; }} className="px-3 py-1 bg-orange-600/50 hover:bg-orange-600/70 text-white text-xs rounded-lg transition-colors">{t('license.upgradeLicense')}</button>
+              <button onClick={() => setLicenseLimitDismissed(true)} className="text-fg-tertiary hover:text-fg-secondary text-xs shrink-0">{t('dismiss')}</button>
+            </span>
           </div>
         )}
         <main className="flex-1 overflow-hidden flex flex-col relative">

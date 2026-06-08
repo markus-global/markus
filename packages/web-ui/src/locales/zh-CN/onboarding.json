@@ -107,7 +107,28 @@
     "builder": "构建器",
     "builderDesc": "从模板招聘新智能体或自定义角色",
     "settings": "设置",
-    "settingsDesc": "管理 LLM 提供商、集成与治理"
+    "settingsDesc": "管理 LLM 提供商、集成与治理",
+    "telemetry": "分享匿名使用统计以帮助改进 Markus（实例 ID、智能体数量、任务数量、版本、操作系统）。",
+    "telemetryNote": "不会收集任何代码、提示词或个人数据。你可以随时在设置中更改此选项。"
+  },
+  "usageType": {
+    "title": "你将如何使用 Markus？",
+    "subtitle": "这有助于我们为你定制体验。",
+    "personal": "个人使用",
+    "personalDesc": "使用你自己的 AI 智能体。",
+    "organization": "团队 & 企业",
+    "organizationDesc": "团队共享许可证与协作。",
+    "orgNameLabel": "组织名称",
+    "orgNamePlaceholder": "输入你的团队名称",
+    "defaultOrgName": "{{name}} 的团队",
+    "setOrgName": "设置组织名称",
+    "orgNameSaved": "已保存",
+    "pendingInvitations": "你有待接受的组织邀请",
+    "invitedBy": "邀请人：{{name}}",
+    "acceptAndJoin": "接受并加入",
+    "accepting": "加入中...",
+    "accepted": "已加入",
+    "orCreateNew": "或创建新组织"
   },
   "getStarted": "开始使用"
 }

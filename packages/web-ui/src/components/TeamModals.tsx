@@ -143,6 +143,14 @@ export function AddHumanModal({
   return (
     <Modal onClose={onClose} title={t('team:modals.addHuman.title')} width="w-[460px]">
       <div className="space-y-4">
+        <div className="text-xs text-fg-secondary bg-surface-primary border border-border-default rounded-lg px-3 py-2.5 leading-relaxed">
+          <div className="font-semibold text-fg-primary mb-1">{t('team:modals.addHuman.sharedInstanceTitle')}</div>
+          {t('team:modals.addHuman.sharedInstanceDesc')}
+          <div className="mt-1.5 text-fg-tertiary">
+            {t('team:modals.addHuman.orgHint')}{' '}
+            <a href="#settings/organization" className="text-brand-500 hover:text-brand-400 underline">{t('team:modals.addHuman.orgLink')}</a>
+          </div>
+        </div>
         <Field label={t('team:modals.addHuman.name')}>
           <input value={name} onChange={e => setName(e.target.value)} placeholder={t('team:modals.addHuman.namePlaceholder')} className="input" autoFocus />
         </Field>
