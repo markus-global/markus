@@ -734,6 +734,18 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
 
   useEffect(() => {
     if (readOnly) return;
+    // Restore from local cache first for instant display
+    try {
+      const raw = localStorage.getItem('markus_builder_shared_map');
+      if (raw) {
+        const cached = JSON.parse(raw) as Record<string, { id: string; slug: string; version: string; visibility?: string }>;
+        const key = `${type}/${name}`;
+        if (cached[key]) {
+          setHubStatus({ shared: true, id: cached[key].id, slug: cached[key].slug, version: cached[key].version, visibility: (cached[key].visibility as HubVisibility) ?? 'public' });
+        }
+      }
+    } catch { /* ignore */ }
+    // Then refresh from Hub API
     hubApi.myItems().then(data => {
       const items = data?.items ?? [];
       const typeDir = type === 'agent' ? 'agent' : type === 'team' ? 'team' : 'skill';

@@ -104,6 +104,24 @@ function useBuilderSubRoute(): { type: string; name: string } | null {
   return sub;
 }
 
+const SHARED_MAP_STORAGE_KEY = 'markus_builder_shared_map';
+type SharedEntry = { id: string; name: string; slug: string; version: string; visibility?: HubVisibility };
+
+function loadSharedMapFromStorage(): Map<string, SharedEntry> {
+  try {
+    const raw = localStorage.getItem(SHARED_MAP_STORAGE_KEY);
+    if (!raw) return new Map();
+    const obj = JSON.parse(raw) as Record<string, SharedEntry>;
+    return new Map(Object.entries(obj));
+  } catch { return new Map(); }
+}
+
+function saveSharedMapToStorage(m: Map<string, SharedEntry>): void {
+  try {
+    localStorage.setItem(SHARED_MAP_STORAGE_KEY, JSON.stringify(Object.fromEntries(m)));
+  } catch { /* quota exceeded etc */ }
+}
+
 export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
   const { t } = useTranslation(['builder', 'common']);
   const isMobile = useIsMobile();
@@ -115,7 +133,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
   const [actionInProgress, setActionInProgress] = useState<{ key: string; action: string } | null>(null);
   const [installedMap, setInstalledMap] = useState<Map<string, InstalledInfo>>(new Map());
   const [deleteTarget, setDeleteTarget] = useState<BuilderArtifact | null>(null);
-  const [sharedMap, setSharedMap] = useState<Map<string, { id: string; name: string; slug: string; version: string; visibility?: HubVisibility }>>(new Map());
+  const [sharedMap, setSharedMap] = useState<Map<string, SharedEntry>>(loadSharedMapFromStorage);
   const [hubDeleteTarget, setHubDeleteTarget] = useState<{ key: string; name: string } | null>(null);
   const [sharePrompt, setSharePrompt] = useState<BuilderArtifact | null>(null);
   const [shareModeTarget, setShareModeTarget] = useState<BuilderArtifact | null>(null);
@@ -138,9 +156,9 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
       setArtifacts(arts);
       setAgents(agentList);
 
-      // Populate shared status from Hub published items
+      // Populate shared status from Hub published items, merged with local cache
       if (hubItems.length > 0) {
-        const shared = new Map<string, { id: string; name: string; slug: string; version: string; visibility?: HubVisibility }>();
+        const shared = new Map<string, SharedEntry>();
         for (const hi of hubItems) {
           const typeDir = hi.itemType === 'agent' ? 'agent' : hi.itemType === 'team' ? 'team' : 'skill';
           for (const art of arts) {
@@ -149,7 +167,9 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
             }
           }
         }
-        if (shared.size > 0) setSharedMap(prev => { const m = new Map(prev); for (const [k, v] of shared) m.set(k, v); return m; });
+        if (shared.size > 0) {
+          setSharedMap(prev => { const m = new Map(prev); for (const [k, v] of shared) m.set(k, v); saveSharedMapToStorage(m); return m; });
+        }
       }
 
       // Detect installed artifacts from backend scan (uses .role-origin.json markers + skill dirs)
@@ -289,7 +309,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
         visibility: opts?.visibility,
         orgId: opts?.orgId,
       });
-      if (result.id) setSharedMap(prev => { const m = new Map(prev); m.set(key, { id: result.id!, name, slug: result.slug ?? slug, version, visibility: result.visibility ?? opts?.visibility ?? 'public' }); return m; });
+      if (result.id) setSharedMap(prev => { const m = new Map(prev); m.set(key, { id: result.id!, name, slug: result.slug ?? slug, version, visibility: result.visibility ?? opts?.visibility ?? 'public' }); saveSharedMapToStorage(m); return m; });
     } catch (err) {
       console.error('Share failed:', err);
       alert(t('shareFailed', { error: String(err) }));
@@ -308,7 +328,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
     setActionInProgress({ key, action: 'hubDelete' });
     try {
       await hubApi.deleteItem(hubItemId);
-      setSharedMap(prev => { const m = new Map(prev); m.delete(key); return m; });
+      setSharedMap(prev => { const m = new Map(prev); m.delete(key); saveSharedMapToStorage(m); return m; });
     } catch (err) {
       console.error('Hub delete failed:', err);
       alert(t('hubDeleteFailed', { error: String(err) }));
