@@ -69,7 +69,6 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [showWorkingModal, setShowWorkingModal] = useState(false);
   const [showHealthModal, setShowHealthModal] = useState(false);
   const [llmConfigured, setLlmConfigured] = useState<boolean | null>(null);
-  const [searchConfigured, setSearchConfigured] = useState<boolean | null>(null);
   const [browserConnected, setBrowserConnected] = useState<boolean | null>(null);
   const [licenseConfigured, setLicenseConfigured] = useState<boolean | null>(null);
   const [checklistDismissed, setChecklistDismissed] = useState(() => localStorage.getItem('markus_checklist_dismissed') === 'true');
@@ -133,16 +132,13 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     const llmP = api.settings.getLlm().then(d => {
       setLlmConfigured(Object.values(d.providers).some(p => p.configured));
     }).catch(() => {});
-    const searchP = api.settings.getSearch().then(d => {
-      setSearchConfigured(Object.values(d).some(p => p?.configured));
-    }).catch(() => {});
     const browserP = api.settings.getBrowser().then(d => {
       setBrowserConnected(d.extensionConnected);
     }).catch(() => {});
     const licenseP = api.license.get().then(d => {
       setLicenseConfigured(d.plan !== 'free');
     }).catch(() => {});
-    Promise.allSettled([agentsP, teamsP, reqsP, projsP, llmP, searchP, browserP, licenseP]).then(() => {
+    Promise.allSettled([agentsP, teamsP, reqsP, projsP, llmP, browserP, licenseP]).then(() => {
       setChecklistReady(true);
     });
   }, [opsPeriod]);
@@ -445,7 +441,6 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
 
           const setupSteps = [
             { id: 'llm', done: llmConfigured === true, isSetup: true, label: t('checklist.setup.llm'), desc: t('checklist.setup.llmDesc'), action: t('checklist.setup.llmAction'), onClick: () => { window.location.hash = '#settings/providers'; } },
-            { id: 'search', done: searchConfigured === true, isSetup: true, optional: true, label: t('checklist.setup.search'), desc: t('checklist.setup.searchDesc'), action: t('checklist.setup.searchAction'), onClick: () => { window.location.hash = '#settings/search'; } },
             { id: 'browser', done: browserConnected === true, isSetup: true, optional: true, label: t('checklist.setup.browser'), desc: t('checklist.setup.browserDesc'), action: t('checklist.setup.browserAction'), onClick: () => { window.location.hash = '#settings/browser'; } },
             { id: 'license', done: licenseConfigured === true, isSetup: true, optional: true, label: t('checklist.setup.license'), desc: t('checklist.setup.licenseDesc'), action: t('checklist.setup.licenseAction'), onClick: () => { window.location.hash = '#settings/account'; } },
           ];

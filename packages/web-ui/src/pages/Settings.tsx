@@ -1135,16 +1135,23 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                         {t('setupGuide.browserExtension.downloadBtn')}
                       </button>
-                      <button
-                        disabled={browserSaving}
-                        onClick={async () => {
-                          try { await api.settings.openExtensionsPage(); } catch { /* ignore */ }
-                        }}
-                        className="px-3 py-1.5 text-xs border border-border-default text-fg-primary rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
-                        {t('setupGuide.browserExtension.openChromeBtn')}
-                      </button>
+                      {navigator.platform.toUpperCase().includes('WIN') ? (
+                        <span className="px-3 py-1.5 text-xs text-fg-secondary inline-flex items-center gap-1.5">
+                          {t('setupGuide.browserExtension.openChromeBtn')}:
+                          <code className="px-1.5 py-0.5 bg-surface-elevated rounded text-fg-primary font-mono text-[11px] select-all">chrome://extensions</code>
+                        </span>
+                      ) : (
+                        <button
+                          disabled={browserSaving}
+                          onClick={async () => {
+                            try { await api.settings.openExtensionsPage(); } catch { /* ignore */ }
+                          }}
+                          className="px-3 py-1.5 text-xs border border-border-default text-fg-primary rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                          {t('setupGuide.browserExtension.openChromeBtn')}
+                        </button>
+                      )}
                     </div>
                     <div className="text-xs text-fg-tertiary">{t('setupGuide.browserExtension.loadHint')}</div>
                   </div>
@@ -2056,20 +2063,27 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.extensionStep2')}</div>
                     <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.extensionStep2Desc')}</div>
-                    <button
-                      disabled={browserSaving}
-                      onClick={async () => {
-                        setBrowserSaving(true); setBrowserMsg(null);
-                        try {
-                          await api.settings.openExtensionsPage();
-                        } catch { setBrowserMsg({ type: 'err', text: t('browserAutomation.extensionOpenError') }); }
-                        setBrowserSaving(false);
-                      }}
-                      className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-surface-primary border border-border-default text-fg-primary rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-40"
-                    >
-                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
-                      {t('browserAutomation.extensionStep2Btn')}
-                    </button>
+                    {navigator.platform.toUpperCase().includes('WIN') ? (
+                      <div className="mt-2 text-xs text-fg-secondary">
+                        {t('browserAutomation.extensionStep2Desc')}:
+                        <code className="ml-1.5 px-1.5 py-0.5 bg-surface-elevated rounded text-fg-primary font-mono text-[11px] select-all">chrome://extensions</code>
+                      </div>
+                    ) : (
+                      <button
+                        disabled={browserSaving}
+                        onClick={async () => {
+                          setBrowserSaving(true); setBrowserMsg(null);
+                          try {
+                            await api.settings.openExtensionsPage();
+                          } catch { setBrowserMsg({ type: 'err', text: t('browserAutomation.extensionOpenError') }); }
+                          setBrowserSaving(false);
+                        }}
+                        className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-surface-primary border border-border-default text-fg-primary rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-40"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                        {t('browserAutomation.extensionStep2Btn')}
+                      </button>
+                    )}
                   </div>
                 </div>
 
