@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -1379,7 +1379,7 @@ function VisibilityDialog({ onClose, onConfirm }: {
     }
   }, [selected, orgs.length]);
 
-  const options: Array<{ value: HubVisibility; icon: JSX.Element; label: string; desc: string }> = [
+  const options: Array<{ value: HubVisibility; icon: ReactNode; label: string; desc: string }> = [
     {
       value: 'public',
       icon: <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>,
