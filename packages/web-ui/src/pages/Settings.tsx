@@ -903,10 +903,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             <button
               key={tab.id}
               onClick={() => navigateTab(tab.id)}
-              className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+              className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors text-fg-primary ${
                 resolvedTab === tab.id
-                  ? 'bg-brand-600/10 text-brand-600 dark:text-brand-400 font-medium'
-                  : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-overlay'
+                  ? 'bg-surface-overlay'
+                  : 'hover:bg-surface-overlay/60'
               }`}
             >
               {t(`settings:${tab.labelKey}`)}
