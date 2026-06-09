@@ -90,5 +90,18 @@
   "count": {
     "partial": "{{loaded}} / {{total}} 个交付物",
     "total": "共 {{total}} 个交付物"
+  },
+  "sidebar": {
+    "collapse": "收起侧边栏",
+    "expand": "展开侧边栏"
+  },
+  "chat": {
+    "openChat": "与智能体对话",
+    "closeChat": "关闭对话",
+    "placeholder": "给智能体发消息…",
+    "currentDeliverable": "当前交付物"
+  },
+  "contextMenu": {
+    "addToConversation": "添加到对话"
   }
 }

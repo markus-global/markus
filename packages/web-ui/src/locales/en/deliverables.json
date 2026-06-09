@@ -100,5 +100,18 @@
   "count": {
     "partial": "{{loaded}} / {{total}} deliverables",
     "total": "{{total}} deliverables"
+  },
+  "sidebar": {
+    "collapse": "Collapse sidebar",
+    "expand": "Expand sidebar"
+  },
+  "chat": {
+    "openChat": "Chat with agent",
+    "closeChat": "Close chat",
+    "placeholder": "Message agent...",
+    "currentDeliverable": "Current deliverable"
+  },
+  "contextMenu": {
+    "addToConversation": "Add to conversation"
   }
 }
