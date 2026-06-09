@@ -261,6 +261,13 @@
     "sessionMain": "Main",
     "sessionConversation": "Conversation",
     "noConversationsYet": "No conversations yet",
+    "chatGreetings": [
+      "How can I help you?",
+      "What would you like me to do?",
+      "Ready when you are ✨",
+      "What's on your mind?",
+      "What shall we work on today?"
+    ],
     "dateToday": "Today",
     "dateYesterday": "Yesterday",
     "datePrevious7Days": "Previous 7 days",
@@ -271,8 +278,16 @@
     "emptyNewConversation": "Start a new conversation with {{name}}.",
     "agentThinking": "Agent is thinking…",
     "scrollToBottom": "Scroll to bottom",
+    "toggleSidebar": "Toggle sidebar",
     "newMessages": "{{count}} new message(s)",
     "mentionAgent": "Mention an agent",
+    "mentionType": {
+      "agent": "Agent",
+      "project": "Project",
+      "requirement": "Requirement",
+      "task": "Task",
+      "deliverable": "Deliverable"
+    },
     "addMoreFiles": "Add more files",
     "attachFilesTitle": "Attach files (images, PDF, Word, Excel, PowerPoint...)",
     "visionWarning": "Images will be converted to text (model does not support vision)",
@@ -288,6 +303,13 @@
       "dmSelf": "Write a note to yourself…",
       "dmOther": "Message {{name}}…",
       "direct": "Type a message…",
+      "directOptions": [
+        "What can I do for you?",
+        "How can I help you today?",
+        "What's on your mind?",
+        "Ready when you are…",
+        "Tell me what you need…"
+      ],
       "noAgent": "Select an agent to start chatting"
     },
     "newTaskTitle": "New Conversation Task",

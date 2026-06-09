@@ -5,6 +5,8 @@ import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ContentRenderer, resolveFormat } from '../components/ContentRenderer.tsx';
 import { copyPlainText } from '../components/markdown-copy.ts';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
+import { ChatPanel } from '../components/ChatPanel.tsx';
+import { type ContextChip } from '../components/ChatInput.tsx';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
@@ -103,6 +105,16 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [sharedDir, setSharedDir] = useState('');
   const [missingFileIds, setMissingFileIds] = useState<Set<string>>(new Set());
 
+  // Sidebar collapse (Phase 2)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // Chat panel (Phase 3)
+  const [chatPanelOpen, setChatPanelOpen] = useState(false);
+  const [contextChips, setContextChips] = useState<ContextChip[]>([]);
+
+  // Selection toolbar (Phase 4)
+  const [selectionToolbar, setSelectionToolbar] = useState<{ x: number; y: number; text: string } | null>(null);
+
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const flashMsg = (type: 'success' | 'error', text: string) => {
@@ -186,11 +198,25 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     }
   }, [previewMode, previewData]);
 
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+
   useEffect(() => {
     if (previewMode) return;
     if (!isActive) return;
     const unsub1 = wsClient.on('deliverable:created', () => refresh());
-    const unsub2 = wsClient.on('deliverable:updated', () => refresh());
+    const unsub2 = wsClient.on('deliverable:updated', (event) => {
+      refresh();
+      const updatedId = event.payload?.deliverableId as string | undefined;
+      if (updatedId && selectedRef.current?.id === updatedId) {
+        api.deliverables.get(updatedId).then(r => {
+          if (r.deliverable) {
+            setSelected(r.deliverable);
+            loadPreview(r.deliverable);
+          }
+        }).catch(() => {});
+      }
+    });
     const unsub3 = wsClient.on('deliverable:removed', () => refresh());
     return () => { unsub1(); unsub2(); unsub3(); };
   }, [refresh, isActive, previewMode]);
@@ -380,21 +406,87 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
   const handleSelectItem = (item: DeliverableInfo) => {
     setSelected(item);
+    setContextChips([]);
     if (isMobile) {
+      setChatPanelOpen(false);
       setMobileShowDetail(true);
       history.pushState({ mobileDetail: PAGE.DELIVERABLES }, '', window.location.hash);
     }
   };
 
+  // Auto-collapse sidebar when chat panel opens on narrow screens
+  useEffect(() => {
+    if (chatPanelOpen && !isMobile && window.innerWidth < 1280) {
+      setSidebarCollapsed(true);
+    }
+  }, [chatPanelOpen, isMobile]);
+
+  // Selection toolbar handler (Phase 4)
+  const detailContentRef = useRef<HTMLDivElement>(null);
+
+  const addToConversation = useCallback((text: string) => {
+    const label = text.length > 30 ? `${text.slice(0, 15)}…${text.slice(-12)}` : text;
+    const chipId = `sel_${Date.now()}`;
+    setContextChips(prev => [...prev, {
+      id: chipId,
+      label,
+      type: 'selection',
+      content: text,
+      onRemove: () => setContextChips(p => p.filter(c => c.id !== chipId)),
+    }]);
+    if (!chatPanelOpen) setChatPanelOpen(true);
+    setSelectionToolbar(null);
+    window.getSelection()?.removeAllRanges();
+  }, [chatPanelOpen]);
+
+  useEffect(() => {
+    const el = detailContentRef.current;
+    if (!el) return;
+    const onMouseUp = () => {
+      requestAnimationFrame(() => {
+        const sel = window.getSelection();
+        const text = sel?.toString().trim();
+        if (!text || !sel?.rangeCount) { setSelectionToolbar(null); return; }
+        const range = sel.getRangeAt(0);
+        if (!el.contains(range.commonAncestorContainer)) { setSelectionToolbar(null); return; }
+        const rect = range.getBoundingClientRect();
+        setSelectionToolbar({ x: rect.left + rect.width / 2, y: rect.top, text });
+      });
+    };
+    const onMouseDown = (e: MouseEvent) => {
+      const toolbar = document.getElementById('selection-toolbar');
+      if (toolbar && toolbar.contains(e.target as Node)) return;
+      setSelectionToolbar(null);
+    };
+    el.addEventListener('mouseup', onMouseUp);
+    document.addEventListener('mousedown', onMouseDown);
+    return () => {
+      el.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener('mousedown', onMouseDown);
+    };
+  }, []);
+
   return (
     <div className="flex-1 overflow-hidden flex">
       {/* Left sidebar — always mounted on mobile to preserve scroll position */}
       <div className={`${isMobile ? 'flex-1 min-w-0' : 'shrink-0'} flex flex-col bg-surface-secondary rounded-xl m-1 mr-0`}
-        style={isMobile ? (mobileShowDetail ? { display: 'none' } : undefined) : { width: listPanel.width }}>
+        style={isMobile ? (mobileShowDetail ? { display: 'none' } : undefined) : sidebarCollapsed ? { display: 'none' } : { width: listPanel.width }}>
         <div className="p-4 space-y-3">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
               {isMobile && <MobileMenuButton />}
+              {!isMobile && (
+                <button
+                  onClick={() => setSidebarCollapsed(true)}
+                  className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 bg-brand-500/15 text-brand-500 hover:bg-brand-500/25"
+                  title={t('sidebar.collapse')}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                    <line x1="9" y1="3" x2="9" y2="21" />
+                  </svg>
+                </button>
+              )}
               <h2 className="text-sm font-semibold text-fg-secondary truncate">
                 {t('title')}{totalCount > 0 && <span className="ml-1.5 text-fg-tertiary font-normal">({totalCount})</span>}
               </h2>
@@ -543,7 +635,24 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
       {/* Right detail panel */}
       {(!isMobile || mobileShowDetail) && (
-      <div className="flex-1 overflow-y-auto min-w-0">
+      <div className="flex-1 overflow-hidden min-w-0 flex">
+        <div ref={detailContentRef} className="flex-1 overflow-y-auto min-w-0 relative">
+        {/* Expand sidebar button — shown when collapsed */}
+        {sidebarCollapsed && !isMobile && (
+          <div className="sticky top-0 z-10 bg-surface-primary/80 backdrop-blur-sm px-4 py-2 flex items-center gap-2">
+            <button
+              onClick={() => setSidebarCollapsed(false)}
+              className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
+              title={t('sidebar.expand')}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                <line x1="9" y1="3" x2="9" y2="21" />
+              </svg>
+            </button>
+            <span className="text-sm font-medium text-fg-secondary truncate">{selected?.title ?? t('detail.details')}</span>
+          </div>
+        )}
         {isMobile && (
           <div className="sticky top-0 z-10 bg-surface-secondary px-4 py-2.5 flex items-center gap-2">
             <button
@@ -783,7 +892,60 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
             )}
           </div>
         )}
+
+        {/* Floating chat FAB (Phase 3a) — only when deliverable has an agent */}
+        {selected?.agentId && !chatPanelOpen && !isMobile && (
+          <button
+            onClick={() => setChatPanelOpen(true)}
+            className="absolute bottom-6 right-6 w-12 h-12 rounded-full bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-black/20 flex items-center justify-center transition-all hover:scale-105 z-10"
+            title={t('chat.openChat')}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+          </button>
+        )}
       </div>
+
+        {/* Chat panel (Phase 3b) */}
+        {chatPanelOpen && selected?.agentId && !isMobile && (
+          <ChatPanel
+            agentId={selected.agentId}
+            agents={agents}
+            authUser={_authUser}
+            onClose={() => { setChatPanelOpen(false); setContextChips([]); }}
+            contextChips={[
+              {
+                id: `deliverable_ctx_${selected.id}`,
+                label: `📦 ${selected.title}`,
+                type: 'deliverable',
+                content: `${t('chat.currentDeliverable')}: ${selected.title} (id: ${selected.id})`,
+              },
+              ...contextChips,
+            ]}
+            width={400}
+          />
+        )}
+      </div>
+      )}
+
+      {/* Selection toolbar (Phase 4) */}
+      {selectionToolbar && (
+        <div
+          id="selection-toolbar"
+          className="fixed z-50 -translate-x-1/2 -translate-y-full bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden"
+          style={{ left: selectionToolbar.x, top: selectionToolbar.y - 8 }}
+        >
+          <button
+            onMouseDown={e => { e.preventDefault(); e.stopPropagation(); addToConversation(selectionToolbar.text); }}
+            className="px-3 py-1.5 text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+            {t('contextMenu.addToConversation')}
+          </button>
+        </div>
       )}
 
       {/* Remove Confirmation */}

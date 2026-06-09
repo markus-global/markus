@@ -6,6 +6,7 @@ const POLL_INTERVAL_MS = 60_000;
 let _globalCounts: Record<string, number> = {};
 let _globalSessionAgentMap: Record<string, string> = {};
 const _listeners = new Set<() => void>();
+const _activeKeys = new Set<string>();
 
 function notify() {
   for (const fn of _listeners) fn();
@@ -47,6 +48,9 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
     } catch { /* silent */ }
   }, []);
 
+  const setActiveKey = useCallback((key: string) => { _activeKeys.add(key); }, []);
+  const clearActiveKey = useCallback((key: string) => { _activeKeys.delete(key); }, []);
+
   useEffect(() => {
     if (!enabled) return;
     refresh();
@@ -54,7 +58,7 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
 
     const unsub = wsClient.on('chat:unread_update', (event) => {
       const key = (event.payload as { conversationKey?: string })?.conversationKey;
-      if (key) {
+      if (key && !_activeKeys.has(key)) {
         _globalCounts[key] = (_globalCounts[key] ?? 0) + 1;
         setCounts({ ..._globalCounts });
         notify();
@@ -83,7 +87,7 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
     return counts[`channel:${channelKey}`] ?? 0;
   }, [counts]);
 
-  return { counts, totalUnread, sessionAgentMap, getSessionUnread, getChannelUnread, markRead, markAllRead, refresh };
+  return { counts, totalUnread, sessionAgentMap, getSessionUnread, getChannelUnread, markRead, markAllRead, refresh, setActiveKey, clearActiveKey };
 }
 
 /**

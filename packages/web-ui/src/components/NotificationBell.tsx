@@ -1081,10 +1081,10 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
           ref={btnRef}
           onClick={() => { setOpen(!open); if (!open) fetchData(); }}
           title={collapsed ? (label || t('team:notifications.bellTitle')) : undefined}
-          className={`w-full flex items-center ${collapsed ? 'flex-col justify-center px-1 py-1.5 gap-0.5' : 'gap-3 px-3 py-[7px]'} rounded-xl text-[13px] mb-0.5 transition-all relative ${
+          className={`w-full flex items-center ${collapsed ? 'flex-col justify-center px-1 py-1.5 gap-0.5' : 'gap-3 px-3 py-[7px]'} rounded-lg text-[13px] font-medium mb-0.5 transition-colors relative text-fg-primary ${
             open || isActive
-              ? 'bg-brand-600 text-white shadow-sm shadow-brand-900/30 font-medium'
-              : 'text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary'
+              ? 'bg-surface-overlay'
+              : 'hover:bg-surface-overlay/60'
           }`}
         >
           <svg width={collapsed ? 16 : 18} height={collapsed ? 16 : 18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">

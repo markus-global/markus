@@ -54,6 +54,8 @@ interface ChatTeamSidebarProps {
   width?: number;
   onResizeStart?: (e: React.MouseEvent) => void;
   hidden?: boolean;
+  /** Callback to collapse both L1 and L2 sidebars */
+  onCollapse?: () => void;
   /** True while the initial data load is in progress; sidebar shows skeleton placeholders */
   initialLoading?: boolean;
   /** When true, auto-scroll to the Teams section on mount */
@@ -199,7 +201,7 @@ export function ChatTeamSidebar({
   onManageGroupMembers,
   unreadByAgent,
   unreadByChannel,
-  width, onResizeStart, hidden,
+  width, onResizeStart, hidden, onCollapse,
   initialLoading,
   previewMode,
 }: ChatTeamSidebarProps) {
@@ -644,7 +646,7 @@ export function ChatTeamSidebar({
           className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs transition-colors select-none text-fg-primary ${
             isMobile ? '' : 'touch-none'
           } ${
-            selected ? 'bg-brand-600/15' : 'hover:bg-white/[0.08]'
+            selected ? 'bg-surface-overlay' : 'hover:bg-surface-overlay/60'
           }`}
         >
           <Avatar
@@ -729,8 +731,8 @@ export function ChatTeamSidebar({
             }}
             className={`flex-1 flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs transition-colors min-w-0 text-fg-primary ${
               isSelected
-                ? 'bg-brand-600/15'
-                : 'hover:bg-white/[0.08]'
+                ? 'bg-surface-overlay'
+                : 'hover:bg-surface-overlay/60'
             }`}
           >
             <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-surface-overlay text-fg-primary">
@@ -813,8 +815,8 @@ export function ChatTeamSidebar({
             }}
             className={`flex-1 flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs transition-colors min-w-0 text-fg-primary ${
               isGcActive
-                ? 'bg-brand-600/15'
-                : 'hover:bg-white/[0.08]'
+                ? 'bg-surface-overlay'
+                : 'hover:bg-surface-overlay/60'
             }`}
           >
             <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-surface-overlay text-fg-primary">
@@ -907,10 +909,21 @@ export function ChatTeamSidebar({
 
   return (
     <>
-      <div className={`bg-surface-secondary rounded-xl my-1 flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'}`} style={hidden ? { display: 'none' } : width != null ? { width } : undefined}>
+      <div className={`bg-surface-primary flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'}`} style={hidden ? { display: 'none' } : width != null ? { width } : undefined}>
         {/* Header with title + manage button */}
         <div className="px-4 h-14 flex items-center shrink-0 gap-2">
           {isMobile && <MobileMenuButton />}
+          {!isMobile && onCollapse && (
+            <button
+              onClick={onCollapse}
+              className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 bg-brand-500/15 text-brand-500 hover:bg-brand-500/25"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                <line x1="9" y1="3" x2="9" y2="21" />
+              </svg>
+            </button>
+          )}
           <h2 className="text-lg font-semibold">{t('chat.title')}</h2>
           {isAdmin && (
             <div className="ml-auto relative" ref={actionMenuRef}>
@@ -1000,8 +1013,8 @@ export function ChatTeamSidebar({
                 onClick={() => onSelectDm(authUser.id)}
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
                   chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId)
-                    ? 'bg-brand-600/15'
-                    : 'hover:bg-white/[0.08]'
+                    ? 'bg-surface-overlay'
+                    : 'hover:bg-surface-overlay/60'
                 }`}
               >
                 <Avatar
@@ -1034,7 +1047,7 @@ export function ChatTeamSidebar({
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
                   chatMode === 'dm' && activeDmUserId === h.id
                     ? 'bg-green-500/15'
-                    : 'hover:bg-white/[0.08]'
+                    : 'hover:bg-surface-overlay/60'
                 }`}
               >
                 <Avatar
@@ -1073,7 +1086,7 @@ export function ChatTeamSidebar({
                       setGcMenu({ gcId: gc.id, ...pos });
                     }}
                     className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
-                      isActive ? 'bg-brand-600/15' : 'hover:bg-white/[0.08]'
+                      isActive ? 'bg-surface-overlay' : 'hover:bg-surface-overlay/60'
                     }`}
                   >
                     <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 bg-surface-overlay text-fg-primary">
@@ -1116,8 +1129,8 @@ export function ChatTeamSidebar({
                 onClick={() => onSelectChannel(gc.channelKey)}
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
                   chatMode === 'channel' && activeChannel === gc.channelKey
-                    ? 'bg-brand-600/15'
-                    : 'hover:bg-white/[0.08]'
+                    ? 'bg-surface-overlay'
+                    : 'hover:bg-surface-overlay/60'
                 }`}
               >
                 <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-surface-overlay text-fg-primary">

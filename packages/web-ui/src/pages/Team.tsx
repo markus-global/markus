@@ -155,6 +155,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     storageKey: 'markus_chat_sidebar',
   });
 
+  // Sidebars collapsed: user can collapse both L1 and L2 together
+  const [sidebarsCollapsed, setSidebarsCollapsed] = useState(false);
+
   // L2: Team detail panel (hidden by default, toggled via header button)
   const [showTeamDetailPanel, setShowTeamDetailPanel] = useState<boolean>(() => {
     if (previewMode) return true;
@@ -529,7 +532,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   useEffect(() => { localStorage.setItem('markus_chat_channel', activeChannel); }, [activeChannel]);
 
   // ── Chat unread counts (unified single-source read cursor system) ────────────
-  const { counts: chatUnreadCounts, sessionAgentMap, markRead: markChatRead } = useUnreadCounts({ enabled: !previewMode });
+  const { counts: chatUnreadCounts, sessionAgentMap, markRead: markChatRead, setActiveKey, clearActiveKey } = useUnreadCounts({ enabled: !previewMode });
   const unreadByChannel = useMemo(() => {
     const result: Record<string, number> = {};
     for (const [key, count] of Object.entries(chatUnreadCounts)) {
@@ -579,6 +582,27 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewMode, chatMode, activeChannel, activeSessionId, activeDmUserId, mobileLayer, mainTab]);
+
+  // Suppress unread increments for the conversation currently being viewed
+  useEffect(() => {
+    if (previewMode) return;
+    const isVisible = (!isMobile || mobileLayer === 'chat') && mainTab === 'chat';
+    if (!isVisible) return;
+    const keys: string[] = [];
+    if (chatMode === 'direct' && activeSessionId) {
+      keys.push(`session:${activeSessionId}`);
+      for (const [sid, aid] of Object.entries(sessionAgentMap)) {
+        if (aid === selectedAgent) keys.push(`session:${sid}`);
+      }
+    } else if (chatMode === 'channel' && activeChannel) {
+      keys.push(`channel:${activeChannel}`);
+    } else if (chatMode === 'dm' && activeDmUserId && authUser?.id) {
+      keys.push(`channel:dm:${[authUser.id, activeDmUserId].sort().join(':')}`);
+    }
+    for (const k of keys) setActiveKey(k);
+    return () => { for (const k of keys) clearActiveKey(k); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewMode, chatMode, activeChannel, activeSessionId, activeDmUserId, selectedAgent, mobileLayer, mainTab, sessionAgentMap]);
 
   // ── Data loading ─────────────────────────────────────────────────────────────
   const refreshAgents = useCallback(() => api.agents.list().then(d => setAgents(d.agents)).catch(() => {}), []);
@@ -1053,7 +1077,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         loadSessions(selectedAgent).then(s => {
           if (currentConvKeyRef.current !== newKey) return;
           if (s.length > 0) {
-            // Ensure main session is always first in the default tab list
             const mainSession = s.find(ss => ss.isMain);
             const defaultTabs = mainSession
               ? [mainSession, ...s.filter(ss => !ss.isMain).slice(0, 4)]
@@ -1966,7 +1989,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     const key = currentConvKeyRef.current;
     msgBuffers.current.delete(key);
     setMessages([]);
-    // Add to open tabs if not already there
     setOpenSessionTabs(prev => prev.some(t => t.id === s.id) ? prev : [...prev, s]);
     await loadSessionMessages(s.id, key);
   };
@@ -2215,6 +2237,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     chatMode === 'dm'      ? (isSelfDm ? t('chat.myNotes') : (activeDmUser?.name ?? t('page.directMessage'))) :
     t('page.chatTitle');
 
+  const directGreetingIdx = useMemo(() => Math.floor(Math.random() * 5), [selectedAgent, activeSessionId]);
+  const emptyGreeting = selectedAgent ? t(`page.placeholder.directOptions.${directGreetingIdx}`) : '';
   const placeholder =
     chatMode === 'channel' ? (activeGroupChat ? t('page.placeholder.channel', { name: activeGroupChat.name }) : t('page.placeholder.channelWithMention', { name: activeChannel })) :
     chatMode === 'dm'      ? (isSelfDm ? t('page.placeholder.dmSelf') : t('page.placeholder.dmOther', { name: activeDmUser?.name ?? '' })) :
@@ -2222,6 +2246,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // ── Render ────────────────────────────────────────────────────────────────────
   const showChatOnMobile = isMobile && mobileLayer === 'chat';
+  const isEmptyChat = mainTab === 'chat' && visibleMessages.length === 0 && !sending;
 
   return (
     <div ref={teamContainerRef} className="flex-1 overflow-hidden flex relative">
@@ -2261,7 +2286,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         unreadByChannel={unreadByChannel}
         width={isMobile ? undefined : chatSidebar.width}
         onResizeStart={isMobile ? undefined : chatSidebar.onResizeStart}
-        hidden={isMobile && mobileLayer !== 'roster'}
+        hidden={(isMobile && mobileLayer !== 'roster') || (!isMobile && sidebarsCollapsed)}
+        onCollapse={() => setSidebarsCollapsed(true)}
         initialLoading={initialLoading}
       />
 
@@ -2346,7 +2372,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
       {/* ── L2: Team detail panel (desktop only) ── */}
       {/* Inline mode: when space allows */}
-      {showTeamDetailPanel && !l2SpaceTight && !isMobile && (() => {
+      {showTeamDetailPanel && !l2SpaceTight && !isMobile && !sidebarsCollapsed && (() => {
         const l2TeamId = activeTeamId ?? (chatMode === 'direct' ? currentAgent?.teamId : undefined);
         if (!l2TeamId) return null;
         const panelTeam = teams.find(t => t.id === l2TeamId);
@@ -2377,7 +2403,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         );
       })()}
       {/* Floating mode: when space is tight, show as overlay */}
-      {l2Floating && !isMobile && (() => {
+      {l2Floating && !isMobile && !sidebarsCollapsed && (() => {
         const l2TeamId = activeTeamId ?? (chatMode === 'direct' ? currentAgent?.teamId : undefined);
         if (!l2TeamId) return null;
         const panelTeam = teams.find(t => t.id === l2TeamId);
@@ -2529,8 +2555,21 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
             return (
             <div className="flex flex-col">
-              {/* Row 1: L2 toggle + avatar + name/desc + action buttons */}
+              {/* Row 1: L1/L2 toggle + avatar + name/desc + action buttons */}
               <div className="flex items-center px-4 h-14 gap-2.5">
+                {/* Expand sidebars button — shown when sidebars are collapsed */}
+                {sidebarsCollapsed && !isMobile && (
+                  <button
+                    onClick={() => setSidebarsCollapsed(false)}
+                    className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
+                    title={t('page.toggleSidebar')}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                      <line x1="9" y1="3" x2="9" y2="21" />
+                    </svg>
+                  </button>
+                )}
                 {/* L2 toggle button — shown when inline L2 is closed, or in tight mode to toggle floating */}
                 {(!showTeamDetailPanel || l2SpaceTight) && ((chatMode === 'channel' && activeTeamId) || (chatMode === 'direct' && currentAgent?.teamId)) && (
                   <button
@@ -2975,7 +3014,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         )}
 
         {/* Chat Tab: Messages */}
-        <div className={`flex-1 overflow-hidden flex flex-col relative ${mainTab !== 'chat' ? 'hidden' : ''}`}>
+        <div className={`flex-1 overflow-hidden flex flex-col relative ${isEmptyChat ? 'justify-center' : ''} ${mainTab !== 'chat' ? 'hidden' : ''}`}>
           {loadingMore && (
             <div className="absolute top-0 left-0 right-0 z-10 flex justify-center items-center gap-2 py-2 bg-gradient-to-b from-surface-primary/90 to-transparent pointer-events-none">
               <svg className="animate-spin h-3.5 w-3.5 text-brand-400" viewBox="0 0 24 24" fill="none">
@@ -2985,23 +3024,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               <span className="text-xs text-fg-tertiary">{t('page.loadingEarlierMessages')}</span>
             </div>
           )}
-          <div ref={chatScrollRef} className={`flex-1 overflow-y-auto ${isMobile ? 'p-2.5' : 'p-5 2xl:pr-[280px]'}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
-
-          {visibleMessages.length === 0 && !sending && (
-            <div className="flex flex-col items-center justify-center h-full text-fg-tertiary text-sm space-y-2">
-              <div className="opacity-40">
-                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  {chatMode === 'channel'
-                    ? <><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H6l-4 4V6c0-1.1.9-2 2-2z" /><line x1="8" y1="10" x2="16" y2="10" /><line x1="8" y1="14" x2="13" y2="14" /></>
-                    : <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                  }
-                </svg>
-              </div>
-              {chatMode === 'channel' && <div>{t('page.emptyChannel', { name: activeGroupChat?.name ?? activeChannel })}</div>}
-              {chatMode === 'direct' && !selectedAgent && <div>{t('page.emptySelectAgent')}</div>}
-              {chatMode === 'direct' && selectedAgent && <div>{t('page.emptyNewConversation', { name: currentAgent?.name ?? '' })}</div>}
-            </div>
-          )}
+          <div ref={chatScrollRef} className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto ${isMobile ? 'p-2.5' : 'p-5 2xl:pr-[280px]'}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
 
           {visibleMessages.length > 0 && (
           <div style={{ height: chatVirtualizer.getTotalSize(), width: '100%', position: 'relative' }}>
@@ -3092,7 +3115,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         <span className="truncate max-w-[250px]">{msg.replyToText ?? '...'}</span>
                       </button>
                     )}
-                    <div className={`mt-0.5 ${msg.sender === 'agent' ? 'bg-surface-chat-bubble rounded-2xl px-3.5 py-2.5' : ''} ${
+                    <div className={`mt-0.5 ${msg.sender === 'agent' ? 'py-1' : 'bg-surface-secondary rounded-2xl px-3.5 py-2.5 w-fit max-w-full'} ${
                       msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
                         ? 'border-b-2 border-red-500/60'
                         : ''
@@ -3188,7 +3211,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 newMsgCountRef.current = 0;
                 setNewMsgCount(0);
               }}
-              className={`absolute ${isMobile ? 'bottom-4' : 'bottom-20'} left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3.5 py-2 bg-surface-secondary/95 backdrop-blur-sm border border-border-default rounded-full shadow-lg hover:bg-surface-elevated transition-colors text-xs text-fg-secondary`}
+              className={`absolute ${isMobile ? 'bottom-4' : 'bottom-28'} left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3.5 py-2 bg-surface-secondary/95 backdrop-blur-sm border border-border-default rounded-full shadow-lg hover:bg-surface-elevated transition-colors text-xs text-fg-secondary`}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
               {newMsgCount > 0
@@ -3196,7 +3219,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 : t('page.scrollToBottom')}
             </button>
           )}
-        </div>
 
         {/* Avatar popover */}
         {avatarPopover && (() => {
@@ -3212,9 +3234,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           );
         })()}
 
+        {/* Empty state greeting (above input when no messages) */}
+        {isEmptyChat && emptyGreeting && (
+          <div className="text-center mb-4">
+            <h2 className="text-xl font-semibold text-fg-primary">{emptyGreeting}</h2>
+          </div>
+        )}
+
         {/* Input (only in chat tab) */}
-        <div className={`${isMobile ? 'px-3 py-2' : 'px-5 py-3 2xl:pr-[280px]'} relative shrink-0 ${mainTab !== 'chat' ? 'hidden' : ''}`} onDrop={handleDrop} onDragOver={handleDragOver}>
-          <div className={`bg-surface-primary border border-border-default shadow-lg shadow-black/5 ${isMobile ? 'rounded-2xl p-3' : 'rounded-2xl p-3 max-w-3xl'}`}>
+        <div className={`${isMobile ? 'px-3 py-2' : 'px-5 py-3'} relative shrink-0 ${isEmptyChat ? '' : '2xl:pr-[280px]'}`} onDrop={handleDrop} onDragOver={handleDragOver}>
+          <div className={`bg-surface-primary border border-border-default shadow-lg shadow-black/10 ${isMobile ? 'rounded-2xl p-3' : 'rounded-2xl p-3 max-w-3xl mx-auto'}`}>
           {mentionDropdown && filteredAgents.length > 0 && (
             <div className="absolute bottom-full left-4 mb-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden z-10 max-h-48 overflow-y-auto">
               <div className="px-3 py-1.5 text-[10px] text-fg-tertiary font-medium uppercase tracking-wider border-b border-border-default">
@@ -3321,7 +3350,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               placeholder={placeholder}
               disabled={chatMode === 'direct' && !selectedAgent}
               rows={2}
-              className="flex-1 px-4 py-3 bg-transparent rounded-xl text-sm outline-none disabled:opacity-40 transition-colors resize-none overflow-hidden leading-relaxed placeholder:text-fg-tertiary/60"
+              className="flex-1 px-4 py-3 bg-transparent rounded-xl text-sm outline-none disabled:opacity-40 transition-colors resize-none overflow-hidden leading-relaxed placeholder:text-fg-secondary"
               style={{ minHeight: '52px', maxHeight: '120px' }}
             />
             {sending && chatMode !== 'dm' && (
@@ -3344,6 +3373,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             </button>
           </div>
           </div>
+        </div>
         </div>
       </div>
       )}

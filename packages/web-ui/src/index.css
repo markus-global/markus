@@ -2,33 +2,33 @@
 @plugin "@tailwindcss/typography";
 
 @theme {
-  --color-brand-50: oklch(0.97 0.02 200);
-  --color-brand-100: oklch(0.93 0.04 200);
-  --color-brand-200: oklch(0.85 0.08 200);
-  --color-brand-300: oklch(0.75 0.14 200);
-  --color-brand-400: oklch(0.65 0.18 200);
-  --color-brand-500: oklch(0.55 0.16 200);
-  --color-brand-600: oklch(0.48 0.14 200);
-  --color-brand-700: oklch(0.40 0.12 200);
-  --color-brand-800: oklch(0.32 0.08 200);
-  --color-brand-900: oklch(0.24 0.06 200);
-  --color-brand-950: oklch(0.16 0.04 200);
+  --color-brand-50: oklch(0.96 0.008 250);
+  --color-brand-100: oklch(0.92 0.012 250);
+  --color-brand-200: oklch(0.84 0.025 250);
+  --color-brand-300: oklch(0.74 0.04 250);
+  --color-brand-400: oklch(0.66 0.05 250);
+  --color-brand-500: oklch(0.58 0.045 250);
+  --color-brand-600: oklch(0.52 0.04 250);
+  --color-brand-700: oklch(0.44 0.035 250);
+  --color-brand-800: oklch(0.34 0.025 250);
+  --color-brand-900: oklch(0.25 0.018 250);
+  --color-brand-950: oklch(0.17 0.01 250);
 
-  --color-surface-primary: oklch(0.08 0.01 240);
-  --color-surface-secondary: oklch(0.11 0.015 240);
-  --color-surface-elevated: oklch(0.15 0.02 240);
-  --color-surface-overlay: oklch(0.18 0.025 240);
-  --color-surface-chat-bubble: oklch(0.13 0.02 240);
+  --color-surface-primary: oklch(0.145 0.004 70);
+  --color-surface-secondary: oklch(0.185 0.004 70);
+  --color-surface-elevated: oklch(0.21 0.005 70);
+  --color-surface-overlay: oklch(0.28 0.005 70);
+  --color-surface-chat-bubble: oklch(0.175 0.004 70);
 
-  --color-border-default: oklch(0.22 0.03 220);
-  --color-border-subtle: oklch(0.18 0.02 220);
+  --color-border-default: oklch(0.28 0.005 70);
+  --color-border-subtle: oklch(0.23 0.003 70);
 
-  --color-fg-primary: oklch(0.92 0.01 220);
-  --color-fg-secondary: oklch(0.68 0.02 220);
-  --color-fg-tertiary: oklch(0.50 0.02 220);
-  --color-fg-muted: oklch(0.38 0.015 220);
+  --color-fg-primary: oklch(0.96 0.002 80);
+  --color-fg-secondary: oklch(0.75 0.004 80);
+  --color-fg-tertiary: oklch(0.56 0.004 80);
+  --color-fg-muted: oklch(0.42 0.003 80);
 
-  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-sans: 'SF Pro Display', 'SF Pro Text', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 
 :root {
@@ -139,6 +139,7 @@ html, body, #root {
 
 body {
   @apply bg-surface-primary text-fg-primary antialiased;
+  font-feature-settings: 'cv01', 'cv02';
   overflow: hidden;
 }
 
@@ -165,7 +166,7 @@ body {
 }
 
 .btn-primary {
-  @apply px-5 py-2.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-sm font-medium transition-all shadow-md shadow-brand-900/30 hover:shadow-lg hover:shadow-brand-900/40 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none;
+  @apply px-5 py-2.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-sm font-medium transition-all shadow-sm shadow-black/20 hover:shadow-md hover:shadow-black/25 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none;
 }
 
 .btn-secondary {
@@ -206,7 +207,7 @@ body {
 }
 
 .text-gradient-brand {
-  @apply text-transparent bg-clip-text bg-gradient-to-r from-brand-400 to-brand-300;
+  @apply text-brand-400;
 }
 
 .safe-area-bottom {
@@ -222,9 +223,9 @@ body {
   to { --border-angle: 360deg; }
 }
 .exec-card-active {
-  border-image-source: conic-gradient(from var(--border-angle), oklch(0.58 0.22 270), oklch(0.78 0.12 270), oklch(0.58 0.22 270));
+  border-image-source: conic-gradient(from var(--border-angle), oklch(0.50 0.04 250), oklch(0.65 0.03 250), oklch(0.50 0.04 250));
   border-image-slice: 1;
-  animation: border-rotate 3s linear infinite;
+  animation: border-rotate 4s linear infinite;
 }
 @keyframes pulse-subtle {
   0%, 100% { opacity: 1; }
@@ -232,12 +233,12 @@ body {
 }
 
 @keyframes glow-pulse {
-  0%, 100% { box-shadow: 0 0 8px -2px var(--color-brand-500); }
-  50% { box-shadow: 0 0 16px -2px var(--color-brand-500); }
+  0%, 100% { box-shadow: 0 0 6px -3px var(--color-brand-500); }
+  50% { box-shadow: 0 0 10px -3px var(--color-brand-500); }
 }
 
 .glow-brand {
-  box-shadow: 0 0 12px -3px var(--color-brand-500);
+  box-shadow: 0 0 8px -4px var(--color-brand-500);
 }
 
 .card-shine {
@@ -248,7 +249,7 @@ body {
   content: '';
   position: absolute;
   top: 0; left: -100%; width: 50%; height: 100%;
-  background: linear-gradient(90deg, transparent, oklch(1 0 0 / 0.03), transparent);
+  background: linear-gradient(90deg, transparent, oklch(1 0 0 / 0.015), transparent);
   transition: left 0.6s ease;
   pointer-events: none;
 }
@@ -256,26 +257,12 @@ body {
   left: 100%;
 }
 
-/* Streaming chat bubble: flowing gradient border (cross-browser) */
+/* Streaming chat bubble: subtle pulsing left accent */
 .streaming-bubble {
-  border: 1.5px solid transparent !important;
-  background:
-    linear-gradient(var(--color-surface-chat-bubble), var(--color-surface-chat-bubble)) padding-box,
-    conic-gradient(from var(--border-angle), #a855f7, #3b82f6 30%, transparent 50%, transparent 80%, #ec4899 90%, #a855f7) border-box !important;
-  animation: border-rotate 2.5s linear infinite;
-  position: relative;
-}
-.streaming-bubble::after {
-  content: '';
-  position: absolute;
-  inset: -4px;
-  border-radius: inherit;
-  background: conic-gradient(from var(--border-angle), #a855f7, #3b82f6 30%, transparent 50%, transparent 80%, #ec4899 90%, #a855f7);
-  animation: border-rotate 2.5s linear infinite;
-  filter: blur(8px);
-  opacity: 0.4;
-  z-index: -1;
-  pointer-events: none;
+  border-left: 2px solid var(--color-brand-500) !important;
+  padding-left: 12px !important;
+  min-height: 2.5rem;
+  animation: pulse-subtle 2s ease-in-out infinite;
 }
 
 @keyframes fadeIn {

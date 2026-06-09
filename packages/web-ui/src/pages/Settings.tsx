@@ -903,10 +903,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             <button
               key={tab.id}
               onClick={() => navigateTab(tab.id)}
-              className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+              className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors text-fg-primary ${
                 resolvedTab === tab.id
-                  ? 'bg-brand-600/10 text-brand-600 dark:text-brand-400 font-medium'
-                  : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-overlay'
+                  ? 'bg-surface-overlay'
+                  : 'hover:bg-surface-overlay/60'
               }`}
             >
               {t(`settings:${tab.labelKey}`)}
@@ -4213,7 +4213,7 @@ function LicensePlanCard({ isEnterprise, licenseInfo, licenseOwnedBySelectedOrg,
               <span className="text-base font-semibold text-fg-primary">{t('license.planEnterprise')}</span>
               <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-500/12 text-green-600 border border-green-500/15">{t('license.statusActive')}</span>
               {licenseOwnedBySelectedOrg && licenseInfo?.isTrial && (<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/12 text-amber-600 border border-amber-500/15">{t('license.trial')}</span>)}
-              {licenseOwnedBySelectedOrg && licenseInfo?.isOffline && (<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-cyan-500/12 text-cyan-600 border border-cyan-500/15">{t('license.offline')}</span>)}
+              {licenseOwnedBySelectedOrg && licenseInfo?.isOffline && (<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-brand-500/12 text-brand-400 border border-brand-500/15">{t('license.offline')}</span>)}
             </div>
             {daysRemaining !== null && (
               <div className="text-right">

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -63,7 +63,7 @@ const PERMISSION_ICONS: Record<string, { icon: string; color: string }> = {
   shell:   { icon: '>', color: 'bg-amber-500/15 text-amber-400 border-amber-500/30' },
   file:    { icon: '◫', color: 'bg-blue-500/15 text-blue-400 border-blue-500/30' },
   network: { icon: '◎', color: 'bg-purple-500/15 text-purple-400 border-purple-500/30' },
-  browser: { icon: '◉', color: 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30' },
+  browser: { icon: '◉', color: 'bg-brand-500/15 text-brand-400 border-brand-500/30' },
 };
 
 // ---------------------------------------------------------------------------
@@ -734,6 +734,18 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
 
   useEffect(() => {
     if (readOnly) return;
+    // Restore from local cache first for instant display
+    try {
+      const raw = localStorage.getItem('markus_builder_shared_map');
+      if (raw) {
+        const cached = JSON.parse(raw) as Record<string, { id: string; slug: string; version: string; visibility?: string }>;
+        const key = `${type}/${name}`;
+        if (cached[key]) {
+          setHubStatus({ shared: true, id: cached[key].id, slug: cached[key].slug, version: cached[key].version, visibility: (cached[key].visibility as HubVisibility) ?? 'public' });
+        }
+      }
+    } catch { /* ignore */ }
+    // Then refresh from Hub API
     hubApi.myItems().then(data => {
       const items = data?.items ?? [];
       const typeDir = type === 'agent' ? 'agent' : type === 'team' ? 'team' : 'skill';
@@ -1367,7 +1379,7 @@ function VisibilityDialog({ onClose, onConfirm }: {
     }
   }, [selected, orgs.length]);
 
-  const options: Array<{ value: HubVisibility; icon: JSX.Element; label: string; desc: string }> = [
+  const options: Array<{ value: HubVisibility; icon: ReactNode; label: string; desc: string }> = [
     {
       value: 'public',
       icon: <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>,
