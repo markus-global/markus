@@ -104,7 +104,7 @@ export function TeamDetailPanel({
   return (
     <>
       <div
-        className="bg-surface-elevated rounded-xl my-1 flex flex-col shrink-0"
+        className="bg-surface-primary flex flex-col shrink-0"
         style={width != null ? { width } : { width: 260 }}
       >
         {/* Header */}

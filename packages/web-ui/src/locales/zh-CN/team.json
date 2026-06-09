@@ -271,6 +271,7 @@
     "emptyNewConversation": "开始与 {{name}} 的新对话。",
     "agentThinking": "智能体思考中…",
     "scrollToBottom": "回到底部",
+    "toggleSidebar": "展开侧边栏",
     "newMessages": "{{count}} 条新消息",
     "mentionAgent": "提及智能体",
     "addMoreFiles": "添加更多文件",
@@ -288,6 +289,13 @@
       "dmSelf": "给自己写条笔记…",
       "dmOther": "给 {{name}} 发消息…",
       "direct": "输入消息…",
+      "directOptions": [
+        "您有什么吩咐？",
+        "有什么我能帮您的？",
+        "请问需要做什么？",
+        "随时听候您的指示",
+        "说说您的想法吧…"
+      ],
       "noAgent": "选择智能体以开始聊天"
     },
     "newTaskTitle": "来自对话的新任务",
