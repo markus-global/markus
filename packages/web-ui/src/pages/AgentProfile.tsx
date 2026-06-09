@@ -1779,7 +1779,7 @@ const CATEGORY_SOURCE_TYPES: Record<string, string[]> = {
 
 const STATUS_COLORS: Record<string, string> = {
   completed: 'bg-green-500', processing: 'bg-blue-400 animate-pulse',
-  deferred: 'bg-purple-400', merged: 'bg-cyan-400', queued: 'bg-amber-400', dropped: 'bg-red-500',
+  deferred: 'bg-purple-400', merged: 'bg-brand-400', queued: 'bg-amber-400', dropped: 'bg-red-500',
 };
 
 const ACTIVITY_FILTER_KEYS: Array<AgentActivityType | 'all'> = ['all', 'task', 'chat', 'heartbeat', 'a2a', 'internal', 'respond_in_session'];
@@ -2231,7 +2231,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
             { key: 'queued', dot: 'bg-amber-400' },
             { key: 'processing', dot: 'bg-blue-400' },
             { key: 'completed', dot: 'bg-green-500' },
-            { key: 'merged', dot: 'bg-cyan-400' },
+            { key: 'merged', dot: 'bg-brand-400' },
             { key: 'deferred', dot: 'bg-purple-400' },
             { key: 'dropped', dot: 'bg-red-500' },
           ].map(f => {

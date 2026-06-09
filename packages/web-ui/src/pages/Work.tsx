@@ -4094,7 +4094,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 </h2>
               )}
               <div className="flex items-center gap-1 shrink-0">
-                <button onClick={() => setShowCreateProject(true)} className="px-2 py-1 text-[11px] bg-teal-600 text-white rounded-md">{t('work:task.shortProject')}</button>
+                <button onClick={() => setShowCreateProject(true)} className="px-2 py-1 text-[11px] bg-brand-600 text-white rounded-md">{t('work:task.shortProject')}</button>
                 <button onClick={openCreateReq} className="px-2 py-1 text-[11px] bg-brand-600 text-white rounded-md">{t('work:task.shortReq')}</button>
                 <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-2 py-1 text-[11px] border border-amber-500/60 text-amber-600 rounded-md">{t('work:task.shortTask')}</button>
               </div>
@@ -4176,7 +4176,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
 
           {/* Actions */}
           <div className="flex items-center gap-1.5 shrink-0">
-            <button onClick={() => setShowCreateProject(true)} className="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 text-white text-xs rounded-lg font-medium transition-colors">{t('work:task.shortProject')}</button>
+            <button onClick={() => setShowCreateProject(true)} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg font-medium transition-colors">{t('work:task.shortProject')}</button>
             <button onClick={openCreateReq} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg font-medium transition-colors">{t('work:task.newRequirement')}</button>
             <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-3 py-1.5 border border-amber-500/60 text-amber-600 hover:bg-amber-500/10 text-xs rounded-lg font-medium transition-colors">{t('work:task.newTaskBtn')}</button>
           </div>

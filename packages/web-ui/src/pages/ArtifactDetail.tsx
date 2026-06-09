@@ -63,7 +63,7 @@ const PERMISSION_ICONS: Record<string, { icon: string; color: string }> = {
   shell:   { icon: '>', color: 'bg-amber-500/15 text-amber-400 border-amber-500/30' },
   file:    { icon: '◫', color: 'bg-blue-500/15 text-blue-400 border-blue-500/30' },
   network: { icon: '◎', color: 'bg-purple-500/15 text-purple-400 border-purple-500/30' },
-  browser: { icon: '◉', color: 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30' },
+  browser: { icon: '◉', color: 'bg-brand-500/15 text-brand-400 border-brand-500/30' },
 };
 
 // ---------------------------------------------------------------------------

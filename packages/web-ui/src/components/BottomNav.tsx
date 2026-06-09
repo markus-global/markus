@@ -51,7 +51,7 @@ export function BottomNav({ currentPage, onNavigate, userId }: Props) {
             key={tab.id}
             onClick={() => onNavigate(tab.id)}
             className={`flex-1 flex flex-col items-center justify-center gap-0.5 transition-colors ${
-              isActive ? 'text-brand-500' : 'text-fg-tertiary active:text-fg-secondary'
+              isActive ? 'text-fg-primary' : 'text-fg-tertiary active:text-fg-secondary'
             }`}
           >
             <div className="relative">

@@ -138,7 +138,7 @@ export function TeamDetailPanel({
               <button
                 onClick={() => onSelectChannel(groupChat.channelKey)}
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs transition-colors text-fg-primary ${
-                  isGcActive ? 'bg-brand-600/15' : 'hover:bg-white/[0.08]'
+                  isGcActive ? 'bg-surface-overlay' : 'hover:bg-surface-overlay/60'
                 }`}
               >
                 <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 bg-surface-overlay text-fg-primary">
@@ -183,7 +183,7 @@ export function TeamDetailPanel({
                       setAgentMenu({ agentId: a.id, ...pos });
                     }}
                     className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
-                      isActive ? 'bg-brand-600/15' : 'hover:bg-white/[0.08]'
+                      isActive ? 'bg-surface-overlay' : 'hover:bg-surface-overlay/60'
                     }`}
                   >
                     <Avatar

@@ -701,7 +701,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
           nodeColor={(node) => {
             const t = (node.data as { task: TaskInfo })?.task;
             const status = t?.status;
-            if (t?.taskType === 'scheduled') return '#06b6d4';
+            if (t?.taskType === 'scheduled') return '#8b8fa3';
             if (status === 'completed' || status === 'accepted') return '#10b981';
             if (status === 'in_progress') return '#f59e0b';
             if (status === 'blocked' || status === 'failed') return '#ef4444';

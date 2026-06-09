@@ -4213,7 +4213,7 @@ function LicensePlanCard({ isEnterprise, licenseInfo, licenseOwnedBySelectedOrg,
               <span className="text-base font-semibold text-fg-primary">{t('license.planEnterprise')}</span>
               <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-500/12 text-green-600 border border-green-500/15">{t('license.statusActive')}</span>
               {licenseOwnedBySelectedOrg && licenseInfo?.isTrial && (<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/12 text-amber-600 border border-amber-500/15">{t('license.trial')}</span>)}
-              {licenseOwnedBySelectedOrg && licenseInfo?.isOffline && (<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-cyan-500/12 text-cyan-600 border border-cyan-500/15">{t('license.offline')}</span>)}
+              {licenseOwnedBySelectedOrg && licenseInfo?.isOffline && (<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-brand-500/12 text-brand-400 border border-brand-500/15">{t('license.offline')}</span>)}
             </div>
             {daysRemaining !== null && (
               <div className="text-right">
