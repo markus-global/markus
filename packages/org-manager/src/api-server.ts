@@ -44,6 +44,8 @@ import type { ReportService } from './report-service.js';
 import type { KnowledgeService } from './knowledge-service.js';
 import type { DeliverableService } from './deliverable-service.js';
 import type { RequirementService } from './requirement-service.js';
+import type { WorkflowService } from './workflow-service.js';
+import type { WorkflowRunner } from './workflow-runner.js';
 import { WSBroadcaster } from './ws-server.js';
 import { SSEHandler } from './sse-handler.js';
 import { installSkill } from './skill-service.js';
@@ -201,8 +203,8 @@ export class APIServer {
   private templateRegistry?: TemplateRegistry;
   private builderService?: BuilderService;
   private workflowEngine?: WorkflowEngine;
-  private workflowService?: import('./workflow-service.js').WorkflowService;
-  private workflowRunner?: import('./workflow-runner.js').WorkflowRunner;
+  private workflowService?: WorkflowService;
+  private workflowRunner?: WorkflowRunner;
   private teamTemplateRegistry: TeamTemplateRegistry;
   private fileStorage?: LocalFileStorageProvider;
   private remoteAgent?: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void };
@@ -11021,10 +11023,10 @@ EXPLANATION_END`;
   setRequirementService(svc: RequirementService): void {
     this.requirementService = svc;
   }
-  setWorkflowService(svc: import('./workflow-service.js').WorkflowService): void {
+  setWorkflowService(svc: WorkflowService): void {
     this.workflowService = svc;
   }
-  setWorkflowRunner(runner: import('./workflow-runner.js').WorkflowRunner): void {
+  setWorkflowRunner(runner: WorkflowRunner): void {
     this.workflowRunner = runner;
   }
 

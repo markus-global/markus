@@ -140,20 +140,25 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
     const limit = category === 'all' ? 8 : undefined;
     const addSection = (section: SectionId) => {
       if (category !== 'all' && category !== section) return;
-      const arr = results[section];
-      const sliced = limit ? arr.slice(0, limit) : arr;
-      for (const item of sliced) {
-        switch (section) {
-          case 'agents': items.push({ id: item.id, type: 'agent', page: PAGE.TEAM, params: { agentId: item.id } }); break;
-          case 'tasks': items.push({ id: item.id, type: 'task', page: PAGE.WORK, params: { openTask: item.id } }); break;
-          case 'requirements': items.push({ id: item.id, type: 'requirement', page: PAGE.WORK, params: { openRequirement: item.id } }); break;
-          case 'projects': items.push({ id: item.id, type: 'project', page: PAGE.WORK, params: { projectId: item.id } }); break;
-          case 'deliverables': items.push({ id: item.id, type: 'deliverable', page: PAGE.DELIVERABLES, params: { openDeliverable: item.id } }); break;
-          case 'workflows': items.push({ id: (item as unknown as WorkflowInfo).name, type: 'workflow', page: PAGE.WORK, params: { boardType: 'workflows' } }); break;
+      const total = results[section].length;
+      if (section === 'workflows') {
+        const sliced = limit ? results.workflows.slice(0, limit) : results.workflows;
+        for (const wf of sliced) items.push({ id: wf.name, type: 'workflow', page: PAGE.WORK, params: { boardType: 'workflows' } });
+      } else {
+        const arr = results[section] as Array<{ id: string }>;
+        const sliced = limit ? arr.slice(0, limit) : arr;
+        for (const item of sliced) {
+          switch (section) {
+            case 'agents': items.push({ id: item.id, type: 'agent', page: PAGE.TEAM, params: { agentId: item.id } }); break;
+            case 'tasks': items.push({ id: item.id, type: 'task', page: PAGE.WORK, params: { openTask: item.id } }); break;
+            case 'requirements': items.push({ id: item.id, type: 'requirement', page: PAGE.WORK, params: { openRequirement: item.id } }); break;
+            case 'projects': items.push({ id: item.id, type: 'project', page: PAGE.WORK, params: { projectId: item.id } }); break;
+            case 'deliverables': items.push({ id: item.id, type: 'deliverable', page: PAGE.DELIVERABLES, params: { openDeliverable: item.id } }); break;
+          }
         }
       }
-      if (limit && arr.length > limit) {
-        items.push({ id: `more_${section}`, type: 'showMore', page: '' as PageId, expandCategory: section as SearchCategory, totalCount: arr.length });
+      if (limit && total > limit) {
+        items.push({ id: `more_${section}`, type: 'showMore', page: '' as PageId, expandCategory: section as SearchCategory, totalCount: total });
       }
     };
     for (const s of sectionOrder) addSection(s);

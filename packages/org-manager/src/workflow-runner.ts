@@ -1,7 +1,8 @@
 import {
   createLogger,
   generateId,
-  parseInterval,
+  renderStepPrompt,
+  topologicalSort,
   type WorkflowTemplate,
   type WorkflowRun,
   type WorkflowRunStatus,
@@ -11,8 +12,7 @@ import {
   type Task,
   TERMINAL_STATUSES,
 } from '@markus/shared';
-import { renderStepPrompt, topologicalSort } from '@markus/shared';
-import type { RequirementService, CreateRequirementRequest } from './requirement-service.js';
+import type { RequirementService } from './requirement-service.js';
 import type { TaskService } from './task-service.js';
 import type { OrganizationService } from './org-service.js';
 import type { WSBroadcaster } from './ws-server.js';
@@ -593,7 +593,7 @@ export class WorkflowRunner {
     template: WorkflowTemplate,
     params: Record<string, string>,
     runNumber: number,
-    sortedSteps: StepDef[],
+    _sortedSteps: StepDef[],
   ): string {
     const displayName = template.displayName || template.name;
     const lines: string[] = [
