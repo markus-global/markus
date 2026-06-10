@@ -34,6 +34,7 @@ import type { OrganizationService } from './org-service.js';
 import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
+import { FeishuNotifier, type FeishuNotifierConfig } from './feishu-notifier.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
 import type { LicenseService } from './license-service.js';
@@ -183,6 +184,7 @@ export class APIServer {
   private ws: WSBroadcaster;
   private skillRegistry?: SkillRegistry;
   private hitlService?: HITLService;
+  private feishuNotifier?: FeishuNotifier;
   private billingService?: BillingService;
   private auditService?: AuditService;
   private licenseService?: LicenseService;
@@ -569,10 +571,20 @@ export class APIServer {
       };
       this.ws.sendToUser(n.targetUserId, event);
     });
+    this.tryInitFeishuNotifier();
+  }
+
+  /** Update the Feishu notifier config at runtime (called when integration settings are saved). */
+  updateFeishuConfig(config: FeishuNotifierConfig): void {
+    if (!this.feishuNotifier) {
+      return;
+    }
+    this.feishuNotifier.updateConfig(config);
   }
 
   setStorage(storage: StorageBridge): void {
     this.storage = storage;
+    this.tryInitFeishuNotifier();
   }
 
   setRemoteAgent(agent: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void }): void {
@@ -1424,10 +1436,55 @@ export class APIServer {
     this.server.listen(this.port, '0.0.0.0', () => {
       log.info(`API server listening on 0.0.0.0:${this.port} (HTTP + WebSocket)`);
     });
+    this.tryInitFeishuNotifier();
   }
 
   stop(): void {
     this.server?.close();
+    this.feishuNotifier?.stop();
+  }
+
+  /** Initialize FeishuNotifier once all dependencies are available. */
+  private async tryInitFeishuNotifier(): Promise<void> {
+    if (this.feishuNotifier) return;
+    if (!this.hitlService) return;
+    if (!this.storage) return;
+    try {
+      const agentManager = this.orgService.getAgentManager();
+      const eventBus = agentManager.getEventBus();
+
+      // Load Feishu integration config from storage (integrations table)
+      const rows = this.storage.integrationRepo.listByPlatform('default', 'feishu') as Array<Record<string, unknown>>;
+      const row = rows[0];
+      const cfgConfig = row?.['config'] as Record<string, unknown> | undefined;
+      const forwardRules = row?.['forwardRules'] as Array<Record<string, unknown>> | undefined;
+
+      let initialConfig: FeishuNotifierConfig | undefined;
+      if (cfgConfig?.appId && cfgConfig?.appSecret) {
+        initialConfig = {
+          appId: cfgConfig.appId as string,
+          appSecret: cfgConfig.appSecret as string,
+          domain: cfgConfig.domain as string | undefined,
+          forwardRules: (forwardRules ?? []) as unknown as FeishuNotifierConfig['forwardRules'],
+        };
+      }
+
+      this.feishuNotifier = new FeishuNotifier({
+        eventBus,
+        hitlService: this.hitlService,
+        orgId: 'default',
+        agentManager: {
+          getAgentName: (id: string) => {
+            try { return agentManager.getAgent(id)?.config?.name ?? id; } catch { return id; }
+          },
+        },
+        config: initialConfig,
+      });
+      this.feishuNotifier.start();
+      log.info('FeishuNotifier initialized');
+    } catch (err) {
+      log.warn('Failed to initialize FeishuNotifier', { error: String(err) });
+    }
   }
 
   getWSBroadcaster(): WSBroadcaster {
@@ -9022,6 +9079,13 @@ EXPLANATION_END`;
           userId: auth.userId,
           success: true,
         });
+        // Update the FeishuNotifier runtime config
+        this.updateFeishuConfig({
+          appId,
+          appSecret: appSecret,
+          domain: body['domain'] as string | undefined,
+          forwardRules: [],
+        });
         this.json(res, 200, { config: payload });
       } catch (e) {
         log.error('Failed to save feishu integration config', { error: String(e) });
@@ -9120,6 +9184,16 @@ EXPLANATION_END`;
             lastVerifiedAt: row['lastVerifiedAt'] ?? null,
             lastError: row['lastError'] ?? null,
           });
+          // Update the FeishuNotifier runtime config with new rules
+          const cfgConfig = row['config'] as Record<string, unknown> | undefined;
+          if (cfgConfig?.appId && cfgConfig?.appSecret && this.feishuNotifier) {
+            this.feishuNotifier.updateConfig({
+              appId: cfgConfig.appId as string,
+              appSecret: cfgConfig.appSecret as string,
+              domain: cfgConfig.domain as string | undefined,
+              forwardRules: rules as unknown as FeishuNotifierConfig['forwardRules'],
+            });
+          }
           log.info('Feishu notification rules updated', { orgId: auth.orgId, ruleCount: rules.length });
           this.auditService?.record({
             orgId: auth.orgId,
