@@ -34,6 +34,7 @@ import type { OrganizationService } from './org-service.js';
 import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
+import { FeishuNotifier, type FeishuNotifierConfig } from './feishu-notifier.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
 import type { LicenseService } from './license-service.js';
@@ -183,6 +184,7 @@ export class APIServer {
   private ws: WSBroadcaster;
   private skillRegistry?: SkillRegistry;
   private hitlService?: HITLService;
+  private feishuNotifier?: FeishuNotifier;
   private billingService?: BillingService;
   private auditService?: AuditService;
   private licenseService?: LicenseService;
@@ -569,10 +571,12 @@ export class APIServer {
       };
       this.ws.sendToUser(n.targetUserId, event);
     });
+    this.tryInitFeishuNotifier();
   }
 
   setStorage(storage: StorageBridge): void {
     this.storage = storage;
+    this.tryInitFeishuNotifier();
   }
 
   setRemoteAgent(agent: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void }): void {
@@ -584,6 +588,15 @@ export class APIServer {
 
   setRemoteAgentFactory(factory: () => Promise<{ getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void } | null>): void {
     this.remoteAgentFactory = factory;
+  }
+
+  /** Update the Feishu notifier config at runtime (called when integration settings are saved). */
+  updateFeishuConfig(config: FeishuNotifierConfig): void {
+    if (!this.feishuNotifier) {
+      // The notifier will pick up the config when tryInitFeishuNotifier runs
+      return;
+    }
+    this.feishuNotifier.updateConfig(config);
   }
 
   setGateway(gateway: ExternalAgentGateway, secret?: string): void {
@@ -1424,10 +1437,48 @@ export class APIServer {
     this.server.listen(this.port, '0.0.0.0', () => {
       log.info(`API server listening on 0.0.0.0:${this.port} (HTTP + WebSocket)`);
     });
+    this.tryInitFeishuNotifier();
   }
 
   stop(): void {
     this.server?.close();
+    this.feishuNotifier?.stop();
+  }
+
+  /** Initialize FeishuNotifier once all dependencies are available. */
+  private async tryInitFeishuNotifier(): Promise<void> {
+    if (this.feishuNotifier) return;
+    if (!this.hitlService) return;
+    try {
+      const agentManager = this.orgService.getAgentManager();
+      const eventBus = agentManager.getEventBus();
+      // Try to load Feishu integration config from config file
+      let initialConfig: FeishuNotifierConfig | undefined;
+      try {
+        const { loadConfig: loadCfg } = await import('@markus/shared');
+        const cfg = loadCfg(this.markusConfigPath);
+        const feishuCfg = cfg.integrations?.feishu as FeishuNotifierConfig | undefined;
+        if (feishuCfg?.appId && feishuCfg?.appSecret) {
+          initialConfig = feishuCfg;
+        }
+      } catch { /* config file may not exist yet */ }
+
+      this.feishuNotifier = new FeishuNotifier({
+        eventBus,
+        hitlService: this.hitlService,
+        orgId: 'default',
+        agentManager: {
+          getAgentName: (id: string) => {
+            try { return agentManager.getAgent(id)?.config?.name ?? id; } catch { return id; }
+          },
+        },
+        config: initialConfig,
+      });
+      this.feishuNotifier.start();
+      log.info('FeishuNotifier initialized');
+    } catch (err) {
+      log.warn('Failed to initialize FeishuNotifier', { error: String(err) });
+    }
   }
 
   getWSBroadcaster(): WSBroadcaster {
