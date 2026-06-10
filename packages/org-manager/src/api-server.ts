@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, kebab, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, kebab, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -8907,6 +8907,197 @@ EXPLANATION_END`;
       return;
     }
 
+    // ── Settings — Integration Config (Feishu) ──────────────────────────
+
+    /** Find feishu integration config for a given org */
+    const findFeishuConfig = (orgId: string): Record<string, unknown> | undefined => {
+      const repo = this.storage?.integrationRepo;
+      if (!repo) return undefined;
+      const rows = repo.listByPlatform(orgId, 'feishu') as Array<Record<string, unknown>>;
+      return rows[0];
+    };
+
+    if (path === '/api/settings/integrations/feishu' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      try {
+        const row = findFeishuConfig(auth.orgId);
+        this.json(res, 200, { config: row ?? null });
+      } catch (e) {
+        log.error('Failed to read feishu integration config', { error: String(e) });
+        this.json(res, 500, { error: 'Failed to read integration config' });
+      }
+      return;
+    }
+
+    if (path === '/api/settings/integrations/feishu' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const appId = body['appId'] as string;
+      const appSecret = body['appSecret'] as string;
+      if (!appId || !appSecret) {
+        this.json(res, 400, { error: 'appId and appSecret are required' });
+        return;
+      }
+      const now = new Date().toISOString();
+      const payload: Record<string, unknown> = {
+        id: 'feishu_default',
+        orgId: auth.orgId,
+        platform: 'feishu',
+        displayName: body['displayName'] ?? '飞书',
+        enabled: body['enabled'] !== false,
+        config: {
+          appId,
+          appSecret,
+          verificationToken: body['verificationToken'] ?? undefined,
+          encryptKey: body['encryptKey'] ?? undefined,
+          webhookPort: body['webhookPort'] ?? undefined,
+          domain: body['domain'] ?? undefined,
+        },
+        forwardRules: [],
+        lastVerifiedAt: null,
+        lastError: null,
+      };
+      try {
+        const repo = this.storage?.integrationRepo;
+        if (!repo) {
+          this.json(res, 503, { error: 'Storage not available' });
+          return;
+        }
+        const existing = findFeishuConfig(auth.orgId);
+        if (existing) {
+          await repo.update(existing['id'] as string, payload);
+        } else {
+          await repo.create(payload);
+        }
+        log.info('Feishu integration config saved', { orgId: auth.orgId });
+        this.auditService?.record({
+          orgId: auth.orgId,
+          type: 'settings_changed',
+          action: 'integration_feishu',
+          detail: 'Feishu integration config saved',
+          userId: auth.userId,
+          success: true,
+        });
+        this.json(res, 200, { config: payload });
+      } catch (e) {
+        log.error('Failed to save feishu integration config', { error: String(e) });
+        this.json(res, 500, { error: 'Failed to save integration config' });
+      }
+      return;
+    }
+
+    if (path === '/api/settings/integrations/feishu' && req.method === 'DELETE') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      try {
+        const row = findFeishuConfig(auth.orgId);
+        if (row) {
+          this.storage?.integrationRepo?.delete(row['id'] as string);
+        }
+        log.info('Feishu integration config deleted', { orgId: auth.orgId });
+        this.auditService?.record({
+          orgId: auth.orgId,
+          type: 'settings_changed',
+          action: 'integration_feishu_delete',
+          detail: 'Feishu integration config deleted',
+          userId: auth.userId,
+          success: true,
+        });
+        this.json(res, 200, { success: true });
+      } catch (e) {
+        log.error('Failed to delete feishu integration config', { error: String(e) });
+        this.json(res, 500, { error: 'Failed to delete integration config' });
+      }
+      return;
+    }
+
+    if (path === '/api/settings/integrations/feishu/test' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const appId = (body['appId'] as string) ?? '';
+      const appSecret = (body['appSecret'] as string) ?? '';
+      if (!appId || !appSecret) {
+        this.json(res, 400, { error: 'appId and appSecret are required' });
+        return;
+      }
+      try {
+        const resp = await fetch('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
+        });
+        const data = await resp.json() as Record<string, unknown>;
+        if (resp.ok && data['tenant_access_token']) {
+          this.json(res, 200, { success: true, message: 'Credentials verified successfully' });
+        } else {
+          this.json(res, 200, { success: false, message: String(data['msg'] ?? 'Authentication failed') });
+        }
+      } catch (e) {
+        log.error('Feishu test connection failed', { error: String(e) });
+        this.json(res, 200, { success: false, message: `Connection failed: ${String(e)}` });
+      }
+      return;
+    }
+
+    if (path === '/api/settings/integrations/feishu/notifications' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      try {
+        const row = findFeishuConfig(auth.orgId);
+        const rules = row?.['forwardRules'] as Array<Record<string, unknown>> | undefined;
+        this.json(res, 200, { rules: rules ?? [] });
+      } catch (e) {
+        log.error('Failed to read notification rules', { error: String(e) });
+        this.json(res, 500, { error: 'Failed to read notification rules' });
+      }
+      return;
+    }
+
+    if (path === '/api/settings/integrations/feishu/notifications' && req.method === 'PUT') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const rules = body['rules'] as Array<Record<string, unknown>>;
+      if (!Array.isArray(rules)) {
+        this.json(res, 400, { error: 'rules must be an array' });
+        return;
+      }
+      try {
+        const repo = this.storage?.integrationRepo;
+        if (!repo) {
+          this.json(res, 503, { error: 'Storage not available' });
+          return;
+        }
+        const row = findFeishuConfig(auth.orgId);
+        if (row) {
+          await repo.update(row['id'] as string, {
+            forwardRules: rules,
+            lastVerifiedAt: row['lastVerifiedAt'] ?? null,
+            lastError: row['lastError'] ?? null,
+          });
+          log.info('Feishu notification rules updated', { orgId: auth.orgId, ruleCount: rules.length });
+          this.auditService?.record({
+            orgId: auth.orgId,
+            type: 'settings_changed',
+            action: 'integration_feishu_notifications',
+            detail: `Feishu notification rules updated (${rules.length} rules)`,
+            userId: auth.userId,
+            success: true,
+          });
+          this.json(res, 200, { rules });
+        } else {
+          this.json(res, 404, { error: 'Feishu integration not configured' });
+        }
+      } catch (e) {
+        log.error('Failed to update notification rules', { error: String(e) });
+        this.json(res, 500, { error: 'Failed to update notification rules' });
+      }
+      return;
+    }
+
     // Settings — Config Export
     if (path === '/api/settings/export' && req.method === 'POST') {
       const auth = await this.requireAuth(req, res);
@@ -10799,6 +10990,11 @@ EXPLANATION_END`;
       exact('/api/settings/oauth/status', 'GET'),
       regex(/^\/api\/settings\/oauth\/profiles\/[^/]+$/, 'DELETE'),
       exact('/api/settings/oauth/setup-token', 'POST'),
+
+      // ── Integrations ────────────────────────────────────────────────────
+      exact('/api/settings/integrations/feishu', 'GET', 'POST', 'DELETE'),
+      exact('/api/settings/integrations/feishu/test', 'POST'),
+      exact('/api/settings/integrations/feishu/notifications', 'GET', 'PUT'),
 
       // ── Approvals ────────────────────────────────────────────────────────
       exact('/api/approvals', 'GET', 'POST'),
