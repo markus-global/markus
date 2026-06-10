@@ -1,6 +1,7 @@
 // Type definitions
 export type {
   TaskRepo, TaskLogRepo, TaskCommentRepo, RequirementCommentRepo, DeliverableRepo,
+  IntegrationRepo,
   TaskLogType, TaskLogRow,
   TaskCommentRow, RequirementCommentRow,
   ChannelMsg, ChannelMsgMetadata,
@@ -44,6 +45,7 @@ export {
   SqliteGroupChatRepo,
   SqliteAuditRepo,
   SqliteStatusTransitionRepo,
+  SqliteIntegrationRepo,
   SqliteReadCursorRepo,
   SqliteWorkflowRunRepo,
   SqliteWorkflowScheduleRepo,
@@ -54,6 +56,7 @@ export {
   type ExecutionStreamRow,
   type MailboxItemRow,
   type DecisionRow,
+  type IntegrationRow,
   type NotificationRow,
   type ApprovalRow,
   type StatusTransitionRow,
