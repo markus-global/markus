@@ -80,6 +80,7 @@
         "description": "多平台适应、素材复用、抖音口播文案",
         "skills": ["self-evolution"]
       }
-    ]
+    ],
+    "workflows": ["workflows/content-publishing.yaml"]
   }
 }

@@ -1,0 +1,19 @@
+{
+  "type": "skill",
+  "name": "workflow-building",
+  "displayName": "Workflow Building",
+  "version": "1.0.0",
+  "description": "Design and create workflow templates — YAML format, DAG patterns, scheduling, parameter systems, and role mapping for multi-step automated processes",
+  "author": "markus",
+  "category": "development",
+  "tags": ["builder", "workflow", "automation", "dag", "template"],
+  "i18n": {
+    "zh-CN": {
+      "displayName": "工作流构建",
+      "description": "设计和创建工作流模板 — YAML 格式、DAG 模式、调度、参数系统和多步骤自动化流程的角色映射"
+    }
+  },
+  "skill": {
+    "skillFile": "SKILL.md"
+  }
+}

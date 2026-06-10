@@ -1772,7 +1772,7 @@ export class TaskService {
       timeoutMs: request.timeoutMs,
       projectId: request.projectId,
       createdBy: request.createdBy,
-      approvedVia: undefined,
+      approvedVia: request.approvedVia,
       planReportId: request.planReportId,
       taskType: request.taskType ?? 'standard',
       scheduleConfig,
@@ -1835,6 +1835,16 @@ export class TaskService {
       assignedTo: task.assignedAgentId,
       reviewer: task.reviewerId,
     });
+
+    // Auto-start execution for tasks born in in_progress (e.g. workflow-created auto-approved tasks)
+    if (task.status === 'in_progress' && task.assignedAgentId && this.agentManager) {
+      log.info('Auto-starting newly created task', { taskId: task.id });
+      setImmediate(() => {
+        this.runTask(task.id).catch(err =>
+          log.warn('Auto-start runTask failed for new task', { taskId: task.id, error: String(err) }),
+        );
+      });
+    }
 
     // Request HITL approval (only for agent-created tasks that need approval)
     if (this.hitlService && request.creatorRole !== 'human' && task.status === 'pending') {
@@ -2890,7 +2900,7 @@ export class TaskService {
 
     // Human-created tasks and pre-approved plan tasks always skip governance
     if (request.creatorRole === 'human') return 'auto';
-    if (request.approvedVia === 'plan_approval') return 'auto';
+    if (request.approvedVia === 'plan_approval' || request.approvedVia === 'workflow') return 'auto';
 
     // Safe default when no policy is configured: agent-created tasks require human approval
     if (!policy?.enabled) {

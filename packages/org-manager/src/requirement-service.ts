@@ -144,7 +144,7 @@ export class RequirementService {
     if (request.priority && !validPriorities.includes(request.priority)) {
       throw new Error(`Invalid priority "${request.priority}". Must be one of: ${validPriorities.join(', ')}.`);
     }
-    const isUser = request.source === 'user';
+    const isAutoApproved = request.source === 'user' || request.source === 'workflow';
     const now = new Date().toISOString();
 
     const req: Requirement = {
@@ -153,12 +153,12 @@ export class RequirementService {
       projectId: request.projectId,
       title: request.title,
       description: request.description,
-      status: isUser ? 'in_progress' : 'pending',
+      status: isAutoApproved ? 'in_progress' : 'pending',
       priority: request.priority ?? 'medium',
       source: request.source,
       createdBy: request.createdBy,
-      approvedBy: isUser ? request.createdBy : undefined,
-      approvedAt: isUser ? now : undefined,
+      approvedBy: isAutoApproved ? request.createdBy : undefined,
+      approvedAt: isAutoApproved ? now : undefined,
       taskIds: [],
       tags: request.tags,
       createdAt: now,

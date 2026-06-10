@@ -217,6 +217,50 @@ export interface ProjectInfo {
   updatedAt: string;
 }
 
+export interface WorkflowInfo {
+  name: string;
+  displayName: string;
+  description: string;
+  version: string;
+  roles: string[];
+  hasSchedule: boolean;
+  schedule?: { interval?: string; cron?: string };
+  stepCount: number;
+  params?: Array<{ name: string; label?: string; type?: string; default?: string; required?: boolean; options?: string[] }>;
+}
+
+export interface WorkflowTemplateInfo {
+  name: string;
+  displayName?: string;
+  description: string;
+  version: string;
+  schedule?: { interval?: string; cron?: string };
+  params?: Array<{ name: string; label?: string; type?: string; default?: string; required?: boolean; options?: string[] }>;
+  steps: Array<{ id: string; name: string; role: string; depends_on?: string[]; prompt: string }>;
+}
+
+export interface WorkflowRoleCandidate {
+  role: string;
+  candidates: Array<{ agentId: string; agentName: string; roleName: string; agentRole: string; score: number }>;
+  recommended?: string;
+}
+
+export interface WorkflowRunInfo {
+  id: string;
+  teamId: string;
+  workflowName: string;
+  runNumber: number;
+  requirementId: string;
+  taskIds: string[];
+  params: Record<string, string>;
+  roleMapping: Record<string, string>;
+  status: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+  triggeredBy: string;
+  projectId?: string;
+  startedAt: string;
+  completedAt?: string;
+}
+
 export interface KnowledgeEntryInfo {
   id: string;
   scope: string;
@@ -1679,6 +1723,32 @@ export const api = {
     invitations: () => hubRequest<{ invitations: Array<{ orgId: string; orgName: string; invitedBy: string }> }>('/orgs/invitations'),
     acceptInvitation: (orgId: string) => hubRequest<{ ok: boolean }>(`/orgs/${orgId}/members/accept`, { method: 'POST' }),
     leave: (orgId: string) => hubRequest<{ ok: boolean }>(`/orgs/${orgId}/leave`, { method: 'POST' }),
+  },
+  workflows: {
+    list: (teamId: string) =>
+      request<{ workflows: WorkflowInfo[] }>(`/teams/${teamId}/workflows`),
+    get: (teamId: string, name: string) =>
+      request<{ template: WorkflowTemplateInfo }>(`/teams/${teamId}/workflows/${encodeURIComponent(name)}`),
+    create: (teamId: string, name: string, yaml: string) =>
+      request<{ template: { name: string; displayName?: string; description: string; version: string; stepCount: number } }>(`/teams/${teamId}/workflows`, { method: 'POST', body: JSON.stringify({ name, yaml }) }),
+    update: (teamId: string, name: string, yaml: string) =>
+      request<{ template: { name: string; displayName?: string; description: string; version: string } }>(`/teams/${teamId}/workflows/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify({ yaml }) }),
+    remove: (teamId: string, name: string) =>
+      request<{ ok: boolean }>(`/teams/${teamId}/workflows/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    roles: (teamId: string, name: string) =>
+      request<{ roles: WorkflowRoleCandidate[] }>(`/teams/${teamId}/workflows/${encodeURIComponent(name)}/roles`),
+    listRuns: (teamId: string, name: string, limit?: number) =>
+      request<{ runs: WorkflowRunInfo[] }>(`/teams/${teamId}/workflows/${encodeURIComponent(name)}/runs${limit ? `?limit=${limit}` : ''}`),
+    startRun: (teamId: string, name: string, projectId: string, params?: Record<string, string>, roleMapping?: Record<string, string>) =>
+      request<{ run: WorkflowRunInfo }>(`/teams/${teamId}/workflows/${encodeURIComponent(name)}/runs`, { method: 'POST', body: JSON.stringify({ projectId, params, roleMapping }) }),
+    getRun: (runId: string) =>
+      request<{ run: WorkflowRunInfo }>(`/workflow-runs/${runId}`),
+    cancelRun: (runId: string) =>
+      request<{ run: WorkflowRunInfo }>(`/workflow-runs/${runId}`, { method: 'DELETE' }),
+    pauseRun: (runId: string) =>
+      request<{ run: WorkflowRunInfo }>(`/workflow-runs/${runId}/pause`, { method: 'POST' }),
+    resumeRun: (runId: string) =>
+      request<{ run: WorkflowRunInfo }>(`/workflow-runs/${runId}/resume`, { method: 'POST' }),
   },
 };
 

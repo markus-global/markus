@@ -52,6 +52,9 @@ import {
   initStorage,
   searchRegistries,
   installSkill,
+  WorkflowService,
+  WorkflowRunner,
+  WorkflowScheduler,
   type AuditEventType,
 } from '@markus/org-manager';
 import { MessageRouter, FeishuAdapter, WebUIAdapter } from '@markus/comms';
@@ -547,6 +550,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   agentManager.setProjectService(projectService);
   agentManager.setDeliverableService(deliverableService);
   agentManager.setWebUiBaseUrl(`http://localhost:${apiPort}`);
+
   requirementService.setAgentManager(agentManager);
   requirementService.setHITLService(hitlService);
   apiServer.setProjectService(projectService);
@@ -556,6 +560,54 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   apiServer.setRequirementService(requirementService);
   taskService.setDeliverableService(deliverableService);
   orgService.setDeliverableService(deliverableService);
+
+  // Wire WorkflowService + WorkflowRunner (must be constructed before tools factory)
+  const workflowService = new WorkflowService(orgService);
+  const workflowRunner = new WorkflowRunner(requirementService, taskService, orgService);
+  if (storage?.workflowRunRepo) {
+    workflowRunner.setRunRepo(storage.workflowRunRepo);
+  }
+  workflowRunner.setWSBroadcaster(apiServer.getWSBroadcaster());
+  apiServer.setWorkflowService(workflowService);
+  apiServer.setWorkflowRunner(workflowRunner);
+
+  await workflowRunner.loadFromDB();
+
+  // Hook workflow run status tracking into task status changes
+  taskService.onTaskEvent(async (event) => {
+    if (event.type === 'completed' || event.type === 'failed' || event.type === 'status_changed') {
+      const task = taskService.getTask(event.taskId);
+      if (task) await workflowRunner.onTaskStatusChange(task);
+    }
+  });
+
+  // Wire workflow tools factory for manager agents
+  agentManager.setWorkflowToolsFactory((teamId: string) => {
+    return {
+      teamId,
+      listWorkflows: () => workflowService.listWorkflows(teamId),
+      getWorkflow: (name: string) => workflowService.getWorkflow(teamId, name),
+      runWorkflow: async (name: string, params: Record<string, string>, projectId: string, roleMapping?: Record<string, string>) => {
+        const template = workflowService.getWorkflow(teamId, name);
+        if (!template) throw new Error(`Workflow "${name}" not found`);
+        const mapping = roleMapping ?? workflowService.buildDefaultRoleMapping(teamId, template);
+        const run = await workflowRunner.createRun(teamId, template, params, mapping, projectId, 'agent');
+        return { runId: run.id, runNumber: run.runNumber, requirementId: run.requirementId, taskIds: run.taskIds };
+      },
+      listRuns: async (name: string, limit?: number) => {
+        const runs = await workflowRunner.listRuns(teamId, name, limit);
+        return runs.map(r => ({ id: r.id, runNumber: r.runNumber, status: r.status, taskIds: r.taskIds, triggeredBy: r.triggeredBy, startedAt: r.startedAt, completedAt: r.completedAt }));
+      },
+      getActiveRuns: () => {
+        const runs = workflowRunner.getActiveRuns(teamId);
+        return runs.map(r => ({ id: r.id, workflowName: r.workflowName, runNumber: r.runNumber, status: r.status, taskIds: r.taskIds, startedAt: r.startedAt }));
+      },
+      cancelRun: async (runId: string) => { await workflowRunner.cancelRun(runId); },
+      addWorkflow: (name: string, yaml: string) => { workflowService.addWorkflow(teamId, name, yaml); },
+      updateWorkflow: (name: string, yaml: string) => { workflowService.updateWorkflow(teamId, name, yaml); },
+      removeWorkflow: (name: string) => { workflowService.removeWorkflow(teamId, name); },
+    };
+  });
 
   // Wire ProjectService into TaskService (workspace management is handled by agents)
   taskService.setProjectService(projectService);
@@ -994,6 +1046,12 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
   const scheduledTaskRunner = new ScheduledTaskRunner(taskService);
   scheduledTaskRunner.start();
+
+  const workflowScheduler = new WorkflowScheduler(workflowService, workflowRunner, orgService);
+  if (storage?.workflowScheduleRepo) {
+    workflowScheduler.setScheduleRepo(storage.workflowScheduleRepo);
+  }
+  await workflowScheduler.start();
 
   // Escalation callback kept for agent-internal state management; actual notification/DB/WS/audit
   // logic is handled by the 'agent:escalation' event handler registered above.

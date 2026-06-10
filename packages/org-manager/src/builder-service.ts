@@ -288,9 +288,28 @@ export class BuilderService {
       }
     }
 
+    // Copy workflow YAML files from the package to the team's workflows directory
+    const workflowFiles = manifest.team?.workflows ?? [];
+    const copiedWorkflows: string[] = [];
+    if (workflowFiles.length > 0) {
+      const wfDir = join(homedir(), '.markus', 'teams', team.id, 'workflows');
+      mkdirSync(wfDir, { recursive: true });
+      for (const wfRelPath of workflowFiles) {
+        const srcPath = join(artDir, wfRelPath);
+        if (existsSync(srcPath)) {
+          const destName = wfRelPath.split('/').pop() ?? wfRelPath;
+          copyFileSync(srcPath, join(wfDir, destName));
+          copiedWorkflows.push(destName);
+          log.info('installTeam: copied workflow', { workflow: destName, teamId: team.id });
+        } else {
+          log.warn('installTeam: workflow file not found', { path: wfRelPath });
+        }
+      }
+    }
+
     return {
       type: 'team',
-      installed: { team: { id: team.id, name: teamName }, agents: createdAgents, starterTaskIds: createdTaskIds },
+      installed: { team: { id: team.id, name: teamName }, agents: createdAgents, starterTaskIds: createdTaskIds, workflows: copiedWorkflows },
     };
   }
 

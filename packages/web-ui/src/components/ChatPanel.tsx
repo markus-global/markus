@@ -461,16 +461,23 @@ export function ChatPanel({
     const load = async () => {
       const items: MentionItem[] = [];
       try {
-        const [projRes, reqRes, taskRes, delRes] = await Promise.all([
+        const [projRes, reqRes, taskRes, delRes, teamsRes] = await Promise.all([
           api.projects.list().catch(() => ({ projects: [] })),
           api.requirements.list().catch(() => ({ requirements: [] })),
           api.tasks.list({ pageSize: 100 }).catch(() => ({ tasks: [] })),
           api.deliverables.search({ limit: 100 }).catch(() => ({ results: [] })),
+          api.teams.list().catch(() => ({ teams: [], ungrouped: [] })),
         ]);
         for (const p of projRes.projects) items.push({ id: p.id, name: p.name, type: 'project', role: p.status });
         for (const r of reqRes.requirements) items.push({ id: r.id, name: r.title, type: 'requirement', role: r.priority });
         for (const t of taskRes.tasks) items.push({ id: t.id, name: t.title, type: 'task', role: t.status });
         for (const d of delRes.results) items.push({ id: d.id, name: d.title, type: 'deliverable', role: d.type });
+        for (const team of teamsRes.teams) {
+          try {
+            const wfRes = await api.workflows.list(team.id);
+            for (const wf of wfRes.workflows) items.push({ id: wf.name, name: wf.displayName || wf.name, type: 'workflow', role: `v${wf.version}` });
+          } catch { /* skip teams without workflows */ }
+        }
       } catch { /* ignore */ }
       if (!cancelled) setEntityMentions(items);
     };

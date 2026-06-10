@@ -431,6 +431,37 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
 
+  type EntityMentionItem = { id: string; name: string; entityType: 'workflow' | 'project' | 'requirement' | 'task' | 'deliverable'; role?: string };
+  const [entityMentionItems, setEntityMentionItems] = useState<EntityMentionItem[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const items: EntityMentionItem[] = [];
+      try {
+        const [projRes, reqRes, taskRes, delRes, teamsRes] = await Promise.all([
+          api.projects.list().catch(() => ({ projects: [] as Array<{ id: string; name: string; status: string }> })),
+          api.requirements.list().catch(() => ({ requirements: [] as Array<{ id: string; title: string; priority: string }> })),
+          api.tasks.list({ pageSize: 100 }).catch(() => ({ tasks: [] as Array<{ id: string; title: string; status: string }> })),
+          api.deliverables.search({ limit: 100 }).catch(() => ({ results: [] as Array<{ id: string; title: string; type: string }> })),
+          api.teams.list().catch(() => ({ teams: [] as TeamInfo[], ungrouped: [] })),
+        ]);
+        for (const p of projRes.projects) items.push({ id: p.id, name: p.name, entityType: 'project', role: p.status });
+        for (const r of reqRes.requirements) items.push({ id: r.id, name: r.title, entityType: 'requirement', role: r.priority });
+        for (const tk of taskRes.tasks) items.push({ id: tk.id, name: tk.title, entityType: 'task', role: tk.status });
+        for (const d of delRes.results) items.push({ id: d.id, name: d.title, entityType: 'deliverable', role: d.type });
+        for (const team of teamsRes.teams) {
+          try {
+            const wfRes = await api.workflows.list(team.id);
+            for (const wf of wfRes.workflows) items.push({ id: wf.name, name: wf.displayName || wf.name, entityType: 'workflow', role: `v${wf.version}` });
+          } catch { /* skip */ }
+        }
+      } catch { /* ignore */ }
+      if (!cancelled) setEntityMentionItems(items);
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, []);
+
   const activeTeamId = chatMode === 'channel'
     ? groupChats.find(gc => gc.channelKey === activeChannel)?.teamId
     : undefined;
@@ -2069,19 +2100,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const handleInputChange = (val: string) => {
     setInput(val);
-    if (chatMode !== 'channel') { setMentionDropdown(false); return; }
 
     const cursorPos = textareaRef.current?.selectionStart ?? val.length;
     const textBeforeCursor = val.slice(0, cursorPos);
 
-    // Search backwards from cursor for the nearest unfinished @mention
     const atIdx = textBeforeCursor.lastIndexOf('@');
     if (atIdx >= 0) {
       const charBefore = atIdx === 0 ? '' : textBeforeCursor[atIdx - 1]!;
       const isValidPosition = atIdx === 0 || /[\s\n,，。！？!?;；:：、（）()\[\]【】]/.test(charBefore);
       if (isValidPosition) {
         const fragment = textBeforeCursor.slice(atIdx + 1);
-        // Fragment between @ and cursor must be a contiguous token (no space/newline)
         if (!fragment.includes(' ') && !fragment.includes('\n')) {
           setMentionDropdown(true);
           setMentionFilter(fragment.toLowerCase());
@@ -2093,17 +2121,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     setMentionDropdown(false);
   };
 
-  const insertMention = (name: string) => {
+  const insertMention = (name: string, entityType?: string, entityId?: string) => {
     const cursorPos = textareaRef.current?.selectionStart ?? input.length;
     const before = input.slice(0, cursorPos);
     const atIdx = before.lastIndexOf('@');
     const after = input.slice(cursorPos);
-    const mention = name.includes(' ') ? `@[${name}]` : `@${name}`;
+    const mention = entityType && entityId
+      ? `@[${name}](${entityType}:${entityId})`
+      : name.includes(' ') ? `@[${name}]` : `@${name}`;
     const newVal = input.slice(0, atIdx) + mention + ' ' + after;
     setInput(newVal);
     setMentionDropdown(false);
     setMentionSelectedIndex(0);
-    // Restore cursor position after the inserted mention
     const newCursor = atIdx + mention.length + 1;
     requestAnimationFrame(() => {
       textareaRef.current?.setSelectionRange(newCursor, newCursor);
@@ -2212,6 +2241,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const filteredAgents = agents
     .filter(a => channelTeamMemberIds ? channelTeamMemberIds.has(a.id) : true)
     .filter(a => a.name.toLowerCase().includes(mentionFilter));
+  const filteredEntityItems = entityMentionItems.filter(e => e.name.toLowerCase().includes(mentionFilter));
+  const ENTITY_TYPE_ICON: Record<string, string> = { workflow: '⚙️', project: '📁', requirement: '📋', task: '✅', deliverable: '📦' };
+  type MentionDropdownItem = { kind: 'agent'; agent: AgentInfo } | { kind: 'entity'; entity: EntityMentionItem };
+  const allMentionItems: MentionDropdownItem[] = useMemo(() => [
+    ...filteredAgents.map(a => ({ kind: 'agent' as const, agent: a })),
+    ...filteredEntityItems.map(e => ({ kind: 'entity' as const, entity: e })),
+  ], [filteredAgents, filteredEntityItems]);
 
   const activeDmUser = humans.find(h => h.id === activeDmUserId);
   const isSelfDm = activeDmUserId === authUser?.id || !activeDmUserId;
@@ -3244,24 +3280,38 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         {/* Input (only in chat tab) */}
         <div className={`${isMobile ? 'px-3 py-2' : 'px-5 py-3'} relative shrink-0 ${isEmptyChat ? '' : '2xl:pr-[280px]'}`} onDrop={handleDrop} onDragOver={handleDragOver}>
           <div className={`bg-surface-primary border border-border-default shadow-lg shadow-black/10 ${isMobile ? 'rounded-2xl p-3' : 'rounded-2xl p-3 max-w-3xl mx-auto'}`}>
-          {mentionDropdown && filteredAgents.length > 0 && (
-            <div className="absolute bottom-full left-4 mb-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden z-10 max-h-48 overflow-y-auto">
+          {mentionDropdown && allMentionItems.length > 0 && (
+            <div className="absolute bottom-full left-4 mb-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden z-10 max-h-64 max-w-xs w-72 overflow-y-auto">
               <div className="px-3 py-1.5 text-[10px] text-fg-tertiary font-medium uppercase tracking-wider border-b border-border-default">
                 {t('page.mentionAgent')}
               </div>
-              {filteredAgents.map((a, i) => (
+              {allMentionItems.map((item, i) => item.kind === 'agent' ? (
                 <button
-                  key={a.id}
+                  key={`agt-${item.agent.id}`}
                   ref={el => { if (i === mentionSelectedIndex && el) el.scrollIntoView({ block: 'nearest' }); }}
-                  onClick={() => insertMention(a.name)}
+                  onClick={() => insertMention(item.agent.name)}
                   onMouseEnter={() => setMentionSelectedIndex(i)}
                   className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 transition-colors ${
                     i === mentionSelectedIndex ? 'bg-brand-500/15 text-brand-500' : 'text-fg-secondary hover:bg-surface-overlay'
                   }`}
                 >
-                  <Avatar name={a.name} avatarUrl={a.avatarUrl} size={24} bgClass="bg-brand-500/20 text-brand-500" />
-                  <span className="flex-1 min-w-0">{a.name}</span>
-                  <span className="text-xs text-fg-tertiary ml-auto">{a.role}</span>
+                  <Avatar name={item.agent.name} avatarUrl={item.agent.avatarUrl} size={24} bgClass="bg-brand-500/20 text-brand-500" />
+                  <span className="flex-1 min-w-0 truncate">{item.agent.name}</span>
+                  <span className="text-xs text-fg-tertiary ml-auto">{item.agent.role}</span>
+                </button>
+              ) : (
+                <button
+                  key={`${item.entity.entityType}-${item.entity.id}`}
+                  ref={el => { if (i === mentionSelectedIndex && el) el.scrollIntoView({ block: 'nearest' }); }}
+                  onClick={() => insertMention(item.entity.name, item.entity.entityType, item.entity.id)}
+                  onMouseEnter={() => setMentionSelectedIndex(i)}
+                  className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 transition-colors ${
+                    i === mentionSelectedIndex ? 'bg-brand-500/15 text-brand-500' : 'text-fg-secondary hover:bg-surface-overlay'
+                  }`}
+                >
+                  <span className="w-6 h-6 flex items-center justify-center text-sm shrink-0">{ENTITY_TYPE_ICON[item.entity.entityType] ?? '📄'}</span>
+                  <span className="flex-1 min-w-0 truncate">{item.entity.name}</span>
+                  <span className="text-xs text-fg-tertiary ml-auto">{item.entity.role}</span>
                 </button>
               ))}
             </div>
@@ -3334,14 +3384,22 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 adjustTextareaHeight();
               }}
               onKeyDown={e => {
-                if (mentionDropdown && filteredAgents.length > 0) {
+                if (mentionDropdown && allMentionItems.length > 0) {
                   const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
                   const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
                   const isSelect = e.key === 'Enter' || e.key === 'Tab';
                   const isClose = e.key === 'Escape';
-                  if (isUp) { e.preventDefault(); setMentionSelectedIndex(prev => (prev - 1 + filteredAgents.length) % filteredAgents.length); return; }
-                  if (isDown) { e.preventDefault(); setMentionSelectedIndex(prev => (prev + 1) % filteredAgents.length); return; }
-                  if (isSelect) { e.preventDefault(); const agent = filteredAgents[mentionSelectedIndex]; if (agent) insertMention(agent.name); return; }
+                  if (isUp) { e.preventDefault(); setMentionSelectedIndex(prev => (prev - 1 + allMentionItems.length) % allMentionItems.length); return; }
+                  if (isDown) { e.preventDefault(); setMentionSelectedIndex(prev => (prev + 1) % allMentionItems.length); return; }
+                  if (isSelect) {
+                    e.preventDefault();
+                    const sel = allMentionItems[mentionSelectedIndex];
+                    if (sel) {
+                      if (sel.kind === 'agent') insertMention(sel.agent.name);
+                      else insertMention(sel.entity.name, sel.entity.entityType, sel.entity.id);
+                    }
+                    return;
+                  }
                   if (isClose) { e.preventDefault(); setMentionDropdown(false); return; }
                 }
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }

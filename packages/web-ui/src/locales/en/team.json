@@ -286,7 +286,8 @@
       "project": "Project",
       "requirement": "Requirement",
       "task": "Task",
-      "deliverable": "Deliverable"
+      "deliverable": "Deliverable",
+      "workflow": "Workflow"
     },
     "addMoreFiles": "Add more files",
     "attachFilesTitle": "Attach files (images, PDF, Word, Excel, PowerPoint...)",

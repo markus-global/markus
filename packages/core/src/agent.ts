@@ -191,7 +191,7 @@ export interface AgentOptions {
   cognitive?: CognitiveConfig;
 }
 
-export type AgentScenario = 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'group_chat' | 'comment_response' | 'memory_consolidation' | 'review' | 'requirement_action' | 'deliberation';
+export type AgentScenario = 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'group_chat' | 'comment_response' | 'memory_consolidation' | 'review' | 'requirement_action' | 'workflow_action' | 'deliberation';
 
 interface HandleMessageOptions {
   sessionId?: string;
@@ -1209,6 +1209,25 @@ export class Agent {
           );
           resolveResponse(reply);
           return reply;
+        }
+
+        case 'workflow_update': {
+          if (extra.actionRequired) {
+            const wfEvent = extra.event ?? 'update';
+            const reply = await this.handleMessage(
+              item.payload.content + COMPLETION_MARKER_INSTRUCTION,
+              item.metadata?.senderId,
+              senderInfo,
+              buildHandleOpts({ sessionId: `workflow_${wfEvent}_${ts}`, scenario: 'workflow_action' }),
+            );
+            resolveResponse(reply);
+            return reply;
+          }
+          log.info('Workflow update (informational, no LLM)', {
+            agentId: this.id, summary: item.payload.summary,
+          });
+          resolveResponse('');
+          return;
         }
 
         case 'task_comment': {
@@ -2767,6 +2786,18 @@ export class Agent {
     this.tasksFetcher = fetcher;
   }
 
+  private workflowContextFetcher?: () => {
+    activeRuns: Array<{ workflowName: string; runNumber: number; status: string; taskCount: number; startedAt: string }>;
+    availableWorkflows: Array<{ name: string; description: string; stepCount: number }>;
+  } | undefined;
+
+  setWorkflowContextFetcher(fetcher: () => {
+    activeRuns: Array<{ workflowName: string; runNumber: number; status: string; taskCount: number; startedAt: string }>;
+    availableWorkflows: Array<{ name: string; description: string; stepCount: number }>;
+  } | undefined): void {
+    this.workflowContextFetcher = fetcher;
+  }
+
   async generateDailyReport(): Promise<string> {
     const dailyLog = this.memory.getRecentDailyLogs(1);
     const state = this.getState();
@@ -2849,6 +2880,10 @@ export class Agent {
         case 'requirement_action':
           actType = 'internal';
           actLabel = peerName ? `Requirement action from ${peerName}` : 'Requirement Action';
+          break;
+        case 'workflow_action':
+          actType = 'internal';
+          actLabel = 'Workflow Action';
           break;
         default:
           actLabel = peerName ? `Chat with ${peerName}` : 'Human Chat';
@@ -2948,6 +2983,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      workflowContext: isLightweight ? undefined : this.workflowContextFetcher?.(),
       cognitiveContext,
       ...this.getTeamContextParams(),
     });
@@ -3586,6 +3622,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
       ...this.getTeamContextParams(),
     });
@@ -4235,6 +4272,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
       ...this.getTeamContextParams(),
     });
@@ -4763,6 +4801,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
       ...this.getTeamContextParams(),
     });

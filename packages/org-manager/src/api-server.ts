@@ -44,6 +44,8 @@ import type { ReportService } from './report-service.js';
 import type { KnowledgeService } from './knowledge-service.js';
 import type { DeliverableService } from './deliverable-service.js';
 import type { RequirementService } from './requirement-service.js';
+import type { WorkflowService } from './workflow-service.js';
+import type { WorkflowRunner } from './workflow-runner.js';
 import { WSBroadcaster } from './ws-server.js';
 import { SSEHandler } from './sse-handler.js';
 import { installSkill } from './skill-service.js';
@@ -201,6 +203,8 @@ export class APIServer {
   private templateRegistry?: TemplateRegistry;
   private builderService?: BuilderService;
   private workflowEngine?: WorkflowEngine;
+  private workflowService?: WorkflowService;
+  private workflowRunner?: WorkflowRunner;
   private teamTemplateRegistry: TeamTemplateRegistry;
   private fileStorage?: LocalFileStorageProvider;
   private remoteAgent?: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void };
@@ -9150,10 +9154,178 @@ EXPLANATION_END`;
       return;
     }
 
-    // ── Workflow Engine ────────────────────────────────────────────────────
+    // ── Workflow Templates (team-scoped) ─────────────────────────────────
+    const wfTeamMatch = path.match(/^\/api\/teams\/([^/]+)\/workflows(?:\/([^/]+))?(?:\/(runs|roles))?$/);
+    if (wfTeamMatch) {
+      const teamId = wfTeamMatch[1]!;
+      const wfName = wfTeamMatch[2] ? decodeURIComponent(wfTeamMatch[2]) : undefined;
+      const wfSub = wfTeamMatch[3] as 'runs' | 'roles' | undefined;
+
+      // GET /api/teams/:teamId/workflows — list all workflow templates
+      if (!wfName && req.method === 'GET') {
+        if (!this.workflowService) { this.json(res, 200, { workflows: [] }); return; }
+        const workflows = this.workflowService.listWorkflows(teamId);
+        this.json(res, 200, { workflows });
+        return;
+      }
+
+      // POST /api/teams/:teamId/workflows — add a new workflow template
+      if (!wfName && req.method === 'POST') {
+        if (!this.workflowService) { this.json(res, 500, { error: 'Workflow service not available' }); return; }
+        const body = await this.readBody(req);
+        const name = body['name'] as string;
+        const yaml = body['yaml'] as string;
+        if (!name || !yaml) { this.json(res, 400, { error: 'name and yaml are required' }); return; }
+        try {
+          const template = this.workflowService.addWorkflow(teamId, name, yaml);
+          this.json(res, 201, { template: { name: template.name, displayName: template.displayName, description: template.description, version: template.version, stepCount: template.steps.length } });
+        } catch (err) {
+          this.json(res, 400, { error: String(err) });
+        }
+        return;
+      }
+
+      // GET /api/teams/:teamId/workflows/:name — get a single workflow template
+      if (wfName && !wfSub && req.method === 'GET') {
+        if (!this.workflowService) { this.json(res, 404, { error: 'Workflow service not available' }); return; }
+        const template = this.workflowService.getWorkflow(teamId, wfName);
+        if (!template) { this.json(res, 404, { error: `Workflow "${wfName}" not found` }); return; }
+        this.json(res, 200, { template });
+        return;
+      }
+
+      // PUT /api/teams/:teamId/workflows/:name — update a workflow template
+      if (wfName && !wfSub && req.method === 'PUT') {
+        if (!this.workflowService) { this.json(res, 500, { error: 'Workflow service not available' }); return; }
+        const body = await this.readBody(req);
+        const yaml = body['yaml'] as string;
+        if (!yaml) { this.json(res, 400, { error: 'yaml is required' }); return; }
+        try {
+          const template = this.workflowService.updateWorkflow(teamId, wfName, yaml);
+          this.json(res, 200, { template: { name: template.name, displayName: template.displayName, description: template.description, version: template.version } });
+        } catch (err) {
+          this.json(res, 400, { error: String(err) });
+        }
+        return;
+      }
+
+      // DELETE /api/teams/:teamId/workflows/:name — remove a workflow template
+      if (wfName && !wfSub && req.method === 'DELETE') {
+        if (!this.workflowService) { this.json(res, 500, { error: 'Workflow service not available' }); return; }
+        try {
+          this.workflowService.removeWorkflow(teamId, wfName);
+          this.json(res, 200, { ok: true });
+        } catch (err) {
+          this.json(res, 400, { error: String(err) });
+        }
+        return;
+      }
+
+      // GET /api/teams/:teamId/workflows/:name/roles — resolve role candidates
+      if (wfName && wfSub === 'roles' && req.method === 'GET') {
+        if (!this.workflowService) { this.json(res, 500, { error: 'Workflow service not available' }); return; }
+        const template = this.workflowService.getWorkflow(teamId, wfName);
+        if (!template) { this.json(res, 404, { error: `Workflow "${wfName}" not found` }); return; }
+        const roles = this.workflowService.resolveRoles(teamId, template);
+        this.json(res, 200, { roles });
+        return;
+      }
+
+      // GET /api/teams/:teamId/workflows/:name/runs — list runs for a workflow
+      if (wfName && wfSub === 'runs' && req.method === 'GET') {
+        if (!this.workflowRunner) { this.json(res, 200, { runs: [] }); return; }
+        const limit = parseInt(url.searchParams.get('limit') ?? '20', 10);
+        const runs = await this.workflowRunner.listRuns(teamId, wfName, limit);
+        this.json(res, 200, { runs });
+        return;
+      }
+
+      // POST /api/teams/:teamId/workflows/:name/runs — start a new workflow run
+      if (wfName && wfSub === 'runs' && req.method === 'POST') {
+        if (!this.workflowService || !this.workflowRunner) {
+          this.json(res, 500, { error: 'Workflow service not available' });
+          return;
+        }
+        const template = this.workflowService.getWorkflow(teamId, wfName);
+        if (!template) { this.json(res, 404, { error: `Workflow "${wfName}" not found` }); return; }
+
+        const authUser = await this.getAuthUser(req);
+        const body = await this.readBody(req);
+        const params = (body['params'] as Record<string, string>) ?? {};
+        let roleMapping = body['roleMapping'] as Record<string, string> | undefined;
+        const projectId = body['projectId'] as string;
+
+        if (!projectId) { this.json(res, 400, { error: 'projectId is required' }); return; }
+
+        if (!roleMapping) {
+          roleMapping = this.workflowService.buildDefaultRoleMapping(teamId, template);
+        }
+
+        try {
+          const run = await this.workflowRunner.createRun(
+            teamId, template, params, roleMapping, projectId, 'manual', authUser?.userId,
+          );
+          this.json(res, 201, { run });
+        } catch (err) {
+          this.json(res, 400, { error: String(err) });
+        }
+        return;
+      }
+    }
+
+    // Workflow run by ID
+    const wfRunMatch = path.match(/^\/api\/workflow-runs\/([^/]+)$/);
+    if (wfRunMatch) {
+      const runId = wfRunMatch[1]!;
+
+      if (req.method === 'GET') {
+        if (!this.workflowRunner) { this.json(res, 404, { error: 'Run not found' }); return; }
+        const run = await this.workflowRunner.getRunAsync(runId);
+        if (!run) { this.json(res, 404, { error: 'Run not found' }); return; }
+        this.json(res, 200, { run });
+        return;
+      }
+
+      if (req.method === 'DELETE') {
+        if (!this.workflowRunner) { this.json(res, 404, { error: 'Run not found' }); return; }
+        try {
+          const run = await this.workflowRunner.cancelRun(runId);
+          this.json(res, 200, { run });
+        } catch (err) {
+          this.json(res, 400, { error: String(err) });
+        }
+        return;
+      }
+    }
+
+    // Workflow run pause/resume
+    const wfRunActionMatch = path.match(/^\/api\/workflow-runs\/([^/]+)\/(pause|resume)$/);
+    if (wfRunActionMatch && req.method === 'POST') {
+      const runId = wfRunActionMatch[1]!;
+      const action = wfRunActionMatch[2] as 'pause' | 'resume';
+      if (!this.workflowRunner) { this.json(res, 404, { error: 'Run not found' }); return; }
+      try {
+        const run = action === 'pause'
+          ? await this.workflowRunner.pauseRun(runId)
+          : await this.workflowRunner.resumeRun(runId);
+        this.json(res, 200, { run });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // ── Workflow Engine (DEPRECATED — use /api/teams/:teamId/workflows instead) ─
+    if ((path === '/api/workflows' || path.startsWith('/api/workflows/')) &&
+        !path.startsWith('/api/workflow-runs')) {
+      res.setHeader('Deprecation', 'true');
+      res.setHeader('Sunset', '2026-09-01');
+      res.setHeader('Link', '</api/teams/{teamId}/workflows>; rel="successor-version"');
+    }
+
     if (path === '/api/workflows' && req.method === 'GET') {
       if (!this.workflowEngine) {
-        this.json(res, 200, { executions: [] });
+        this.json(res, 200, { executions: [], _deprecated: 'Use GET /api/teams/:teamId/workflows instead' });
         return;
       }
       const executions = this.workflowEngine.listExecutions().map(e => ({
@@ -9165,7 +9337,7 @@ EXPLANATION_END`;
         error: e.error,
         stepCount: e.steps.size,
       }));
-      this.json(res, 200, { executions });
+      this.json(res, 200, { executions, _deprecated: 'Use GET /api/teams/:teamId/workflows instead' });
       return;
     }
 
@@ -9175,7 +9347,7 @@ EXPLANATION_END`;
       const action = body['action'] as string;
       if (action === 'validate') {
         const errors = this.workflowEngine!.validate(body['workflow'] as WorkflowDefinition);
-        this.json(res, 200, { valid: errors.length === 0, errors });
+        this.json(res, 200, { valid: errors.length === 0, errors, _deprecated: 'Use POST /api/teams/:teamId/workflows/:name/runs instead' });
         return;
       }
       try {
@@ -9188,6 +9360,7 @@ EXPLANATION_END`;
           status: execution.status,
           outputs: execution.outputs,
           error: execution.error,
+          _deprecated: 'Use POST /api/teams/:teamId/workflows/:name/runs instead',
         });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -10535,7 +10708,7 @@ EXPLANATION_END`;
       exact('/api/taskboard', 'GET'),
       exact('/api/ops/dashboard', 'GET'),
       regex(/^\/api\/tasks\/[^/]+$/, 'GET'),
-      startsWith('/api/tasks/', 'PUT', 'DELETE'),
+      regex(/^\/api\/tasks\/[^/]+$/, 'PUT', 'DELETE'),
       regex(/^\/api\/tasks\/[^/]+\/approve$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/reject$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/cancel$/, 'POST'),
@@ -10741,6 +10914,11 @@ EXPLANATION_END`;
       exact('/api/governance/policy', 'GET', 'PUT'),
       exact('/api/workflows', 'GET', 'POST'),
       startsWith('/api/workflows/', 'GET', 'DELETE'),
+      regex(/^\/api\/teams\/[^/]+\/workflows$/, 'GET', 'POST'),
+      regex(/^\/api\/teams\/[^/]+\/workflows\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
+      regex(/^\/api\/teams\/[^/]+\/workflows\/[^/]+\/roles$/, 'GET'),
+      regex(/^\/api\/teams\/[^/]+\/workflows\/[^/]+\/runs$/, 'GET', 'POST'),
+      regex(/^\/api\/workflow-runs\/[^/]+$/, 'GET', 'DELETE'),
 
       // ── System ───────────────────────────────────────────────────────────
       exact('/api/health', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'),
@@ -10845,6 +11023,12 @@ EXPLANATION_END`;
   }
   setRequirementService(svc: RequirementService): void {
     this.requirementService = svc;
+  }
+  setWorkflowService(svc: WorkflowService): void {
+    this.workflowService = svc;
+  }
+  setWorkflowRunner(runner: WorkflowRunner): void {
+    this.workflowRunner = runner;
   }
 
   private buildOpsDashboard(orgId: string | undefined, period: '1h' | '24h' | '7d') {

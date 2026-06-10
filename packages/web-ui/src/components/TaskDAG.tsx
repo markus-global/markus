@@ -659,8 +659,12 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
 
   if (tasks.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm">
-        {t('work:dag.noTasks')}
+      <div className="flex-1 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3 max-w-sm text-center">
+          <svg className="w-10 h-10 text-fg-quaternary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+          <p className="text-sm font-medium text-fg-secondary">{t('work:task.dagEmptyTitle')}</p>
+          <p className="text-xs text-fg-tertiary leading-relaxed">{t('work:task.dagEmptyDesc')}</p>
+        </div>
       </div>
     );
   }

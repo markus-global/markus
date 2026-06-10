@@ -24,6 +24,7 @@ import { createBuiltinTools } from './tools/builtin.js';
 import { MCPClientManager } from './tools/mcp-client.js';
 import { BrowserSessionManager } from './tools/browser-session.js';
 import { createManagerTools, createPackageTools } from './tools/manager.js';
+import { createWorkflowTools, type WorkflowToolsContext } from './tools/workflow-tools.js';
 import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
@@ -693,6 +694,47 @@ export class AgentManager {
     this.deliverableService = deliverableService;
   }
 
+  private workflowToolsFactory?: (teamId: string) => WorkflowToolsContext | null;
+
+  setWorkflowToolsFactory(factory: (teamId: string) => WorkflowToolsContext | null): void {
+    this.workflowToolsFactory = factory;
+  }
+
+  private wireWorkflowForManager(agent: Agent, teamId: string): void {
+    if (!this.workflowToolsFactory) return;
+    const wfFactory = this.workflowToolsFactory;
+
+    agent.setWorkflowContextFetcher(() => {
+      try {
+        const wfCtx = wfFactory(teamId);
+        if (!wfCtx) return undefined;
+        return {
+          activeRuns: wfCtx.getActiveRuns().map(r => ({
+            workflowName: r.workflowName,
+            runNumber: r.runNumber,
+            status: r.status,
+            taskCount: r.taskIds.length,
+            startedAt: r.startedAt,
+          })),
+          availableWorkflows: wfCtx.listWorkflows().map(w => ({
+            name: w.name,
+            description: w.description,
+            stepCount: w.stepCount,
+          })),
+        };
+      } catch {
+        return undefined;
+      }
+    });
+
+    const wfCtx = wfFactory(teamId);
+    if (wfCtx) {
+      for (const tool of createWorkflowTools(wfCtx)) {
+        agent.registerTool(tool);
+      }
+    }
+  }
+
   setWebUiBaseUrl(url: string): void {
     this.webUiBaseUrl = url.replace(/\/+$/, '');
   }
@@ -1305,6 +1347,11 @@ export class AgentManager {
       });
 
       log.info(`Task tools injected for agent ${id}`);
+    }
+
+    // Workflow context + tools for manager agents
+    if (request.agentRole === 'manager' && request.teamId) {
+      this.wireWorkflowForManager(agent, request.teamId);
     }
 
     // Project tools — every agent can list/view/create/update/delete projects + knowledge + stats
@@ -2046,6 +2093,11 @@ export class AgentManager {
           return [];
         }
       });
+    }
+
+    // Workflow context + tools for restored manager agents
+    if (config.agentRole === 'manager' && config.teamId) {
+      this.wireWorkflowForManager(agent, config.teamId);
     }
 
     if (this.projectService) {

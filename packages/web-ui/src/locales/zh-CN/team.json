@@ -286,7 +286,8 @@
       "project": "项目",
       "requirement": "需求",
       "task": "任务",
-      "deliverable": "交付物"
+      "deliverable": "交付物",
+      "workflow": "工作流"
     },
     "addMoreFiles": "添加更多文件",
     "attachFilesTitle": "附加文件（图片、PDF、Word、Excel、PowerPoint…）",

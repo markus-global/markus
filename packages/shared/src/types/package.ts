@@ -55,6 +55,8 @@ export interface TeamSection {
   members: TeamMemberSection[];
   /** Pre-built tasks created when the team is first set up (for onboarding) */
   starterTasks?: StarterTaskDef[];
+  /** Workflow template YAML files relative to the package root, e.g. ["workflows/content-publishing.yaml"] */
+  workflows?: string[];
 }
 
 export interface SkillSection {
