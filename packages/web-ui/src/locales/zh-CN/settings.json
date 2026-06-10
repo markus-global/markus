@@ -605,7 +605,7 @@
   "feishu": {
     "description": "配置飞书集成，用于接收通知和审批请求",
     "connectionSettings": "连接设置",
-    "verifyToken": "验证令牌",
+    "verificationToken": "验证令牌",
     "encryptKey": "加密密钥",
     "optional": "可选",
     "webhookPath": "Webhook 路径",

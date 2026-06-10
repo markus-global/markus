@@ -1352,12 +1352,12 @@ export const api = {
     enableRemote: () => request<{ ok: boolean; status: RemoteStatus }>('/settings/remote/enable', { method: 'POST' }),
     disableRemote: () => request<{ ok: boolean }>('/settings/remote/disable', { method: 'POST' }),
     getFeishuIntegration: () => request<{
-      appId?: string; appSecret?: string; verifyToken?: string; encryptKey?: string;
+      appId?: string; appSecret?: string; verificationToken?: string; encryptKey?: string;
       webhookPath?: string; enabled: boolean; connected: boolean;
       notifyOnApproval: boolean; notifyOnNotification: boolean; notifyPriority: string[];
     }>('/settings/integrations/feishu'),
     saveFeishuIntegration: (config: {
-      appId: string; appSecret: string; verifyToken?: string; encryptKey?: string;
+      appId: string; appSecret: string; verificationToken?: string; encryptKey?: string;
       webhookPath?: string; enabled?: boolean;
       notifyOnApproval?: boolean; notifyOnNotification?: boolean; notifyPriority?: string[];
     }) => request<{
