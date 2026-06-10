@@ -5,7 +5,7 @@ import { api } from '../api.ts';
 export interface FeishuConfig {
   appId: string;
   appSecret: string;
-  verifyToken?: string;
+  verificationToken?: string;
   encryptKey?: string;
   webhookPath?: string;
   enabled: boolean;
@@ -18,7 +18,7 @@ export interface FeishuConfig {
 const DEFAULT_CONFIG: FeishuConfig = {
   appId: '',
   appSecret: '',
-  verifyToken: '',
+  verificationToken: '',
   encryptKey: '',
   webhookPath: '/webhook/feishu',
   enabled: false,
@@ -104,7 +104,7 @@ export function FeishuIntegrationSection() {
         setConfig({
           appId: data.appId ?? '',
           appSecret: data.appSecret ?? '',
-          verifyToken: data.verifyToken ?? '',
+          verificationToken: data.verificationToken ?? '',
           encryptKey: data.encryptKey ?? '',
           webhookPath: data.webhookPath ?? '/webhook/feishu',
           enabled: data.enabled ?? false,
@@ -148,7 +148,7 @@ export function FeishuIntegrationSection() {
       const result = await api.settings.saveFeishuIntegration({
         appId: config.appId,
         appSecret: config.appSecret,
-        verifyToken: config.verifyToken || undefined,
+        verificationToken: config.verificationToken || undefined,
         encryptKey: config.encryptKey || undefined,
         webhookPath: config.webhookPath || '/webhook/feishu',
         enabled: config.enabled,
@@ -284,13 +284,13 @@ export function FeishuIntegrationSection() {
           {/* Verify Token */}
           <div>
             <label className="block text-xs font-medium text-fg-secondary mb-1.5">
-              {t('settings:feishu.verifyToken', { defaultValue: 'Verify Token' })}
+              {t('settings:feishu.verificationToken', { defaultValue: 'Verify Token' })}
               <span className="text-fg-tertiary ml-1">({t('settings:feishu.optional', { defaultValue: 'optional' })})</span>
             </label>
             <input
               type="text"
-              value={config.verifyToken ?? ''}
-              onChange={e => updateField('verifyToken', e.target.value)}
+              value={config.verificationToken ?? ''}
+              onChange={e => updateField('verificationToken', e.target.value)}
               placeholder="Event verification token from Feishu"
               className="w-full px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
             />

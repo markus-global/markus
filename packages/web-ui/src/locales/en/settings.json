@@ -605,7 +605,7 @@
   "feishu": {
     "description": "Configure Feishu integration for notifications and approvals",
     "connectionSettings": "Connection Settings",
-    "verifyToken": "Verify Token",
+    "verificationToken": "Verify Token",
     "encryptKey": "Encrypt Key",
     "optional": "optional",
     "webhookPath": "Webhook Path",
