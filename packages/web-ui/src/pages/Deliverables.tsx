@@ -635,8 +635,8 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
       {/* Right detail panel */}
       {(!isMobile || mobileShowDetail) && (
-      <div className="flex-1 overflow-hidden min-w-0 flex">
-        <div ref={detailContentRef} className="flex-1 overflow-y-auto min-w-0 relative">
+      <div className="flex-1 overflow-hidden min-w-0 flex relative">
+        <div ref={detailContentRef} className="flex-1 overflow-y-auto min-w-0">
         {/* Expand sidebar button — shown when collapsed */}
         {sidebarCollapsed && !isMobile && (
           <div className="sticky top-0 z-10 bg-surface-primary/80 backdrop-blur-sm px-4 py-2 flex items-center gap-2">
@@ -893,11 +893,13 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
           </div>
         )}
 
-        {/* Floating chat FAB (Phase 3a) — only when deliverable has an agent */}
+      </div>
+
+        {/* Floating chat FAB — positioned in the non-scrolling parent */}
         {selected?.agentId && !chatPanelOpen && !isMobile && (
           <button
             onClick={() => setChatPanelOpen(true)}
-            className="absolute bottom-6 right-6 w-12 h-12 rounded-full bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-black/20 flex items-center justify-center transition-all hover:scale-105 z-10"
+            className="absolute bottom-6 right-6 w-12 h-12 rounded-full bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-black/20 flex items-center justify-center transition-all hover:scale-105 z-20"
             title={t('chat.openChat')}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -905,7 +907,6 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
             </svg>
           </button>
         )}
-      </div>
 
         {/* Chat panel (Phase 3b) */}
         {chatPanelOpen && selected?.agentId && !isMobile && (

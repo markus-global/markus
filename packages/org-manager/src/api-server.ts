@@ -10705,7 +10705,7 @@ EXPLANATION_END`;
       exact('/api/taskboard', 'GET'),
       exact('/api/ops/dashboard', 'GET'),
       regex(/^\/api\/tasks\/[^/]+$/, 'GET'),
-      startsWith('/api/tasks/', 'PUT', 'DELETE'),
+      regex(/^\/api\/tasks\/[^/]+$/, 'PUT', 'DELETE'),
       regex(/^\/api\/tasks\/[^/]+\/approve$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/reject$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/cancel$/, 'POST'),

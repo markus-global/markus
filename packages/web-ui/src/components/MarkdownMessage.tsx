@@ -117,7 +117,9 @@ function preprocessMentions(text: string, knownNames?: string[]): string {
 // ─── Entity ID linking ───────────────────────────────────────────────────────
 
 const ENTITY_PREFIX = '#entity:';
-const ENTITY_ID_RE = /\b(tsk|req|proj|dlv|agt)_[a-f0-9]{6,}\b/gi;
+const ENTITY_ID_RE = /(?<!\[)(?<!#entity:)\b(tsk|req|proj|dlv|agt)_[a-f0-9]{6,}\b(?!\]\(#entity:)/gi;
+const ENTITY_LINK_IN_CODE_RE = /`\[([^\]]+)\]\(#entity:((?:tsk|req|proj|dlv|agt)_[a-f0-9]{6,})\)`/gi;
+const ENTITY_LINK_CONTENT_RE = /^\[([^\]]+)\]\(#entity:((tsk|req|proj|dlv|agt)_[a-f0-9]{6,})\)$/i;
 
 const ENTITY_META: Record<string, { icon: string; label: string }> = {
   tsk:  { icon: '📋', label: 'Task' },
@@ -137,6 +139,11 @@ function navigateToEntity(id: string) {
 
 function looksLikeEntityId(text: string): boolean {
   return /^(tsk|req|proj|dlv|agt)_[a-f0-9]{6,}$/i.test(text);
+}
+
+/** Unwrap entity links wrapped in backticks: `[id](#entity:id)` → [id](#entity:id) */
+function preprocessEntityLinksInCode(text: string): string {
+  return text.replace(ENTITY_LINK_IN_CODE_RE, (_m, label, id) => `[${label}](${ENTITY_PREFIX}${id})`);
 }
 
 /** Convert bare entity IDs (tsk_xxx, dlv_xxx, etc.) to markdown links with #entity: href. */
@@ -172,6 +179,23 @@ const mdComponents = {
         >
           {meta && <span className="text-[10px]">{meta.icon}</span>}
           <span>{text.slice(0, prefix.length + 1 + 8)}…</span>
+        </span>
+      );
+    }
+    const entityLinkMatch = text.match(ENTITY_LINK_CONTENT_RE);
+    if (entityLinkMatch) {
+      const id = entityLinkMatch[2];
+      const prefix = id.split('_')[0]!;
+      const meta = ENTITY_META[prefix];
+      return (
+        <span
+          data-entity-link={id}
+          className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-brand-500/10 text-brand-500 text-xs font-mono cursor-pointer hover:bg-brand-500/20 transition-colors"
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigateToEntity(id); }}
+          title={meta ? `${meta.label}: ${id}` : id}
+        >
+          {meta && <span className="text-[10px]">{meta.icon}</span>}
+          <span>{id.slice(0, prefix.length + 1 + 8)}…</span>
         </span>
       );
     }
@@ -404,6 +428,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
 
   const processedRest = useMemo(() => {
     let t = normalizeMathDelimiters(rest);
+    t = preprocessEntityLinksInCode(t);
     t = preprocessEntityIds(t);
     t = preprocessMentions(t, knownNames);
     return t;
