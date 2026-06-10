@@ -38,6 +38,8 @@ export interface WorkflowToolsContext {
   }>;
   cancelRun: (runId: string) => Promise<void>;
   addWorkflow: (name: string, yaml: string) => void;
+  updateWorkflow?: (name: string, yaml: string) => void;
+  removeWorkflow?: (name: string) => void;
 }
 
 export function createWorkflowTools(ctx: WorkflowToolsContext): AgentToolHandler[] {
@@ -205,6 +207,63 @@ export function createWorkflowTools(ctx: WorkflowToolsContext): AgentToolHandler
         try {
           ctx.addWorkflow(name, yaml);
           return JSON.stringify({ status: 'success', message: `Workflow "${name}" created.` });
+        } catch (error) {
+          return JSON.stringify({ status: 'error', error: String(error) });
+        }
+      },
+    },
+    {
+      name: 'workflow_update',
+      description: 'Update an existing workflow template with new YAML content. The workflow must already exist.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'The workflow template name to update.',
+          },
+          yaml: {
+            type: 'string',
+            description: 'The updated full YAML content of the workflow template.',
+          },
+        },
+        required: ['name', 'yaml'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        if (!ctx.updateWorkflow) {
+          return JSON.stringify({ status: 'error', error: 'Workflow update is not available.' });
+        }
+        const name = args['name'] as string;
+        const yaml = args['yaml'] as string;
+        try {
+          ctx.updateWorkflow(name, yaml);
+          return JSON.stringify({ status: 'success', message: `Workflow "${name}" updated.` });
+        } catch (error) {
+          return JSON.stringify({ status: 'error', error: String(error) });
+        }
+      },
+    },
+    {
+      name: 'workflow_delete',
+      description: 'Delete a workflow template from your team. This only removes the template — existing runs are not affected.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'The workflow template name to delete.',
+          },
+        },
+        required: ['name'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        if (!ctx.removeWorkflow) {
+          return JSON.stringify({ status: 'error', error: 'Workflow delete is not available.' });
+        }
+        const name = args['name'] as string;
+        try {
+          ctx.removeWorkflow(name);
+          return JSON.stringify({ status: 'success', message: `Workflow "${name}" deleted.` });
         } catch (error) {
           return JSON.stringify({ status: 'error', error: String(error) });
         }

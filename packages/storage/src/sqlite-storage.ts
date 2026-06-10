@@ -613,6 +613,20 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_team ON workflow_runs(team_id, workflow_name);
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_req ON workflow_runs(requirement_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_number ON workflow_runs(team_id, workflow_name, run_number);
+
+CREATE TABLE IF NOT EXISTS workflow_schedules (
+  team_id TEXT NOT NULL,
+  workflow_name TEXT NOT NULL,
+  schedule TEXT NOT NULL DEFAULT '{}',
+  next_run_at TEXT,
+  total_runs INTEGER NOT NULL DEFAULT 0,
+  last_run_at TEXT,
+  paused INTEGER NOT NULL DEFAULT 0,
+  last_role_mapping TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (team_id, workflow_name)
+);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -4597,6 +4611,75 @@ export class SqliteWorkflowRunRepo {
       project_id: (r['project_id'] as string) ?? null,
       started_at: r['started_at'] as string,
       completed_at: (r['completed_at'] as string) ?? null,
+    };
+  }
+}
+
+// ─── Workflow Schedule Repo ──────────────────────────────────────────────────
+
+export interface WorkflowScheduleRow {
+  team_id: string;
+  workflow_name: string;
+  schedule: string;
+  next_run_at: string | null;
+  total_runs: number;
+  last_run_at: string | null;
+  paused: number;
+  last_role_mapping: string;
+  updated_at: string;
+}
+
+export class SqliteWorkflowScheduleRepo {
+  constructor(private db: DatabaseSync) {}
+
+  async upsert(row: WorkflowScheduleRow): Promise<void> {
+    this.db.prepare(
+      `INSERT INTO workflow_schedules (team_id, workflow_name, schedule, next_run_at, total_runs, last_run_at, paused, last_role_mapping, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(team_id, workflow_name) DO UPDATE SET
+         schedule = excluded.schedule,
+         next_run_at = excluded.next_run_at,
+         total_runs = excluded.total_runs,
+         last_run_at = excluded.last_run_at,
+         paused = excluded.paused,
+         last_role_mapping = excluded.last_role_mapping,
+         updated_at = datetime('now')`
+    ).run(
+      row.team_id, row.workflow_name, row.schedule,
+      row.next_run_at, row.total_runs, row.last_run_at,
+      row.paused, row.last_role_mapping,
+    );
+  }
+
+  async findAll(): Promise<WorkflowScheduleRow[]> {
+    return (this.db.prepare(
+      'SELECT * FROM workflow_schedules'
+    ).all() as Record<string, unknown>[]).map(r => this._map(r));
+  }
+
+  async findByTeam(teamId: string): Promise<WorkflowScheduleRow[]> {
+    return (this.db.prepare(
+      'SELECT * FROM workflow_schedules WHERE team_id = ?'
+    ).all(teamId) as Record<string, unknown>[]).map(r => this._map(r));
+  }
+
+  async remove(teamId: string, workflowName: string): Promise<void> {
+    this.db.prepare(
+      'DELETE FROM workflow_schedules WHERE team_id = ? AND workflow_name = ?'
+    ).run(teamId, workflowName);
+  }
+
+  private _map(r: Record<string, unknown>): WorkflowScheduleRow {
+    return {
+      team_id: r['team_id'] as string,
+      workflow_name: r['workflow_name'] as string,
+      schedule: r['schedule'] as string,
+      next_run_at: (r['next_run_at'] as string) ?? null,
+      total_runs: r['total_runs'] as number,
+      last_run_at: (r['last_run_at'] as string) ?? null,
+      paused: r['paused'] as number,
+      last_role_mapping: r['last_role_mapping'] as string,
+      updated_at: r['updated_at'] as string,
     };
   }
 }

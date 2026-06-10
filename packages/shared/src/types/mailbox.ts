@@ -66,7 +66,7 @@ export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescripto
   daily_report:         { label: 'Daily Report',         defaultPriority: 2, category: 'system',        icon: '📊', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
   heartbeat:            { label: 'Heartbeat',            defaultPriority: 3, category: 'system',        icon: '♡',  activityType: 'heartbeat',          createsActivity: true,  invokesLLM: true  },
   memory_consolidation: { label: 'Memory Consolidation', defaultPriority: 4, category: 'system',        icon: '🧠', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
-  workflow_update:      { label: 'Workflow Update',      defaultPriority: 2, category: 'task',          icon: '🔄', activityType: 'internal',           createsActivity: true,  invokesLLM: false },
+  workflow_update:      { label: 'Workflow Update',      defaultPriority: 2, category: 'task',          icon: '🔄', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
 };
 
 export const MAILBOX_CATEGORIES: Record<MailboxCategory, { label: string; types: MailboxItemType[] }> = {

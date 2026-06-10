@@ -9295,10 +9295,17 @@ EXPLANATION_END`;
       }
     }
 
-    // ── Workflow Engine (legacy) ──────────────────────────────────────────
+    // ── Workflow Engine (DEPRECATED — use /api/teams/:teamId/workflows instead) ─
+    if ((path === '/api/workflows' || path.startsWith('/api/workflows/')) &&
+        !path.startsWith('/api/workflow-runs')) {
+      res.setHeader('Deprecation', 'true');
+      res.setHeader('Sunset', '2026-09-01');
+      res.setHeader('Link', '</api/teams/{teamId}/workflows>; rel="successor-version"');
+    }
+
     if (path === '/api/workflows' && req.method === 'GET') {
       if (!this.workflowEngine) {
-        this.json(res, 200, { executions: [] });
+        this.json(res, 200, { executions: [], _deprecated: 'Use GET /api/teams/:teamId/workflows instead' });
         return;
       }
       const executions = this.workflowEngine.listExecutions().map(e => ({
@@ -9310,7 +9317,7 @@ EXPLANATION_END`;
         error: e.error,
         stepCount: e.steps.size,
       }));
-      this.json(res, 200, { executions });
+      this.json(res, 200, { executions, _deprecated: 'Use GET /api/teams/:teamId/workflows instead' });
       return;
     }
 
@@ -9320,7 +9327,7 @@ EXPLANATION_END`;
       const action = body['action'] as string;
       if (action === 'validate') {
         const errors = this.workflowEngine!.validate(body['workflow'] as WorkflowDefinition);
-        this.json(res, 200, { valid: errors.length === 0, errors });
+        this.json(res, 200, { valid: errors.length === 0, errors, _deprecated: 'Use POST /api/teams/:teamId/workflows/:name/runs instead' });
         return;
       }
       try {
@@ -9333,6 +9340,7 @@ EXPLANATION_END`;
           status: execution.status,
           outputs: execution.outputs,
           error: execution.error,
+          _deprecated: 'Use POST /api/teams/:teamId/workflows/:name/runs instead',
         });
       } catch (err) {
         this.json(res, 400, { error: String(err) });

@@ -46,6 +46,7 @@ export {
   SqliteStatusTransitionRepo,
   SqliteReadCursorRepo,
   SqliteWorkflowRunRepo,
+  SqliteWorkflowScheduleRepo,
   migrateToExecutionStreamLogs,
   type SqliteExternalAgentRegistration,
   type ActivityRecord,
@@ -58,4 +59,5 @@ export {
   type StatusTransitionRow,
   type ReadCursorRow,
   type WorkflowRunRow,
+  type WorkflowScheduleRow,
 } from './sqlite-storage.js';

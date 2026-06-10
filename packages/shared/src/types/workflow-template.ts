@@ -94,6 +94,14 @@ export interface WorkflowTemplate {
 export type WorkflowRunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 export type WorkflowRunTrigger = 'manual' | 'schedule' | 'agent';
 
+export interface WorkflowStepConfig {
+  stepId: string;
+  taskId: string;
+  timeout?: string;
+  retryCount?: number;
+  retriesUsed?: number;
+}
+
 export interface WorkflowRun {
   id: string;
   teamId: string;
@@ -105,6 +113,7 @@ export interface WorkflowRun {
 
   params: Record<string, string>;
   roleMapping: Record<string, string>;
+  stepConfigs?: WorkflowStepConfig[];
 
   status: WorkflowRunStatus;
   triggeredBy: WorkflowRunTrigger;
@@ -166,6 +175,8 @@ export function validateWorkflowTemplate(template: unknown): string[] {
       errors.push(`${prefix}.role is required`);
     if (!step.prompt || typeof step.prompt !== 'string')
       errors.push(`${prefix}.prompt is required`);
+    if (step.type !== undefined && step.type !== 'agent_task')
+      errors.push(`${prefix}.type must be "agent_task" (got "${step.type}")`);
   }
 
   // Validate depends_on references exist
@@ -177,6 +188,20 @@ export function validateWorkflowTemplate(template: unknown): string[] {
           errors.push(`Step "${step.id}": depends_on entries must be strings`);
         } else if (!stepIds.has(dep)) {
           errors.push(`Step "${step.id}": depends_on references unknown step "${dep}"`);
+        }
+      }
+    }
+  }
+
+  // Validate inputs[].from references
+  for (const step of steps) {
+    const inputs = step.inputs as Array<Record<string, unknown>> | undefined;
+    if (Array.isArray(inputs)) {
+      for (const inp of inputs) {
+        if (typeof inp.from !== 'string' || typeof inp.as !== 'string') {
+          errors.push(`Step "${step.id}": inputs entries must have "from" and "as" string fields`);
+        } else if (!stepIds.has(inp.from)) {
+          errors.push(`Step "${step.id}": inputs.from references unknown step "${inp.from}"`);
         }
       }
     }
@@ -220,6 +245,16 @@ export function validateWorkflowTemplate(template: unknown): string[] {
       errors.push('schedule must have at least one of: every, cron, run_at');
     if (hasEvery && !parseInterval(sched.every as string))
       errors.push(`schedule.every: invalid interval "${sched.every}"`);
+    if (hasCron) {
+      try {
+        // Validate cron expression format (5-field standard)
+        const parts = (sched.cron as string).trim().split(/\s+/);
+        if (parts.length < 5 || parts.length > 6)
+          errors.push(`schedule.cron: expected 5 or 6 fields, got ${parts.length}`);
+      } catch {
+        errors.push(`schedule.cron: invalid expression "${sched.cron}"`);
+      }
+    }
   }
 
   return errors;

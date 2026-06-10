@@ -26,4 +26,4 @@ export { BuilderService, type ArtifactInfo, type InstallResult } from './builder
 export { LocalFileStorageProvider } from './file-storage-provider.js';
 export { WorkflowService } from './workflow-service.js';
 export { WorkflowRunner, type WorkflowRunRepo } from './workflow-runner.js';
-export { WorkflowScheduler } from './workflow-scheduler.js';
+export { WorkflowScheduler, type WorkflowScheduleRepo } from './workflow-scheduler.js';

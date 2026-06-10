@@ -551,6 +551,36 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   agentManager.setDeliverableService(deliverableService);
   agentManager.setWebUiBaseUrl(`http://localhost:${apiPort}`);
 
+  requirementService.setAgentManager(agentManager);
+  requirementService.setHITLService(hitlService);
+  apiServer.setProjectService(projectService);
+  apiServer.setReportService(reportService);
+  apiServer.setKnowledgeService(knowledgeService);
+  apiServer.setDeliverableService(deliverableService);
+  apiServer.setRequirementService(requirementService);
+  taskService.setDeliverableService(deliverableService);
+  orgService.setDeliverableService(deliverableService);
+
+  // Wire WorkflowService + WorkflowRunner (must be constructed before tools factory)
+  const workflowService = new WorkflowService(orgService);
+  const workflowRunner = new WorkflowRunner(requirementService, taskService, orgService);
+  if (storage?.workflowRunRepo) {
+    workflowRunner.setRunRepo(storage.workflowRunRepo);
+  }
+  workflowRunner.setWSBroadcaster(apiServer.getWSBroadcaster());
+  apiServer.setWorkflowService(workflowService);
+  apiServer.setWorkflowRunner(workflowRunner);
+
+  await workflowRunner.loadFromDB();
+
+  // Hook workflow run status tracking into task status changes
+  taskService.onTaskEvent(async (event) => {
+    if (event.type === 'completed' || event.type === 'failed' || event.type === 'status_changed') {
+      const task = taskService.getTask(event.taskId);
+      if (task) await workflowRunner.onTaskStatusChange(task);
+    }
+  });
+
   // Wire workflow tools factory for manager agents
   agentManager.setWorkflowToolsFactory((teamId: string) => {
     return {
@@ -574,36 +604,9 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       },
       cancelRun: async (runId: string) => { await workflowRunner.cancelRun(runId); },
       addWorkflow: (name: string, yaml: string) => { workflowService.addWorkflow(teamId, name, yaml); },
+      updateWorkflow: (name: string, yaml: string) => { workflowService.updateWorkflow(teamId, name, yaml); },
+      removeWorkflow: (name: string) => { workflowService.removeWorkflow(teamId, name); },
     };
-  });
-  requirementService.setAgentManager(agentManager);
-  requirementService.setHITLService(hitlService);
-  apiServer.setProjectService(projectService);
-  apiServer.setReportService(reportService);
-  apiServer.setKnowledgeService(knowledgeService);
-  apiServer.setDeliverableService(deliverableService);
-  apiServer.setRequirementService(requirementService);
-  taskService.setDeliverableService(deliverableService);
-  orgService.setDeliverableService(deliverableService);
-
-  // Wire WorkflowService + WorkflowRunner
-  const workflowService = new WorkflowService(orgService);
-  const workflowRunner = new WorkflowRunner(requirementService, taskService, orgService);
-  if (storage?.workflowRunRepo) {
-    workflowRunner.setRunRepo(storage.workflowRunRepo);
-  }
-  workflowRunner.setWSBroadcaster(apiServer.getWSBroadcaster());
-  apiServer.setWorkflowService(workflowService);
-  apiServer.setWorkflowRunner(workflowRunner);
-
-  await workflowRunner.loadFromDB();
-
-  // Hook workflow run status tracking into task status changes
-  taskService.onTaskEvent(async (event) => {
-    if (event.type === 'completed' || event.type === 'failed' || event.type === 'status_changed') {
-      const task = taskService.getTask(event.taskId);
-      if (task) await workflowRunner.onTaskStatusChange(task);
-    }
   });
 
   // Wire ProjectService into TaskService (workspace management is handled by agents)
@@ -1045,7 +1048,10 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   scheduledTaskRunner.start();
 
   const workflowScheduler = new WorkflowScheduler(workflowService, workflowRunner, orgService);
-  workflowScheduler.start();
+  if (storage?.workflowScheduleRepo) {
+    workflowScheduler.setScheduleRepo(storage.workflowScheduleRepo);
+  }
+  await workflowScheduler.start();
 
   // Escalation callback kept for agent-internal state management; actual notification/DB/WS/audit
   // logic is handled by the 'agent:escalation' event handler registered above.

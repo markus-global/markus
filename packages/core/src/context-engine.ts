@@ -512,7 +512,7 @@ export class ContextEngine {
         }
         dynamic.push('Use `workflow_status` to check details or `workflow_cancel` to stop a run.');
       }
-      if (wc.availableWorkflows.length > 0 && wc.activeRuns.length === 0) {
+      if (wc.availableWorkflows.length > 0) {
         dynamic.push('\n## Available Workflows');
         for (const w of wc.availableWorkflows) {
           dynamic.push(`- **${w.name}** (${w.stepCount} steps): ${w.description}`);

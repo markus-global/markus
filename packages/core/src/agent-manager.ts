@@ -700,6 +700,41 @@ export class AgentManager {
     this.workflowToolsFactory = factory;
   }
 
+  private wireWorkflowForManager(agent: Agent, teamId: string): void {
+    if (!this.workflowToolsFactory) return;
+    const wfFactory = this.workflowToolsFactory;
+
+    agent.setWorkflowContextFetcher(() => {
+      try {
+        const wfCtx = wfFactory(teamId);
+        if (!wfCtx) return undefined;
+        return {
+          activeRuns: wfCtx.getActiveRuns().map(r => ({
+            workflowName: r.workflowName,
+            runNumber: r.runNumber,
+            status: r.status,
+            taskCount: r.taskIds.length,
+            startedAt: r.startedAt,
+          })),
+          availableWorkflows: wfCtx.listWorkflows().map(w => ({
+            name: w.name,
+            description: w.description,
+            stepCount: w.stepCount,
+          })),
+        };
+      } catch {
+        return undefined;
+      }
+    });
+
+    const wfCtx = wfFactory(teamId);
+    if (wfCtx) {
+      for (const tool of createWorkflowTools(wfCtx)) {
+        agent.registerTool(tool);
+      }
+    }
+  }
+
   setWebUiBaseUrl(url: string): void {
     this.webUiBaseUrl = url.replace(/\/+$/, '');
   }
@@ -1314,32 +1349,9 @@ export class AgentManager {
       log.info(`Task tools injected for agent ${id}`);
     }
 
-    // Workflow context fetcher — manager agents get active workflow context in prompts
-    if (request.agentRole === 'manager' && request.teamId && this.workflowToolsFactory) {
-      const teamIdForWf = request.teamId;
-      const wfFactory = this.workflowToolsFactory;
-      agent.setWorkflowContextFetcher(() => {
-        try {
-          const wfCtx = wfFactory(teamIdForWf);
-          if (!wfCtx) return undefined;
-          return {
-            activeRuns: wfCtx.getActiveRuns().map(r => ({
-              workflowName: r.workflowName,
-              runNumber: r.runNumber,
-              status: r.status,
-              taskCount: r.taskIds.length,
-              startedAt: r.startedAt,
-            })),
-            availableWorkflows: wfCtx.listWorkflows().map(w => ({
-              name: w.name,
-              description: w.description,
-              stepCount: w.stepCount,
-            })),
-          };
-        } catch {
-          return undefined;
-        }
-      });
+    // Workflow context + tools for manager agents
+    if (request.agentRole === 'manager' && request.teamId) {
+      this.wireWorkflowForManager(agent, request.teamId);
     }
 
     // Project tools — every agent can list/view/create/update/delete projects + knowledge + stats
@@ -1452,16 +1464,6 @@ export class AgentManager {
       });
       for (const tool of managerTools) {
         agent.registerTool(tool);
-      }
-
-      // Workflow tools for managers
-      if (myTeamId && this.workflowToolsFactory) {
-        const wfCtx = this.workflowToolsFactory(myTeamId);
-        if (wfCtx) {
-          for (const tool of createWorkflowTools(wfCtx)) {
-            agent.registerTool(tool);
-          }
-        }
       }
     }
 
@@ -2093,32 +2095,9 @@ export class AgentManager {
       });
     }
 
-    // Workflow context fetcher for restored manager agents
-    if (config.agentRole === 'manager' && config.teamId && this.workflowToolsFactory) {
-      const teamIdForWf2 = config.teamId;
-      const wfFactory2 = this.workflowToolsFactory;
-      agent.setWorkflowContextFetcher(() => {
-        try {
-          const wfCtx = wfFactory2(teamIdForWf2);
-          if (!wfCtx) return undefined;
-          return {
-            activeRuns: wfCtx.getActiveRuns().map(r => ({
-              workflowName: r.workflowName,
-              runNumber: r.runNumber,
-              status: r.status,
-              taskCount: r.taskIds.length,
-              startedAt: r.startedAt,
-            })),
-            availableWorkflows: wfCtx.listWorkflows().map(w => ({
-              name: w.name,
-              description: w.description,
-              stepCount: w.stepCount,
-            })),
-          };
-        } catch {
-          return undefined;
-        }
-      });
+    // Workflow context + tools for restored manager agents
+    if (config.agentRole === 'manager' && config.teamId) {
+      this.wireWorkflowForManager(agent, config.teamId);
     }
 
     if (this.projectService) {
@@ -2228,16 +2207,6 @@ export class AgentManager {
         },
       });
       for (const tool of managerTools) agent.registerTool(tool);
-
-      // Workflow tools for restored managers
-      if (restoredTeamId && this.workflowToolsFactory) {
-        const wfCtx = this.workflowToolsFactory(restoredTeamId);
-        if (wfCtx) {
-          for (const tool of createWorkflowTools(wfCtx)) {
-            agent.registerTool(tool);
-          }
-        }
-      }
     }
 
     // Package tools (package_install, package_list, hub_search, hub_install) — available to all agents

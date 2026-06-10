@@ -1,10 +1,12 @@
 import {
   createLogger,
   generateId,
+  parseInterval,
   type WorkflowTemplate,
   type WorkflowRun,
   type WorkflowRunStatus,
   type WorkflowRunTrigger,
+  type WorkflowStepConfig,
   type StepDef,
   type Task,
   TERMINAL_STATUSES,
@@ -25,6 +27,7 @@ export interface WorkflowRunRepo {
   updateStatus(id: string, status: WorkflowRunStatus, completedAt?: string): Promise<void>;
   getNextRunNumber(teamId: string, workflowName: string): Promise<number>;
   findRunning(teamId: string, workflowName: string): Promise<WorkflowRunRow[]>;
+  findAllRunning(): Promise<WorkflowRunRow[]>;
 }
 
 export interface WorkflowRunRow {
@@ -120,6 +123,13 @@ export class WorkflowRunner {
     const team = this.orgService.getTeam(teamId);
     if (!team) throw new Error(`Team not found: ${teamId}`);
 
+    // Validate required params
+    for (const p of template.params ?? []) {
+      if (p.required && !params[p.name]) {
+        throw new Error(`Required parameter "${p.name}" is missing`);
+      }
+    }
+
     // Get run number
     const runNumber = this.runRepo
       ? await this.runRepo.getNextRunNumber(teamId, template.name)
@@ -144,47 +154,67 @@ export class WorkflowRunner {
     // 2. Sort steps topologically
     const sortedSteps = topologicalSort(template.steps);
 
-    // 3. Create tasks in dependency order
+    // 3. Create tasks in dependency order (with cleanup on failure)
     const taskIdMap = new Map<string, string>();
     const createdTaskIds: string[] = [];
 
-    for (const step of sortedSteps) {
-      const description = renderStepPrompt(step, params, runNumber);
-      const workflowContext = this.buildWorkflowContext(step, template, params, runNumber, sortedSteps);
+    try {
+      for (const step of sortedSteps) {
+        const description = renderStepPrompt(step, params, runNumber);
+        const workflowContext = this.buildWorkflowContext(step, template, params, runNumber, sortedSteps);
 
-      const assignedAgentId = roleMapping[step.role];
-      if (!assignedAgentId) {
-        throw new Error(`No agent mapped for role "${step.role}" in workflow "${template.name}"`);
+        const assignedAgentId = roleMapping[step.role];
+        if (!assignedAgentId) {
+          throw new Error(`No agent mapped for role "${step.role}" in workflow "${template.name}"`);
+        }
+
+        const reviewerId = this.resolveReviewer(step, roleMapping, team);
+
+        const blockedBy = (step.depends_on || [])
+          .map(depId => taskIdMap.get(depId))
+          .filter((id): id is string => !!id);
+
+        const task = this.taskService.createTask({
+          orgId: team.orgId,
+          title: `[${displayName}] ${step.name}`,
+          description: `${workflowContext}\n\n${description}`,
+          priority: step.priority || 'medium',
+          assignedAgentId,
+          reviewerId,
+          reviewerType: 'agent',
+          blockedBy,
+          requirementId: requirement.id,
+          projectId,
+          createdBy: createdBy || team.managerId || 'system',
+          creatorRole: 'worker',
+          approvedVia: 'workflow',
+          notes: `[Workflow] ${template.name} run #${runNumber}, step: ${step.id}`,
+        });
+
+        taskIdMap.set(step.id, task.id);
+        createdTaskIds.push(task.id);
       }
-
-      const reviewerId = this.resolveReviewer(step, roleMapping, team);
-
-      const blockedBy = (step.depends_on || [])
-        .map(depId => taskIdMap.get(depId))
-        .filter((id): id is string => !!id);
-
-      const task = this.taskService.createTask({
-        orgId: team.orgId,
-        title: `[${displayName}] ${step.name}`,
-        description: `${workflowContext}\n\n${description}`,
-        priority: step.priority || 'medium',
-        assignedAgentId,
-        reviewerId,
-        reviewerType: 'agent',
-        blockedBy,
-        requirementId: requirement.id,
-        projectId,
-        createdBy: createdBy || team.managerId || 'system',
-        creatorRole: 'worker',
-        approvedVia: 'workflow',
-        notes: `[Workflow] ${template.name} run #${runNumber}, step: ${step.id}`,
-      });
-
-      taskIdMap.set(step.id, task.id);
-      createdTaskIds.push(task.id);
+    } catch (err) {
+      for (const taskId of createdTaskIds) {
+        try {
+          this.taskService.cancelTask(taskId, false, 'system', 'system');
+        } catch { /* best-effort cleanup */ }
+      }
+      throw err;
     }
 
-    // 4. Save run record
+    // 4. Build step configs for timeout/retry tracking
+    const stepConfigs: WorkflowStepConfig[] = sortedSteps
+      .filter(s => s.timeout || s.retry_count)
+      .map(s => ({
+        stepId: s.id,
+        taskId: taskIdMap.get(s.id)!,
+        timeout: s.timeout,
+        retryCount: s.retry_count,
+        retriesUsed: 0,
+      }));
+
+    // 5. Save run record
     const run: WorkflowRun = {
       id: generateId('wfr'),
       teamId,
@@ -194,6 +224,7 @@ export class WorkflowRunner {
       taskIds: createdTaskIds,
       params,
       roleMapping,
+      stepConfigs: stepConfigs.length > 0 ? stepConfigs : undefined,
       status: 'running',
       triggeredBy,
       projectId,
@@ -328,17 +359,20 @@ export class WorkflowRunner {
     const allTasks = run.taskIds.map(id => this.taskService.getTask(id)).filter(Boolean) as Task[];
     const newStatus: WorkflowRunStatus = this.deriveRunStatus(allTasks);
 
-    // Still running — but check for individual step failure to notify early
+    // Still running — check for step failure and apply retry logic
     if (newStatus === 'running') {
       if (task.status === 'failed') {
-        this.notifyManager(run.teamId, 'step_failed', {
-          workflowName: run.workflowName,
-          runId: run.id,
-          runNumber: run.runNumber,
-          taskId: task.id,
-          taskTitle: task.title,
-          actionRequired: true,
-        });
+        const retried = this.attemptStepRetry(run, task);
+        if (!retried) {
+          this.notifyManager(run.teamId, 'step_failed', {
+            workflowName: run.workflowName,
+            runId: run.id,
+            runNumber: run.runNumber,
+            taskId: task.id,
+            taskTitle: task.title,
+            actionRequired: true,
+          });
+        }
       }
       return;
     }
@@ -373,7 +407,7 @@ export class WorkflowRunner {
     }
 
     this.ws?.broadcast?.({
-      type: 'workflow:run_completed',
+      type: `workflow:run_${newStatus}` as const,
       payload: { runId: run.id, status: newStatus, teamId: run.teamId },
       timestamp: new Date().toISOString(),
     });
@@ -389,7 +423,7 @@ export class WorkflowRunner {
   async loadFromDB(): Promise<void> {
     if (!this.runRepo) return;
     try {
-      const rows = await (this.runRepo as any).findAllRunning?.() ?? [];
+      const rows = await this.runRepo.findAllRunning();
       for (const row of rows) {
         const run = rowToRun(row);
         this.runs.set(run.id, run);
@@ -421,6 +455,25 @@ export class WorkflowRunner {
       if (run.taskIds.includes(taskId)) return run;
     }
     return undefined;
+  }
+
+  private attemptStepRetry(run: WorkflowRun, task: Task): boolean {
+    if (!run.stepConfigs) return false;
+    const stepCfg = run.stepConfigs.find(sc => sc.taskId === task.id);
+    if (!stepCfg || !stepCfg.retryCount) return false;
+    if ((stepCfg.retriesUsed ?? 0) >= stepCfg.retryCount) return false;
+
+    try {
+      stepCfg.retriesUsed = (stepCfg.retriesUsed ?? 0) + 1;
+      this.taskService.updateTaskStatus(task.id, 'pending', 'system', true, false, 'system', `Workflow auto-retry ${stepCfg.retriesUsed}/${stepCfg.retryCount}`);
+      log.info('Retrying failed workflow step', {
+        runId: run.id, taskId: task.id, retry: stepCfg.retriesUsed, maxRetries: stepCfg.retryCount,
+      });
+      return true;
+    } catch (err) {
+      log.warn('Failed to retry workflow step', { taskId: task.id, error: String(err) });
+      return false;
+    }
   }
 
   private resolveReviewer(

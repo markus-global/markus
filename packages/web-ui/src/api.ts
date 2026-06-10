@@ -226,7 +226,7 @@ export interface WorkflowInfo {
   hasSchedule: boolean;
   schedule?: { interval?: string; cron?: string };
   stepCount: number;
-  params?: Array<{ name: string; label?: string; type?: string; default?: string; required?: boolean }>;
+  params?: Array<{ name: string; label?: string; type?: string; default?: string; required?: boolean; options?: string[] }>;
 }
 
 export interface WorkflowTemplateInfo {
@@ -235,7 +235,7 @@ export interface WorkflowTemplateInfo {
   description: string;
   version: string;
   schedule?: { interval?: string; cron?: string };
-  params?: Array<{ name: string; label?: string; type?: string; default?: string; required?: boolean }>;
+  params?: Array<{ name: string; label?: string; type?: string; default?: string; required?: boolean; options?: string[] }>;
   steps: Array<{ id: string; name: string; role: string; depends_on?: string[]; prompt: string }>;
 }
 

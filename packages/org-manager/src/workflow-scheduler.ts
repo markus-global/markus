@@ -10,6 +10,32 @@ import type { OrganizationService } from './org-service.js';
 
 const log = createLogger('workflow-scheduler');
 
+export interface WorkflowScheduleRepo {
+  upsert(row: {
+    team_id: string;
+    workflow_name: string;
+    schedule: string;
+    next_run_at: string | null;
+    total_runs: number;
+    last_run_at: string | null;
+    paused: number;
+    last_role_mapping: string;
+    updated_at: string;
+  }): Promise<void>;
+  findAll(): Promise<Array<{
+    team_id: string;
+    workflow_name: string;
+    schedule: string;
+    next_run_at: string | null;
+    total_runs: number;
+    last_run_at: string | null;
+    paused: number;
+    last_role_mapping: string;
+    updated_at: string;
+  }>>;
+  remove(teamId: string, workflowName: string): Promise<void>;
+}
+
 /**
  * Polls scheduled workflow templates on a fixed interval and auto-triggers runs
  * when their next-run time has passed. Parallel to ScheduledTaskRunner but
@@ -18,6 +44,8 @@ const log = createLogger('workflow-scheduler');
 export class WorkflowScheduler {
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
+  private scheduleRepo?: WorkflowScheduleRepo;
+  private paramGenerator?: (prompt: string) => Promise<string | null>;
 
   private scheduleStates = new Map<string, WorkflowScheduleState>();
 
@@ -28,11 +56,20 @@ export class WorkflowScheduler {
     private pollIntervalMs = 60_000,
   ) {}
 
-  start(): void {
+  setScheduleRepo(repo: WorkflowScheduleRepo): void {
+    this.scheduleRepo = repo;
+  }
+
+  setParamGenerator(gen: (prompt: string) => Promise<string | null>): void {
+    this.paramGenerator = gen;
+  }
+
+  async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
 
-    this.initScheduleStates();
+    await this.loadFromDB();
+    this.refreshScheduleStates();
 
     this.timer = setInterval(() => {
       this.tick().catch(e =>
@@ -60,37 +97,101 @@ export class WorkflowScheduler {
     return `${teamId}:${workflowName}`;
   }
 
-  private initScheduleStates(): void {
+  private async loadFromDB(): Promise<void> {
+    if (!this.scheduleRepo) return;
     try {
-      const teams = this.orgService.listTeams('default');
-      for (const team of teams) {
-        const workflows = this.workflowService.listWorkflows(team.id);
-        for (const wf of workflows) {
-          if (!wf.hasSchedule || !wf.schedule) continue;
+      const rows = await this.scheduleRepo.findAll();
+      for (const row of rows) {
+        const key = this.stateKey(row.team_id, row.workflow_name);
+        this.scheduleStates.set(key, {
+          teamId: row.team_id,
+          workflowName: row.workflow_name,
+          schedule: JSON.parse(row.schedule),
+          nextRunAt: row.next_run_at,
+          totalRuns: row.total_runs,
+          lastRunAt: row.last_run_at,
+          paused: row.paused === 1,
+          lastRoleMapping: JSON.parse(row.last_role_mapping),
+        });
+      }
+      if (rows.length > 0) {
+        log.info(`Loaded ${rows.length} workflow schedule state(s) from DB`);
+      }
+    } catch (err) {
+      log.warn('Failed to load workflow schedule states from DB', { error: String(err) });
+    }
+  }
 
-          const key = this.stateKey(team.id, wf.name);
-          if (!this.scheduleStates.has(key)) {
-            const nextRunAt = this.computeNextRun(wf.schedule, null);
-            this.scheduleStates.set(key, {
-              teamId: team.id,
-              workflowName: wf.name,
-              schedule: wf.schedule,
-              nextRunAt,
-              totalRuns: 0,
-              lastRunAt: null,
-              paused: false,
-              lastRoleMapping: {},
-            });
+  private async persistState(state: WorkflowScheduleState): Promise<void> {
+    if (!this.scheduleRepo) return;
+    try {
+      await this.scheduleRepo.upsert({
+        team_id: state.teamId,
+        workflow_name: state.workflowName,
+        schedule: JSON.stringify(state.schedule),
+        next_run_at: state.nextRunAt,
+        total_runs: state.totalRuns,
+        last_run_at: state.lastRunAt,
+        paused: state.paused ? 1 : 0,
+        last_role_mapping: JSON.stringify(state.lastRoleMapping),
+        updated_at: new Date().toISOString(),
+      });
+    } catch (err) {
+      log.warn('Failed to persist workflow schedule state', { error: String(err) });
+    }
+  }
+
+  /**
+   * Refresh schedule states from YAML templates. Picks up new/removed/changed
+   * schedules without requiring a server restart. Iterates all orgs dynamically.
+   */
+  private refreshScheduleStates(): void {
+    try {
+      const orgs = (this.orgService as any).listOrgs?.() ?? [{ id: 'default' }];
+      const seenKeys = new Set<string>();
+
+      for (const org of orgs) {
+        const teams = this.orgService.listTeams(org.id);
+        for (const team of teams) {
+          const workflows = this.workflowService.listWorkflows(team.id);
+          for (const wf of workflows) {
+            if (!wf.hasSchedule || !wf.schedule) continue;
+
+            const key = this.stateKey(team.id, wf.name);
+            seenKeys.add(key);
+
+            const existing = this.scheduleStates.get(key);
+            if (existing) {
+              existing.schedule = wf.schedule;
+            } else {
+              const nextRunAt = this.computeNextRun(wf.schedule, null);
+              this.scheduleStates.set(key, {
+                teamId: team.id,
+                workflowName: wf.name,
+                schedule: wf.schedule,
+                nextRunAt,
+                totalRuns: 0,
+                lastRunAt: null,
+                paused: false,
+                lastRoleMapping: {},
+              });
+            }
           }
         }
       }
+
+      for (const key of this.scheduleStates.keys()) {
+        if (!seenKeys.has(key)) {
+          this.scheduleStates.delete(key);
+        }
+      }
     } catch (err) {
-      log.warn('Failed to initialize schedule states', { error: String(err) });
+      log.warn('Failed to refresh schedule states', { error: String(err) });
     }
   }
 
   private async tick(): Promise<void> {
-    this.initScheduleStates();
+    this.refreshScheduleStates();
 
     const now = Date.now();
 
@@ -110,6 +211,7 @@ export class WorkflowScheduler {
       if (sched.max_runs && sched.max_runs > 0 && state.totalRuns >= sched.max_runs) {
         state.paused = true;
         log.info('Workflow schedule reached max_runs', { key, totalRuns: state.totalRuns });
+        await this.persistState(state);
         continue;
       }
 
@@ -135,24 +237,29 @@ export class WorkflowScheduler {
       return;
     }
 
-    // Build params: use defaults from template, add auto-generated date params
     const params: Record<string, string> = {};
     for (const p of template.params ?? []) {
       if (p.default) params[p.name] = p.default;
+      if (p.auto_generate && this.paramGenerator) {
+        try {
+          const generated = await this.paramGenerator(p.auto_prompt ?? `Generate a value for "${p.name}": ${p.description ?? ''}`);
+          if (generated) params[p.name] = generated;
+        } catch (err) {
+          log.warn('Failed to auto-generate param', { param: p.name, error: String(err) });
+        }
+      }
     }
     params['_run_date'] = new Date().toISOString().slice(0, 10);
     params['_run_timestamp'] = new Date().toISOString();
 
-    // Resolve roles: reuse last mapping if available, otherwise auto-resolve
     let roleMapping = state.lastRoleMapping;
     if (!roleMapping || Object.keys(roleMapping).length === 0) {
       roleMapping = this.workflowService.buildDefaultRoleMapping(state.teamId, template);
     }
 
-    // Find a project for this team
     const projectId = await this.findProjectForTeam(state.teamId);
     if (!projectId) {
-      log.warn('No project found for scheduled workflow', { teamId: state.teamId, name: state.workflowName });
+      log.warn('No project linked to team for scheduled workflow — skipping', { teamId: state.teamId, name: state.workflowName });
       return;
     }
 
@@ -160,11 +267,11 @@ export class WorkflowScheduler {
       state.teamId, template, params, roleMapping, projectId, 'schedule',
     );
 
-    // Update schedule state
     state.lastRunAt = new Date().toISOString();
     state.totalRuns++;
     state.lastRoleMapping = roleMapping;
     state.nextRunAt = this.computeNextRun(state.schedule, state.lastRunAt);
+    await this.persistState(state);
 
     log.info('Scheduled workflow run triggered', {
       teamId: state.teamId,
@@ -179,13 +286,11 @@ export class WorkflowScheduler {
     schedule: WorkflowScheduleState['schedule'],
     lastRunAt: string | null,
   ): string | null {
-    // One-shot run_at
     if ('run_at' in schedule && schedule.run_at) {
       if (!lastRunAt) return schedule.run_at as string;
       return null;
     }
 
-    // Interval-based
     if ('every' in schedule && schedule.every) {
       const intervalMs = parseInterval(schedule.every as string);
       if (!intervalMs) return null;
@@ -194,7 +299,6 @@ export class WorkflowScheduler {
       return new Date(base + intervalMs).toISOString();
     }
 
-    // Cron-based: compute next cron fire from now
     if ('cron' in schedule && schedule.cron) {
       return this.computeCronNext(schedule.cron as string, (schedule as any).timezone);
     }
@@ -224,7 +328,6 @@ export class WorkflowScheduler {
           const teamIds: string[] = typeof p.teamIds === 'string' ? JSON.parse(p.teamIds) : (p.teamIds ?? []);
           if (teamIds.includes(teamId)) return p.id;
         }
-        if (projects.length > 0) return projects[0].id;
       }
     } catch {
       /* ignore */
