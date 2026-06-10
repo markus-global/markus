@@ -11,7 +11,8 @@
     "remote": "Remote Access",
     "license": "License",
     "organization": "Organization",
-    "account": "Organization & License"
+    "account": "Organization & License",
+    "integrations": "Integrations"
   },
   "appearance": {
     "title": "Appearance",
@@ -600,5 +601,39 @@
     "roleUpdated": "Role updated",
     "yourRole": "Your Role",
     "changeRole": "Change Role"
+  },
+  "feishu": {
+    "description": "Configure Feishu integration for notifications and approvals",
+    "connectionSettings": "Connection Settings",
+    "verifyToken": "Verify Token",
+    "encryptKey": "Encrypt Key",
+    "optional": "optional",
+    "webhookPath": "Webhook Path",
+    "webhookPathHint": "Set this path in your Feishu app event subscription",
+    "actions": "Actions",
+    "testConnection": "Test Connection",
+    "integrationState": "Integration State",
+    "enableIntegration": "Enable Feishu Integration",
+    "enableHint": "When enabled, Markus will connect to Feishu and start processing events",
+    "notificationForwarding": "Notification Forwarding",
+    "forwardApprovals": "Forward Approval Requests",
+    "forwardApprovalsHint": "Send approval requests to Feishu as interactive cards",
+    "forwardNotifications": "Forward General Notifications",
+    "forwardNotificationsHint": "Send system notifications to Feishu chat",
+    "notifyPriority": "Minimum Notification Priority",
+    "priorityHint": "Only notifications with the selected priority levels will be forwarded",
+    "setupGuide": "Setup Guide",
+    "setupGuideDesc": "Follow these steps to set up the Feishu integration:",
+    "guideStep1": "Go to Feishu Open Platform (open.feishu.cn) and create a new app",
+    "guideStep2": "Enable bot capabilities and configure event subscriptions",
+    "guideStep3": "Copy the App ID and App Secret into the fields above",
+    "guideStep4": "Set the webhook URL in your Feishu app event subscription",
+    "guideStep5": "Click \"Test Connection\" to verify the setup",
+    "saved": "Feishu configuration saved",
+    "fillRequired": "Please fill in App ID and App Secret first",
+    "testSuccess": "Connection successful",
+    "testFailed": "Connection failed",
+    "disconnected": "Disconnected from Feishu",
+    "disconnect": "Disconnect"
   }
 }

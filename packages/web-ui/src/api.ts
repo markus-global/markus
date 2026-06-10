@@ -1351,6 +1351,21 @@ export const api = {
     getRemote: () => request<RemoteStatus>('/settings/remote'),
     enableRemote: () => request<{ ok: boolean; status: RemoteStatus }>('/settings/remote/enable', { method: 'POST' }),
     disableRemote: () => request<{ ok: boolean }>('/settings/remote/disable', { method: 'POST' }),
+    getFeishuIntegration: () => request<{
+      appId?: string; appSecret?: string; verifyToken?: string; encryptKey?: string;
+      webhookPath?: string; enabled: boolean; connected: boolean;
+      notifyOnApproval: boolean; notifyOnNotification: boolean; notifyPriority: string[];
+    }>('/settings/integrations/feishu'),
+    saveFeishuIntegration: (config: {
+      appId: string; appSecret: string; verifyToken?: string; encryptKey?: string;
+      webhookPath?: string; enabled?: boolean;
+      notifyOnApproval?: boolean; notifyOnNotification?: boolean; notifyPriority?: string[];
+    }) => request<{
+      appId?: string; connected: boolean; enabled: boolean;
+    }>('/settings/integrations/feishu', { method: 'POST', body: JSON.stringify(config) }),
+    testFeishuConnection: (creds: { appId: string; appSecret: string }) =>
+      request<{ success: boolean; message?: string }>('/settings/integrations/feishu/test', { method: 'POST', body: JSON.stringify(creds) }),
+    deleteFeishuIntegration: () => request<{ ok: boolean }>('/settings/integrations/feishu', { method: 'DELETE' }),
   },
   modelCatalog: {
     getByProvider: (provider: string) => request<{ provider: string; models: CatalogModel[] }>(`/models/catalog/${provider}`),
