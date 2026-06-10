@@ -9036,7 +9036,7 @@ EXPLANATION_END`;
       try {
         const row = findFeishuConfig(auth.orgId);
         if (row) {
-          this.storage?.integrationRepo?.delete(row['id'] as string);
+          await this.storage?.integrationRepo?.delete(row['id'] as string);
         }
         log.info('Feishu integration config deleted', { orgId: auth.orgId });
         this.auditService?.record({

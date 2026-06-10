@@ -201,23 +201,23 @@ export class FeishuAdapter implements CommAdapter {
     // Step 2: Connect WebSocket
     this.ws = new (globalThis as any).WebSocket(wsUrl);
 
-    this.ws.on('open', () => {
+    this.ws.onopen = () => {
       log.info('Feishu WebSocket connected');
-    });
+    };
 
-    this.ws.on('message', (raw: Buffer) => {
+    this.ws.onmessage = (event: { data: Buffer }) => {
       try {
-        const payload = JSON.parse(raw.toString()) as FeishuEvent;
+        const payload = JSON.parse(event.data.toString()) as FeishuEvent;
         this.handleWsEvent(payload).catch((err) => {
           log.error('Failed to handle WS event', { error: err.message });
         });
       } catch (err) {
         log.error('Failed to parse WS message', { error: err instanceof Error ? err.message : String(err) });
       }
-    });
+    };
 
-    this.ws.on('close', (code: number, reason: Buffer) => {
-      log.warn(`Feishu WebSocket closed: code=${code}, reason=${reason.toString()}`);
+    this.ws.onclose = (event: { code: number; reason: Buffer }) => {
+      log.warn(`Feishu WebSocket closed: code=${event.code}, reason=${event.reason.toString()}`);
       // Auto-reconnect after 5 seconds
       setTimeout(() => {
         if (this.connected) {
@@ -227,11 +227,11 @@ export class FeishuAdapter implements CommAdapter {
           });
         }
       }, 5000);
-    });
+    };
 
-    this.ws.on('error', (err: Error) => {
-      log.error('Feishu WebSocket error', { error: err.message });
-    });
+    this.ws.onerror = () => {
+      log.error('Feishu WebSocket error occurred');
+    };
 
     // Step 3: Heartbeat at 30s intervals (Feishu WS requirement)
     this.wsHeartbeatTimer = setInterval(() => {
