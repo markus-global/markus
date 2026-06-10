@@ -4211,7 +4211,7 @@ export class SqliteApprovalRepo {
 
 // ─── Group Chat Repo ──────────────────────────────────────────────────────────
 
-import type { GroupChat, GroupChatMember } from './types.ts';
+import type { GroupChat, GroupChatMember, IntegrationRow } from './types.ts';
 
 export class SqliteGroupChatRepo {
   constructor(private db: DatabaseSync) {}
@@ -4411,19 +4411,7 @@ export class SqliteStatusTransitionRepo {
 
 // ─── Integration ─────────────────────────────────────────────────────────────
 
-export interface IntegrationRow {
-  id: string;
-  orgId: string;
-  platform: string;
-  displayName: string;
-  enabled: boolean;
-  config: Record<string, unknown>;
-  forwardRules: Record<string, unknown>[];
-  lastVerifiedAt: string | null;
-  lastError: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
+export type { IntegrationRow } from './types.ts';
 
 export class SqliteIntegrationRepo {
   constructor(private db: DatabaseSync) {}

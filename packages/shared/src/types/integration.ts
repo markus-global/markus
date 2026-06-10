@@ -10,6 +10,9 @@
 /** Supported external IM platforms */
 export type IntegrationPlatform = 'feishu' | 'slack' | 'telegram' | 'whatsapp';
 
+/** Integration operational status */
+export type IntegrationStatus = 'active' | 'inactive' | 'error' | 'pending_verify';
+
 // ─── Base integration config ─────────────────────────────────────────────────
 
 /** Generic integration configuration base type */
@@ -22,6 +25,8 @@ export interface IntegrationConfig {
   displayName: string;
   /** Whether this integration is enabled */
   enabled: boolean;
+  /** Operational status (default: 'inactive') */
+  status?: IntegrationStatus;
   /** Org-scoped — which org owns this config */
   orgId: string;
   /** Platform-specific config payload (validated by the consumer) */
