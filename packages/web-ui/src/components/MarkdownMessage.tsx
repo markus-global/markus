@@ -444,6 +444,33 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
             </span>
           );
         }
+        {
+          const chipMatch = href?.match(/^(workflow|task|requirement|project|deliverable|agent):(.+)$/);
+          if (chipMatch) {
+            const [, chipType, chipId] = chipMatch;
+            const chipMeta: Record<string, { icon: string; nav: () => void }> = {
+              workflow:    { icon: '⚙️', nav: () => navBus.navigate(PAGE.WORK, { boardType: 'workflows' }) },
+              task:        { icon: '✅', nav: () => navigateToEntity(chipId!) },
+              requirement: { icon: '📋', nav: () => navigateToEntity(chipId!) },
+              project:     { icon: '📁', nav: () => navigateToEntity(chipId!) },
+              deliverable: { icon: '📦', nav: () => navigateToEntity(chipId!) },
+              agent:       { icon: '🤖', nav: () => navigateToEntity(chipId!) },
+            };
+            const cm = chipMeta[chipType!];
+            if (cm) {
+              return (
+                <span
+                  className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-brand-500/10 text-brand-500 text-xs font-medium cursor-pointer hover:bg-brand-500/20 transition-colors"
+                  onClick={(e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); cm.nav(); }}
+                  title={`${chipType}: ${chipId}`}
+                >
+                  <span className="text-[10px]">{cm.icon}</span>
+                  <span>{children}</span>
+                </span>
+              );
+            }
+          }
+        }
         return (
           <a href={href} target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-500 underline break-all">{children}</a>
         );

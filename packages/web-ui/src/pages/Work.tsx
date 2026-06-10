@@ -3778,7 +3778,13 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
     setStarting(true);
     setError(null);
     try {
-      const mapping = Object.keys(roleOverrides).length > 0 ? roleOverrides : undefined;
+      let mapping: Record<string, string> | undefined;
+      if (roleCandidates.length > 0) {
+        mapping = {};
+        for (const rc of roleCandidates) {
+          mapping[rc.role] = roleOverrides[rc.role] ?? rc.recommended ?? '';
+        }
+      }
       await api.workflows.startRun(effectiveTeamId, runModal.name, effectiveProjectId, runParams, mapping);
       localStorage.setItem(`markus_wf_project_${runModal.name}`, effectiveProjectId);
       localStorage.setItem('markus_wf_project_last', effectiveProjectId);
@@ -3877,9 +3883,26 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                   <div className="flex items-center gap-2">
                     <svg className={`w-3.5 h-3.5 text-fg-tertiary shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                     <h3 className="text-sm font-semibold text-fg-primary">{wf.displayName || wf.name}</h3>
+                    <span className="text-[11px] text-fg-tertiary">{t('work:task.workflowStepsCount', '{{count}} steps', { count: wf.stepCount })}</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  <span
+                    className="text-[10px] text-fg-quaternary font-mono cursor-pointer hover:text-fg-tertiary transition-colors"
+                    title={t('work:task.workflowSendToAgent', 'Send to agent chat')}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const wfTeamId = resolveTeam(wf.name);
+                      const teamManager = wfTeamId ? agents.find(a => a.teamId === wfTeamId && a.agentRole === 'manager') : undefined;
+                      const targetAgentId = teamManager?.id ?? agents.find(a => a.agentRole === 'manager')?.id ?? agents[0]?.id;
+                      if (targetAgentId) {
+                        navBus.navigate(PAGE.TEAM, { agentId: targetAgentId, prefillMessage: `@[${wf.displayName || wf.name}](workflow:${wf.name}) ` });
+                      }
+                    }}
+                  >
+                    <svg className="w-3.5 h-3.5 inline mr-0.5 -mt-px" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+                    {wf.name}
+                  </span>
                   {wf.hasSchedule && <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-500/20 text-purple-400">{t('work:task.workflowScheduled', 'Scheduled')}</span>}
                   <span className="text-[10px] text-fg-tertiary">v{wf.version}</span>
                   {hasRunning ? (
@@ -3893,11 +3916,6 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                     </button>
                   )}
                 </div>
-              </div>
-              <div className="flex items-center gap-4 text-[11px] text-fg-tertiary mb-3 ml-5">
-                <span>{t('work:task.workflowStepsCount', '{{count}} steps', { count: wf.stepCount })}</span>
-                <span>{wf.roles.length} {t('work:task.roles', 'roles')}: {wf.roles.join(', ')}</span>
-                {wf.params && wf.params.length > 0 && <span>{t('work:task.workflowParamsCount', '{{count}} params', { count: wf.params.length })}</span>}
               </div>
 
               {/* Expanded detail view */}
@@ -4070,21 +4088,20 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                         <option value="">—</option>
                         {p.options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                       </select>
-                    ) : p.type === 'text' ? (
+                    ) : (
                       <textarea
                         value={runParams[p.name] ?? ''}
-                        onChange={e => setRunParams(prev => ({ ...prev, [p.name]: e.target.value }))}
+                        onChange={e => {
+                          setRunParams(prev => ({ ...prev, [p.name]: e.target.value }));
+                          const el = e.target;
+                          el.style.height = 'auto';
+                          const lineH = parseFloat(getComputedStyle(el).lineHeight) || 18;
+                          el.style.height = Math.min(el.scrollHeight, lineH * 7) + 'px';
+                        }}
                         placeholder={p.default ?? ''}
-                        className="input-field text-xs w-full min-h-[60px] resize-y"
-                        rows={3}
-                      />
-                    ) : (
-                      <input
-                        type="text"
-                        value={runParams[p.name] ?? ''}
-                        onChange={e => setRunParams(prev => ({ ...prev, [p.name]: e.target.value }))}
-                        placeholder={p.default ?? ''}
-                        className="input-field text-xs"
+                        rows={1}
+                        className="input-field text-xs w-full resize-none overflow-y-auto"
+                        style={{ maxHeight: `${7 * 1.5}em` }}
                       />
                     )}
                   </div>

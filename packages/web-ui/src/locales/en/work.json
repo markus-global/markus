@@ -295,6 +295,7 @@
     "workflowNo": "No",
     "workflowPause": "Pause",
     "workflowResume": "Resume",
+    "workflowSendToAgent": "Send to agent chat",
     "workflowNoRecentRuns": "No recent runs",
     "workflowStepsCount": "{{count}} steps",
     "workflowRolesCount": "{{count}} roles",

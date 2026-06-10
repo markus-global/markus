@@ -1,11 +1,11 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, type AgentInfo, type TaskInfo, type ProjectInfo, type DeliverableInfo, type RequirementInfo } from '../api.ts';
+import { api, type AgentInfo, type TaskInfo, type ProjectInfo, type DeliverableInfo, type RequirementInfo, type WorkflowInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE, type PageId } from '../routes.ts';
 import { Avatar } from './Avatar.tsx';
 
-type SearchCategory = 'all' | 'agents' | 'tasks' | 'requirements' | 'projects' | 'deliverables';
+type SearchCategory = 'all' | 'agents' | 'tasks' | 'requirements' | 'projects' | 'deliverables' | 'workflows';
 
 interface SearchResults {
   agents: AgentInfo[];
@@ -13,27 +13,28 @@ interface SearchResults {
   requirements: RequirementInfo[];
   projects: ProjectInfo[];
   deliverables: DeliverableInfo[];
+  workflows: WorkflowInfo[];
 }
 
 interface FlatItem {
   id: string;
-  type: 'agent' | 'task' | 'requirement' | 'project' | 'deliverable' | 'showMore';
+  type: 'agent' | 'task' | 'requirement' | 'project' | 'deliverable' | 'workflow' | 'showMore';
   page: PageId;
   params?: Record<string, string>;
   expandCategory?: SearchCategory;
   totalCount?: number;
 }
 
-const EMPTY: SearchResults = { agents: [], tasks: [], requirements: [], projects: [], deliverables: [] };
+const EMPTY: SearchResults = { agents: [], tasks: [], requirements: [], projects: [], deliverables: [], workflows: [] };
 
-type SectionId = 'agents' | 'tasks' | 'requirements' | 'projects' | 'deliverables';
+type SectionId = 'agents' | 'tasks' | 'requirements' | 'projects' | 'deliverables' | 'workflows';
 
 const PAGE_SECTION_ORDER: Record<string, SectionId[]> = {
-  team: ['agents', 'tasks', 'requirements', 'projects', 'deliverables'],
-  work: ['projects', 'requirements', 'tasks', 'agents', 'deliverables'],
-  deliverables: ['deliverables', 'agents', 'tasks', 'requirements', 'projects'],
+  team: ['agents', 'workflows', 'tasks', 'requirements', 'projects', 'deliverables'],
+  work: ['workflows', 'projects', 'requirements', 'tasks', 'agents', 'deliverables'],
+  deliverables: ['deliverables', 'agents', 'tasks', 'requirements', 'projects', 'workflows'],
 };
-const DEFAULT_ORDER: SectionId[] = ['agents', 'tasks', 'requirements', 'projects', 'deliverables'];
+const DEFAULT_ORDER: SectionId[] = ['agents', 'tasks', 'requirements', 'projects', 'deliverables', 'workflows'];
 
 let _persistedQuery = '';
 let _persistedCategory: SearchCategory = 'all';
@@ -69,12 +70,13 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
     setFocusIdx(-1);
     const lower = q.toLowerCase();
     try {
-      const [agentsRes, tasksRes, requirementsRes, projectsRes, deliverablesRes] = await Promise.allSettled([
+      const [agentsRes, tasksRes, requirementsRes, projectsRes, deliverablesRes, teamsRes] = await Promise.allSettled([
         api.agents.list(),
         api.tasks.list({ search: q, pageSize: 20 }),
         api.requirements.list(),
         api.projects.list(),
         api.deliverables.search({ q, limit: 20 }),
+        api.teams.list(),
       ]);
       const agents = agentsRes.status === 'fulfilled'
         ? agentsRes.value.agents.filter(a => a.name?.toLowerCase().includes(lower) || a.role?.toLowerCase().includes(lower))
@@ -87,7 +89,22 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
         ? projectsRes.value.projects.filter(p => p.name?.toLowerCase().includes(lower) || p.description?.toLowerCase().includes(lower))
         : [];
       const deliverables = deliverablesRes.status === 'fulfilled' ? deliverablesRes.value.results : [];
-      setResults({ agents, tasks, requirements, projects, deliverables });
+      const workflows: WorkflowInfo[] = [];
+      if (teamsRes.status === 'fulfilled') {
+        const wfFetches = await Promise.allSettled(
+          teamsRes.value.teams.map(team => api.workflows.list(team.id)),
+        );
+        for (const wfRes of wfFetches) {
+          if (wfRes.status === 'fulfilled') {
+            for (const wf of wfRes.value.workflows) {
+              if (wf.name.toLowerCase().includes(lower) || (wf.displayName || '').toLowerCase().includes(lower) || wf.description?.toLowerCase().includes(lower)) {
+                workflows.push(wf);
+              }
+            }
+          }
+        }
+      }
+      setResults({ agents, tasks, requirements, projects, deliverables, workflows });
     } catch {
       setResults(EMPTY);
     } finally {
@@ -113,6 +130,7 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
     { id: 'requirements', label: t('common:requirements', { defaultValue: '需求' }) },
     { id: 'projects', label: t('common:projects', { defaultValue: '项目' }) },
     { id: 'deliverables', label: t('common:deliverables', { defaultValue: '交付物' }) },
+    { id: 'workflows', label: t('common:workflows', { defaultValue: '工作流' }) },
   ];
 
   const sectionOrder = useMemo(() => PAGE_SECTION_ORDER[currentPage || ''] || DEFAULT_ORDER, [currentPage]);
@@ -122,7 +140,7 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
     const limit = category === 'all' ? 8 : undefined;
     const addSection = (section: SectionId) => {
       if (category !== 'all' && category !== section) return;
-      const arr = results[section === 'agents' ? 'agents' : section === 'tasks' ? 'tasks' : section === 'requirements' ? 'requirements' : section === 'projects' ? 'projects' : 'deliverables'];
+      const arr = results[section];
       const sliced = limit ? arr.slice(0, limit) : arr;
       for (const item of sliced) {
         switch (section) {
@@ -131,6 +149,7 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
           case 'requirements': items.push({ id: item.id, type: 'requirement', page: PAGE.WORK, params: { openRequirement: item.id } }); break;
           case 'projects': items.push({ id: item.id, type: 'project', page: PAGE.WORK, params: { projectId: item.id } }); break;
           case 'deliverables': items.push({ id: item.id, type: 'deliverable', page: PAGE.DELIVERABLES, params: { openDeliverable: item.id } }); break;
+          case 'workflows': items.push({ id: (item as unknown as WorkflowInfo).name, type: 'workflow', page: PAGE.WORK, params: { boardType: 'workflows' } }); break;
         }
       }
       if (limit && arr.length > limit) {
@@ -267,6 +286,7 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
                     : cat === 'tasks' ? results.tasks.length
                     : cat === 'requirements' ? results.requirements.length
                     : cat === 'projects' ? results.projects.length
+                    : cat === 'workflows' ? results.workflows.length
                     : results.deliverables.length;
                   return (
                     <button data-idx={idx} onClick={() => { setCategory(cat); setFocusIdx(-1); }} className={`mt-1 w-full text-xs py-1.5 rounded-lg transition-colors ${idx === focusIdx ? 'bg-brand-600/15 ring-1 ring-brand-500/40 text-brand-500' : 'text-brand-500 hover:text-brand-400 hover:bg-surface-overlay'}`}>
@@ -384,6 +404,28 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
                       })}
                     </div>
                     {limit && results.deliverables.length > limit && showMoreBtn('deliverables')}
+                  </section>
+                );
+                if (section === 'workflows' && results.workflows.length > 0) return (
+                  <section key="workflows">
+                    <h3 className="text-xs font-medium text-fg-tertiary uppercase mb-2">{t('common:workflows', { defaultValue: '工作流' })}</h3>
+                    <div className="space-y-0.5">
+                      {(limit ? results.workflows.slice(0, limit) : results.workflows).map(wf => {
+                        const idx = itemCounter++;
+                        return (
+                          <button key={wf.name} data-idx={idx} onClick={() => navigate(PAGE.WORK, { boardType: 'workflows' })} className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition-colors text-left ${idx === focusIdx ? 'bg-brand-600/15 ring-1 ring-brand-500/40' : 'hover:bg-surface-overlay'}`}>
+                            <div className="w-7 h-7 rounded-lg bg-teal-500/15 flex items-center justify-center shrink-0">
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-teal-500"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm text-fg-primary truncate">{wf.displayName || wf.name}</div>
+                              <div className="text-xs text-fg-tertiary truncate">{wf.stepCount} steps · v{wf.version}</div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {limit && results.workflows.length > limit && showMoreBtn('workflows')}
                   </section>
                 );
                 return null;

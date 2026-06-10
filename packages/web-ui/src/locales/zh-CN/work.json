@@ -295,6 +295,7 @@
     "workflowNo": "否",
     "workflowPause": "暂停",
     "workflowResume": "恢复",
+    "workflowSendToAgent": "发送到智能体对话",
     "workflowNoRecentRuns": "暂无运行记录",
     "workflowStepsCount": "{{count}} 步骤",
     "workflowRolesCount": "{{count}} 角色",

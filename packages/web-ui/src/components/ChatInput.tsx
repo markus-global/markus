@@ -3,12 +3,12 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Avatar } from './Avatar.tsx';
 
-export type MentionEntityType = 'agent' | 'project' | 'requirement' | 'task' | 'deliverable';
+export type MentionEntityType = 'agent' | 'project' | 'requirement' | 'task' | 'deliverable' | 'workflow';
 
 export interface ContextChip {
   id: string;
   label: string;
-  type: 'selection' | 'mention' | 'deliverable' | 'task' | 'project' | 'requirement';
+  type: 'selection' | 'mention' | 'deliverable' | 'task' | 'project' | 'requirement' | 'workflow';
   content: string;
   entityType?: MentionEntityType;
   onRemove?: () => void;
@@ -28,9 +28,10 @@ const MENTION_TYPE_ICON: Record<MentionEntityType, string> = {
   requirement: '📋',
   task: '✅',
   deliverable: '📦',
+  workflow: '⚙️',
 };
 
-const MENTION_TYPE_ORDER: MentionEntityType[] = ['project', 'requirement', 'task', 'deliverable', 'agent'];
+const MENTION_TYPE_ORDER: MentionEntityType[] = ['project', 'requirement', 'task', 'deliverable', 'workflow', 'agent'];
 
 export interface PendingFile {
   id: string;
