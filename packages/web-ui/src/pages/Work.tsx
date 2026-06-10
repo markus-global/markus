@@ -4015,7 +4015,7 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                   </div>
                   <div className="space-y-1">
                     {visibleRuns.map(run => (
-                      <div key={run.id} className="flex items-center gap-3 text-xs px-2 py-1 rounded hover:bg-surface-elevated/50">
+                      <div key={run.id} className="flex flex-wrap items-center gap-2 text-xs px-2 py-1.5 rounded hover:bg-surface-elevated/50">
                         <span className="text-fg-secondary font-medium">#{run.runNumber}</span>
                         {statusBadge(run.status)}
                         <span className="text-fg-tertiary">{run.taskIds.length} tasks</span>
@@ -4026,7 +4026,7 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                           <button
                             onClick={(e) => { e.stopPropagation(); togglePauseRun(run); }}
                             disabled={pausingRunId === run.id}
-                            className={`text-[10px] font-medium ${run.status === 'running' ? 'text-amber-400 hover:text-amber-300' : 'text-green-400 hover:text-green-300'}`}
+                            className={`px-2.5 py-0.5 text-[10px] rounded-lg font-medium transition-colors ${run.status === 'running' ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30' : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'}`}
                           >
                             {pausingRunId === run.id
                               ? '...'
@@ -4038,20 +4038,17 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                         {(run.status === 'running' || (run.status as string) === 'paused') && (
                           <button
                             onClick={(e) => { e.stopPropagation(); setConfirmCancelRunId(run.id); }}
-                            className="text-[10px] text-red-400 hover:text-red-300 font-medium"
+                            className="px-2.5 py-0.5 text-[10px] rounded-lg font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
                           >
                             {t('work:task.workflowCancelRun', 'Cancel Run')}
                           </button>
                         )}
                         <button
                           onClick={() => viewRunTasks(run)}
-                          className="text-[10px] text-brand-400 hover:text-brand-300 font-medium"
+                          className="px-2.5 py-0.5 text-[10px] rounded-lg font-medium bg-brand-500/20 text-brand-400 hover:bg-brand-500/30 transition-colors"
                         >
                           {t('work:task.workflowViewTasks', 'View Tasks')}
                         </button>
-                        {Object.entries(run.roleMapping).slice(0, 2).map(([role, agentId]) => (
-                          <span key={role} className="text-[10px] text-fg-tertiary">{role}: {agentMap[agentId] ?? agentId.slice(0, 8)}</span>
-                        ))}
                       </div>
                     ))}
                   </div>
@@ -4211,6 +4208,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>(previewData?.board ?? {});
   const [agents, setAgents] = useState<AgentInfo[]>(previewData?.agents ?? []);
+  const [teams, setTeams] = useState<Array<{ id: string; name: string }>>([]);
   const [users, setUsers] = useState<HumanUserInfo[]>(previewData?.users ?? []);
   const [allRequirements, setAllRequirements] = useState<RequirementInfo[]>(previewData?.allRequirements ?? []);
   const [loading, setLoading] = useState(previewData ? false : true);
@@ -4319,6 +4317,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     try { const { agents: a } = await api.agents.list(); setAgents(a); } catch { /* */ }
   }, []);
 
+  const refreshTeams = useCallback(async () => {
+    try { const { teams: t } = await api.teams.list(); setTeams(t.map(tm => ({ id: tm.id, name: tm.name }))); } catch { /* */ }
+  }, []);
+
   const refreshUsers = useCallback(async () => {
     try { const { users: u } = await api.users.list(authUser?.orgId); setUsers(u); } catch { /* */ }
   }, [authUser?.orgId]);
@@ -4328,9 +4330,9 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   }, []);
 
   const refresh = useCallback(async () => {
-    await Promise.all([refreshProjects(), refreshBoard(), refreshAgents(), refreshUsers(), refreshRequirements()]);
+    await Promise.all([refreshProjects(), refreshBoard(), refreshAgents(), refreshUsers(), refreshRequirements(), refreshTeams()]);
     setLoading(false);
-  }, [refreshProjects, refreshBoard, refreshAgents, refreshUsers, refreshRequirements]);
+  }, [refreshProjects, refreshBoard, refreshAgents, refreshUsers, refreshRequirements, refreshTeams]);
 
   useEffect(() => { if (previewMode) return; refresh(); }, [previewMode, refresh]);
 
@@ -4863,12 +4865,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     if (viewMode === 'project' && selectedProjectId) list = list.filter(r => r.projectId === selectedProjectId);
     if (projectFilter.size > 0) list = list.filter(r => r.projectId && projectFilter.has(r.projectId));
     if (agentFilter.size > 0) {
-      const uid = authUser?.id;
-      list = list.filter(r =>
-        agentFilter.has(r.createdBy)
-        || (uid != null && r.createdBy === uid)
-        || !agentIds.has(r.createdBy),
-      );
+      list = list.filter(r => agentFilter.has(r.createdBy));
     }
     if (myTasksOnly && authUser?.id) list = list.filter(r => r.createdBy === authUser.id);
     return list;
@@ -4907,6 +4904,30 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     });
   }, [agents, board, selectedProjectId]);
 
+  type TeamFilterItem = { kind: 'team'; id: string; name: string; agentIds: string[] } | { kind: 'agent'; agent: AgentInfo };
+  const teamFilterItems = useMemo<TeamFilterItem[]>(() => {
+    const teamMap = new Map<string, string[]>();
+    const ungrouped: AgentInfo[] = [];
+    for (const a of sortedAgents) {
+      if (a.teamId) {
+        const arr = teamMap.get(a.teamId) ?? [];
+        arr.push(a.id);
+        teamMap.set(a.teamId, arr);
+      } else {
+        ungrouped.push(a);
+      }
+    }
+    const items: TeamFilterItem[] = [];
+    for (const a of ungrouped) items.push({ kind: 'agent', agent: a });
+    for (const tm of teams) {
+      const agentIds = teamMap.get(tm.id);
+      if (agentIds && agentIds.length > 0) {
+        items.push({ kind: 'team', id: tm.id, name: tm.name, agentIds });
+      }
+    }
+    return items;
+  }, [sortedAgents, teams]);
+
   const sortedProjects = useMemo(() => {
     const terminal = new Set(['completed', 'failed', 'cancelled', 'archived']);
     const allTasks = Object.values(board).flat();
@@ -4916,7 +4937,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
         activeProjectIds.add(t.projectId);
       }
     }
-    return [...projects].sort((a, b) => {
+    const filtered = showClosed ? projects : projects.filter(p => p.status !== 'archived');
+    return [...filtered].sort((a, b) => {
       const aArchived = a.status === 'archived' ? 1 : 0;
       const bArchived = b.status === 'archived' ? 1 : 0;
       if (aArchived !== bArchived) return aArchived - bArchived;
@@ -4925,7 +4947,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       if (aActive !== bActive) return aActive - bActive;
       return a.name.localeCompare(b.name);
     });
-  }, [projects, board]);
+  }, [projects, board, showClosed]);
 
   // Count tasks per project — computed locally from existing board data
   const allTaskCounts = useMemo(() => {
@@ -5104,8 +5126,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           </div>
         )}
 
-        {/* Agent filter bar — desktop only (hidden in workflows view) */}
-        {!isMobile && boardType !== 'workflows' && (agents.length > 0 || authUser?.id) && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
+        {/* Team/agent filter bar — desktop only (hidden in workflows view) */}
+        {!isMobile && boardType !== 'workflows' && (teamFilterItems.length > 0 || authUser?.id) && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
           <div className="px-6 py-1.5 flex items-center gap-1.5 overflow-x-auto scrollbar-hide shrink-0">
             <button type="button" onClick={() => { setAgentFilter(new Set()); setMyTasksOnly(false); }}
               className={`text-[10px] text-fg-tertiary hover:text-fg-secondary px-2 py-1 rounded-md bg-surface-elevated/60 hover:bg-surface-overlay shrink-0 transition-all ${agentFilter.size > 0 || myTasksOnly ? 'visible opacity-100' : 'invisible opacity-0'}`}>{t('work:task.clear')}</button>
@@ -5120,7 +5142,31 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 {t('work:task.myTasks')}
               </button>
             )}
-            {sortedAgents.map(a => {
+            {teamFilterItems.map(item => {
+              if (item.kind === 'team') {
+                const selected = item.agentIds.every(id => agentFilter.has(id));
+                const partial = !selected && item.agentIds.some(id => agentFilter.has(id));
+                return (
+                  <button key={`team-${item.id}`} onClick={() => {
+                    setAgentFilter(prev => {
+                      const next = new Set(prev);
+                      if (selected) { for (const id of item.agentIds) next.delete(id); }
+                      else { for (const id of item.agentIds) next.add(id); }
+                      return next;
+                    });
+                  }}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] shrink-0 transition-all ${
+                      selected ? 'bg-brand-600/20 text-brand-500 ring-1 ring-brand-500/40'
+                      : partial ? 'bg-brand-600/10 text-brand-400 ring-1 ring-brand-500/20'
+                      : 'text-fg-tertiary hover:bg-surface-elevated hover:text-fg-secondary'
+                    }`}>
+                    <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                    {item.name}
+                    <span className="text-[9px] text-fg-quaternary">{item.agentIds.length}</span>
+                  </button>
+                );
+              }
+              const a = item.agent;
               const selected = agentFilter.has(a.id);
               return (
                 <button key={a.id} onClick={() => toggleAgentFilter(a.id)}
@@ -5777,11 +5823,35 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 </button>
               </div>
             )}
-            {agents.length > 0 && (
+            {teamFilterItems.length > 0 && (
               <div className="px-4 py-3 border-t border-border-default/40">
                 <div className="text-[11px] text-fg-tertiary font-medium uppercase tracking-wider mb-2">{t('work:task.agentsFilterGroup')}</div>
                 <div className="flex flex-wrap gap-1.5">
-                  {sortedAgents.map(a => {
+                  {teamFilterItems.map(item => {
+                    if (item.kind === 'team') {
+                      const selected = item.agentIds.every(id => agentFilter.has(id));
+                      const partial = !selected && item.agentIds.some(id => agentFilter.has(id));
+                      return (
+                        <button key={`team-${item.id}`} onClick={() => {
+                          setAgentFilter(prev => {
+                            const next = new Set(prev);
+                            if (selected) { for (const id of item.agentIds) next.delete(id); }
+                            else { for (const id of item.agentIds) next.add(id); }
+                            return next;
+                          });
+                        }}
+                          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] transition-all ${
+                            selected ? 'bg-brand-600/20 text-brand-500 ring-1 ring-brand-500/40'
+                            : partial ? 'bg-brand-600/10 text-brand-400 ring-1 ring-brand-500/20'
+                            : 'bg-surface-elevated text-fg-secondary'
+                          }`}>
+                          <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                          {item.name}
+                          <span className="text-[9px] text-fg-quaternary">{item.agentIds.length}</span>
+                        </button>
+                      );
+                    }
+                    const a = item.agent;
                     const selected = agentFilter.has(a.id);
                     return (
                       <button key={a.id} onClick={() => toggleAgentFilter(a.id)}
