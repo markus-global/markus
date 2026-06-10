@@ -8,6 +8,19 @@ export interface FeishuConfig {
   domain?: string;
 }
 
+/** Feishu receive ID types for sending messages */
+export type ReceiveIdType = 'chat_id' | 'open_id' | 'user_id' | 'union_id';
+
+/** Message content type for sending */
+export type SendMsgType = 'text' | 'post' | 'interactive' | 'image' | 'file' | 'audio' | 'media' | 'sticker';
+
+/** Response type for Feishu API operations */
+interface ApiResponse<T = unknown> {
+  code: number;
+  msg: string;
+  data?: T;
+}
+
 interface TokenResponse {
   code: number;
   msg: string;
@@ -62,22 +75,27 @@ export class FeishuClient {
     return this.tenantToken;
   }
 
-  async sendTextMessage(chatId: string, text: string): Promise<string> {
-    return this.sendMessage(chatId, 'text', JSON.stringify({ text }));
+  async sendTextMessage(chatId: string, text: string, idType: ReceiveIdType = 'chat_id'): Promise<string> {
+    return this.sendMessage(chatId, 'text', JSON.stringify({ text }), idType);
   }
 
-  async sendRichTextMessage(chatId: string, title: string, content: Array<Array<Record<string, unknown>>>): Promise<string> {
+  async sendRichTextMessage(chatId: string, title: string, content: Array<Array<Record<string, unknown>>>, idType: ReceiveIdType = 'chat_id'): Promise<string> {
     return this.sendMessage(chatId, 'post', JSON.stringify({
       zh_cn: { title, content },
-    }));
+    }), idType);
   }
 
-  async sendInteractiveMessage(chatId: string, card: Record<string, unknown>): Promise<string> {
-    return this.sendMessage(chatId, 'interactive', JSON.stringify(card));
+  async sendInteractiveMessage(chatId: string, card: Record<string, unknown>, idType: ReceiveIdType = 'chat_id'): Promise<string> {
+    return this.sendMessage(chatId, 'interactive', JSON.stringify(card), idType);
   }
 
-  async replyMessage(messageId: string, text: string): Promise<string> {
+  async replyMessage(messageId: string, content: string, msgType: SendMsgType = 'text'): Promise<string> {
     const token = await this.getTenantToken();
+
+    const body: Record<string, unknown> = {
+      msg_type: msgType,
+      content,
+    };
 
     const res = await fetch(`${this.domain}/open-apis/im/v1/messages/${messageId}/reply`, {
       method: 'POST',
@@ -85,18 +103,64 @@ export class FeishuClient {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({
-        msg_type: 'text',
-        content: JSON.stringify({ text }),
-      }),
+      body: JSON.stringify(body),
     });
 
-    const data = (await res.json()) as SendMessageResponse;
+    const data = (await res.json()) as ApiResponse<{ message_id: string }>;
     if (data.code !== 0) {
       throw new Error(`Feishu reply failed: ${data.msg}`);
     }
 
     return data.data!.message_id;
+  }
+
+  async replyCard(messageId: string, card: Record<string, unknown>): Promise<string> {
+    return this.replyMessage(messageId, JSON.stringify(card), 'interactive');
+  }
+
+  async updateMessage(messageId: string, content: string, msgType: SendMsgType = 'text'): Promise<void> {
+    const token = await this.getTenantToken();
+
+    const res = await fetch(`${this.domain}/open-apis/im/v1/messages/${messageId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        msg_type: msgType,
+        content,
+      }),
+    });
+
+    const data = (await res.json()) as ApiResponse;
+    if (data.code !== 0) {
+      throw new Error(`Feishu updateMessage failed: ${data.msg}`);
+    }
+
+    log.info(`Feishu message updated: ${messageId}`);
+  }
+
+  async updateInteractiveMessage(messageId: string, card: Record<string, unknown>): Promise<void> {
+    return this.updateMessage(messageId, JSON.stringify(card), 'interactive');
+  }
+
+  async deleteMessage(messageId: string): Promise<void> {
+    const token = await this.getTenantToken();
+
+    const res = await fetch(`${this.domain}/open-apis/im/v1/messages/${messageId}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    const data = (await res.json()) as ApiResponse;
+    if (data.code !== 0) {
+      throw new Error(`Feishu deleteMessage failed: ${data.msg}`);
+    }
+
+    log.info(`Feishu message deleted: ${messageId}`);
   }
 
   async getMessageList(chatId: string, pageSize = 20): Promise<unknown[]> {
@@ -191,23 +255,23 @@ export class FeishuClient {
     }));
   }
 
-  private async sendMessage(receiveIdType: string, msgType: string, content: string): Promise<string> {
+  private async sendMessage(receiveId: string, msgType: string, content: string, receiveIdType: ReceiveIdType = 'chat_id'): Promise<string> {
     const token = await this.getTenantToken();
 
-    const res = await fetch(`${this.domain}/open-apis/im/v1/messages?receive_id_type=chat_id`, {
+    const res = await fetch(`${this.domain}/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({
-        receive_id: receiveIdType,
+        receive_id: receiveId,
         msg_type: msgType,
         content,
       }),
     });
 
-    const data = (await res.json()) as SendMessageResponse;
+    const data = (await res.json()) as ApiResponse<{ message_id: string }>;
     if (data.code !== 0) {
       throw new Error(`Feishu send failed: ${data.msg}`);
     }
