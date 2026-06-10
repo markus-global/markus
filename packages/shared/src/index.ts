@@ -8,6 +8,7 @@ export * from './types/package.js';
 export * from './types/project.js';
 export * from './types/requirement.js';
 export * from './types/connector.js';
+export * from './types/integration.js';
 export * from './types/file-storage.js';
 export * from './types/mailbox.js';
 export * from './types/cognitive.js';

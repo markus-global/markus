@@ -295,6 +295,32 @@ export interface GroupChatMember {
   addedAt: Date;
 }
 
+// ─── Integration ──────────────────────────────────────────────────────────────
+
+export interface IntegrationRow {
+  id: string;
+  orgId: string;
+  platform: string;
+  displayName: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  forwardRules: Record<string, unknown>[];
+  lastVerifiedAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Contract for integration config persistence */
+export interface IntegrationRepo {
+  create(data: Record<string, unknown>): Promise<IntegrationRow>;
+  findById(id: string): IntegrationRow | undefined;
+  listByOrg(orgId: string): IntegrationRow[];
+  listByPlatform(orgId: string, platform: string): IntegrationRow[];
+  update(id: string, data: Record<string, unknown>): Promise<void>;
+  delete(id: string): Promise<void>;
+}
+
 // ─── Repo interfaces (structural contracts for dependency injection) ──────────
 
 /** Contract for task persistence used by org-manager consumers */

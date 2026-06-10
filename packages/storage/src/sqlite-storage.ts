@@ -594,6 +594,21 @@ CREATE TABLE IF NOT EXISTS user_read_cursors (
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, conversation_key)
 );
+
+CREATE TABLE IF NOT EXISTS integrations (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  config TEXT NOT NULL DEFAULT '{}',
+  forward_rules TEXT DEFAULT '[]',
+  last_verified_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_integrations_org ON integrations(org_id, platform);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -4391,6 +4406,104 @@ export class SqliteStatusTransitionRepo {
        WHERE entity_type = ? AND entity_id = ?
        ORDER BY created_at ASC, id ASC LIMIT ?`
     ).all(entityType, entityId, limit) as unknown as StatusTransitionRow[];
+  }
+}
+
+// ─── Integration ─────────────────────────────────────────────────────────────
+
+export interface IntegrationRow {
+  id: string;
+  orgId: string;
+  platform: string;
+  displayName: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  forwardRules: Record<string, unknown>[];
+  lastVerifiedAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export class SqliteIntegrationRepo {
+  constructor(private db: DatabaseSync) {}
+
+  async create(data: Record<string, unknown>): Promise<IntegrationRow> {
+    const id = (data['id'] as string) ?? generateId('int');
+    const now = new Date().toISOString();
+    this.db.prepare(
+      `INSERT INTO integrations (id, org_id, platform, display_name, enabled, config, forward_rules, last_verified_at, last_error, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      data['orgId'] as string,
+      data['platform'] as string,
+      data['displayName'] as string,
+      (data['enabled'] as boolean) ? 1 : 0,
+      toJson(data['config']),
+      toJson(data['forwardRules'] ?? []),
+      (data['lastVerifiedAt'] as string) ?? null,
+      (data['lastError'] as string) ?? null,
+      now,
+      now,
+    );
+    return this.findById(id)!;
+  }
+
+  findById(id: string): IntegrationRow | undefined {
+    const row = this.db.prepare('SELECT * FROM integrations WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return row ? this.mapRow(row) : undefined;
+  }
+
+  listByOrg(orgId: string): IntegrationRow[] {
+    const rows = this.db.prepare('SELECT * FROM integrations WHERE org_id = ? ORDER BY platform, display_name').all(orgId) as Record<string, unknown>[];
+    return rows.map(r => this.mapRow(r));
+  }
+
+  listByPlatform(orgId: string, platform: string): IntegrationRow[] {
+    const rows = this.db.prepare('SELECT * FROM integrations WHERE org_id = ? AND platform = ? ORDER BY display_name').all(orgId, platform) as Record<string, unknown>[];
+    return rows.map(r => this.mapRow(r));
+  }
+
+  async update(id: string, data: Record<string, unknown>): Promise<void> {
+    const now = new Date().toISOString();
+    const sets: string[] = [];
+    const params: SQLInputValue[] = [];
+
+    if (data['displayName'] !== undefined) { sets.push('display_name = ?'); params.push(data['displayName'] as string); }
+    if (data['enabled'] !== undefined) { sets.push('enabled = ?'); params.push((data['enabled'] as boolean) ? 1 : 0); }
+    if (data['config'] !== undefined) { sets.push('config = ?'); params.push(toJson(data['config'])); }
+    if (data['forwardRules'] !== undefined) { sets.push('forward_rules = ?'); params.push(toJson(data['forwardRules'])); }
+    if (data['lastVerifiedAt'] !== undefined) { sets.push('last_verified_at = ?'); params.push(data['lastVerifiedAt'] as string ?? null); }
+    if (data['lastError'] !== undefined) { sets.push('last_error = ?'); params.push(data['lastError'] as string ?? null); }
+    if (data['platform'] !== undefined) { sets.push('platform = ?'); params.push(data['platform'] as string); }
+
+    if (sets.length === 0) return;
+    sets.push('updated_at = ?');
+    params.push(now);
+    params.push(id);
+
+    this.db.prepare(`UPDATE integrations SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  async delete(id: string): Promise<void> {
+    this.db.prepare('DELETE FROM integrations WHERE id = ?').run(id);
+  }
+
+  private mapRow(r: Record<string, unknown>): IntegrationRow {
+    return {
+      id: r['id'] as string,
+      orgId: r['org_id'] as string,
+      platform: r['platform'] as string,
+      displayName: r['display_name'] as string,
+      enabled: !!(r['enabled'] as number),
+      config: fromJson<Record<string, unknown>>(r['config'] as string),
+      forwardRules: fromJson<Record<string, unknown>[]>(r['forward_rules'] as string),
+      lastVerifiedAt: r['last_verified_at'] as string | null,
+      lastError: r['last_error'] as string | null,
+      createdAt: r['created_at'] as string,
+      updatedAt: r['updated_at'] as string,
+    };
   }
 }
 
