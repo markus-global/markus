@@ -9295,6 +9295,23 @@ EXPLANATION_END`;
       }
     }
 
+    // Workflow run pause/resume
+    const wfRunActionMatch = path.match(/^\/api\/workflow-runs\/([^/]+)\/(pause|resume)$/);
+    if (wfRunActionMatch && req.method === 'POST') {
+      const runId = wfRunActionMatch[1]!;
+      const action = wfRunActionMatch[2] as 'pause' | 'resume';
+      if (!this.workflowRunner) { this.json(res, 404, { error: 'Run not found' }); return; }
+      try {
+        const run = action === 'pause'
+          ? await this.workflowRunner.pauseRun(runId)
+          : await this.workflowRunner.resumeRun(runId);
+        this.json(res, 200, { run });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
     // ── Workflow Engine (DEPRECATED — use /api/teams/:teamId/workflows instead) ─
     if ((path === '/api/workflows' || path.startsWith('/api/workflows/')) &&
         !path.startsWith('/api/workflow-runs')) {

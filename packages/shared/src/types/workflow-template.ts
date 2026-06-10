@@ -91,7 +91,7 @@ export interface WorkflowTemplate {
 
 // ─── Workflow Run (runtime instance) ─────────────────────────────────────────
 
-export type WorkflowRunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
+export type WorkflowRunStatus = 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
 export type WorkflowRunTrigger = 'manual' | 'schedule' | 'agent';
 
 export interface WorkflowStepConfig {

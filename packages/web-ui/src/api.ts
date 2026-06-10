@@ -254,7 +254,7 @@ export interface WorkflowRunInfo {
   taskIds: string[];
   params: Record<string, string>;
   roleMapping: Record<string, string>;
-  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
   triggeredBy: string;
   projectId?: string;
   startedAt: string;
@@ -1745,6 +1745,10 @@ export const api = {
       request<{ run: WorkflowRunInfo }>(`/workflow-runs/${runId}`),
     cancelRun: (runId: string) =>
       request<{ run: WorkflowRunInfo }>(`/workflow-runs/${runId}`, { method: 'DELETE' }),
+    pauseRun: (runId: string) =>
+      request<{ run: WorkflowRunInfo }>(`/workflow-runs/${runId}/pause`, { method: 'POST' }),
+    resumeRun: (runId: string) =>
+      request<{ run: WorkflowRunInfo }>(`/workflow-runs/${runId}/resume`, { method: 'POST' }),
   },
 };
 

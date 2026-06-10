@@ -315,6 +315,76 @@ export class WorkflowRunner {
     return run;
   }
 
+  async pauseRun(runId: string, pausedBy?: string): Promise<WorkflowRun> {
+    const run = this.runs.get(runId) ?? (this.runRepo ? await this.loadRun(runId) : null);
+    if (!run) throw new Error(`Workflow run not found: ${runId}`);
+    if (run.status !== 'running') throw new Error(`Run ${runId} is not running (current: ${run.status})`);
+
+    for (const taskId of run.taskIds) {
+      try {
+        const task = this.taskService.getTask(taskId);
+        if (task && task.status === 'in_progress') {
+          this.taskService.pauseTask(taskId, pausedBy, 'system');
+        } else if (task && task.status === 'pending') {
+          this.taskService.updateTaskStatus(taskId, 'blocked', pausedBy, true, false, 'system');
+        }
+      } catch (err) {
+        log.warn('Failed to pause task in workflow run', { taskId, error: String(err) });
+      }
+    }
+
+    run.status = 'paused' as WorkflowRunStatus;
+    this.runs.set(runId, run);
+
+    if (this.runRepo) {
+      await this.runRepo.updateStatus(runId, 'paused' as WorkflowRunStatus).catch(err =>
+        log.warn('Failed to update workflow run status', { error: String(err) }),
+      );
+    }
+
+    this.ws?.broadcast?.({
+      type: 'workflow:run_updated',
+      payload: { runId, status: 'paused', teamId: run.teamId },
+      timestamp: new Date().toISOString(),
+    });
+
+    return run;
+  }
+
+  async resumeRun(runId: string, resumedBy?: string): Promise<WorkflowRun> {
+    const run = this.runs.get(runId) ?? (this.runRepo ? await this.loadRun(runId) : null);
+    if (!run) throw new Error(`Workflow run not found: ${runId}`);
+    if ((run.status as string) !== 'paused') throw new Error(`Run ${runId} is not paused (current: ${run.status})`);
+
+    for (const taskId of run.taskIds) {
+      try {
+        const task = this.taskService.getTask(taskId);
+        if (task && task.status === 'blocked') {
+          this.taskService.resumeTask(taskId, resumedBy, 'system');
+        }
+      } catch (err) {
+        log.warn('Failed to resume task in workflow run', { taskId, error: String(err) });
+      }
+    }
+
+    run.status = 'running';
+    this.runs.set(runId, run);
+
+    if (this.runRepo) {
+      await this.runRepo.updateStatus(runId, 'running').catch(err =>
+        log.warn('Failed to update workflow run status', { error: String(err) }),
+      );
+    }
+
+    this.ws?.broadcast?.({
+      type: 'workflow:run_updated',
+      payload: { runId, status: 'running', teamId: run.teamId },
+      timestamp: new Date().toISOString(),
+    });
+
+    return run;
+  }
+
   getRun(runId: string): WorkflowRun | undefined {
     return this.runs.get(runId);
   }
@@ -481,15 +551,41 @@ export class WorkflowRunner {
     roleMapping: Record<string, string>,
     team: { managerId?: string; memberAgentIds: string[] },
   ): string {
+    const assignee = roleMapping[step.role];
+
+    const pickOrFallback = (candidate: string | undefined): string => {
+      if (candidate && candidate !== assignee) return candidate;
+      // Assignee === candidate (self-review): try another team member first
+      const otherMember = team.memberAgentIds.find(id => id !== assignee);
+      if (otherMember) return otherMember;
+      // Last resort: use the Secretary (system default agent)
+      const secretary = this.findSecretaryAgent();
+      if (secretary) return secretary;
+      // Absolute fallback — self-review (will be caught at review time)
+      return candidate || assignee;
+    };
+
     // Explicit reviewer role on the step
     if (step.reviewer && roleMapping[step.reviewer]) {
-      return roleMapping[step.reviewer]!;
+      return pickOrFallback(roleMapping[step.reviewer]!);
     }
     // Default to team manager
-    if (team.managerId) return team.managerId;
-    // Fallback: first team member that isn't the assignee
-    const assignee = roleMapping[step.role];
-    return team.memberAgentIds.find(id => id !== assignee) || assignee;
+    if (team.managerId) return pickOrFallback(team.managerId);
+    // Fallback chain
+    return pickOrFallback(undefined);
+  }
+
+  private findSecretaryAgent(): string | undefined {
+    try {
+      const agentManager = this.orgService.getAgentManager();
+      const agents = agentManager.listAgents();
+      const secretary = agents.find(a =>
+        a.agentRole === 'secretary' || a.role?.toLowerCase() === 'secretary'
+      );
+      return secretary?.id;
+    } catch {
+      return undefined;
+    }
   }
 
   private buildWorkflowContext(

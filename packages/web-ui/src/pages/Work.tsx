@@ -3660,7 +3660,7 @@ function WorkflowHowItWorks({ teamId, agents, compact }: { teamId: string | null
   );
 }
 
-function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, projects }: { teamId: string | null; projectId: string | null; agents: AgentInfo[]; projects: ProjectInfo[] }) {
+function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, projects, onViewRunTasks }: { teamId: string | null; projectId: string | null; agents: AgentInfo[]; projects: ProjectInfo[]; onViewRunTasks?: (requirementId: string) => void }) {
   const { t } = useTranslation(['work']);
   const [workflows, setWorkflows] = useState<WorkflowInfo[]>([]);
   const [runs, setRuns] = useState<Record<string, WorkflowRunInfo[]>>({});
@@ -3674,9 +3674,13 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
   const [expandedWorkflow, setExpandedWorkflow] = useState<string | null>(null);
   const [templateDetails, setTemplateDetails] = useState<Record<string, WorkflowTemplateInfo>>({});
   const [cancellingRunId, setCancellingRunId] = useState<string | null>(null);
+  const [confirmCancelRunId, setConfirmCancelRunId] = useState<string | null>(null);
+  const [pausingRunId, setPausingRunId] = useState<string | null>(null);
   const [roleCandidates, setRoleCandidates] = useState<Array<{ role: string; candidates: Array<{ agentId: string; agentName: string }>; recommended?: string }>>([]);
   const [roleOverrides, setRoleOverrides] = useState<Record<string, string>>({});
   const [runProjectId, setRunProjectId] = useState<string | null>(null);
+  const [workflowTeamMap, setWorkflowTeamMap] = useState<Record<string, string>>({});
+  const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
 
   const teamId = propTeamId ?? selectedTeamId;
 
@@ -3700,9 +3704,11 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
     try {
       const allWf: WorkflowInfo[] = [];
       const runsMap: Record<string, WorkflowRunInfo[]> = {};
+      const teamMap: Record<string, string> = {};
       await Promise.all(targetTeams.map(async tid => {
         try {
           const { workflows: wf } = await api.workflows.list(tid);
+          for (const w of wf) teamMap[w.name] = tid;
           allWf.push(...wf);
           await Promise.all(wf.map(async w => {
             try {
@@ -3714,11 +3720,14 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
       }));
       setWorkflows(allWf);
       setRuns(runsMap);
+      setWorkflowTeamMap(teamMap);
     } catch { /* ignore */ }
     setLoading(false);
   }, [teamId, teams]);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  const resolveTeam = (wfName: string) => teamId ?? workflowTeamMap[wfName];
 
   const toggleExpand = async (wf: WorkflowInfo) => {
     if (expandedWorkflow === wf.name) {
@@ -3726,9 +3735,10 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
       return;
     }
     setExpandedWorkflow(wf.name);
-    if (!templateDetails[wf.name] && teamId) {
+    const tid = resolveTeam(wf.name);
+    if (!templateDetails[wf.name] && tid) {
       try {
-        const { template } = await api.workflows.get(teamId, wf.name);
+        const { template } = await api.workflows.get(tid, wf.name);
         setTemplateDetails(prev => ({ ...prev, [wf.name]: template }));
       } catch { /* ignore */ }
     }
@@ -3743,11 +3753,14 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
     setError(null);
     setRoleCandidates([]);
     setRoleOverrides({});
-    setRunProjectId(propProjectId ?? projects[0]?.id ?? null);
+    const lastProject = localStorage.getItem(`markus_wf_project_${wf.name}`) ?? localStorage.getItem('markus_wf_project_last');
+    const validLast = lastProject && projects.some(p => p.id === lastProject) ? lastProject : null;
+    setRunProjectId(propProjectId ?? validLast ?? projects[0]?.id ?? null);
     setRunModal(wf);
 
-    if (teamId) {
-      api.workflows.roles(teamId, wf.name)
+    const tid = resolveTeam(wf.name);
+    if (tid) {
+      api.workflows.roles(tid, wf.name)
         .then(({ roles }) => setRoleCandidates(roles))
         .catch(() => {});
     }
@@ -3755,15 +3768,20 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
 
   const startRun = async () => {
     const effectiveProjectId = runProjectId ?? projects[0]?.id;
-    if (!runModal || !teamId || !effectiveProjectId) {
-      setError(t('work:task.workflowNoProject', 'Please select a project'));
+    const effectiveTeamId = runModal ? resolveTeam(runModal.name) : undefined;
+    if (!runModal || !effectiveTeamId || !effectiveProjectId) {
+      setError(!effectiveProjectId
+        ? t('work:task.workflowNoProject', 'Please select a project')
+        : t('work:task.workflowNoTeam', 'Cannot determine team for this workflow'));
       return;
     }
     setStarting(true);
     setError(null);
     try {
       const mapping = Object.keys(roleOverrides).length > 0 ? roleOverrides : undefined;
-      await api.workflows.startRun(teamId, runModal.name, effectiveProjectId, runParams, mapping);
+      await api.workflows.startRun(effectiveTeamId, runModal.name, effectiveProjectId, runParams, mapping);
+      localStorage.setItem(`markus_wf_project_${runModal.name}`, effectiveProjectId);
+      localStorage.setItem('markus_wf_project_last', effectiveProjectId);
       setRunModal(null);
       refresh();
     } catch (err) {
@@ -3786,6 +3804,7 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
 
   const cancelRun = async (runId: string) => {
     setCancellingRunId(runId);
+    setConfirmCancelRunId(null);
     try {
       await api.workflows.cancelRun(runId);
       refresh();
@@ -3793,14 +3812,27 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
     setCancellingRunId(null);
   };
 
+  const togglePauseRun = async (run: WorkflowRunInfo) => {
+    setPausingRunId(run.id);
+    try {
+      if (run.status === 'running') {
+        await api.workflows.pauseRun(run.id);
+      } else if ((run.status as string) === 'paused') {
+        await api.workflows.resumeRun(run.id);
+      }
+      refresh();
+    } catch { /* ignore */ }
+    setPausingRunId(null);
+  };
+
   const viewRunTasks = (run: WorkflowRunInfo) => {
-    if (run.requirementId) {
-      navBus.navigate(PAGE.WORK, { requirementId: run.requirementId, boardType: 'dag' });
+    if (run.requirementId && onViewRunTasks) {
+      onViewRunTasks(run.requirementId);
     }
   };
 
   const statusBadge = (s: string) => {
-    const colors: Record<string, string> = { running: 'bg-blue-500/20 text-blue-400', completed: 'bg-green-500/20 text-green-400', failed: 'bg-red-500/20 text-red-400', cancelled: 'bg-gray-500/20 text-gray-400' };
+    const colors: Record<string, string> = { running: 'bg-blue-500/20 text-blue-400', paused: 'bg-amber-500/20 text-amber-400', completed: 'bg-green-500/20 text-green-400', failed: 'bg-red-500/20 text-red-400', cancelled: 'bg-gray-500/20 text-gray-400' };
     return <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${colors[s] ?? 'bg-gray-500/20 text-gray-400'}`}>{s}</span>;
   };
 
@@ -3836,6 +3868,8 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
           {workflows.map(wf => {
             const isExpanded = expandedWorkflow === wf.name;
             const detail = templateDetails[wf.name];
+            const wfRuns = runs[wf.name] ?? [];
+            const hasRunning = wfRuns.some(r => r.status === 'running' || (r.status as string) === 'paused');
             return (
             <div key={wf.name} className="bg-surface-secondary border border-border-default/50 rounded-xl p-4">
               <div className="flex items-start justify-between gap-3 mb-2 cursor-pointer" onClick={() => toggleExpand(wf)}>
@@ -3844,14 +3878,20 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                     <svg className={`w-3.5 h-3.5 text-fg-tertiary shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                     <h3 className="text-sm font-semibold text-fg-primary">{wf.displayName || wf.name}</h3>
                   </div>
-                  <p className="text-xs text-fg-tertiary mt-0.5 ml-5">{wf.description}</p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {wf.hasSchedule && <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-500/20 text-purple-400">{t('work:task.workflowScheduled', 'Scheduled')}</span>}
                   <span className="text-[10px] text-fg-tertiary">v{wf.version}</span>
-                  <button onClick={(e) => { e.stopPropagation(); openRunModal(wf); }} className="px-3 py-1 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg font-medium transition-colors">
-                    {t('work:task.workflowRun', 'Run')}
-                  </button>
+                  {hasRunning ? (
+                    <span className="px-3 py-1 bg-blue-500/20 text-blue-400 text-xs rounded-lg font-medium inline-flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                      {t('work:task.workflowRunning', 'Running')}
+                    </span>
+                  ) : (
+                    <button onClick={(e) => { e.stopPropagation(); openRunModal(wf); }} className="px-3 py-1 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg font-medium transition-colors">
+                      {t('work:task.workflowRun', 'Run')}
+                    </button>
+                  )}
                 </div>
               </div>
               <div className="flex items-center gap-4 text-[11px] text-fg-tertiary mb-3 ml-5">
@@ -3863,6 +3903,7 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
               {/* Expanded detail view */}
               {isExpanded && detail && (
                 <div className="border-t border-border-default/30 pt-3 mt-1 ml-5 space-y-3">
+                  {wf.description && <p className="text-xs text-fg-tertiary">{wf.description}</p>}
                   <div>
                     <p className="text-[10px] text-fg-tertiary font-medium mb-2 uppercase tracking-wider">{t('work:task.workflowSteps', 'Steps')}</p>
                     <div className="space-y-1.5">
@@ -3935,11 +3976,27 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                 </div>
               )}
 
-              {(runs[wf.name] ?? []).length > 0 && (
+              {(() => {
+                const allRuns = runs[wf.name] ?? [];
+                if (allRuns.length === 0) return null;
+                const runsOpen = expandedRuns.has(wf.name);
+                const visibleRuns = runsOpen ? allRuns : allRuns.slice(0, 1);
+                return (
                 <div className="border-t border-border-default/30 pt-2 mt-1">
-                  <p className="text-[10px] text-fg-tertiary font-medium mb-1.5 uppercase tracking-wider">{t('work:task.workflowRecentRuns', 'Recent Runs')}</p>
+                  <div
+                    className="flex items-center gap-1.5 mb-1.5 cursor-pointer select-none"
+                    onClick={() => setExpandedRuns(prev => {
+                      const next = new Set(prev);
+                      next.has(wf.name) ? next.delete(wf.name) : next.add(wf.name);
+                      return next;
+                    })}
+                  >
+                    <svg className={`w-3 h-3 text-fg-quaternary transition-transform ${runsOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                    <p className="text-[10px] text-fg-tertiary font-medium uppercase tracking-wider">{t('work:task.workflowRecentRuns', 'Recent Runs')}</p>
+                    {allRuns.length > 1 && <span className="text-[10px] text-fg-quaternary">({allRuns.length})</span>}
+                  </div>
                   <div className="space-y-1">
-                    {(runs[wf.name] ?? []).map(run => (
+                    {visibleRuns.map(run => (
                       <div key={run.id} className="flex items-center gap-3 text-xs px-2 py-1 rounded hover:bg-surface-elevated/50">
                         <span className="text-fg-secondary font-medium">#{run.runNumber}</span>
                         {statusBadge(run.status)}
@@ -3947,13 +4004,25 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                         <span className="text-fg-tertiary">{new Date(run.startedAt).toLocaleDateString()}</span>
                         {run.triggeredBy === 'schedule' && <span className="text-[10px] text-purple-400">auto</span>}
                         <span className="flex-1" />
-                        {run.status === 'running' && (
+                        {(run.status === 'running' || (run.status as string) === 'paused') && (
                           <button
-                            onClick={(e) => { e.stopPropagation(); cancelRun(run.id); }}
-                            disabled={cancellingRunId === run.id}
+                            onClick={(e) => { e.stopPropagation(); togglePauseRun(run); }}
+                            disabled={pausingRunId === run.id}
+                            className={`text-[10px] font-medium ${run.status === 'running' ? 'text-amber-400 hover:text-amber-300' : 'text-green-400 hover:text-green-300'}`}
+                          >
+                            {pausingRunId === run.id
+                              ? '...'
+                              : run.status === 'running'
+                                ? t('work:task.workflowPause', 'Pause')
+                                : t('work:task.workflowResume', 'Resume')}
+                          </button>
+                        )}
+                        {(run.status === 'running' || (run.status as string) === 'paused') && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setConfirmCancelRunId(run.id); }}
                             className="text-[10px] text-red-400 hover:text-red-300 font-medium"
                           >
-                            {cancellingRunId === run.id ? t('work:task.workflowCancelling', 'Cancelling...') : t('work:task.workflowCancelRun', 'Cancel Run')}
+                            {t('work:task.workflowCancelRun', 'Cancel Run')}
                           </button>
                         )}
                         <button
@@ -3969,7 +4038,8 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                     ))}
                   </div>
                 </div>
-              )}
+                );
+              })()}
             </div>
           );
           })}
@@ -4050,7 +4120,7 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
               </label>
               <select
                 value={runProjectId ?? ''}
-                onChange={e => setRunProjectId(e.target.value || null)}
+                onChange={e => { const v = e.target.value || null; setRunProjectId(v); setError(null); if (v) localStorage.setItem('markus_wf_project_last', v); }}
                 className="input-field text-xs w-full"
               >
                 <option value="">{t('work:task.workflowSelectProject', '— Select a project —')}</option>
@@ -4064,6 +4134,22 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
               <button onClick={() => setRunModal(null)} className="btn-secondary text-xs px-4 py-1.5">{t('work:task.workflowCancel', 'Cancel')}</button>
               <button onClick={startRun} disabled={starting || !!hasRequiredMissing} className="btn-primary text-xs px-4 py-1.5">
                 {starting ? t('work:task.workflowStarting', 'Starting...') : t('work:task.workflowStartRun', 'Start Run')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Cancel confirmation modal */}
+      {confirmCancelRunId && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setConfirmCancelRunId(null)}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-fg-primary mb-2">{t('work:task.workflowConfirmCancelTitle', 'Cancel Workflow Run')}</h3>
+            <p className="text-xs text-fg-secondary mb-5">{t('work:task.workflowConfirmCancelDesc', 'This will cancel all running and pending tasks in this workflow run. This action cannot be undone.')}</p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setConfirmCancelRunId(null)} className="btn-secondary text-xs px-4 py-1.5">{t('work:task.workflowNo', 'No')}</button>
+              <button onClick={() => cancelRun(confirmCancelRunId)} disabled={cancellingRunId === confirmCancelRunId} className="px-4 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs rounded-lg font-medium transition-colors">
+                {cancellingRunId === confirmCancelRunId ? t('work:task.workflowCancelling', 'Cancelling...') : t('work:task.workflowConfirmCancelBtn', 'Confirm Cancel')}
               </button>
             </div>
           </div>
@@ -4149,6 +4235,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const projectFilterRef = useRef<Set<string>>(new Set());
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const [boardType, setBoardType] = useState<'backlog' | 'kanban' | 'dag' | 'workflows'>(previewData?.initialBoardType ?? 'backlog');
+  const [dagExpandReqId, setDagExpandReqId] = useState<string | null>(null);
   const boardTabs = useMemo(() => [{ id: 'backlog' as const }, { id: 'kanban' as const }, { id: 'dag' as const }, { id: 'workflows' as const }], []);
   const boardSwipe = useSwipeTabs(boardTabs, boardType, setBoardType);
   const kanbanScrollRef = useRef<HTMLDivElement>(null);
@@ -5097,7 +5184,24 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           />
           </div>
         ) : boardType === 'workflows' ? (
-          <WorkflowsPanel teamId={selectedProjectTeamId} projectId={selectedProjectId} agents={agents} projects={projects} />
+          <WorkflowsPanel teamId={selectedProjectTeamId} projectId={selectedProjectId} agents={agents} projects={projects} onViewRunTasks={(reqId) => {
+            const openReqInDag = (req: RequirementInfo) => {
+              forceOpenReq(req);
+              setDagExpandReqId(`req-${req.id}`);
+              setBoardType('dag');
+            };
+            const req = allRequirements.find(r => r.id === reqId);
+            if (req) {
+              openReqInDag(req);
+            } else {
+              api.requirements.get(reqId).then(resp => {
+                if (resp.requirement) {
+                  setAllRequirements(prev => [...prev, resp.requirement]);
+                  openReqInDag(resp.requirement);
+                }
+              }).catch(() => {});
+            }
+          }} />
         ) : boardType === 'dag' ? (
           <div className="flex-1 min-h-0 flex flex-col relative" onTouchStart={isMobile ? boardSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? boardSwipe.onTouchEnd : undefined}>
           <TaskDAG
@@ -5115,12 +5219,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             onShowArchivedChange={setShowClosed}
             onTaskClick={(task) => handleSelectTask(task)}
             onReqClick={(req) => handleSelectReq(req)}
-            onCollapseDAG={() => { setSelectedTask(null); setSelectedReq(null); }}
+            onCollapseDAG={() => { setSelectedTask(null); setSelectedReq(null); setDagExpandReqId(null); }}
             onDependencyChange={refreshBoard}
             selectedTaskId={selectedTask?.id}
             selectedReqId={selectedReq?.id}
             hasDetailPanel={hasDetail}
-            defaultExpandedNodeId={previewMode && selectedReq ? `req-${selectedReq.id}` : undefined}
+            defaultExpandedNodeId={dagExpandReqId ?? (previewMode && selectedReq ? `req-${selectedReq.id}` : undefined)}
             previewMode={previewMode}
           />
           {isMobile && (
