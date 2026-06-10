@@ -9249,6 +9249,7 @@ EXPLANATION_END`;
         const template = this.workflowService.getWorkflow(teamId, wfName);
         if (!template) { this.json(res, 404, { error: `Workflow "${wfName}" not found` }); return; }
 
+        const authUser = await this.getAuthUser(req);
         const body = await this.readBody(req);
         const params = (body['params'] as Record<string, string>) ?? {};
         let roleMapping = body['roleMapping'] as Record<string, string> | undefined;
@@ -9262,7 +9263,7 @@ EXPLANATION_END`;
 
         try {
           const run = await this.workflowRunner.createRun(
-            teamId, template, params, roleMapping, projectId, 'manual',
+            teamId, template, params, roleMapping, projectId, 'manual', authUser?.userId,
           );
           this.json(res, 201, { run });
         } catch (err) {
