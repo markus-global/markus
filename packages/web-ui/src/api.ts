@@ -1396,19 +1396,22 @@ export const api = {
     enableRemote: () => request<{ ok: boolean; status: RemoteStatus }>('/settings/remote/enable', { method: 'POST' }),
     disableRemote: () => request<{ ok: boolean }>('/settings/remote/disable', { method: 'POST' }),
     getFeishuIntegration: () => request<{
-      appId?: string; appSecret?: string; verificationToken?: string; encryptKey?: string;
-      webhookPath?: string; enabled: boolean; connected: boolean;
+      appId?: string; appSecret?: string;
+      enabled: boolean; connected: boolean;
+      notifyChatId?: string;
       notifyOnApproval: boolean; notifyOnNotification: boolean; notifyPriority: string[];
     }>('/settings/integrations/feishu'),
     saveFeishuIntegration: (config: {
-      appId: string; appSecret: string; verificationToken?: string; encryptKey?: string;
-      webhookPath?: string; enabled?: boolean;
+      appId: string; appSecret: string; enabled?: boolean;
+      notifyChatId?: string;
       notifyOnApproval?: boolean; notifyOnNotification?: boolean; notifyPriority?: string[];
     }) => request<{
       appId?: string; connected: boolean; enabled: boolean;
     }>('/settings/integrations/feishu', { method: 'POST', body: JSON.stringify(config) }),
     testFeishuConnection: (creds: { appId: string; appSecret: string }) =>
       request<{ success: boolean; message?: string }>('/settings/integrations/feishu/test', { method: 'POST', body: JSON.stringify(creds) }),
+    sendFeishuTestMessage: (data: { chatId: string }) =>
+      request<{ success: boolean; message?: string }>('/settings/integrations/feishu/test-message', { method: 'POST', body: JSON.stringify(data) }),
     deleteFeishuIntegration: () => request<{ ok: boolean }>('/settings/integrations/feishu', { method: 'DELETE' }),
   },
   modelCatalog: {

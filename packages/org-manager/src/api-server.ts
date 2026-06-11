@@ -1491,6 +1491,10 @@ export class APIServer {
           appId: cfgConfig.appId as string,
           appSecret: cfgConfig.appSecret as string,
           domain: cfgConfig.domain as string | undefined,
+          notifyChatId: cfgConfig.notifyChatId as string | undefined,
+          notifyOnApproval: (cfgConfig.notifyOnApproval ?? true) as boolean,
+          notifyOnNotification: (cfgConfig.notifyOnNotification ?? false) as boolean,
+          notifyPriority: (cfgConfig.notifyPriority ?? ['high', 'urgent']) as string[],
           forwardRules: (forwardRules ?? []) as unknown as FeishuNotifierConfig['forwardRules'],
         };
       }
@@ -1508,8 +1512,65 @@ export class APIServer {
       });
       this.feishuNotifier.start();
       log.info('FeishuNotifier initialized');
+
+      // Route Feishu user messages to the Secretary agent
+      eventBus.on('feishu:message_received', (...args: unknown[]) => {
+        const payload = args[0] as Record<string, unknown>;
+        this.handleFeishuUserMessage(payload).catch((err) => {
+          log.error('Failed to handle Feishu user message', { error: String(err) });
+        });
+      });
     } catch (err) {
       log.warn('Failed to initialize FeishuNotifier', { error: String(err) });
+    }
+  }
+
+  /** Handle an incoming Feishu user message by routing it to the Secretary agent. */
+  private async handleFeishuUserMessage(payload: Record<string, unknown>): Promise<void> {
+    const chatId = payload['chatId'] as string | undefined;
+    const senderId = payload['senderId'] as string | undefined;
+    const rawContent = payload['content'] as string | undefined;
+    const messageType = payload['messageType'] as string | undefined;
+    if (!chatId || !rawContent) return;
+
+    // Extract text from Feishu message content JSON (e.g. {"text":"hello"})
+    let text: string | undefined;
+    if (messageType === 'text') {
+      try {
+        const parsed = JSON.parse(rawContent);
+        text = parsed.text;
+      } catch { text = rawContent; }
+    } else {
+      text = `[${messageType ?? 'unknown'}] ${rawContent}`;
+    }
+    if (!text) return;
+
+    const agentManager = this.orgService.getAgentManager();
+    const agentList = agentManager.listAgents();
+    const secretaryInfo = agentList.find(a =>
+      a.agentRole === 'secretary' || a.role?.toLowerCase() === 'secretary'
+    );
+    if (!secretaryInfo) {
+      log.warn('No Secretary agent found to handle Feishu message');
+      await this.feishuNotifier?.sendTextToChat(chatId, '暂无可用的秘书 Agent 处理此消息');
+      return;
+    }
+
+    const secretary = agentManager.getAgent(secretaryInfo.id);
+    const senderName = payload['senderName'] as string ?? senderId ?? 'feishu_user';
+    try {
+      const reply = await secretary.sendMessage(
+        text,
+        senderId ?? 'feishu_user',
+        { name: senderName, role: 'user' },
+        { sourceType: 'human_chat' },
+      );
+      if (reply && this.feishuNotifier) {
+        await this.feishuNotifier.sendTextToChat(chatId, reply);
+      }
+    } catch (err) {
+      log.error('Secretary agent failed to respond to Feishu message', { error: String(err) });
+      await this.feishuNotifier?.sendTextToChat(chatId, `处理消息时出错: ${String(err).slice(0, 200)}`);
     }
   }
 
@@ -8979,7 +9040,22 @@ EXPLANATION_END`;
       if (!auth) return;
       try {
         const row = findFeishuConfig(auth.orgId);
-        this.json(res, 200, { config: row ?? null });
+        if (!row) {
+          this.json(res, 200, { appId: '', appSecret: '', enabled: false, connected: false, notifyChatId: '', notifyOnApproval: true, notifyOnNotification: false, notifyPriority: ['high', 'urgent'] });
+          return;
+        }
+        const cfg = (row['config'] as Record<string, unknown>) ?? {};
+        const connected = !!(this.feishuNotifier?.connected);
+        this.json(res, 200, {
+          appId: cfg['appId'] ?? '',
+          appSecret: cfg['appSecret'] ?? '',
+          enabled: !!(row['enabled']),
+          connected,
+          notifyChatId: cfg['notifyChatId'] ?? '',
+          notifyOnApproval: cfg['notifyOnApproval'] ?? true,
+          notifyOnNotification: cfg['notifyOnNotification'] ?? false,
+          notifyPriority: cfg['notifyPriority'] ?? ['high', 'urgent'],
+        });
       } catch (e) {
         log.error('Failed to read feishu integration config', { error: String(e) });
         this.json(res, 500, { error: 'Failed to read integration config' });
@@ -8998,19 +9074,22 @@ EXPLANATION_END`;
         return;
       }
       const now = new Date().toISOString();
+      const enabled = body['enabled'] !== false;
       const payload: Record<string, unknown> = {
         id: 'feishu_default',
         orgId: auth.orgId,
         platform: 'feishu',
         displayName: body['displayName'] ?? '飞书',
-        enabled: body['enabled'] !== false,
+        enabled,
         config: {
           appId,
           appSecret,
-          verificationToken: body['verificationToken'] ?? undefined,
-          encryptKey: body['encryptKey'] ?? undefined,
-          webhookPort: body['webhookPort'] ?? undefined,
           domain: body['domain'] ?? undefined,
+          connectionMode: 'long_connection',
+          notifyChatId: body['notifyChatId'] ?? undefined,
+          notifyOnApproval: body['notifyOnApproval'] ?? true,
+          notifyOnNotification: body['notifyOnNotification'] ?? false,
+          notifyPriority: body['notifyPriority'] ?? ['high', 'urgent'],
         },
         forwardRules: [],
         lastVerifiedAt: null,
@@ -9042,9 +9121,14 @@ EXPLANATION_END`;
           appId,
           appSecret: appSecret,
           domain: body['domain'] as string | undefined,
+          notifyChatId: body['notifyChatId'] as string | undefined,
+          notifyOnApproval: (body['notifyOnApproval'] ?? true) as boolean,
+          notifyOnNotification: (body['notifyOnNotification'] ?? false) as boolean,
+          notifyPriority: (body['notifyPriority'] ?? ['high', 'urgent']) as string[],
           forwardRules: [],
         });
-        this.json(res, 200, { config: payload });
+        const connected = !!(this.feishuNotifier?.connected);
+        this.json(res, 200, { appId, connected, enabled });
       } catch (e) {
         log.error('Failed to save feishu integration config', { error: String(e) });
         this.json(res, 500, { error: 'Failed to save integration config' });
@@ -9102,6 +9186,44 @@ EXPLANATION_END`;
       } catch (e) {
         log.error('Feishu test connection failed', { error: String(e) });
         this.json(res, 200, { success: false, message: `Connection failed: ${String(e)}` });
+      }
+      return;
+    }
+
+    if (path === '/api/settings/integrations/feishu/test-message' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const chatId = (body['chatId'] as string) ?? '';
+      if (!chatId) {
+        this.json(res, 400, { error: 'chatId is required' });
+        return;
+      }
+      try {
+        const row = findFeishuConfig(auth.orgId);
+        const cfg = (row?.['config'] as Record<string, unknown>) ?? {};
+        const appId = cfg['appId'] as string;
+        const appSecret = cfg['appSecret'] as string;
+        if (!appId || !appSecret) {
+          this.json(res, 400, { error: 'Feishu integration not configured' });
+          return;
+        }
+        const { FeishuApiClient } = await import('./feishu-api-client.js');
+        const client = new FeishuApiClient({ appId, appSecret });
+        const card = {
+          config: { wide_screen_mode: true },
+          header: { title: { tag: 'plain_text', content: '🎉 Markus 测试消息' }, template: 'blue' },
+          elements: [
+            { tag: 'markdown', content: '这是一条来自 **Markus** 的测试消息。\n如果你看到了这条消息，说明飞书集成配置正确！' },
+            { tag: 'hr' },
+            { tag: 'note', elements: [{ tag: 'plain_text', content: `发送时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}` }] },
+          ],
+        };
+        await client.sendCard(chatId, card);
+        this.json(res, 200, { success: true, message: 'Test message sent' });
+      } catch (e) {
+        log.error('Feishu test message failed', { error: String(e) });
+        this.json(res, 200, { success: false, message: `Send failed: ${String(e)}` });
       }
       return;
     }

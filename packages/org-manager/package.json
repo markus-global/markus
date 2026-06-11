@@ -11,6 +11,7 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.36.0",
     "@markus/core": "workspace:*",
     "@markus/shared": "workspace:*",
     "@markus/storage": "workspace:*",

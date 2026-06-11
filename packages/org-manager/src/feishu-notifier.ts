@@ -1,3 +1,4 @@
+import * as Lark from '@larksuiteoapi/node-sdk';
 import { createLogger } from '@markus/shared';
 import type { EventBus } from '@markus/core';
 import type { HITLService, Notification as HITLNotification } from './hitl-service.js';
@@ -27,6 +28,10 @@ export interface FeishuNotifierConfig {
   appId: string;
   appSecret: string;
   domain?: string;
+  notifyChatId?: string;
+  notifyOnApproval?: boolean;
+  notifyOnNotification?: boolean;
+  notifyPriority?: string[];
   forwardRules: NotificationForwardRule[];
 }
 
@@ -72,7 +77,6 @@ function buildNotificationCard(
     },
   ];
 
-  // Add action buttons for approval events
   if (metadata?.approvalId) {
     elements.push({
       tag: 'action',
@@ -115,13 +119,13 @@ export class FeishuNotifier {
   private config: FeishuNotifierConfig | null = null;
   private unsubscribes: Array<() => void> = [];
   private hitlUnsubscribe: (() => void) | null = null;
+  private wsConnected = false;
 
   constructor(opts: {
     eventBus: EventBus;
     hitlService: HITLService;
     orgId: string;
     agentManager?: { getAgentName?: (id: string) => string | undefined };
-    /** Optional initial config — can be set later via updateConfig(). */
     config?: FeishuNotifierConfig;
   }) {
     this.eventBus = opts.eventBus;
@@ -133,9 +137,13 @@ export class FeishuNotifier {
     }
   }
 
-  /** Start listening — subscribe to EventBus events and HITL notifications. */
+  /** Whether the long connection is active. */
+  get connected(): boolean {
+    return this.wsConnected;
+  }
+
+  /** Start listening — subscribe to EventBus events, HITL notifications, and establish Feishu long connection. */
   start(): void {
-    // Subscribe to EventBus events
     for (const [eventName] of Object.entries(EVENT_MAP)) {
       const unsub = this.eventBus.on(eventName, (...args: unknown[]) => {
         this.handleEventBusEvent(eventName, args).catch((err) => {
@@ -145,12 +153,17 @@ export class FeishuNotifier {
       this.unsubscribes.push(unsub);
     }
 
-    // Subscribe to HITL notifications
     this.hitlUnsubscribe = this.hitlService.onNotification((notification: HITLNotification) => {
       this.handleHITLNotification(notification).catch((err) => {
         log.error('Failed to handle HITL notification', { error: String(err) });
       });
     });
+
+    if (this.config) {
+      this.startLongConnection(this.config).catch((err) => {
+        log.error('Failed to start Feishu long connection on init', { error: String(err) });
+      });
+    }
 
     log.info('FeishuNotifier started');
   }
@@ -165,8 +178,12 @@ export class FeishuNotifier {
       try { this.hitlUnsubscribe(); } catch { /* ignore */ }
       this.hitlUnsubscribe = null;
     }
+    if (this.apiClient) {
+      this.apiClient.stopWSClient();
+    }
     this.apiClient = null;
     this.config = null;
+    this.wsConnected = false;
     log.info('FeishuNotifier stopped');
   }
 
@@ -174,19 +191,135 @@ export class FeishuNotifier {
   updateConfig(config: FeishuNotifierConfig): void {
     this.config = config;
     if (config.appId && config.appSecret) {
-      if (!this.apiClient) {
-        this.apiClient = new FeishuApiClient({
-          appId: config.appId,
-          appSecret: config.appSecret,
-          domain: config.domain,
-        });
-      } else {
-        this.apiClient.clearToken();
+      if (this.apiClient) {
+        this.apiClient.stopWSClient();
       }
+      this.apiClient = new FeishuApiClient({
+        appId: config.appId,
+        appSecret: config.appSecret,
+        domain: config.domain,
+      });
+      this.startLongConnection(config).catch((err) => {
+        log.error('Failed to restart Feishu long connection', { error: String(err) });
+      });
     } else {
+      if (this.apiClient) {
+        this.apiClient.stopWSClient();
+      }
       this.apiClient = null;
+      this.wsConnected = false;
     }
     log.info('FeishuNotifier config updated');
+  }
+
+  /** Establish the WebSocket long connection to receive Feishu events. */
+  private async startLongConnection(config: FeishuNotifierConfig): Promise<void> {
+    if (!this.apiClient) {
+      this.apiClient = new FeishuApiClient({
+        appId: config.appId,
+        appSecret: config.appSecret,
+        domain: config.domain,
+      });
+    }
+
+    const eventDispatcher = new Lark.EventDispatcher({
+      loggerLevel: Lark.LoggerLevel.debug,
+    }).register({
+      'im.message.receive_v1': (data: unknown) => {
+        log.info('im.message.receive_v1 event fired', { hasData: !!data, dataKeys: data ? Object.keys(data as object).join(',') : 'null' });
+        this.handleFeishuMessage(data).catch((err: unknown) => {
+          log.error('Failed to handle Feishu message', { error: String(err) });
+        });
+      },
+    });
+
+    // Monkey-patch invoke to log ALL incoming events for debugging
+    const originalInvoke = eventDispatcher.invoke.bind(eventDispatcher);
+    eventDispatcher.invoke = async (data: unknown, params?: { needCheck?: boolean }) => {
+      log.info('EventDispatcher.invoke called', {
+        dataType: typeof data,
+        dataKeys: data && typeof data === 'object' ? Object.keys(data).join(',') : 'n/a',
+      });
+      return originalInvoke(data, params);
+    };
+
+    try {
+      await this.apiClient.startWSClient(eventDispatcher);
+      this.wsConnected = true;
+      log.info('Feishu long connection established successfully');
+    } catch (err) {
+      this.wsConnected = false;
+      log.error('Failed to start Feishu long connection', { error: String(err) });
+    }
+  }
+
+  /** Handle incoming Feishu messages (from bot chat). */
+  private async handleFeishuMessage(data: unknown): Promise<void> {
+    const event = data as {
+      sender?: {
+        sender_id?: { open_id?: string; user_id?: string; union_id?: string };
+        sender_type?: string;
+      };
+      message?: {
+        chat_id?: string;
+        message_id?: string;
+        content?: string;
+        message_type?: string;
+        chat_type?: string;
+      };
+    };
+
+    const chatId = event?.message?.chat_id;
+    const content = event?.message?.content;
+    if (!chatId || !content) {
+      log.warn('Feishu message missing chatId or content', {
+        hasChatId: !!chatId,
+        hasContent: !!content,
+        dataKeys: data ? Object.keys(data as object) : [],
+      });
+      return;
+    }
+
+    const senderId = event.sender?.sender_id?.open_id;
+    log.info('Received Feishu message', {
+      chatId,
+      senderId,
+      messageType: event.message?.message_type,
+      chatType: event.message?.chat_type,
+    });
+
+    this.eventBus.emit('feishu:message_received', {
+      chatId,
+      messageId: event.message?.message_id,
+      content,
+      messageType: event.message?.message_type,
+      senderId,
+    });
+  }
+
+  /** Handle interactive card button actions (approve/reject). */
+  private handleCardAction(data: unknown): Record<string, unknown> {
+    const action = data as {
+      action?: { value?: { action?: string; approval_id?: string } };
+      open_id?: string;
+    };
+
+    const actionValue = action?.action?.value;
+    if (actionValue?.approval_id) {
+      log.info('Feishu card action', { action: actionValue.action, approvalId: actionValue.approval_id });
+      this.eventBus.emit('feishu:card_action', {
+        action: actionValue.action,
+        approvalId: actionValue.approval_id,
+        openId: action?.open_id,
+      });
+    }
+
+    return {
+      toast: {
+        type: 'success',
+        content: actionValue?.action === 'approve' ? '已批准' : '已拒绝',
+      },
+    };
   }
 
   /** Handle an EventBus event. */
@@ -322,6 +455,21 @@ export class FeishuNotifier {
       matchedTargets.push(...rule.targets);
     }
 
+    // Fallback: use notifyChatId from simplified config if no explicit rules matched
+    if (matchedTargets.length === 0 && this.config.notifyChatId) {
+      const isApprovalType = ['approval_request', 'approval_approved', 'approval_rejected'].includes(eventType);
+      const shouldForward = isApprovalType
+        ? this.config.notifyOnApproval !== false
+        : this.config.notifyOnNotification === true;
+
+      if (shouldForward) {
+        const allowedPriorities = this.config.notifyPriority ?? ['high', 'urgent'];
+        if (allowedPriorities.includes(priority) || allowedPriorities.includes('*')) {
+          matchedTargets.push({ type: 'chat', channelId: this.config.notifyChatId });
+        }
+      }
+    }
+
     // Deduplicate by channelId
     const seen = new Set<string>();
     const uniqueTargets = matchedTargets.filter(t => {
@@ -332,9 +480,9 @@ export class FeishuNotifier {
 
     if (uniqueTargets.length === 0) return;
 
-    const includeActions = rules.some(
-      r => r.type === eventType && r.enabled && r.includeApprovalActions && metadata?.approvalId,
-    );
+    const includeActions = metadata?.approvalId
+      ? rules.some(r => r.type === eventType && r.enabled && r.includeApprovalActions) || true
+      : false;
 
     const card = includeActions
       ? buildNotificationCard(title, body, priority, eventType, metadata)
@@ -361,5 +509,11 @@ export class FeishuNotifier {
         });
       }
     }
+  }
+
+  /** Send a text message to a specific Feishu chat. */
+  async sendTextToChat(chatId: string, text: string): Promise<void> {
+    if (!this.apiClient) return;
+    await this.apiClient.sendText(chatId, text);
   }
 }

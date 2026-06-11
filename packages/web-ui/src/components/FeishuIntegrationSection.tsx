@@ -1,15 +1,13 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api.ts';
 
 export interface FeishuConfig {
   appId: string;
   appSecret: string;
-  verificationToken?: string;
-  encryptKey?: string;
-  webhookPath?: string;
   enabled: boolean;
   connected: boolean;
+  notifyChatId: string;
   notifyOnApproval: boolean;
   notifyOnNotification: boolean;
   notifyPriority: string[];
@@ -18,17 +16,16 @@ export interface FeishuConfig {
 const DEFAULT_CONFIG: FeishuConfig = {
   appId: '',
   appSecret: '',
-  verificationToken: '',
-  encryptKey: '',
-  webhookPath: '/webhook/feishu',
   enabled: false,
   connected: false,
+  notifyChatId: '',
   notifyOnApproval: true,
   notifyOnNotification: false,
   notifyPriority: ['high', 'urgent'],
 };
 
 const PRIORITY_OPTIONS = [
+  { value: 'normal', color: 'bg-green-400' },
   { value: 'low', color: 'bg-gray-400' },
   { value: 'medium', color: 'bg-blue-400' },
   { value: 'high', color: 'bg-amber-400' },
@@ -86,15 +83,18 @@ export function FeishuIntegrationSection() {
   const { t } = useTranslation(['settings', 'common']);
 
   const [config, setConfig] = useState<FeishuConfig>(DEFAULT_CONFIG);
-  const [dirty, setDirty] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [sendingMsg, setSendingMsg] = useState(false);
   const [msg, setMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
-
-  // Show/hide secret values
   const [showAppSecret, setShowAppSecret] = useState(false);
-  const [showEncryptKey, setShowEncryptKey] = useState(false);
+  const [testChatId, setTestChatId] = useState('');
+
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const configRef = useRef(config);
+  configRef.current = config;
+  const initialLoadDone = useRef(false);
 
   const loadConfig = useCallback(async () => {
     setLoading(true);
@@ -104,11 +104,9 @@ export function FeishuIntegrationSection() {
         setConfig({
           appId: data.appId ?? '',
           appSecret: data.appSecret ?? '',
-          verificationToken: data.verificationToken ?? '',
-          encryptKey: data.encryptKey ?? '',
-          webhookPath: data.webhookPath ?? '/webhook/feishu',
           enabled: data.enabled ?? false,
           connected: data.connected ?? false,
+          notifyChatId: data.notifyChatId ?? '',
           notifyOnApproval: data.notifyOnApproval ?? true,
           notifyOnNotification: data.notifyOnNotification ?? false,
           notifyPriority: data.notifyPriority ?? ['high', 'urgent'],
@@ -118,15 +116,60 @@ export function FeishuIntegrationSection() {
       // Not configured yet — use defaults
     } finally {
       setLoading(false);
+      initialLoadDone.current = true;
     }
   }, []);
 
   useEffect(() => { loadConfig(); }, [loadConfig]);
 
+  const doSave = useCallback(async (cfg: FeishuConfig) => {
+    if (!cfg.appId || !cfg.appSecret) return;
+    setSaving(true);
+    try {
+      const result = await api.settings.saveFeishuIntegration({
+        appId: cfg.appId,
+        appSecret: cfg.appSecret,
+        enabled: cfg.enabled,
+        notifyChatId: cfg.notifyChatId || undefined,
+        notifyOnApproval: cfg.notifyOnApproval,
+        notifyOnNotification: cfg.notifyOnNotification,
+        notifyPriority: cfg.notifyPriority,
+      });
+      if (result.connected !== undefined) {
+        setConfig(prev => ({ ...prev, connected: result.connected }));
+      }
+      setMsg({ type: 'ok', text: t('settings:feishu.saved', { defaultValue: 'Saved' }) });
+      setTimeout(() => setMsg(prev => prev?.type === 'ok' ? null : prev), 2000);
+    } catch (err) {
+      setMsg({ type: 'err', text: String(err instanceof Error ? err.message : err) });
+    } finally {
+      setSaving(false);
+    }
+  }, [t]);
+
+  const scheduleSave = useCallback(() => {
+    if (!initialLoadDone.current) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      doSave(configRef.current);
+    }, 600);
+  }, [doSave]);
+
   const updateField = <K extends keyof FeishuConfig>(key: K, value: FeishuConfig[K]) => {
     setConfig(prev => ({ ...prev, [key]: value }));
-    setDirty(true);
     setMsg(null);
+    scheduleSave();
+  };
+
+  const updateFieldImmediate = <K extends keyof FeishuConfig>(key: K, value: FeishuConfig[K]) => {
+    setConfig(prev => {
+      const next = { ...prev, [key]: value };
+      configRef.current = next;
+      return next;
+    });
+    setMsg(null);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    doSave({ ...configRef.current, [key]: value });
   };
 
   const togglePriority = (priority: string) => {
@@ -135,37 +178,15 @@ export function FeishuIntegrationSection() {
       const next = current.includes(priority)
         ? current.filter(p => p !== priority)
         : [...current, priority];
-      return { ...prev, notifyPriority: next };
+      const updated = { ...prev, notifyPriority: next };
+      configRef.current = updated;
+      return updated;
     });
-    setDirty(true);
     setMsg(null);
-  };
-
-  const handleSave = async () => {
-    setSaving(true);
-    setMsg(null);
-    try {
-      const result = await api.settings.saveFeishuIntegration({
-        appId: config.appId,
-        appSecret: config.appSecret,
-        verificationToken: config.verificationToken || undefined,
-        encryptKey: config.encryptKey || undefined,
-        webhookPath: config.webhookPath || '/webhook/feishu',
-        enabled: config.enabled,
-        notifyOnApproval: config.notifyOnApproval,
-        notifyOnNotification: config.notifyOnNotification,
-        notifyPriority: config.notifyPriority,
-      });
-      if (result.connected !== undefined) {
-        setConfig(prev => ({ ...prev, connected: result.connected }));
-      }
-      setDirty(false);
-      setMsg({ type: 'ok', text: t('settings:feishu.saved', { defaultValue: 'Feishu configuration saved' }) });
-    } catch (err) {
-      setMsg({ type: 'err', text: String(err instanceof Error ? err.message : err) });
-    } finally {
-      setSaving(false);
-    }
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      doSave(configRef.current);
+    }, 300);
   };
 
   const handleTest = async () => {
@@ -193,13 +214,35 @@ export function FeishuIntegrationSection() {
     }
   };
 
+  const handleSendTestMessage = async () => {
+    if (!testChatId.trim()) {
+      setMsg({ type: 'err', text: t('settings:feishu.chatIdRequired', { defaultValue: 'Please enter a Chat ID' }) });
+      return;
+    }
+    setSendingMsg(true);
+    setMsg(null);
+    try {
+      const result = await api.settings.sendFeishuTestMessage({ chatId: testChatId.trim() });
+      if (result.success) {
+        setMsg({ type: 'ok', text: result.message || t('settings:feishu.testMsgSent', { defaultValue: 'Test message sent' }) });
+      } else {
+        setMsg({ type: 'err', text: result.message || t('settings:feishu.testMsgFailed', { defaultValue: 'Failed to send test message' }) });
+      }
+    } catch (err) {
+      setMsg({ type: 'err', text: String(err instanceof Error ? err.message : err) });
+    } finally {
+      setSendingMsg(false);
+    }
+  };
+
   const handleDisconnect = async () => {
     setSaving(true);
     setMsg(null);
     try {
       await api.settings.deleteFeishuIntegration();
+      initialLoadDone.current = false;
       setConfig(DEFAULT_CONFIG);
-      setDirty(false);
+      initialLoadDone.current = true;
       setMsg({ type: 'ok', text: t('settings:feishu.disconnected', { defaultValue: 'Disconnected from Feishu' }) });
     } catch (err) {
       setMsg({ type: 'err', text: String(err instanceof Error ? err.message : err) });
@@ -234,7 +277,20 @@ export function FeishuIntegrationSection() {
             <p className="text-xs text-fg-tertiary mt-0.5">{t('settings:feishu.description', { defaultValue: 'Configure Feishu integration for notifications and approvals' })}</p>
           </div>
         </div>
-        <StatusBadge connected={config.connected && config.enabled} />
+        <div className="flex items-center gap-2">
+          {saving && <div className="w-3.5 h-3.5 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />}
+          <StatusBadge connected={config.connected && config.enabled} />
+        </div>
+      </div>
+
+      {/* Connection mode indicator */}
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-500/5 border border-blue-500/20">
+        <svg className="w-4 h-4 text-blue-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+        <span className="text-xs text-fg-secondary">
+          {t('settings:feishu.longConnectionMode', { defaultValue: 'Using long connection mode (WebSocket) — no public IP required' })}
+        </span>
       </div>
 
       {/* Connection Settings */}
@@ -249,6 +305,7 @@ export function FeishuIntegrationSection() {
               type="text"
               value={config.appId}
               onChange={e => updateField('appId', e.target.value)}
+              onBlur={() => { if (config.appId && config.appSecret) { if (saveTimer.current) clearTimeout(saveTimer.current); doSave(configRef.current); } }}
               placeholder="cli_xxxxxxxxxxxxxx"
               className="w-full px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
             />
@@ -264,6 +321,7 @@ export function FeishuIntegrationSection() {
                 type={showAppSecret ? 'text' : 'password'}
                 value={config.appSecret}
                 onChange={e => updateField('appSecret', e.target.value)}
+                onBlur={() => { if (config.appId && config.appSecret) { if (saveTimer.current) clearTimeout(saveTimer.current); doSave(configRef.current); } }}
                 placeholder="Enter your Feishu app secret"
                 className="w-full px-3 py-2 pr-10 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
               />
@@ -280,70 +338,10 @@ export function FeishuIntegrationSection() {
               </button>
             </div>
           </div>
-
-          {/* Verify Token */}
-          <div>
-            <label className="block text-xs font-medium text-fg-secondary mb-1.5">
-              {t('settings:feishu.verificationToken', { defaultValue: 'Verify Token' })}
-              <span className="text-fg-tertiary ml-1">({t('settings:feishu.optional', { defaultValue: 'optional' })})</span>
-            </label>
-            <input
-              type="text"
-              value={config.verificationToken ?? ''}
-              onChange={e => updateField('verificationToken', e.target.value)}
-              placeholder="Event verification token from Feishu"
-              className="w-full px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
-            />
-          </div>
-
-          {/* Encrypt Key */}
-          <div>
-            <label className="block text-xs font-medium text-fg-secondary mb-1.5">
-              {t('settings:feishu.encryptKey', { defaultValue: 'Encrypt Key' })}
-              <span className="text-fg-tertiary ml-1">({t('settings:feishu.optional', { defaultValue: 'optional' })})</span>
-            </label>
-            <div className="relative">
-              <input
-                type={showEncryptKey ? 'text' : 'password'}
-                value={config.encryptKey ?? ''}
-                onChange={e => updateField('encryptKey', e.target.value)}
-                placeholder="AES encryption key for event decryption"
-                className="w-full px-3 py-2 pr-10 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
-              />
-              <button
-                type="button"
-                onClick={() => setShowEncryptKey(!showEncryptKey)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-fg-tertiary hover:text-fg-secondary transition-colors"
-              >
-                {showEncryptKey ? (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" /></svg>
-                ) : (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* Webhook Path */}
-          <div>
-            <label className="block text-xs font-medium text-fg-secondary mb-1.5">
-              {t('settings:feishu.webhookPath', { defaultValue: 'Webhook Path' })}
-            </label>
-            <input
-              type="text"
-              value={config.webhookPath ?? '/webhook/feishu'}
-              onChange={e => updateField('webhookPath', e.target.value)}
-              placeholder="/webhook/feishu"
-              className="w-full px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
-            />
-            <p className="text-[11px] text-fg-tertiary mt-1">
-              {t('settings:feishu.webhookPathHint', { defaultValue: 'Set this path in your Feishu app event subscription' })}
-            </p>
-          </div>
         </div>
       </Section>
 
-      {/* Test & Save Actions */}
+      {/* Actions */}
       <Section title={t('settings:feishu.actions', { defaultValue: 'Actions' })}>
         <div className="flex flex-wrap items-center gap-3">
           <button
@@ -359,19 +357,6 @@ export function FeishuIntegrationSection() {
             {t('settings:feishu.testConnection', { defaultValue: 'Test Connection' })}
           </button>
 
-          <button
-            onClick={handleSave}
-            disabled={saving || !dirty}
-            className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-brand-600 hover:bg-brand-500 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {saving ? (
-              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            ) : (
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" /></svg>
-            )}
-            {t('common:save', { defaultValue: 'Save' })}
-          </button>
-
           {config.connected && config.enabled && (
             <button
               onClick={handleDisconnect}
@@ -383,6 +368,39 @@ export function FeishuIntegrationSection() {
             </button>
           )}
         </div>
+
+        {/* Send Test Message */}
+        {config.connected && config.enabled && (
+          <div className="mt-4 p-4 bg-surface-secondary border border-border-default rounded-xl space-y-3">
+            <label className="block text-xs font-medium text-fg-secondary">
+              {t('settings:feishu.sendTestMessage', { defaultValue: 'Send Test Message' })}
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={testChatId}
+                onChange={e => setTestChatId(e.target.value)}
+                placeholder={t('settings:feishu.chatIdPlaceholder', { defaultValue: 'Enter Chat ID (oc_xxxxxxxx)' })}
+                className="flex-1 px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
+              />
+              <button
+                onClick={handleSendTestMessage}
+                disabled={sendingMsg || !testChatId.trim()}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-surface-primary border border-border-default rounded-lg text-fg-primary hover:bg-surface-overlay disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+              >
+                {sendingMsg ? (
+                  <div className="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
+                )}
+                {t('settings:feishu.send', { defaultValue: 'Send' })}
+              </button>
+            </div>
+            <p className="text-[11px] text-fg-tertiary">
+              {t('settings:feishu.chatIdHint', { defaultValue: 'Chat ID can be found in the Feishu group chat URL or via the API' })}
+            </p>
+          </div>
+        )}
 
         {msg && <Msg type={msg.type} text={msg.text} />}
       </Section>
@@ -396,17 +414,11 @@ export function FeishuIntegrationSection() {
                 {t('settings:feishu.enableIntegration', { defaultValue: 'Enable Feishu Integration' })}
               </div>
               <div className="text-xs text-fg-tertiary mt-0.5">
-                {t('settings:feishu.enableHint', { defaultValue: 'When enabled, Markus will connect to Feishu and start processing events' })}
+                {t('settings:feishu.enableHint', { defaultValue: 'When enabled, Markus will establish a long connection to Feishu and start processing events' })}
               </div>
             </div>
             <button
-              onClick={() => {
-                updateField('enabled', !config.enabled);
-                if (!config.enabled && config.appId && config.appSecret) {
-                  // Auto-save when enabling with credentials
-                  setDirty(true);
-                }
-              }}
+              onClick={() => updateFieldImmediate('enabled', !config.enabled)}
               disabled={!config.appId || !config.appSecret}
               className={`relative w-12 h-6 rounded-full transition-colors duration-200 ${
                 config.enabled ? 'bg-brand-600' : 'bg-gray-300 dark:bg-gray-600'
@@ -423,7 +435,24 @@ export function FeishuIntegrationSection() {
       {/* Notification Forwarding Settings */}
       <Section title={t('settings:feishu.notificationForwarding', { defaultValue: 'Notification Forwarding' })}>
         <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-5">
-          {/* Toggle switches */}
+          {/* Target Chat ID */}
+          <div>
+            <label className="block text-xs font-medium text-fg-secondary mb-1.5">
+              {t('settings:feishu.notifyChatId', { defaultValue: 'Notification Target Chat ID' })}
+            </label>
+            <input
+              type="text"
+              value={config.notifyChatId}
+              onChange={e => updateField('notifyChatId', e.target.value)}
+              onBlur={() => { if (config.appId && config.appSecret) { if (saveTimer.current) clearTimeout(saveTimer.current); doSave(configRef.current); } }}
+              placeholder="oc_xxxxxxxxxxxxxxxx"
+              className="w-full px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
+            />
+            <p className="text-[11px] text-fg-tertiary mt-1">
+              {t('settings:feishu.notifyChatIdHint', { defaultValue: 'The Feishu group chat ID to receive notifications. Required for notification forwarding.' })}
+            </p>
+          </div>
+
           <div className="space-y-3">
             {/* Approval notifications */}
             <div className="flex items-center justify-between">
@@ -432,7 +461,7 @@ export function FeishuIntegrationSection() {
                 <div className="text-xs text-fg-tertiary mt-0.5">{t('settings:feishu.forwardApprovalsHint', { defaultValue: 'Send approval requests to Feishu as interactive cards' })}</div>
               </div>
               <button
-                onClick={() => updateField('notifyOnApproval', !config.notifyOnApproval)}
+                onClick={() => updateFieldImmediate('notifyOnApproval', !config.notifyOnApproval)}
                 className={`relative w-10 h-5 rounded-full transition-colors duration-200 ${
                   config.notifyOnApproval ? 'bg-brand-600' : 'bg-gray-300 dark:bg-gray-600'
                 } cursor-pointer`}
@@ -450,7 +479,7 @@ export function FeishuIntegrationSection() {
                 <div className="text-xs text-fg-tertiary mt-0.5">{t('settings:feishu.forwardNotificationsHint', { defaultValue: 'Send system notifications to Feishu chat' })}</div>
               </div>
               <button
-                onClick={() => updateField('notifyOnNotification', !config.notifyOnNotification)}
+                onClick={() => updateFieldImmediate('notifyOnNotification', !config.notifyOnNotification)}
                 className={`relative w-10 h-5 rounded-full transition-colors duration-200 ${
                   config.notifyOnNotification ? 'bg-brand-600' : 'bg-gray-300 dark:bg-gray-600'
                 } cursor-pointer`}
@@ -497,17 +526,32 @@ export function FeishuIntegrationSection() {
 
       {/* Setup Guide */}
       <Section title={t('settings:feishu.setupGuide', { defaultValue: 'Setup Guide' })}>
-        <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-3">
+        <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
           <p className="text-xs text-fg-tertiary">
             {t('settings:feishu.setupGuideDesc', { defaultValue: 'Follow these steps to set up the Feishu integration:' })}
           </p>
-          <ol className="text-xs text-fg-secondary space-y-2 list-decimal list-inside">
-            <li>{t('settings:feishu.guideStep1', { defaultValue: 'Go to Feishu Open Platform (open.feishu.cn) and create a new app' })}</li>
-            <li>{t('settings:feishu.guideStep2', { defaultValue: 'Enable bot capabilities and configure event subscriptions' })}</li>
-            <li>{t('settings:feishu.guideStep3', { defaultValue: 'Copy the App ID and App Secret into the fields above' })}</li>
-            <li>{t('settings:feishu.guideStep4', { defaultValue: 'Set the webhook URL in your Feishu app event subscription' })}</li>
-            <li>{t('settings:feishu.guideStep5', { defaultValue: 'Click "Test Connection" to verify the setup' })}</li>
+          <ol className="text-xs text-fg-secondary space-y-2.5 list-none pl-0">
+            {[
+              { key: 'guideStep1', icon: '1️⃣', defaultValue: 'Go to Feishu Open Platform (open.feishu.cn) and create an enterprise self-built app' },
+              { key: 'guideStep2', icon: '2️⃣', defaultValue: 'Go to App → Features → Bot, enable bot capability' },
+              { key: 'guideStep3', icon: '3️⃣', defaultValue: 'Go to App → Permissions, enable im:message and im:message.receive_v1' },
+              { key: 'guideStep4', icon: '4️⃣', defaultValue: 'Go to App → Events & Callbacks → Subscription mode, select "Use long connection"' },
+              { key: 'guideStep5', icon: '5️⃣', defaultValue: 'On the Events & Callbacks page, subscribe to "Receive messages v2.0" (im.message.receive_v1)' },
+              { key: 'guideStep6', icon: '6️⃣', defaultValue: 'Go to App → Credentials, copy App ID and App Secret into the fields above' },
+              { key: 'guideStep7', icon: '7️⃣', defaultValue: 'Click "Test Connection" to verify credentials, then enable the integration' },
+              { key: 'guideStep8', icon: '8️⃣', defaultValue: 'Add the bot to a group chat (or send a direct message to the bot)' },
+            ].map(({ key, icon, defaultValue }) => (
+              <li key={key} className="flex gap-2 items-start">
+                <span className="shrink-0 text-sm leading-4">{icon}</span>
+                <span className="leading-4">{t(`settings:feishu.${key}`, { defaultValue })}</span>
+              </li>
+            ))}
           </ol>
+          <div className="mt-3 px-3 py-2 rounded-lg bg-amber-500/5 border border-amber-500/20">
+            <p className="text-[11px] text-amber-700 dark:text-amber-400">
+              {t('settings:feishu.longConnectionNote', { defaultValue: 'Long connection mode requires an enterprise self-built app. Store apps are not supported. No public IP or domain is needed.' })}
+            </p>
+          </div>
         </div>
       </Section>
     </div>
