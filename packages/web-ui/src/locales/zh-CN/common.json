@@ -103,6 +103,7 @@
     "hoursAgo": "{{count}} 小时前",
     "daysAgo": "{{count}} 天前"
   },
+  "signOut": "退出登录",
   "confirmDelete": "确认删除",
   "userPlaceholder": "用户",
   "profile": {
