@@ -103,6 +103,7 @@
     "hoursAgo": "{{count}}h",
     "daysAgo": "{{count}}d"
   },
+  "signOut": "Sign Out",
   "confirmDelete": "Confirm Delete",
   "userPlaceholder": "User",
   "profile": {

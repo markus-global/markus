@@ -2026,34 +2026,63 @@ export function ensureHubAuth(method?: string): Promise<void> {
     }
 
     let settled = false;
+    let finalCheckTimer: ReturnType<typeof setInterval> | null = null;
+
+    const statusUrl = () =>
+      `/hub/auth/connect-status?session=${encodeURIComponent(sessionId)}&_t=${Date.now()}`;
+
     const cleanup = () => {
       clearInterval(pollTimer);
       clearInterval(closedTimer);
+      if (finalCheckTimer) clearInterval(finalCheckTimer);
+      document.removeEventListener('visibilitychange', onVisible);
       _hubAuthPromise = null;
     };
 
-    const pollTimer = setInterval(async () => {
+    const handleReady = (data: { token: string; user: HubUser }) => {
       if (settled) return;
+      settled = true;
+      saveHubAuth(data.token, data.user);
+      cleanup();
+      popup?.close();
+      resolve();
+    };
+
+    const pollStatus = async () => {
       try {
-        const data = await request<{ ready?: boolean; token?: string; user?: HubUser }>(
-          `/hub/auth/connect-status?session=${encodeURIComponent(sessionId)}`
-        );
+        const data = await request<{ ready?: boolean; token?: string; user?: HubUser }>(statusUrl());
         if (data.ready && data.token && data.user) {
-          settled = true;
-          saveHubAuth(data.token, data.user);
-          cleanup();
-          popup?.close();
-          resolve();
+          handleReady(data as { token: string; user: HubUser });
         }
       } catch { /* Hub might be offline, keep polling */ }
+    };
+
+    const pollTimer = setInterval(() => {
+      if (settled) return;
+      pollStatus();
     }, 1500);
+
+    const onVisible = () => {
+      if (settled || document.visibilityState !== 'visible') return;
+      pollStatus();
+    };
+    document.addEventListener('visibilitychange', onVisible);
 
     const closedTimer = setInterval(() => {
       if (settled) return;
       if (popup?.closed) {
-        settled = true;
-        cleanup();
-        if (getHubToken()) { resolve(); } else { reject(new Error('Hub login cancelled')); }
+        clearInterval(closedTimer);
+        let retries = 0;
+        finalCheckTimer = setInterval(async () => {
+          if (settled) { clearInterval(finalCheckTimer!); return; }
+          retries++;
+          await pollStatus();
+          if (retries >= 5 && !settled) {
+            settled = true;
+            cleanup();
+            if (getHubToken()) { resolve(); } else { reject(new Error('Hub login cancelled')); }
+          }
+        }, 1000);
       }
     }, 500);
   });
