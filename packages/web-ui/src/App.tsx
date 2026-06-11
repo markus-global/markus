@@ -362,10 +362,10 @@ export function App() {
       <div className={`flex-1 overflow-hidden flex flex-col min-w-0 ${isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH ? 'pb-14' : ''}`}>
         {llmConfigured === false && !llmBannerDismissed && page !== PAGE.SETTINGS && (
           <div className="flex items-center justify-between px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-600 text-sm shrink-0">
-            <span className={isMobile ? 'text-xs' : ''}>No LLM provider configured — agents cannot process requests.</span>
+            <span className={isMobile ? 'text-xs' : ''}>{t('llmBanner.message')}</span>
             <div className="flex items-center gap-3">
-              <button onClick={() => { navigate(PAGE.SETTINGS); }} className="px-3 py-1 bg-amber-700/50 hover:bg-amber-700/70 text-white text-xs rounded-lg transition-colors">
-                Go to Settings
+              <button onClick={() => { window.location.hash = '#settings/providers'; }} className="px-3 py-1 bg-amber-700/50 hover:bg-amber-700/70 text-white text-xs rounded-lg transition-colors">
+                {t('llmBanner.goToSettings')}
               </button>
               <button onClick={() => setLlmBannerDismissed(true)} className="text-amber-500 hover:text-amber-600 text-xs">{t('dismiss')}</button>
             </div>

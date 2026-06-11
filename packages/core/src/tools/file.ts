@@ -1,8 +1,22 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import type { PathAccessPolicy } from '@markus/shared';
+import { basename, dirname, resolve } from 'node:path';
+import { type PathAccessPolicy, validateManifest } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
+
+const MANIFEST_FILENAMES = new Set(['agent.json', 'team.json', 'skill.json']);
+
+function validateBuilderArtifactManifest(path: string, content: string): string[] {
+  if (!path.includes('builder-artifacts/')) return [];
+  const filename = basename(path);
+  if (!MANIFEST_FILENAMES.has(filename)) return [];
+  try {
+    const parsed = JSON.parse(content);
+    return validateManifest(parsed);
+  } catch {
+    return ['Manifest file is not valid JSON'];
+  }
+}
 
 type AccessLevel = 'readwrite' | 'readonly' | 'denied';
 
@@ -157,6 +171,15 @@ export function createFileWriteTool(security?: SecurityGuard, workspacePath?: st
       const check = guard.validateFilePath(path);
       if (!check.allowed) {
         return JSON.stringify({ status: 'denied', error: check.reason });
+      }
+
+      const manifestErrors = validateBuilderArtifactManifest(path, content);
+      if (manifestErrors.length > 0) {
+        return JSON.stringify({
+          status: 'error',
+          error: `Manifest validation failed. Fix these issues and retry:\n${manifestErrors.map(e => `- ${e}`).join('\n')}`,
+          validationErrors: manifestErrors,
+        });
       }
 
       try {

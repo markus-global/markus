@@ -1,10 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation, Trans } from 'react-i18next';
 import type { ThemeMode } from '../hooks/useTheme.ts';
-import { api, type CatalogModel } from '../api.ts';
+import { api } from '../api.ts';
 import { AvatarUpload } from './Avatar.tsx';
-import { ModelPicker } from './ModelPicker.tsx';
-import { PROVIDER_OPTIONS } from '../constants/providers.ts';
 
 interface Props {
   onComplete: () => void;
@@ -13,17 +11,8 @@ interface Props {
   skipProfile?: boolean;
 }
 
-interface EnvModelDetected {
-  provider: string; displayName: string; apiKeySet: boolean; apiKeyPreview: string;
-  model: string; baseUrl?: string; envVars: Record<string, string>;
-}
-interface EnvModelsResponse { detected: EnvModelDetected[]; timeoutMs?: number }
-
-
 const USAGE_TYPE_STEP_ID = 'usageType';
 const PROFILE_STEP_ID = 'profile';
-const LLM_STEP_ID = 'llm';
-const SEARCH_STEP_ID = 'search';
 
 export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Props) {
   const { t } = useTranslation(['onboarding', 'common']);
@@ -53,30 +42,6 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // LLM setup state
-  const [envModels, setEnvModels] = useState<EnvModelsResponse | null>(null);
-  const [envLoading, setEnvLoading] = useState(false);
-  const [envSelected, setEnvSelected] = useState<Record<string, boolean>>({});
-  const [envApplying, setEnvApplying] = useState(false);
-  const [llmConfigured, setLlmConfigured] = useState(false);
-  const [configuredProviders, setConfiguredProviders] = useState<Array<{ name: string; displayName: string; model: string; apiKeyPreview?: string }>>([]);
-  const [setupMsg, setSetupMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
-  const [autoFallback, setAutoFallback] = useState(true);
-  const [defaultProvider, setDefaultProvider] = useState<string>('');
-  const envDetected = useRef(false);
-
-  // Model catalog state (for env-detected providers)
-  const [catalogModels, setCatalogModels] = useState<Record<string, CatalogModel[]>>({});
-  const [selectedModels, setSelectedModels] = useState<Record<string, string>>({});
-
-  // Manual key input state (fallback when no env detected)
-  const [manualProvider, setManualProvider] = useState('anthropic');
-  const [manualKey, setManualKey] = useState('');
-  const [manualValidating, setManualValidating] = useState(false);
-  const [manualModels, setManualModels] = useState<CatalogModel[]>([]);
-  const [manualSelectedModel, setManualSelectedModel] = useState('');
-  const [manualError, setManualError] = useState('');
-
   // Usage type state
   const [usageType, setUsageType] = useState<'personal' | 'organization' | null>(null);
   const [orgName, setOrgName] = useState('');
@@ -88,244 +53,6 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
 
   // Telemetry opt-in state
   const [telemetryEnabled, setTelemetryEnabled] = useState(true);
-
-  // Search API key state
-  const [searchKeys, setSearchKeys] = useState<{ serper: { configured: boolean; preview: string }; tavily: { configured: boolean; preview: string }; bing: { configured: boolean; preview: string }; google: { configured: boolean; preview: string }; serpapi: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; exa: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } } | null>(null);
-  const [searchForm, setSearchForm] = useState({ serperApiKey: '', tavilyApiKey: '', bingApiKey: '', googleSearchApiKey: '', googleSearchCx: '', serpApiKey: '', braveApiKey: '', exaApiKey: '', bochaApiKey: '' });
-  const [searchSaving, setSearchSaving] = useState(false);
-  const [searchConfigured, setSearchConfigured] = useState(false);
-  const [searchMsg, setSearchMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
-  const searchDetected = useRef(false);
-
-  const authHeaders = (): Record<string, string> => ({
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${localStorage.getItem('markus_token') ?? ''}`,
-  });
-
-  useEffect(() => {
-    fetch('/api/settings/llm')
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (d?.providers) {
-          const active = Object.entries(d.providers as Record<string, { configured: boolean; enabled: boolean; displayName?: string; model?: string; apiKeyPreview?: string }>)
-            .filter(([, p]) => p.configured)
-            .map(([k, p]) => ({ name: k, displayName: p.displayName ?? k, model: p.model ?? '', apiKeyPreview: p.apiKeyPreview }));
-          if (active.length > 0) {
-            setLlmConfigured(true);
-            setConfiguredProviders(active);
-          }
-        }
-        if (d?.defaultProvider) setDefaultProvider(d.defaultProvider);
-        if (typeof d?.autoFallback === 'boolean') setAutoFallback(d.autoFallback);
-      })
-      .catch(() => {});
-  }, []);
-
-  const earlyLlmStepIdx = skipProfile ? 3 : 4;
-  useEffect(() => {
-    if (step === earlyLlmStepIdx && !envDetected.current && !llmConfigured) {
-      envDetected.current = true;
-      void detectEnvModels();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, llmConfigured, earlyLlmStepIdx]);
-
-  const earlySearchStepIdx = skipProfile ? 4 : 5;
-  useEffect(() => {
-    if (step === earlySearchStepIdx && !searchDetected.current) {
-      searchDetected.current = true;
-      void detectSearchKeys();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, earlySearchStepIdx]);
-
-  const detectEnvModels = async () => {
-    setEnvLoading(true);
-    try {
-      const res = await fetch('/api/settings/env-models', { headers: authHeaders() });
-      if (res.ok) {
-        const data = await res.json() as EnvModelsResponse;
-        setEnvModels(data);
-        if (data.detected.length > 0) {
-          const sel: Record<string, boolean> = {};
-          const modelSel: Record<string, string> = {};
-          for (const d of data.detected) {
-            sel[d.provider] = true;
-            modelSel[d.provider] = d.model;
-          }
-          setEnvSelected(sel);
-          setSelectedModels(modelSel);
-          // Fetch catalog models for each detected provider
-          for (const d of data.detected) {
-            api.modelCatalog.getByProvider(d.provider)
-              .then(result => {
-                setCatalogModels(prev => ({ ...prev, [d.provider]: result.models }));
-              })
-              .catch(() => {});
-          }
-        }
-      }
-    } catch { /* ignore */ }
-    finally { setEnvLoading(false); }
-  };
-
-  const validateManualKey = async () => {
-    if (!manualKey.trim()) return;
-    setManualValidating(true);
-    setManualError('');
-    setManualModels([]);
-    try {
-      const result = await api.modelCatalog.validateKey(manualProvider, manualKey.trim());
-      if (result.valid) {
-        setManualModels(result.models);
-        if (result.models.length > 0) {
-          setManualSelectedModel(result.models[0].id);
-        }
-      } else {
-        setManualError(result.error || 'Invalid API key');
-        if (result.models.length > 0) {
-          setManualModels(result.models);
-          setManualSelectedModel(result.models[0].id);
-        }
-      }
-    } catch (err) {
-      setManualError(err instanceof Error ? err.message : 'Validation failed');
-    } finally {
-      setManualValidating(false);
-    }
-  };
-
-  const applyManualProvider = async () => {
-    if (!manualSelectedModel) return;
-    setEnvApplying(true);
-    setSetupMsg(null);
-    try {
-      const res = await fetch('/api/settings/llm/providers', {
-        method: 'POST', headers: authHeaders(),
-        body: JSON.stringify({ name: manualProvider, apiKey: manualKey.trim(), model: manualSelectedModel }),
-      });
-      if (res.ok) {
-        setLlmConfigured(true);
-        setDefaultProvider(manualProvider);
-        setConfiguredProviders([{ name: manualProvider, displayName: manualProvider, model: manualSelectedModel }]);
-        setSetupMsg({ type: 'ok', text: `Provider ${manualProvider} configured successfully` });
-      } else {
-        const data = await res.json() as { error?: string };
-        setSetupMsg({ type: 'err', text: data.error || 'Failed to add provider' });
-      }
-    } catch { setSetupMsg({ type: 'err', text: 'Network error' }); }
-    finally { setEnvApplying(false); }
-  };
-
-  const applyEnvModels = async () => {
-    if (!envModels) return;
-    const selected = envModels.detected.filter(d => envSelected[d.provider]);
-    if (selected.length === 0) return;
-    setEnvApplying(true); setSetupMsg(null);
-    try {
-      const res = await fetch('/api/settings/env-models', {
-        method: 'POST', headers: authHeaders(),
-        body: JSON.stringify({
-          providers: selected.map(d => ({
-            provider: d.provider,
-            model: selectedModels[d.provider] || d.model,
-            baseUrl: d.baseUrl,
-            enabled: true,
-          })),
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json() as { applied: string[]; message: string; settings?: { defaultProvider?: string; providers?: Record<string, { configured: boolean; displayName?: string; model?: string; apiKeyPreview?: string }> } };
-        // Refresh configured providers from returned settings
-        if (data.settings?.providers) {
-          const active = Object.entries(data.settings.providers)
-            .filter(([, p]) => p.configured)
-            .map(([k, p]) => ({ name: k, displayName: p.displayName ?? k, model: p.model ?? '', apiKeyPreview: p.apiKeyPreview }));
-          setConfiguredProviders(active);
-        } else {
-          setConfiguredProviders(selected.map(d => ({ name: d.provider, displayName: d.displayName, model: d.model, apiKeyPreview: d.apiKeyPreview })));
-        }
-        // Set default provider: use returned default or first applied
-        const resolvedDefault = data.settings?.defaultProvider || data.applied[0] || selected[0]?.provider || '';
-        setDefaultProvider(resolvedDefault);
-        // Persist the default provider choice
-        if (resolvedDefault) {
-          fetch('/api/settings/llm', {
-            method: 'POST', headers: authHeaders(),
-            body: JSON.stringify({ defaultProvider: resolvedDefault }),
-          }).catch(() => {});
-        }
-        setSetupMsg({ type: 'ok', text: data.message });
-        setLlmConfigured(true);
-      } else {
-        setSetupMsg({ type: 'err', text: t('llm.failedToApply') });
-      }
-    } catch { setSetupMsg({ type: 'err', text: t('common:networkError') }); }
-    finally { setEnvApplying(false); }
-  };
-
-
-  const refreshLlmSettings = async () => {
-    try {
-      const res = await fetch('/api/settings/llm');
-      if (!res.ok) return;
-      const d = await res.json() as { defaultProvider?: string; autoFallback?: boolean; providers?: Record<string, { configured: boolean; displayName?: string; model?: string; apiKeyPreview?: string }> };
-      if (d.providers) {
-        const active = Object.entries(d.providers)
-          .filter(([, p]) => p.configured)
-          .map(([k, p]) => ({ name: k, displayName: p.displayName ?? k, model: p.model ?? '', apiKeyPreview: p.apiKeyPreview }));
-        if (active.length > 0) setConfiguredProviders(active);
-      }
-      if (d.defaultProvider) setDefaultProvider(d.defaultProvider);
-      if (typeof d.autoFallback === 'boolean') setAutoFallback(d.autoFallback);
-    } catch { /* ignore */ }
-  };
-
-
-  const detectSearchKeys = async () => {
-    try {
-      const res = await fetch('/api/settings/search', { headers: authHeaders() });
-      if (res.ok) {
-        const data = await res.json() as typeof searchKeys;
-        setSearchKeys(data);
-        if (data && (data.serper.configured || data.tavily.configured || data.bing.configured || data.google.configured || data.serpapi.configured || data.brave.configured || data.exa.configured || data.bocha.configured)) {
-          setSearchConfigured(true);
-        }
-      }
-    } catch { /* ignore */ }
-  };
-
-  const saveSearchKeys = async () => {
-    const hasAny = searchForm.serperApiKey || searchForm.tavilyApiKey || searchForm.bingApiKey || searchForm.googleSearchApiKey || searchForm.googleSearchCx || searchForm.serpApiKey || searchForm.braveApiKey || searchForm.exaApiKey || searchForm.bochaApiKey;
-    if (!hasAny) return;
-    setSearchSaving(true); setSearchMsg(null);
-    try {
-      const updates: Record<string, string> = {};
-      if (searchForm.serperApiKey) updates.serperApiKey = searchForm.serperApiKey;
-      if (searchForm.tavilyApiKey) updates.tavilyApiKey = searchForm.tavilyApiKey;
-      if (searchForm.bingApiKey) updates.bingApiKey = searchForm.bingApiKey;
-      if (searchForm.googleSearchApiKey) updates.googleSearchApiKey = searchForm.googleSearchApiKey;
-      if (searchForm.googleSearchCx) updates.googleSearchCx = searchForm.googleSearchCx;
-      if (searchForm.serpApiKey) updates.serpApiKey = searchForm.serpApiKey;
-      if (searchForm.braveApiKey) updates.braveApiKey = searchForm.braveApiKey;
-      if (searchForm.exaApiKey) updates.exaApiKey = searchForm.exaApiKey;
-      if (searchForm.bochaApiKey) updates.bochaApiKey = searchForm.bochaApiKey;
-      const res = await fetch('/api/settings/search', {
-        method: 'POST', headers: authHeaders(),
-        body: JSON.stringify(updates),
-      });
-      if (res.ok) {
-        const data = await res.json() as typeof searchKeys;
-        setSearchKeys(data);
-        setSearchConfigured(true);
-        setSearchForm({ serperApiKey: '', tavilyApiKey: '', bingApiKey: '', googleSearchApiKey: '', googleSearchCx: '', serpApiKey: '', braveApiKey: '', exaApiKey: '', bochaApiKey: '' });
-        setSearchMsg({ type: 'ok', text: t('search.saved') });
-      } else {
-        setSearchMsg({ type: 'err', text: t('search.failedToSave') });
-      }
-    } catch { setSearchMsg({ type: 'err', text: t('common:networkError') }); }
-    finally { setSearchSaving(false); }
-  };
 
   const saveProfile = async () => {
     setProfileError('');
@@ -363,28 +90,13 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
       title: t('welcome.title'),
       subtitle: t('welcome.subtitle'),
       content: (
-        <div className="space-y-4 text-fg-secondary text-sm leading-relaxed">
-          <p className="text-fg-secondary">
-            <Trans
-              i18nKey="welcome.description"
-              ns="onboarding"
-              components={{ strong: <strong className="text-fg-primary" /> }}
-            />
-          </p>
-          <div className="grid grid-cols-2 gap-3 mt-6">
-            {[
-              [t('welcome.features.operation'), t('welcome.features.operationDesc')],
-              [t('welcome.features.collaboration'), t('welcome.features.collaborationDesc')],
-              [t('welcome.features.memory'), t('welcome.features.memoryDesc')],
-              [t('welcome.features.anyLlm'), t('welcome.features.anyLlmDesc')],
-            ].map(([title, desc]) => (
-              <div key={title} className="bg-surface-elevated/50 rounded-lg p-3">
-                <div className="font-medium text-fg-primary text-xs">{title}</div>
-                <div className="text-fg-secondary text-xs mt-1">{desc}</div>
-              </div>
-            ))}
-          </div>
-        </div>
+        <p className="text-fg-secondary text-sm leading-relaxed">
+          <Trans
+            i18nKey="welcome.description"
+            ns="onboarding"
+            components={{ strong: <strong className="text-fg-primary" /> }}
+          />
+        </p>
       ),
     },
     // Step 1: Usage Type
@@ -471,10 +183,10 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
                   if (!orgName.trim()) return;
                   setOrgNameSaving(true);
                   try {
-                    const licData = await api.license.get();
-                    const defaultOrg = (licData as any).defaultOrg;
-                    if (defaultOrg?.id) {
-                      await api.hubOrgs.update(defaultOrg.id, { name: orgName.trim() });
+                    const orgsData = await api.hubOrgs.mine();
+                    const firstOrg = orgsData.orgs?.[0];
+                    if (firstOrg?.id) {
+                      await api.hubOrgs.update(firstOrg.id, { name: orgName.trim() });
                     }
                     setOrgNameSaved(true);
                   } catch { /* ignore */ }
@@ -566,383 +278,39 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
         </div>
       ),
     },
-    // Step 2: Appearance
+    // Step: Appearance (final step)
     {
       id: 'theme',
       title: t('theme.title'),
       subtitle: t('theme.subtitle'),
       content: (
-        <div className="grid grid-cols-3 gap-3">
-          {themeOptions.map(opt => (
-            <button
-              key={opt.value}
-              onClick={() => onThemeChange(opt.value)}
-              className={`flex flex-col items-center gap-2 rounded-xl border-2 p-5 transition-all ${
-                theme === opt.value
-                  ? 'border-brand-500 bg-brand-500/10'
-                  : 'border-border-default hover:border-fg-tertiary bg-surface-elevated/30'
-              }`}
-            >
-              <span className="text-2xl">{opt.icon}</span>
-              <span className="text-sm font-medium text-fg-primary">{opt.label}</span>
-              <span className="text-[11px] text-fg-tertiary leading-tight text-center">{opt.desc}</span>
-            </button>
-          ))}
-        </div>
-      ),
-    },
-    // Step 3: LLM Setup
-    {
-      id: LLM_STEP_ID,
-      title: t('llm.title'),
-      subtitle: t('llm.subtitle'),
-      content: llmConfigured ? (
-        <div className="space-y-2">
-          <div className="flex items-center gap-2 text-green-600 text-sm font-medium mb-1">
-            <span>&#10003;</span>
-            <span>{t('llm.configured')}</span>
-          </div>
-          {configuredProviders.length > 1 && (
-            <div className="text-xs text-fg-secondary mb-1">{t('llm.selectDefault')}</div>
-          )}
-          {configuredProviders.map(p => {
-            const isDefault = defaultProvider === p.name;
-            return (
+        <div className="space-y-4">
+          <div className="grid grid-cols-3 gap-3">
+            {themeOptions.map(opt => (
               <button
-                key={p.name}
-                onClick={async () => {
-                  const prev = defaultProvider;
-                  setDefaultProvider(p.name);
-                  try {
-                    await fetch('/api/settings/llm', {
-                      method: 'POST', headers: authHeaders(),
-                      body: JSON.stringify({ defaultProvider: p.name }),
-                    });
-                  } catch { setDefaultProvider(prev); }
-                }}
-                className={`w-full flex items-center justify-between rounded-lg px-4 py-2.5 text-left transition-colors ${
-                  isDefault
-                    ? 'bg-brand-500/15 border-2 border-brand-500'
-                    : 'bg-green-500/10 border border-green-500/30 hover:border-brand-500/50'
+                key={opt.value}
+                onClick={() => onThemeChange(opt.value)}
+                className={`flex flex-col items-center gap-2 rounded-xl border-2 p-5 transition-all ${
+                  theme === opt.value
+                    ? 'border-brand-500 bg-brand-500/10'
+                    : 'border-border-default hover:border-fg-tertiary bg-surface-elevated/30'
                 }`}
               >
-                <div className="flex items-center gap-2">
-                  <span className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 ${
-                    isDefault ? 'border-brand-500' : 'border-fg-tertiary'
-                  }`}>
-                    {isDefault && <span className="w-1.5 h-1.5 rounded-full bg-brand-500" />}
-                  </span>
-                  <span className="text-sm text-fg-primary font-medium">{p.displayName}</span>
-                  {p.model && <span className="text-xs text-fg-tertiary">{p.model}</span>}
-                  {isDefault && <span className="text-[10px] text-brand-500 font-medium">{t('llm.default')}</span>}
-                </div>
-                {p.apiKeyPreview && <code className="text-[10px] text-fg-tertiary">{p.apiKeyPreview}</code>}
+                <span className="text-2xl">{opt.icon}</span>
+                <span className="text-sm font-medium text-fg-primary">{opt.label}</span>
+                <span className="text-[11px] text-fg-tertiary leading-tight text-center">{opt.desc}</span>
               </button>
-            );
-          })}
-          <div className="text-xs text-fg-secondary mt-1">{t('llm.configuredHint')}</div>
-
-          <div className="flex items-center justify-between bg-surface-elevated/40 rounded-lg px-4 py-3 mt-3">
-            <div>
-              <div className="text-xs font-medium text-fg-primary">{t('llm.autoFallback')}</div>
-              <div className="text-[11px] text-fg-tertiary mt-0.5">{t('llm.autoFallbackDesc')}</div>
-            </div>
-            <button
-              onClick={async () => {
-                const newVal = !autoFallback;
-                setAutoFallback(newVal);
-                try {
-                  await fetch('/api/settings/llm', {
-                    method: 'POST', headers: authHeaders(),
-                    body: JSON.stringify({ autoFallback: newVal }),
-                  });
-                } catch { setAutoFallback(!newVal); }
-              }}
-              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 ${autoFallback ? 'bg-green-500' : 'bg-gray-600'}`}
-            >
-              <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${autoFallback ? 'translate-x-4' : 'translate-x-1'}`} />
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {envLoading && (
-            <div className="flex items-center gap-2 text-xs text-fg-tertiary animate-pulse">
-              <div className="w-3 h-3 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
-              {t('llm.detectingKeys')}
-            </div>
-          )}
-
-          {/* Case A: Environment variables detected */}
-          {envModels && envModels.detected.length > 0 && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 text-green-600 text-xs font-medium">
-                <span>&#10003;</span>
-                <span>{t('llm.fromEnv')}</span>
-              </div>
-
-              {envModels.detected.map(d => (
-                <div key={d.provider} className="border border-border-default rounded-lg overflow-hidden">
-                  <label className="flex items-center gap-3 px-3 py-2.5 bg-surface-elevated/40 cursor-pointer hover:bg-surface-elevated/60 transition-colors">
-                    <input type="checkbox" checked={envSelected[d.provider] ?? false}
-                      onChange={e => setEnvSelected({ ...envSelected, [d.provider]: e.target.checked })}
-                      className="w-4 h-4 rounded bg-surface-overlay border-gray-600 text-brand-500 focus:ring-brand-500" />
-                    <div className="flex-1 min-w-0">
-                      <span className="text-sm text-fg-primary font-medium">{d.displayName}</span>
-                    </div>
-                    <code className="text-[10px] text-fg-tertiary">{d.apiKeyPreview}</code>
-                  </label>
-                  {envSelected[d.provider] && (
-                    <div className="px-3 py-2 border-t border-border-default">
-                      <ModelPicker
-                        provider={d.provider}
-                        models={catalogModels[d.provider] ?? []}
-                        selectedModel={selectedModels[d.provider] || d.model}
-                        onSelect={(modelId) => setSelectedModels(prev => ({ ...prev, [d.provider]: modelId }))}
-                        loading={!catalogModels[d.provider]}
-                        compact
-                        maxVisible={4}
-                      />
-                    </div>
-                  )}
-                </div>
-              ))}
-
-              {envModels.detected.filter(d => envSelected[d.provider]).length > 1 && (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-fg-secondary">Default:</span>
-                  <select
-                    value={defaultProvider || envModels.detected[0]?.provider || ''}
-                    onChange={e => setDefaultProvider(e.target.value)}
-                    className="px-2 py-1 bg-surface-overlay border border-border-default rounded text-xs text-fg-primary"
-                  >
-                    {envModels.detected.filter(d => envSelected[d.provider]).map(d => (
-                      <option key={d.provider} value={d.provider}>{d.displayName}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              <button onClick={() => void applyEnvModels()}
-                disabled={envApplying || Object.values(envSelected).filter(Boolean).length === 0}
-                className="w-full px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                {envApplying ? t('common:applying') : t('llm.applyProviders', { count: Object.values(envSelected).filter(Boolean).length })}
-              </button>
-            </div>
-          )}
-
-          {/* Case B: No environment variables — manual key input */}
-          {envModels && envModels.detected.length === 0 && !envLoading && (
-            <div className="space-y-3">
-              <div className="text-xs text-fg-tertiary">
-                <Trans i18nKey="llm.noKeysFound" ns="onboarding" components={{ code: <code className="text-fg-secondary" /> }} />
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-xs text-fg-secondary">Provider</label>
-                <select
-                  value={manualProvider}
-                  onChange={e => { setManualProvider(e.target.value); setManualModels([]); setManualError(''); setManualSelectedModel(''); }}
-                  className="w-full px-3 py-2 bg-surface-overlay border border-border-default rounded-lg text-sm text-fg-primary"
-                >
-                  {PROVIDER_OPTIONS.map(p => (
-                    <option key={p.id} value={p.id}>{p.label}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-xs text-fg-secondary">API Key</label>
-                <div className="flex gap-2">
-                  <input
-                    type="password"
-                    value={manualKey}
-                    onChange={e => setManualKey(e.target.value)}
-                    onBlur={() => { if (manualKey.trim().length >= 8) void validateManualKey(); }}
-                    onKeyDown={e => { if (e.key === 'Enter' && manualKey.trim().length >= 8) void validateManualKey(); }}
-                    placeholder="sk-..."
-                    className="flex-1 px-3 py-2 bg-surface-overlay border border-border-default rounded-lg text-sm text-fg-primary placeholder:text-fg-tertiary"
-                  />
-                  <button
-                    onClick={() => void validateManualKey()}
-                    disabled={manualValidating || !manualKey.trim()}
-                    className="px-3 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-xs rounded-lg transition-colors whitespace-nowrap"
-                  >
-                    {manualValidating ? 'Validating...' : 'Validate'}
-                  </button>
-                </div>
-              </div>
-
-              {manualError && (
-                <div className="text-xs px-3 py-2 rounded-lg bg-red-500/10 text-red-500 border border-red-500/30">
-                  {manualError}
-                </div>
-              )}
-
-              {manualModels.length > 0 && (
-                <div className="border border-border-default rounded-lg p-3">
-                  <div className="text-xs text-fg-secondary mb-2">Select Model</div>
-                  <ModelPicker
-                    provider={manualProvider}
-                    models={manualModels}
-                    selectedModel={manualSelectedModel}
-                    onSelect={setManualSelectedModel}
-                    compact
-                    maxVisible={5}
-                  />
-                  <button
-                    onClick={() => void applyManualProvider()}
-                    disabled={envApplying || !manualSelectedModel}
-                    className="w-full mt-3 px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors"
-                  >
-                    {envApplying ? t('common:applying') : 'Activate Provider'}
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {setupMsg && (
-            <div className={`text-xs px-3 py-2 rounded-lg ${setupMsg.type === 'ok' ? 'bg-green-500/10 text-green-600 border border-green-500/30' : 'bg-red-500/10 text-red-500 border border-red-500/30'}`}>
-              {setupMsg.text}
-            </div>
-          )}
-        </div>
-      ),
-    },
-    // Step 4: Search API Keys
-    {
-      id: SEARCH_STEP_ID,
-      title: t('search.title'),
-      subtitle: t('search.subtitle'),
-      content: searchConfigured ? (
-        <div className="space-y-2">
-          <div className="flex items-center gap-2 text-green-600 text-sm font-medium mb-1">
-            <span>&#10003;</span>
-            <span>{t('search.saved')}</span>
-          </div>
-          {searchKeys && ([
-            { id: 'serper' as const, label: t('search.serper') },
-            { id: 'tavily' as const, label: t('search.tavily') },
-            { id: 'bing' as const, label: t('search.bing') },
-            { id: 'google' as const, label: t('search.google') },
-            { id: 'serpapi' as const, label: t('search.serpapi') },
-            { id: 'brave' as const, label: t('search.brave') },
-            { id: 'exa' as const, label: t('search.exa') },
-            { id: 'bocha' as const, label: t('search.bocha') },
-          ]).filter(item => searchKeys[item.id]?.configured).map(item => (
-            <div key={item.id} className="flex items-center justify-between bg-green-500/10 border border-green-500/30 rounded-lg px-4 py-2.5">
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-green-400" />
-                <span className="text-sm text-fg-primary font-medium">{item.label}</span>
-              </div>
-              <code className="text-[10px] text-fg-tertiary">{searchKeys[item.id].preview}</code>
-            </div>
-          ))}
-          <div className="text-xs text-fg-secondary mt-1">{t('search.savedHint')}</div>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          <div className="text-xs text-fg-secondary">{t('search.description')}</div>
-
-          {searchKeys && (searchKeys.serper.configured || searchKeys.tavily.configured || searchKeys.bing.configured || searchKeys.google.configured || searchKeys.serpapi.configured || searchKeys.brave.configured || searchKeys.exa.configured || searchKeys.bocha.configured) && (
-            <div className="space-y-2">
-              <div className="text-xs text-fg-secondary uppercase tracking-wider">{t('search.detected')}</div>
-              {([
-                { id: 'serper' as const, label: t('search.serper') },
-                { id: 'tavily' as const, label: t('search.tavily') },
-                { id: 'bing' as const, label: t('search.bing') },
-                { id: 'google' as const, label: t('search.google') },
-                { id: 'serpapi' as const, label: t('search.serpapi') },
-                { id: 'brave' as const, label: t('search.brave') },
-                { id: 'exa' as const, label: t('search.exa') },
-                { id: 'bocha' as const, label: t('search.bocha') },
-              ]).filter(item => searchKeys[item.id]?.configured).map(item => (
-                <div key={item.id} className="flex items-center justify-between bg-green-500/10 border border-green-500/30 rounded-lg px-3 py-2">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-green-400" />
-                    <span className="text-sm text-fg-primary">{item.label}</span>
-                  </div>
-                  <code className="text-[10px] text-fg-tertiary">{searchKeys[item.id].preview}</code>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="space-y-3">
-            {([
-              { label: t('search.serper'), field: 'serperApiKey' as const },
-              { label: t('search.tavily'), field: 'tavilyApiKey' as const },
-              { label: t('search.bing'), field: 'bingApiKey' as const },
-              { label: t('search.google'), field: 'googleSearchApiKey' as const },
-              { label: t('search.serpapi'), field: 'serpApiKey' as const },
-              { label: t('search.brave'), field: 'braveApiKey' as const },
-              { label: t('search.exa'), field: 'exaApiKey' as const },
-              { label: t('search.bocha'), field: 'bochaApiKey' as const },
-            ]).map(item => (
-              <div key={item.field} className="space-y-1">
-                <label className="text-xs text-fg-tertiary font-medium">{item.label}</label>
-                <input
-                  type="password"
-                  value={searchForm[item.field]}
-                  onChange={e => setSearchForm({ ...searchForm, [item.field]: e.target.value })}
-                  placeholder={t('search.apiKeyPlaceholder')}
-                  className="w-full px-4 py-2 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
-                />
-              </div>
             ))}
           </div>
 
-          <button
-            onClick={() => void saveSearchKeys()}
-            disabled={searchSaving || (!searchForm.serperApiKey && !searchForm.tavilyApiKey && !searchForm.bingApiKey && !searchForm.googleSearchApiKey && !searchForm.serpApiKey && !searchForm.braveApiKey && !searchForm.exaApiKey && !searchForm.bochaApiKey)}
-            className="w-full px-4 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
-          >
-            {searchSaving ? t('search.saving') : t('search.save')}
-          </button>
-
-          {searchMsg && (
-            <div className={`text-xs px-3 py-2 rounded-lg ${searchMsg.type === 'ok' ? 'bg-green-500/10 text-green-600 border border-green-500/30' : 'bg-red-500/10 text-red-500 border border-red-500/30'}`}>
-              {searchMsg.text}
-            </div>
-          )}
-        </div>
-      ),
-    },
-    // Step: Done
-    {
-      id: 'done',
-      title: t('done.title'),
-      subtitle: t('done.subtitle'),
-      content: (
-        <div className="space-y-3 text-fg-secondary text-sm">
-          {[
-            [t('done.chat'), t('done.chatDesc')],
-            [t('done.projects'), t('done.projectsDesc')],
-            [t('done.builder'), t('done.builderDesc')],
-            [t('done.settings'), t('done.settingsDesc')],
-          ].map(([title, desc]) => (
-            <div key={title} className="flex gap-3 bg-surface-elevated/50 rounded-lg p-3">
-              <div className="text-brand-500 mt-0.5 shrink-0">&#x2192;</div>
-              <div>
-                <div className="font-medium text-fg-primary text-xs">{title}</div>
-                <div className="text-fg-secondary text-xs">{desc}</div>
-              </div>
-            </div>
-          ))}
-
-          <label className="flex items-start gap-2.5 p-3 bg-surface-elevated/30 rounded-lg cursor-pointer group mt-2">
+          <label className="flex items-center gap-2.5 p-3 bg-surface-elevated/30 rounded-lg cursor-pointer group">
             <input
               type="checkbox"
               checked={telemetryEnabled}
               onChange={e => setTelemetryEnabled(e.target.checked)}
-              className="mt-0.5 accent-brand-500 shrink-0"
+              className="accent-brand-500 shrink-0"
             />
-            <div className="text-[11px] text-fg-tertiary leading-relaxed">
-              {t('done.telemetry')}
-              <br />
-              <span className="text-fg-quaternary">{t('done.telemetryNote')}</span>
-            </div>
+            <span className="text-[11px] text-fg-tertiary">{t('done.telemetry')}</span>
           </label>
         </div>
       ),
@@ -952,8 +320,6 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
   const steps = skipProfile ? allSteps.filter(s => s.id !== PROFILE_STEP_ID) : allSteps;
   const usageTypeStepIdx = steps.findIndex(s => s.id === USAGE_TYPE_STEP_ID);
   const profileStepIdx = steps.findIndex(s => s.id === PROFILE_STEP_ID);
-  const llmStepIdx = steps.findIndex(s => s.id === LLM_STEP_ID);
-  const searchStepIdx = steps.findIndex(s => s.id === SEARCH_STEP_ID);
 
   const handleNext = () => {
     if (step === usageTypeStepIdx && usageTypeStepIdx >= 0 && !usageType) return;
@@ -1002,22 +368,12 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
             <div className="flex items-center gap-3">
               {usageTypeStepIdx >= 0 && step === usageTypeStepIdx && !usageType && (
                 <button onClick={() => { setUsageType('personal'); setOrgNameSaved(true); setStep(step + 1); }} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
-                  {t('llm.skipForNow')}
+                  {t('common:skip')}
                 </button>
               )}
               {profileStepIdx >= 0 && step === profileStepIdx && !profileSaved && (
                 <button onClick={() => setStep(step + 1)} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
-                  {t('llm.skipForNow')}
-                </button>
-              )}
-              {llmStepIdx >= 0 && step === llmStepIdx && !llmConfigured && (
-                <button onClick={handleNext} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
-                  {t('llm.skipForNow')}
-                </button>
-              )}
-              {searchStepIdx >= 0 && step === searchStepIdx && !searchConfigured && (
-                <button onClick={handleNext} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
-                  {t('search.skipForNow')}
+                  {t('common:skip')}
                 </button>
               )}
               <button

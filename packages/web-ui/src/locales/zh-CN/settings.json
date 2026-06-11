@@ -82,7 +82,7 @@
     "autoFallbackDesc": "启用后，当主模型出错时自动尝试其他提供商/模型。禁用后，仅使用所选模型 — 出错时不会自动切换。"
   },
   "modelProviders": {
-    "title": "模型提供商与定价",
+    "title": "模型提供商",
     "disabled": "已禁用",
     "notConfigured": "点击配置",
     "addProvider": "+ 添加提供商",

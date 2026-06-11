@@ -2,17 +2,7 @@
   "welcome": {
     "title": "欢迎使用 Markus",
     "subtitle": "几分钟内就绪的 AI 团队",
-    "description": "Markus 运行<strong>完整的 AI 团队</strong> — 开发者、研究员、撰稿人、分析师可自主工作、彼此协作，并全天候交付成果。",
-    "features": {
-      "operation": "7×24 运行",
-      "operationDesc": "智能体通过心跳在你休息时继续工作",
-      "collaboration": "团队协作",
-      "collaborationDesc": "智能体之间委派、审核与协调",
-      "memory": "持久记忆",
-      "memoryDesc": "五层记忆在重启后仍然保留",
-      "anyLlm": "任意 LLM 提供商",
-      "anyLlmDesc": "Anthropic、OpenAI、Google、Ollama 等"
-    }
+    "description": "Markus 帮你构建和运行<strong>自主协作的 AI 智能体团队</strong>，它们能协同工作、持续学习，并全天候交付成果。接下来几步快速完成初始设置。"
   },
   "theme": {
     "title": "选择主题",
@@ -108,7 +98,7 @@
     "builderDesc": "从模板招聘新智能体或自定义角色",
     "settings": "设置",
     "settingsDesc": "管理 LLM 提供商、集成与治理",
-    "telemetry": "分享匿名使用统计以帮助改进 Markus（实例 ID、智能体数量、任务数量、版本、操作系统）。",
+    "telemetry": "分享匿名使用数据以帮助改进 Markus",
     "telemetryNote": "不会收集任何代码、提示词或个人数据。你可以随时在设置中更改此选项。"
   },
   "usageType": {
@@ -116,7 +106,7 @@
     "subtitle": "这有助于我们为你定制体验。",
     "personal": "个人使用",
     "personalDesc": "使用你自己的 AI 智能体。",
-    "organization": "团队 & 企业",
+    "organization": "组织 & 企业",
     "organizationDesc": "团队共享许可证与协作。",
     "orgNameLabel": "组织名称",
     "orgNamePlaceholder": "输入你的团队名称",

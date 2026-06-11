@@ -238,6 +238,10 @@
     "available": "New version available: v{{latest}} (current: v{{current}})",
     "download": "Download Update"
   },
+  "llmBanner": {
+    "message": "No LLM provider configured — agents cannot process requests.",
+    "goToSettings": "Go to Settings"
+  },
   "license": {
     "limitReachedTeams": "You've reached the free plan limit for AI Agent teams. Upgrade to Enterprise for unlimited teams.",
     "limitReachedToolCalls": "You've reached the free plan daily tool call limit. Upgrade to Enterprise for unlimited usage.",

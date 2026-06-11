@@ -1479,8 +1479,8 @@ export const api = {
       request<{ avatarUrl: string }>('/avatars/upload', { method: 'POST', body: JSON.stringify({ image, type, id }) }),
   },
   license: {
-    get: () => request<{ plan: string; licenseKey?: string; validUntil?: string; isTrial?: boolean; isOffline?: boolean; features: string[]; limits: { maxTeams: number; maxToolCallsPerDay: number; maxUsers: number }; usage?: { teams: number; toolCallsToday: number; users: number }; instanceId: string; hubUserId?: string; username?: string; orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number; defaultOrg?: { id: string; name: string; slug: string } }>('/license'),
-    refresh: () => request<{ plan: string; licenseKey?: string; validUntil?: string; isTrial?: boolean; isOffline?: boolean; features: string[]; limits: { maxTeams: number; maxToolCallsPerDay: number; maxUsers: number }; usage?: { teams: number; toolCallsToday: number; users: number }; instanceId: string; hubUserId?: string; username?: string; orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number; defaultOrg?: { id: string; name: string; slug: string } }>('/license/refresh', { method: 'POST' }),
+    get: () => request<{ plan: string; licenseKey?: string; validUntil?: string; isTrial?: boolean; isOffline?: boolean; features: string[]; limits: { maxTeams: number; maxToolCallsPerDay: number; maxUsers: number }; usage?: { teams: number; toolCallsToday: number; users: number }; instanceId: string; hubUserId?: string; username?: string; orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number }>('/license'),
+    refresh: () => request<{ plan: string; licenseKey?: string; validUntil?: string; isTrial?: boolean; isOffline?: boolean; features: string[]; limits: { maxTeams: number; maxToolCallsPerDay: number; maxUsers: number }; usage?: { teams: number; toolCallsToday: number; users: number }; instanceId: string; hubUserId?: string; username?: string; orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number }>('/license/refresh', { method: 'POST' }),
     activate: (licenseKey: string) =>
       request<{ success: boolean; error?: string }>('/license/activate', { method: 'POST', body: JSON.stringify({ licenseKey }) }),
     trial: () =>
@@ -1712,7 +1712,7 @@ export const api = {
       }),
   },
   hubOrgs: {
-    mine: () => hubRequest<{ orgs: Array<{ id: string; name: string; slug: string; role: string; memberCount: number; license: { id: string; plan: string; status: string; validUntil: string; maxSeats: number | null } | null }> }>('/orgs/mine'),
+    mine: () => hubRequest<{ orgs: Array<{ id: string; name: string; slug: string; role: string; memberCount: number; license: { id: string; plan: string; status: string; validUntil: string; maxSeats: number | null; isTrial?: boolean } | null }> }>('/orgs/mine'),
     get: (id: string) => hubRequest<{ org: { id: string; name: string; slug: string; ownerId: string; memberCount: number; role: string } }>(`/orgs/${id}`),
     update: (id: string, data: { name?: string }) => hubRequest<{ ok: boolean }>(`/orgs/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     create: (name: string) => hubRequest<{ id: string; name: string; slug: string }>('/orgs', { method: 'POST', body: JSON.stringify({ name }) }),

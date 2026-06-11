@@ -1242,7 +1242,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
                   <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.type')}</span><span className={`font-medium ${style.color}`}>{style.label}</span></div>
                   <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.category')}</span><span className="text-fg-secondary">{editCategory}</span></div>
                   <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.version')}</span><span className="text-fg-secondary font-mono">{editVersion}</span></div>
-                  {manifest.author && <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.author')}</span><span className="text-fg-secondary">{manifest.author}</span></div>}
+                  {manifest.author && <div className="flex justify-between"><span className="text-fg-muted">{t('sidebar.author')}</span><span className="text-fg-secondary">{typeof manifest.author === 'string' ? manifest.author : (manifest.author as unknown as Record<string, string>)?.name ?? ''}</span></div>}
                 </div>
               </div>
 
