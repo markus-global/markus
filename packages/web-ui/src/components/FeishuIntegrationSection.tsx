@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import QRCode from 'qrcode';
 import { api } from '../api.ts';
 
 export interface FeishuConfig {
@@ -79,6 +80,8 @@ function Msg({ type, text }: { type: 'ok' | 'err'; text: string }) {
   );
 }
 
+type RegisterState = 'idle' | 'waiting_qr' | 'scanning' | 'done' | 'error';
+
 export function FeishuIntegrationSection() {
   const { t } = useTranslation(['settings', 'common']);
 
@@ -88,8 +91,19 @@ export function FeishuIntegrationSection() {
   const [testing, setTesting] = useState(false);
   const [sendingMsg, setSendingMsg] = useState(false);
   const [msg, setMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
-  const [showAppSecret, setShowAppSecret] = useState(false);
   const [testChatId, setTestChatId] = useState('');
+
+  // QR code registration state
+  const [registerState, setRegisterState] = useState<RegisterState>('idle');
+  const [qrUrl, setQrUrl] = useState<string | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [qrExpireIn, setQrExpireIn] = useState(0);
+  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const registerAbort = useRef<AbortController | null>(null);
+
+  // Manual config toggle (advanced)
+  const [showManualConfig, setShowManualConfig] = useState(false);
+  const [showAppSecret, setShowAppSecret] = useState(false);
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const configRef = useRef(config);
@@ -113,7 +127,7 @@ export function FeishuIntegrationSection() {
         });
       }
     } catch {
-      // Not configured yet — use defaults
+      // Not configured yet
     } finally {
       setLoading(false);
       initialLoadDone.current = true;
@@ -121,6 +135,13 @@ export function FeishuIntegrationSection() {
   }, []);
 
   useEffect(() => { loadConfig(); }, [loadConfig]);
+
+  // Cleanup poll timer on unmount
+  useEffect(() => {
+    return () => {
+      if (pollTimer.current) clearInterval(pollTimer.current);
+    };
+  }, []);
 
   const doSave = useCallback(async (cfg: FeishuConfig) => {
     if (!cfg.appId || !cfg.appSecret) return;
@@ -189,6 +210,63 @@ export function FeishuIntegrationSection() {
     }, 300);
   };
 
+  // --- QR Code Registration Flow ---
+  const startRegister = async () => {
+    setRegisterState('waiting_qr');
+    setQrUrl(null);
+    setQrDataUrl(null);
+    setMsg(null);
+
+    // Start polling for QR code status
+    pollTimer.current = setInterval(async () => {
+      try {
+        const status = await api.settings.getFeishuRegisterStatus();
+        if (status.active && status.url) {
+          setQrUrl(status.url);
+          setQrExpireIn(status.expireIn ?? 300);
+          setRegisterState('scanning');
+          // Generate QR code data URL from the authorization URL
+          try {
+            const dataUrl = await QRCode.toDataURL(status.url, {
+              width: 200,
+              margin: 2,
+              color: { dark: '#000000', light: '#ffffff' },
+            });
+            setQrDataUrl(dataUrl);
+          } catch { /* QR generation error */ }
+        }
+      } catch { /* ignore poll errors */ }
+    }, 1000);
+
+    // Trigger the registration (this is a long-poll request that resolves when user scans)
+    try {
+      const result = await api.settings.registerFeishuApp();
+      if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; }
+
+      if (result.success && result.appId) {
+        setRegisterState('done');
+        setMsg({ type: 'ok', text: t('settings:feishu.registerSuccess', { defaultValue: 'App created successfully! Integration is now active.' }) });
+        // Reload config to get the new credentials
+        await loadConfig();
+      } else {
+        setRegisterState('error');
+        setMsg({ type: 'err', text: result.message || t('settings:feishu.registerFailed', { defaultValue: 'Registration failed' }) });
+      }
+    } catch (err) {
+      if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; }
+      setRegisterState('error');
+      setMsg({ type: 'err', text: String(err instanceof Error ? err.message : err) });
+    }
+  };
+
+  const cancelRegister = () => {
+    if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; }
+    if (registerAbort.current) registerAbort.current.abort();
+    setRegisterState('idle');
+    setQrUrl(null);
+    setQrDataUrl(null);
+  };
+
   const handleTest = async () => {
     if (!config.appId || !config.appSecret) {
       setMsg({ type: 'err', text: t('settings:feishu.fillRequired', { defaultValue: 'Please fill in App ID and App Secret first' }) });
@@ -243,6 +321,7 @@ export function FeishuIntegrationSection() {
       initialLoadDone.current = false;
       setConfig(DEFAULT_CONFIG);
       initialLoadDone.current = true;
+      setShowManualConfig(false);
       setMsg({ type: 'ok', text: t('settings:feishu.disconnected', { defaultValue: 'Disconnected from Feishu' }) });
     } catch (err) {
       setMsg({ type: 'err', text: String(err instanceof Error ? err.message : err) });
@@ -262,9 +341,11 @@ export function FeishuIntegrationSection() {
     );
   }
 
+  const isConfigured = !!(config.appId && config.appSecret);
+
   return (
     <div className="bg-surface-elevated border border-border-default rounded-xl p-6 space-y-8">
-      {/* Header — Connection status + Feishu branding */}
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center">
@@ -293,267 +374,353 @@ export function FeishuIntegrationSection() {
         </span>
       </div>
 
-      {/* Connection Settings */}
-      <Section title={t('settings:feishu.connectionSettings', { defaultValue: 'Connection Settings' })}>
-        <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
-          {/* App ID */}
-          <div>
-            <label className="block text-xs font-medium text-fg-secondary mb-1.5">
-              App ID <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="text"
-              value={config.appId}
-              onChange={e => updateField('appId', e.target.value)}
-              onBlur={() => { if (config.appId && config.appSecret) { if (saveTimer.current) clearTimeout(saveTimer.current); doSave(configRef.current); } }}
-              placeholder="cli_xxxxxxxxxxxxxx"
-              className="w-full px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
-            />
-          </div>
+      {/* One-Click Setup or Connected State */}
+      {!isConfigured ? (
+        <Section title={t('settings:feishu.quickSetup', { defaultValue: 'Quick Setup' })}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 space-y-5">
+            {registerState === 'idle' || registerState === 'error' || registerState === 'done' ? (
+              <>
+                <div className="text-center space-y-3">
+                  <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-blue-500/20 to-indigo-500/20 border border-blue-500/30 flex items-center justify-center">
+                    <svg className="w-8 h-8 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-fg-primary">
+                      {t('settings:feishu.oneClickTitle', { defaultValue: 'One-Click Feishu Integration' })}
+                    </h3>
+                    <p className="text-xs text-fg-tertiary mt-1 max-w-sm mx-auto">
+                      {t('settings:feishu.oneClickDesc', { defaultValue: 'Scan a QR code with Feishu to automatically create and configure the app. No manual setup needed.' })}
+                    </p>
+                  </div>
+                  <button
+                    onClick={startRegister}
+                    disabled={registerState === 'done'}
+                    className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                    </svg>
+                    {t('settings:feishu.scanToCreate', { defaultValue: 'Scan QR Code to Create App' })}
+                  </button>
+                </div>
 
-          {/* App Secret */}
-          <div>
-            <label className="block text-xs font-medium text-fg-secondary mb-1.5">
-              App Secret <span className="text-red-500">*</span>
-            </label>
-            <div className="relative">
-              <input
-                type={showAppSecret ? 'text' : 'password'}
-                value={config.appSecret}
-                onChange={e => updateField('appSecret', e.target.value)}
-                onBlur={() => { if (config.appId && config.appSecret) { if (saveTimer.current) clearTimeout(saveTimer.current); doSave(configRef.current); } }}
-                placeholder="Enter your Feishu app secret"
-                className="w-full px-3 py-2 pr-10 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
-              />
-              <button
-                type="button"
-                onClick={() => setShowAppSecret(!showAppSecret)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-fg-tertiary hover:text-fg-secondary transition-colors"
-              >
-                {showAppSecret ? (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" /></svg>
-                ) : (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      </Section>
-
-      {/* Actions */}
-      <Section title={t('settings:feishu.actions', { defaultValue: 'Actions' })}>
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            onClick={handleTest}
-            disabled={testing || !config.appId || !config.appSecret}
-            className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-surface-primary border border-border-default rounded-lg text-fg-primary hover:bg-surface-overlay disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {testing ? (
-              <div className="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+                <div className="border-t border-border-default pt-4">
+                  <p className="text-[11px] text-fg-tertiary text-center">
+                    {t('settings:feishu.oneClickPermissions', { defaultValue: 'The app will be created with permissions: bot messaging, message receiving, user info reading, and group chat management.' })}
+                  </p>
+                </div>
+              </>
             ) : (
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              /* QR Code Display */
+              <div className="text-center space-y-4">
+                {registerState === 'waiting_qr' && !qrUrl && (
+                  <div className="flex flex-col items-center gap-3 py-6">
+                    <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                    <p className="text-sm text-fg-secondary">
+                      {t('settings:feishu.generatingQR', { defaultValue: 'Generating QR code...' })}
+                    </p>
+                  </div>
+                )}
+
+                {qrUrl && (
+                  <>
+                    <div className="inline-block p-4 bg-white rounded-xl shadow-sm border border-gray-200">
+                      {qrDataUrl ? (
+                        <img src={qrDataUrl} alt="Feishu QR Code" className="w-48 h-48" />
+                      ) : (
+                        <div className="w-48 h-48 flex items-center justify-center">
+                          <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium text-fg-primary">
+                        {t('settings:feishu.scanWithFeishu', { defaultValue: 'Scan with Feishu app' })}
+                      </p>
+                      <p className="text-xs text-fg-tertiary">
+                        {t('settings:feishu.scanHint', { defaultValue: 'Use your Feishu mobile app to scan and authorize. The app will be created in your organization.' })}
+                      </p>
+                      {qrExpireIn > 0 && (
+                        <p className="text-[11px] text-fg-tertiary">
+                          {t('settings:feishu.qrExpire', { defaultValue: `QR code expires in ${Math.floor(qrExpireIn / 60)} minutes`, minutes: Math.floor(qrExpireIn / 60) })}
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      onClick={cancelRegister}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 text-xs text-fg-tertiary hover:text-fg-secondary border border-border-default rounded-lg hover:bg-surface-overlay transition-colors"
+                    >
+                      {t('common:cancel', { defaultValue: 'Cancel' })}
+                    </button>
+                  </>
+                )}
+              </div>
             )}
-            {t('settings:feishu.testConnection', { defaultValue: 'Test Connection' })}
-          </button>
+          </div>
 
-          {config.connected && config.enabled && (
+          {/* Manual Configuration Fallback */}
+          <div className="mt-4">
             <button
-              onClick={handleDisconnect}
-              disabled={saving}
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              onClick={() => setShowManualConfig(!showManualConfig)}
+              className="inline-flex items-center gap-1.5 text-xs text-fg-tertiary hover:text-fg-secondary transition-colors"
             >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29" /></svg>
-              {t('settings:feishu.disconnect', { defaultValue: 'Disconnect' })}
+              <svg className={`w-3 h-3 transition-transform ${showManualConfig ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+              {t('settings:feishu.manualConfig', { defaultValue: 'Manual configuration (advanced)' })}
             </button>
-          )}
-        </div>
 
-        {/* Send Test Message */}
-        {config.connected && config.enabled && (
-          <div className="mt-4 p-4 bg-surface-secondary border border-border-default rounded-xl space-y-3">
-            <label className="block text-xs font-medium text-fg-secondary">
-              {t('settings:feishu.sendTestMessage', { defaultValue: 'Send Test Message' })}
-            </label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={testChatId}
-                onChange={e => setTestChatId(e.target.value)}
-                placeholder={t('settings:feishu.chatIdPlaceholder', { defaultValue: 'Enter Chat ID (oc_xxxxxxxx)' })}
-                className="flex-1 px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
-              />
+            {showManualConfig && (
+              <div className="mt-3 bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-fg-secondary mb-1.5">
+                    App ID <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={config.appId}
+                    onChange={e => updateField('appId', e.target.value)}
+                    onBlur={() => { if (config.appId && config.appSecret) { if (saveTimer.current) clearTimeout(saveTimer.current); doSave(configRef.current); } }}
+                    placeholder="cli_xxxxxxxxxxxxxx"
+                    className="w-full px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-fg-secondary mb-1.5">
+                    App Secret <span className="text-red-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showAppSecret ? 'text' : 'password'}
+                      value={config.appSecret}
+                      onChange={e => updateField('appSecret', e.target.value)}
+                      onBlur={() => { if (config.appId && config.appSecret) { if (saveTimer.current) clearTimeout(saveTimer.current); doSave(configRef.current); } }}
+                      placeholder="Enter your Feishu app secret"
+                      className="w-full px-3 py-2 pr-10 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowAppSecret(!showAppSecret)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-fg-tertiary hover:text-fg-secondary transition-colors"
+                    >
+                      {showAppSecret ? (
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" /></svg>
+                      ) : (
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </Section>
+      ) : (
+        /* Already Configured — show app info and actions */
+        <>
+          <Section title={t('settings:feishu.appInfo', { defaultValue: 'App Information' })}>
+            <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-medium text-fg-secondary">App ID:</span>
+                    <code className="text-xs font-mono text-fg-primary bg-surface-primary px-2 py-0.5 rounded">{config.appId}</code>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-medium text-fg-secondary">App Secret:</span>
+                    <code className="text-xs font-mono text-fg-primary bg-surface-primary px-2 py-0.5 rounded">
+                      {'•'.repeat(Math.min(config.appSecret.length, 20))}
+                    </code>
+                  </div>
+                </div>
+                <button
+                  onClick={handleDisconnect}
+                  disabled={saving}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                  {t('settings:feishu.removeApp', { defaultValue: 'Remove' })}
+                </button>
+              </div>
+            </div>
+          </Section>
+
+          {/* Enable / Disable Toggle */}
+          <Section title={t('settings:feishu.integrationState', { defaultValue: 'Integration State' })}>
+            <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium text-fg-primary">
+                    {t('settings:feishu.enableIntegration', { defaultValue: 'Enable Feishu Integration' })}
+                  </div>
+                  <div className="text-xs text-fg-tertiary mt-0.5">
+                    {t('settings:feishu.enableHint', { defaultValue: 'When enabled, Markus will establish a long connection to Feishu and start processing events' })}
+                  </div>
+                </div>
+                <button
+                  onClick={() => updateFieldImmediate('enabled', !config.enabled)}
+                  className={`relative w-12 h-6 rounded-full transition-colors duration-200 ${
+                    config.enabled ? 'bg-brand-600' : 'bg-gray-300 dark:bg-gray-600'
+                  } cursor-pointer`}
+                >
+                  <span className={`block w-5 h-5 bg-white rounded-full shadow transform transition-transform duration-200 ${
+                    config.enabled ? 'translate-x-6' : 'translate-x-0.5'
+                  }`} />
+                </button>
+              </div>
+            </div>
+          </Section>
+
+          {/* Actions */}
+          <Section title={t('settings:feishu.actions', { defaultValue: 'Actions' })}>
+            <div className="flex flex-wrap items-center gap-3">
               <button
-                onClick={handleSendTestMessage}
-                disabled={sendingMsg || !testChatId.trim()}
-                className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-surface-primary border border-border-default rounded-lg text-fg-primary hover:bg-surface-overlay disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                onClick={handleTest}
+                disabled={testing}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-surface-primary border border-border-default rounded-lg text-fg-primary hover:bg-surface-overlay disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                {sendingMsg ? (
+                {testing ? (
                   <div className="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
                 ) : (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                 )}
-                {t('settings:feishu.send', { defaultValue: 'Send' })}
+                {t('settings:feishu.testConnection', { defaultValue: 'Test Connection' })}
               </button>
             </div>
-            <p className="text-[11px] text-fg-tertiary">
-              {t('settings:feishu.chatIdHint', { defaultValue: 'Chat ID can be found in the Feishu group chat URL or via the API' })}
-            </p>
-          </div>
-        )}
 
-        {msg && <Msg type={msg.type} text={msg.text} />}
-      </Section>
-
-      {/* Enable / Disable Toggle */}
-      <Section title={t('settings:feishu.integrationState', { defaultValue: 'Integration State' })}>
-        <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm font-medium text-fg-primary">
-                {t('settings:feishu.enableIntegration', { defaultValue: 'Enable Feishu Integration' })}
+            {/* Send Test Message */}
+            {config.connected && config.enabled && (
+              <div className="mt-4 p-4 bg-surface-secondary border border-border-default rounded-xl space-y-3">
+                <label className="block text-xs font-medium text-fg-secondary">
+                  {t('settings:feishu.sendTestMessage', { defaultValue: 'Send Test Message' })}
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={testChatId}
+                    onChange={e => setTestChatId(e.target.value)}
+                    placeholder={t('settings:feishu.chatIdPlaceholder', { defaultValue: 'Enter Chat ID (oc_xxxxxxxx)' })}
+                    className="flex-1 px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
+                  />
+                  <button
+                    onClick={handleSendTestMessage}
+                    disabled={sendingMsg || !testChatId.trim()}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-surface-primary border border-border-default rounded-lg text-fg-primary hover:bg-surface-overlay disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                  >
+                    {sendingMsg ? (
+                      <div className="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+                    ) : (
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
+                    )}
+                    {t('settings:feishu.send', { defaultValue: 'Send' })}
+                  </button>
+                </div>
+                <p className="text-[11px] text-fg-tertiary">
+                  {t('settings:feishu.chatIdHint', { defaultValue: 'Chat ID can be found in the Feishu group chat URL or via the API' })}
+                </p>
               </div>
-              <div className="text-xs text-fg-tertiary mt-0.5">
-                {t('settings:feishu.enableHint', { defaultValue: 'When enabled, Markus will establish a long connection to Feishu and start processing events' })}
-              </div>
-            </div>
-            <button
-              onClick={() => updateFieldImmediate('enabled', !config.enabled)}
-              disabled={!config.appId || !config.appSecret}
-              className={`relative w-12 h-6 rounded-full transition-colors duration-200 ${
-                config.enabled ? 'bg-brand-600' : 'bg-gray-300 dark:bg-gray-600'
-              } ${(!config.appId || !config.appSecret) ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-            >
-              <span className={`block w-5 h-5 bg-white rounded-full shadow transform transition-transform duration-200 ${
-                config.enabled ? 'translate-x-6' : 'translate-x-0.5'
-              }`} />
-            </button>
-          </div>
-        </div>
-      </Section>
+            )}
 
-      {/* Notification Forwarding Settings */}
-      <Section title={t('settings:feishu.notificationForwarding', { defaultValue: 'Notification Forwarding' })}>
-        <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-5">
-          {/* Target Chat ID */}
-          <div>
-            <label className="block text-xs font-medium text-fg-secondary mb-1.5">
-              {t('settings:feishu.notifyChatId', { defaultValue: 'Notification Target Chat ID' })}
-            </label>
-            <input
-              type="text"
-              value={config.notifyChatId}
-              onChange={e => updateField('notifyChatId', e.target.value)}
-              onBlur={() => { if (config.appId && config.appSecret) { if (saveTimer.current) clearTimeout(saveTimer.current); doSave(configRef.current); } }}
-              placeholder="oc_xxxxxxxxxxxxxxxx"
-              className="w-full px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
-            />
-            <p className="text-[11px] text-fg-tertiary mt-1">
-              {t('settings:feishu.notifyChatIdHint', { defaultValue: 'The Feishu group chat ID to receive notifications. Required for notification forwarding.' })}
-            </p>
-          </div>
+            {msg && <Msg type={msg.type} text={msg.text} />}
+          </Section>
 
-          <div className="space-y-3">
-            {/* Approval notifications */}
-            <div className="flex items-center justify-between">
+          {/* Notification Forwarding Settings */}
+          <Section title={t('settings:feishu.notificationForwarding', { defaultValue: 'Notification Forwarding' })}>
+            <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-5">
+              {/* Target Chat ID */}
               <div>
-                <div className="text-sm text-fg-primary">{t('settings:feishu.forwardApprovals', { defaultValue: 'Forward Approval Requests' })}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('settings:feishu.forwardApprovalsHint', { defaultValue: 'Send approval requests to Feishu as interactive cards' })}</div>
+                <label className="block text-xs font-medium text-fg-secondary mb-1.5">
+                  {t('settings:feishu.notifyChatId', { defaultValue: 'Notification Target Chat ID' })}
+                </label>
+                <input
+                  type="text"
+                  value={config.notifyChatId}
+                  onChange={e => updateField('notifyChatId', e.target.value)}
+                  onBlur={() => { if (config.appId && config.appSecret) { if (saveTimer.current) clearTimeout(saveTimer.current); doSave(configRef.current); } }}
+                  placeholder="oc_xxxxxxxxxxxxxxxx"
+                  className="w-full px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
+                />
+                <p className="text-[11px] text-fg-tertiary mt-1">
+                  {t('settings:feishu.notifyChatIdHint', { defaultValue: 'The Feishu group chat ID to receive notifications. Required for notification forwarding.' })}
+                </p>
               </div>
-              <button
-                onClick={() => updateFieldImmediate('notifyOnApproval', !config.notifyOnApproval)}
-                className={`relative w-10 h-5 rounded-full transition-colors duration-200 ${
-                  config.notifyOnApproval ? 'bg-brand-600' : 'bg-gray-300 dark:bg-gray-600'
-                } cursor-pointer`}
-              >
-                <span className={`block w-4 h-4 bg-white rounded-full shadow transform transition-transform duration-200 ${
-                  config.notifyOnApproval ? 'translate-x-5' : 'translate-x-0.5'
-                }`} />
-              </button>
-            </div>
 
-            {/* General notifications */}
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm text-fg-primary">{t('settings:feishu.forwardNotifications', { defaultValue: 'Forward General Notifications' })}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('settings:feishu.forwardNotificationsHint', { defaultValue: 'Send system notifications to Feishu chat' })}</div>
+              <div className="space-y-3">
+                {/* Approval notifications */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm text-fg-primary">{t('settings:feishu.forwardApprovals', { defaultValue: 'Forward Approval Requests' })}</div>
+                    <div className="text-xs text-fg-tertiary mt-0.5">{t('settings:feishu.forwardApprovalsHint', { defaultValue: 'Send approval requests to Feishu as interactive cards' })}</div>
+                  </div>
+                  <button
+                    onClick={() => updateFieldImmediate('notifyOnApproval', !config.notifyOnApproval)}
+                    className={`relative w-10 h-5 rounded-full transition-colors duration-200 ${
+                      config.notifyOnApproval ? 'bg-brand-600' : 'bg-gray-300 dark:bg-gray-600'
+                    } cursor-pointer`}
+                  >
+                    <span className={`block w-4 h-4 bg-white rounded-full shadow transform transition-transform duration-200 ${
+                      config.notifyOnApproval ? 'translate-x-5' : 'translate-x-0.5'
+                    }`} />
+                  </button>
+                </div>
+
+                {/* General notifications */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm text-fg-primary">{t('settings:feishu.forwardNotifications', { defaultValue: 'Forward General Notifications' })}</div>
+                    <div className="text-xs text-fg-tertiary mt-0.5">{t('settings:feishu.forwardNotificationsHint', { defaultValue: 'Send system notifications to Feishu chat' })}</div>
+                  </div>
+                  <button
+                    onClick={() => updateFieldImmediate('notifyOnNotification', !config.notifyOnNotification)}
+                    className={`relative w-10 h-5 rounded-full transition-colors duration-200 ${
+                      config.notifyOnNotification ? 'bg-brand-600' : 'bg-gray-300 dark:bg-gray-600'
+                    } cursor-pointer`}
+                  >
+                    <span className={`block w-4 h-4 bg-white rounded-full shadow transform transition-transform duration-200 ${
+                      config.notifyOnNotification ? 'translate-x-5' : 'translate-x-0.5'
+                    }`} />
+                  </button>
+                </div>
               </div>
-              <button
-                onClick={() => updateFieldImmediate('notifyOnNotification', !config.notifyOnNotification)}
-                className={`relative w-10 h-5 rounded-full transition-colors duration-200 ${
-                  config.notifyOnNotification ? 'bg-brand-600' : 'bg-gray-300 dark:bg-gray-600'
-                } cursor-pointer`}
-              >
-                <span className={`block w-4 h-4 bg-white rounded-full shadow transform transition-transform duration-200 ${
-                  config.notifyOnNotification ? 'translate-x-5' : 'translate-x-0.5'
-                }`} />
-              </button>
-            </div>
-          </div>
 
-          {/* Priority filter */}
-          {(config.notifyOnApproval || config.notifyOnNotification) && (
-            <div>
-              <label className="block text-xs font-medium text-fg-secondary mb-2">
-                {t('settings:feishu.notifyPriority', { defaultValue: 'Minimum Notification Priority' })}
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {PRIORITY_OPTIONS.map(({ value, color }) => {
-                  const selected = config.notifyPriority.includes(value);
-                  return (
-                    <button
-                      key={value}
-                      onClick={() => togglePriority(value)}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors ${
-                        selected
-                          ? 'bg-brand-500/10 border-brand-500/30 text-brand-600'
-                          : 'bg-surface-primary border-border-default text-fg-tertiary hover:border-fg-tertiary'
-                      }`}
-                    >
-                      <span className={`w-1.5 h-1.5 rounded-full ${color}`} />
-                      {value.charAt(0).toUpperCase() + value.slice(1)}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="text-[11px] text-fg-tertiary mt-1.5">
-                {t('settings:feishu.priorityHint', { defaultValue: 'Only notifications with the selected priority levels will be forwarded' })}
-              </p>
+              {/* Priority filter */}
+              {(config.notifyOnApproval || config.notifyOnNotification) && (
+                <div>
+                  <label className="block text-xs font-medium text-fg-secondary mb-2">
+                    {t('settings:feishu.notifyPriority', { defaultValue: 'Minimum Notification Priority' })}
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {PRIORITY_OPTIONS.map(({ value, color }) => {
+                      const selected = config.notifyPriority.includes(value);
+                      return (
+                        <button
+                          key={value}
+                          onClick={() => togglePriority(value)}
+                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors ${
+                            selected
+                              ? 'bg-brand-500/10 border-brand-500/30 text-brand-600'
+                              : 'bg-surface-primary border-border-default text-fg-tertiary hover:border-fg-tertiary'
+                          }`}
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full ${color}`} />
+                          {value.charAt(0).toUpperCase() + value.slice(1)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[11px] text-fg-tertiary mt-1.5">
+                    {t('settings:feishu.priorityHint', { defaultValue: 'Only notifications with the selected priority levels will be forwarded' })}
+                  </p>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </Section>
+          </Section>
+        </>
+      )}
 
-      {/* Setup Guide */}
-      <Section title={t('settings:feishu.setupGuide', { defaultValue: 'Setup Guide' })}>
-        <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
-          <p className="text-xs text-fg-tertiary">
-            {t('settings:feishu.setupGuideDesc', { defaultValue: 'Follow these steps to set up the Feishu integration:' })}
-          </p>
-          <ol className="text-xs text-fg-secondary space-y-2.5 list-none pl-0">
-            {[
-              { key: 'guideStep1', icon: '1️⃣', defaultValue: 'Go to Feishu Open Platform (open.feishu.cn) and create an enterprise self-built app' },
-              { key: 'guideStep2', icon: '2️⃣', defaultValue: 'Go to App → Features → Bot, enable bot capability' },
-              { key: 'guideStep3', icon: '3️⃣', defaultValue: 'Go to App → Permissions, enable im:message and im:message.receive_v1' },
-              { key: 'guideStep4', icon: '4️⃣', defaultValue: 'Go to App → Events & Callbacks → Subscription mode, select "Use long connection"' },
-              { key: 'guideStep5', icon: '5️⃣', defaultValue: 'On the Events & Callbacks page, subscribe to "Receive messages v2.0" (im.message.receive_v1)' },
-              { key: 'guideStep6', icon: '6️⃣', defaultValue: 'Go to App → Credentials, copy App ID and App Secret into the fields above' },
-              { key: 'guideStep7', icon: '7️⃣', defaultValue: 'Click "Test Connection" to verify credentials, then enable the integration' },
-              { key: 'guideStep8', icon: '8️⃣', defaultValue: 'Add the bot to a group chat (or send a direct message to the bot)' },
-            ].map(({ key, icon, defaultValue }) => (
-              <li key={key} className="flex gap-2 items-start">
-                <span className="shrink-0 text-sm leading-4">{icon}</span>
-                <span className="leading-4">{t(`settings:feishu.${key}`, { defaultValue })}</span>
-              </li>
-            ))}
-          </ol>
-          <div className="mt-3 px-3 py-2 rounded-lg bg-amber-500/5 border border-amber-500/20">
-            <p className="text-[11px] text-amber-700 dark:text-amber-400">
-              {t('settings:feishu.longConnectionNote', { defaultValue: 'Long connection mode requires an enterprise self-built app. Store apps are not supported. No public IP or domain is needed.' })}
-            </p>
-          </div>
-        </div>
-      </Section>
+      {msg && !isConfigured && <Msg type={msg.type} text={msg.text} />}
     </div>
   );
 }

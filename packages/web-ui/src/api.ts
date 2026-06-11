@@ -1413,6 +1413,10 @@ export const api = {
     sendFeishuTestMessage: (data: { chatId: string }) =>
       request<{ success: boolean; message?: string }>('/settings/integrations/feishu/test-message', { method: 'POST', body: JSON.stringify(data) }),
     deleteFeishuIntegration: () => request<{ ok: boolean }>('/settings/integrations/feishu', { method: 'DELETE' }),
+    registerFeishuApp: () =>
+      request<{ success: boolean; appId?: string; connected?: boolean; userInfo?: { open_id?: string; tenant_brand?: string }; error?: string; message?: string }>('/settings/integrations/feishu/register', { method: 'POST' }),
+    getFeishuRegisterStatus: () =>
+      request<{ active: boolean; url?: string; expireIn?: number; status?: string; elapsed?: number }>('/settings/integrations/feishu/register/status'),
   },
   modelCatalog: {
     getByProvider: (provider: string) => request<{ provider: string; models: CatalogModel[] }>(`/models/catalog/${provider}`),

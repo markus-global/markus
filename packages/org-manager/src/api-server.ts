@@ -212,6 +212,7 @@ export class APIServer {
   private remoteAgent?: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void };
   private remoteAgentFactory?: () => Promise<{ getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void } | null>;
   private modelCatalog?: ModelCatalogService;
+  private feishuRegisterSessions = new Map<string, { url: string; expireIn: number; status: string; createdAt: number }>();
   /** Aggregate today's tool calls from all agents' persisted metrics (the single source of truth) */
   private getToolCallsTodayFromAgents(): number {
     try {
@@ -9224,6 +9225,168 @@ EXPLANATION_END`;
       } catch (e) {
         log.error('Feishu test message failed', { error: String(e) });
         this.json(res, 200, { success: false, message: `Send failed: ${String(e)}` });
+      }
+      return;
+    }
+
+    if (path === '/api/settings/integrations/feishu/register' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      try {
+        const Lark = await import('@larksuiteoapi/node-sdk');
+        const controller = new AbortController();
+
+        // Timeout after 10 minutes
+        const timeout = setTimeout(() => controller.abort(), 600_000);
+
+        const result = await Lark.registerApp({
+          source: 'markus',
+          signal: controller.signal,
+          appPreset: {
+            name: 'Markus 秘书',
+            desc: 'Markus 智能秘书 — 消息互动、通知转发、审批处理',
+          },
+          onQRCodeReady: (info) => {
+            // Store QR info for polling — use a simple in-memory store keyed by orgId
+            this.feishuRegisterSessions.set(auth.orgId, {
+              url: info.url,
+              expireIn: info.expireIn,
+              status: 'pending',
+              createdAt: Date.now(),
+            });
+          },
+          onStatusChange: (info) => {
+            const session = this.feishuRegisterSessions.get(auth.orgId);
+            if (session) session.status = info.status;
+          },
+        });
+
+        clearTimeout(timeout);
+        this.feishuRegisterSessions.delete(auth.orgId);
+
+        // Auto-save the credentials
+        const appId = result.client_id;
+        const appSecret = result.client_secret;
+        const payload: Record<string, unknown> = {
+          id: 'feishu_default',
+          orgId: auth.orgId,
+          platform: 'feishu',
+          displayName: '飞书',
+          enabled: true,
+          config: {
+            appId,
+            appSecret,
+            connectionMode: 'long_connection',
+            notifyOnApproval: true,
+            notifyOnNotification: true,
+            notifyPriority: ['normal', 'high', 'urgent'],
+          },
+          forwardRules: [],
+          lastVerifiedAt: new Date().toISOString(),
+          lastError: null,
+        };
+        const repo = this.storage?.integrationRepo;
+        if (repo) {
+          const existing = findFeishuConfig(auth.orgId);
+          if (existing) {
+            await repo.update(existing['id'] as string, payload);
+          } else {
+            await repo.create(payload);
+          }
+        }
+
+        // Start the long connection
+        this.updateFeishuConfig({
+          appId,
+          appSecret,
+          notifyOnApproval: true,
+          notifyOnNotification: true,
+          notifyPriority: ['normal', 'high', 'urgent'],
+          forwardRules: [],
+        });
+
+        log.info('Feishu app registered via QR scan', { orgId: auth.orgId, appId });
+
+        // Send welcome message and pending status to the user who scanned
+        const openId = result.user_info?.open_id;
+        if (openId) {
+          try {
+            const { FeishuApiClient } = await import('./feishu-api-client.js');
+            const welcomeClient = new FeishuApiClient({ appId, appSecret });
+
+            // Gather pending status
+            let statusLines = '';
+            const pendingApprovals = this.hitlService?.listApprovals('pending') ?? [];
+            const notifCounts = this.hitlService?.countNotifications(auth.userId, true) ?? { total: 0, unread: 0 };
+
+            if (pendingApprovals.length > 0 || notifCounts.unread > 0) {
+              statusLines += '\n\n---\n📊 **当前待处理事项：**\n';
+              if (pendingApprovals.length > 0) {
+                statusLines += `\n🔔 **${pendingApprovals.length} 个待审批请求**\n`;
+                for (const a of pendingApprovals.slice(0, 5)) {
+                  statusLines += `• ${a.title}（来自 ${a.agentName}）\n`;
+                }
+                if (pendingApprovals.length > 5) {
+                  statusLines += `• ...还有 ${pendingApprovals.length - 5} 项\n`;
+                }
+              }
+              if (notifCounts.unread > 0) {
+                statusLines += `\n📬 **${notifCounts.unread} 条未读通知**\n`;
+              }
+              statusLines += '\n直接回复消息即可处理，例如输入「审批」查看详情。';
+            }
+
+            const card = {
+              config: { wide_screen_mode: true },
+              header: { title: { tag: 'plain_text', content: '🎉 Markus 秘书已上线' }, template: 'green' },
+              elements: [
+                { tag: 'markdown', content: `**Markus 秘书** 已成功接入你的飞书！\n\n你现在可以：\n- 💬 直接发消息给我，我来帮你处理\n- 📋 接收系统通知和审批请求\n- ✅ 直接在对话中审批或驳回\n- 🤖 与 AI 团队实时互动${statusLines}` },
+                { tag: 'hr' },
+                { tag: 'note', elements: [{ tag: 'plain_text', content: 'Powered by Markus — Your AI Team OS' }] },
+              ],
+            };
+            await welcomeClient.sendCardToUser(openId, card);
+            log.info('Welcome message sent to user', { openId });
+          } catch (welcomeErr) {
+            log.warn('Failed to send welcome message', { error: String(welcomeErr) });
+          }
+        }
+
+        this.json(res, 200, {
+          success: true,
+          appId,
+          connected: !!(this.feishuNotifier?.connected),
+          userInfo: result.user_info,
+        });
+      } catch (e: unknown) {
+        this.feishuRegisterSessions.delete(auth.orgId);
+        const err = e as { code?: string; description?: string; message?: string };
+        if (err.code === 'access_denied') {
+          this.json(res, 200, { success: false, error: 'user_denied', message: '用户拒绝了授权' });
+        } else if (err.code === 'expired_token' || err.code === 'abort') {
+          this.json(res, 200, { success: false, error: 'expired', message: '二维码已过期或超时' });
+        } else {
+          log.error('Feishu register app failed', { error: String(e) });
+          this.json(res, 200, { success: false, error: 'unknown', message: String(err.message || err.description || e) });
+        }
+      }
+      return;
+    }
+
+    if (path === '/api/settings/integrations/feishu/register/status' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const session = this.feishuRegisterSessions.get(auth.orgId);
+      if (!session) {
+        this.json(res, 200, { active: false });
+      } else {
+        this.json(res, 200, {
+          active: true,
+          url: session.url,
+          expireIn: session.expireIn,
+          status: session.status,
+          elapsed: Math.floor((Date.now() - session.createdAt) / 1000),
+        });
       }
       return;
     }

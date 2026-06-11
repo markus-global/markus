@@ -85,6 +85,40 @@ export class FeishuApiClient {
     }
   }
 
+  /** Send a text message to a user by open_id (direct/P2P message). */
+  async sendTextToUser(openId: string, text: string): Promise<void> {
+    try {
+      await this.client.im.v1.message.create({
+        params: { receive_id_type: 'open_id' },
+        data: {
+          receive_id: openId,
+          msg_type: 'text',
+          content: JSON.stringify({ text }),
+        },
+      });
+    } catch (err) {
+      log.error('Feishu sendTextToUser failed', { openId, error: String(err) });
+      throw err;
+    }
+  }
+
+  /** Send an interactive card to a user by open_id (direct/P2P message). */
+  async sendCardToUser(openId: string, card: Record<string, unknown>): Promise<void> {
+    try {
+      await this.client.im.v1.message.create({
+        params: { receive_id_type: 'open_id' },
+        data: {
+          receive_id: openId,
+          msg_type: 'interactive',
+          content: JSON.stringify(card),
+        },
+      });
+    } catch (err) {
+      log.error('Feishu sendCardToUser failed', { openId, error: String(err) });
+      throw err;
+    }
+  }
+
   /** Send an interactive card to a Feishu chat by chat_id. */
   async sendCard(chatId: string, card: Record<string, unknown>): Promise<void> {
     try {
