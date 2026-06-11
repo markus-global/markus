@@ -58,7 +58,7 @@ This JSON contains ONLY metadata — **no file content**.
   "displayName": "Skill Name",
   "version": "1.0.0",
   "description": "When and why an agent should use this skill",
-  "author": "",
+  "author": "Your Name",
   "category": "custom",
   "tags": ["tag1", "tag2"],
   "skill": {
@@ -75,7 +75,7 @@ This JSON contains ONLY metadata — **no file content**.
   "displayName": "My API Connector",
   "version": "1.0.0",
   "description": "Connect to My API for data retrieval and actions",
-  "author": "",
+  "author": "Your Name",
   "category": "custom",
   "tags": ["api", "connector"],
   "skill": {
@@ -172,3 +172,4 @@ Once all files are written, tell the user:
 - **DO NOT** write artifacts to `~/.markus/shared/` or your working directory. Always use `~/.markus/builder-artifacts/skills/{name}/`.
 - **The `name` field MUST be English kebab-case** (e.g., `git-changelog`, not `网页抓取器`). This is the directory name and package identifier.
 - The `name` field and `SKILL.md` frontmatter `name` must match exactly.
+- **All top-level fields must be the correct type**: `author` must be a plain string (your name, e.g. `"John"`) — NOT an object. `tags` must be an array of strings. `version` must be semver string. `description` must be a string. The system validates the manifest on write and will reject malformed files.

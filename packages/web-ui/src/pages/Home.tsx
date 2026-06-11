@@ -322,8 +322,8 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
             icon={<MetricIcon type="tasks" />} badge={urgentHighActive > 0 ? `${urgentHighActive} urgent/high` : undefined} onClick={() => navBus.navigate(PAGE.WORK)} />
           <MetricCard label={t('metricCards.projects')} value={String(activeProjects)}
             icon={<MetricIcon type="projects" />} onClick={() => navBus.navigate(PAGE.WORK)} />
-          <MetricCard label={t('metricCards.health')} value={`${ops?.systemHealth.overallScore ?? '—'}`} sub={ops ? '%' : undefined}
-            icon={<MetricIcon type="health" />} color={!ops ? undefined : ops.systemHealth.overallScore >= 80 ? 'green' : ops.systemHealth.overallScore >= 50 ? 'amber' : 'red'}
+          <MetricCard label={t('metricCards.health')} value={`${llmConfigured === false ? 100 : ops?.systemHealth.overallScore ?? '—'}`} sub={llmConfigured === false || ops ? '%' : undefined}
+            icon={<MetricIcon type="health" />} color={llmConfigured === false ? 'green' : !ops ? undefined : ops.systemHealth.overallScore >= 80 ? 'green' : ops.systemHealth.overallScore >= 50 ? 'amber' : 'red'}
             onClick={() => setShowHealthModal(true)} />
         </div>
 
@@ -430,6 +430,14 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
         )}
 
         {/* ── Onboarding Checklist ── */}
+        {!checklistDismissed && !checklistReady && (
+          <div className="bg-gradient-to-br from-brand-600/10 via-surface-secondary to-surface-secondary border border-brand-500/20 rounded-2xl p-5 sm:p-6">
+            <div className="flex items-center justify-center py-10 gap-3 text-fg-tertiary">
+              <div className="w-5 h-5 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm">{t('common:loading')}</span>
+            </div>
+          </div>
+        )}
         {!checklistDismissed && checklistReady && (() => {
           const navigateToSecretary = (prompt: string) => {
             const secretary = agents.find(a => a.role === 'secretary') ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));

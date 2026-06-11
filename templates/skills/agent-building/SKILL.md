@@ -156,6 +156,7 @@ Once all files are written, tell the user:
 - **DO NOT** default skills to `[]` when relevant skills are available. Check the skills list!
 - **DO NOT** write artifacts to `~/.markus/shared/` or your working directory. Always use `~/.markus/builder-artifacts/agents/{name}/`.
 - **The `name` field MUST be English kebab-case**.
+- **All top-level fields must be the correct type**: `author` must be a plain string (e.g. `"John"`) — NOT an object. `tags` must be an array of strings. `version` must be semver string. `description` must be a string. The system validates the manifest on write and will reject malformed files.
 - The `ROLE.md` is what makes the agent unique — write at least 5 substantive paragraphs. A generic one-liner is useless.
 - Default `temperature` to 0.7 for general tasks, lower (0.3-0.5) for precision tasks, higher (0.8-1.0) for creative tasks.
 - After outputting the JSON, immediately proceed to write files via `file_write` — announce what you're writing.

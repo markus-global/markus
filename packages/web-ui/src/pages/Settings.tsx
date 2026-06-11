@@ -156,8 +156,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   // Track whether we already triggered auto-detect for first-run
   const autoDetectDone = useRef(false);
-  // Track if user dismissed the setup guide
-  const [setupDismissed, setSetupDismissed] = useState(false);
 
   // Agent settings
   const [agentMaxIter, setAgentMaxIter] = useState(200);
@@ -869,7 +867,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const enabledProviders = llm?.providers
     ? Object.entries(llm.providers).filter(([, v]) => v.configured && v.enabled).map(([k]) => k) : [];
 
-  const showSetupGuide = llm && !hasConfiguredProviders && !setupDismissed;
   const canManageOrgSettings = authUser?.role === 'owner' || authUser?.role === 'admin';
 
   const visibleTabs = SETTINGS_TABS.filter(tab => !tab.adminOnly || canManageOrgSettings);
@@ -1043,181 +1040,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {canManageOrgSettings && (
         <>
-        {/* ───── First-Run Setup Guide (shown in providers tab) ───── */}
         {resolvedTab === 'providers' && <>
-        {showSetupGuide && (
-          <div className="relative bg-gradient-to-br from-brand-500/10 to-surface-secondary border border-brand-500/20 rounded-2xl p-6 space-y-5">
-            <button onClick={() => setSetupDismissed(true)}
-              className="absolute top-4 right-4 text-fg-tertiary hover:text-fg-secondary text-xs">{t('setupGuide.skip')}</button>
-            <div>
-              <h3 className="text-base font-semibold text-fg-primary">{t('setupGuide.title')}</h3>
-              <p className="text-sm text-fg-secondary mt-1">{t('setupGuide.subtitle')}</p>
-            </div>
-
-            {/* Option 1: Environment variables (auto-detected) */}
-            <SetupCard
-              step={t('setupGuide.fromEnv.step')}
-              title={t('setupGuide.fromEnv.title')}
-              description={t('setupGuide.fromEnv.description')}
-              active={!!(envModels && envModels.detected.length > 0)}
-            >
-              {envLoading && <div className="text-xs text-fg-tertiary">{t('common:detecting')}</div>}
-              {envModels && envModels.detected.length > 0 && (
-                <div className="space-y-2">
-                  {envModels.detected.map(d => (
-                    <label key={d.provider} className="flex items-center gap-3 bg-surface-elevated/30 rounded-lg px-3 py-2 cursor-pointer hover:bg-surface-elevated/50 transition-colors">
-                      <input type="checkbox" checked={envSelected[d.provider] ?? false}
-                        onChange={e => setEnvSelected({ ...envSelected, [d.provider]: e.target.checked })}
-                        className="w-4 h-4 rounded bg-surface-overlay border-gray-600 text-brand-500 focus:ring-brand-500" />
-                      <div className="flex-1 min-w-0">
-                        <span className="text-sm text-fg-primary">{d.displayName}</span>
-                        <span className="text-xs text-fg-tertiary ml-2">{d.model}</span>
-                      </div>
-                      <code className="text-[10px] text-fg-tertiary">{d.apiKeyPreview}</code>
-                    </label>
-                  ))}
-                  <button onClick={() => void applyEnvModels()} disabled={envApplying || Object.values(envSelected).filter(Boolean).length === 0}
-                    className="w-full px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                    {envApplying ? t('common:applying') : t('setupGuide.applyProviders', { count: Object.values(envSelected).filter(Boolean).length })}
-                  </button>
-                </div>
-              )}
-              {envModels && envModels.detected.length === 0 && (
-                <div className="text-xs text-fg-tertiary">
-                  <Trans i18nKey="settings:setupGuide.fromEnv.noKeysHint" components={{ code: <code className="text-fg-secondary" /> }} />
-                </div>
-              )}
-              {envMsg && <Msg type={envMsg.type} text={envMsg.text} />}
-            </SetupCard>
-
-            {/* Option 2: Local Ollama */}
-            <SetupCard
-              step={t('setupGuide.fromOllama.step')}
-              title={t('setupGuide.fromOllama.title')}
-              description={t('setupGuide.fromOllama.description')}
-              active={!!(ollamaDetect?.found)}
-            >
-              {ollamaLoading && <div className="text-xs text-fg-tertiary">{t('common:detecting')}</div>}
-              {ollamaDetect?.found && ollamaDetect.models && ollamaDetect.models.length > 0 && (
-                <div className="space-y-2">
-                  <div className="text-xs text-green-600">{t('ollama.foundModels', { count: ollamaDetect.models.length, url: ollamaDetect.baseUrl })}</div>
-                  <select
-                    value={ollamaSelectedModel}
-                    onChange={e => setOllamaSelectedModel(e.target.value)}
-                    className="w-full px-3 py-2 bg-surface-overlay border border-border-default rounded-lg text-sm text-fg-primary focus:outline-none focus:ring-2 focus:ring-brand-500"
-                  >
-                    {ollamaDetect.models.map(m => (
-                      <option key={m.name} value={m.name}>
-                        {m.name}{m.parameterSize ? ` (${m.parameterSize})` : ''}{m.family ? ` — ${m.family}` : ''}
-                      </option>
-                    ))}
-                  </select>
-                  <button onClick={() => void applyOllama()} disabled={ollamaApplying || !ollamaSelectedModel}
-                    className="w-full px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                    {ollamaApplying ? t('common:applying') : t('ollama.useModel', { model: ollamaSelectedModel })}
-                  </button>
-                </div>
-              )}
-              {!ollamaLoading && !ollamaDetect && (
-                <button onClick={() => void detectOllama()} className="px-4 py-2 border border-border-default hover:bg-surface-elevated text-fg-secondary text-sm rounded-lg transition-colors">
-                  {t('ollama.detect')}
-                </button>
-              )}
-              {ollamaDetect && !ollamaDetect.found && (
-                <div className="text-xs text-fg-tertiary">{t('ollama.notRunning')}</div>
-              )}
-              {ollamaMsg && <Msg type={ollamaMsg.type} text={ollamaMsg.text} />}
-            </SetupCard>
-
-            {/* Option 3: OpenClaw */}
-            <SetupCard
-              step={t('setupGuide.fromOpenClaw.step')}
-              title={t('setupGuide.fromOpenClaw.title')}
-              description={t('setupGuide.fromOpenClaw.description')}
-            >
-              {!openclawPreview ? (
-                <button onClick={() => void detectOpenclaw()} disabled={openclawLoading}
-                  className="px-4 py-2 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-secondary text-sm rounded-lg transition-colors">
-                  {openclawLoading ? t('common:detecting') : t('openClaw.detectShort')}
-                </button>
-              ) : openclawPreview.found ? (
-                <div className="space-y-2">
-                  <div className="text-xs text-green-600">{t('setupGuide.foundPrefix')} <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code></div>
-                  {openclawPreview.summary.models && (
-                    <div className="text-xs text-fg-secondary">{t('openClaw.providersModels', { providers: openclawPreview.summary.models.providerCount, models: openclawPreview.summary.models.providers.reduce((s, p) => s + p.modelCount, 0) })}</div>
-                  )}
-                  <button onClick={() => void importOpenclaw()} disabled={openclawLoading}
-                    className="w-full px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                    {openclawLoading ? t('common:importing') : t('openClaw.importConfigs')}
-                  </button>
-                </div>
-              ) : (
-                <div className="text-xs text-fg-tertiary">{t('openClaw.notFound')}</div>
-              )}
-              {openclawMsg && <Msg type={openclawMsg.type} text={openclawMsg.text} />}
-            </SetupCard>
-
-            {/* Option 4: Manual hint */}
-            <SetupCard
-              step={t('setupGuide.manual.step')}
-              title={t('setupGuide.manual.title')}
-              description={<Trans i18nKey="settings:setupGuide.manual.description" components={{ code: <code className="text-fg-secondary" /> }} />}
-            />
-
-            {/* Option 5: Chrome Extension (only shown in Chrome) */}
-            {/Chrome\/\d/.test(navigator.userAgent) && !/Edg\//.test(navigator.userAgent) && (
-              <SetupCard
-                step={t('setupGuide.browserExtension.step')}
-                title={t('setupGuide.browserExtension.title')}
-                description={t('setupGuide.browserExtension.description')}
-                active={browserExtensionConnected}
-              >
-                {browserExtensionConnected ? (
-                  <div className="flex items-center gap-1.5 text-xs text-green-400">
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
-                    {t('setupGuide.browserExtension.alreadyConnected')}
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <button
-                        disabled={browserSaving}
-                        onClick={async () => {
-                          setBrowserSaving(true);
-                          try { await api.settings.downloadExtensionZip(); } catch { /* ignore */ }
-                          setBrowserSaving(false);
-                        }}
-                        className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-                        {t('setupGuide.browserExtension.downloadBtn')}
-                      </button>
-                      {navigator.platform.toUpperCase().includes('WIN') ? (
-                        <span className="px-3 py-1.5 text-xs text-fg-secondary inline-flex items-center gap-1.5">
-                          {t('setupGuide.browserExtension.openChromeBtn')}:
-                          <code className="px-1.5 py-0.5 bg-surface-elevated rounded text-fg-primary font-mono text-[11px] select-all">chrome://extensions</code>
-                        </span>
-                      ) : (
-                        <button
-                          disabled={browserSaving}
-                          onClick={async () => {
-                            try { await api.settings.openExtensionsPage(); } catch { /* ignore */ }
-                          }}
-                          className="px-3 py-1.5 text-xs border border-border-default text-fg-primary rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
-                        >
-                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
-                          {t('setupGuide.browserExtension.openChromeBtn')}
-                        </button>
-                      )}
-                    </div>
-                    <div className="text-xs text-fg-tertiary">{t('setupGuide.browserExtension.loadHint')}</div>
-                  </div>
-                )}
-              </SetupCard>
-            )}
-          </div>
-        )}
-
         {/* ───── System Status ───── */}
         <Section title={t('systemStatus.title')}>
           {health ? (
@@ -3078,26 +2901,6 @@ function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addM
 
 /* ─── Shared components ─── */
 
-function SetupCard({ step, title, description, active, children }: {
-  step: string;
-  title: string;
-  description: React.ReactNode;
-  active?: boolean;
-  children?: React.ReactNode;
-}) {
-  return (
-    <div className={`rounded-xl p-4 space-y-3 transition-colors ${active ? 'ring-1 ring-brand-500/60 bg-brand-500/10' : 'bg-surface-elevated'}`}>
-      <div className="flex items-start gap-3">
-        <span className="flex-none w-6 h-6 rounded-full bg-surface-overlay flex items-center justify-center text-xs font-bold text-fg-secondary">{step}</span>
-        <div className="min-w-0">
-          <div className="text-sm font-medium text-fg-primary">{title}</div>
-          <div className="text-xs text-fg-tertiary mt-0.5">{description}</div>
-        </div>
-      </div>
-      {children && <div className="pl-9">{children}</div>}
-    </div>
-  );
-}
 
 function Msg({ type, text }: { type: 'ok' | 'err'; text: string }) {
   return (
@@ -3657,27 +3460,26 @@ function OrgLicenseSection() {
   const loadOrgs = useCallback((showError = false) => {
     setOrgLoading(true);
     let loadFailed = false;
-    Promise.all([
-      api.hubOrgs.mine().catch((e) => { loadFailed = true; if (showError) setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : t('org.loadFailed') }); return { orgs: [] }; }),
-      api.hubOrgs.invitations().catch(() => ({ invitations: [] })),
-    ]).then(([o, inv]) => {
-      setOrgs(o.orgs);
-      setInvitations(inv.invitations);
-      if (o.orgs.length > 0) {
-        setSelectedOrgId(prev => {
-          if (prev && o.orgs.some((org: any) => org.id === prev)) return prev;
-          const withLicense = o.orgs.find((org: any) => org.license?.plan === 'enterprise');
-          return withLicense?.id ?? o.orgs[0].id;
-        });
-        setEditName(prev => {
-          if (prev) return prev;
-          const withLicense = o.orgs.find((org: any) => org.license?.plan === 'enterprise');
-          return withLicense?.name ?? o.orgs[0].name;
-        });
-      } else if (showError && !loadFailed) {
-        setOrgMsg({ type: 'err', text: t('org.noOrgAfterConnect') });
-      }
-    }).finally(() => setOrgLoading(false));
+    api.hubOrgs.mine().catch((e) => { loadFailed = true; if (showError) setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : t('org.loadFailed') }); return { orgs: [] as typeof orgs }; })
+      .then(o => {
+        setOrgs(o.orgs);
+        if (o.orgs.length > 0) {
+          setSelectedOrgId(prev => {
+            if (prev && o.orgs.some((org: any) => org.id === prev)) return prev;
+            const withLicense = o.orgs.find((org: any) => org.license?.plan === 'enterprise');
+            return withLicense?.id ?? o.orgs[0].id;
+          });
+          setEditName(prev => {
+            if (prev) return prev;
+            const withLicense = o.orgs.find((org: any) => org.license?.plan === 'enterprise');
+            return withLicense?.name ?? o.orgs[0].name;
+          });
+        } else if (showError && !loadFailed) {
+          setOrgMsg({ type: 'err', text: t('org.noOrgAfterConnect') });
+        }
+        // Fetch invitations after orgs (non-blocking)
+        api.hubOrgs.invitations().then(inv => setInvitations(inv.invitations)).catch(() => {});
+      }).finally(() => setOrgLoading(false));
   }, [setSelectedOrgId, t]);
 
   useEffect(() => {
@@ -3720,19 +3522,14 @@ function OrgLicenseSection() {
   useEffect(() => { refreshLicense(true); }, [refreshLicense]);
 
   // ── Derived license values ──
-  const orgsLoaded = orgs.length > 0;
-  const selectedOrgHasEnterprise = selectedOrg?.license?.plan === 'enterprise';
-  const isEnterprise = (selectedOrgId && orgsLoaded)
-    ? selectedOrgHasEnterprise
-    : licenseInfo?.plan === 'enterprise';
-  // Whether the local instance license data actually belongs to the selected org (for data source selection & badges)
-  const localLicenseMatchesOrg = !orgsLoaded || (isEnterprise && licenseInfo?.orgId != null && licenseInfo.orgId === selectedOrgId);
-  // Whether the current user can see license details & management (owner of selected org)
-  const canManageLicense = !orgsLoaded || isOwner;
+  // licenseInfo (from local instance) is the single source of truth for license state.
+  // Org data (from Hub) supplements with member count and org name only.
+  const isEnterprise = licenseInfo?.plan === 'enterprise';
+  const canManageLicense = orgs.length === 0 || isOwner;
 
-  const effectiveValidUntil = localLicenseMatchesOrg ? licenseInfo?.validUntil : selectedOrg?.license?.validUntil;
-  const effectiveMaxSeats = localLicenseMatchesOrg ? licenseInfo?.maxSeats : selectedOrg?.license?.maxSeats;
-  const effectiveUsedSeats = localLicenseMatchesOrg ? (licenseInfo?.usedSeats ?? 0) : (selectedOrg?.memberCount ?? 0);
+  const effectiveValidUntil = licenseInfo?.validUntil;
+  const effectiveMaxSeats = licenseInfo?.maxSeats;
+  const effectiveUsedSeats = selectedOrg?.memberCount ?? licenseInfo?.usedSeats ?? 0;
 
   const daysRemaining = effectiveValidUntil
     ? Math.max(0, Math.ceil((new Date(effectiveValidUntil).getTime() - Date.now()) / 86400000))
@@ -3894,7 +3691,7 @@ function OrgLicenseSection() {
   if (orgs.length === 0 && invitations.length === 0) {
     return (
       <div className="space-y-6">
-        <LicensePlanCard isEnterprise={licenseInfo?.plan === 'enterprise'} licenseInfo={licenseInfo} licenseOwnedBySelectedOrg={true}
+        <LicensePlanCard isEnterprise={licenseInfo?.plan === 'enterprise'} licenseInfo={licenseInfo}
           daysRemaining={licenseInfo?.validUntil ? Math.max(0, Math.ceil((new Date(licenseInfo.validUntil).getTime() - Date.now()) / 86400000)) : null}
           effectiveValidUntil={licenseInfo?.validUntil} effectiveMaxSeats={licenseInfo?.maxSeats}
           effectiveUsedSeats={licenseInfo?.usedSeats ?? 0} effectiveOrgName={licenseInfo?.orgName}
@@ -3978,11 +3775,12 @@ function OrgLicenseSection() {
           </button>
         </div>
         <div className="space-y-4">
-          <LicensePlanCard isEnterprise={isEnterprise} licenseInfo={licenseInfo} licenseOwnedBySelectedOrg={localLicenseMatchesOrg}
+          <LicensePlanCard isEnterprise={isEnterprise} licenseInfo={licenseInfo}
             daysRemaining={daysRemaining} effectiveValidUntil={effectiveValidUntil}
             effectiveMaxSeats={effectiveMaxSeats} effectiveUsedSeats={effectiveUsedSeats}
             effectiveOrgName={selectedOrg?.name ?? licenseInfo?.orgName}
             hubMemberCount={selectedOrg?.memberCount}
+            orgIsTrial={selectedOrg?.license?.isTrial}
             featureKeys={featureKeys} featureI18n={featureI18n} t={t} />
 
           {isEnterprise ? (
@@ -4197,10 +3995,10 @@ function OrgLicenseSection() {
 
 /* ─── License Plan Card (shared sub-component) ─── */
 
-function LicensePlanCard({ isEnterprise, licenseInfo, licenseOwnedBySelectedOrg, daysRemaining, effectiveValidUntil, effectiveMaxSeats, effectiveUsedSeats, effectiveOrgName, hubMemberCount, featureKeys, featureI18n, t }: {
-  isEnterprise: boolean | undefined; licenseInfo: any; licenseOwnedBySelectedOrg: boolean;
+function LicensePlanCard({ isEnterprise, licenseInfo, daysRemaining, effectiveValidUntil, effectiveMaxSeats, effectiveUsedSeats, effectiveOrgName, hubMemberCount, orgIsTrial, featureKeys, featureI18n, t }: {
+  isEnterprise: boolean | undefined; licenseInfo: any;
   daysRemaining: number | null; effectiveValidUntil?: string; effectiveMaxSeats?: number; effectiveUsedSeats: number; effectiveOrgName?: string;
-  hubMemberCount?: number;
+  hubMemberCount?: number; orgIsTrial?: boolean;
   featureKeys: readonly string[]; featureI18n: Record<string, string>; t: (key: string, opts?: any) => string;
 }) {
   const displayUsers = hubMemberCount ?? licenseInfo?.usage?.users ?? 0;
@@ -4212,8 +4010,8 @@ function LicensePlanCard({ isEnterprise, licenseInfo, licenseOwnedBySelectedOrg,
             <div className="flex items-center gap-2.5">
               <span className="text-base font-semibold text-fg-primary">{t('license.planEnterprise')}</span>
               <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-500/12 text-green-600 border border-green-500/15">{t('license.statusActive')}</span>
-              {licenseOwnedBySelectedOrg && licenseInfo?.isTrial && (<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/12 text-amber-600 border border-amber-500/15">{t('license.trial')}</span>)}
-              {licenseOwnedBySelectedOrg && licenseInfo?.isOffline && (<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-brand-500/12 text-brand-400 border border-brand-500/15">{t('license.offline')}</span>)}
+              {(licenseInfo?.isTrial || orgIsTrial) && (<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/12 text-amber-600 border border-amber-500/15">{t('license.trial')}</span>)}
+              {licenseInfo?.isOffline && (<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-brand-500/12 text-brand-400 border border-brand-500/15">{t('license.offline')}</span>)}
             </div>
             {daysRemaining !== null && (
               <div className="text-right">

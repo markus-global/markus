@@ -132,13 +132,18 @@ export function buildManifest(
   const name = kebab(rawName);
   const displayName = (raw.displayName as string) || (raw.name as string) || name;
 
+  const rawAuthor = raw.author;
+  const author: string = typeof rawAuthor === 'string' ? rawAuthor
+    : (rawAuthor && typeof rawAuthor === 'object' && 'name' in rawAuthor) ? String((rawAuthor as Record<string, unknown>).name)
+    : '';
+
   const base: MarkusPackageManifest = {
     type,
     name,
     displayName,
     version: (raw.version as string) ?? '1.0.0',
     description: (raw.description as string) ?? '',
-    author: (raw.author as string) ?? '',
+    author,
     category: ((raw.category as string) ?? 'general') as PackageCategory,
     tags: toArr(raw.tags),
     icon: (raw.icon as string) || undefined,
@@ -258,6 +263,14 @@ export function validateManifest(m: unknown): string[] {
     errors.push('version is required');
   if (typeof o.version === 'string' && !/^\d+\.\d+\.\d+/.test(o.version))
     errors.push('version must be semver (e.g. 1.0.0)');
+  if (o.author !== undefined && typeof o.author !== 'string')
+    errors.push('author must be a string (e.g. "Your Name"), not an object');
+  if (o.category !== undefined && typeof o.category !== 'string')
+    errors.push('category must be a string');
+  if (o.tags !== undefined && !Array.isArray(o.tags))
+    errors.push('tags must be an array of strings');
+  if (o.description !== undefined && typeof o.description !== 'string')
+    errors.push('description must be a string');
 
   if (o.type === 'agent' && o.agent) {
     const a = o.agent as Record<string, unknown>;

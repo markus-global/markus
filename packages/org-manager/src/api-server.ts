@@ -226,6 +226,28 @@ export class APIServer {
     } catch { return 0; }
   }
 
+  /** Enrich raw license data with local usage stats and user info (no Hub calls). */
+  private async buildLicenseResponse(raw: object, req: IncomingMessage): Promise<Record<string, unknown>> {
+    const info: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+    const authUser = await this.getAuthUser(req);
+    if (authUser && this.storage) {
+      const userRow = this.storage.userRepo.findById(authUser.userId) as Record<string, unknown> | null;
+      if (userRow) {
+        if (userRow.hubUserId) info.hubUserId = userRow.hubUserId;
+        info.username = (userRow.hubUsername as string) || (userRow.name as string) || undefined;
+      }
+    }
+    try {
+      const defaultOrg = this.orgService.getDefaultOrganization();
+      const orgId = defaultOrg?.id ?? 'default';
+      const teams = this.orgService.listTeams(orgId);
+      const humans = this.orgService.listHumanUsers(orgId);
+      const todayToolCalls = this.getToolCallsTodayFromAgents();
+      info.usage = { teams: teams.length, toolCallsToday: todayToolCalls, users: humans.length };
+    } catch { /* non-critical */ }
+    return info;
+  }
+
   /** fetch that follows redirects while preserving the Authorization header */
   private async hubFetch(url: string, init?: RequestInit): Promise<Response> {
     let currentUrl = url;
@@ -7173,41 +7195,7 @@ EXPLANATION_END`;
       const raw = this.licenseService
         ? this.licenseService.getInfo()
         : { plan: 'free', features: [], limits: { maxTeams: 1, maxToolCallsPerDay: 500, maxUsers: 1 } };
-      const info: Record<string, unknown> = { ...raw };
-      const authUser = await this.getAuthUser(req);
-      if (authUser && this.storage) {
-        const userRow = this.storage.userRepo.findById(authUser.userId) as Record<string, unknown> | null;
-        if (userRow) {
-          if (userRow.hubUserId) info.hubUserId = userRow.hubUserId;
-          info.username = (userRow.hubUsername as string) || (userRow.name as string) || undefined;
-        }
-      }
-      try {
-        const defaultOrg = this.orgService.getDefaultOrganization();
-        const orgId = defaultOrg?.id ?? 'default';
-        const teams = this.orgService.listTeams(orgId);
-        const humans = this.orgService.listHumanUsers(orgId);
-        const todayToolCalls = this.getToolCallsTodayFromAgents();
-        info.usage = { teams: teams.length, toolCallsToday: todayToolCalls, users: humans.length };
-      } catch { /* non-critical */ }
-      const hubToken = this.readHubToken();
-      if (hubToken) {
-        try {
-          const meRes = await this.hubFetch(`${this.hubUrl}/api/auth/me`, {
-            headers: { 'Authorization': `Bearer ${hubToken}` },
-          });
-          if (meRes.ok) {
-            const meData = await meRes.json() as { user?: { id: string; username?: string }; defaultOrg?: { id: string; name: string; slug: string } };
-            if (meData.defaultOrg) {
-              info.defaultOrg = meData.defaultOrg;
-              if (!info.orgId) info.orgId = meData.defaultOrg.id;
-              if (!info.orgName) info.orgName = meData.defaultOrg.name;
-            }
-            if (meData.user?.id && !info.hubUserId) info.hubUserId = meData.user.id;
-          }
-        } catch { /* ignore */ }
-      }
-      this.json(res, 200, info);
+      this.json(res, 200, await this.buildLicenseResponse(raw, req));
       return;
     }
 
@@ -7218,41 +7206,7 @@ EXPLANATION_END`;
       }
       const raw = await this.licenseService.revalidate();
       if (this.billingService) this.billingService.setOrgPlan('default', this.licenseService.getPlan());
-      const info: Record<string, unknown> = { ...raw };
-      const authUser = await this.getAuthUser(req);
-      if (authUser && this.storage) {
-        const userRow = this.storage.userRepo.findById(authUser.userId) as Record<string, unknown> | null;
-        if (userRow) {
-          if (userRow.hubUserId) info.hubUserId = userRow.hubUserId;
-          info.username = (userRow.hubUsername as string) || (userRow.name as string) || undefined;
-        }
-      }
-      try {
-        const defaultOrg = this.orgService.getDefaultOrganization();
-        const orgId = defaultOrg?.id ?? 'default';
-        const teams = this.orgService.listTeams(orgId);
-        const humans = this.orgService.listHumanUsers(orgId);
-        const todayToolCalls = this.getToolCallsTodayFromAgents();
-        info.usage = { teams: teams.length, toolCallsToday: todayToolCalls, users: humans.length };
-      } catch { /* non-critical */ }
-      const hubToken = this.readHubToken();
-      if (hubToken) {
-        try {
-          const meRes = await this.hubFetch(`${this.hubUrl}/api/auth/me`, {
-            headers: { 'Authorization': `Bearer ${hubToken}` },
-          });
-          if (meRes.ok) {
-            const meData = await meRes.json() as { user?: { id: string; username?: string }; defaultOrg?: { id: string; name: string; slug: string } };
-            if (meData.defaultOrg) {
-              info.defaultOrg = meData.defaultOrg;
-              if (!info.orgId) info.orgId = meData.defaultOrg.id;
-              if (!info.orgName) info.orgName = meData.defaultOrg.name;
-            }
-            if (meData.user?.id && !info.hubUserId) info.hubUserId = meData.user.id;
-          }
-        } catch { /* ignore */ }
-      }
-      this.json(res, 200, info);
+      this.json(res, 200, await this.buildLicenseResponse(raw, req));
       return;
     }
 

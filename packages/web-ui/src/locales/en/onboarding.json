@@ -2,17 +2,7 @@
   "welcome": {
     "title": "Welcome to Markus",
     "subtitle": "Your AI workforce, ready in minutes",
-    "description": "Markus runs <strong>complete AI teams</strong> — developers, researchers, writers, analysts that work autonomously, collaborate with each other, and deliver results around the clock.",
-    "features": {
-      "operation": "24/7 Operation",
-      "operationDesc": "Agents work while you sleep via heartbeat",
-      "collaboration": "Team Collaboration",
-      "collaborationDesc": "Agents delegate, review, and coordinate",
-      "memory": "Persistent Memory",
-      "memoryDesc": "Five memory layers survive restarts",
-      "anyLlm": "Any LLM Provider",
-      "anyLlmDesc": "Anthropic, OpenAI, Google, Ollama & more"
-    }
+    "description": "Markus lets you build and run <strong>autonomous AI agent teams</strong> that collaborate, learn, and deliver results around the clock. Let's get you set up in a few quick steps."
   },
   "theme": {
     "title": "Choose Your Theme",
@@ -108,7 +98,7 @@
     "builderDesc": "Hire new agents from templates or build custom roles",
     "settings": "Settings",
     "settingsDesc": "Manage LLM providers, integrations, and governance",
-    "telemetry": "Help improve Markus by sharing anonymous usage statistics (instance ID, agent count, task count, version, OS).",
+    "telemetry": "Share anonymous usage data to help improve Markus",
     "telemetryNote": "No code, prompts, or personal data is ever collected. You can change this in Settings at any time."
   },
   "usageType": {

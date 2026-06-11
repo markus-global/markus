@@ -101,17 +101,19 @@ export class LicenseService {
       });
 
       if (res.ok) {
-        const data = await res.json() as { valid: boolean; plan: PlanTier; validUntil?: string; orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number };
+        const data = await res.json() as { valid: boolean; plan: PlanTier; validUntil?: string; isTrial?: boolean; orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number };
         if (data.valid) {
           this.license.lastValidated = new Date().toISOString();
           this.license.plan = data.plan;
           this.license.validUntil = data.validUntil;
+          if (data.isTrial !== undefined) this.license.isTrial = data.isTrial;
           this.license.limits = { ...PLAN_LIMITS[data.plan] };
           this.license.features = data.plan === 'enterprise' ? [...ENTERPRISE_FEATURES] : [];
           if (data.orgId) this.license.orgId = data.orgId;
           if (data.orgName) this.license.orgName = data.orgName;
           if (data.maxSeats !== null && data.maxSeats !== undefined) this.license.maxSeats = data.maxSeats;
           if (data.usedSeats !== null && data.usedSeats !== undefined) this.license.usedSeats = data.usedSeats;
+          this.checkExpiry();
           this.saveLicense(this.license);
         } else {
           log.warn('License heartbeat returned invalid — reverting to free');
@@ -150,36 +152,36 @@ export class LicenseService {
     }
   }
 
-  // ─── Public API ────────────────────────────────────────────────────────
-
-  getPlan(): PlanTier {
+  /** Check expiry and revert to free if needed. Only called from revalidate/heartbeat flows. */
+  private checkExpiry(): void {
     if (this.license.validUntil && new Date(this.license.validUntil) < new Date()) {
       if (this.license.plan !== 'free') {
         log.info('License expired — reverting to free');
         this.revertToFree();
       }
     }
+  }
+
+  // ─── Public API ────────────────────────────────────────────────────────
+
+  getPlan(): PlanTier {
     return this.license.plan;
   }
 
   getLimits(): PlanLimits {
-    this.getPlan();
     return { ...this.license.limits };
   }
 
   getFeatures(): EnterpriseFeature[] {
-    this.getPlan();
     return [...this.license.features];
   }
 
   canUse(feature: EnterpriseFeature): boolean {
-    this.getPlan();
     if (this.license.plan === 'enterprise') return true;
     return this.license.features.includes(feature);
   }
 
   getInfo(): LicenseInfo {
-    this.getPlan();
     return { ...this.license };
   }
 
@@ -359,16 +361,20 @@ export class LicenseService {
       }
     }
 
-    await this.syncFromHub();
-
     if (this.license.licenseKey) {
+      // Key exists locally — heartbeat alone validates & syncs all fields
       await this.sendHeartbeat();
     }
+    // If no key (never had one, or heartbeat invalidated it), discover from Hub
+    if (!this.license.licenseKey) {
+      await this.syncFromHub();
+    }
 
-    this.getPlan();
+    this.checkExpiry();
     return { ...this.license };
   }
 
+  /** Fetch the best license from Hub when no local key exists yet. */
   private async syncFromHub(): Promise<void> {
     const hubToken = this.readHubToken();
     if (!hubToken) return;
@@ -380,31 +386,25 @@ export class LicenseService {
       const data = await res.json() as { license?: { licenseKey: string; plan: PlanTier; validUntil: string; isTrial: boolean; features: EnterpriseFeature[]; orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number } };
       if (!data.license) return;
 
-      const currentKey = this.license.licenseKey;
-      if (currentKey === data.license.licenseKey) {
-        if (data.license.usedSeats !== null && data.license.usedSeats !== undefined && data.license.usedSeats !== this.license.usedSeats) {
-          this.license.usedSeats = data.license.usedSeats;
-          this.saveLicense(this.license);
-        }
-        return;
-      }
+      log.info(`Found license on Hub: ${data.license.licenseKey} (plan=${data.license.plan})`);
+      // Restore local license from Hub data and validate via heartbeat
+      // (avoids calling /activate which rejects already-registered instances)
+      this.license.licenseKey = data.license.licenseKey;
+      this.license.plan = data.license.plan;
+      this.license.validUntil = data.license.validUntil;
+      this.license.isTrial = data.license.isTrial;
+      this.license.isOffline = false;
+      this.license.features = data.license.features ?? [...ENTERPRISE_FEATURES];
+      this.license.limits = { ...PLAN_LIMITS[data.license.plan] };
+      this.license.lastValidated = new Date().toISOString();
+      if (data.license.orgId) this.license.orgId = data.license.orgId;
+      if (data.license.orgName) this.license.orgName = data.license.orgName;
+      if (data.license.maxSeats !== null && data.license.maxSeats !== undefined) this.license.maxSeats = data.license.maxSeats;
+      if (data.license.usedSeats !== null && data.license.usedSeats !== undefined) this.license.usedSeats = data.license.usedSeats;
+      this.saveLicense(this.license);
 
-      const currentIsTrial = this.license.isTrial;
-      const newIsBetter = !currentKey
-        || (currentIsTrial && !data.license.isTrial)
-        || (!currentIsTrial && !data.license.isTrial && new Date(data.license.validUntil) > new Date(this.license.validUntil ?? ''));
-
-      if (!newIsBetter) return;
-
-      log.info(`Found better license on Hub: ${data.license.licenseKey} (current: ${currentKey ?? 'none'})`);
-      const result = await this.activateLicense(data.license.licenseKey);
-      if (result.success) {
-        if (data.license.orgId) this.license.orgId = data.license.orgId;
-        if (data.license.orgName) this.license.orgName = data.license.orgName;
-        if (data.license.maxSeats !== null && data.license.maxSeats !== undefined) this.license.maxSeats = data.license.maxSeats;
-        this.saveLicense(this.license);
-        log.info(`Upgraded license from Hub: ${data.license.licenseKey}`);
-      }
+      // Heartbeat to confirm with Hub and register/refresh the instance
+      await this.sendHeartbeat();
     } catch {
       log.debug('Failed to sync license from Hub');
     }

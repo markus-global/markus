@@ -238,6 +238,10 @@
     "available": "新版本可用：v{{latest}}（当前：v{{current}}）",
     "download": "下载更新"
   },
+  "llmBanner": {
+    "message": "未配置 LLM 提供商 — 智能体无法处理请求。",
+    "goToSettings": "前往配置"
+  },
   "license": {
     "limitReachedTeams": "已达免费版 AI Agent 团队数量上限，升级企业版可解锁无限团队。",
     "limitReachedToolCalls": "已达免费版每日工具调用次数上限，升级企业版可解锁无限用量。",
