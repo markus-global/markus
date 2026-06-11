@@ -177,6 +177,21 @@ TypeScript Monorepo，模块化包结构：
 
 ---
 
+## 博客与文章
+
+关于 Markus 架构、多智能体系统和 AI 员工管理的系列文章：
+
+| 文章 | 说明 |
+|------|------|
+| [Markus: An Open-Source AI Employee Platform — Deep Dive (EN)](https://markus.global/blog/markus-open-source-ai-employee-platform-deep-dive/) | 架构总览：Agent 运行时、记忆系统、工具生态和部署方案 |
+| [为何传统 AI 工具不够——AI 员工的必要性 (EN)](https://markus.global/blog/why-traditional-ai-tools-are-not-enough-ai-employees/) | 从副驾驶和聊天机器人到自主协作的 AI 员工团队 |
+| [Markus vs LangChain vs CrewAI vs AutoGPT: 架构对比 (EN)](https://markus.global/blog/markus-vs-langchain-vs-crewai-vs-autogpt-architecture-comparison/) | 在运行时、记忆、治理和生成能力方面的技术对比 |
+| [如何用 Markus 搭建你的第一个 AI 团队](https://markus.global/blog/ru-he-yong-markus-da-jian-di-yi-ge-ai-tuan-dui/) | 5分钟从零搭建你的第一个 AI 数字员工团队 |
+| [X.com 话题: Markus — AI 员工操作系统](https://x.com/jsyqrt/status/2053816964527874383) | 双语讨论：多Agent协作、GEO优化、自主执行和质量管控 |
+| [掘金: Markus 开源项目分析](https://juejin.cn/post/7638525040418963519) | Markus 开源项目分析：一个 AI 数字员工平台的架构与上手指南 |
+
+---
+
 ## 文档
 
 | 指南 | 说明 |
