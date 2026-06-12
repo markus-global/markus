@@ -203,8 +203,9 @@ describe('Integration Config API (Feishu)', () => {
         });
         expect(res.status).toBe(200);
         const body = await res.json() as Record<string, unknown>;
-        expect(body['config']).toBeTruthy();
-        expect((body['config'] as Record<string, unknown>)['platform']).toBe('feishu');
+        expect(body['appId']).toBe('cli_a1111');
+        expect(body['appSecret']).toBe('xxx');
+        expect(body['enabled']).toBe(true);
       });
 
       it('returns null config when none exists', async () => {
@@ -214,7 +215,8 @@ describe('Integration Config API (Feishu)', () => {
         });
         expect(res.status).toBe(200);
         const body = await res.json() as Record<string, unknown>;
-        expect(body['config']).toBeNull();
+        expect(body['appId']).toBe('');
+        expect(body['enabled']).toBe(false);
       });
     });
 

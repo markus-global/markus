@@ -102,10 +102,10 @@ export class FeishuApiClient {
     }
   }
 
-  /** Send an interactive card to a user by open_id (direct/P2P message). */
-  async sendCardToUser(openId: string, card: Record<string, unknown>): Promise<void> {
+  /** Send an interactive card to a user by open_id (direct/P2P message). Returns message_id if available. */
+  async sendCardToUser(openId: string, card: Record<string, unknown>): Promise<string | undefined> {
     try {
-      await this.client.im.v1.message.create({
+      const resp = await this.client.im.v1.message.create({
         params: { receive_id_type: 'open_id' },
         data: {
           receive_id: openId,
@@ -113,16 +113,17 @@ export class FeishuApiClient {
           content: JSON.stringify(card),
         },
       });
+      return (resp?.data?.message_id as string) ?? undefined;
     } catch (err) {
       log.error('Feishu sendCardToUser failed', { openId, error: String(err) });
       throw err;
     }
   }
 
-  /** Send an interactive card to a Feishu chat by chat_id. */
-  async sendCard(chatId: string, card: Record<string, unknown>): Promise<void> {
+  /** Send an interactive card to a Feishu chat by chat_id. Returns message_id if available. */
+  async sendCard(chatId: string, card: Record<string, unknown>): Promise<string | undefined> {
     try {
-      await this.client.im.v1.message.create({
+      const resp = await this.client.im.v1.message.create({
         params: { receive_id_type: 'chat_id' },
         data: {
           receive_id: chatId,
@@ -130,10 +131,49 @@ export class FeishuApiClient {
           content: JSON.stringify(card),
         },
       });
+      return (resp?.data?.message_id as string) ?? undefined;
     } catch (err) {
       log.error('Feishu sendCard failed', { chatId, error: String(err) });
       throw err;
     }
+  }
+
+  /** List groups where the bot is a member. */
+  async listBotChats(): Promise<Array<{ chatId: string; name: string; description?: string; avatar?: string; ownerIdType?: string; ownerId?: string }>> {
+    const results: Array<{ chatId: string; name: string; description?: string; avatar?: string; ownerIdType?: string; ownerId?: string }> = [];
+    let pageToken: string | undefined;
+    try {
+      do {
+        const resp = await this.client.im.v1.chat.list({
+          params: { page_size: 50, page_token: pageToken },
+        });
+        const items = (resp?.data?.items ?? []) as Array<{
+          chat_id?: string;
+          name?: string;
+          description?: string;
+          avatar?: string;
+          owner_id_type?: string;
+          owner_id?: string;
+        }>;
+        for (const item of items) {
+          if (item.chat_id) {
+            results.push({
+              chatId: item.chat_id,
+              name: item.name ?? '',
+              description: item.description,
+              avatar: item.avatar,
+              ownerIdType: item.owner_id_type,
+              ownerId: item.owner_id,
+            });
+          }
+        }
+        pageToken = resp?.data?.page_token as string | undefined;
+      } while (pageToken);
+    } catch (err) {
+      log.error('Feishu listBotChats failed', { error: String(err) });
+      throw err;
+    }
+    return results;
   }
 
   /** Verify credentials by fetching a tenant access token. */

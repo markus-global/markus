@@ -1480,22 +1480,30 @@ export class APIServer {
       const agentManager = this.orgService.getAgentManager();
       const eventBus = agentManager.getEventBus();
 
-      // Load Feishu integration config from storage (integrations table)
+      // Credentials from markus.json (single source of truth)
+      const { loadConfig: loadCfg } = await import('@markus/shared');
+      const markusCfg = loadCfg(this.markusConfigPath);
+      const appId = markusCfg.integrations?.feishu?.appId;
+      const appSecret = markusCfg.integrations?.feishu?.appSecret;
+
+      // Runtime prefs from SQLite
       const rows = this.storage.integrationRepo.listByPlatform('default', 'feishu') as Array<Record<string, unknown>>;
       const row = rows[0];
       const cfgConfig = row?.['config'] as Record<string, unknown> | undefined;
       const forwardRules = row?.['forwardRules'] as Array<Record<string, unknown>> | undefined;
 
       let initialConfig: FeishuNotifierConfig | undefined;
-      if (cfgConfig?.appId && cfgConfig?.appSecret) {
+      if (appId && appSecret) {
         initialConfig = {
-          appId: cfgConfig.appId as string,
-          appSecret: cfgConfig.appSecret as string,
-          domain: cfgConfig.domain as string | undefined,
-          notifyChatId: cfgConfig.notifyChatId as string | undefined,
-          notifyOnApproval: (cfgConfig.notifyOnApproval ?? true) as boolean,
-          notifyOnNotification: (cfgConfig.notifyOnNotification ?? false) as boolean,
-          notifyPriority: (cfgConfig.notifyPriority ?? ['high', 'urgent']) as string[],
+          appId,
+          appSecret,
+          domain: cfgConfig?.domain as string | undefined,
+          locale: (cfgConfig?.locale as 'zh' | 'en' | undefined) ?? 'zh',
+          notifyChatId: cfgConfig?.notifyChatId as string | undefined,
+          notifyOpenId: cfgConfig?.notifyOpenId as string | undefined,
+          notifyOnApproval: (cfgConfig?.notifyOnApproval ?? true) as boolean,
+          notifyOnNotification: (cfgConfig?.notifyOnNotification ?? false) as boolean,
+          notifyPriority: (cfgConfig?.notifyPriority ?? ['high', 'urgent']) as string[],
           forwardRules: (forwardRules ?? []) as unknown as FeishuNotifierConfig['forwardRules'],
         };
       }
@@ -9040,17 +9048,20 @@ EXPLANATION_END`;
       const auth = await this.requireAuth(req, res);
       if (!auth) return;
       try {
+        // Credentials from markus.json (single source of truth)
+        const { loadConfig: loadCfg } = await import('@markus/shared');
+        const markusCfg = loadCfg(this.markusConfigPath);
+        const appId = markusCfg.integrations?.feishu?.appId ?? '';
+        const appSecret = markusCfg.integrations?.feishu?.appSecret ?? '';
+
+        // Runtime prefs from SQLite
         const row = findFeishuConfig(auth.orgId);
-        if (!row) {
-          this.json(res, 200, { appId: '', appSecret: '', enabled: false, connected: false, notifyChatId: '', notifyOnApproval: true, notifyOnNotification: false, notifyPriority: ['high', 'urgent'] });
-          return;
-        }
-        const cfg = (row['config'] as Record<string, unknown>) ?? {};
+        const cfg = (row?.['config'] as Record<string, unknown>) ?? {};
         const connected = !!(this.feishuNotifier?.connected);
         this.json(res, 200, {
-          appId: cfg['appId'] ?? '',
-          appSecret: cfg['appSecret'] ?? '',
-          enabled: !!(row['enabled']),
+          appId,
+          appSecret,
+          enabled: !!(row?.['enabled']),
           connected,
           notifyChatId: cfg['notifyChatId'] ?? '',
           notifyOnApproval: cfg['notifyOnApproval'] ?? true,
@@ -9083,8 +9094,6 @@ EXPLANATION_END`;
         displayName: body['displayName'] ?? '飞书',
         enabled,
         config: {
-          appId,
-          appSecret,
           domain: body['domain'] ?? undefined,
           connectionMode: 'long_connection',
           notifyChatId: body['notifyChatId'] ?? undefined,
@@ -9108,6 +9117,8 @@ EXPLANATION_END`;
         } else {
           await repo.create(payload);
         }
+        // Credentials go to markus.json (single source of truth, consistent with other API keys)
+        saveConfig({ integrations: { feishu: { appId, appSecret } } }, this.markusConfigPath);
         log.info('Feishu integration config saved', { orgId: auth.orgId });
         this.auditService?.record({
           orgId: auth.orgId,
@@ -9122,6 +9133,7 @@ EXPLANATION_END`;
           appId,
           appSecret: appSecret,
           domain: body['domain'] as string | undefined,
+          locale: (body['locale'] as 'zh' | 'en' | undefined) ?? undefined,
           notifyChatId: body['notifyChatId'] as string | undefined,
           notifyOnApproval: (body['notifyOnApproval'] ?? true) as boolean,
           notifyOnNotification: (body['notifyOnNotification'] ?? false) as boolean,
@@ -9145,6 +9157,8 @@ EXPLANATION_END`;
         if (row) {
           await this.storage?.integrationRepo?.delete(row['id'] as string);
         }
+        // Clear credentials from markus.json
+        saveConfig({ integrations: { feishu: {} } }, this.markusConfigPath);
         log.info('Feishu integration config deleted', { orgId: auth.orgId });
         this.auditService?.record({
           orgId: auth.orgId,
@@ -9191,6 +9205,30 @@ EXPLANATION_END`;
       return;
     }
 
+    if (path === '/api/settings/integrations/feishu/chats' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      try {
+        // Credentials from markus.json (single source of truth)
+        const { loadConfig: loadCfg } = await import('@markus/shared');
+        const markusCfg = loadCfg(this.markusConfigPath);
+        const appId = markusCfg.integrations?.feishu?.appId;
+        const appSecret = markusCfg.integrations?.feishu?.appSecret;
+        if (!appId || !appSecret) {
+          this.json(res, 400, { error: 'Feishu integration not configured' });
+          return;
+        }
+        const { FeishuApiClient } = await import('./feishu-api-client.js');
+        const client = new FeishuApiClient({ appId, appSecret });
+        const chats = await client.listBotChats();
+        this.json(res, 200, { chats });
+      } catch (e) {
+        log.error('Failed to list Feishu bot chats', { error: String(e) });
+        this.json(res, 200, { chats: [], error: String(e) });
+      }
+      return;
+    }
+
     if (path === '/api/settings/integrations/feishu/test-message' && req.method === 'POST') {
       const auth = await this.requireAuth(req, res);
       if (!auth) return;
@@ -9201,10 +9239,11 @@ EXPLANATION_END`;
         return;
       }
       try {
-        const row = findFeishuConfig(auth.orgId);
-        const cfg = (row?.['config'] as Record<string, unknown>) ?? {};
-        const appId = cfg['appId'] as string;
-        const appSecret = cfg['appSecret'] as string;
+        // Credentials from markus.json (single source of truth)
+        const { loadConfig: loadCfg } = await import('@markus/shared');
+        const markusCfg = loadCfg(this.markusConfigPath);
+        const appId = markusCfg.integrations?.feishu?.appId;
+        const appSecret = markusCfg.integrations?.feishu?.appSecret;
         if (!appId || !appSecret) {
           this.json(res, 400, { error: 'Feishu integration not configured' });
           return;
@@ -9267,15 +9306,17 @@ EXPLANATION_END`;
         // Auto-save the credentials
         const appId = result.client_id;
         const appSecret = result.client_secret;
+        const locale = result.user_info?.tenant_brand === 'lark' ? 'en' : 'zh';
+        const registeredOpenId = result.user_info?.open_id;
         const payload: Record<string, unknown> = {
           id: 'feishu_default',
           orgId: auth.orgId,
           platform: 'feishu',
-          displayName: '飞书',
+          displayName: locale === 'en' ? 'Lark' : '飞书',
           enabled: true,
           config: {
-            appId,
-            appSecret,
+            locale,
+            notifyOpenId: registeredOpenId,
             connectionMode: 'long_connection',
             notifyOnApproval: true,
             notifyOnNotification: true,
@@ -9295,10 +9336,15 @@ EXPLANATION_END`;
           }
         }
 
+        // Credentials go to markus.json (single source of truth)
+        saveConfig({ integrations: { feishu: { appId, appSecret } } }, this.markusConfigPath);
+
         // Start the long connection
         this.updateFeishuConfig({
           appId,
           appSecret,
+          locale: locale as 'zh' | 'en',
+          notifyOpenId: registeredOpenId,
           notifyOnApproval: true,
           notifyOnNotification: true,
           notifyPriority: ['normal', 'high', 'urgent'],
@@ -9319,34 +9365,62 @@ EXPLANATION_END`;
             const pendingApprovals = this.hitlService?.listApprovals('pending') ?? [];
             const notifCounts = this.hitlService?.countNotifications(auth.userId, true) ?? { total: 0, unread: 0 };
 
-            if (pendingApprovals.length > 0 || notifCounts.unread > 0) {
-              statusLines += '\n\n---\n📊 **当前待处理事项：**\n';
-              if (pendingApprovals.length > 0) {
-                statusLines += `\n🔔 **${pendingApprovals.length} 个待审批请求**\n`;
-                for (const a of pendingApprovals.slice(0, 5)) {
-                  statusLines += `• ${a.title}（来自 ${a.agentName}）\n`;
+            if (locale === 'en') {
+              if (pendingApprovals.length > 0 || notifCounts.unread > 0) {
+                statusLines += '\n\n---\n📊 **Pending items:**\n';
+                if (pendingApprovals.length > 0) {
+                  statusLines += `\n🔔 **${pendingApprovals.length} pending approval(s)**\n`;
+                  for (const a of pendingApprovals.slice(0, 5)) {
+                    statusLines += `• ${a.title} (from ${a.agentName})\n`;
+                  }
+                  if (pendingApprovals.length > 5) {
+                    statusLines += `• ...and ${pendingApprovals.length - 5} more\n`;
+                  }
                 }
-                if (pendingApprovals.length > 5) {
-                  statusLines += `• ...还有 ${pendingApprovals.length - 5} 项\n`;
+                if (notifCounts.unread > 0) {
+                  statusLines += `\n📬 **${notifCounts.unread} unread notification(s)**\n`;
                 }
+                statusLines += '\nReply to handle them, e.g. type "approvals" to view details.';
               }
-              if (notifCounts.unread > 0) {
-                statusLines += `\n📬 **${notifCounts.unread} 条未读通知**\n`;
+              const card = {
+                config: { wide_screen_mode: true },
+                header: { title: { tag: 'plain_text', content: '🎉 Markus Secretary is Online' }, template: 'green' },
+                elements: [
+                  { tag: 'markdown', content: `**Markus Secretary** has been connected to your Lark!\n\nYou can now:\n- 💬 Send me messages and I'll handle them for you\n- 📋 Receive system notifications and approval requests\n- ✅ Approve or reject directly in the conversation\n- 🤖 Interact with the AI team in real time${statusLines}` },
+                  { tag: 'hr' },
+                  { tag: 'note', elements: [{ tag: 'plain_text', content: 'Powered by Markus — Your AI Team OS' }] },
+                ],
+              };
+              await welcomeClient.sendCardToUser(openId, card);
+            } else {
+              if (pendingApprovals.length > 0 || notifCounts.unread > 0) {
+                statusLines += '\n\n---\n📊 **当前待处理事项：**\n';
+                if (pendingApprovals.length > 0) {
+                  statusLines += `\n🔔 **${pendingApprovals.length} 个待审批请求**\n`;
+                  for (const a of pendingApprovals.slice(0, 5)) {
+                    statusLines += `• ${a.title}（来自 ${a.agentName}）\n`;
+                  }
+                  if (pendingApprovals.length > 5) {
+                    statusLines += `• ...还有 ${pendingApprovals.length - 5} 项\n`;
+                  }
+                }
+                if (notifCounts.unread > 0) {
+                  statusLines += `\n📬 **${notifCounts.unread} 条未读通知**\n`;
+                }
+                statusLines += '\n直接回复消息即可处理，例如输入「审批」查看详情。';
               }
-              statusLines += '\n直接回复消息即可处理，例如输入「审批」查看详情。';
+              const card = {
+                config: { wide_screen_mode: true },
+                header: { title: { tag: 'plain_text', content: '🎉 Markus 秘书已上线' }, template: 'green' },
+                elements: [
+                  { tag: 'markdown', content: `**Markus 秘书** 已成功接入你的飞书！\n\n你现在可以：\n- 💬 直接发消息给我，我来帮你处理\n- 📋 接收系统通知和审批请求\n- ✅ 直接在对话中审批或驳回\n- 🤖 与 AI 团队实时互动${statusLines}` },
+                  { tag: 'hr' },
+                  { tag: 'note', elements: [{ tag: 'plain_text', content: 'Powered by Markus — Your AI Team OS' }] },
+                ],
+              };
+              await welcomeClient.sendCardToUser(openId, card);
             }
-
-            const card = {
-              config: { wide_screen_mode: true },
-              header: { title: { tag: 'plain_text', content: '🎉 Markus 秘书已上线' }, template: 'green' },
-              elements: [
-                { tag: 'markdown', content: `**Markus 秘书** 已成功接入你的飞书！\n\n你现在可以：\n- 💬 直接发消息给我，我来帮你处理\n- 📋 接收系统通知和审批请求\n- ✅ 直接在对话中审批或驳回\n- 🤖 与 AI 团队实时互动${statusLines}` },
-                { tag: 'hr' },
-                { tag: 'note', elements: [{ tag: 'plain_text', content: 'Powered by Markus — Your AI Team OS' }] },
-              ],
-            };
-            await welcomeClient.sendCardToUser(openId, card);
-            log.info('Welcome message sent to user', { openId });
+            log.info('Welcome message sent to user', { openId, locale });
           } catch (welcomeErr) {
             log.warn('Failed to send welcome message', { error: String(welcomeErr) });
           }
@@ -9428,14 +9502,20 @@ EXPLANATION_END`;
             lastError: row['lastError'] ?? null,
           });
           // Update the FeishuNotifier runtime config with new rules
-          const cfgConfig = row['config'] as Record<string, unknown> | undefined;
-          if (cfgConfig?.appId && cfgConfig?.appSecret && this.feishuNotifier) {
-            this.feishuNotifier.updateConfig({
-              appId: cfgConfig.appId as string,
-              appSecret: cfgConfig.appSecret as string,
-              domain: cfgConfig.domain as string | undefined,
-              forwardRules: rules as unknown as FeishuNotifierConfig['forwardRules'],
-            });
+          if (this.feishuNotifier) {
+            const { loadConfig: loadCfg } = await import('@markus/shared');
+            const markusCfg = loadCfg(this.markusConfigPath);
+            const cfgAppId = markusCfg.integrations?.feishu?.appId;
+            const cfgAppSecret = markusCfg.integrations?.feishu?.appSecret;
+            if (cfgAppId && cfgAppSecret) {
+              const cfgConfig = row['config'] as Record<string, unknown> | undefined;
+              this.feishuNotifier.updateConfig({
+                appId: cfgAppId,
+                appSecret: cfgAppSecret,
+                domain: cfgConfig?.domain as string | undefined,
+                forwardRules: rules as unknown as FeishuNotifierConfig['forwardRules'],
+              });
+            }
           }
           log.info('Feishu notification rules updated', { orgId: auth.orgId, ruleCount: rules.length });
           this.auditService?.record({

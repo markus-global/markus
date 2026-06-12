@@ -2288,7 +2288,7 @@ export class AgentManager {
       skills: config.skills,
       status: 'idle',
     });
-    this.eventBus.emit('agent:created', { agentId: id, name: row.name });
+    this.eventBus.emit('agent:restored', { agentId: id, name: row.name });
     log.info(`Agent restored: ${row.name} (${id})`, {
       profile: config.profile ? 'yes' : 'no',
       tokensUsedToday: row.tokensUsedToday ?? 0,

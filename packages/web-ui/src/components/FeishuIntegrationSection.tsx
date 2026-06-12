@@ -93,6 +93,10 @@ export function FeishuIntegrationSection() {
   const [msg, setMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [testChatId, setTestChatId] = useState('');
 
+  // Bot chat list for chat selector
+  const [botChats, setBotChats] = useState<Array<{ chatId: string; name: string; description?: string; avatar?: string }>>([]);
+  const [loadingChats, setLoadingChats] = useState(false);
+
   // QR code registration state
   const [registerState, setRegisterState] = useState<RegisterState>('idle');
   const [qrUrl, setQrUrl] = useState<string | null>(null);
@@ -110,6 +114,15 @@ export function FeishuIntegrationSection() {
   configRef.current = config;
   const initialLoadDone = useRef(false);
 
+  const loadBotChats = useCallback(async () => {
+    setLoadingChats(true);
+    try {
+      const data = await api.settings.listFeishuChats();
+      setBotChats(data.chats ?? []);
+    } catch { /* ignore */ }
+    finally { setLoadingChats(false); }
+  }, []);
+
   const loadConfig = useCallback(async () => {
     setLoading(true);
     try {
@@ -125,6 +138,9 @@ export function FeishuIntegrationSection() {
           notifyOnNotification: data.notifyOnNotification ?? false,
           notifyPriority: data.notifyPriority ?? ['high', 'urgent'],
         });
+        if (data.appId && data.appSecret) {
+          loadBotChats();
+        }
       }
     } catch {
       // Not configured yet
@@ -294,7 +310,7 @@ export function FeishuIntegrationSection() {
 
   const handleSendTestMessage = async () => {
     if (!testChatId.trim()) {
-      setMsg({ type: 'err', text: t('settings:feishu.chatIdRequired', { defaultValue: 'Please enter a Chat ID' }) });
+      setMsg({ type: 'err', text: t('settings:feishu.chatIdRequired', { defaultValue: 'Please select a group chat' }) });
       return;
     }
     setSendingMsg(true);
@@ -597,13 +613,23 @@ export function FeishuIntegrationSection() {
                   {t('settings:feishu.sendTestMessage', { defaultValue: 'Send Test Message' })}
                 </label>
                 <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={testChatId}
-                    onChange={e => setTestChatId(e.target.value)}
-                    placeholder={t('settings:feishu.chatIdPlaceholder', { defaultValue: 'Enter Chat ID (oc_xxxxxxxx)' })}
-                    className="flex-1 px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
-                  />
+                  <div className="relative flex-1">
+                    <select
+                      value={testChatId}
+                      onChange={e => setTestChatId(e.target.value)}
+                      className="w-full px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors appearance-none pr-8"
+                    >
+                      <option value="">{t('settings:feishu.selectChat', { defaultValue: '— Select a group chat —' })}</option>
+                      {botChats.map(chat => (
+                        <option key={chat.chatId} value={chat.chatId}>
+                          {chat.name || chat.chatId}
+                        </option>
+                      ))}
+                    </select>
+                    <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-fg-tertiary pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </div>
                   <button
                     onClick={handleSendTestMessage}
                     disabled={sendingMsg || !testChatId.trim()}
@@ -617,9 +643,6 @@ export function FeishuIntegrationSection() {
                     {t('settings:feishu.send', { defaultValue: 'Send' })}
                   </button>
                 </div>
-                <p className="text-[11px] text-fg-tertiary">
-                  {t('settings:feishu.chatIdHint', { defaultValue: 'Chat ID can be found in the Feishu group chat URL or via the API' })}
-                </p>
               </div>
             )}
 
@@ -631,20 +654,50 @@ export function FeishuIntegrationSection() {
             <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-5">
               {/* Target Chat ID */}
               <div>
-                <label className="block text-xs font-medium text-fg-secondary mb-1.5">
-                  {t('settings:feishu.notifyChatId', { defaultValue: 'Notification Target Chat ID' })}
-                </label>
-                <input
-                  type="text"
-                  value={config.notifyChatId}
-                  onChange={e => updateField('notifyChatId', e.target.value)}
-                  onBlur={() => { if (config.appId && config.appSecret) { if (saveTimer.current) clearTimeout(saveTimer.current); doSave(configRef.current); } }}
-                  placeholder="oc_xxxxxxxxxxxxxxxx"
-                  className="w-full px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors font-mono"
-                />
-                <p className="text-[11px] text-fg-tertiary mt-1">
-                  {t('settings:feishu.notifyChatIdHint', { defaultValue: 'The Feishu group chat ID to receive notifications. Required for notification forwarding.' })}
-                </p>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-medium text-fg-secondary">
+                    {t('settings:feishu.notifyChatId', { defaultValue: 'Notification Target Group' })}
+                  </label>
+                  <button
+                    onClick={loadBotChats}
+                    disabled={loadingChats}
+                    className="inline-flex items-center gap-1 text-[11px] text-brand-600 hover:text-brand-700 disabled:opacity-50 transition-colors"
+                  >
+                    <svg className={`w-3 h-3 ${loadingChats ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    {t('settings:feishu.refreshChats', { defaultValue: 'Refresh' })}
+                  </button>
+                </div>
+                <div className="relative">
+                  <select
+                    value={config.notifyChatId}
+                    onChange={e => updateFieldImmediate('notifyChatId', e.target.value)}
+                    className="w-full px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors appearance-none pr-8"
+                  >
+                    <option value="">
+                      {loadingChats
+                        ? t('settings:feishu.loadingChats', { defaultValue: 'Loading groups...' })
+                        : t('settings:feishu.selectChat', { defaultValue: '— Select a group chat —' })}
+                    </option>
+                    {botChats.map(chat => (
+                      <option key={chat.chatId} value={chat.chatId}>
+                        {chat.name || chat.chatId}
+                      </option>
+                    ))}
+                  </select>
+                  <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-fg-tertiary pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </div>
+                {botChats.length === 0 && !loadingChats && (
+                  <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1">
+                    {t('settings:feishu.noChatHint', { defaultValue: 'No groups found. Please add the bot to a group chat first.' })}
+                  </p>
+                )}
+                {config.notifyChatId && (
+                  <p className="text-[11px] text-fg-tertiary mt-1 font-mono">ID: {config.notifyChatId}</p>
+                )}
               </div>
 
               <div className="space-y-3">
