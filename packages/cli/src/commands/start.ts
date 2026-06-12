@@ -1570,15 +1570,20 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   if (feishuAppId && feishuAppSecret) {
     const feishuAdapter = new FeishuAdapter();
     messageRouter.registerAdapter(feishuAdapter);
-    await messageRouter.connectAll([
-      {
-        platform: 'feishu',
-        appId: feishuAppId,
-        appSecret: feishuAppSecret,
-      },
-    ]);
-    startupLog('OK', '飞书适配器已连接');
-    progress.complete(5, 'webhook adapters: WebUI + Feishu');
+    try {
+      await messageRouter.connectAll([
+        {
+          platform: 'feishu',
+          appId: feishuAppId,
+          appSecret: feishuAppSecret,
+        },
+      ]);
+      startupLog('OK', '飞书适配器已连接');
+      progress.complete(5, 'webhook adapters: WebUI + Feishu');
+    } catch (error) {
+      startupLog('WARN', `飞书适配器连接失败，跳过: ${error instanceof Error ? error.message : String(error)}`);
+      progress.complete(5, 'webhook adapter: WebUI only (Feishu failed)');
+    }
   } else {
     progress.complete(5, 'webhook adapter: WebUI only');
   }

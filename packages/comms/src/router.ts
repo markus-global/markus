@@ -33,11 +33,14 @@ export class MessageRouter {
         continue;
       }
 
-      await adapter.connect(config);
-
-      adapter.onMessage(async (message: Message) => {
-        await this.routeIncomingMessage(message);
-      });
+      try {
+        await adapter.connect(config);
+        adapter.onMessage(async (message: Message) => {
+          await this.routeIncomingMessage(message);
+        });
+      } catch (error) {
+        log.error(`Failed to connect ${config.platform} adapter, skipping`, { error: String(error) });
+      }
     }
   }
 
