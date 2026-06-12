@@ -619,7 +619,7 @@ export function FeishuIntegrationSection() {
                       onChange={e => setTestChatId(e.target.value)}
                       className="w-full px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-colors appearance-none pr-8"
                     >
-                      <option value="">{t('settings:feishu.selectChat', { defaultValue: '— Select a group chat —' })}</option>
+                      <option value="">{t('settings:feishu.selectTestChat', { defaultValue: '— Select a group chat —' })}</option>
                       {botChats.map(chat => (
                         <option key={chat.chatId} value={chat.chatId}>
                           {chat.name || chat.chatId}
@@ -678,7 +678,7 @@ export function FeishuIntegrationSection() {
                     <option value="">
                       {loadingChats
                         ? t('settings:feishu.loadingChats', { defaultValue: 'Loading groups...' })
-                        : t('settings:feishu.selectChat', { defaultValue: '— Select a group chat —' })}
+                        : t('settings:feishu.selectChat', { defaultValue: '— Private message (default) —' })}
                     </option>
                     {botChats.map(chat => (
                       <option key={chat.chatId} value={chat.chatId}>
@@ -690,9 +690,14 @@ export function FeishuIntegrationSection() {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                   </svg>
                 </div>
-                {botChats.length === 0 && !loadingChats && (
-                  <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1">
-                    {t('settings:feishu.noChatHint', { defaultValue: 'No groups found. Please add the bot to a group chat first.' })}
+                {!config.notifyChatId && !loadingChats && (
+                  <p className="text-[11px] text-fg-tertiary mt-1">
+                    {t('settings:feishu.noChatFallbackHint', { defaultValue: 'No group selected — notifications will be sent to you as private messages.' })}
+                  </p>
+                )}
+                {botChats.length === 0 && !loadingChats && config.notifyChatId === '' && (
+                  <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">
+                    {t('settings:feishu.noChatHint', { defaultValue: 'No groups found. Add the bot to a group chat to enable group notifications.' })}
                   </p>
                 )}
                 {config.notifyChatId && (
