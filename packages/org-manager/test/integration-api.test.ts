@@ -10,6 +10,9 @@
  * - PUT  /api/settings/integrations/feishu/notifications  — update rules
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { APIServer } from '../src/api-server.js';
 import type { OrganizationService } from '../src/org-service.js';
 import type { TaskService } from '../src/task-service.js';
@@ -176,25 +179,40 @@ describe('Integration Config API (Feishu)', () => {
 
   // ── Actual route handler tests (auth bypassed) ──────────────────────────────
   describe('route handlers', () => {
+    let tmpDir: string;
+    let configPath: string;
+
     beforeEach(async () => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'markus-test-'));
+      configPath = join(tmpDir, 'markus.json');
+      writeFileSync(configPath, JSON.stringify({}));
+
       integrationRepo = createMockIntegrationRepo();
       const mockStorage = createMockStorage(integrationRepo);
       const orgService = createMockOrgService();
       const taskService = createMockTaskService();
       server = new APIServer(orgService, taskService, 0);
       server.setStorage(mockStorage);
+      server.setConfigPath(configPath);
       port = await startServer(server);
+    });
+
+    afterEach(() => {
+      try { rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
     });
 
     describe('GET /api/settings/integrations/feishu', () => {
       it('returns config when one exists', async () => {
+        // Credentials in markus.json (single source of truth)
+        writeFileSync(configPath, JSON.stringify({ integrations: { feishu: { appId: 'cli_a1111', appSecret: 'xxx' } } }));
+        // Runtime prefs in SQLite
         await integrationRepo.create({
           id: 'feishu_default',
           orgId: 'default',
           platform: 'feishu',
           displayName: '飞书',
           enabled: true,
-          config: { appId: 'cli_a1111', appSecret: 'xxx' },
+          config: { notifyChatId: 'oc_123' },
         });
 
         const res = await fetch(`http://localhost:${port}/api/settings/integrations/feishu`, {
@@ -206,6 +224,7 @@ describe('Integration Config API (Feishu)', () => {
         expect(body['appId']).toBe('cli_a1111');
         expect(body['appSecret']).toBe('xxx');
         expect(body['enabled']).toBe(true);
+        expect(body['notifyChatId']).toBe('oc_123');
       });
 
       it('returns null config when none exists', async () => {
@@ -239,19 +258,26 @@ describe('Integration Config API (Feishu)', () => {
           body: JSON.stringify({ appId: 'cli_a2222', appSecret: 'secret123' }),
         });
         expect(res.status).toBe(200);
+        // Runtime prefs stored in SQLite (no credentials)
         const rows = integrationRepo.listByPlatform('default', 'feishu');
         expect(rows).toHaveLength(1);
-        expect((rows[0]['config'] as Record<string, unknown>)['appId']).toBe('cli_a2222');
+        expect((rows[0]['config'] as Record<string, unknown>)['appId']).toBeUndefined();
+        // Credentials stored in markus.json
+        const { readFileSync } = await import('fs');
+        const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
+        expect(saved.integrations.feishu.appId).toBe('cli_a2222');
+        expect(saved.integrations.feishu.appSecret).toBe('secret123');
       });
 
       it('updates existing config when already present', async () => {
+        writeFileSync(configPath, JSON.stringify({ integrations: { feishu: { appId: 'old_id', appSecret: 'old_secret' } } }));
         await integrationRepo.create({
           id: 'feishu_default',
           orgId: 'default',
           platform: 'feishu',
           displayName: '飞书',
           enabled: true,
-          config: { appId: 'old_id', appSecret: 'old_secret' },
+          config: { connectionMode: 'long_connection' },
         });
 
         const res = await fetch(`http://localhost:${port}/api/settings/integrations/feishu`, {
@@ -260,9 +286,15 @@ describe('Integration Config API (Feishu)', () => {
           body: JSON.stringify({ appId: 'new_id', appSecret: 'new_secret', displayName: '飞书新版' }),
         });
         expect(res.status).toBe(200);
+        // SQLite should not have credentials
         const rows = integrationRepo.listByPlatform('default', 'feishu');
         expect(rows).toHaveLength(1);
-        expect((rows[0]['config'] as Record<string, unknown>)['appId']).toBe('new_id');
+        expect((rows[0]['config'] as Record<string, unknown>)['appId']).toBeUndefined();
+        // markus.json should have updated credentials
+        const { readFileSync } = await import('fs');
+        const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
+        expect(saved.integrations.feishu.appId).toBe('new_id');
+        expect(saved.integrations.feishu.appSecret).toBe('new_secret');
       });
     });
 
