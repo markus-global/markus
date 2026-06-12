@@ -84,21 +84,17 @@ export function Sidebar({ currentPage, onNavigate, authUser, collapsed, onToggle
           );
         })}
       </nav>
-      <div className={`shrink-0 ${collapsed ? 'p-1' : 'px-3 pb-2'}`}>
+      <div className={`shrink-0 ${collapsed ? 'p-1' : 'px-3 pb-2'} flex items-center ${collapsed ? 'flex-col' : 'justify-between'}`}>
         <button
           onClick={() => onNavigate(PAGE.SETTINGS)}
-          title={collapsed ? t(PAGE.SETTINGS) : undefined}
-          className={`w-full flex items-center ${collapsed ? 'flex-col justify-center px-1 py-1.5 gap-0.5' : 'gap-3 px-3 py-[7px]'} rounded-lg text-[13px] font-medium transition-colors text-fg-secondary hover:bg-surface-overlay/60`}
+          title={t(PAGE.SETTINGS)}
+          className="flex items-center justify-center w-8 h-8 rounded-lg transition-colors text-fg-secondary hover:bg-surface-overlay/60 hover:text-fg-primary"
         >
-          <Icon d={PAGE_ICONS[PAGE.SETTINGS] ?? ''} size={collapsed ? 16 : 18} />
-          {collapsed
-            ? <span className="text-[9px] leading-tight truncate w-full text-center">{t(PAGE.SETTINGS)}</span>
-            : <>
-                <span className="truncate">{t(PAGE.SETTINGS)}</span>
-                <span className="ml-auto text-[10px] text-fg-muted">v{__APP_VERSION__}</span>
-              </>
-          }
+          <Icon d={PAGE_ICONS[PAGE.SETTINGS] ?? ''} size={16} />
         </button>
+        {!collapsed && (
+          <span className="text-[10px] text-fg-muted select-none">v{__APP_VERSION__}</span>
+        )}
       </div>
 
     </aside>

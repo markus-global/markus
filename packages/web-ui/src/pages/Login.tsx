@@ -160,7 +160,7 @@ export function Login({ onLogin, hasOwner, hasMultipleUsers }: HubLoginProps) {
                   </div>
                 )}
 
-                {hasOwner && !hasMultipleUsers && (
+                {!hasMultipleUsers && (
                   <p className="text-[11px] text-fg-tertiary">{t('login.defaultCredentials')}</p>
                 )}
 
