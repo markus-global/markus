@@ -10,6 +10,7 @@ import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { BrowserTestPanel } from '../components/BrowserTestPanel.tsx';
 import { ModelPicker } from '../components/ModelPicker.tsx';
 import { PROVIDER_OPTIONS } from '../constants/providers.ts';
+import { FeishuIntegrationSection } from '../components/FeishuIntegrationSection.tsx';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[] }
@@ -39,7 +40,7 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
-type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'storage' | 'users' | 'organization' | 'account' | 'remote' | 'license';
+type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'storage' | 'users' | 'organization' | 'account' | 'remote' | 'integrations' | 'license';
 
 const SETTINGS_TABS: Array<{ id: SettingsTab; labelKey: string; adminOnly?: boolean }> = [
   { id: 'appearance', labelKey: 'nav.appearance' },
@@ -50,6 +51,7 @@ const SETTINGS_TABS: Array<{ id: SettingsTab; labelKey: string; adminOnly?: bool
   { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
   { id: 'account', labelKey: 'nav.account' },
   { id: 'remote', labelKey: 'nav.remote', adminOnly: true },
+  { id: 'integrations', labelKey: 'nav.integrations', adminOnly: true },
 ];
 
 const LEGACY_TAB_ALIASES: Record<string, SettingsTab> = { users: 'account', organization: 'account', license: 'account' };
@@ -2496,6 +2498,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         {(resolvedTab === 'account' || resolvedTab === 'users' || resolvedTab === 'organization' || resolvedTab === 'license') && <AccountSection authUser={authUser} />}
 
         {resolvedTab === 'remote' && <RemoteAccessSection />}
+
+        {resolvedTab === 'integrations' && <FeishuIntegrationSection />}
 
         </>
         )}

@@ -1395,6 +1395,30 @@ export const api = {
     getRemote: () => request<RemoteStatus>('/settings/remote'),
     enableRemote: () => request<{ ok: boolean; status: RemoteStatus }>('/settings/remote/enable', { method: 'POST' }),
     disableRemote: () => request<{ ok: boolean }>('/settings/remote/disable', { method: 'POST' }),
+    getFeishuIntegration: () => request<{
+      appId?: string; appSecret?: string;
+      enabled: boolean; connected: boolean;
+      notifyChatId?: string;
+      notifyOnApproval: boolean; notifyOnNotification: boolean; notifyPriority: string[];
+    }>('/settings/integrations/feishu'),
+    saveFeishuIntegration: (config: {
+      appId: string; appSecret: string; enabled?: boolean;
+      notifyChatId?: string;
+      notifyOnApproval?: boolean; notifyOnNotification?: boolean; notifyPriority?: string[];
+    }) => request<{
+      appId?: string; connected: boolean; enabled: boolean;
+    }>('/settings/integrations/feishu', { method: 'POST', body: JSON.stringify(config) }),
+    testFeishuConnection: (creds: { appId: string; appSecret: string }) =>
+      request<{ success: boolean; message?: string }>('/settings/integrations/feishu/test', { method: 'POST', body: JSON.stringify(creds) }),
+    sendFeishuTestMessage: (data: { chatId: string }) =>
+      request<{ success: boolean; message?: string }>('/settings/integrations/feishu/test-message', { method: 'POST', body: JSON.stringify(data) }),
+    deleteFeishuIntegration: () => request<{ ok: boolean }>('/settings/integrations/feishu', { method: 'DELETE' }),
+    listFeishuChats: () =>
+      request<{ chats: Array<{ chatId: string; name: string; description?: string; avatar?: string }>; error?: string }>('/settings/integrations/feishu/chats'),
+    registerFeishuApp: () =>
+      request<{ success: boolean; appId?: string; connected?: boolean; userInfo?: { open_id?: string; tenant_brand?: string }; error?: string; message?: string }>('/settings/integrations/feishu/register', { method: 'POST' }),
+    getFeishuRegisterStatus: () =>
+      request<{ active: boolean; url?: string; expireIn?: number; status?: string; elapsed?: number }>('/settings/integrations/feishu/register/status'),
   },
   modelCatalog: {
     getByProvider: (provider: string) => request<{ provider: string; models: CatalogModel[] }>(`/models/catalog/${provider}`),
