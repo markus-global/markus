@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { allTemplateDirs, resolveTemplatesDir, resolveWebUiDir } from '../paths.js';
 import {
   loadConfig,
+  saveConfig,
   getDefaultConfigPath,
   createLogger,
   closeRuntimeLogger,
@@ -22,6 +23,8 @@ import {
   LLMRouter,
   LLMLogger,
   ModelCatalogService,
+  ModelScoreService,
+  ModelProfileService,
   type LLMLogEntry,
   RoleLoader,
   createDefaultSkillRegistry,
@@ -228,6 +231,30 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   // Apply auto-fallback setting
   if (config.llm.autoFallback === false) {
     llmRouter.setAutoFallback(false);
+  }
+
+  // Apply routing config
+  if (config.llm.routing) {
+    llmRouter.setRoutingConfig(config.llm.routing);
+  }
+  if (config.llm.taskRouting) {
+    llmRouter.setTaskRouting(config.llm.taskRouting);
+  }
+  if (config.llm.routingDefaultModel) {
+    llmRouter.setRoutingDefaultModel(config.llm.routingDefaultModel);
+  } else if (config.llm.defaultProvider) {
+    const providerCfg = config.llm.providers[config.llm.defaultProvider];
+    const activeModel = providerCfg?.model ?? config.llm.defaultModel;
+    if (activeModel) {
+      const migrated = { provider: config.llm.defaultProvider, model: activeModel };
+      llmRouter.setRoutingDefaultModel(migrated);
+      startupLog('INFO', 'Migrated routingDefaultModel from defaultProvider', JSON.stringify(migrated));
+      try {
+        saveConfig({ llm: { routingDefaultModel: migrated } } as any);
+      } catch {
+        startupLog('WARN', 'Failed to persist migrated routingDefaultModel');
+      }
+    }
   }
 
   // Load custom models from config
@@ -640,9 +667,31 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   apiServer.setConfigPath(values['config'] as string ?? getDefaultConfigPath());
 
   // Initialize model catalog service (loads baseline, tries to fetch latest in background)
-  const modelCatalog = new ModelCatalogService();
+  const modelCatalog = new ModelCatalogService({ mirrorUrl: config.llm?.catalogMirrorUrl });
   await modelCatalog.initialize();
   apiServer.setModelCatalog(modelCatalog);
+  llmRouter.setModelCatalogService(modelCatalog);
+
+  // Initialize model scoring and profile services
+  const modelScoreService = new ModelScoreService();
+  await modelScoreService.init();
+
+  const modelProfileService = new ModelProfileService(modelScoreService);
+  const builtinTierOverrides = new Map<string, import('@markus/shared').ModelTier>();
+  for (const entry of llmRouter.getModelCatalog()) {
+    if (entry.tier) builtinTierOverrides.set(entry.id, entry.tier);
+  }
+  // Apply user-configured tier overrides from markus.json
+  if (config.llm?.tierOverrides) {
+    for (const [modelId, tier] of Object.entries(config.llm.tierOverrides)) {
+      builtinTierOverrides.set(modelId, tier);
+    }
+  }
+  const allCatalogModels = modelCatalog.getAllProviders().flatMap(p => modelCatalog.getModelsByProvider(p));
+  modelProfileService.build(allCatalogModels, builtinTierOverrides);
+  apiServer.setModelProfileService(modelProfileService);
+  llmRouter.setModelProfileService(modelProfileService);
+
   if (config.hub?.url) apiServer.setHubUrl(config.hub.url);
 
   // Telemetry: connect stats provider and start background reporting

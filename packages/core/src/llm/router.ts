@@ -1,4 +1,4 @@
-import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile } from '@markus/shared';
+import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type CatalogModelCapabilities, type ModelTaskType, type CostTier, type RoutingStrategy, type RoutingConfig, type TaskRoutingConfig, type TaskModelAssignment } from '@markus/shared';
 import { startSpan } from '../tracing.js';
 import type { LLMProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
@@ -8,8 +8,17 @@ import { GoogleProvider } from './google.js';
 import { OllamaProvider } from './ollama.js';
 import { AuthProfileStore } from './auth-profiles.js';
 import { OAuthManager } from './oauth-manager.js';
+import type { ModelCatalogService } from './model-catalog.js';
 
 const log = createLogger('llm-router');
+
+export interface ChatOptions {
+  sessionId?: string;
+  taskType?: ModelTaskType;
+}
+
+const SESSION_MODEL_TTL_MS = 60 * 60 * 1000; // 1 hour
+const SESSION_MODEL_MAX_SIZE = 1000;
 
 function maskApiKey(key: string): string | undefined {
   if (!key) return undefined;
@@ -85,6 +94,24 @@ export class LLMRouter {
 
   private _profileStore?: AuthProfileStore;
   private _oauthManager?: OAuthManager;
+  private _modelProfileService?: import('./model-profile.js').ModelProfileService;
+  private _modelCatalogService?: ModelCatalogService;
+
+  // -- Model routing config --
+  private _routingConfig: RoutingConfig = {
+    strategy: 'balanced',
+    defaultTier: 'pro',
+    preferCacheHit: true,
+  };
+  private _taskRouting: TaskRoutingConfig = {
+    mode: 'auto',
+    assignments: {},
+    autoStrategy: 'balanced',
+    defaultTier: 'pro',
+  };
+  private _routingDefaultModel?: { provider: string; model: string };
+  /** Session-level model locks: sessionId → { provider, model, tier } */
+  private sessionModels = new Map<string, { provider: string; model: string; tier: ModelTier; ts: number }>();
 
   private readonly CIRCUIT_OPEN_AFTER = 2;
   private readonly CIRCUIT_RESET_MS = 5 * 60 * 1000;
@@ -331,11 +358,36 @@ export class LLMRouter {
     return catalog.some(m => m.id !== provider.model && this.isModelAvailable(name, m.id));
   }
 
-  /** Get all model definitions for a provider (builtin + custom) */
+  /** Get all model definitions for a provider (builtin + custom), enriched with live catalog pricing */
   private getProviderModels(providerName: string): ModelDefinition[] {
     const builtinModels = BUILTIN_MODEL_CATALOG.filter(m => m.provider === providerName);
     const customModels = this.customModelCatalog.get(providerName) ?? [];
-    return [...builtinModels, ...customModels.filter(cm => !builtinModels.some(bm => bm.id === cm.id))];
+    const merged = [...builtinModels, ...customModels.filter(cm => !builtinModels.some(bm => bm.id === cm.id))];
+    return merged.map(m => this.enrichModelFromCatalog(m));
+  }
+
+  /**
+   * Overlay live pricing from ModelCatalogService onto a builtin model definition.
+   * The catalog (from LiteLLM) is refreshed every 24h so prices stay current.
+   */
+  private enrichModelFromCatalog(model: ModelDefinition): ModelDefinition {
+    if (!this._modelCatalogService) return model;
+    // Try exact ID, then provider-prefixed ID
+    const catalogEntry = this._modelCatalogService.getModelInfo(model.id)
+      ?? this._modelCatalogService.getModelInfo(`${model.provider}/${model.id}`);
+    if (!catalogEntry) return model;
+    if (catalogEntry.inputCostPer1MTokens <= 0 && catalogEntry.outputCostPer1MTokens <= 0) return model;
+    return {
+      ...model,
+      contextWindow: catalogEntry.maxInputTokens || model.contextWindow,
+      maxOutputTokens: catalogEntry.maxOutputTokens || model.maxOutputTokens,
+      cost: {
+        input: catalogEntry.inputCostPer1MTokens || model.cost?.input || 0,
+        output: catalogEntry.outputCostPer1MTokens || model.cost?.output || 0,
+        cacheRead: catalogEntry.cacheReadCostPer1MTokens ?? model.cost?.cacheRead,
+        cacheWrite: catalogEntry.cacheWriteCostPer1MTokens ?? model.cost?.cacheWrite,
+      },
+    };
   }
 
   /**
@@ -446,9 +498,206 @@ export class LLMRouter {
     const toolCount = request.tools?.length ?? 0;
     const msgCount = request.messages.length;
 
+    // Hard thresholds (existing)
     if (toolCount > 5 || totalChars > 8000 || msgCount > 15) return 'complex';
+
+    // Check for reasoning/thinking requirement hints
+    const lastUserMsg = [...request.messages].reverse().find(m => m.role === 'user');
+    const lastText = lastUserMsg ? getTextContent(lastUserMsg.content).toLowerCase() : '';
+
+    const complexKeywords = /\b(architect|design|analyze|debug|refactor|optimize|complex|difficult|challenging|in-?depth|comprehensive|reasoning|think\s+step|chain.of.thought)\b/i;
+    const simpleKeywords = /\b(translate|summarize|format|convert|list|hello|hi|hey|thanks|thank you|yes|no|ok)\b/i;
+
+    if (complexKeywords.test(lastText)) return 'complex';
+
+    // System prompt complexity: long system prompts suggest complex setup
+    const systemMsg = request.messages.find(m => m.role === 'system');
+    const systemLen = systemMsg ? getTextContent(systemMsg.content).length : 0;
+    if (systemLen > 4000) return 'complex';
+
     if (toolCount > 0 || totalChars > 2000 || msgCount > 5) return 'moderate';
+
+    if (simpleKeywords.test(lastText) && totalChars < 500) return 'simple';
+
     return 'simple';
+  }
+
+  /**
+   * Infer the recommended ModelTier based on complexity and routing strategy.
+   */
+  static recommendTier(complexity: ComplexityLevel, strategy: RoutingStrategy, defaultTier: ModelTier = 'pro'): ModelTier {
+    switch (strategy) {
+      case 'always_max': return 'max';
+      case 'always_cheapest': return 'base';
+      case 'cache_optimized': return defaultTier;
+      case 'balanced':
+      default:
+        switch (complexity) {
+          case 'complex': return 'max';
+          case 'moderate': return 'pro';
+          case 'simple': return 'base';
+        }
+    }
+  }
+
+  /**
+   * Infer the task type from a request based on tools, keywords, and context.
+   */
+  static inferTaskType(request: LLMRequest): ModelTaskType {
+    const hasTools = (request.tools?.length ?? 0) > 0;
+    const lastUser = [...request.messages].reverse().find(m => m.role === 'user');
+    const text = lastUser ? getTextContent(lastUser.content).toLowerCase() : '';
+
+    if (/\b(translat|翻译)\b/i.test(text)) return 'text_translation';
+    if (/\b(summar|摘要|总结)\b/i.test(text)) return 'text_summary';
+    if (hasTools || /\b(code|function|implement|refactor|debug|编程|代码|实现)\b/i.test(text)) return 'text_coding';
+    if (/\b(reason|think|analy|prove|推理|分析|证明)\b/i.test(text)) return 'text_reasoning';
+    return 'text_chat';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Routing config
+  // ---------------------------------------------------------------------------
+
+  get routingConfig(): RoutingConfig { return this._routingConfig; }
+
+  setRoutingConfig(config: Partial<RoutingConfig>): void {
+    this._routingConfig = { ...this._routingConfig, ...config };
+    log.info('Routing config updated', { strategy: this._routingConfig.strategy, defaultTier: this._routingConfig.defaultTier });
+  }
+
+  get routingDefaultModel(): { provider: string; model: string } | undefined { return this._routingDefaultModel; }
+
+  setRoutingDefaultModel(defaultModel?: { provider: string; model: string }): void {
+    this._routingDefaultModel = defaultModel;
+    if (defaultModel) {
+      log.info('Routing default model set', defaultModel);
+    }
+  }
+
+  setModelProfileService(service: import('./model-profile.js').ModelProfileService): void {
+    this._modelProfileService = service;
+  }
+
+  setModelCatalogService(service: ModelCatalogService): void {
+    this._modelCatalogService = service;
+  }
+
+  get taskRouting(): TaskRoutingConfig { return this._taskRouting; }
+
+  setTaskRouting(config: Partial<TaskRoutingConfig>): void {
+    this._taskRouting = { ...this._taskRouting, ...config };
+    log.info('Task routing updated', { mode: this._taskRouting.mode, assignments: Object.keys(this._taskRouting.assignments) });
+  }
+
+  /**
+   * Look up the task routing assignment for a specific task type.
+   * Returns the assignment if set, else undefined (falls through to default model).
+   */
+  getTaskAssignment(taskType: ModelTaskType): TaskModelAssignment | undefined {
+    return this._taskRouting.assignments[taskType];
+  }
+
+  /**
+   * Select a provider+model for a given task type.
+   * Pure lookup: explicit assignment -> default model -> any available provider.
+   */
+  selectForTask(taskType: ModelTaskType, request: LLMRequest, _sessionId?: string): { provider: string; model?: string } {
+    // 1. Check explicit assignment
+    const assignment = this._taskRouting.assignments[taskType];
+    if (assignment) {
+      if (this.isAvailable(assignment.provider)) {
+        return { provider: assignment.provider, model: assignment.model };
+      }
+      if (assignment.fallback && this.isAvailable(assignment.fallback.provider)) {
+        log.warn(`Task ${taskType} primary ${assignment.provider} unavailable, using fallback`);
+        return { provider: assignment.fallback.provider, model: assignment.fallback.model };
+      }
+      log.warn(`Task ${taskType} assignment ${assignment.provider} unavailable, falling through to default`);
+    }
+
+    // 2. Fallback to default model
+    if (this._routingDefaultModel && this.providers.has(this._routingDefaultModel.provider) && this.isAvailable(this._routingDefaultModel.provider)) {
+      return { provider: this._routingDefaultModel.provider, model: this._routingDefaultModel.model };
+    }
+
+    // 3. Final fallback: any available provider
+    return { provider: this.selectProvider(request) };
+  }
+
+  /**
+   * Select the best available provider+model matching a target tier.
+   * Uses ModelProfileService when available for quality-ranked selection.
+   * Falls back to any available provider if no tier match found.
+   */
+  private selectProviderByTier(targetTier: ModelTier, request: LLMRequest): { provider: string; model?: string } {
+    if (this._modelProfileService) {
+      const profiles = this._modelProfileService.getByTier(targetTier);
+      let candidates = profiles
+        .filter(p => this.providers.has(p.provider) && this.isAvailable(p.provider));
+
+      if (candidates.length > 0) {
+        const strategy = this._routingConfig.strategy;
+        if (strategy === 'cache_optimized') {
+          // Prefer models that support prompt caching
+          const cacheable = candidates.filter(p => p.capabilities?.promptCaching);
+          if (cacheable.length > 0) candidates = cacheable;
+        }
+
+        if (strategy === 'balanced') {
+          candidates.sort((a, b) => b.derived.costEfficiency - a.derived.costEfficiency);
+        } else if (strategy === 'always_cheapest') {
+          candidates.sort((a, b) => (a.cost.inputPer1MTokens ?? 0) - (b.cost.inputPer1MTokens ?? 0));
+        } else {
+          candidates.sort((a, b) => (b.quality.qualityScore ?? 0) - (a.quality.qualityScore ?? 0));
+        }
+
+        return { provider: candidates[0].provider, model: candidates[0].id };
+      }
+    }
+
+    const tierPriority: ModelTier[] = targetTier === 'max' ? ['max', 'pro', 'base']
+      : targetTier === 'base' ? ['base', 'pro', 'max']
+      : ['pro', 'max', 'base'];
+
+    for (const tier of tierPriority) {
+      const candidates = BUILTIN_MODEL_CATALOG.filter(m =>
+        m.tier === tier && this.providers.has(m.provider) && this.isAvailable(m.provider),
+      );
+      if (candidates.length > 0) {
+        const best = candidates[0];
+        return { provider: best.provider, model: best.id };
+      }
+    }
+
+    // Fallback: use routingDefaultModel if configured and available
+    if (this._routingDefaultModel && this.providers.has(this._routingDefaultModel.provider) && this.isAvailable(this._routingDefaultModel.provider)) {
+      return { provider: this._routingDefaultModel.provider, model: this._routingDefaultModel.model };
+    }
+
+    // Final fallback: use existing selectProvider logic
+    const provider = this.selectProvider(request);
+    return { provider };
+  }
+
+  /** Clear session model lock (e.g. when user explicitly requests a different tier) */
+  clearSessionModel(sessionId: string): void {
+    this.sessionModels.delete(sessionId);
+  }
+
+  private evictStaleSessions(): void {
+    const now = Date.now();
+    for (const [id, entry] of this.sessionModels) {
+      if (now - entry.ts > SESSION_MODEL_TTL_MS) {
+        this.sessionModels.delete(id);
+      }
+    }
+    // If still over limit, remove oldest entries
+    if (this.sessionModels.size >= SESSION_MODEL_MAX_SIZE) {
+      const entries = [...this.sessionModels.entries()].sort((a, b) => a[1].ts - b[1].ts);
+      const toRemove = entries.slice(0, entries.length - SESSION_MODEL_MAX_SIZE + 100);
+      for (const [id] of toRemove) this.sessionModels.delete(id);
+    }
   }
 
   private selectProvider(request: LLMRequest, explicit?: string): string {
@@ -611,39 +860,50 @@ export class LLMRouter {
       return { response, model: activeModel };
     } catch (error) {
       this.recordFailure(providerName, activeModel, error);
+      throw LLMRouter.enrichError(error, providerName, activeModel);
+    } finally {
       if (altModel && altModel !== originalModel) {
         provider.configure({ provider: providerName as any, model: originalModel });
       }
-      throw LLMRouter.enrichError(error, providerName, activeModel);
-    } finally {
       this.releaseInflight(providerName);
     }
   }
 
-  async chat(request: LLMRequest, providerName?: string): Promise<LLMResponse> {
-    const primary = this.selectProvider(request, providerName);
+  async chat(request: LLMRequest, providerName?: string, options?: ChatOptions): Promise<LLMResponse> {
+    let primary: string;
+    let routedModel: string | undefined;
+
+    if (providerName) {
+      primary = this.selectProvider(request, providerName);
+    } else {
+      const taskType = options?.taskType ?? LLMRouter.inferTaskType(request);
+      const routeResult = this.selectForTask(taskType, request, options?.sessionId);
+      primary = routeResult.provider;
+      routedModel = routeResult.model;
+    }
+
     const provider = this.providers.get(primary);
     if (!provider) {
       throw new Error(`LLM provider not found: ${primary}. Available: ${[...this.providers.keys()].join(', ')}`);
     }
     request = this.resolveMaxTokens(request, primary);
 
-    log.debug(`Sending request to ${primary}`, { model: provider.model, messageCount: request.messages.length });
+    log.debug(`Sending request to ${primary}`, { model: routedModel ?? provider.model, messageCount: request.messages.length });
 
-    const span = startSpan('llm.chat', { provider: primary, model: provider.model });
+    const span = startSpan('llm.chat', { provider: primary, model: routedModel ?? provider.model });
     const startTime = Date.now();
     let lastError: unknown = null;
 
-    // Try primary provider's active model
+    // Try primary provider's active model (or routed model)
     try {
-      const { response, model } = await this.tryChat(primary, request);
+      const { response, model } = await this.tryChat(primary, request, routedModel);
       span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
       log.debug(`Response from ${primary}`, { tokens: response.usage, finishReason: response.finishReason });
       this.emitLog(primary, model, request, response, Date.now() - startTime);
       return response;
     } catch (error) {
       lastError = error;
-      log.error(`LLM request failed for ${primary}:${provider.model}`, { error: String(error) });
+      log.error(`LLM request failed for ${primary}:${routedModel ?? provider.model}`, { error: String(error) });
 
       // Try alternate models on the same provider (only when auto-fallback is enabled)
       if (this._autoFallback && !LLMRouter.isNonRetryableError(error)) {
@@ -731,31 +991,42 @@ export class LLMRouter {
       return { response, model: activeModel };
     } catch (error) {
       this.recordFailure(providerName, activeModel, error);
+      throw LLMRouter.enrichError(error, providerName, activeModel);
+    } finally {
       if (altModel && altModel !== originalModel) {
         provider.configure({ provider: providerName as any, model: originalModel });
       }
-      throw LLMRouter.enrichError(error, providerName, activeModel);
-    } finally {
       this.releaseInflight(providerName);
     }
   }
 
-  async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void, providerName?: string, signal?: AbortSignal): Promise<LLMResponse> {
-    const primary = this.selectProvider(request, providerName);
+  async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void, providerName?: string, signal?: AbortSignal, options?: ChatOptions): Promise<LLMResponse> {
+    let primary: string;
+    let routedModel: string | undefined;
+
+    if (providerName) {
+      primary = this.selectProvider(request, providerName);
+    } else {
+      const taskType = options?.taskType ?? LLMRouter.inferTaskType(request);
+      const routeResult = this.selectForTask(taskType, request, options?.sessionId);
+      primary = routeResult.provider;
+      routedModel = routeResult.model;
+    }
+
     const provider = this.providers.get(primary);
     if (!provider) {
       throw new Error(`LLM provider not found: ${primary}. Available: ${[...this.providers.keys()].join(', ')}`);
     }
     request = this.resolveMaxTokens(request, primary);
 
-    const span = startSpan('llm.chatStream', { provider: primary, model: provider.model });
+    const span = startSpan('llm.chatStream', { provider: primary, model: routedModel ?? provider.model });
     const startTime = Date.now();
 
     let lastError: unknown = null;
 
-    // Try primary provider's active model
+    // Try primary provider's routed model (or its default model)
     try {
-      const { response, model } = await this.tryStream(primary, request, onEvent, signal);
+      const { response, model } = await this.tryStream(primary, request, onEvent, signal, routedModel);
       span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
       this.emitLog(primary, model, request, response, Date.now() - startTime);
       return response;
@@ -866,12 +1137,17 @@ export class LLMRouter {
     const providers: Record<string, EnhancedProviderSettings> = {};
 
     for (const [name, p] of this.providers.entries()) {
-      const modelDef = BUILTIN_MODEL_CATALOG.find(m => m.id === p.model || m.provider === name);
+      const enrichedModels = this.getProviderModels(name);
+      const modelDef = enrichedModels.find(m => m.id === p.model) ?? enrichedModels[0];
       const customModels = this.customModelConfigs.get(name);
       const oauthProfile = this._profileStore?.getDefaultProfile(name);
-      const builtinModels = BUILTIN_MODEL_CATALOG.filter(m => m.provider === name);
-      const customCatalogModels = this.customModelCatalog.get(name) ?? [];
-      const mergedModels = [...builtinModels, ...customCatalogModels.filter(cm => !builtinModels.some(bm => bm.id === cm.id))];
+      // Enrich models without tier from ModelProfileService
+      const tieredModels = enrichedModels.map(m => {
+        if (m.tier) return m;
+        const profile = this._modelProfileService?.getProfile(m.id);
+        if (profile?.quality?.tier) return { ...m, tier: profile.quality.tier };
+        return m;
+      });
       const rawKey: string = (p as any).apiKey ?? '';
       const keySource = oauthProfile?.authType === 'oauth' ? 'oauth' as const : rawKey ? 'config' as const : undefined;
       providers[name] = {
@@ -886,7 +1162,7 @@ export class LLMRouter {
         contextWindow: customModels?.contextWindow ?? modelDef?.contextWindow,
         maxOutputTokens: customModels?.maxOutputTokens ?? modelDef?.maxOutputTokens,
         cost: customModels?.cost ?? modelDef?.cost,
-        models: mergedModels,
+        models: tieredModels,
         authType: oauthProfile?.authType,
         oauthConnected: oauthProfile?.authType === 'oauth' && !!oauthProfile?.oauth,
         oauthAccountId: oauthProfile?.oauth?.accountId,
@@ -896,16 +1172,14 @@ export class LLMRouter {
     for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter', 'zai', 'deepseek']) {
       if (!providers[name]) {
         const oauthProfile = this._profileStore?.getDefaultProfile(name);
-        const builtinModels = BUILTIN_MODEL_CATALOG.filter(m => m.provider === name);
-        const customCatalogModels = this.customModelCatalog.get(name) ?? [];
-        const mergedModels = [...builtinModels, ...customCatalogModels.filter(cm => !builtinModels.some(bm => bm.id === cm.id))];
+        const enrichedModels = this.getProviderModels(name);
         providers[name] = {
           name,
           displayName: PROVIDER_DISPLAY_NAMES[name] ?? name,
           model: '',
           configured: false,
           enabled: this.isProviderEnabled(name),
-          models: mergedModels,
+          models: enrichedModels,
           authType: oauthProfile?.authType,
           oauthConnected: oauthProfile?.authType === 'oauth' && !!oauthProfile?.oauth,
           oauthAccountId: oauthProfile?.oauth?.accountId,
@@ -971,7 +1245,7 @@ export class LLMRouter {
   }
 
   getModelCatalog(): ModelDefinition[] {
-    const all = [...BUILTIN_MODEL_CATALOG];
+    const all = BUILTIN_MODEL_CATALOG.map(m => this.enrichModelFromCatalog(m));
     for (const models of this.customModelCatalog.values()) {
       for (const m of models) {
         if (!all.some(b => b.id === m.id && b.provider === m.provider)) {
@@ -1116,37 +1390,151 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
 // - MiniMax: https://platform.minimax.io/docs/api-reference/api-overview
 const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   // Anthropic — https://docs.anthropic.com/claude/reference/input-and-output-sizes
-  { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, reasoning: true, inputTypes: ['text', 'image'] },
-  { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, reasoning: false, inputTypes: ['text', 'image'] },
-  { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 }, reasoning: false, inputTypes: ['text', 'image'] },
+  { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
+  { id: 'claude-sonnet-4-6-20260514', name: 'Claude Sonnet 4.6', provider: 'anthropic', contextWindow: 1000000, maxOutputTokens: 64000, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'max' },
+  { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4 (legacy)', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'pro' },
+  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'pro' },
+  { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku (legacy)', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'base' },
   // OpenAI — https://developers.openai.com/api/docs/models
-  { id: 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 2.5, output: 15, cacheRead: 0.25 }, reasoning: true, inputTypes: ['text', 'image'] },
-  { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 2.5, output: 10 }, reasoning: false, inputTypes: ['text', 'image'] },
-  { id: 'o4-mini', name: 'o4-mini', provider: 'openai', contextWindow: 200000, maxOutputTokens: 100000, cost: { input: 1.1, output: 4.4 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 2.5, output: 15, cacheRead: 0.25 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
+  { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 2.5, output: 10 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'max' },
+  { id: 'o4-mini', name: 'o4-mini', provider: 'openai', contextWindow: 200000, maxOutputTokens: 100000, cost: { input: 1.1, output: 4.4 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro' },
   // OpenAI Codex (OAuth — uses ChatGPT subscription)
-  { id: 'gpt-5.5', name: 'GPT-5.5 (Codex)', provider: 'openai-codex', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 0, output: 0 }, reasoning: true, inputTypes: ['text', 'image'], description: 'Uses ChatGPT subscription via OAuth' },
-  { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini (Codex)', provider: 'openai-codex', contextWindow: 512000, maxOutputTokens: 64000, cost: { input: 0, output: 0 }, reasoning: true, inputTypes: ['text', 'image'], description: 'Uses ChatGPT subscription via OAuth — fast' },
-  { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Spark (Codex)', provider: 'openai-codex', contextWindow: 128000, maxOutputTokens: 64000, cost: { input: 0, output: 0 }, reasoning: false, inputTypes: ['text', 'image'], description: 'Uses ChatGPT subscription via OAuth — Pro only, real-time' },
+  { id: 'gpt-5.5', name: 'GPT-5.5 (Codex)', provider: 'openai-codex', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 0, output: 0 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max', description: 'Uses ChatGPT subscription via OAuth' },
+  { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini (Codex)', provider: 'openai-codex', contextWindow: 512000, maxOutputTokens: 64000, cost: { input: 0, output: 0 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro', description: 'Uses ChatGPT subscription via OAuth — fast' },
+  { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Spark (Codex)', provider: 'openai-codex', contextWindow: 128000, maxOutputTokens: 64000, cost: { input: 0, output: 0 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'base', description: 'Uses ChatGPT subscription via OAuth — Pro only, real-time' },
   // Google — https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini
-  { id: 'gemini-3-1-pro', name: 'Gemini 3.1 Pro', provider: 'google', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'] },
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'google', contextWindow: 1048576, maxOutputTokens: 65536, cost: { input: 0.15, output: 0.6 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'gemini-3-1-pro', name: 'Gemini 3.1 Pro', provider: 'google', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'google', contextWindow: 1048576, maxOutputTokens: 65536, cost: { input: 0.30, output: 2.50 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro' },
   // MiniMax — https://platform.minimax.io/docs/api-reference/api-overview
-  { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2 }, reasoning: true, inputTypes: ['text'] },
-  { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.2, output: 0.95 }, reasoning: false, inputTypes: ['text'] },
+  { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
+  { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2, cacheRead: 0.03, cacheWrite: 0.375 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
   // OpenRouter — https://openrouter.ai/models (pass-through pricing varies by upstream provider)
-  { id: 'xiaomi/mimo-v2-pro', name: 'MiMo-V2-Pro', provider: 'openrouter', contextWindow: 1048576, maxOutputTokens: 131072, cost: { input: 1, output: 3, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text'] },
-  { id: 'anthropic/claude-opus-4-6', name: 'Claude Opus 4.6 (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, reasoning: true, inputTypes: ['text', 'image'] },
-  { id: 'openai/gpt-5.4', name: 'GPT-5.4 (via OpenRouter)', provider: 'openrouter', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 2.5, output: 15, cacheRead: 0.25 }, reasoning: true, inputTypes: ['text', 'image'] },
-  { id: 'google/gemini-3-1-pro', name: 'Gemini 3.1 Pro (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'xiaomi/mimo-v2-pro', name: 'MiMo-V2-Pro', provider: 'openrouter', contextWindow: 1048576, maxOutputTokens: 131072, cost: { input: 1, output: 3, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
+  { id: 'anthropic/claude-opus-4-6', name: 'Claude Opus 4.6 (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
+  { id: 'openai/gpt-5.4', name: 'GPT-5.4 (via OpenRouter)', provider: 'openrouter', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 2.5, output: 15, cacheRead: 0.25 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
+  { id: 'google/gemini-3-1-pro', name: 'Gemini 3.1 Pro (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
   // DeepSeek — https://api-docs.deepseek.com/
-  { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 0.14, output: 0.28, cacheRead: 0.028 }, reasoning: true, inputTypes: ['text'] },
-  { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 1.67, output: 3.33, cacheRead: 0.14 }, reasoning: true, inputTypes: ['text'] },
-  { id: 'deepseek-chat', name: 'DeepSeek-Chat (legacy)', provider: 'deepseek', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 0.14, output: 0.28, cacheRead: 0.028 }, reasoning: false, inputTypes: ['text'] },
-  { id: 'deepseek-reasoner', name: 'DeepSeek-Reasoner (legacy)', provider: 'deepseek', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 0.55, output: 2.19, cacheRead: 0.14 }, reasoning: true, inputTypes: ['text'] },
+  { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 0.14, output: 0.28, cacheRead: 0.0028 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
+  { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 0.435, output: 0.87, cacheRead: 0.003625 }, reasoning: true, inputTypes: ['text'], tier: 'max' },
+  { id: 'deepseek-chat', name: 'DeepSeek-Chat (legacy)', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 0.14, output: 0.28, cacheRead: 0.0028 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
+  { id: 'deepseek-reasoner', name: 'DeepSeek-Reasoner (legacy)', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 0.14, output: 0.28, cacheRead: 0.0028 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
   // SiliconFlow — https://docs.siliconflow.cn/docs/model-library (OpenAI-compatible proxy, pricing varies)
-  { id: 'Qwen/Qwen3.5-35B-A3B', name: 'Qwen3.5-35B-A3B', provider: 'siliconflow', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 1.5, output: 4 }, reasoning: true, inputTypes: ['text'] },
-  { id: 'Qwen/Qwen3.5-32B-A3B', name: 'Qwen3.5-32B-A3B', provider: 'siliconflow', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 1.5, output: 4 }, reasoning: true, inputTypes: ['text'] },
-  { id: 'deepseek-ai/DeepSeek-V3', name: 'DeepSeek-V3 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 2, output: 8 }, reasoning: true, inputTypes: ['text'] },
-  { id: 'deepseek-ai/DeepSeek-Coder-V2', name: 'DeepSeek-Coder-V2 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 1, output: 4 }, reasoning: false, inputTypes: ['text'] },
-  { id: 'moonshotai/Kimi-K2.5', name: 'Kimi-K2.5 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 2, output: 8 }, reasoning: true, inputTypes: ['text'] },
+  { id: 'Qwen/Qwen3.5-35B-A3B', name: 'Qwen3.5-35B-A3B', provider: 'siliconflow', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 0.24, output: 1.80 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
+  { id: 'Qwen/Qwen3.5-122B-A10B', name: 'Qwen3.5-122B-A10B', provider: 'siliconflow', contextWindow: 262144, maxOutputTokens: 262144, cost: { input: 0.26, output: 2.08 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
+  { id: 'Qwen/Qwen3.5-27B', name: 'Qwen3.5-27B', provider: 'siliconflow', contextWindow: 262144, maxOutputTokens: 262144, cost: { input: 0.25, output: 2.00 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
+  { id: 'Qwen/Qwen3.5-9B', name: 'Qwen3.5-9B', provider: 'siliconflow', contextWindow: 262144, maxOutputTokens: 262144, cost: { input: 0.10, output: 0.15 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
+  { id: 'deepseek-ai/DeepSeek-V3', name: 'DeepSeek-V3 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 163840, maxOutputTokens: 163840, cost: { input: 0.25, output: 1.00 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
+  { id: 'deepseek-ai/DeepSeek-V3.2', name: 'DeepSeek-V3.2 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 163840, maxOutputTokens: 163840, cost: { input: 0.27, output: 0.42 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
+  { id: 'moonshotai/Kimi-K2.5', name: 'Kimi-K2.5 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 0.60, output: 3.00 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
+  // ZAI (Zhipu) — https://docs.z.ai/guides/overview/pricing
+  { id: 'glm-5.1', name: 'GLM-5.1', provider: 'zai', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 1.4, output: 4.4, cacheRead: 0.26 }, reasoning: true, inputTypes: ['text'], tier: 'max' },
+  { id: 'glm-5', name: 'GLM-5', provider: 'zai', contextWindow: 205000, maxOutputTokens: 16384, cost: { input: 1.0, output: 3.2, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro' },
+  { id: 'glm-4.7-flashx', name: 'GLM-4.7 FlashX', provider: 'zai', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 0.07, output: 0.4 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
 ];
+
+// ---------------------------------------------------------------------------
+// Tier classification helpers
+// ---------------------------------------------------------------------------
+
+/** Infer a quality score (0-100) from model name heuristics when no benchmark data is available */
+export function estimateQualityScore(modelId: string, reasoning?: boolean, inputCostPer1M?: number): number {
+  const id = modelId.toLowerCase();
+  let score = 40;
+
+  // Top-tier flagship models
+  if (id.includes('opus') || id.includes('fable')) score = 92;
+  else if (id.includes('gpt-5.5') || id.includes('gpt-5.4')) score = 90;
+  else if (id.includes('o3') || id.includes('o4')) score = 85;
+  else if (id.includes('gemini-3') && id.includes('pro')) score = 85;
+  else if (id.includes('gemini-2.5-pro')) score = 82;
+
+  // Strong models
+  else if (id.includes('sonnet')) score = 78;
+  else if (id.includes('gpt-4.1') && !id.includes('mini') && !id.includes('nano')) score = 78;
+  else if (id.includes('gpt-4o') && !id.includes('mini')) score = 75;
+  else if (id.includes('deepseek') && id.includes('v4-pro')) score = 75;
+  else if (id.includes('deepseek') && (id.includes('r2') || id.includes('r1'))) score = 78;
+  else if (id.includes('qwen') && /3\.5|3\.0/.test(id) && !id.includes('turbo')) score = 72;
+
+  // Mid-tier models
+  else if (id.includes('deepseek') && id.includes('v4-flash')) score = 55;
+  else if (id.includes('haiku')) score = 52;
+  else if (id.includes('gpt-4.1-mini') || id.includes('gpt-4o-mini')) score = 55;
+  else if (id.includes('gemini') && id.includes('flash')) score = 52;
+  else if (id.includes('mimo') || id.includes('kimi')) score = 60;
+
+  // Legacy / outdated models — explicitly low
+  else if (id.includes('legacy') || id.includes('deprecated')) score = 30;
+  else if (id.includes('deepseek') && id.includes('v3')) score = 50;
+  else if (id.includes('deepseek') && id.includes('v2')) score = 35;
+  else if (id.includes('deepseek-chat') || id.includes('deepseek-coder')) score = 35;
+  else if (id.includes('gpt-3.5') || id.includes('gpt-35')) score = 30;
+
+  // Small models
+  else if (id.includes('gpt-4.1-nano') || id.includes('nano')) score = 38;
+  else if (id.includes('phi-') || id.includes('tinyllama')) score = 30;
+
+  else {
+    // Unknown models: use pricing as a rough quality signal
+    if (inputCostPer1M !== undefined && inputCostPer1M > 0) {
+      if (inputCostPer1M >= 20) score = 80;
+      else if (inputCostPer1M >= 8) score = 65;
+      else if (inputCostPer1M >= 3) score = 50;
+      else score = 38;
+    }
+    // Use parameter count from name if present
+    const paramMatch = id.match(/(\d+)b\b/);
+    if (paramMatch) {
+      const params = parseInt(paramMatch[1], 10);
+      if (params >= 400) score = Math.max(score, 80);
+      else if (params >= 70) score = Math.max(score, 65);
+      else if (params >= 30) score = Math.max(score, 50);
+      else if (params <= 7) score = Math.min(score, 40);
+    }
+  }
+
+  if (reasoning && score < 75) score += 5;
+
+  return Math.min(100, score);
+}
+
+/** Determine tier from quality score */
+export function tierFromQualityScore(score: number): ModelTier {
+  if (score >= 75) return 'max';
+  if (score >= 50) return 'pro';
+  return 'base';
+}
+
+/** Determine cost tier badge from input cost per 1M tokens */
+export function costTierFromPrice(inputPer1M: number): CostTier {
+  if (inputPer1M <= 0) return '$';
+  if (inputPer1M < 0.5) return '$';
+  if (inputPer1M < 2) return '$$';
+  if (inputPer1M < 5) return '$$$';
+  return '$$$$';
+}
+
+/** Derive task types a model can serve based on its capabilities and mode */
+export function getModelTaskTypes(
+  mode: string,
+  capabilities: CatalogModelCapabilities,
+): ModelTaskType[] {
+  const tasks: ModelTaskType[] = [];
+
+  if (mode === 'chat') {
+    tasks.push('text_chat', 'text_summary', 'text_translation');
+    if (capabilities.reasoning) tasks.push('text_reasoning');
+    if (capabilities.functionCalling) tasks.push('text_coding');
+    if (capabilities.vision) tasks.push('image_recognition');
+    if (capabilities.webSearch) tasks.push('web_search');
+    if (capabilities.audioInput) tasks.push('audio_stt');
+    if (capabilities.audioOutput) tasks.push('audio_tts');
+  }
+  if (mode === 'image_generation') tasks.push('image_generation');
+  if (mode === 'audio_speech') tasks.push('audio_tts');
+  if (mode === 'audio_transcription') tasks.push('audio_stt');
+  if (mode === 'embedding') tasks.push('embedding');
+
+  return tasks;
+}

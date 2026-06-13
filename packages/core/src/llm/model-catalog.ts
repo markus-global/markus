@@ -12,7 +12,12 @@ const DATA_DIR = join(__dirname, '..', '..', 'data');
 const log = createLogger('model-catalog');
 
 const LITELLM_JSON_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
+const LITELLM_MIRROR_URLS = [
+  'https://cdn.jsdelivr.net/gh/BerriAI/litellm@main/model_prices_and_context_window.json',
+  'https://raw.gitmirror.com/BerriAI/litellm/main/model_prices_and_context_window.json',
+];
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+const RETRY_BACKOFF_MS = 4 * 60 * 60 * 1000;  // 4 hours after failure (avoid spamming)
 const CACHE_FILENAME = 'model-catalog-cache.json';
 
 const PROVIDER_MAP: Record<string, string> = {
@@ -50,6 +55,8 @@ export class ModelCatalogService {
   private markusDir: string;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private mirrorUrl?: string;
+  private consecutiveFailures = 0;
+  private lastFailureAt = 0;
 
   constructor(options?: { mirrorUrl?: string }) {
     this.markusDir = join(homedir(), '.markus');
@@ -128,30 +135,47 @@ export class ModelCatalogService {
   }
 
   async refresh(): Promise<boolean> {
-    try {
-      const url = this.mirrorUrl || LITELLM_JSON_URL;
-      log.info(`Refreshing model catalog from ${url}`);
-
-      const response = await fetch(url, {
-        signal: AbortSignal.timeout(30000),
-      });
-
-      if (!response.ok) {
-        log.warn(`Failed to fetch model catalog: HTTP ${response.status}`);
-        return false;
-      }
-
-      const rawText = await response.text();
-      const rawData = JSON.parse(rawText) as Record<string, LiteLLMRawModelEntry>;
-
-      this.parseAndLoad(rawData, 'remote');
-      this.persistCache(rawText);
-      log.info(`Model catalog refreshed: ${this.models.size} chat models loaded`);
-      return true;
-    } catch (err) {
-      log.warn(`Failed to refresh model catalog: ${err instanceof Error ? err.message : String(err)}`);
+    // Back off if we've been failing repeatedly
+    if (this.consecutiveFailures > 0 && Date.now() - this.lastFailureAt < RETRY_BACKOFF_MS) {
       return false;
     }
+
+    const urls = this.mirrorUrl
+      ? [this.mirrorUrl]
+      : [LITELLM_JSON_URL, ...LITELLM_MIRROR_URLS];
+
+    for (const url of urls) {
+      try {
+        log.info(`Refreshing model catalog from ${url}`);
+        const response = await fetch(url, {
+          signal: AbortSignal.timeout(30000),
+        });
+
+        if (!response.ok) {
+          log.warn(`Failed to fetch model catalog from ${url}: HTTP ${response.status}`);
+          continue;
+        }
+
+        const rawText = await response.text();
+        const rawData = JSON.parse(rawText) as Record<string, LiteLLMRawModelEntry>;
+
+        this.parseAndLoad(rawData, 'remote');
+        this.persistCache(rawText);
+        this.consecutiveFailures = 0;
+        log.info(`Model catalog refreshed: ${this.models.size} chat models loaded`);
+        return true;
+      } catch (err) {
+        log.warn(`Failed to fetch model catalog from ${url}: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+    }
+
+    this.consecutiveFailures++;
+    this.lastFailureAt = Date.now();
+    if (this.consecutiveFailures === 1) {
+      log.warn('All model catalog sources unreachable. Using bundled baseline data. Will retry in 4 hours.');
+    }
+    return false;
   }
 
   private loadBaseline(): void {

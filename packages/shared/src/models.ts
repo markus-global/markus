@@ -174,6 +174,23 @@ export const PROVIDERS: ProviderModel[] = [
     defaultModel: 'qwen-max',
     models: ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen-long'],
   },
+  // Full-modal aggregator providers (text + image + audio + video via single API key)
+  {
+    id: 'atlascloud',
+    label: 'Atlas Cloud (Full-Modal)',
+    envKey: 'ATLASCLOUD_API_KEY',
+    baseUrl: 'https://api.atlascloud.ai/v1',
+    defaultModel: 'claude-sonnet-4-6',
+    models: ['claude-sonnet-4-6', 'gpt-4.1', 'gemini-2.5-pro', 'deepseek-v3', 'flux-1-schnell'],
+  },
+  {
+    id: 'strongly',
+    label: 'Strongly.AI (Full-Modal)',
+    envKey: 'STRONGLY_API_KEY',
+    baseUrl: 'https://api.strongly.ai/v1',
+    defaultModel: 'claude-sonnet-4-6',
+    models: ['claude-sonnet-4-6', 'gpt-4.1', 'gemini-2.5-pro'],
+  },
 ];
 
 export function isPlaceholder(key: string): boolean {

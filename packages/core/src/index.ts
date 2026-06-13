@@ -33,6 +33,7 @@ export {
 } from './environment-profile.js';
 export { ToolSelector, type ToolGroup } from './tool-selector.js';
 export { LLMRouter } from './llm/router.js';
+export type { ChatOptions } from './llm/router.js';
 export { LLMLogger, type LLMLogEntry } from './llm/llm-logger.js';
 export { AnthropicProvider } from './llm/anthropic.js';
 export { OpenAIProvider } from './llm/openai.js';
@@ -43,6 +44,10 @@ export { OllamaProvider } from './llm/ollama.js';
 export { AuthProfileStore } from './llm/auth-profiles.js';
 export { OAuthManager } from './llm/oauth-manager.js';
 export { ModelCatalogService } from './llm/model-catalog.js';
+export { ModelScoreService } from './llm/model-scores.js';
+export { ModelProfileService } from './llm/model-profile.js';
+export { ModalityRouter } from './llm/modality-router.js';
+export { estimateQualityScore, tierFromQualityScore, costTierFromPrice, getModelTaskTypes } from './llm/router.js';
 export { MemoryStore } from './memory/store.js';
 export type { IMemoryStore, MemoryEntry, ConversationSession } from './memory/types.js';
 
@@ -114,7 +119,7 @@ export {
   createMaxLengthGuardrail,
 } from './guardrails.js';
 export type { InputGuardrail, OutputGuardrail, GuardrailResult } from './guardrails.js';
-export type { LLMProviderInterface } from './llm/provider.js';
+export type { LLMProviderInterface, MultiModalProviderInterface, ImageGenOptions, ImageResult, TTSOptions, AudioResult, STTOptions, VideoGenOptions, VideoResult } from './llm/provider.js';
 export {
   ShellTool,
   FileReadTool,
@@ -149,6 +154,8 @@ export {
   runSubagentLoop,
   type SubagentContext,
   type SubagentProgressCallback,
+  createMultiModalTools,
+  type MultiModalToolsContext,
 } from './tools/index.js';
 export {
   ToolLoopDetector,

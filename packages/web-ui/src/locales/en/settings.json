@@ -82,6 +82,71 @@
     "autoFallback": "Auto-switch Model",
     "autoFallbackDesc": "When enabled, automatically try other providers/models if the primary one fails. When disabled, only use the selected model — errors will not trigger fallback."
   },
+  "modelRouting": {
+    "title": "Model Routing",
+    "defaultModelTitle": "Default Model",
+    "defaultModelDesc": "Used as fallback when no specific model is assigned for a task.",
+    "defaultModelPlaceholder": "Select a default model...",
+    "taskAssignTitle": "Task Assignments",
+    "taskAssignDesc": "Each task type uses the assigned model. Unassigned tasks use the default model above.",
+    "taskGroups": {
+      "text": "Text",
+      "image": "Image",
+      "audio": "Audio",
+      "video": "Video",
+      "other": "Other"
+    },
+    "tasks": {
+      "text_chat": "Chat",
+      "text_reasoning": "Reasoning",
+      "text_coding": "Coding",
+      "text_translation": "Translation",
+      "text_summary": "Summary",
+      "image_recognition": "Image Recognition",
+      "image_generation": "Image Generation",
+      "audio_tts": "Text-to-Speech",
+      "audio_stt": "Speech-to-Text",
+      "video_generation": "Video Generation",
+      "embedding": "Embedding",
+      "web_search": "Web Search"
+    },
+    "selectModel": "Select model...",
+    "suggested": "suggested",
+    "noModelAvailable": "No capable model available",
+    "addProviderHint": "add a provider that supports this capability above",
+    "clear": "Clear",
+    "loadError": "Failed to load routing settings: {{error}}",
+    "saving": "Saving...",
+    "saved": "Saved",
+    "saveError": "Save failed",
+    "noProvidersHint": "Configure at least one provider above to assign models to tasks.",
+    "tier": {
+      "base": "Base",
+      "pro": "Pro",
+      "max": "Max"
+    }
+  },
+  "modelPicker": {
+    "loading": "Loading models...",
+    "empty": "No models available for this provider.",
+    "filterPlaceholder": "Filter models...",
+    "searchPlaceholder": "Search models...",
+    "showAll": "Show all {{count}} models...",
+    "showLess": "Show less",
+    "allCount": "All ({{count}})",
+    "tierCount": "{{tier}} ({{count}})",
+    "active": "Active",
+    "perMillion": "per 1M",
+    "ctx": "ctx",
+    "costFree": "Free",
+    "capabilities": {
+      "tools": "Tools",
+      "vision": "Vision",
+      "reasoning": "Reasoning",
+      "caching": "Caching",
+      "search": "Search"
+    }
+  },
   "modelProviders": {
     "title": "Model Providers & Pricing",
     "disabled": "disabled",
@@ -127,6 +192,10 @@
     "selectFromCatalog": "Select from catalog",
     "loadingCatalog": "Loading models from catalog...",
     "moreCatalogModels": "{{count}} more models available from catalog...",
+    "modelsAvailable": "{{count}} models available",
+    "andMoreModels": "... and {{count}} more models",
+    "catalogModelsAvailable": "{{count}} more models supported by this provider",
+    "collapseModels": "Collapse",
     "modelId": "Model ID",
     "displayName": "Display Name",
     "reasoning": "reasoning",

@@ -1000,6 +1000,7 @@ export class Agent {
       const continuation = await this.llmRouter.chat(
         { messages: prepared.messages },
         this.getEffectiveProvider(),
+        { sessionId: this.currentSessionId },
       );
 
       const contReply = continuation.content ?? '';
@@ -2551,7 +2552,7 @@ export class Agent {
           metadata: this.getLLMMetadata(sessionId),
           compaction: useCompaction,
           systemCacheSegments,
-        }, this.getEffectiveProvider()),
+        }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
         'Browser close-tabs follow-up',
       );
 
@@ -2589,7 +2590,7 @@ export class Agent {
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
             systemCacheSegments,
-          }, this.getEffectiveProvider()),
+          }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
           'Browser close-tabs follow-up continuation',
         );
       }
@@ -3023,7 +3024,7 @@ export class Agent {
           metadata: this.getLLMMetadata(sessionId),
           compaction: useCompaction,
           systemCacheSegments,
-        }, this.getEffectiveProvider()),
+        }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
         'Chat LLM call',
       );
 
@@ -3250,7 +3251,7 @@ export class Agent {
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
             systemCacheSegments,
-          }, this.getEffectiveProvider()),
+          }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
           'Chat LLM continuation',
         );
 
@@ -3309,7 +3310,7 @@ export class Agent {
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
             systemCacheSegments,
-          }, this.getEffectiveProvider()),
+          }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
           'Chat LLM comment-reminder',
         );
 
@@ -3372,7 +3373,7 @@ export class Agent {
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
               systemCacheSegments,
-            }, this.getEffectiveProvider()),
+            }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
             'Chat LLM comment-reminder-final',
           );
         }
@@ -3413,7 +3414,7 @@ export class Agent {
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
             systemCacheSegments,
-          }, this.getEffectiveProvider()),
+          }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
           'Chat LLM requirement-action-reminder',
         );
 
@@ -3474,7 +3475,7 @@ export class Agent {
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
               systemCacheSegments,
-            }, this.getEffectiveProvider()),
+            }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
             'Chat LLM requirement-action-reminder-final',
           );
         }
@@ -3687,6 +3688,7 @@ export class Agent {
           wrappedOnEvent,
           this.getEffectiveProvider(),
           abortController.signal,
+          { sessionId: this.currentSessionId },
         ),
         'Stream LLM call',
         abortController.signal,
@@ -3897,6 +3899,7 @@ export class Agent {
             wrappedOnEvent,
             this.getEffectiveProvider(),
             abortController.signal,
+            { sessionId: this.currentSessionId },
           ),
           'Stream LLM continuation',
           abortController.signal,
@@ -4334,6 +4337,7 @@ export class Agent {
           handleStreamEvent,
           this.getEffectiveProvider(),
           abortController.signal,
+          { sessionId: sessionId ?? this.currentSessionId },
         ),
         'Task execution LLM call',
         abortController.signal,
@@ -4557,6 +4561,7 @@ export class Agent {
             handleStreamEvent,
             this.getEffectiveProvider(),
             abortController.signal,
+            { sessionId: sessionId ?? this.currentSessionId },
           ),
           'Task execution LLM continuation',
           abortController.signal,
@@ -4625,6 +4630,7 @@ export class Agent {
             handleStreamEvent,
             this.getEffectiveProvider(),
             abortController.signal,
+            { sessionId: sessionId ?? this.currentSessionId },
           ),
           'Task execution final submit reminder',
           abortController.signal,
@@ -4854,6 +4860,8 @@ export class Agent {
           { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments },
           handleStreamEvent,
           this.getEffectiveProvider(),
+          undefined,
+          { sessionId: sessionId ?? this.currentSessionId },
         ),
         'RespondInSession LLM call',
       );
@@ -4954,6 +4962,8 @@ export class Agent {
             { messages: preparedCont.messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments },
             handleStreamEvent,
             this.getEffectiveProvider(),
+            undefined,
+            { sessionId: sessionId ?? this.currentSessionId },
           ),
           'RespondInSession LLM continuation',
         );

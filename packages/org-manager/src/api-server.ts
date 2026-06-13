@@ -28,6 +28,7 @@ import {
   WELL_KNOWN_SKILL_DIRS,
   type AgentManager,
   type ModelCatalogService,
+  type ModelProfileService,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
@@ -163,6 +164,28 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
   return hashHex === expectedHash;
 }
 
+/** Strip LiteLLM-style "provider/" prefix from a model key to get the actual API model ID. */
+function stripProviderPrefix(catalogId: string): string {
+  const slashIdx = catalogId.indexOf('/');
+  if (slashIdx < 0) return catalogId;
+  const prefix = catalogId.slice(0, slashIdx);
+  // Only strip if the prefix looks like a provider name (no dots, short, lowercase-ish).
+  // Keep IDs like "deepseek-ai/DeepSeek-V3" (org/model for SiliconFlow) as-is.
+  const knownPrefixes = ['deepseek', 'openai', 'anthropic', 'google', 'gemini', 'vertex_ai', 'minimax', 'xai', 'mistral', 'groq', 'perplexity', 'cohere', 'together_ai', 'fireworks_ai', 'volcengine', 'moonshot', 'dashscope', 'openrouter'];
+  if (knownPrefixes.includes(prefix)) {
+    return catalogId.slice(slashIdx + 1);
+  }
+  return catalogId;
+}
+
+function costTierFromNormalized(cost: { inputPer1MTokens?: number; outputPer1MTokens?: number }): string {
+  const avg = ((cost.inputPer1MTokens ?? 0) + (cost.outputPer1MTokens ?? 0)) / 2;
+  if (avg <= 0.5) return '$';
+  if (avg <= 5) return '$$';
+  if (avg <= 30) return '$$$';
+  return '$$$$';
+}
+
 function generateInviteToken(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -212,6 +235,7 @@ export class APIServer {
   private remoteAgent?: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void };
   private remoteAgentFactory?: () => Promise<{ getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void } | null>;
   private modelCatalog?: ModelCatalogService;
+  private modelProfileService?: ModelProfileService;
   private feishuRegisterSessions = new Map<string, { url: string; expireIn: number; status: string; createdAt: number }>();
   /** Aggregate today's tool calls from all agents' persisted metrics (the single source of truth) */
   private getToolCallsTodayFromAgents(): number {
@@ -732,6 +756,10 @@ export class APIServer {
 
   setModelCatalog(catalog: ModelCatalogService): void {
     this.modelCatalog = catalog;
+  }
+
+  setModelProfileService(service: ModelProfileService): void {
+    this.modelProfileService = service;
   }
 
   setConfigPath(configPath: string): void {
@@ -7663,8 +7691,9 @@ EXPLANATION_END`;
         const baseUrl = (providerInstance as any)?.baseUrl;
 
         if (!apiKey) {
-          // No key available, fallback to catalog
-          const catalogModels = this.modelCatalog?.getModelsByProvider(providerName) ?? [];
+          // No key available, fallback to catalog (strip LiteLLM provider prefixes)
+          const catalogModels = (this.modelCatalog?.getModelsByProvider(providerName) ?? [])
+            .map(cm => ({ ...cm, id: stripProviderPrefix(cm.id) }));
           this.json(res, 200, { provider: providerName, models: catalogModels, source: 'catalog' });
           return;
         }
@@ -7672,7 +7701,8 @@ EXPLANATION_END`;
         const result = await this.validateProviderKey(providerName, apiKey, baseUrl);
         this.json(res, 200, { provider: providerName, models: result.models, source: result.valid ? 'live' : 'catalog' });
       } catch (err) {
-        const catalogModels = this.modelCatalog?.getModelsByProvider(providerName) ?? [];
+        const catalogModels = (this.modelCatalog?.getModelsByProvider(providerName) ?? [])
+          .map(cm => ({ ...cm, id: stripProviderPrefix(cm.id) }));
         this.json(res, 200, { provider: providerName, models: catalogModels, source: 'catalog', error: err instanceof Error ? err.message : String(err) });
       }
       return;
@@ -7696,9 +7726,13 @@ EXPLANATION_END`;
         return;
       }
       const body = await this.readBody(req);
-      const { defaultProvider, autoFallback } = body as { defaultProvider?: string; autoFallback?: boolean };
-      if (!defaultProvider && autoFallback === undefined) {
-        this.json(res, 400, { error: 'defaultProvider or autoFallback is required' });
+      const { defaultProvider, autoFallback, routing, taskRouting, routingDefaultModel } = body as {
+        defaultProvider?: string; autoFallback?: boolean;
+        routing?: Record<string, unknown>; taskRouting?: Record<string, unknown>;
+        routingDefaultModel?: { provider: string; model: string } | null;
+      };
+      if (!defaultProvider && autoFallback === undefined && !routing && !taskRouting && routingDefaultModel === undefined) {
+        this.json(res, 400, { error: 'defaultProvider, autoFallback, routing, taskRouting, or routingDefaultModel is required' });
         return;
       }
       try {
@@ -7711,6 +7745,41 @@ EXPLANATION_END`;
           this.llmRouter.setAutoFallback(autoFallback);
           configUpdates.autoFallback = autoFallback;
         }
+        if (routing) {
+          const validStrategies = ['always_max', 'always_cheapest', 'balanced', 'cache_optimized'];
+          if (routing.strategy && !validStrategies.includes(routing.strategy as string)) {
+            this.json(res, 400, { error: `Invalid routing strategy. Must be one of: ${validStrategies.join(', ')}` });
+            return;
+          }
+          const validTiers = ['base', 'pro', 'max'];
+          if (routing.defaultTier && !validTiers.includes(routing.defaultTier as string)) {
+            this.json(res, 400, { error: `Invalid defaultTier. Must be one of: ${validTiers.join(', ')}` });
+            return;
+          }
+          this.llmRouter.setRoutingConfig(routing as any);
+          configUpdates.routing = routing;
+        }
+        if (taskRouting) {
+          const validModes = ['auto', 'hybrid', 'manual'];
+          if (taskRouting.mode && !validModes.includes(taskRouting.mode as string)) {
+            this.json(res, 400, { error: `Invalid taskRouting mode. Must be one of: ${validModes.join(', ')}` });
+            return;
+          }
+          this.llmRouter.setTaskRouting(taskRouting as any);
+          configUpdates.taskRouting = taskRouting;
+        }
+        if (routingDefaultModel !== undefined) {
+          if (routingDefaultModel === null) {
+            this.llmRouter.setRoutingDefaultModel(undefined);
+            configUpdates.routingDefaultModel = undefined;
+          } else if (routingDefaultModel.provider && routingDefaultModel.model) {
+            this.llmRouter.setRoutingDefaultModel(routingDefaultModel);
+            configUpdates.routingDefaultModel = routingDefaultModel;
+          } else {
+            this.json(res, 400, { error: 'routingDefaultModel must have provider and model fields' });
+            return;
+          }
+        }
         try {
           saveConfig({ llm: configUpdates } as any, this.markusConfigPath);
         } catch (e) {
@@ -7720,7 +7789,7 @@ EXPLANATION_END`;
           orgId: 'system',
           type: 'settings_changed',
           action: 'llm_settings',
-          detail: `${defaultProvider ? `defaultProvider=${defaultProvider}` : ''}${autoFallback !== undefined ? ` autoFallback=${autoFallback}` : ''}`.trim(),
+          detail: `${defaultProvider ? `defaultProvider=${defaultProvider}` : ''}${autoFallback !== undefined ? ` autoFallback=${autoFallback}` : ''}${routing ? ' routing=updated' : ''}${taskRouting ? ' taskRouting=updated' : ''}`.trim(),
           userId: auth.userId,
           success: true,
         });
@@ -7728,6 +7797,252 @@ EXPLANATION_END`;
       } catch (err) {
         this.json(res, 400, { error: String(err) });
       }
+      return;
+    }
+
+    // Models — Routing candidates (enriched model list for task routing UI)
+    if (path === '/api/models/routing-candidates' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter) {
+        this.json(res, 200, { providers: [] });
+        return;
+      }
+      const settings = this.llmRouter.getEnhancedSettings();
+      const result: Array<{ provider: string; displayName: string; models: Array<{ id: string; name: string; tier?: string; qualityScore?: number; costTier?: string; capabilities?: string[] }> }> = [];
+
+      for (const [providerName, providerSettings] of Object.entries(settings.providers)) {
+        if (!providerSettings.enabled) continue;
+        const seenIds = new Set<string>();
+        const models: Array<{ id: string; name: string; tier?: string; qualityScore?: number; costTier?: string; capabilities?: string[] }> = [];
+
+        // Include models from router's builtin + custom catalog
+        for (const m of providerSettings.models ?? []) {
+          seenIds.add(m.id);
+          const profile = this.modelProfileService?.getProfile(m.id);
+          models.push({
+            id: m.id,
+            name: m.name ?? m.id,
+            tier: profile?.quality?.tier ?? m.tier,
+            qualityScore: profile?.quality?.qualityScore,
+            costTier: profile?.cost ? costTierFromNormalized(profile.cost) : undefined,
+            capabilities: profile?.capabilities ? Object.keys(profile.capabilities).filter(k => (profile.capabilities as unknown as Record<string, boolean>)[k]) : undefined,
+          });
+        }
+
+        // Fetch live model list from the provider's API (if key is configured).
+        // The provider's own /v1/models is the authoritative source for model IDs.
+        // LiteLLM catalog is used only for enrichment (pricing/capabilities), not as a model ID source.
+        try {
+          const providerInstance = this.llmRouter?.getProvider(providerName);
+          const apiKey = (providerInstance as any)?.apiKey ?? '';
+          const providerBaseUrl = (providerInstance as any)?.baseUrl;
+          if (apiKey) {
+            const liveResult = await this.validateProviderKey(providerName, apiKey, providerBaseUrl);
+            if (liveResult.valid && Array.isArray(liveResult.models)) {
+              for (const lm of liveResult.models as Array<{ id?: string; name?: string }>) {
+                const rawId = String(lm.id ?? lm.name ?? '');
+                if (!rawId) continue;
+                // validateProviderKey may return catalog models with LiteLLM-style
+                // "provider/model" IDs; normalize to the actual API model ID.
+                const modelId = stripProviderPrefix(rawId);
+                if (seenIds.has(modelId)) continue;
+                seenIds.add(modelId);
+                // Also mark the raw ID as seen to prevent duplicates from other sources
+                seenIds.add(rawId);
+                const profile = this.modelProfileService?.getProfile(rawId) ?? this.modelProfileService?.getProfile(modelId);
+                models.push({
+                  id: modelId,
+                  name: modelId,
+                  tier: profile?.quality?.tier,
+                  qualityScore: profile?.quality?.qualityScore,
+                  costTier: profile?.cost ? costTierFromNormalized(profile.cost) : undefined,
+                  capabilities: profile?.capabilities ? Object.keys(profile.capabilities).filter(k => (profile.capabilities as unknown as Record<string, boolean>)[k]) : undefined,
+                });
+              }
+            }
+          }
+        } catch { /* non-critical: live fetch failure just means fewer results */ }
+
+        result.push({
+          provider: providerName,
+          displayName: providerSettings.displayName ?? providerName,
+          models,
+        });
+      }
+      this.json(res, 200, { providers: result });
+      return;
+    }
+
+    // Models — Suggested assignments (auto-prefill best model per task type)
+    if (path === '/api/models/suggested-assignments' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+
+      const ALL_TASK_TYPES: string[] = [
+        'text_chat', 'text_reasoning', 'text_coding', 'text_translation', 'text_summary',
+        'image_recognition', 'image_generation',
+        'audio_tts', 'audio_stt',
+        'video_generation', 'embedding', 'web_search',
+      ];
+
+      const TEXT_TASKS = new Set(['text_chat', 'text_reasoning', 'text_coding', 'text_translation', 'text_summary']);
+
+      const CAP_MAP: Record<string, string[]> = {
+        image_recognition: ['vision'],
+        image_generation: ['imageGeneration'],
+        audio_tts: ['audioOutput', 'tts'],
+        audio_stt: ['audioInput', 'stt'],
+        video_generation: ['videoGeneration'],
+        embedding: ['embedding'],
+        web_search: ['webSearch'],
+      };
+
+      const NON_TEXT_PATTERNS: Record<string, RegExp> = {
+        image_recognition: /\bvl\b|vision|visual|eye/i,
+        image_generation: /\bdall-?e\b|flux|stable.?diffusion|sdxl|imagen|wanx|wan[.-]?ai|kolors|playground/i,
+        audio_tts: /\btts\b|cosy.?voice|speech|bark|xtts|voice/i,
+        audio_stt: /\bstt\b|whisper|sense.?voice|paraformer|speech.?to.?text|audio/i,
+        video_generation: /\bvideo\b|wan.*t2v|sora|kling|gen-?[23]/i,
+        embedding: /\bembed|bge|gte|e5-|text-embedding/i,
+        web_search: /^$/,
+      };
+
+      // Gather all available models with capabilities and tier info
+      interface CandidateModel {
+        provider: string;
+        modelId: string;
+        tier?: string;
+        qualityScore?: number;
+        capabilities?: string[];
+      }
+
+      const allCandidates: CandidateModel[] = [];
+      const settings = this.llmRouter!.getEnhancedSettings();
+
+      for (const [providerName, providerSettings] of Object.entries(settings.providers)) {
+        if (!providerSettings.enabled) continue;
+        const seenIds = new Set<string>();
+
+        // From router's builtin + custom catalog
+        for (const m of providerSettings.models ?? []) {
+          seenIds.add(m.id);
+          const profile = this.modelProfileService?.getProfile(m.id);
+          const caps = profile?.capabilities
+            ? Object.keys(profile.capabilities).filter(k => (profile.capabilities as unknown as Record<string, boolean>)[k])
+            : undefined;
+          allCandidates.push({
+            provider: providerName,
+            modelId: m.id,
+            tier: profile?.quality?.tier ?? m.tier,
+            qualityScore: profile?.quality?.qualityScore,
+            capabilities: caps,
+          });
+        }
+
+        // From model catalog service
+        if (this.modelCatalog) {
+          for (const cm of this.modelCatalog.getModelsByProvider(providerName)) {
+            if (seenIds.has(cm.id)) continue;
+            seenIds.add(cm.id);
+            const profile = this.modelProfileService?.getProfile(cm.id);
+            const caps = profile?.capabilities
+              ? Object.keys(profile.capabilities).filter(k => (profile.capabilities as unknown as Record<string, boolean>)[k])
+              : undefined;
+            allCandidates.push({
+              provider: providerName,
+              modelId: cm.id,
+              tier: profile?.quality?.tier,
+              qualityScore: profile?.quality?.qualityScore,
+              capabilities: caps,
+            });
+          }
+        }
+      }
+
+      // For each task type, find the best model
+      const suggestions: Record<string, { provider: string; model: string; tier?: string } | null> = {};
+
+      for (const taskType of ALL_TASK_TYPES) {
+        let candidates: CandidateModel[];
+
+        if (TEXT_TASKS.has(taskType)) {
+          // Text tasks: any model that isn't exclusively non-text
+          candidates = allCandidates.filter(m => {
+            const id = m.modelId.toLowerCase();
+            return !/\btts\b|\bwhisper\b|\bstt\b|\bdall-?e\b|\bstable.?diffusion\b|\bflux\b|\bwav2vec\b|\bembedding\b|\bembed\b/.test(id);
+          });
+        } else {
+          // Specialized tasks: require matching capability or name pattern
+          const requiredCaps = CAP_MAP[taskType] ?? [];
+          const namePattern = NON_TEXT_PATTERNS[taskType];
+
+          candidates = allCandidates.filter(m => {
+            if (m.capabilities && m.capabilities.length > 0) {
+              return requiredCaps.some(cap => m.capabilities!.includes(cap));
+            }
+            if (namePattern) {
+              return namePattern.test(m.modelId);
+            }
+            return false;
+          });
+        }
+
+        if (candidates.length === 0) {
+          suggestions[taskType] = null;
+          continue;
+        }
+
+        // Sort: prefer higher tier (max > pro > base > undefined), then higher quality score
+        const tierRank: Record<string, number> = { max: 3, pro: 2, base: 1 };
+        candidates.sort((a, b) => {
+          const ta = tierRank[a.tier ?? ''] ?? 0;
+          const tb = tierRank[b.tier ?? ''] ?? 0;
+          if (ta !== tb) return tb - ta;
+          return (b.qualityScore ?? 0) - (a.qualityScore ?? 0);
+        });
+
+        // For text_reasoning, prefer reasoning-capable models
+        if (taskType === 'text_reasoning') {
+          const reasoningModels = candidates.filter(m =>
+            /\br[12]\b|reasoning|think|o[1-9]|qwq|deepseek-r/i.test(m.modelId),
+          );
+          if (reasoningModels.length > 0) {
+            candidates = reasoningModels;
+          }
+        }
+
+        // For text_coding, prefer coding-focused models
+        if (taskType === 'text_coding') {
+          const codingModels = candidates.filter(m =>
+            /code|coder|codex|starcoder|deepseek-v/i.test(m.modelId),
+          );
+          if (codingModels.length > 0) {
+            candidates = [...codingModels, ...candidates.filter(c => !codingModels.includes(c))];
+          }
+        }
+
+        const best = candidates[0];
+        suggestions[taskType] = { provider: best.provider, model: best.modelId, tier: best.tier };
+      }
+
+      this.json(res, 200, { suggestions });
+      return;
+    }
+
+    // Settings — Model routing config (GET/POST)
+    if (path === '/api/settings/llm/routing' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter) {
+        this.json(res, 200, { routing: {}, taskRouting: {}, routingDefaultModel: null });
+        return;
+      }
+      this.json(res, 200, {
+        routing: this.llmRouter.routingConfig,
+        taskRouting: this.llmRouter.taskRouting,
+        routingDefaultModel: this.llmRouter.routingDefaultModel ?? null,
+      });
       return;
     }
 
@@ -12012,21 +12327,12 @@ EXPLANATION_END`;
         // Anthropic models endpoint returns { data: [...] }
         const data = await resp.json() as { data?: Array<{ id: string }> };
         const modelIds = (data.data ?? []).map((m: { id: string }) => m.id);
-        // Cross-reference with catalog (try both bare ID and prefixed)
-        const catalogModels = modelIds
-          .map((id: string) => this.modelCatalog?.getModelInfo(id) || this.modelCatalog?.getModelInfo(`anthropic/${id}`))
-          .filter(Boolean);
-        // Also include catalog entries not returned by API
-        const allAnthropicCatalog = this.modelCatalog?.getModelsByProvider('anthropic') ?? [];
-        const seenIds = new Set(modelIds);
-        const merged = [...catalogModels];
-        for (const cm of allAnthropicCatalog) {
-          const bareId = cm.id.startsWith('anthropic/') ? cm.id.slice('anthropic/'.length) : cm.id;
-          if (!seenIds.has(cm.id) && !seenIds.has(bareId)) {
-            merged.push(cm);
-          }
-        }
-        const result = merged.length > 0 ? merged : allAnthropicCatalog;
+        // Cross-reference with catalog for enrichment (pricing, capabilities).
+        // Only enrich models that the API actually returned — don't add extras.
+        const result = modelIds.map((id: string) => {
+          const match = this.modelCatalog?.getModelInfo(id) || this.modelCatalog?.getModelInfo(`anthropic/${id}`);
+          return match ? { ...match, id } : { id, provider: 'anthropic', mode: 'chat' };
+        });
         result.sort((a, b) => ((a as { id?: string }).id ?? '').localeCompare((b as { id?: string }).id ?? ''));
         return { valid: true, models: result };
       } catch (err) {
@@ -12073,15 +12379,18 @@ EXPLANATION_END`;
             });
           }
         }
-        for (const cm of catalogModels) {
-          const bareId = cm.id.startsWith('gemini/') ? cm.id.slice('gemini/'.length) : cm.id;
-          if (!seenIds.has(cm.id) && !seenIds.has(bareId)) models.push(cm);
-        }
+        // Don't add leftover catalog models — the Gemini API list is authoritative.
         models.sort((a, b) => String((a as { id?: string }).id ?? '').localeCompare(String((b as { id?: string }).id ?? '')));
         return { valid: true, models };
       } catch (err) {
         const catalogModels = this.modelCatalog?.getModelsByProvider('google') ?? [];
-        if (catalogModels.length > 0) return { valid: false, error: `Could not verify key (${err instanceof Error ? err.message : String(err)})`, models: catalogModels };
+        if (catalogModels.length > 0) {
+          const stripped = catalogModels.map(cm => {
+            const bareId = cm.id.startsWith('gemini/') ? cm.id.slice('gemini/'.length) : cm.id;
+            return { ...cm, id: bareId };
+          });
+          return { valid: false, error: `Could not verify key (${err instanceof Error ? err.message : String(err)})`, models: stripped };
+        }
         return { valid: false, error: err instanceof Error ? err.message : String(err), models: [] };
       }
     }
@@ -12252,21 +12561,22 @@ EXPLANATION_END`;
         }
       }
 
-      // Also include catalog models not in remote list
-      for (const cm of catalogModels) {
-        const strippedId = cm.id.startsWith(`${provider}/`) ? cm.id.slice(provider.length + 1) : cm.id;
-        if (!seenIds.has(cm.id) && !seenIds.has(strippedId)) {
-          models.push(cm);
-        }
-      }
+      // Do NOT append leftover catalog models when the live API succeeded.
+      // The provider's own /v1/models is authoritative — catalog entries that
+      // don't appear in the live list are likely LiteLLM aliases (e.g.
+      // "deepseek-r1", "deepseek-v3") that are NOT valid API model IDs.
 
       models.sort((a, b) => String((a as { id?: string }).id ?? '').localeCompare(String((b as { id?: string }).id ?? '')));
       return { valid: true, models };
     } catch (err) {
-      // If /v1/models fails, try to return catalog models and mark key as valid if catalog has data
+      // If /v1/models fails, fall back to catalog models (with stripped provider prefixes)
       const catalogModels = this.modelCatalog?.getModelsByProvider(provider) ?? [];
       if (catalogModels.length > 0) {
-        return { valid: false, error: `Could not verify key (${err instanceof Error ? err.message : String(err)}), showing catalog models`, models: catalogModels };
+        const stripped = catalogModels.map(cm => {
+          const strippedId = cm.id.startsWith(`${provider}/`) ? cm.id.slice(provider.length + 1) : cm.id;
+          return { ...cm, id: strippedId };
+        });
+        return { valid: false, error: `Could not verify key (${err instanceof Error ? err.message : String(err)}), showing catalog models`, models: stripped };
       }
       return { valid: false, error: err instanceof Error ? err.message : String(err), models: [] };
     }

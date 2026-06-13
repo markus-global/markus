@@ -60,6 +60,8 @@ export interface ModelDefinition {
   reasoning?: boolean;
   inputTypes?: Array<'text' | 'image'>;
   description?: string;
+  /** Model quality tier for routing decisions */
+  tier?: import('./model-catalog.js').ModelTier;
 }
 
 export interface EnhancedProviderSettings {
