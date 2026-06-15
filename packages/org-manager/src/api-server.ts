@@ -12354,7 +12354,15 @@ EXPLANATION_END`;
             });
           }
         }
-        // Don't add leftover catalog models — the Gemini API list is authoritative.
+        // Gemini API list is authoritative for chat; append non-chat catalog models
+        const catalogGoogle = this.modelCatalog?.getModelsByProvider('google') ?? [];
+        for (const cm of catalogGoogle) {
+          if (cm.mode === 'chat') continue;
+          const bareId = cm.id.startsWith('gemini/') ? cm.id.slice('gemini/'.length) : cm.id;
+          if (seenIds.has(bareId) || seenIds.has(cm.id)) continue;
+          seenIds.add(bareId);
+          models.push({ ...cm, id: bareId, provider: 'google' });
+        }
         models.sort((a, b) => String((a as { id?: string }).id ?? '').localeCompare(String((b as { id?: string }).id ?? '')));
         return { valid: true, models };
       } catch (err) {
@@ -12541,10 +12549,18 @@ EXPLANATION_END`;
         }
       }
 
-      // Do NOT append leftover catalog models when the live API succeeded.
-      // The provider's own /v1/models is authoritative — catalog entries that
-      // don't appear in the live list are likely LiteLLM aliases (e.g.
-      // "deepseek-r1", "deepseek-v3") that are NOT valid API model IDs.
+      // The live /v1/models is authoritative for chat models — don't append
+      // catalog chat aliases. But non-chat models (TTS, image, video, STT)
+      // are served via separate API endpoints and never appear in /v1/models,
+      // so append them from the catalog.
+      const catalogAll = this.modelCatalog?.getModelsByProvider(provider) ?? [];
+      for (const cm of catalogAll) {
+        if (cm.mode === 'chat') continue;
+        const stripped = ModelCatalogService.stripProviderPrefix(cm.id);
+        if (seenIds.has(stripped) || seenIds.has(cm.id)) continue;
+        seenIds.add(stripped);
+        models.push({ ...cm, id: stripped, provider });
+      }
 
       models.sort((a, b) => String((a as { id?: string }).id ?? '').localeCompare(String((b as { id?: string }).id ?? '')));
       return { valid: true, models };

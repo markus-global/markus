@@ -280,19 +280,34 @@ export class ModelCatalogService {
     this.source = source;
   }
 
+  private static readonly NON_CHAT_MODES = new Set([
+    'audio_speech', 'image_generation', 'video_generation',
+    'audio_transcription', 'ocr', 'moderation',
+  ]);
+
   private convertEntry(id: string, entry: LiteLLMRawModelEntry, provider: string): CatalogModel | null {
     const maxInput = entry.max_input_tokens ?? entry.max_tokens ?? 0;
     const maxOutput = entry.max_output_tokens ?? entry.max_tokens ?? 0;
+    const mode = entry.mode || 'chat';
 
-    if (maxInput === 0 && maxOutput === 0) return null;
+    // Allow non-chat models (TTS, image, video, STT) through even with zero tokens
+    if (maxInput === 0 && maxOutput === 0 && !ModelCatalogService.NON_CHAT_MODES.has(mode)) {
+      return null;
+    }
+
+    // For models priced per character (TTS), estimate token cost (~4 chars per token)
+    let inputCost = (entry.input_cost_per_token ?? 0) * 1_000_000;
+    if (inputCost === 0 && entry.input_cost_per_character) {
+      inputCost = entry.input_cost_per_character * 4 * 1_000_000;
+    }
 
     return {
       id,
       provider,
-      mode: entry.mode || 'chat',
+      mode,
       maxInputTokens: maxInput,
       maxOutputTokens: maxOutput,
-      inputCostPer1MTokens: (entry.input_cost_per_token ?? 0) * 1_000_000,
+      inputCostPer1MTokens: inputCost,
       outputCostPer1MTokens: (entry.output_cost_per_token ?? 0) * 1_000_000,
       cacheReadCostPer1MTokens: entry.cache_read_input_token_cost
         ? entry.cache_read_input_token_cost * 1_000_000
@@ -309,6 +324,7 @@ export class ModelCatalogService {
         audioInput: entry.supports_audio_input ?? false,
         audioOutput: entry.supports_audio_output ?? false,
       },
+      supportedEndpoints: entry.supported_endpoints,
       deprecationDate: entry.deprecation_date,
     };
   }

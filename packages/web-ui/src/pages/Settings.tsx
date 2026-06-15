@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useTranslation, Trans } from 'react-i18next';
 import { api, type StorageInfo, type OrphanInfo, type AuthUser, type HumanUserInfo, type RemoteStatus, type CatalogModel, hubApi, getHubUser, getHubToken, ensureHubAuth, wsClient } from '../api.ts';
 import { THEME_OPTIONS, type ThemeMode } from '../hooks/useTheme.ts';
@@ -2697,13 +2697,35 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
 
 /* ─── Expandable catalog models list ─── */
 
+const MODE_BADGE_MAP: Record<string, { label: string; color: string }> = {
+  audio_speech: { label: 'TTS', color: 'bg-purple-500/20 text-purple-400' },
+  image_generation: { label: 'Image', color: 'bg-blue-500/20 text-blue-400' },
+  video_generation: { label: 'Video', color: 'bg-pink-500/20 text-pink-400' },
+  audio_transcription: { label: 'STT', color: 'bg-teal-500/20 text-teal-400' },
+  ocr: { label: 'OCR', color: 'bg-orange-500/20 text-orange-400' },
+};
+
+const MODE_SORT_ORDER: Record<string, number> = {
+  chat: 0, image_generation: 1, video_generation: 2,
+  audio_speech: 3, audio_transcription: 4, ocr: 5,
+};
+
 function ExpandableCatalogModels({ models, providerName, t, onAdd }: {
-  models: Array<{ id?: string }>;
+  models: Array<{ id?: string; mode?: string }>;
   providerName: string;
   t: (key: string, opts?: Record<string, unknown>) => string;
   onAdd: (modelId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+
+  const sorted = useMemo(() => {
+    return [...models].sort((a, b) => {
+      const orderA = MODE_SORT_ORDER[a.mode ?? 'chat'] ?? 99;
+      const orderB = MODE_SORT_ORDER[b.mode ?? 'chat'] ?? 99;
+      if (orderA !== orderB) return orderA - orderB;
+      return String(a.id ?? '').localeCompare(String(b.id ?? ''));
+    });
+  }, [models]);
 
   return (
     <div className="mt-2">
@@ -2718,11 +2740,18 @@ function ExpandableCatalogModels({ models, providerName, t, onAdd }: {
       </button>
       {expanded && (
         <div className="mt-1 space-y-0.5 pl-1 max-h-64 overflow-y-auto">
-          {models.map(m => {
+          {sorted.map(m => {
             const id = String(m.id ?? '');
+            const mode = m.mode ?? 'chat';
+            const badge = MODE_BADGE_MAP[mode];
             return (
               <div key={id} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-overlay/60 group">
                 <span className="text-[11px] text-fg-secondary flex-1 truncate">{id}</span>
+                {badge && (
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded-full shrink-0 ${badge.color}`}>
+                    {badge.label}
+                  </span>
+                )}
                 <button
                   onClick={() => onAdd(id)}
                   className="text-[9px] text-brand-500 hover:text-brand-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"

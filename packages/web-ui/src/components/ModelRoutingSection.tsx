@@ -370,6 +370,8 @@ function filterModelsForTask(models: ModelOption[], taskType: ModelTaskTypeDTO):
     image_generation: ['image_generation'],
     audio_tts: ['audio_speech'],
     audio_stt: ['audio_transcription'],
+    video_generation: ['video_generation'],
+    image_recognition: ['chat'],
   };
 
   const capMap: Record<string, string[]> = {
@@ -396,7 +398,8 @@ function filterModelsForTask(models: ModelOption[], taskType: ModelTaskTypeDTO):
 }
 
 function isLikelyNonTextModel(modelId: string): boolean {
-  const patterns = [/\btts\b/, /\bwhisper\b/, /\bstt\b/, /\bdall-?e\b/, /\bstable.?diffusion\b/, /\bflux\b/, /\bwav2vec\b/, /\bembedding\b/, /\bembed\b/];
+  const patterns = [/\btts\b/, /\bwhisper\b/, /\bstt\b/, /\bdall-?e\b/, /\bstable.?diffusion\b/, /\bflux\b/, /\bwav2vec\b/, /\bembedding\b/, /\bembed\b/,
+    /gpt-image/, /hailuo/, /cogview/, /cogvideo/, /seedream/, /seedance/, /\bveo\b/, /\bmusic\b/, /\borpheus\b/, /grok-imagine/, /\bimage-01\b/, /\basr\b/, /transcribe/, /\bvidu\b/];
   return patterns.some(p => p.test(modelId));
 }
 
@@ -405,13 +408,13 @@ function inferCapabilityFromName(modelId: string, taskType: ModelTaskTypeDTO): b
     case 'image_recognition':
       return /\bvl\b|vision|visual|eye/.test(modelId);
     case 'image_generation':
-      return /\bdall-?e\b|flux|stable.?diffusion|sdxl|imagen|wanx|wan[.-]?ai|kolors|playground/.test(modelId);
+      return /\bdall-?e\b|gpt-image|flux|stable.?diffusion|sdxl|imagen|wanx|wan[.-]?ai|kolors|playground|cogview|glm-image|seedream|grok-imagine-image/.test(modelId);
     case 'audio_tts':
-      return /\btts\b|cosy.?voice|speech|bark|xtts|voice/.test(modelId);
+      return /\btts\b|cosy.?voice|speech|bark|xtts|voice|orpheus|music/.test(modelId);
     case 'audio_stt':
-      return /\bstt\b|whisper|sense.?voice|paraformer|speech.?to.?text|audio/.test(modelId);
+      return /\bstt\b|whisper|sense.?voice|paraformer|speech.?to.?text|transcribe|asr|voxtral/.test(modelId);
     case 'video_generation':
-      return /\bvideo\b|wan.*t2v|sora|kling|gen-?[23]/.test(modelId);
+      return /\bvideo\b|hailuo|wan.*[ti]2v|sora|kling|gen-?[23]|cogvideo|vidu|seedance|veo|grok-imagine-video/.test(modelId);
     default:
       return false;
   }

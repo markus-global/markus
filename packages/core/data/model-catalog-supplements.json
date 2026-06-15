@@ -1,8 +1,10 @@
 {
   "_meta": {
-    "lastUpdated": "2026-06-14",
+    "lastUpdated": "2026-06-15",
     "description": "Supplement catalog for providers/models not covered by LiteLLM baseline. Prices per token (USD). Run scripts/update-model-catalog.sh to refresh."
   },
+
+  "_comment_siliconflow_chat": "SiliconFlow chat models (no LiteLLM baseline coverage)",
   "siliconflow/Qwen/Qwen3.5-122B-A10B": {
     "litellm_provider": "siliconflow",
     "max_input_tokens": 262144,
@@ -82,6 +84,73 @@
     "supports_function_calling": true,
     "supports_reasoning": true
   },
+
+  "_comment_siliconflow_image": "SiliconFlow image generation models",
+  "siliconflow/black-forest-labs/FLUX.2-pro": {
+    "litellm_provider": "siliconflow",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "siliconflow/black-forest-labs/FLUX.2-flex": {
+    "litellm_provider": "siliconflow",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "siliconflow/black-forest-labs/FLUX.1-dev": {
+    "litellm_provider": "siliconflow",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "siliconflow/black-forest-labs/FLUX.1-schnell": {
+    "litellm_provider": "siliconflow",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "siliconflow/black-forest-labs/FLUX.1-Kontext-dev": {
+    "litellm_provider": "siliconflow",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "siliconflow/black-forest-labs/FLUX.1-Kontext-max": {
+    "litellm_provider": "siliconflow",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "siliconflow/black-forest-labs/FLUX.1-Kontext-pro": {
+    "litellm_provider": "siliconflow",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "siliconflow/black-forest-labs/FLUX-1.1-pro": {
+    "litellm_provider": "siliconflow",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "siliconflow/black-forest-labs/FLUX-1.1-pro-Ultra": {
+    "litellm_provider": "siliconflow",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+
+  "_comment_zai_chat": "ZAI (Zhipu) chat models",
   "zai/glm-5.1": {
     "litellm_provider": "zai",
     "max_input_tokens": 200000,
@@ -143,5 +212,372 @@
     "output_cost_per_token": 0,
     "supports_function_calling": true,
     "supports_reasoning": true
+  },
+  "zai/glm-5v-turbo": {
+    "litellm_provider": "zai",
+    "max_input_tokens": 200000,
+    "max_output_tokens": 16384,
+    "mode": "chat",
+    "input_cost_per_token": 1.2e-06,
+    "output_cost_per_token": 4.0e-06,
+    "supports_function_calling": true,
+    "supports_vision": true,
+    "supports_reasoning": true
+  },
+  "zai/glm-4.6v": {
+    "litellm_provider": "zai",
+    "max_input_tokens": 128000,
+    "max_output_tokens": 4096,
+    "mode": "chat",
+    "input_cost_per_token": 3.0e-07,
+    "output_cost_per_token": 9.0e-07,
+    "supports_function_calling": true,
+    "supports_vision": true
+  },
+
+  "_comment_zai_image": "ZAI (Zhipu) image generation models",
+  "zai/glm-image": {
+    "litellm_provider": "zai",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "zai/cogview-4": {
+    "litellm_provider": "zai",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "zai/cogview-3-flash": {
+    "litellm_provider": "zai",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+
+  "_comment_zai_video": "ZAI (Zhipu) video generation models",
+  "zai/cogvideox-3": {
+    "litellm_provider": "zai",
+    "mode": "video_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/video/generation"]
+  },
+  "zai/cogvideox-flash": {
+    "litellm_provider": "zai",
+    "mode": "video_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/video/generation"]
+  },
+  "zai/vidu-q1": {
+    "litellm_provider": "zai",
+    "mode": "video_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/video/generation"]
+  },
+  "zai/vidu-2": {
+    "litellm_provider": "zai",
+    "mode": "video_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/video/generation"]
+  },
+
+  "_comment_zai_stt": "ZAI (Zhipu) speech recognition",
+  "zai/glm-asr-2512": {
+    "litellm_provider": "zai",
+    "mode": "audio_transcription",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/audio/transcriptions"]
+  },
+
+  "_comment_minimax_chat": "MiniMax chat models not in baseline",
+  "minimax/MiniMax-M2.7-highspeed": {
+    "litellm_provider": "minimax",
+    "max_input_tokens": 204800,
+    "max_output_tokens": 204800,
+    "mode": "chat",
+    "input_cost_per_token": 2.5e-07,
+    "output_cost_per_token": 1.0e-06,
+    "supports_function_calling": true,
+    "supports_prompt_caching": true,
+    "supports_reasoning": true
+  },
+  "minimax/MiniMax-M2.5-highspeed": {
+    "litellm_provider": "minimax",
+    "max_input_tokens": 204800,
+    "max_output_tokens": 204800,
+    "mode": "chat",
+    "input_cost_per_token": 2.5e-07,
+    "output_cost_per_token": 1.0e-06,
+    "supports_function_calling": true,
+    "supports_prompt_caching": true,
+    "supports_reasoning": true
+  },
+  "minimax/MiniMax-M2.1-highspeed": {
+    "litellm_provider": "minimax",
+    "max_input_tokens": 204800,
+    "max_output_tokens": 204800,
+    "mode": "chat",
+    "input_cost_per_token": 2.5e-07,
+    "output_cost_per_token": 1.0e-06,
+    "supports_function_calling": true,
+    "supports_prompt_caching": true,
+    "supports_reasoning": true
+  },
+  "minimax/MiniMax-M2.1": {
+    "litellm_provider": "minimax",
+    "max_input_tokens": 204800,
+    "max_output_tokens": 204800,
+    "mode": "chat",
+    "input_cost_per_token": 2.5e-07,
+    "output_cost_per_token": 1.0e-06,
+    "supports_function_calling": true,
+    "supports_prompt_caching": true,
+    "supports_reasoning": true
+  },
+  "minimax/M2-her": {
+    "litellm_provider": "minimax",
+    "max_input_tokens": 65536,
+    "max_output_tokens": 65536,
+    "mode": "chat",
+    "input_cost_per_token": 2.5e-07,
+    "output_cost_per_token": 1.0e-06
+  },
+
+  "_comment_minimax_video": "MiniMax video generation models",
+  "minimax/MiniMax-Hailuo-2.3": {
+    "litellm_provider": "minimax",
+    "mode": "video_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/video/generation"]
+  },
+  "minimax/MiniMax-Hailuo-2.3-Fast": {
+    "litellm_provider": "minimax",
+    "mode": "video_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/video/generation"]
+  },
+  "minimax/MiniMax-Hailuo-02": {
+    "litellm_provider": "minimax",
+    "mode": "video_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/video/generation"]
+  },
+
+  "_comment_minimax_image": "MiniMax image generation model",
+  "minimax/image-01": {
+    "litellm_provider": "minimax",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+
+  "_comment_minimax_music": "MiniMax music generation models",
+  "minimax/music-2.6": {
+    "litellm_provider": "minimax",
+    "mode": "audio_speech",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/music/generation"]
+  },
+  "minimax/Music-Cover": {
+    "litellm_provider": "minimax",
+    "mode": "audio_speech",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/music/generation"]
+  },
+
+  "_comment_minimax_tts": "MiniMax TTS models not in baseline (speech-2.8 series)",
+  "minimax/speech-2.8-hd": {
+    "litellm_provider": "minimax",
+    "mode": "audio_speech",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "input_cost_per_character": 0.0001,
+    "supported_endpoints": ["/v1/audio/speech"]
+  },
+  "minimax/speech-2.8-turbo": {
+    "litellm_provider": "minimax",
+    "mode": "audio_speech",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "input_cost_per_character": 6e-05,
+    "supported_endpoints": ["/v1/audio/speech"]
+  },
+
+  "_comment_xai_image": "xAI (Grok) image generation",
+  "xai/grok-imagine-image-quality": {
+    "litellm_provider": "xai",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+
+  "_comment_groq_tts": "Groq TTS models (Orpheus, not in LiteLLM baseline)",
+  "groq/canopylabs/orpheus-v1-english": {
+    "litellm_provider": "groq",
+    "mode": "audio_speech",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/audio/speech"]
+  },
+  "groq/canopylabs/orpheus-arabic-saudi": {
+    "litellm_provider": "groq",
+    "mode": "audio_speech",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/audio/speech"]
+  },
+
+  "_comment_together_image": "Together AI image generation models",
+  "together_ai/black-forest-labs/FLUX.2-max": {
+    "litellm_provider": "together_ai",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "together_ai/black-forest-labs/FLUX.2-pro": {
+    "litellm_provider": "together_ai",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "together_ai/black-forest-labs/FLUX.2-dev": {
+    "litellm_provider": "together_ai",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "together_ai/black-forest-labs/FLUX.2-flex": {
+    "litellm_provider": "together_ai",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "together_ai/black-forest-labs/FLUX.1-schnell": {
+    "litellm_provider": "together_ai",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "together_ai/black-forest-labs/FLUX.1.1-pro": {
+    "litellm_provider": "together_ai",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "together_ai/black-forest-labs/FLUX.1-Kontext-pro": {
+    "litellm_provider": "together_ai",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "together_ai/black-forest-labs/FLUX.1-Kontext-max": {
+    "litellm_provider": "together_ai",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+
+  "_comment_volcengine_image": "Volcengine (Doubao) image generation models",
+  "volcengine/doubao-seedream-5-0-260128": {
+    "litellm_provider": "volcengine",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "volcengine/doubao-seedream-4-5-251128": {
+    "litellm_provider": "volcengine",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+  "volcengine/doubao-seedream-4-0-250828": {
+    "litellm_provider": "volcengine",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+
+  "_comment_volcengine_video": "Volcengine (Doubao) video generation model",
+  "volcengine/doubao-seedance-2-0-260128": {
+    "litellm_provider": "volcengine",
+    "mode": "video_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/video/generations"]
+  },
+
+  "_comment_dashscope_image": "DashScope (Qwen) image generation",
+  "dashscope/wanx-v3": {
+    "litellm_provider": "dashscope",
+    "mode": "image_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "supported_endpoints": ["/v1/images/generations"]
+  },
+
+  "_comment_dashscope_video": "DashScope (Qwen) video generation models",
+  "dashscope/wan2.7-t2v": {
+    "litellm_provider": "dashscope",
+    "mode": "video_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0
+  },
+  "dashscope/wan2.7-i2v": {
+    "litellm_provider": "dashscope",
+    "mode": "video_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0
+  },
+  "dashscope/wan2.6-t2v": {
+    "litellm_provider": "dashscope",
+    "mode": "video_generation",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0
+  },
+
+  "_comment_dashscope_tts": "DashScope (Qwen) TTS models",
+  "dashscope/cosyvoice-v3.5-plus": {
+    "litellm_provider": "dashscope",
+    "mode": "audio_speech",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0
+  },
+  "dashscope/cosyvoice-v3.5-flash": {
+    "litellm_provider": "dashscope",
+    "mode": "audio_speech",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0
+  },
+  "dashscope/qwen3-tts-instruct-flash": {
+    "litellm_provider": "dashscope",
+    "mode": "audio_speech",
+    "max_input_tokens": 0,
+    "max_output_tokens": 0
   }
 }

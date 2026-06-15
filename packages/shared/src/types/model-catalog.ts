@@ -65,6 +65,7 @@ export interface CatalogModel {
   cacheReadCostPer1MTokens?: number;
   cacheWriteCostPer1MTokens?: number;
   capabilities: CatalogModelCapabilities;
+  supportedEndpoints?: string[];
   deprecationDate?: string;
 }
 
@@ -99,8 +100,10 @@ export interface LiteLLMRawModelEntry {
   max_tokens?: number;
   input_cost_per_token?: number;
   output_cost_per_token?: number;
+  input_cost_per_character?: number;
   cache_read_input_token_cost?: number;
   cache_creation_input_token_cost?: number;
+  supported_endpoints?: string[];
   supports_vision?: boolean;
   supports_function_calling?: boolean;
   supports_reasoning?: boolean;
