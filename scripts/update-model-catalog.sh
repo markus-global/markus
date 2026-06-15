@@ -3,8 +3,7 @@
 # Run this periodically (e.g., weekly) to keep model pricing data fresh.
 #
 # What it updates:
-#   1. LiteLLM model_prices_and_context_window.json → baseline (covers most major providers)
-#   2. Arena AI leaderboard data (via update-arena-data.sh)
+#   LiteLLM model_prices_and_context_window.json → baseline (covers most major providers)
 #
 # The supplements file (model-catalog-supplements.json) covers providers NOT in
 # LiteLLM (SiliconFlow, ZAI) and must be updated manually when pricing changes.
@@ -33,10 +32,6 @@ else
   rm -f "${DATA_DIR}/model-catalog-baseline.json.tmp"
   echo "  ✗ download failed, keeping existing baseline"
 fi
-
-echo ""
-echo "=== Updating Arena AI leaderboard data ==="
-bash "${SCRIPT_DIR}/update-arena-data.sh" 2>/dev/null || echo "  ⚠ Arena data update failed (non-critical)"
 
 echo ""
 echo "=== Summary ==="

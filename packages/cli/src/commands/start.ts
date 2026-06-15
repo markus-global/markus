@@ -23,8 +23,6 @@ import {
   LLMRouter,
   LLMLogger,
   ModelCatalogService,
-  ModelScoreService,
-  ModelProfileService,
   type LLMLogEntry,
   RoleLoader,
   createDefaultSkillRegistry,
@@ -139,12 +137,30 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     }
   }
 
+  const siliconflowIntlKey =
+    config.llm.providers['siliconflow-intl']?.apiKey ?? process.env['SILICONFLOW_INTL_API_KEY'];
+  if (siliconflowIntlKey) {
+    providerConfigs['siliconflow-intl'] = {
+      provider: 'siliconflow',
+      model: config.llm.providers['siliconflow-intl']?.model ?? process.env['SILICONFLOW_INTL_MODEL'] ?? 'Qwen/Qwen3.5-35B-A3B',
+      apiKey: siliconflowIntlKey,
+      baseUrl:
+        config.llm.providers['siliconflow-intl']?.baseUrl ??
+        process.env['SILICONFLOW_INTL_BASE_URL'] ??
+        'https://api-st.siliconflow.cn/v1',
+      timeoutMs: llmTimeoutMs,
+    };
+    if (config.llm.defaultProvider === 'siliconflow-intl') {
+      defaultProvider = 'siliconflow-intl';
+    }
+  }
+
   const minimaxKey =
     config.llm.providers['minimax']?.apiKey ?? process.env['MINIMAX_API_KEY'];
   if (minimaxKey) {
     providerConfigs['minimax'] = {
       provider: 'openai',
-      model: config.llm.providers['minimax']?.model ?? process.env['MINIMAX_MODEL'] ?? 'MiniMax-M2.7',
+      model: config.llm.providers['minimax']?.model ?? process.env['MINIMAX_MODEL'] ?? 'MiniMax-M3',
       apiKey: minimaxKey,
       baseUrl:
         config.llm.providers['minimax']?.baseUrl ??
@@ -154,6 +170,24 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     };
     if (config.llm.defaultProvider === 'minimax') {
       defaultProvider = 'minimax';
+    }
+  }
+
+  const minimaxCnKey =
+    config.llm.providers['minimax-cn']?.apiKey ?? process.env['MINIMAX_CN_API_KEY'];
+  if (minimaxCnKey) {
+    providerConfigs['minimax-cn'] = {
+      provider: 'openai',
+      model: config.llm.providers['minimax-cn']?.model ?? process.env['MINIMAX_CN_MODEL'] ?? 'MiniMax-M3',
+      apiKey: minimaxCnKey,
+      baseUrl:
+        config.llm.providers['minimax-cn']?.baseUrl ??
+        process.env['MINIMAX_CN_BASE_URL'] ??
+        'https://api.minimaxi.com/v1',
+      timeoutMs: llmTimeoutMs,
+    };
+    if (config.llm.defaultProvider === 'minimax-cn') {
+      defaultProvider = 'minimax-cn';
     }
   }
 
@@ -233,10 +267,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     llmRouter.setAutoFallback(false);
   }
 
-  // Apply routing config
-  if (config.llm.routing) {
-    llmRouter.setRoutingConfig(config.llm.routing);
-  }
+  // Apply task routing config
   if (config.llm.taskRouting) {
     llmRouter.setTaskRouting(config.llm.taskRouting);
   }
@@ -671,26 +702,6 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   await modelCatalog.initialize();
   apiServer.setModelCatalog(modelCatalog);
   llmRouter.setModelCatalogService(modelCatalog);
-
-  // Initialize model scoring and profile services
-  const modelScoreService = new ModelScoreService();
-  await modelScoreService.init();
-
-  const modelProfileService = new ModelProfileService(modelScoreService);
-  const builtinTierOverrides = new Map<string, import('@markus/shared').ModelTier>();
-  for (const entry of llmRouter.getModelCatalog()) {
-    if (entry.tier) builtinTierOverrides.set(entry.id, entry.tier);
-  }
-  // Apply user-configured tier overrides from markus.json
-  if (config.llm?.tierOverrides) {
-    for (const [modelId, tier] of Object.entries(config.llm.tierOverrides)) {
-      builtinTierOverrides.set(modelId, tier);
-    }
-  }
-  const allCatalogModels = modelCatalog.getAllProviders().flatMap(p => modelCatalog.getModelsByProvider(p));
-  modelProfileService.build(allCatalogModels, builtinTierOverrides);
-  apiServer.setModelProfileService(modelProfileService);
-  llmRouter.setModelProfileService(modelProfileService);
 
   if (config.hub?.url) apiServer.setHubUrl(config.hub.url);
 

@@ -6,8 +6,8 @@ export interface ModelOption {
   providerLabel: string;
   modelId: string;
   modelName: string;
+  mode?: string;
   tier?: string;
-  qualityScore?: number;
   costTier?: string;
   capabilities?: string[];
 }
@@ -63,7 +63,6 @@ export function ModelSelect({ value, options, placeholder, onChange }: Props) {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(opt);
     }
-    // Sort within groups by tier priority (max > pro > base)
     const tierOrder: Record<string, number> = { max: 0, pro: 1, base: 2 };
     for (const models of groups.values()) {
       models.sort((a, b) => (tierOrder[a.tier ?? 'base'] ?? 9) - (tierOrder[b.tier ?? 'base'] ?? 9));
@@ -120,7 +119,7 @@ export function ModelSelect({ value, options, placeholder, onChange }: Props) {
 
   useEffect(() => {
     if (listRef.current && focusIndex >= 0) {
-      const el = listRef.current.children[focusIndex] as HTMLElement | undefined;
+      const el = listRef.current.querySelector(`[data-focus-index="${focusIndex}"]`) as HTMLElement | null;
       el?.scrollIntoView({ block: 'nearest' });
     }
   }, [focusIndex]);
@@ -164,6 +163,7 @@ export function ModelSelect({ value, options, placeholder, onChange }: Props) {
                   return (
                     <div
                       key={`${m.provider}/${m.modelId}`}
+                      data-focus-index={idx}
                       className={`px-3 py-1.5 text-xs cursor-pointer flex items-center gap-2 ${
                         idx === focusIndex ? 'bg-brand-500/20' : isActive ? 'bg-surface-overlay' : 'hover:bg-surface-overlay/50'
                       }`}

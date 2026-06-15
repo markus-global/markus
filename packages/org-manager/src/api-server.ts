@@ -28,7 +28,9 @@ import {
   WELL_KNOWN_SKILL_DIRS,
   type AgentManager,
   type ModelCatalogService,
-  type ModelProfileService,
+  estimateQualityScore,
+  tierFromQualityScore,
+  costTierFromPrice,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
@@ -178,12 +180,32 @@ function stripProviderPrefix(catalogId: string): string {
   return catalogId;
 }
 
-function costTierFromNormalized(cost: { inputPer1MTokens?: number; outputPer1MTokens?: number }): string {
-  const avg = ((cost.inputPer1MTokens ?? 0) + (cost.outputPer1MTokens ?? 0)) / 2;
-  if (avg <= 0.5) return '$';
-  if (avg <= 5) return '$$';
-  if (avg <= 30) return '$$$';
-  return '$$$$';
+interface ModelEnrichment {
+  tier?: string;
+  costTier?: string;
+  capabilities?: string[];
+  mode?: string;
+}
+
+function enrichModelFromCatalog(
+  modelId: string,
+  builtinTier: string | undefined,
+  catalog: ModelCatalogService | undefined,
+): ModelEnrichment {
+  const catalogEntry = catalog?.getModelInfo(modelId);
+  const tier = builtinTier ?? tierFromQualityScore(
+    estimateQualityScore(modelId, catalogEntry?.capabilities?.reasoning, catalogEntry?.inputCostPer1MTokens),
+  );
+  const costTier = catalogEntry
+    ? costTierFromPrice(catalogEntry.inputCostPer1MTokens)
+    : undefined;
+  const capabilities = catalogEntry
+    ? Object.entries(catalogEntry.capabilities)
+        .filter(([, v]) => v)
+        .map(([k]) => k)
+    : undefined;
+  const mode = catalogEntry?.mode;
+  return { tier, costTier, capabilities, mode };
 }
 
 function generateInviteToken(): string {
@@ -235,7 +257,6 @@ export class APIServer {
   private remoteAgent?: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void };
   private remoteAgentFactory?: () => Promise<{ getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void } | null>;
   private modelCatalog?: ModelCatalogService;
-  private modelProfileService?: ModelProfileService;
   private feishuRegisterSessions = new Map<string, { url: string; expireIn: number; status: string; createdAt: number }>();
   /** Aggregate today's tool calls from all agents' persisted metrics (the single source of truth) */
   private getToolCallsTodayFromAgents(): number {
@@ -756,10 +777,6 @@ export class APIServer {
 
   setModelCatalog(catalog: ModelCatalogService): void {
     this.modelCatalog = catalog;
-  }
-
-  setModelProfileService(service: ModelProfileService): void {
-    this.modelProfileService = service;
   }
 
   setConfigPath(configPath: string): void {
@@ -7726,13 +7743,13 @@ EXPLANATION_END`;
         return;
       }
       const body = await this.readBody(req);
-      const { defaultProvider, autoFallback, routing, taskRouting, routingDefaultModel } = body as {
+      const { defaultProvider, autoFallback, taskRouting, routingDefaultModel } = body as {
         defaultProvider?: string; autoFallback?: boolean;
-        routing?: Record<string, unknown>; taskRouting?: Record<string, unknown>;
+        taskRouting?: Record<string, unknown>;
         routingDefaultModel?: { provider: string; model: string } | null;
       };
-      if (!defaultProvider && autoFallback === undefined && !routing && !taskRouting && routingDefaultModel === undefined) {
-        this.json(res, 400, { error: 'defaultProvider, autoFallback, routing, taskRouting, or routingDefaultModel is required' });
+      if (!defaultProvider && autoFallback === undefined && !taskRouting && routingDefaultModel === undefined) {
+        this.json(res, 400, { error: 'defaultProvider, autoFallback, taskRouting, or routingDefaultModel is required' });
         return;
       }
       try {
@@ -7745,26 +7762,7 @@ EXPLANATION_END`;
           this.llmRouter.setAutoFallback(autoFallback);
           configUpdates.autoFallback = autoFallback;
         }
-        if (routing) {
-          const validStrategies = ['always_max', 'always_cheapest', 'balanced', 'cache_optimized'];
-          if (routing.strategy && !validStrategies.includes(routing.strategy as string)) {
-            this.json(res, 400, { error: `Invalid routing strategy. Must be one of: ${validStrategies.join(', ')}` });
-            return;
-          }
-          const validTiers = ['base', 'pro', 'max'];
-          if (routing.defaultTier && !validTiers.includes(routing.defaultTier as string)) {
-            this.json(res, 400, { error: `Invalid defaultTier. Must be one of: ${validTiers.join(', ')}` });
-            return;
-          }
-          this.llmRouter.setRoutingConfig(routing as any);
-          configUpdates.routing = routing;
-        }
         if (taskRouting) {
-          const validModes = ['auto', 'hybrid', 'manual'];
-          if (taskRouting.mode && !validModes.includes(taskRouting.mode as string)) {
-            this.json(res, 400, { error: `Invalid taskRouting mode. Must be one of: ${validModes.join(', ')}` });
-            return;
-          }
           this.llmRouter.setTaskRouting(taskRouting as any);
           configUpdates.taskRouting = taskRouting;
         }
@@ -7789,7 +7787,7 @@ EXPLANATION_END`;
           orgId: 'system',
           type: 'settings_changed',
           action: 'llm_settings',
-          detail: `${defaultProvider ? `defaultProvider=${defaultProvider}` : ''}${autoFallback !== undefined ? ` autoFallback=${autoFallback}` : ''}${routing ? ' routing=updated' : ''}${taskRouting ? ' taskRouting=updated' : ''}`.trim(),
+          detail: `${defaultProvider ? `defaultProvider=${defaultProvider}` : ''}${autoFallback !== undefined ? ` autoFallback=${autoFallback}` : ''}${taskRouting ? ' taskRouting=updated' : ''}`.trim(),
           userId: auth.userId,
           success: true,
         });
@@ -7809,30 +7807,26 @@ EXPLANATION_END`;
         return;
       }
       const settings = this.llmRouter.getEnhancedSettings();
-      const result: Array<{ provider: string; displayName: string; models: Array<{ id: string; name: string; tier?: string; qualityScore?: number; costTier?: string; capabilities?: string[] }> }> = [];
+      const result: Array<{ provider: string; displayName: string; models: Array<{ id: string; name: string; mode?: string; tier?: string; costTier?: string; capabilities?: string[] }> }> = [];
 
       for (const [providerName, providerSettings] of Object.entries(settings.providers)) {
         if (!providerSettings.enabled) continue;
         const seenIds = new Set<string>();
-        const models: Array<{ id: string; name: string; tier?: string; qualityScore?: number; costTier?: string; capabilities?: string[] }> = [];
+        const models: Array<{ id: string; name: string; mode?: string; tier?: string; costTier?: string; capabilities?: string[] }> = [];
 
-        // Include models from router's builtin + custom catalog
         for (const m of providerSettings.models ?? []) {
           seenIds.add(m.id);
-          const profile = this.modelProfileService?.getProfile(m.id);
+          const enriched = enrichModelFromCatalog(m.id, m.tier, this.modelCatalog);
           models.push({
             id: m.id,
             name: m.name ?? m.id,
-            tier: profile?.quality?.tier ?? m.tier,
-            qualityScore: profile?.quality?.qualityScore,
-            costTier: profile?.cost ? costTierFromNormalized(profile.cost) : undefined,
-            capabilities: profile?.capabilities ? Object.keys(profile.capabilities).filter(k => (profile.capabilities as unknown as Record<string, boolean>)[k]) : undefined,
+            mode: enriched.mode,
+            tier: enriched.tier,
+            costTier: enriched.costTier,
+            capabilities: enriched.capabilities,
           });
         }
 
-        // Fetch live model list from the provider's API (if key is configured).
-        // The provider's own /v1/models is the authoritative source for model IDs.
-        // LiteLLM catalog is used only for enrichment (pricing/capabilities), not as a model ID source.
         try {
           const providerInstance = this.llmRouter?.getProvider(providerName);
           const apiKey = (providerInstance as any)?.apiKey ?? '';
@@ -7843,26 +7837,40 @@ EXPLANATION_END`;
               for (const lm of liveResult.models as Array<{ id?: string; name?: string }>) {
                 const rawId = String(lm.id ?? lm.name ?? '');
                 if (!rawId) continue;
-                // validateProviderKey may return catalog models with LiteLLM-style
-                // "provider/model" IDs; normalize to the actual API model ID.
                 const modelId = stripProviderPrefix(rawId);
                 if (seenIds.has(modelId)) continue;
                 seenIds.add(modelId);
-                // Also mark the raw ID as seen to prevent duplicates from other sources
                 seenIds.add(rawId);
-                const profile = this.modelProfileService?.getProfile(rawId) ?? this.modelProfileService?.getProfile(modelId);
+                const enriched = enrichModelFromCatalog(modelId, undefined, this.modelCatalog);
                 models.push({
                   id: modelId,
                   name: modelId,
-                  tier: profile?.quality?.tier,
-                  qualityScore: profile?.quality?.qualityScore,
-                  costTier: profile?.cost ? costTierFromNormalized(profile.cost) : undefined,
-                  capabilities: profile?.capabilities ? Object.keys(profile.capabilities).filter(k => (profile.capabilities as unknown as Record<string, boolean>)[k]) : undefined,
+                  mode: enriched.mode,
+                  tier: enriched.tier,
+                  costTier: enriched.costTier,
+                  capabilities: enriched.capabilities,
                 });
               }
             }
           }
         } catch { /* non-critical: live fetch failure just means fewer results */ }
+
+        // Also pull in catalog-only models (not returned by API but known from catalog)
+        if (this.modelCatalog) {
+          for (const cm of this.modelCatalog.getModelsByProvider(providerName)) {
+            if (seenIds.has(cm.id)) continue;
+            seenIds.add(cm.id);
+            const enriched = enrichModelFromCatalog(cm.id, undefined, this.modelCatalog);
+            models.push({
+              id: cm.id,
+              name: cm.id,
+              mode: enriched.mode,
+              tier: enriched.tier,
+              costTier: enriched.costTier,
+              capabilities: enriched.capabilities,
+            });
+          }
+        }
 
         result.push({
           provider: providerName,
@@ -7880,13 +7888,13 @@ EXPLANATION_END`;
       if (!auth) return;
 
       const ALL_TASK_TYPES: string[] = [
-        'text_chat', 'text_reasoning', 'text_coding', 'text_translation', 'text_summary',
+        'text',
         'image_recognition', 'image_generation',
         'audio_tts', 'audio_stt',
-        'video_generation', 'embedding', 'web_search',
+        'video_generation',
       ];
 
-      const TEXT_TASKS = new Set(['text_chat', 'text_reasoning', 'text_coding', 'text_translation', 'text_summary']);
+      const TEXT_TASKS = new Set(['text']);
 
       const CAP_MAP: Record<string, string[]> = {
         image_recognition: ['vision'],
@@ -7894,8 +7902,6 @@ EXPLANATION_END`;
         audio_tts: ['audioOutput', 'tts'],
         audio_stt: ['audioInput', 'stt'],
         video_generation: ['videoGeneration'],
-        embedding: ['embedding'],
-        web_search: ['webSearch'],
       };
 
       const NON_TEXT_PATTERNS: Record<string, RegExp> = {
@@ -7904,16 +7910,12 @@ EXPLANATION_END`;
         audio_tts: /\btts\b|cosy.?voice|speech|bark|xtts|voice/i,
         audio_stt: /\bstt\b|whisper|sense.?voice|paraformer|speech.?to.?text|audio/i,
         video_generation: /\bvideo\b|wan.*t2v|sora|kling|gen-?[23]/i,
-        embedding: /\bembed|bge|gte|e5-|text-embedding/i,
-        web_search: /^$/,
       };
 
-      // Gather all available models with capabilities and tier info
       interface CandidateModel {
         provider: string;
         modelId: string;
         tier?: string;
-        qualityScore?: number;
         capabilities?: string[];
       }
 
@@ -7924,37 +7926,27 @@ EXPLANATION_END`;
         if (!providerSettings.enabled) continue;
         const seenIds = new Set<string>();
 
-        // From router's builtin + custom catalog
         for (const m of providerSettings.models ?? []) {
           seenIds.add(m.id);
-          const profile = this.modelProfileService?.getProfile(m.id);
-          const caps = profile?.capabilities
-            ? Object.keys(profile.capabilities).filter(k => (profile.capabilities as unknown as Record<string, boolean>)[k])
-            : undefined;
+          const enriched = enrichModelFromCatalog(m.id, m.tier, this.modelCatalog);
           allCandidates.push({
             provider: providerName,
             modelId: m.id,
-            tier: profile?.quality?.tier ?? m.tier,
-            qualityScore: profile?.quality?.qualityScore,
-            capabilities: caps,
+            tier: enriched.tier,
+            capabilities: enriched.capabilities,
           });
         }
 
-        // From model catalog service
         if (this.modelCatalog) {
           for (const cm of this.modelCatalog.getModelsByProvider(providerName)) {
             if (seenIds.has(cm.id)) continue;
             seenIds.add(cm.id);
-            const profile = this.modelProfileService?.getProfile(cm.id);
-            const caps = profile?.capabilities
-              ? Object.keys(profile.capabilities).filter(k => (profile.capabilities as unknown as Record<string, boolean>)[k])
-              : undefined;
+            const enriched = enrichModelFromCatalog(cm.id, undefined, this.modelCatalog);
             allCandidates.push({
               provider: providerName,
               modelId: cm.id,
-              tier: profile?.quality?.tier,
-              qualityScore: profile?.quality?.qualityScore,
-              capabilities: caps,
+              tier: enriched.tier,
+              capabilities: enriched.capabilities,
             });
           }
         }
@@ -7993,34 +7985,12 @@ EXPLANATION_END`;
           continue;
         }
 
-        // Sort: prefer higher tier (max > pro > base > undefined), then higher quality score
         const tierRank: Record<string, number> = { max: 3, pro: 2, base: 1 };
         candidates.sort((a, b) => {
           const ta = tierRank[a.tier ?? ''] ?? 0;
           const tb = tierRank[b.tier ?? ''] ?? 0;
-          if (ta !== tb) return tb - ta;
-          return (b.qualityScore ?? 0) - (a.qualityScore ?? 0);
+          return tb - ta;
         });
-
-        // For text_reasoning, prefer reasoning-capable models
-        if (taskType === 'text_reasoning') {
-          const reasoningModels = candidates.filter(m =>
-            /\br[12]\b|reasoning|think|o[1-9]|qwq|deepseek-r/i.test(m.modelId),
-          );
-          if (reasoningModels.length > 0) {
-            candidates = reasoningModels;
-          }
-        }
-
-        // For text_coding, prefer coding-focused models
-        if (taskType === 'text_coding') {
-          const codingModels = candidates.filter(m =>
-            /code|coder|codex|starcoder|deepseek-v/i.test(m.modelId),
-          );
-          if (codingModels.length > 0) {
-            candidates = [...codingModels, ...candidates.filter(c => !codingModels.includes(c))];
-          }
-        }
 
         const best = candidates[0];
         suggestions[taskType] = { provider: best.provider, model: best.modelId, tier: best.tier };
@@ -8035,11 +8005,10 @@ EXPLANATION_END`;
       const auth = await this.requireAuth(req, res);
       if (!auth) return;
       if (!this.llmRouter) {
-        this.json(res, 200, { routing: {}, taskRouting: {}, routingDefaultModel: null });
+        this.json(res, 200, { taskRouting: {}, routingDefaultModel: null });
         return;
       }
       this.json(res, 200, {
-        routing: this.llmRouter.routingConfig,
         taskRouting: this.llmRouter.taskRouting,
         routingDefaultModel: this.llmRouter.routingDefaultModel ?? null,
       });
@@ -8948,8 +8917,10 @@ EXPLANATION_END`;
         { provider: 'anthropic', displayName: 'Anthropic', keyEnv: 'ANTHROPIC_API_KEY', defaultModel: 'claude-opus-4-6' },
         { provider: 'openai', displayName: 'OpenAI', keyEnv: 'OPENAI_API_KEY', defaultModel: 'gpt-5.4' },
         { provider: 'google', displayName: 'Google Gemini', keyEnv: 'GOOGLE_API_KEY', defaultModel: 'gemini-3-1-pro' },
-        { provider: 'siliconflow', displayName: 'SiliconFlow', keyEnv: 'SILICONFLOW_API_KEY', modelEnv: 'SILICONFLOW_MODEL', baseUrlEnv: 'SILICONFLOW_BASE_URL', defaultModel: 'Qwen/Qwen3.5-35B-A3B', defaultBaseUrl: 'https://api.siliconflow.cn/v1' },
-        { provider: 'minimax', displayName: 'MiniMax', keyEnv: 'MINIMAX_API_KEY', modelEnv: 'MINIMAX_MODEL', baseUrlEnv: 'MINIMAX_BASE_URL', defaultModel: 'MiniMax-M2.7', defaultBaseUrl: 'https://api.minimax.io/v1' },
+        { provider: 'siliconflow', displayName: 'SiliconFlow (中国)', keyEnv: 'SILICONFLOW_API_KEY', modelEnv: 'SILICONFLOW_MODEL', baseUrlEnv: 'SILICONFLOW_BASE_URL', defaultModel: 'Qwen/Qwen3.5-35B-A3B', defaultBaseUrl: 'https://api.siliconflow.cn/v1' },
+        { provider: 'siliconflow-intl', displayName: 'SiliconFlow (Global)', keyEnv: 'SILICONFLOW_INTL_API_KEY', modelEnv: 'SILICONFLOW_INTL_MODEL', baseUrlEnv: 'SILICONFLOW_INTL_BASE_URL', defaultModel: 'Qwen/Qwen3.5-35B-A3B', defaultBaseUrl: 'https://api-st.siliconflow.cn/v1' },
+        { provider: 'minimax', displayName: 'MiniMax (Global)', keyEnv: 'MINIMAX_API_KEY', modelEnv: 'MINIMAX_MODEL', baseUrlEnv: 'MINIMAX_BASE_URL', defaultModel: 'MiniMax-M3', defaultBaseUrl: 'https://api.minimax.io/v1' },
+        { provider: 'minimax-cn', displayName: 'MiniMax (中国)', keyEnv: 'MINIMAX_CN_API_KEY', modelEnv: 'MINIMAX_CN_MODEL', baseUrlEnv: 'MINIMAX_CN_BASE_URL', defaultModel: 'MiniMax-M3', defaultBaseUrl: 'https://api.minimaxi.com/v1' },
         { provider: 'openrouter', displayName: 'OpenRouter', keyEnv: 'OPENROUTER_API_KEY', modelEnv: 'OPENROUTER_MODEL', baseUrlEnv: 'OPENROUTER_BASE_URL', defaultModel: 'xiaomi/mimo-v2-pro', defaultBaseUrl: 'https://openrouter.ai/api/v1' },
         { provider: 'zai', displayName: 'ZAI', keyEnv: 'ZAI_API_KEY', modelEnv: 'ZAI_MODEL', baseUrlEnv: 'ZAI_BASE_URL', defaultModel: 'glm-5.1', defaultBaseUrl: 'https://api.z.ai/api/paas/v4' },
         { provider: 'deepseek', displayName: 'DeepSeek', keyEnv: 'DEEPSEEK_API_KEY', modelEnv: 'DEEPSEEK_MODEL', baseUrlEnv: 'DEEPSEEK_BASE_URL', defaultModel: 'deepseek-v4-flash', defaultBaseUrl: 'https://api.deepseek.com' },
@@ -9086,7 +9057,9 @@ EXPLANATION_END`;
             openai: 'OPENAI_API_KEY',
             google: 'GOOGLE_API_KEY',
             siliconflow: 'SILICONFLOW_API_KEY',
+            'siliconflow-intl': 'SILICONFLOW_INTL_API_KEY',
             minimax: 'MINIMAX_API_KEY',
+            'minimax-cn': 'MINIMAX_CN_API_KEY',
             openrouter: 'OPENROUTER_API_KEY',
             zai: 'ZAI_API_KEY',
             deepseek: 'DEEPSEEK_API_KEY',
@@ -12290,6 +12263,8 @@ EXPLANATION_END`;
       deepseek: 'https://api.deepseek.com',
       siliconflow: 'https://api.siliconflow.cn/v1',
       minimax: 'https://api.minimax.io/v1',
+      'minimax-cn': 'https://api.minimaxi.com/v1',
+      'siliconflow-intl': 'https://api-st.siliconflow.cn/v1',
       openrouter: 'https://openrouter.ai/api/v1',
       zai: 'https://api.z.ai/api/paas/v4',
       xai: 'https://api.x.ai/v1',
@@ -12421,9 +12396,8 @@ EXPLANATION_END`;
       const data = await resp.json() as { data?: Array<Record<string, unknown>> };
       const remoteModels = (data.data ?? []) as Array<Record<string, unknown>>;
 
-      // Filter out obvious non-chat models (image/audio/video/embedding/tts/rerank)
-      const NON_CHAT_PATTERNS = /\b(image|img|video|audio|tts|speech|whisper|embed|rerank|moderat)/i;
-      const chatRemoteModels = remoteModels.filter(m => !NON_CHAT_PATTERNS.test(String(m.id ?? '')));
+      // Filter out moderation/safety models only
+      const remoteFiltered = remoteModels.filter(m => !/\b(moderat)\b/i.test(String(m.id ?? '')));
 
       // Build multiple lookup indices for catalog matching
       const catalogModels = this.modelCatalog?.getModelsByProvider(provider) ?? [];
@@ -12529,7 +12503,7 @@ EXPLANATION_END`;
 
       const models: Array<unknown> = [];
       const seenIds = new Set<string>();
-      for (const rm of chatRemoteModels) {
+      for (const rm of remoteFiltered) {
         const id = String(rm.id ?? '');
         if (!id || seenIds.has(id)) continue;
         seenIds.add(id);

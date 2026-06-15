@@ -1,4 +1,4 @@
-import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type CatalogModelCapabilities, type ModelTaskType, type CostTier, type RoutingStrategy, type RoutingConfig, type TaskRoutingConfig, type TaskModelAssignment } from '@markus/shared';
+import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type ModelTaskType, type CostTier, type TaskRoutingConfig, type TaskModelAssignment } from '@markus/shared';
 import { startSpan } from '../tracing.js';
 import type { LLMProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
@@ -17,8 +17,6 @@ export interface ChatOptions {
   taskType?: ModelTaskType;
 }
 
-const SESSION_MODEL_TTL_MS = 60 * 60 * 1000; // 1 hour
-const SESSION_MODEL_MAX_SIZE = 1000;
 
 function maskApiKey(key: string): string | undefined {
   if (!key) return undefined;
@@ -58,7 +56,7 @@ function buildTiers(providerNames: string[], defaultProvider: string): ProviderT
     } else if (name === 'openai') {
       tiers.push({ name, complexity: ['complex', 'moderate'] });
     } else {
-      // OpenAI-compatible providers (siliconflow, minimax, etc.)
+      // OpenAI-compatible providers (siliconflow, minimax, minimax-cn, etc.)
       tiers.push({ name, complexity: ['simple', 'moderate'] });
     }
   }
@@ -94,24 +92,13 @@ export class LLMRouter {
 
   private _profileStore?: AuthProfileStore;
   private _oauthManager?: OAuthManager;
-  private _modelProfileService?: import('./model-profile.js').ModelProfileService;
   private _modelCatalogService?: ModelCatalogService;
 
   // -- Model routing config --
-  private _routingConfig: RoutingConfig = {
-    strategy: 'balanced',
-    defaultTier: 'pro',
-    preferCacheHit: true,
-  };
   private _taskRouting: TaskRoutingConfig = {
-    mode: 'auto',
     assignments: {},
-    autoStrategy: 'balanced',
-    defaultTier: 'pro',
   };
   private _routingDefaultModel?: { provider: string; model: string };
-  /** Session-level model locks: sessionId → { provider, model, tier } */
-  private sessionModels = new Map<string, { provider: string; model: string; tier: ModelTier; ts: number }>();
 
   private readonly CIRCUIT_OPEN_AFTER = 2;
   private readonly CIRCUIT_RESET_MS = 5 * 60 * 1000;
@@ -523,48 +510,19 @@ export class LLMRouter {
   }
 
   /**
-   * Infer the recommended ModelTier based on complexity and routing strategy.
-   */
-  static recommendTier(complexity: ComplexityLevel, strategy: RoutingStrategy, defaultTier: ModelTier = 'pro'): ModelTier {
-    switch (strategy) {
-      case 'always_max': return 'max';
-      case 'always_cheapest': return 'base';
-      case 'cache_optimized': return defaultTier;
-      case 'balanced':
-      default:
-        switch (complexity) {
-          case 'complex': return 'max';
-          case 'moderate': return 'pro';
-          case 'simple': return 'base';
-        }
-    }
-  }
-
-  /**
    * Infer the task type from a request based on tools, keywords, and context.
    */
   static inferTaskType(request: LLMRequest): ModelTaskType {
-    const hasTools = (request.tools?.length ?? 0) > 0;
-    const lastUser = [...request.messages].reverse().find(m => m.role === 'user');
-    const text = lastUser ? getTextContent(lastUser.content).toLowerCase() : '';
-
-    if (/\b(translat|翻译)\b/i.test(text)) return 'text_translation';
-    if (/\b(summar|摘要|总结)\b/i.test(text)) return 'text_summary';
-    if (hasTools || /\b(code|function|implement|refactor|debug|编程|代码|实现)\b/i.test(text)) return 'text_coding';
-    if (/\b(reason|think|analy|prove|推理|分析|证明)\b/i.test(text)) return 'text_reasoning';
-    return 'text_chat';
+    const hasImage = request.messages.some(m =>
+      Array.isArray(m.content) && m.content.some(p => p.type === 'image_url'),
+    );
+    if (hasImage) return 'image_recognition';
+    return 'text';
   }
 
   // ---------------------------------------------------------------------------
   // Routing config
   // ---------------------------------------------------------------------------
-
-  get routingConfig(): RoutingConfig { return this._routingConfig; }
-
-  setRoutingConfig(config: Partial<RoutingConfig>): void {
-    this._routingConfig = { ...this._routingConfig, ...config };
-    log.info('Routing config updated', { strategy: this._routingConfig.strategy, defaultTier: this._routingConfig.defaultTier });
-  }
 
   get routingDefaultModel(): { provider: string; model: string } | undefined { return this._routingDefaultModel; }
 
@@ -575,10 +533,6 @@ export class LLMRouter {
     }
   }
 
-  setModelProfileService(service: import('./model-profile.js').ModelProfileService): void {
-    this._modelProfileService = service;
-  }
-
   setModelCatalogService(service: ModelCatalogService): void {
     this._modelCatalogService = service;
   }
@@ -587,7 +541,7 @@ export class LLMRouter {
 
   setTaskRouting(config: Partial<TaskRoutingConfig>): void {
     this._taskRouting = { ...this._taskRouting, ...config };
-    log.info('Task routing updated', { mode: this._taskRouting.mode, assignments: Object.keys(this._taskRouting.assignments) });
+    log.info('Task routing updated', { assignments: Object.keys(this._taskRouting.assignments) });
   }
 
   /**
@@ -623,81 +577,6 @@ export class LLMRouter {
 
     // 3. Final fallback: any available provider
     return { provider: this.selectProvider(request) };
-  }
-
-  /**
-   * Select the best available provider+model matching a target tier.
-   * Uses ModelProfileService when available for quality-ranked selection.
-   * Falls back to any available provider if no tier match found.
-   */
-  private selectProviderByTier(targetTier: ModelTier, request: LLMRequest): { provider: string; model?: string } {
-    if (this._modelProfileService) {
-      const profiles = this._modelProfileService.getByTier(targetTier);
-      let candidates = profiles
-        .filter(p => this.providers.has(p.provider) && this.isAvailable(p.provider));
-
-      if (candidates.length > 0) {
-        const strategy = this._routingConfig.strategy;
-        if (strategy === 'cache_optimized') {
-          // Prefer models that support prompt caching
-          const cacheable = candidates.filter(p => p.capabilities?.promptCaching);
-          if (cacheable.length > 0) candidates = cacheable;
-        }
-
-        if (strategy === 'balanced') {
-          candidates.sort((a, b) => b.derived.costEfficiency - a.derived.costEfficiency);
-        } else if (strategy === 'always_cheapest') {
-          candidates.sort((a, b) => (a.cost.inputPer1MTokens ?? 0) - (b.cost.inputPer1MTokens ?? 0));
-        } else {
-          candidates.sort((a, b) => (b.quality.qualityScore ?? 0) - (a.quality.qualityScore ?? 0));
-        }
-
-        return { provider: candidates[0].provider, model: candidates[0].id };
-      }
-    }
-
-    const tierPriority: ModelTier[] = targetTier === 'max' ? ['max', 'pro', 'base']
-      : targetTier === 'base' ? ['base', 'pro', 'max']
-      : ['pro', 'max', 'base'];
-
-    for (const tier of tierPriority) {
-      const candidates = BUILTIN_MODEL_CATALOG.filter(m =>
-        m.tier === tier && this.providers.has(m.provider) && this.isAvailable(m.provider),
-      );
-      if (candidates.length > 0) {
-        const best = candidates[0];
-        return { provider: best.provider, model: best.id };
-      }
-    }
-
-    // Fallback: use routingDefaultModel if configured and available
-    if (this._routingDefaultModel && this.providers.has(this._routingDefaultModel.provider) && this.isAvailable(this._routingDefaultModel.provider)) {
-      return { provider: this._routingDefaultModel.provider, model: this._routingDefaultModel.model };
-    }
-
-    // Final fallback: use existing selectProvider logic
-    const provider = this.selectProvider(request);
-    return { provider };
-  }
-
-  /** Clear session model lock (e.g. when user explicitly requests a different tier) */
-  clearSessionModel(sessionId: string): void {
-    this.sessionModels.delete(sessionId);
-  }
-
-  private evictStaleSessions(): void {
-    const now = Date.now();
-    for (const [id, entry] of this.sessionModels) {
-      if (now - entry.ts > SESSION_MODEL_TTL_MS) {
-        this.sessionModels.delete(id);
-      }
-    }
-    // If still over limit, remove oldest entries
-    if (this.sessionModels.size >= SESSION_MODEL_MAX_SIZE) {
-      const entries = [...this.sessionModels.entries()].sort((a, b) => a[1].ts - b[1].ts);
-      const toRemove = entries.slice(0, entries.length - SESSION_MODEL_MAX_SIZE + 100);
-      for (const [id] of toRemove) this.sessionModels.delete(id);
-    }
   }
 
   private selectProvider(request: LLMRequest, explicit?: string): string {
@@ -1125,7 +1004,7 @@ export class LLMRouter {
     for (const [name, p] of this.providers.entries()) {
       providers[name] = { model: p.model, configured: true };
     }
-    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter', 'zai', 'deepseek']) {
+    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'minimax-cn', 'siliconflow', 'siliconflow-intl', 'openrouter', 'zai', 'deepseek']) {
       if (!providers[name]) {
         providers[name] = { model: '', configured: false };
       }
@@ -1141,12 +1020,10 @@ export class LLMRouter {
       const modelDef = enrichedModels.find(m => m.id === p.model) ?? enrichedModels[0];
       const customModels = this.customModelConfigs.get(name);
       const oauthProfile = this._profileStore?.getDefaultProfile(name);
-      // Enrich models without tier from ModelProfileService
       const tieredModels = enrichedModels.map(m => {
         if (m.tier) return m;
-        const profile = this._modelProfileService?.getProfile(m.id);
-        if (profile?.quality?.tier) return { ...m, tier: profile.quality.tier };
-        return m;
+        const score = estimateQualityScore(m.id, m.reasoning);
+        return { ...m, tier: tierFromQualityScore(score) };
       });
       const rawKey: string = (p as any).apiKey ?? '';
       const keySource = oauthProfile?.authType === 'oauth' ? 'oauth' as const : rawKey ? 'config' as const : undefined;
@@ -1169,7 +1046,7 @@ export class LLMRouter {
       };
     }
 
-    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter', 'zai', 'deepseek']) {
+    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'minimax-cn', 'siliconflow', 'siliconflow-intl', 'openrouter', 'zai', 'deepseek']) {
       if (!providers[name]) {
         const oauthProfile = this._profileStore?.getDefaultProfile(name);
         const enrichedModels = this.getProviderModels(name);
@@ -1366,8 +1243,10 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   'openai-codex': 'OpenAI Codex (OAuth)',
   google: 'Google Gemini',
   ollama: 'Ollama (Local)',
-  siliconflow: 'SiliconFlow',
-  minimax: 'MiniMax',
+  siliconflow: 'SiliconFlow (中国)',
+  'siliconflow-intl': 'SiliconFlow (Global)',
+  minimax: 'MiniMax (Global)',
+  'minimax-cn': 'MiniMax (中国)',
   openrouter: 'OpenRouter',
   zai: 'ZAI (GLM)',
   deepseek: 'DeepSeek',
@@ -1406,9 +1285,14 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   // Google — https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini
   { id: 'gemini-3-1-pro', name: 'Gemini 3.1 Pro', provider: 'google', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
   { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'google', contextWindow: 1048576, maxOutputTokens: 65536, cost: { input: 0.30, output: 2.50 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro' },
-  // MiniMax — https://platform.minimax.io/docs/api-reference/api-overview
+  // MiniMax Global — https://platform.minimax.io
+  { id: 'MiniMax-M3', name: 'MiniMax M3', provider: 'minimax', contextWindow: 512000, maxOutputTokens: 128000, cost: { input: 0.6, output: 2.4, cacheRead: 0.12 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
   { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
-  { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2, cacheRead: 0.03, cacheWrite: 0.375 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
+  { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2, cacheRead: 0.03, cacheWrite: 0.375 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
+  // MiniMax China — https://platform.minimaxi.com
+  { id: 'MiniMax-M3', name: 'MiniMax M3', provider: 'minimax-cn', contextWindow: 512000, maxOutputTokens: 128000, cost: { input: 0.6, output: 2.4, cacheRead: 0.12 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
+  { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', provider: 'minimax-cn', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
+  { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax-cn', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2, cacheRead: 0.03, cacheWrite: 0.375 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
   // OpenRouter — https://openrouter.ai/models (pass-through pricing varies by upstream provider)
   { id: 'xiaomi/mimo-v2-pro', name: 'MiMo-V2-Pro', provider: 'openrouter', contextWindow: 1048576, maxOutputTokens: 131072, cost: { input: 1, output: 3, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
   { id: 'anthropic/claude-opus-4-6', name: 'Claude Opus 4.6 (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
@@ -1419,7 +1303,7 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 0.435, output: 0.87, cacheRead: 0.003625 }, reasoning: true, inputTypes: ['text'], tier: 'max' },
   { id: 'deepseek-chat', name: 'DeepSeek-Chat (legacy)', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 0.14, output: 0.28, cacheRead: 0.0028 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
   { id: 'deepseek-reasoner', name: 'DeepSeek-Reasoner (legacy)', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 0.14, output: 0.28, cacheRead: 0.0028 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
-  // SiliconFlow — https://docs.siliconflow.cn/docs/model-library (OpenAI-compatible proxy, pricing varies)
+  // SiliconFlow China — https://docs.siliconflow.cn/docs/model-library
   { id: 'Qwen/Qwen3.5-35B-A3B', name: 'Qwen3.5-35B-A3B', provider: 'siliconflow', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 0.24, output: 1.80 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
   { id: 'Qwen/Qwen3.5-122B-A10B', name: 'Qwen3.5-122B-A10B', provider: 'siliconflow', contextWindow: 262144, maxOutputTokens: 262144, cost: { input: 0.26, output: 2.08 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
   { id: 'Qwen/Qwen3.5-27B', name: 'Qwen3.5-27B', provider: 'siliconflow', contextWindow: 262144, maxOutputTokens: 262144, cost: { input: 0.25, output: 2.00 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
@@ -1427,6 +1311,14 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'deepseek-ai/DeepSeek-V3', name: 'DeepSeek-V3 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 163840, maxOutputTokens: 163840, cost: { input: 0.25, output: 1.00 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
   { id: 'deepseek-ai/DeepSeek-V3.2', name: 'DeepSeek-V3.2 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 163840, maxOutputTokens: 163840, cost: { input: 0.27, output: 0.42 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
   { id: 'moonshotai/Kimi-K2.5', name: 'Kimi-K2.5 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 0.60, output: 3.00 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
+  // SiliconFlow Global (overseas endpoint, same models)
+  { id: 'Qwen/Qwen3.5-35B-A3B', name: 'Qwen3.5-35B-A3B', provider: 'siliconflow-intl', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 0.24, output: 1.80 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
+  { id: 'Qwen/Qwen3.5-122B-A10B', name: 'Qwen3.5-122B-A10B', provider: 'siliconflow-intl', contextWindow: 262144, maxOutputTokens: 262144, cost: { input: 0.26, output: 2.08 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
+  { id: 'Qwen/Qwen3.5-27B', name: 'Qwen3.5-27B', provider: 'siliconflow-intl', contextWindow: 262144, maxOutputTokens: 262144, cost: { input: 0.25, output: 2.00 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
+  { id: 'Qwen/Qwen3.5-9B', name: 'Qwen3.5-9B', provider: 'siliconflow-intl', contextWindow: 262144, maxOutputTokens: 262144, cost: { input: 0.10, output: 0.15 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
+  { id: 'deepseek-ai/DeepSeek-V3', name: 'DeepSeek-V3 (via SiliconFlow)', provider: 'siliconflow-intl', contextWindow: 163840, maxOutputTokens: 163840, cost: { input: 0.25, output: 1.00 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
+  { id: 'deepseek-ai/DeepSeek-V3.2', name: 'DeepSeek-V3.2 (via SiliconFlow)', provider: 'siliconflow-intl', contextWindow: 163840, maxOutputTokens: 163840, cost: { input: 0.27, output: 0.42 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
+  { id: 'moonshotai/Kimi-K2.5', name: 'Kimi-K2.5 (via SiliconFlow)', provider: 'siliconflow-intl', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 0.60, output: 3.00 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
   // ZAI (Zhipu) — https://docs.z.ai/guides/overview/pricing
   { id: 'glm-5.1', name: 'GLM-5.1', provider: 'zai', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 1.4, output: 4.4, cacheRead: 0.26 }, reasoning: true, inputTypes: ['text'], tier: 'max' },
   { id: 'glm-5', name: 'GLM-5', provider: 'zai', contextWindow: 205000, maxOutputTokens: 16384, cost: { input: 1.0, output: 3.2, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro' },
@@ -1515,26 +1407,3 @@ export function costTierFromPrice(inputPer1M: number): CostTier {
   return '$$$$';
 }
 
-/** Derive task types a model can serve based on its capabilities and mode */
-export function getModelTaskTypes(
-  mode: string,
-  capabilities: CatalogModelCapabilities,
-): ModelTaskType[] {
-  const tasks: ModelTaskType[] = [];
-
-  if (mode === 'chat') {
-    tasks.push('text_chat', 'text_summary', 'text_translation');
-    if (capabilities.reasoning) tasks.push('text_reasoning');
-    if (capabilities.functionCalling) tasks.push('text_coding');
-    if (capabilities.vision) tasks.push('image_recognition');
-    if (capabilities.webSearch) tasks.push('web_search');
-    if (capabilities.audioInput) tasks.push('audio_stt');
-    if (capabilities.audioOutput) tasks.push('audio_tts');
-  }
-  if (mode === 'image_generation') tasks.push('image_generation');
-  if (mode === 'audio_speech') tasks.push('audio_tts');
-  if (mode === 'audio_transcription') tasks.push('audio_stt');
-  if (mode === 'embedding') tasks.push('embedding');
-
-  return tasks;
-}

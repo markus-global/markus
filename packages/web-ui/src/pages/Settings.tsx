@@ -1038,297 +1038,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           ) : <div className="text-sm text-fg-tertiary">{t('common:loading')}</div>}
         </Section>
 
-        {/* ───── Default Provider ───── */}
-        
-        <Section title={t('defaultProvider.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm font-medium">{t('defaultProvider.primaryProvider')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('defaultProvider.primaryProviderDesc')}</div>
-              </div>
-              <div className="flex items-center gap-3">
-                {llm ? (
-                  <select value={selectedProvider} onChange={e => { setSelectedProvider(e.target.value); setSaveMsg(null); }}
-                    className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm w-48 focus:border-brand-500 outline-none">
-                    {enabledProviders.length > 0 ? enabledProviders.map(p => <option key={p} value={p}>{llm.providers[p]?.displayName ?? p}</option>) : <option value="">{t('defaultProvider.noProviders')}</option>}
-                  </select>
-                ) : <div className="text-xs text-fg-tertiary">{t('common:loading')}</div>}
-                {selectedProvider !== llm?.defaultProvider && (
-                  <button onClick={() => void saveLLM()} disabled={saving}
-                    className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
-                    {saving ? t('common:saving') : t('common:save')}
-                  </button>
-                )}
-              </div>
-            </div>
-            {saveMsg && <Msg type={saveMsg.type} text={saveMsg.text} />}
-
-            <div className="flex items-center justify-between border-t border-border-default pt-4">
-              <div>
-                <div className="text-sm font-medium text-fg-primary">{t('defaultProvider.autoFallback')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('defaultProvider.autoFallbackDesc')}</div>
-              </div>
-              <button
-                onClick={async () => {
-                  const newVal = !(llm?.autoFallback ?? true);
-                  try {
-                    const res = await fetch('/api/settings/llm', {
-                      method: 'POST', headers: authHeaders(),
-                      body: JSON.stringify({ autoFallback: newVal }),
-                    });
-                    if (res.ok) {
-                      const data = await res.json() as LLMSettings;
-                      setLlm(data);
-                    }
-                  } catch { /* ignore */ }
-                }}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(llm?.autoFallback ?? true) ? 'bg-green-500' : 'bg-gray-600'}`}
-              >
-                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${(llm?.autoFallback ?? true) ? 'translate-x-4' : 'translate-x-1'}`} />
-              </button>
-            </div>
-          </div>
-        </Section>
-
-        {/* ───── Model Routing ───── */}
-        <Section title={t('modelRouting.title')}>
-          <ModelRoutingSection
-            configuredProviders={
-              Object.entries(llm?.providers ?? {})
-                .filter(([, p]) => p.configured && p.enabled)
-                .map(([name, p]) => ({
-                  name,
-                  displayName: p.displayName,
-                  model: p.model,
-                  models: p.models?.map(m => ({ id: m.id, name: m.name })),
-                }))
-            }
-            onSave={async (data) => {
-              await fetch('/api/settings/llm', {
-                method: 'POST',
-                headers: authHeaders(),
-                body: JSON.stringify(data),
-              });
-            }}
-          />
-        </Section>
-
-        {/* ───── Network / Proxy ───── */}
-        <Section title={t('networkProxy.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-fg-tertiary">{t('networkProxy.description')}</p>
-              </div>
-              <button
-                onClick={async () => {
-                  const newVal = !proxyEnabled;
-                  setProxyEnabled(newVal);
-                  try {
-                    await fetch('/api/settings/network', {
-                      method: 'POST', headers: authHeaders(),
-                      body: JSON.stringify({ proxyEnabled: newVal }),
-                    });
-                    loadNetworkSettings();
-                  } catch { setProxyEnabled(!newVal); }
-                }}
-                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${proxyEnabled ? 'bg-green-500' : 'bg-gray-600'}`}
-              >
-                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${proxyEnabled ? 'translate-x-4' : 'translate-x-1'}`} />
-              </button>
-            </div>
-
-            {/* Effective proxy status */}
-            {proxyEffective && (
-              <div className={`flex items-center gap-2 px-3 py-2.5 rounded-lg bg-surface-secondary border border-border-default transition-opacity ${!proxyEnabled ? 'opacity-50' : ''}`}>
-                <span className={`w-2 h-2 rounded-full ${
-                  !proxyEnabled ? 'bg-gray-600' : proxyEffective.proxy ? 'bg-green-400' : 'bg-gray-600'
-                }`} />
-                <span className="text-xs text-fg-secondary">
-                  {!proxyEnabled ? t('networkProxy.disabled') :
-                   proxyEffective.proxy ? (
-                    <>{t('networkProxy.active')} <code className="text-fg-primary font-mono">{proxyEffective.proxy}</code></>
-                  ) : t('networkProxy.noProxy')}
-                </span>
-                {proxyEnabled && proxyEffective.source !== 'none' && proxyEffective.source !== 'disabled' && (
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium ${
-                    proxyEffective.source === 'config' ? 'bg-brand-500/15 text-brand-500' :
-                    proxyEffective.source === 'env' ? 'bg-amber-500/15 text-amber-600' :
-                    proxyEffective.source === 'system' ? 'bg-blue-500/15 text-blue-500' :
-                    'bg-gray-500/15 text-fg-muted'
-                  }`}>
-                    {proxyEffective.source === 'config' ? t('networkProxy.sourceConfig') :
-                     proxyEffective.source === 'env' ? t('networkProxy.sourceEnv') :
-                     proxyEffective.source === 'system' ? t('networkProxy.sourceSystem') : ''}
-                  </span>
-                )}
-                <button
-                  onClick={() => loadNetworkSettings()}
-                  className="ml-auto text-[10px] px-1.5 py-0.5 rounded-md text-fg-muted hover:text-fg-secondary hover:bg-surface-tertiary transition-colors"
-                  title={t('networkProxy.refresh')}
-                >
-                  ↻ {t('networkProxy.refresh')}
-                </button>
-              </div>
-            )}
-
-            <div className={`flex gap-2 items-center transition-opacity ${!proxyEnabled ? 'opacity-50 pointer-events-none' : ''}`}>
-              <input
-                type="text"
-                value={proxyUrl}
-                onChange={e => setProxyUrl(e.target.value)}
-                placeholder={t('networkProxy.placeholder')}
-                className="flex-1 px-3 py-2 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/50 focus:border-brand-500 outline-none"
-              />
-              <button
-                onClick={async () => {
-                  setProxySaving(true); setProxyMsg(null);
-                  try {
-                    const res = await fetch('/api/settings/network', {
-                      method: 'POST', headers: authHeaders(),
-                      body: JSON.stringify({ proxy: proxyUrl.trim() }),
-                    });
-                    if (res.ok) {
-                      setProxyMsg({ type: 'ok', text: t('networkProxy.saved') });
-                      loadNetworkSettings();
-                    } else {
-                      const d = await res.json() as { error?: string };
-                      setProxyMsg({ type: 'err', text: d.error ?? t('networkProxy.saveFailed') });
-                    }
-                  } catch { setProxyMsg({ type: 'err', text: t('networkProxy.networkError') }); }
-                  finally { setProxySaving(false); }
-                }}
-                disabled={proxySaving}
-                className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors"
-              >
-                {proxySaving ? t('networkProxy.saving') : t('networkProxy.save')}
-              </button>
-            </div>
-            {proxyMsg && <Msg type={proxyMsg.type} text={proxyMsg.text} />}
-          </div>
-        </Section>
-
-        {/* ───── OAuth Authentication ───── */}
-        <Section title={t('oauthAuth.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
-            <p className="text-xs text-fg-tertiary">
-              {t('oauthAuth.description')}
-            </p>
-
-            {/* OAuth provider login buttons */}
-            <div className="flex flex-wrap gap-2">
-              {oauthProviders.map(p => (
-                <div key={p.name} className="flex">
-                  <button
-                    onClick={() => startOAuthLogin(p.name)}
-                    disabled={!!oauthLoading}
-                    className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-l-lg transition-colors"
-                  >
-                    {oauthLoading === p.name ? t('oauthAuth.connecting') : t('oauthAuth.signInWith', { name: p.displayName })}
-                  </button>
-                  <button
-                    onClick={() => startDeviceCodeLogin(p.name)}
-                    disabled={!!oauthLoading}
-                    title={t('oauthAuth.deviceTitle')}
-                    className="px-2.5 py-2 text-xs bg-surface-secondary text-fg-secondary border border-border-default border-l-0 rounded-r-lg hover:bg-surface-tertiary disabled:opacity-40 transition-colors"
-                  >
-                    {t('oauthAuth.device')}
-                  </button>
-                </div>
-              ))}
-              {oauthProviders.length === 0 && (
-                <span className="text-xs text-fg-tertiary">{t('oauthAuth.noProviders')}</span>
-              )}
-            </div>
-
-            {/* Device Code display */}
-            {deviceCode && (
-              <div className="p-4 rounded-lg bg-surface-secondary border border-border-default space-y-2">
-                <p className="text-xs text-fg-primary font-medium">{t('oauthAuth.deviceCodeTitle')}</p>
-                <p className="text-xs text-fg-tertiary">
-                  {t('oauthAuth.deviceInstructions')}
-                </p>
-                <div className="flex items-center gap-3">
-                  <a href={deviceCode.verificationUri} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-500 underline hover:text-brand-400">
-                    {deviceCode.verificationUri}
-                  </a>
-                  <code className="px-2.5 py-1 text-sm font-mono font-bold bg-surface-elevated border border-border-default rounded-lg text-fg-primary select-all">
-                    {deviceCode.userCode}
-                  </code>
-                </div>
-                <p className="text-[10px] text-fg-muted">{t('oauthAuth.deviceWaiting')}</p>
-              </div>
-            )}
-
-            {/* Manual callback URL input for headless/remote scenarios */}
-            {pendingOAuthProvider && !deviceCode && (
-              <div className="p-4 rounded-lg bg-surface-secondary border border-border-default space-y-2">
-                <p className="text-xs text-fg-tertiary">
-                  {t('oauthAuth.manualCallbackHint')}
-                </p>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={manualCallbackUrl}
-                    onChange={e => setManualCallbackUrl(e.target.value)}
-                    placeholder={t('oauthAuth.manualPlaceholder')}
-                    className="flex-1 px-3 py-2 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/50 focus:border-brand-500 outline-none"
-                  />
-                  <button
-                    onClick={handleManualCallback}
-                    disabled={!manualCallbackUrl.trim() || oauthLoading === 'manual'}
-                    className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors"
-                  >
-                    {t('oauthAuth.submit')}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Status message */}
-            {oauthMsg && <Msg type={oauthMsg.type} text={oauthMsg.text} />}
-
-            {/* Connected profiles */}
-            {authProfiles.filter(p => p.hasOAuth).length > 0 && (
-              <div className="space-y-2 border-t border-border-default pt-4">
-                <span className="text-xs font-medium text-fg-secondary">{t('oauthAuth.connectedAccounts')}</span>
-                {authProfiles.filter(p => p.hasOAuth).map(profile => (
-                  <div key={profile.id} className={`flex items-center justify-between px-4 py-3 rounded-lg border ${
-                    profile.oauthExpired ? 'bg-amber-500/5 border-amber-500/20' : 'bg-surface-secondary border-border-default'
-                  }`}>
-                    <div className="flex items-center gap-2.5">
-                      <span className={`w-2 h-2 rounded-full ${profile.oauthExpired ? 'bg-amber-400' : 'bg-green-400'}`} />
-                      <span className="text-xs text-fg-primary font-medium">{profile.label ?? profile.provider}</span>
-                      {profile.accountId && <span className="text-[10px] text-fg-muted">({profile.accountId.slice(0, 12)}...)</span>}
-                      {profile.oauthExpired && <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-600 font-medium">{t('oauthAuth.expired')}</span>}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {profile.oauthExpired && (
-                        <button
-                          onClick={() => startOAuthLogin(profile.provider)}
-                          disabled={!!oauthLoading}
-                          className="text-[10px] px-2 py-1 rounded-md text-brand-500 hover:text-brand-400 hover:bg-brand-500/10 transition-colors"
-                        >
-                          {t('oauthAuth.reconnect')}
-                        </button>
-                      )}
-                      <button
-                        onClick={() => deleteAuthProfile(profile.id)}
-                        className="text-[10px] px-2 py-1 rounded-md text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
-                      >
-                        {t('oauthAuth.disconnect')}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </Section>
-
         {/* ───── Model Providers ───── */}
-        <Section title={t('modelProviders.title')}>
+        <CollapsibleSection title={t('modelProviders.title')}>
           <div className="space-y-3">
             {llm && (() => {
               const allProviderEntries: Array<[string, ProviderInfo]> = [];
@@ -1715,12 +1426,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               {addProviderMsg && <Msg type={addProviderMsg.type} text={addProviderMsg.text} />}
             </div>
           )}
-        </Section>
-
-        <div className="border-t border-border-default" />
+        </CollapsibleSection>
 
         {/* ───── Auto-detect & Import ───── */}
-        <Section title={t('autoDetect.title')}>
+        <CollapsibleSection title={t('autoDetect.title')} defaultOpen={false}>
           <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
             <div className="text-sm text-fg-secondary">{t('autoDetect.description')}</div>
 
@@ -1856,7 +1565,297 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               {openclawMsg && <Msg type={openclawMsg.type} text={openclawMsg.text} />}
             </div>
           </div>
+        </CollapsibleSection>
+
+        {/* ───── OAuth Authentication ───── */}
+        <CollapsibleSection title={t('oauthAuth.title')} defaultOpen={false}>
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+            <p className="text-xs text-fg-tertiary">
+              {t('oauthAuth.description')}
+            </p>
+
+            {/* OAuth provider login buttons */}
+            <div className="flex flex-wrap gap-2">
+              {oauthProviders.map(p => (
+                <div key={p.name} className="flex">
+                  <button
+                    onClick={() => startOAuthLogin(p.name)}
+                    disabled={!!oauthLoading}
+                    className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-l-lg transition-colors"
+                  >
+                    {oauthLoading === p.name ? t('oauthAuth.connecting') : t('oauthAuth.signInWith', { name: p.displayName })}
+                  </button>
+                  <button
+                    onClick={() => startDeviceCodeLogin(p.name)}
+                    disabled={!!oauthLoading}
+                    title={t('oauthAuth.deviceTitle')}
+                    className="px-2.5 py-2 text-xs bg-surface-secondary text-fg-secondary border border-border-default border-l-0 rounded-r-lg hover:bg-surface-tertiary disabled:opacity-40 transition-colors"
+                  >
+                    {t('oauthAuth.device')}
+                  </button>
+                </div>
+              ))}
+              {oauthProviders.length === 0 && (
+                <span className="text-xs text-fg-tertiary">{t('oauthAuth.noProviders')}</span>
+              )}
+            </div>
+
+            {/* Device Code display */}
+            {deviceCode && (
+              <div className="p-4 rounded-lg bg-surface-secondary border border-border-default space-y-2">
+                <p className="text-xs text-fg-primary font-medium">{t('oauthAuth.deviceCodeTitle')}</p>
+                <p className="text-xs text-fg-tertiary">
+                  {t('oauthAuth.deviceInstructions')}
+                </p>
+                <div className="flex items-center gap-3">
+                  <a href={deviceCode.verificationUri} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-500 underline hover:text-brand-400">
+                    {deviceCode.verificationUri}
+                  </a>
+                  <code className="px-2.5 py-1 text-sm font-mono font-bold bg-surface-elevated border border-border-default rounded-lg text-fg-primary select-all">
+                    {deviceCode.userCode}
+                  </code>
+                </div>
+                <p className="text-[10px] text-fg-muted">{t('oauthAuth.deviceWaiting')}</p>
+              </div>
+            )}
+
+            {/* Manual callback URL input for headless/remote scenarios */}
+            {pendingOAuthProvider && !deviceCode && (
+              <div className="p-4 rounded-lg bg-surface-secondary border border-border-default space-y-2">
+                <p className="text-xs text-fg-tertiary">
+                  {t('oauthAuth.manualCallbackHint')}
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={manualCallbackUrl}
+                    onChange={e => setManualCallbackUrl(e.target.value)}
+                    placeholder={t('oauthAuth.manualPlaceholder')}
+                    className="flex-1 px-3 py-2 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/50 focus:border-brand-500 outline-none"
+                  />
+                  <button
+                    onClick={handleManualCallback}
+                    disabled={!manualCallbackUrl.trim() || oauthLoading === 'manual'}
+                    className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors"
+                  >
+                    {t('oauthAuth.submit')}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Status message */}
+            {oauthMsg && <Msg type={oauthMsg.type} text={oauthMsg.text} />}
+
+            {/* Connected profiles */}
+            {authProfiles.filter(p => p.hasOAuth).length > 0 && (
+              <div className="space-y-2 border-t border-border-default pt-4">
+                <span className="text-xs font-medium text-fg-secondary">{t('oauthAuth.connectedAccounts')}</span>
+                {authProfiles.filter(p => p.hasOAuth).map(profile => (
+                  <div key={profile.id} className={`flex items-center justify-between px-4 py-3 rounded-lg border ${
+                    profile.oauthExpired ? 'bg-amber-500/5 border-amber-500/20' : 'bg-surface-secondary border-border-default'
+                  }`}>
+                    <div className="flex items-center gap-2.5">
+                      <span className={`w-2 h-2 rounded-full ${profile.oauthExpired ? 'bg-amber-400' : 'bg-green-400'}`} />
+                      <span className="text-xs text-fg-primary font-medium">{profile.label ?? profile.provider}</span>
+                      {profile.accountId && <span className="text-[10px] text-fg-muted">({profile.accountId.slice(0, 12)}...)</span>}
+                      {profile.oauthExpired && <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-600 font-medium">{t('oauthAuth.expired')}</span>}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {profile.oauthExpired && (
+                        <button
+                          onClick={() => startOAuthLogin(profile.provider)}
+                          disabled={!!oauthLoading}
+                          className="text-[10px] px-2 py-1 rounded-md text-brand-500 hover:text-brand-400 hover:bg-brand-500/10 transition-colors"
+                        >
+                          {t('oauthAuth.reconnect')}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => deleteAuthProfile(profile.id)}
+                        className="text-[10px] px-2 py-1 rounded-md text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                      >
+                        {t('oauthAuth.disconnect')}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </CollapsibleSection>
+
+        {/* ───── Default Provider ───── */}
+        <Section title={t('defaultProvider.title')}>
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium">{t('defaultProvider.primaryProvider')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('defaultProvider.primaryProviderDesc')}</div>
+              </div>
+              <div className="flex items-center gap-3">
+                {llm ? (
+                  <select value={selectedProvider} onChange={e => { setSelectedProvider(e.target.value); setSaveMsg(null); }}
+                    className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm w-48 focus:border-brand-500 outline-none">
+                    {enabledProviders.length > 0 ? enabledProviders.map(p => <option key={p} value={p}>{llm.providers[p]?.displayName ?? p}</option>) : <option value="">{t('defaultProvider.noProviders')}</option>}
+                  </select>
+                ) : <div className="text-xs text-fg-tertiary">{t('common:loading')}</div>}
+                {selectedProvider !== llm?.defaultProvider && (
+                  <button onClick={() => void saveLLM()} disabled={saving}
+                    className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
+                    {saving ? t('common:saving') : t('common:save')}
+                  </button>
+                )}
+              </div>
+            </div>
+            {saveMsg && <Msg type={saveMsg.type} text={saveMsg.text} />}
+
+            <div className="flex items-center justify-between border-t border-border-default pt-4">
+              <div>
+                <div className="text-sm font-medium text-fg-primary">{t('defaultProvider.autoFallback')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('defaultProvider.autoFallbackDesc')}</div>
+              </div>
+              <button
+                onClick={async () => {
+                  const newVal = !(llm?.autoFallback ?? true);
+                  try {
+                    const res = await fetch('/api/settings/llm', {
+                      method: 'POST', headers: authHeaders(),
+                      body: JSON.stringify({ autoFallback: newVal }),
+                    });
+                    if (res.ok) {
+                      const data = await res.json() as LLMSettings;
+                      setLlm(data);
+                    }
+                  } catch { /* ignore */ }
+                }}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(llm?.autoFallback ?? true) ? 'bg-green-500' : 'bg-gray-600'}`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${(llm?.autoFallback ?? true) ? 'translate-x-4' : 'translate-x-1'}`} />
+              </button>
+            </div>
+          </div>
         </Section>
+
+        {/* ───── Model Routing ───── */}
+        <Section title={t('modelRouting.title')}>
+          <ModelRoutingSection
+            configuredProviders={
+              Object.entries(llm?.providers ?? {})
+                .filter(([, p]) => p.configured && p.enabled)
+                .map(([name, p]) => ({
+                  name,
+                  displayName: p.displayName,
+                  model: p.model,
+                  models: p.models?.map(m => ({ id: m.id, name: m.name })),
+                }))
+            }
+            onSave={async (data) => {
+              const res = await fetch('/api/settings/llm', {
+                method: 'POST',
+                headers: authHeaders(),
+                body: JSON.stringify(data),
+              });
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            }}
+          />
+        </Section>
+
+        {/* ───── Network / Proxy ───── */}
+        <CollapsibleSection title={t('networkProxy.title')} defaultOpen={false}>
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs text-fg-tertiary">{t('networkProxy.description')}</p>
+              </div>
+              <button
+                onClick={async () => {
+                  const newVal = !proxyEnabled;
+                  setProxyEnabled(newVal);
+                  try {
+                    await fetch('/api/settings/network', {
+                      method: 'POST', headers: authHeaders(),
+                      body: JSON.stringify({ proxyEnabled: newVal }),
+                    });
+                    loadNetworkSettings();
+                  } catch { setProxyEnabled(!newVal); }
+                }}
+                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${proxyEnabled ? 'bg-green-500' : 'bg-gray-600'}`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${proxyEnabled ? 'translate-x-4' : 'translate-x-1'}`} />
+              </button>
+            </div>
+
+            {/* Effective proxy status */}
+            {proxyEffective && (
+              <div className={`flex items-center gap-2 px-3 py-2.5 rounded-lg bg-surface-secondary border border-border-default transition-opacity ${!proxyEnabled ? 'opacity-50' : ''}`}>
+                <span className={`w-2 h-2 rounded-full ${
+                  !proxyEnabled ? 'bg-gray-600' : proxyEffective.proxy ? 'bg-green-400' : 'bg-gray-600'
+                }`} />
+                <span className="text-xs text-fg-secondary">
+                  {!proxyEnabled ? t('networkProxy.disabled') :
+                   proxyEffective.proxy ? (
+                    <>{t('networkProxy.active')} <code className="text-fg-primary font-mono">{proxyEffective.proxy}</code></>
+                  ) : t('networkProxy.noProxy')}
+                </span>
+                {proxyEnabled && proxyEffective.source !== 'none' && proxyEffective.source !== 'disabled' && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium ${
+                    proxyEffective.source === 'config' ? 'bg-brand-500/15 text-brand-500' :
+                    proxyEffective.source === 'env' ? 'bg-amber-500/15 text-amber-600' :
+                    proxyEffective.source === 'system' ? 'bg-blue-500/15 text-blue-500' :
+                    'bg-gray-500/15 text-fg-muted'
+                  }`}>
+                    {proxyEffective.source === 'config' ? t('networkProxy.sourceConfig') :
+                     proxyEffective.source === 'env' ? t('networkProxy.sourceEnv') :
+                     proxyEffective.source === 'system' ? t('networkProxy.sourceSystem') : ''}
+                  </span>
+                )}
+                <button
+                  onClick={() => loadNetworkSettings()}
+                  className="ml-auto text-[10px] px-1.5 py-0.5 rounded-md text-fg-muted hover:text-fg-secondary hover:bg-surface-tertiary transition-colors"
+                  title={t('networkProxy.refresh')}
+                >
+                  ↻ {t('networkProxy.refresh')}
+                </button>
+              </div>
+            )}
+
+            <div className={`flex gap-2 items-center transition-opacity ${!proxyEnabled ? 'opacity-50 pointer-events-none' : ''}`}>
+              <input
+                type="text"
+                value={proxyUrl}
+                onChange={e => setProxyUrl(e.target.value)}
+                placeholder={t('networkProxy.placeholder')}
+                className="flex-1 px-3 py-2 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/50 focus:border-brand-500 outline-none"
+              />
+              <button
+                onClick={async () => {
+                  setProxySaving(true); setProxyMsg(null);
+                  try {
+                    const res = await fetch('/api/settings/network', {
+                      method: 'POST', headers: authHeaders(),
+                      body: JSON.stringify({ proxy: proxyUrl.trim() }),
+                    });
+                    if (res.ok) {
+                      setProxyMsg({ type: 'ok', text: t('networkProxy.saved') });
+                      loadNetworkSettings();
+                    } else {
+                      const d = await res.json() as { error?: string };
+                      setProxyMsg({ type: 'err', text: d.error ?? t('networkProxy.saveFailed') });
+                    }
+                  } catch { setProxyMsg({ type: 'err', text: t('networkProxy.networkError') }); }
+                  finally { setProxySaving(false); }
+                }}
+                disabled={proxySaving}
+                className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors"
+              >
+                {proxySaving ? t('networkProxy.saving') : t('networkProxy.save')}
+              </button>
+            </div>
+            {proxyMsg && <Msg type={proxyMsg.type} text={proxyMsg.text} />}
+          </div>
+        </CollapsibleSection>
+
         </>}
 
         {resolvedTab === 'execution' && <>
@@ -2699,7 +2698,7 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
 /* ─── Expandable catalog models list ─── */
 
 function ExpandableCatalogModels({ models, providerName, t, onAdd }: {
-  models: Array<{ id?: string; [k: string]: unknown }>;
+  models: Array<{ id?: string }>;
   providerName: string;
   t: (key: string, opts?: Record<string, unknown>) => string;
   onAdd: (modelId: string) => void;
@@ -2873,6 +2872,31 @@ function Section({ title, children }: { title: React.ReactNode; children: React.
     <section>
       <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider mb-4">{title}</h3>
       <div className="space-y-4">{children}</div>
+    </section>
+  );
+}
+
+function CollapsibleSection({ title, children, defaultOpen = true }: {
+  title: React.ReactNode;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex items-center justify-between w-full group mb-4"
+      >
+        <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider">
+          {title}
+        </h3>
+        <span className={`text-fg-tertiary text-xs transition-transform group-hover:text-fg-secondary ${open ? '' : '-rotate-90'}`}>
+          ▼
+        </span>
+      </button>
+      {open && <div className="space-y-4">{children}</div>}
     </section>
   );
 }

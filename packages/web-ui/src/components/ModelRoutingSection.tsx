@@ -13,7 +13,7 @@ type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 const DEBOUNCE_MS = 500;
 
 const TASK_GROUPS: { groupKey: string; tasks: ModelTaskTypeDTO[] }[] = [
-  { groupKey: 'text', tasks: ['text_chat', 'text_reasoning', 'text_coding', 'text_translation', 'text_summary'] },
+  { groupKey: 'text', tasks: ['text'] },
   { groupKey: 'image', tasks: ['image_recognition', 'image_generation'] },
   { groupKey: 'audio', tasks: ['audio_tts', 'audio_stt'] },
   { groupKey: 'video', tasks: ['video_generation'] },
@@ -37,28 +37,53 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
   const [suggestionsLoaded, setSuggestionsLoaded] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSaveRef = useRef<{ taskRouting?: Partial<TaskRoutingConfigDTO>; routingDefaultModel?: { provider: string; model: string } | null } | null>(null);
-  const autoFillDone = useRef(false);
 
-  // Load current routing settings
+  const providerKey = useMemo(
+    () => configuredProviders.map(p => p.name).sort().join(','),
+    [configuredProviders],
+  );
+
+  // Load current routing settings; re-run when providers change
   useEffect(() => {
     fetch('/api/settings/llm/routing', { credentials: 'include' })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((data: { taskRouting?: TaskRoutingConfigDTO; routingDefaultModel?: { provider: string; model: string } | null }) => {
+        const providerNames = new Set(configuredProviders.map(p => p.name));
+
+        let cleaned: Partial<Record<ModelTaskTypeDTO, TaskModelAssignmentDTO>> = {};
+        let assignmentsChanged = false;
         if (data.taskRouting?.assignments) {
-          const cleaned = cleanStaleAssignments(data.taskRouting.assignments, configuredProviders);
-          setAssignments(cleaned);
+          cleaned = cleanStaleAssignments(data.taskRouting.assignments, configuredProviders);
+          assignmentsChanged = Object.keys(data.taskRouting.assignments).length !== Object.keys(cleaned).length;
         }
-        if (data.routingDefaultModel) setDefaultModel(data.routingDefaultModel);
+        setAssignments(cleaned);
+
+        let newDefault = data.routingDefaultModel ?? null;
+        let defaultChanged = false;
+        if (newDefault && !providerNames.has(newDefault.provider)) {
+          newDefault = null;
+          defaultChanged = true;
+        }
+        setDefaultModel(newDefault);
+
         setLoaded(true);
+
+        if (assignmentsChanged || defaultChanged) {
+          onSave({
+            taskRouting: { assignments: cleaned },
+            routingDefaultModel: newDefault,
+          });
+        }
       })
       .catch(e => { setLoadError(String(e)); setLoaded(true); });
-  }, [configuredProviders]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providerKey]);
 
-  // Load full model catalog
+  // Load full model catalog; refresh when providers change
   useEffect(() => {
     fetch('/api/models/routing-candidates', { credentials: 'include' })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then((data: { providers: Array<{ provider: string; displayName: string; models: Array<{ id: string; name: string; tier?: string; qualityScore?: number; costTier?: string; capabilities?: string[] }> }> }) => {
+      .then((data: { providers: Array<{ provider: string; displayName: string; models: Array<{ id: string; name: string; mode?: string; tier?: string; costTier?: string; capabilities?: string[] }> }> }) => {
         const models: ModelOption[] = [];
         for (const prov of data.providers) {
           for (const m of prov.models) {
@@ -67,8 +92,8 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
               providerLabel: prov.displayName,
               modelId: m.id,
               modelName: m.name,
+              mode: m.mode,
               tier: m.tier,
-              qualityScore: m.qualityScore,
               costTier: m.costTier,
               capabilities: m.capabilities,
             });
@@ -77,9 +102,9 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
         setFullModelList(models);
       })
       .catch(() => setFullModelList(null));
-  }, []);
+  }, [providerKey]);
 
-  // Load suggested assignments for auto-prefill
+  // Load suggested assignments; refresh when providers change
   useEffect(() => {
     fetch('/api/models/suggested-assignments', { credentials: 'include' })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
@@ -88,33 +113,7 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
         setSuggestionsLoaded(true);
       })
       .catch(() => setSuggestionsLoaded(true));
-  }, []);
-
-  // Auto-prefill: if no assignments exist, use suggestions
-  useEffect(() => {
-    if (!loaded || !suggestionsLoaded || autoFillDone.current) return;
-    autoFillDone.current = true;
-
-    const hasAnyAssignment = Object.keys(assignments).length > 0;
-    if (hasAnyAssignment) return;
-
-    const newAssignments: Partial<Record<ModelTaskTypeDTO, TaskModelAssignmentDTO>> = {};
-    for (const [taskType, suggestion] of Object.entries(suggestions)) {
-      if (suggestion) {
-        newAssignments[taskType as ModelTaskTypeDTO] = { provider: suggestion.provider, model: suggestion.model };
-      }
-    }
-    if (Object.keys(newAssignments).length > 0) {
-      setAssignments(newAssignments);
-      // Also set default model from text_chat suggestion if not already set
-      if (!defaultModel && newAssignments.text_chat) {
-        setDefaultModel({ provider: newAssignments.text_chat.provider, model: newAssignments.text_chat.model });
-        doSave({ taskRouting: { assignments: newAssignments }, routingDefaultModel: { provider: newAssignments.text_chat.provider, model: newAssignments.text_chat.model } });
-      } else {
-        doSave({ taskRouting: { assignments: newAssignments } });
-      }
-    }
-  }, [loaded, suggestionsLoaded, assignments, suggestions, defaultModel]);
+  }, [providerKey]);
 
   const doSave = useCallback((payload: { taskRouting?: Partial<TaskRoutingConfigDTO>; routingDefaultModel?: { provider: string; model: string } | null }) => {
     setSaveStatus('saving');
@@ -386,17 +385,22 @@ function TierBadge({ tier }: { tier: string }) {
 }
 
 function filterModelsForTask(models: ModelOption[], taskType: ModelTaskTypeDTO): ModelOption[] {
-  const TEXT_TASKS: ModelTaskTypeDTO[] = ['text_chat', 'text_reasoning', 'text_coding', 'text_translation', 'text_summary'];
-
-  if (TEXT_TASKS.includes(taskType)) {
+  if (taskType === 'text') {
     return models.filter(m => {
+      if (m.mode && m.mode !== 'chat') return false;
       if (!m.capabilities || m.capabilities.length === 0) {
-        const id = m.modelId.toLowerCase();
-        return !isLikelyNonTextModel(id);
+        return !isLikelyNonTextModel(m.modelId.toLowerCase());
       }
       return true;
     });
   }
+
+  // Mode-based mapping for non-text tasks
+  const modeMap: Record<string, string[]> = {
+    image_generation: ['image_generation'],
+    audio_tts: ['audio_speech'],
+    audio_stt: ['audio_transcription'],
+  };
 
   const capMap: Record<string, string[]> = {
     image_recognition: ['vision'],
@@ -404,19 +408,20 @@ function filterModelsForTask(models: ModelOption[], taskType: ModelTaskTypeDTO):
     audio_tts: ['audioOutput', 'tts'],
     audio_stt: ['audioInput', 'stt'],
     video_generation: ['videoGeneration'],
-    embedding: ['embedding'],
-    web_search: ['webSearch'],
   };
 
+  const validModes = modeMap[taskType];
   const required = capMap[taskType];
-  if (!required) return models;
 
   return models.filter(m => {
-    if (m.capabilities && m.capabilities.length > 0) {
+    // Match by catalog mode (e.g. audio_speech, image_generation)
+    if (validModes && m.mode && validModes.includes(m.mode)) return true;
+    // Match by capability flags
+    if (m.capabilities && m.capabilities.length > 0 && required) {
       return required.some(cap => m.capabilities!.includes(cap));
     }
-    const id = m.modelId.toLowerCase();
-    return inferCapabilityFromName(id, taskType);
+    // Fallback: infer from model name
+    return inferCapabilityFromName(m.modelId.toLowerCase(), taskType);
   });
 }
 
@@ -437,10 +442,6 @@ function inferCapabilityFromName(modelId: string, taskType: ModelTaskTypeDTO): b
       return /\bstt\b|whisper|sense.?voice|paraformer|speech.?to.?text|audio/.test(modelId);
     case 'video_generation':
       return /\bvideo\b|wan.*t2v|sora|kling|gen-?[23]/.test(modelId);
-    case 'embedding':
-      return /\bembed|bge|gte|e5-|text-embedding/.test(modelId);
-    case 'web_search':
-      return false;
     default:
       return false;
   }

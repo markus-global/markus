@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
-import type { RoutingConfig, TaskRoutingConfig } from '../types/model-catalog.js';
+import type { TaskRoutingConfig } from '../types/model-catalog.js';
 
 export interface MarkusConfig {
   org: {
@@ -32,12 +32,8 @@ export interface MarkusConfig {
     timeoutMs?: number;
     /** Allow automatic fallback to other providers/models when the primary fails (default: true) */
     autoFallback?: boolean;
-    /** Model routing configuration (tier-based selection, cache-awareness) */
-    routing?: RoutingConfig;
     /** Task-specific model routing (manual assignments per task type) */
     taskRouting?: TaskRoutingConfig;
-    /** Manual tier overrides per model ID (e.g. { "custom-model-7b": "base" }) */
-    tierOverrides?: Record<string, import('../types/model-catalog.js').ModelTier>;
     /** Global routing default model — used as fallback when routing can't find a tier match */
     routingDefaultModel?: { provider: string; model: string };
     /** Mirror URL for model catalog updates (default: GitHub raw + CDN mirrors). Set this if raw.githubusercontent.com is unreachable. */

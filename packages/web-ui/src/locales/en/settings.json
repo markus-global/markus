@@ -97,19 +97,14 @@
       "other": "Other"
     },
     "tasks": {
-      "text_chat": "Chat",
-      "text_reasoning": "Reasoning",
-      "text_coding": "Coding",
-      "text_translation": "Translation",
-      "text_summary": "Summary",
+      "text": "General",
       "image_recognition": "Image Recognition",
       "image_generation": "Image Generation",
       "audio_tts": "Text-to-Speech",
       "audio_stt": "Speech-to-Text",
-      "video_generation": "Video Generation",
-      "embedding": "Embedding",
-      "web_search": "Web Search"
+      "video_generation": "Video Generation"
     },
+    "auto": "Use default",
     "selectModel": "Select model...",
     "suggested": "suggested",
     "noModelAvailable": "No capable model available",

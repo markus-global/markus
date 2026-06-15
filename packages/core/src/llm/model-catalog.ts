@@ -48,6 +48,11 @@ const PROVIDER_MAP: Record<string, string> = {
   dashscope: 'dashscope',
 };
 
+const PROVIDER_ALIASES: Record<string, string> = {
+  'minimax-cn': 'minimax',
+  'siliconflow-intl': 'siliconflow',
+};
+
 export class ModelCatalogService {
   private models: Map<string, CatalogModel> = new Map();
   private lastUpdated: string | null = null;
@@ -87,9 +92,10 @@ export class ModelCatalogService {
   }
 
   getModelsByProvider(provider: string): CatalogModel[] {
+    const canonicalProvider = PROVIDER_ALIASES[provider] ?? provider;
     const results: CatalogModel[] = [];
     for (const model of this.models.values()) {
-      if (model.provider === provider) {
+      if (model.provider === canonicalProvider) {
         results.push(model);
       }
     }
@@ -162,7 +168,7 @@ export class ModelCatalogService {
         this.parseAndLoad(rawData, 'remote');
         this.persistCache(rawText);
         this.consecutiveFailures = 0;
-        log.info(`Model catalog refreshed: ${this.models.size} chat models loaded`);
+        log.info(`Model catalog refreshed: ${this.models.size} models loaded`);
         return true;
       } catch (err) {
         log.warn(`Failed to fetch model catalog from ${url}: ${err instanceof Error ? err.message : String(err)}`);
@@ -184,7 +190,7 @@ export class ModelCatalogService {
       const data = readFileSync(baselinePath, 'utf-8');
       const rawData = JSON.parse(data) as Record<string, LiteLLMRawModelEntry>;
       this.parseAndLoad(rawData, 'baseline');
-      log.info(`Loaded baseline catalog: ${this.models.size} chat models`);
+      log.info(`Loaded baseline catalog: ${this.models.size} models`);
     } catch (err) {
       log.error(`Failed to load baseline catalog: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -200,9 +206,8 @@ export class ModelCatalogService {
         if (key === '_meta' || !entry.litellm_provider) continue;
         const markusProvider = PROVIDER_MAP[entry.litellm_provider];
         if (!markusProvider) continue;
-        if (entry.mode && entry.mode !== 'chat') continue;
 
-        // For supplements, strip provider prefix for the model ID shown to user
+        // Strip provider prefix for the model ID shown to user
         const modelId = key.startsWith(`${entry.litellm_provider}/`)
           ? key.slice(entry.litellm_provider.length + 1)
           : key;
@@ -222,7 +227,7 @@ export class ModelCatalogService {
       const data = readFileSync(path, 'utf-8');
       const rawData = JSON.parse(data) as Record<string, LiteLLMRawModelEntry>;
       this.parseAndLoad(rawData, source);
-      log.info(`Loaded catalog from ${source}: ${this.models.size} chat models`);
+      log.info(`Loaded catalog from ${source}: ${this.models.size} models`);
     } catch (err) {
       log.warn(`Failed to load catalog from ${source}: ${err instanceof Error ? err.message : String(err)}`);
       if (source === 'cache') {
@@ -237,16 +242,21 @@ export class ModelCatalogService {
     for (const [key, entry] of Object.entries(rawData)) {
       if (key === 'sample_spec') continue;
       if (!entry.litellm_provider) continue;
-      if (entry.mode && entry.mode !== 'chat') continue;
       // Skip entries without mode that look non-chat (image gen prefixes, etc.)
       if (!entry.mode && key.match(/^\d+.*x.*\d+/)) continue;
 
       const markusProvider = PROVIDER_MAP[entry.litellm_provider];
       if (!markusProvider) continue;
 
-      const model = this.convertEntry(key, entry, markusProvider);
+      // Strip LiteLLM provider prefix (e.g. "minimax/MiniMax-M3" → "MiniMax-M3")
+      // so that catalog lookups by bare model ID work correctly.
+      const modelId = key.startsWith(`${entry.litellm_provider}/`)
+        ? key.slice(entry.litellm_provider.length + 1)
+        : key;
+
+      const model = this.convertEntry(modelId, entry, markusProvider);
       if (model) {
-        this.models.set(key, model);
+        this.models.set(modelId, model);
       }
     }
 

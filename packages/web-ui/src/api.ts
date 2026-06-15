@@ -374,11 +374,10 @@ export function invalidateApiCache(pathPrefix?: string) {
 // ── Model Routing Types ──────────────────────────────────────────────────
 
 export type ModelTier = 'base' | 'pro' | 'max';
-export type RoutingStrategyType = 'always_max' | 'always_cheapest' | 'balanced' | 'cache_optimized';
 export type ModelTaskTypeDTO =
-  | 'text_chat' | 'text_reasoning' | 'text_coding' | 'text_translation' | 'text_summary'
+  | 'text'
   | 'image_recognition' | 'image_generation' | 'audio_tts' | 'audio_stt'
-  | 'video_generation' | 'embedding' | 'web_search';
+  | 'video_generation';
 
 export interface TaskModelAssignmentDTO {
   provider: string;
@@ -386,20 +385,8 @@ export interface TaskModelAssignmentDTO {
   fallback?: { provider: string; model: string };
 }
 
-export interface RoutingConfigDTO {
-  strategy: RoutingStrategyType;
-  defaultTier: ModelTier;
-  preferCacheHit: boolean;
-  tierOverrides?: Record<string, ModelTier>;
-  budgetLimit?: number;
-}
-
 export interface TaskRoutingConfigDTO {
-  mode: 'auto' | 'manual' | 'hybrid';
   assignments: Partial<Record<ModelTaskTypeDTO, TaskModelAssignmentDTO>>;
-  autoStrategy: RoutingStrategyType;
-  defaultTier: ModelTier;
-  multiModalStrategy?: 'unified' | 'specialized';
 }
 
 // ── Model Catalog Types ───────────────────────────────────────────────────
@@ -1352,8 +1339,8 @@ export const api = {
   },
   settings: {
     getLlm: () => request<{ defaultProvider: string; providers: Record<string, { model: string; configured: boolean }> }>('/settings/llm'),
-    getRouting: () => request<{ routing: RoutingConfigDTO; taskRouting: TaskRoutingConfigDTO }>('/settings/llm/routing'),
-    updateRouting: (data: { routing?: Partial<RoutingConfigDTO>; taskRouting?: Partial<TaskRoutingConfigDTO> }) =>
+    getRouting: () => request<{ taskRouting: TaskRoutingConfigDTO }>('/settings/llm/routing'),
+    updateRouting: (data: { taskRouting?: Partial<TaskRoutingConfigDTO> }) =>
       request('/settings/llm', { method: 'POST', body: JSON.stringify(data) }),
     getAgent: () => request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent'),
     updateAgent: (settings: { maxToolIterations?: number; cognitive?: { enabled?: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }) =>
