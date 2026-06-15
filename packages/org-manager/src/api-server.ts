@@ -27,7 +27,7 @@ import {
   discoverSkillsInDir,
   WELL_KNOWN_SKILL_DIRS,
   type AgentManager,
-  type ModelCatalogService,
+  ModelCatalogService,
   estimateQualityScore,
   tierFromQualityScore,
   costTierFromPrice,
@@ -166,18 +166,8 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
   return hashHex === expectedHash;
 }
 
-/** Strip LiteLLM-style "provider/" prefix from a model key to get the actual API model ID. */
 function stripProviderPrefix(catalogId: string): string {
-  const slashIdx = catalogId.indexOf('/');
-  if (slashIdx < 0) return catalogId;
-  const prefix = catalogId.slice(0, slashIdx);
-  // Only strip if the prefix looks like a provider name (no dots, short, lowercase-ish).
-  // Keep IDs like "deepseek-ai/DeepSeek-V3" (org/model for SiliconFlow) as-is.
-  const knownPrefixes = ['deepseek', 'openai', 'anthropic', 'google', 'gemini', 'vertex_ai', 'minimax', 'xai', 'mistral', 'groq', 'perplexity', 'cohere', 'together_ai', 'fireworks_ai', 'volcengine', 'moonshot', 'dashscope', 'openrouter'];
-  if (knownPrefixes.includes(prefix)) {
-    return catalogId.slice(slashIdx + 1);
-  }
-  return catalogId;
+  return ModelCatalogService.stripProviderPrefix(catalogId);
 }
 
 interface ModelEnrichment {
@@ -257,6 +247,8 @@ export class APIServer {
   private remoteAgent?: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void };
   private remoteAgentFactory?: () => Promise<{ getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void } | null>;
   private modelCatalog?: ModelCatalogService;
+  private routingCandidatesCache: { data: unknown; expireAt: number } | null = null;
+  private static readonly ROUTING_CACHE_TTL_MS = 5 * 60 * 1000;
   private feishuRegisterSessions = new Map<string, { url: string; expireIn: number; status: string; createdAt: number }>();
   /** Aggregate today's tool calls from all agents' persisted metrics (the single source of truth) */
   private getToolCallsTodayFromAgents(): number {
@@ -7806,6 +7798,13 @@ EXPLANATION_END`;
         this.json(res, 200, { providers: [] });
         return;
       }
+
+      // Serve from cache if still valid
+      if (this.routingCandidatesCache && Date.now() < this.routingCandidatesCache.expireAt) {
+        this.json(res, 200, this.routingCandidatesCache.data);
+        return;
+      }
+
       const settings = this.llmRouter.getEnhancedSettings();
       const result: Array<{ provider: string; displayName: string; models: Array<{ id: string; name: string; mode?: string; tier?: string; costTier?: string; capabilities?: string[] }> }> = [];
 
@@ -7855,7 +7854,6 @@ EXPLANATION_END`;
           }
         } catch { /* non-critical: live fetch failure just means fewer results */ }
 
-        // Also pull in catalog-only models (not returned by API but known from catalog)
         if (this.modelCatalog) {
           for (const cm of this.modelCatalog.getModelsByProvider(providerName)) {
             if (seenIds.has(cm.id)) continue;
@@ -7878,7 +7876,9 @@ EXPLANATION_END`;
           models,
         });
       }
-      this.json(res, 200, { providers: result });
+      const payload = { providers: result };
+      this.routingCandidatesCache = { data: payload, expireAt: Date.now() + APIServer.ROUTING_CACHE_TTL_MS };
+      this.json(res, 200, payload);
       return;
     }
 
@@ -12396,8 +12396,14 @@ EXPLANATION_END`;
       const data = await resp.json() as { data?: Array<Record<string, unknown>> };
       const remoteModels = (data.data ?? []) as Array<Record<string, unknown>>;
 
-      // Filter out moderation/safety models only
-      const remoteFiltered = remoteModels.filter(m => !/\b(moderat)\b/i.test(String(m.id ?? '')));
+      // Filter out moderation/safety models and embedding/rerank models (not usable for chat or multimodal).
+      // Keep image/audio/video/tts/speech/whisper models since multimodal routing needs them.
+      const remoteFiltered = remoteModels.filter(m => {
+        const id = String(m.id ?? '').toLowerCase();
+        if (/\b(moderat)\b/i.test(id)) return false;
+        if (/\b(embed|rerank)\b/.test(id)) return false;
+        return true;
+      });
 
       // Build multiple lookup indices for catalog matching
       const catalogModels = this.modelCatalog?.getModelsByProvider(provider) ?? [];

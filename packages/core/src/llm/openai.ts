@@ -1,5 +1,5 @@
-import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
-import type { LLMProviderInterface } from './provider.js';
+import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, type ProviderCapabilities, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
+import type { MultiModalProviderInterface, ImageGenOptions, ImageResult, TTSOptions, AudioResult, STTOptions } from './provider.js';
 
 interface OpenAIMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -30,7 +30,7 @@ interface OpenAIResponse {
 
 export type TokenResolver = () => Promise<string>;
 
-export class OpenAIProvider implements LLMProviderInterface {
+export class OpenAIProvider implements MultiModalProviderInterface {
   name: string;
   model: string;
   private apiKey: string;
@@ -370,5 +370,139 @@ export class OpenAIProvider implements LLMProviderInterface {
     };
     if (msg.reasoning_content) result.reasoningContent = msg.reasoning_content;
     return result;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-modal: capabilities
+  // ---------------------------------------------------------------------------
+
+  private get isNativeOpenAI(): boolean {
+    return this.baseUrl.includes('api.openai.com');
+  }
+
+  getCapabilities(): ProviderCapabilities {
+    const isOpenAI = this.isNativeOpenAI;
+    // OpenAI-compatible providers (SiliconFlow, MiniMax, etc.) often expose
+    // /v1/images/generations; TTS/STT is less common outside native OpenAI.
+    return {
+      chat: true,
+      vision: true,
+      imageGeneration: true,
+      tts: isOpenAI,
+      stt: isOpenAI,
+      videoGeneration: false,
+      embedding: isOpenAI,
+      reasoning: true,
+      promptCaching: true,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-modal: image generation (DALL-E)
+  // ---------------------------------------------------------------------------
+
+  async generateImage(prompt: string, options?: ImageGenOptions): Promise<ImageResult[]> {
+    const base = this.baseUrl.replace(/\/+$/, '');
+    const endpoint = /\/v\d+$/.test(base) ? `${base}/images/generations` : `${base}/v1/images/generations`;
+
+    const body: Record<string, unknown> = {
+      model: options?.model ?? 'dall-e-3',
+      prompt,
+      n: options?.n ?? 1,
+      size: options?.size ?? '1024x1024',
+      response_format: 'url',
+    };
+    if (options?.quality) body['quality'] = options.quality;
+    if (options?.style) body['style'] = options.style;
+
+    const authorization = await this.resolveAuthHeader();
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: authorization },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Image generation API error ${res.status}: ${errText}`);
+    }
+
+    const data = await res.json() as { data: Array<{ url?: string; b64_json?: string; revised_prompt?: string }> };
+    return (data.data ?? []).map(d => ({
+      url: d.url,
+      base64: d.b64_json,
+      revisedPrompt: d.revised_prompt,
+    }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-modal: text-to-speech
+  // ---------------------------------------------------------------------------
+
+  async generateSpeech(text: string, options?: TTSOptions): Promise<AudioResult> {
+    const base = this.baseUrl.replace(/\/+$/, '');
+    const endpoint = /\/v\d+$/.test(base) ? `${base}/audio/speech` : `${base}/v1/audio/speech`;
+
+    const format = options?.responseFormat ?? 'mp3';
+    const body: Record<string, unknown> = {
+      model: options?.model ?? 'tts-1',
+      input: text,
+      voice: options?.voice ?? 'alloy',
+      response_format: format,
+    };
+    if (options?.speed) body['speed'] = options.speed;
+
+    const authorization = await this.resolveAuthHeader();
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: authorization },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`TTS API error ${res.status}: ${errText}`);
+    }
+
+    const arrayBuf = await res.arrayBuffer();
+    return { audio: Buffer.from(arrayBuf), format };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-modal: speech-to-text (Whisper)
+  // ---------------------------------------------------------------------------
+
+  async transcribeSpeech(audio: Buffer, options?: STTOptions): Promise<string> {
+    const base = this.baseUrl.replace(/\/+$/, '');
+    const endpoint = /\/v\d+$/.test(base) ? `${base}/audio/transcriptions` : `${base}/v1/audio/transcriptions`;
+
+    const formData = new FormData();
+    formData.append('file', new Blob([audio as unknown as ArrayBuffer], { type: 'audio/wav' }), 'audio.wav');
+    formData.append('model', options?.model ?? 'whisper-1');
+    if (options?.language) formData.append('language', options.language);
+    if (options?.prompt) formData.append('prompt', options.prompt);
+    formData.append('response_format', options?.responseFormat ?? 'text');
+
+    const authorization = await this.resolveAuthHeader();
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { Authorization: authorization },
+      body: formData,
+      signal: AbortSignal.timeout(120_000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`STT API error ${res.status}: ${errText}`);
+    }
+
+    const responseFormat = options?.responseFormat ?? 'text';
+    if (responseFormat === 'text') {
+      return await res.text();
+    }
+    const data = await res.json() as { text: string };
+    return data.text;
   }
 }

@@ -32,6 +32,7 @@ import { createProjectTools, type ProjectServiceBridge, type DeliverableServiceB
 import { createMemoryTools } from './tools/memory.js';
 import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
 import { createSettingsTools } from './tools/settings.js';
+import { createMultiModalTools } from './tools/multimodal.js';
 import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
@@ -1147,6 +1148,13 @@ export class AgentManager {
       agent.registerTool(tool);
     }
 
+    // Multi-modal tools — image generation, TTS, STT, video generation
+    for (const tool of createMultiModalTools({
+      resolveProvider: (taskType) => this.llmRouter.resolveModalityProvider(taskType),
+    })) {
+      agent.registerTool(tool);
+    }
+
     if (this.semanticSearch) {
       agent.getContextEngine().setSemanticSearch(this.semanticSearch);
       agent.setSemanticSearch(this.semanticSearch);
@@ -1923,6 +1931,12 @@ export class AgentManager {
     for (const tool of createSettingsTools({
       llmRouter: this.llmRouter,
       persistConfig: (updates) => { try { saveConfig(updates); } catch { /* best effort */ } },
+    })) {
+      agent.registerTool(tool);
+    }
+
+    for (const tool of createMultiModalTools({
+      resolveProvider: (taskType) => this.llmRouter.resolveModalityProvider(taskType),
     })) {
       agent.registerTool(tool);
     }

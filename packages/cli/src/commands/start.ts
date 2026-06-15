@@ -5,7 +5,6 @@ import { homedir } from 'node:os';
 import { allTemplateDirs, resolveTemplatesDir, resolveWebUiDir } from '../paths.js';
 import {
   loadConfig,
-  saveConfig,
   getDefaultConfigPath,
   createLogger,
   closeRuntimeLogger,
@@ -273,19 +272,6 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   }
   if (config.llm.routingDefaultModel) {
     llmRouter.setRoutingDefaultModel(config.llm.routingDefaultModel);
-  } else if (config.llm.defaultProvider) {
-    const providerCfg = config.llm.providers[config.llm.defaultProvider];
-    const activeModel = providerCfg?.model ?? config.llm.defaultModel;
-    if (activeModel) {
-      const migrated = { provider: config.llm.defaultProvider, model: activeModel };
-      llmRouter.setRoutingDefaultModel(migrated);
-      startupLog('INFO', 'Migrated routingDefaultModel from defaultProvider', JSON.stringify(migrated));
-      try {
-        saveConfig({ llm: { routingDefaultModel: migrated } } as any);
-      } catch {
-        startupLog('WARN', 'Failed to persist migrated routingDefaultModel');
-      }
-    }
   }
 
   // Load custom models from config

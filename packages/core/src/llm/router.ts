@@ -1,6 +1,6 @@
 import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type ModelTaskType, type CostTier, type TaskRoutingConfig, type TaskModelAssignment } from '@markus/shared';
 import { startSpan } from '../tracing.js';
-import type { LLMProviderInterface } from './provider.js';
+import type { LLMProviderInterface, MultiModalProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
 import { OpenAIProvider } from './openai.js';
 import { CodexResponsesProvider } from './openai-codex.js';
@@ -17,6 +17,11 @@ export interface ChatOptions {
   taskType?: ModelTaskType;
 }
 
+/** Regional variants that share the same model catalog as their parent provider. */
+const REGIONAL_PROVIDER_ALIASES: Record<string, string> = {
+  'minimax-cn': 'minimax',
+  'siliconflow-intl': 'siliconflow',
+};
 
 function maskApiKey(key: string): string | undefined {
   if (!key) return undefined;
@@ -347,7 +352,13 @@ export class LLMRouter {
 
   /** Get all model definitions for a provider (builtin + custom), enriched with live catalog pricing */
   private getProviderModels(providerName: string): ModelDefinition[] {
-    const builtinModels = BUILTIN_MODEL_CATALOG.filter(m => m.provider === providerName);
+    let builtinModels = BUILTIN_MODEL_CATALOG.filter(m => m.provider === providerName);
+    // For regional aliases, inherit the parent provider's catalog with provider field swapped
+    if (builtinModels.length === 0 && REGIONAL_PROVIDER_ALIASES[providerName]) {
+      const parent = REGIONAL_PROVIDER_ALIASES[providerName];
+      builtinModels = BUILTIN_MODEL_CATALOG.filter(m => m.provider === parent)
+        .map(m => ({ ...m, provider: providerName }));
+    }
     const customModels = this.customModelCatalog.get(providerName) ?? [];
     const merged = [...builtinModels, ...customModels.filter(cm => !builtinModels.some(bm => bm.id === cm.id))];
     return merged.map(m => this.enrichModelFromCatalog(m));
@@ -485,27 +496,8 @@ export class LLMRouter {
     const toolCount = request.tools?.length ?? 0;
     const msgCount = request.messages.length;
 
-    // Hard thresholds (existing)
     if (toolCount > 5 || totalChars > 8000 || msgCount > 15) return 'complex';
-
-    // Check for reasoning/thinking requirement hints
-    const lastUserMsg = [...request.messages].reverse().find(m => m.role === 'user');
-    const lastText = lastUserMsg ? getTextContent(lastUserMsg.content).toLowerCase() : '';
-
-    const complexKeywords = /\b(architect|design|analyze|debug|refactor|optimize|complex|difficult|challenging|in-?depth|comprehensive|reasoning|think\s+step|chain.of.thought)\b/i;
-    const simpleKeywords = /\b(translate|summarize|format|convert|list|hello|hi|hey|thanks|thank you|yes|no|ok)\b/i;
-
-    if (complexKeywords.test(lastText)) return 'complex';
-
-    // System prompt complexity: long system prompts suggest complex setup
-    const systemMsg = request.messages.find(m => m.role === 'system');
-    const systemLen = systemMsg ? getTextContent(systemMsg.content).length : 0;
-    if (systemLen > 4000) return 'complex';
-
     if (toolCount > 0 || totalChars > 2000 || msgCount > 5) return 'moderate';
-
-    if (simpleKeywords.test(lastText) && totalChars < 500) return 'simple';
-
     return 'simple';
   }
 
@@ -577,6 +569,42 @@ export class LLMRouter {
 
     // 3. Final fallback: any available provider
     return { provider: this.selectProvider(request) };
+  }
+
+  /**
+   * Resolve a provider instance for a non-text modality (image_generation, audio_tts, etc.).
+   * Looks up taskRouting assignment, configures the model, and returns as MultiModalProviderInterface.
+   */
+  resolveModalityProvider(taskType: ModelTaskType): MultiModalProviderInterface | undefined {
+    const assignment = this._taskRouting.assignments[taskType];
+    if (assignment) {
+      const provider = this.providers.get(assignment.provider);
+      if (provider && this.isAvailable(assignment.provider)) {
+        if (assignment.model) {
+          provider.configure({ provider: assignment.provider as any, model: assignment.model });
+        }
+        return provider as MultiModalProviderInterface;
+      }
+      if (assignment.fallback) {
+        const fallbackProvider = this.providers.get(assignment.fallback.provider);
+        if (fallbackProvider && this.isAvailable(assignment.fallback.provider)) {
+          if (assignment.fallback.model) {
+            fallbackProvider.configure({ provider: assignment.fallback.provider as any, model: assignment.fallback.model });
+          }
+          return fallbackProvider as MultiModalProviderInterface;
+        }
+      }
+    }
+
+    // Fallback: try routingDefaultModel, then defaultProvider
+    if (this._routingDefaultModel) {
+      const p = this.providers.get(this._routingDefaultModel.provider);
+      if (p && this.isAvailable(this._routingDefaultModel.provider)) {
+        return p as MultiModalProviderInterface;
+      }
+    }
+    const p = this.providers.get(this.defaultProvider);
+    return p ? (p as MultiModalProviderInterface) : undefined;
   }
 
   private selectProvider(request: LLMRequest, explicit?: string): string {
@@ -739,11 +767,11 @@ export class LLMRouter {
       return { response, model: activeModel };
     } catch (error) {
       this.recordFailure(providerName, activeModel, error);
-      throw LLMRouter.enrichError(error, providerName, activeModel);
-    } finally {
       if (altModel && altModel !== originalModel) {
         provider.configure({ provider: providerName as any, model: originalModel });
       }
+      throw LLMRouter.enrichError(error, providerName, activeModel);
+    } finally {
       this.releaseInflight(providerName);
     }
   }
@@ -756,9 +784,13 @@ export class LLMRouter {
       primary = this.selectProvider(request, providerName);
     } else {
       const taskType = options?.taskType ?? LLMRouter.inferTaskType(request);
-      const routeResult = this.selectForTask(taskType, request, options?.sessionId);
-      primary = routeResult.provider;
-      routedModel = routeResult.model;
+      if (taskType === 'text') {
+        primary = this.selectProvider(request);
+      } else {
+        const routeResult = this.selectForTask(taskType, request, options?.sessionId);
+        primary = routeResult.provider;
+        routedModel = routeResult.model;
+      }
     }
 
     const provider = this.providers.get(primary);
@@ -870,11 +902,11 @@ export class LLMRouter {
       return { response, model: activeModel };
     } catch (error) {
       this.recordFailure(providerName, activeModel, error);
-      throw LLMRouter.enrichError(error, providerName, activeModel);
-    } finally {
       if (altModel && altModel !== originalModel) {
         provider.configure({ provider: providerName as any, model: originalModel });
       }
+      throw LLMRouter.enrichError(error, providerName, activeModel);
+    } finally {
       this.releaseInflight(providerName);
     }
   }
@@ -887,9 +919,13 @@ export class LLMRouter {
       primary = this.selectProvider(request, providerName);
     } else {
       const taskType = options?.taskType ?? LLMRouter.inferTaskType(request);
-      const routeResult = this.selectForTask(taskType, request, options?.sessionId);
-      primary = routeResult.provider;
-      routedModel = routeResult.model;
+      if (taskType === 'text') {
+        primary = this.selectProvider(request);
+      } else {
+        const routeResult = this.selectForTask(taskType, request, options?.sessionId);
+        primary = routeResult.provider;
+        routedModel = routeResult.model;
+      }
     }
 
     const provider = this.providers.get(primary);
@@ -1289,10 +1325,7 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'MiniMax-M3', name: 'MiniMax M3', provider: 'minimax', contextWindow: 512000, maxOutputTokens: 128000, cost: { input: 0.6, output: 2.4, cacheRead: 0.12 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
   { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
   { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2, cacheRead: 0.03, cacheWrite: 0.375 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
-  // MiniMax China — https://platform.minimaxi.com
-  { id: 'MiniMax-M3', name: 'MiniMax M3', provider: 'minimax-cn', contextWindow: 512000, maxOutputTokens: 128000, cost: { input: 0.6, output: 2.4, cacheRead: 0.12 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
-  { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', provider: 'minimax-cn', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
-  { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax-cn', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2, cacheRead: 0.03, cacheWrite: 0.375 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
+  // MiniMax China shares the same models as MiniMax Global (resolved via REGIONAL_PROVIDER_ALIASES)
   // OpenRouter — https://openrouter.ai/models (pass-through pricing varies by upstream provider)
   { id: 'xiaomi/mimo-v2-pro', name: 'MiMo-V2-Pro', provider: 'openrouter', contextWindow: 1048576, maxOutputTokens: 131072, cost: { input: 1, output: 3, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
   { id: 'anthropic/claude-opus-4-6', name: 'Claude Opus 4.6 (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
@@ -1311,14 +1344,7 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'deepseek-ai/DeepSeek-V3', name: 'DeepSeek-V3 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 163840, maxOutputTokens: 163840, cost: { input: 0.25, output: 1.00 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
   { id: 'deepseek-ai/DeepSeek-V3.2', name: 'DeepSeek-V3.2 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 163840, maxOutputTokens: 163840, cost: { input: 0.27, output: 0.42 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
   { id: 'moonshotai/Kimi-K2.5', name: 'Kimi-K2.5 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 0.60, output: 3.00 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
-  // SiliconFlow Global (overseas endpoint, same models)
-  { id: 'Qwen/Qwen3.5-35B-A3B', name: 'Qwen3.5-35B-A3B', provider: 'siliconflow-intl', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 0.24, output: 1.80 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
-  { id: 'Qwen/Qwen3.5-122B-A10B', name: 'Qwen3.5-122B-A10B', provider: 'siliconflow-intl', contextWindow: 262144, maxOutputTokens: 262144, cost: { input: 0.26, output: 2.08 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
-  { id: 'Qwen/Qwen3.5-27B', name: 'Qwen3.5-27B', provider: 'siliconflow-intl', contextWindow: 262144, maxOutputTokens: 262144, cost: { input: 0.25, output: 2.00 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
-  { id: 'Qwen/Qwen3.5-9B', name: 'Qwen3.5-9B', provider: 'siliconflow-intl', contextWindow: 262144, maxOutputTokens: 262144, cost: { input: 0.10, output: 0.15 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
-  { id: 'deepseek-ai/DeepSeek-V3', name: 'DeepSeek-V3 (via SiliconFlow)', provider: 'siliconflow-intl', contextWindow: 163840, maxOutputTokens: 163840, cost: { input: 0.25, output: 1.00 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
-  { id: 'deepseek-ai/DeepSeek-V3.2', name: 'DeepSeek-V3.2 (via SiliconFlow)', provider: 'siliconflow-intl', contextWindow: 163840, maxOutputTokens: 163840, cost: { input: 0.27, output: 0.42 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
-  { id: 'moonshotai/Kimi-K2.5', name: 'Kimi-K2.5 (via SiliconFlow)', provider: 'siliconflow-intl', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 0.60, output: 3.00 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
+  // SiliconFlow Global shares the same models as SiliconFlow China (resolved via REGIONAL_PROVIDER_ALIASES)
   // ZAI (Zhipu) — https://docs.z.ai/guides/overview/pricing
   { id: 'glm-5.1', name: 'GLM-5.1', provider: 'zai', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 1.4, output: 4.4, cacheRead: 0.26 }, reasoning: true, inputTypes: ['text'], tier: 'max' },
   { id: 'glm-5', name: 'GLM-5', provider: 'zai', contextWindow: 205000, maxOutputTokens: 16384, cost: { input: 1.0, output: 3.2, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro' },
@@ -1329,64 +1355,28 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
 // Tier classification helpers
 // ---------------------------------------------------------------------------
 
-/** Infer a quality score (0-100) from model name heuristics when no benchmark data is available */
-export function estimateQualityScore(modelId: string, reasoning?: boolean, inputCostPer1M?: number): number {
-  const id = modelId.toLowerCase();
+/**
+ * Estimate a quality score (0-100) for a model when no explicit tier is set.
+ * Uses pricing as primary signal, parameter count from name as secondary.
+ */
+export function estimateQualityScore(_modelId: string, reasoning?: boolean, inputCostPer1M?: number): number {
   let score = 40;
 
-  // Top-tier flagship models
-  if (id.includes('opus') || id.includes('fable')) score = 92;
-  else if (id.includes('gpt-5.5') || id.includes('gpt-5.4')) score = 90;
-  else if (id.includes('o3') || id.includes('o4')) score = 85;
-  else if (id.includes('gemini-3') && id.includes('pro')) score = 85;
-  else if (id.includes('gemini-2.5-pro')) score = 82;
-
-  // Strong models
-  else if (id.includes('sonnet')) score = 78;
-  else if (id.includes('gpt-4.1') && !id.includes('mini') && !id.includes('nano')) score = 78;
-  else if (id.includes('gpt-4o') && !id.includes('mini')) score = 75;
-  else if (id.includes('deepseek') && id.includes('v4-pro')) score = 75;
-  else if (id.includes('deepseek') && (id.includes('r2') || id.includes('r1'))) score = 78;
-  else if (id.includes('qwen') && /3\.5|3\.0/.test(id) && !id.includes('turbo')) score = 72;
-
-  // Mid-tier models
-  else if (id.includes('deepseek') && id.includes('v4-flash')) score = 55;
-  else if (id.includes('haiku')) score = 52;
-  else if (id.includes('gpt-4.1-mini') || id.includes('gpt-4o-mini')) score = 55;
-  else if (id.includes('gemini') && id.includes('flash')) score = 52;
-  else if (id.includes('mimo') || id.includes('kimi')) score = 60;
-
-  // Legacy / outdated models — explicitly low
-  else if (id.includes('legacy') || id.includes('deprecated')) score = 30;
-  else if (id.includes('deepseek') && id.includes('v3')) score = 50;
-  else if (id.includes('deepseek') && id.includes('v2')) score = 35;
-  else if (id.includes('deepseek-chat') || id.includes('deepseek-coder')) score = 35;
-  else if (id.includes('gpt-3.5') || id.includes('gpt-35')) score = 30;
-
-  // Small models
-  else if (id.includes('gpt-4.1-nano') || id.includes('nano')) score = 38;
-  else if (id.includes('phi-') || id.includes('tinyllama')) score = 30;
-
-  else {
-    // Unknown models: use pricing as a rough quality signal
-    if (inputCostPer1M !== undefined && inputCostPer1M > 0) {
-      if (inputCostPer1M >= 20) score = 80;
-      else if (inputCostPer1M >= 8) score = 65;
-      else if (inputCostPer1M >= 3) score = 50;
-      else score = 38;
-    }
-    // Use parameter count from name if present
-    const paramMatch = id.match(/(\d+)b\b/);
-    if (paramMatch) {
-      const params = parseInt(paramMatch[1], 10);
-      if (params >= 400) score = Math.max(score, 80);
-      else if (params >= 70) score = Math.max(score, 65);
-      else if (params >= 30) score = Math.max(score, 50);
-      else if (params <= 7) score = Math.min(score, 40);
-    }
+  if (inputCostPer1M !== undefined && inputCostPer1M > 0) {
+    if (inputCostPer1M >= 3) score = 80;
+    else if (inputCostPer1M >= 0.5) score = 55;
+    else score = 38;
   }
 
-  if (reasoning && score < 75) score += 5;
+  const paramMatch = _modelId.match(/(\d+)[bB]\b/);
+  if (paramMatch) {
+    const params = parseInt(paramMatch[1], 10);
+    if (params >= 70) score = Math.max(score, 75);
+    else if (params >= 30) score = Math.max(score, 55);
+    else if (params <= 7) score = Math.min(score, 40);
+  }
+
+  if (reasoning && score < 55) score += 10;
 
   return Math.min(100, score);
 }

@@ -114,6 +114,7 @@
     "saving": "Saving...",
     "saved": "Saved",
     "saveError": "Save failed",
+    "staleProvider": "Provider not configured — clear or reconfigure",
     "noProvidersHint": "Configure at least one provider above to assign models to tasks.",
     "tier": {
       "base": "Base",

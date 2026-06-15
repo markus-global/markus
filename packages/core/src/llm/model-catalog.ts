@@ -53,7 +53,20 @@ const PROVIDER_ALIASES: Record<string, string> = {
   'siliconflow-intl': 'siliconflow',
 };
 
+const KNOWN_LITELLM_PREFIXES = new Set(Object.keys(PROVIDER_MAP));
+
 export class ModelCatalogService {
+  /**
+   * Strip LiteLLM-style "provider/" prefix from a catalog key.
+   * Keeps IDs like "deepseek-ai/DeepSeek-V3" (org/model) intact.
+   */
+  static stripProviderPrefix(catalogId: string): string {
+    const slashIdx = catalogId.indexOf('/');
+    if (slashIdx < 0) return catalogId;
+    const prefix = catalogId.slice(0, slashIdx);
+    return KNOWN_LITELLM_PREFIXES.has(prefix) ? catalogId.slice(slashIdx + 1) : catalogId;
+  }
+
   private models: Map<string, CatalogModel> = new Map();
   private lastUpdated: string | null = null;
   private source: CatalogStatus['source'] = 'baseline';

@@ -48,32 +48,9 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
     fetch('/api/settings/llm/routing', { credentials: 'include' })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((data: { taskRouting?: TaskRoutingConfigDTO; routingDefaultModel?: { provider: string; model: string } | null }) => {
-        const providerNames = new Set(configuredProviders.map(p => p.name));
-
-        let cleaned: Partial<Record<ModelTaskTypeDTO, TaskModelAssignmentDTO>> = {};
-        let assignmentsChanged = false;
-        if (data.taskRouting?.assignments) {
-          cleaned = cleanStaleAssignments(data.taskRouting.assignments, configuredProviders);
-          assignmentsChanged = Object.keys(data.taskRouting.assignments).length !== Object.keys(cleaned).length;
-        }
-        setAssignments(cleaned);
-
-        let newDefault = data.routingDefaultModel ?? null;
-        let defaultChanged = false;
-        if (newDefault && !providerNames.has(newDefault.provider)) {
-          newDefault = null;
-          defaultChanged = true;
-        }
-        setDefaultModel(newDefault);
-
+        setAssignments(data.taskRouting?.assignments ?? {});
+        setDefaultModel(data.routingDefaultModel ?? null);
         setLoaded(true);
-
-        if (assignmentsChanged || defaultChanged) {
-          onSave({
-            taskRouting: { assignments: cleaned },
-            routingDefaultModel: newDefault,
-          });
-        }
       })
       .catch(e => { setLoadError(String(e)); setLoaded(true); });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -222,6 +199,7 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
                 assignments={assignments}
                 suggestions={suggestions}
                 allModels={allModels}
+                configuredProviderNames={new Set(configuredProviders.map(p => p.name))}
                 t={t}
                 onAssign={(taskType, assignment) => {
                   const newAssignments = { ...assignments };
@@ -248,6 +226,7 @@ function TaskGroup({
   assignments,
   suggestions,
   allModels,
+  configuredProviderNames,
   t,
   onAssign,
 }: {
@@ -256,6 +235,7 @@ function TaskGroup({
   assignments: Partial<Record<ModelTaskTypeDTO, TaskModelAssignmentDTO>>;
   suggestions: Record<string, Suggestion | null>;
   allModels: ModelOption[];
+  configuredProviderNames: Set<string>;
   t: (key: string) => string;
   onAssign: (taskType: ModelTaskTypeDTO, assignment: TaskModelAssignmentDTO | null) => void;
 }) {
@@ -272,12 +252,13 @@ function TaskGroup({
           const filteredModels = filterModelsForTask(allModels, taskType);
           const hasModels = filteredModels.length > 0;
           const tier = assignment ? getTierForModel(allModels, assignment.provider, assignment.model) : undefined;
+          const isStale = assignment && !configuredProviderNames.has(assignment.provider);
 
           return (
             <div
               key={taskType}
               className={`flex items-center gap-3 px-3 py-2 rounded-lg ${
-                !hasModels && !assignment ? 'bg-amber-500/5 border border-amber-500/20' : 'bg-surface-overlay/40'
+                isStale ? 'bg-yellow-500/10 border border-yellow-500/30' : !hasModels && !assignment ? 'bg-amber-500/5 border border-amber-500/20' : 'bg-surface-overlay/40'
               }`}
             >
               <div className="w-28 shrink-0">
@@ -306,8 +287,11 @@ function TaskGroup({
                 )}
               </div>
               <div className="w-14 shrink-0 flex justify-end">
-                {tier && <TierBadge tier={tier} />}
-                {!tier && assignment && <TierBadge tier="unknown" />}
+                {isStale && (
+                  <span className="text-[10px] text-yellow-400 font-medium" title={t('modelRouting.staleProvider')}>⚠</span>
+                )}
+                {!isStale && tier && <TierBadge tier={tier} />}
+                {!isStale && !tier && assignment && <TierBadge tier="unknown" />}
               </div>
               <div className="w-8 shrink-0 flex justify-end">
                 {assignment && (
@@ -333,20 +317,6 @@ function TaskGroup({
 function getTierForModel(allModels: ModelOption[], provider: string, modelId: string): string | undefined {
   const model = allModels.find(m => m.provider === provider && m.modelId === modelId);
   return model?.tier;
-}
-
-function cleanStaleAssignments(
-  assignments: Partial<Record<ModelTaskTypeDTO, TaskModelAssignmentDTO>>,
-  configuredProviders: Props['configuredProviders'],
-): Partial<Record<ModelTaskTypeDTO, TaskModelAssignmentDTO>> {
-  const providerNames = new Set(configuredProviders.map(p => p.name));
-  const cleaned: Partial<Record<ModelTaskTypeDTO, TaskModelAssignmentDTO>> = {};
-  for (const [key, val] of Object.entries(assignments)) {
-    if (val && providerNames.has(val.provider)) {
-      cleaned[key as ModelTaskTypeDTO] = val;
-    }
-  }
-  return cleaned;
 }
 
 function SaveIndicator({ status, t }: { status: SaveStatus; t: (key: string) => string }) {
