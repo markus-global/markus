@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "lastUpdated": "2026-06-01",
+    "source": "https://lmarena.ai/",
+    "description": "Text benchmark Elo scores from Chatbot Arena"
+  },
+  "models": [
+    { "model": "claude-sonnet-4-20250514", "rawName": "Claude Sonnet 4", "provider": "anthropic", "elo": 1452, "95thPercentile": 1384, "votes": 125000, "organization": "Anthropic", "license": "Proprietary", "ranking": 1, "lastUpdated": "2026-06-01" },
+    { "model": "claude-opus-4-6", "rawName": "Claude Opus 4", "provider": "anthropic", "elo": 1448, "95thPercentile": 1365, "votes": 93000, "organization": "Anthropic", "license": "Proprietary", "ranking": 2, "lastUpdated": "2026-06-01" },
+    { "model": "gpt-5.4", "rawName": "GPT-5.4", "provider": "openai", "elo": 1440, "95thPercentile": 1370, "votes": 110000, "organization": "OpenAI", "license": "Proprietary", "ranking": 3, "lastUpdated": "2026-06-01" },
+    { "model": "gemini-3-1-pro", "rawName": "Gemini 3.1 Pro", "provider": "google", "elo": 1420, "95thPercentile": 1350, "votes": 87000, "organization": "Google", "license": "Proprietary", "ranking": 6, "lastUpdated": "2026-06-01" },
+    { "model": "deepseek-v4-pro", "rawName": "DeepSeek V4 Pro", "provider": "deepseek", "elo": 1410, "95thPercentile": 1338, "votes": 82000, "organization": "DeepSeek", "license": "MIT", "ranking": 8, "lastUpdated": "2026-06-01" },
+    { "model": "o4-mini", "rawName": "o4-mini", "provider": "openai", "elo": 1405, "95thPercentile": 1340, "votes": 78000, "organization": "OpenAI", "license": "Proprietary", "ranking": 5, "lastUpdated": "2026-06-01" },
+    { "model": "gpt-4o", "rawName": "GPT-4o", "provider": "openai", "elo": 1395, "95thPercentile": 1322, "votes": 98000, "organization": "OpenAI", "license": "Proprietary", "ranking": 4, "lastUpdated": "2026-06-01" },
+    { "model": "deepseek-v4-flash", "rawName": "DeepSeek V4 Flash", "provider": "deepseek", "elo": 1390, "95thPercentile": 1320, "votes": 65000, "organization": "DeepSeek", "license": "MIT", "ranking": 9, "lastUpdated": "2026-06-01" },
+    { "model": "xiaomi/mimo-v2-pro", "rawName": "Xiaomi MiMo V2 Pro", "provider": "openrouter", "elo": 1385, "95thPercentile": 1310, "votes": 12000, "organization": "Xiaomi", "license": "MIT", "ranking": 12, "lastUpdated": "2026-06-01" },
+    { "model": "gemini-2.5-flash", "rawName": "Gemini 2.5 Flash", "provider": "google", "elo": 1378, "95thPercentile": 1305, "votes": 88000, "organization": "Google", "license": "Proprietary", "ranking": 7, "lastUpdated": "2026-06-01" },
+    { "model": "Qwen/Qwen3.5-35B-A3B", "rawName": "Qwen 3.5 35B-A3B", "provider": "siliconflow", "elo": 1370, "95thPercentile": 1295, "votes": 35000, "organization": "Alibaba", "license": "Apache-2.0", "ranking": 13, "lastUpdated": "2026-06-01" },
+    { "model": "moonshotai/Kimi-K2.5", "rawName": "Kimi K2.5", "provider": "siliconflow", "elo": 1368, "95thPercentile": 1288, "votes": 28000, "organization": "Moonshot AI", "license": "Proprietary", "ranking": 17, "lastUpdated": "2026-06-01" },
+    { "model": "MiniMax-M2.7", "rawName": "MiniMax M2.7", "provider": "minimax", "elo": 1365, "95thPercentile": 1280, "votes": 15000, "organization": "MiniMax", "license": "MIT", "ranking": 10, "lastUpdated": "2026-06-01" },
+    { "model": "Qwen/Qwen3.5-32B-A3B", "rawName": "Qwen 3.5 32B-A3B", "provider": "siliconflow", "elo": 1362, "95thPercentile": 1285, "votes": 22000, "organization": "Alibaba", "license": "Apache-2.0", "ranking": 14, "lastUpdated": "2026-06-01" },
+    { "model": "glm-5.1", "rawName": "GLM-5.1", "provider": "zai", "elo": 1345, "95thPercentile": 1270, "votes": 18000, "organization": "Zhipu AI", "license": "Proprietary", "ranking": 18, "lastUpdated": "2026-06-01" },
+    { "model": "MiniMax-M2.5", "rawName": "MiniMax M2.5", "provider": "minimax", "elo": 1342, "95thPercentile": 1265, "votes": 12000, "organization": "MiniMax", "license": "MIT", "ranking": 11, "lastUpdated": "2026-06-01" },
+    { "model": "deepseek-ai/DeepSeek-Coder-V2", "rawName": "DeepSeek Coder V2", "provider": "siliconflow", "elo": 1340, "95thPercentile": 1260, "votes": 45000, "organization": "DeepSeek", "license": "MIT", "ranking": 16, "lastUpdated": "2026-06-01" },
+    { "model": "glm-5", "rawName": "GLM-5", "provider": "zai", "elo": 1330, "95thPercentile": 1255, "votes": 14000, "organization": "Zhipu AI", "license": "Proprietary", "ranking": 19, "lastUpdated": "2026-06-01" },
+    { "model": "deepseek-ai/DeepSeek-V3", "rawName": "DeepSeek V3", "provider": "siliconflow", "elo": 1328, "95thPercentile": 1250, "votes": 55000, "organization": "DeepSeek", "license": "MIT", "ranking": 15, "lastUpdated": "2026-06-01" },
+    { "model": "glm-4-turbo", "rawName": "GLM-4 Turbo", "provider": "zai", "elo": 1305, "95thPercentile": 1230, "votes": 16000, "organization": "Zhipu AI", "license": "Proprietary", "ranking": 20, "lastUpdated": "2026-06-01" }
+  ]
+}

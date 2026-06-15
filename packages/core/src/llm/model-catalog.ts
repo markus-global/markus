@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'no
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { createLogger, type CatalogModel, type CatalogStatus, type LiteLLMRawModelEntry } from '@markus/shared';
+import { createLogger, type CatalogModel, type CatalogStatus, type LiteLLMRawModelEntry, type ModelProfile, type ModelTier, type CostTier, type NormalizedCost, type PriceConfidence, type PricingType, type ModelQuality } from '@markus/shared';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -127,17 +127,29 @@ export class ModelCatalogService {
     };
   }
 
-  async refresh(): Promise<boolean> {
+  async refresh(retryCount = 0): Promise<boolean> {
+    const maxRetries = 3;
     try {
       const url = this.mirrorUrl || LITELLM_JSON_URL;
       log.info(`Refreshing model catalog from ${url}`);
 
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
       const response = await fetch(url, {
-        signal: AbortSignal.timeout(30000),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         log.warn(`Failed to fetch model catalog: HTTP ${response.status}`);
+        if (retryCount < maxRetries && response.status >= 500) {
+          const backoff = Math.min(1000 * Math.pow(2, retryCount), 10000);
+          log.info(`Retrying in ${backoff}ms (attempt ${retryCount + 1}/${maxRetries})...`);
+          await new Promise(r => setTimeout(r, backoff));
+          return this.refresh(retryCount + 1);
+        }
         return false;
       }
 
@@ -149,6 +161,12 @@ export class ModelCatalogService {
       log.info(`Model catalog refreshed: ${this.models.size} chat models loaded`);
       return true;
     } catch (err) {
+      if (retryCount < maxRetries) {
+        const backoff = Math.min(1000 * Math.pow(2, retryCount), 10000);
+        log.info(`Retry ${retryCount + 1}/${maxRetries} after error in ${backoff}ms...`);
+        await new Promise(r => setTimeout(r, backoff));
+        return this.refresh(retryCount + 1);
+      }
       log.warn(`Failed to refresh model catalog: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
@@ -290,6 +308,149 @@ export class ModelCatalogService {
     } catch (err) {
       log.warn(`Failed to persist catalog cache: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  /**
+   * Enrich a CatalogModel with derived fields (tier, costTier, task types, quality).
+   * This is a heuristic enrichment — real benchmark data from ModelScoreService
+   * will override these estimates when available.
+   */
+  enrichModel(model: CatalogModel): {
+    tier: ModelTier;
+    costTier: CostTier;
+    taskTypes: string[];
+    quality: ModelQuality;
+    normalizedCost: NormalizedCost;
+  } {
+    // --- Tier estimation based on capabilities and pricing ---
+    const tier = this.estimateTier(model);
+
+    // --- Cost tier ---
+    const costTier = this.estimateCostTier(model);
+
+    // --- Task type inference ---
+    const taskTypes = this.inferTaskTypes(model);
+
+    // --- Quality estimate (heuristic, overridden by Arena data) ---
+    const quality: ModelQuality = {
+      overallElo: undefined,
+      codingElo: undefined,
+      visionElo: undefined,
+      qualityScore: this.estimateQualityScore(model, tier),
+      tier,
+      lastUpdated: this.lastUpdated ?? new Date().toISOString(),
+      source: 'heuristic',
+    };
+
+    // --- Normalized cost ---
+    const normalizedCost = this.buildNormalizedCost(model);
+
+    return { tier, costTier, taskTypes, quality, normalizedCost };
+  }
+
+  /**
+   * Produce a list of all models with enrichment applied,
+   * ready for ModelProfile construction.
+   */
+  getAllEnrichedModels(): Array<CatalogModel & ReturnType<ModelCatalogService['enrichModel']>> {
+    const results: Array<CatalogModel & ReturnType<ModelCatalogService['enrichModel']>> = [];
+    for (const model of this.models.values()) {
+      const enrichment = this.enrichModel(model);
+      results.push({ ...model, ...enrichment });
+    }
+    return results.sort((a, b) => b.quality.qualityScore - a.quality.qualityScore);
+  }
+
+  /**
+   * Get models filtered by task type (e.g. 'text_chat', 'text_coding').
+   */
+  getModelsByTaskType(taskType: string): CatalogModel[] {
+    return Array.from(this.models.values()).filter(m => {
+      const types = this.inferTaskTypes(m);
+      return types.includes(taskType);
+    });
+  }
+
+  /**
+   * Get models that match a given tier and (optionally) task type.
+   */
+  getModelsByTier(tier: ModelTier, taskType?: string): CatalogModel[] {
+    return Array.from(this.models.values()).filter(m => {
+      const t = this.estimateTier(m);
+      if (t !== tier) return false;
+      if (taskType) {
+        const types = this.inferTaskTypes(m);
+        return types.includes(taskType);
+      }
+      return true;
+    });
+  }
+
+  /**
+   * Estimate model tier based on pricing and capabilities.
+   * base: cheapest models
+   * pro: moderate pricing with function calling
+   * max: expensive models with advanced capabilities
+   */
+  private estimateTier(model: CatalogModel): ModelTier {
+    const avgCost = (model.inputCostPer1MTokens + model.outputCostPer1MTokens) / 2;
+    const hasAdvanced = model.capabilities.reasoning || model.capabilities.audioInput;
+
+    if (avgCost > 10 && hasAdvanced) return 'max';
+    if (avgCost > 2 || model.capabilities.functionCalling) return 'pro';
+    return 'base';
+  }
+
+  /**
+   * Estimate cost tier for UI display.
+   */
+  private estimateCostTier(model: CatalogModel): CostTier {
+    const avgCost = (model.inputCostPer1MTokens + model.outputCostPer1MTokens) / 2;
+    const d = String.fromCodePoint(36);
+    if (avgCost <= 0.5) return d as CostTier;
+    if (avgCost <= 3) return (d + d) as CostTier;
+    if (avgCost <= 10) return (d + d + d) as CostTier;
+    return (d + d + d + d) as CostTier;
+  }
+
+  private inferTaskTypes(model: CatalogModel): string[] {
+    const types: string[] = ['text_chat'];
+    if (model.capabilities.reasoning) types.push('text_reasoning');
+    if (model.capabilities.functionCalling) types.push('text_coding');
+    if (model.capabilities.vision) types.push('image_recognition');
+    if (model.capabilities.webSearch) types.push('web_search');
+    if (model.capabilities.audioInput) types.push('audio_stt');
+    if (model.capabilities.audioOutput) types.push('audio_tts');
+    return types;
+  }
+
+  private estimateQualityScore(model: CatalogModel, tier: ModelTier): number {
+    const tierBase: Record<ModelTier, number> = { base: 30, pro: 60, max: 85 };
+    let score = tierBase[tier] ?? 50;
+    const premiumProviders = ['anthropic', 'openai', 'google'];
+    if (premiumProviders.includes(model.provider)) score += 8;
+    if (model.capabilities.reasoning) score += 5;
+    const avgCost = (model.inputCostPer1MTokens + model.outputCostPer1MTokens) / 2;
+    if (avgCost < 0.1 && !premiumProviders.includes(model.provider)) score -= 10;
+    return Math.max(0, Math.min(100, score));
+  }
+
+  private buildNormalizedCost(model: CatalogModel): NormalizedCost {
+    const isLocal = model.provider === 'ollama';
+    const isFree = isLocal || (model.inputCostPer1MTokens === 0 && model.outputCostPer1MTokens === 0);
+    let pricingType: PricingType = 'token';
+    if (isLocal) pricingType = 'local';
+    else if (isFree) pricingType = 'free';
+    return {
+      inputPer1MTokens: model.inputCostPer1MTokens || undefined,
+      outputPer1MTokens: model.outputCostPer1MTokens || undefined,
+      cachedReadPer1MTokens: model.cacheReadCostPer1MTokens,
+      cachedWritePer1MTokens: model.cacheWriteCostPer1MTokens,
+      pricingType,
+      isFree,
+      isLocal,
+      priceConfidence: 'estimated' as PriceConfidence,
+    };
   }
 
   private refreshInBackground(): void {
