@@ -2,7 +2,20 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'no
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { createLogger, type CatalogModel, type CatalogStatus, type LiteLLMRawModelEntry, type ModelProfile, type ModelTier, type CostTier, type NormalizedCost, type PriceConfidence, type PricingType, type ModelQuality } from '@markus/shared';
+import { createLogger, type CatalogModel, type CatalogStatus, type LiteLLMRawModelEntry, type ModelTier, type CostTier, type ModelTaskType, type NormalizedCost, type PriceConfidence, type PricingType, type ModelQuality } from '@markus/shared';
+
+/** Arena category — maps to the three arena JSON data files. */
+export type ArenaCategory = 'text' | 'code' | 'vision';
+
+/** Single arena Elo entry parsed from the data files. */
+export interface ArenaEntry {
+  model: string;
+  provider: string;
+  elo: number;
+  ranking: number;
+  votes: number;
+  lastUpdated: string;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -45,6 +58,7 @@ const PROVIDER_MAP: Record<string, string> = {
 
 export class ModelCatalogService {
   private models: Map<string, CatalogModel> = new Map();
+  private arenaCache: Map<ArenaCategory, Map<string, ArenaEntry>> = new Map();
   private lastUpdated: string | null = null;
   private source: CatalogStatus['source'] = 'baseline';
   private markusDir: string;
@@ -312,13 +326,12 @@ export class ModelCatalogService {
 
   /**
    * Enrich a CatalogModel with derived fields (tier, costTier, task types, quality).
-   * This is a heuristic enrichment — real benchmark data from ModelScoreService
-   * will override these estimates when available.
+   * Uses Arena Elo data when available, falls back to heuristic scoring.
    */
   enrichModel(model: CatalogModel): {
     tier: ModelTier;
     costTier: CostTier;
-    taskTypes: string[];
+    taskTypes: ModelTaskType[];
     quality: ModelQuality;
     normalizedCost: NormalizedCost;
   } {
@@ -328,18 +341,21 @@ export class ModelCatalogService {
     // --- Cost tier ---
     const costTier = this.estimateCostTier(model);
 
-    // --- Task type inference ---
+    // --- Task type inference (typed against Wave 0 ModelTaskType) ---
     const taskTypes = this.inferTaskTypes(model);
 
-    // --- Quality estimate (heuristic, overridden by Arena data) ---
+    // --- Quality score: prefer Arena Elo over heuristic ---
+    const arenaElo = this.lookupArenaElo(model);
     const quality: ModelQuality = {
-      overallElo: undefined,
-      codingElo: undefined,
-      visionElo: undefined,
-      qualityScore: this.estimateQualityScore(model, tier),
+      overallElo: arenaElo?.overall,
+      codingElo: arenaElo?.coding,
+      visionElo: arenaElo?.vision,
+      qualityScore: arenaElo?.overall
+        ? this.eloToQualityScore(arenaElo.overall)
+        : this.estimateQualityScore(model, tier),
       tier,
       lastUpdated: this.lastUpdated ?? new Date().toISOString(),
-      source: 'heuristic',
+      source: arenaElo ? 'arena' : 'heuristic',
     };
 
     // --- Normalized cost ---
@@ -364,7 +380,7 @@ export class ModelCatalogService {
   /**
    * Get models filtered by task type (e.g. 'text_chat', 'text_coding').
    */
-  getModelsByTaskType(taskType: string): CatalogModel[] {
+  getModelsByTaskType(taskType: ModelTaskType): CatalogModel[] {
     return Array.from(this.models.values()).filter(m => {
       const types = this.inferTaskTypes(m);
       return types.includes(taskType);
@@ -374,7 +390,7 @@ export class ModelCatalogService {
   /**
    * Get models that match a given tier and (optionally) task type.
    */
-  getModelsByTier(tier: ModelTier, taskType?: string): CatalogModel[] {
+  getModelsByTier(tier: ModelTier, taskType?: ModelTaskType): CatalogModel[] {
     return Array.from(this.models.values()).filter(m => {
       const t = this.estimateTier(m);
       if (t !== tier) return false;
@@ -413,8 +429,8 @@ export class ModelCatalogService {
     return (d + d + d + d) as CostTier;
   }
 
-  private inferTaskTypes(model: CatalogModel): string[] {
-    const types: string[] = ['text_chat'];
+  private inferTaskTypes(model: CatalogModel): ModelTaskType[] {
+    const types: ModelTaskType[] = ['text_chat'];
     if (model.capabilities.reasoning) types.push('text_reasoning');
     if (model.capabilities.functionCalling) types.push('text_coding');
     if (model.capabilities.vision) types.push('image_recognition');
@@ -422,6 +438,77 @@ export class ModelCatalogService {
     if (model.capabilities.audioInput) types.push('audio_stt');
     if (model.capabilities.audioOutput) types.push('audio_tts');
     return types;
+  }
+
+  /**
+   * Load Arena Elo data for a given category. Cached on first call.
+   * Returns Map keyed by model ID, or empty Map on missing/corrupt file.
+   */
+  loadArena(category: ArenaCategory): Map<string, ArenaEntry> {
+    const cached = this.arenaCache.get(category);
+    if (cached) return cached;
+
+    const fileMap: Record<ArenaCategory, string> = {
+      text: 'arena-text.json',
+      code: 'arena-code.json',
+      vision: 'arena-vision.json',
+    };
+
+    const path = join(DATA_DIR, fileMap[category]);
+    const empty = new Map<string, ArenaEntry>();
+    if (!existsSync(path)) {
+      log.warn(`Arena data file not found: ${path}`);
+      this.arenaCache.set(category, empty);
+      return empty;
+    }
+
+    try {
+      const raw = JSON.parse(readFileSync(path, 'utf-8')) as {
+        meta?: { lastUpdated?: string };
+        models?: ArenaEntry[];
+      };
+      const map = new Map<string, ArenaEntry>();
+      for (const entry of raw.models ?? []) {
+        map.set(entry.model, entry);
+      }
+      this.arenaCache.set(category, map);
+      log.info(`Loaded arena ${category}: ${map.size} models`);
+      return map;
+    } catch (err) {
+      log.warn(`Failed to load arena ${category}: ${err instanceof Error ? err.message : String(err)}`);
+      this.arenaCache.set(category, empty);
+      return empty;
+    }
+  }
+
+  /**
+   * Look up Arena Elo scores across all categories for a given model.
+   * Returns per-category Elo (or undefined) for fields with data.
+   */
+  private lookupArenaElo(model: CatalogModel): { overall?: number; coding?: number; vision?: number } | null {
+    const textMap = this.loadArena('text');
+    const codeMap = this.loadArena('code');
+    const visionMap = this.loadArena('vision');
+
+    const overall = textMap.get(model.id)?.elo;
+    const coding = codeMap.get(model.id)?.elo;
+    const vision = visionMap.get(model.id)?.elo;
+
+    if (overall === undefined && coding === undefined && vision === undefined) {
+      return null;
+    }
+    return { overall, coding, vision };
+  }
+
+  /**
+   * Convert Arena Elo (typically 1200-1500) to 0-100 quality score.
+   * Mapping: elo 1200 -> 30, elo 1500 -> 95 (linear).
+   */
+  private eloToQualityScore(elo: number): number {
+    const MIN_ELO = 1200;
+    const MAX_ELO = 1500;
+    const ratio = (elo - MIN_ELO) / (MAX_ELO - MIN_ELO);
+    return Math.max(0, Math.min(100, Math.round(ratio * 65 + 30)));
   }
 
   private estimateQualityScore(model: CatalogModel, tier: ModelTier): number {
