@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
+import type { RoutingConfig, TaskRoutingConfig } from '../types/model-catalog.js';
 
 export interface MarkusConfig {
   org: {
@@ -31,6 +32,10 @@ export interface MarkusConfig {
     timeoutMs?: number;
     /** Allow automatic fallback to other providers/models when the primary fails (default: true) */
     autoFallback?: boolean;
+    /** Global routing config (strategy, tier overrides, budget, task routing). */
+    routing?: RoutingConfig;
+    /** Shortcut for the per-task routing block. */
+    taskRouting?: TaskRoutingConfig;
   };
   server: {
     apiPort: number;
