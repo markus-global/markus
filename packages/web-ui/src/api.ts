@@ -411,6 +411,41 @@ export interface ValidateKeyResponse {
   models: CatalogModel[];
 }
 
+// ── Model Routing Types ─────────────────────────────────────────────
+
+export interface RoutingCandidate {
+  provider: string;
+  model: string;
+  displayName: string;
+  source: 'live' | 'catalog' | 'baseline';
+  tier: 'base' | 'pro' | 'max';
+  costTier: 'base' | 'pro' | 'max';
+  capabilities: CatalogModelCapabilities;
+  contextWindow: number;
+  maxOutputTokens: number;
+  latencies?: { p50: number; p95: number };
+  qualityScore: number;
+}
+
+export interface SuggestedAssignment {
+  taskType: string;
+  taskLabel: string;
+  suggested: { provider: string; model: string };
+  alternatives: Array<{ provider: string; model: string }>;
+  reason: string;
+}
+
+export interface RoutingConfig {
+  defaultModel: string;
+  taskRouting: Array<{
+    taskType: string;
+    assignment: { provider: string; model: string; fallback?: { provider: string; model: string } };
+    enabled: boolean;
+  }>;
+  autoStrategy: 'always_max' | 'always_cheapest' | 'balanced' | 'cache_optimized';
+  defaultTier: 'base' | 'pro' | 'max';
+}
+
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   const method = opts?.method?.toUpperCase() ?? 'GET';
   const isGet = method === 'GET' && !opts?.body;
@@ -1433,6 +1468,19 @@ export const api = {
       request<ValidateKeyResponse>('/models/validate-key', {
         method: 'POST',
         body: JSON.stringify({ provider, apiKey, baseUrl }),
+      }),
+    getRoutingCandidates: (taskType: string) =>
+      request<{ candidates: RoutingCandidate[] }>('/models/routing/candidates', {
+        method: 'POST',
+        body: JSON.stringify({ taskType }),
+      }),
+    getSuggestedAssignments: () =>
+      request<{ assignments: SuggestedAssignment[] }>('/models/routing/suggested'),
+    getRouting: () => request<RoutingConfig>('/models/routing'),
+    saveRouting: (config: RoutingConfig) =>
+      request<{ success: boolean }>('/models/routing', {
+        method: 'PUT',
+        body: JSON.stringify(config),
       }),
   },
   skills: {
