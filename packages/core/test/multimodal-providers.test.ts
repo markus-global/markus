@@ -325,3 +325,92 @@ describe('Provider factory dispatches correct subclass', () => {
     expect(p.constructor.name).toBe('OpenAIProvider');
   });
 });
+
+// ===========================================================================
+// getCapabilities — non-OpenAI providers must NOT claim imageGeneration
+// ===========================================================================
+
+describe('OpenAIProvider getCapabilities accuracy', () => {
+  it('native OpenAI claims imageGeneration', () => {
+    const p = new OpenAIProvider({ provider: 'openai', model: 'gpt-4o', apiKey: 'k', baseUrl: 'https://api.openai.com' });
+    expect(p.getCapabilities().imageGeneration).toBe(true);
+  });
+
+  it('DeepSeek (non-OpenAI) does NOT claim imageGeneration', () => {
+    const p = new OpenAIProvider({ provider: 'deepseek' as any, model: 'deepseek-v4-flash', apiKey: 'k', baseUrl: 'https://api.deepseek.com' });
+    expect(p.getCapabilities().imageGeneration).toBe(false);
+  });
+
+  it('SiliconFlow (non-OpenAI) does NOT claim imageGeneration', () => {
+    const p = new OpenAIProvider({ provider: 'siliconflow' as any, model: 'Qwen/Qwen3.5-35B-A3B', apiKey: 'k', baseUrl: 'https://api.siliconflow.cn/v1' });
+    expect(p.getCapabilities().imageGeneration).toBe(false);
+  });
+
+  it('MiniMax overrides and claims imageGeneration', () => {
+    const p = new MiniMaxProvider({ provider: 'minimax', model: 'MiniMax-M3', apiKey: 'k', baseUrl: 'https://api.minimax.io/v1' });
+    expect(p.getCapabilities().imageGeneration).toBe(true);
+  });
+});
+
+// ===========================================================================
+// resolveModalityCandidates — text-only providers must NOT be fallbacks
+// for non-text tasks (the root cause of the 404 bug)
+// ===========================================================================
+
+describe('resolveModalityCandidates capability filtering', () => {
+  function createRouter() {
+    return LLMRouter.createDefault({
+      'minimax-cn': { apiKey: 'k', baseUrl: 'https://api.minimaxi.com/v1', model: 'MiniMax-M3' },
+      'deepseek':   { apiKey: 'k', baseUrl: 'https://api.deepseek.com',   model: 'deepseek-v4-flash' },
+    }, 'deepseek');
+  }
+
+  it('image_generation with assignment: only assigned provider, no deepseek fallback', () => {
+    const router = createRouter();
+    router.setTaskRouting({ assignments: { image_generation: { provider: 'minimax-cn', model: 'image-01' } } });
+    const candidates = router.resolveModalityCandidates('image_generation');
+    const names = candidates.map(c => c.name);
+    expect(names).toContain('minimax-cn');
+    expect(names).not.toContain('deepseek');
+  });
+
+  it('image_generation without assignment: empty candidates (no misleading 404)', () => {
+    const router = createRouter();
+    const candidates = router.resolveModalityCandidates('image_generation');
+    const names = candidates.map(c => c.name);
+    expect(names).not.toContain('deepseek');
+  });
+
+  it('text routing still includes routingDefaultModel and defaultProvider', () => {
+    const router = createRouter();
+    router.setTaskRouting({ assignments: { text: { provider: 'minimax-cn', model: 'MiniMax-M3' } } });
+    const candidates = router.resolveModalityCandidates('text');
+    const names = candidates.map(c => c.name);
+    expect(names).toContain('minimax-cn');
+    expect(names).toContain('deepseek');
+  });
+
+  it('audio_tts without assignment: deepseek not included as fallback', () => {
+    const router = createRouter();
+    const candidates = router.resolveModalityCandidates('audio_tts');
+    const names = candidates.map(c => c.name);
+    expect(names).not.toContain('deepseek');
+  });
+
+  it('assigned provider is always included even without capability declaration', () => {
+    const router = createRouter();
+    router.setTaskRouting({ assignments: { image_generation: { provider: 'deepseek', model: 'some-model' } } });
+    const candidates = router.resolveModalityCandidates('image_generation');
+    expect(candidates.some(c => c.name === 'deepseek')).toBe(true);
+  });
+
+  it('autoFallback respects capability filter for non-text tasks', () => {
+    const router = createRouter();
+    (router as any)._autoFallback = true;
+    router.setTaskRouting({ assignments: { image_generation: { provider: 'minimax-cn', model: 'image-01' } } });
+    const candidates = router.resolveModalityCandidates('image_generation');
+    const names = candidates.map(c => c.name);
+    expect(names).toContain('minimax-cn');
+    expect(names).not.toContain('deepseek');
+  });
+});

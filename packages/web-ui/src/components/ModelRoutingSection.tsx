@@ -253,19 +253,44 @@ function TaskGroup({
           const hasModels = filteredModels.length > 0;
           const tier = assignment ? getTierForModel(allModels, assignment.provider, assignment.model) : undefined;
           const isStale = assignment && !configuredProviderNames.has(assignment.provider);
+          const isMismatch = !!(assignment && hasModels && taskType !== 'text' &&
+            !filteredModels.some(m => m.provider === assignment.provider && m.modelId === assignment.model));
 
           return (
             <div
               key={taskType}
               className={`flex items-center gap-3 px-3 py-2 rounded-lg ${
-                isStale ? 'bg-yellow-500/10 border border-yellow-500/30' : !hasModels && !assignment ? 'bg-amber-500/5 border border-amber-500/20' : 'bg-surface-overlay/40'
+                isMismatch ? 'bg-red-500/10 border border-red-500/30'
+                : isStale ? 'bg-yellow-500/10 border border-yellow-500/30'
+                : !hasModels && !assignment ? 'bg-amber-500/5 border border-amber-500/20'
+                : 'bg-surface-overlay/40'
               }`}
             >
               <div className="w-28 shrink-0">
                 <span className="text-xs text-fg-primary">{t(`modelRouting.tasks.${taskType}`)}</span>
               </div>
               <div className="flex-1 min-w-0">
-                {hasModels ? (
+                {isMismatch ? (
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-red-400">⚠ {assignment!.model}</span>
+                      <span className="text-[10px] text-red-400/70">{t('modelRouting.mismatchHint')}</span>
+                    </div>
+                    <ModelSelect
+                      value=""
+                      options={filteredModels}
+                      placeholder={suggestion ? `${suggestion.model} (${t('modelRouting.suggested')})` : t('modelRouting.selectModel')}
+                      onChange={val => {
+                        if (!val) {
+                          onAssign(taskType, null);
+                        } else {
+                          const [provider, ...modelParts] = val.split('/');
+                          onAssign(taskType, { provider, model: modelParts.join('/') });
+                        }
+                      }}
+                    />
+                  </div>
+                ) : hasModels ? (
                   <ModelSelect
                     value={currentValue}
                     options={filteredModels}
@@ -287,11 +312,14 @@ function TaskGroup({
                 )}
               </div>
               <div className="w-14 shrink-0 flex justify-end">
-                {isStale && (
+                {isMismatch && (
+                  <span className="text-[10px] text-red-400 font-medium" title={t('modelRouting.mismatchHint')}>⚠</span>
+                )}
+                {!isMismatch && isStale && (
                   <span className="text-[10px] text-yellow-400 font-medium" title={t('modelRouting.staleProvider')}>⚠</span>
                 )}
-                {!isStale && tier && <TierBadge tier={tier} />}
-                {!isStale && !tier && assignment && <TierBadge tier="unknown" />}
+                {!isMismatch && !isStale && tier && <TierBadge tier={tier} />}
+                {!isMismatch && !isStale && !tier && assignment && <TierBadge tier="unknown" />}
               </div>
               <div className="w-8 shrink-0 flex justify-end">
                 {assignment && (

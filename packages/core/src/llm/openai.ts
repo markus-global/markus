@@ -391,7 +391,7 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     return {
       chat: true,
       vision: true,
-      imageGeneration: true,
+      imageGeneration: isOpenAI,
       tts: isOpenAI,
       stt: isOpenAI,
       videoGeneration: false,

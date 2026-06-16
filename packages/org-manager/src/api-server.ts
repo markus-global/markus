@@ -7756,8 +7756,16 @@ EXPLANATION_END`;
           configUpdates.autoFallback = autoFallback;
         }
         if (taskRouting) {
+          const prevAssignments = { ...this.llmRouter.taskRouting.assignments };
           this.llmRouter.setTaskRouting(taskRouting as any);
-          configUpdates.taskRouting = taskRouting;
+          const incomingAssignments = (taskRouting as any).assignments ?? {};
+          const persistAssignments: Record<string, unknown> = { ...incomingAssignments };
+          for (const key of Object.keys(prevAssignments)) {
+            if (!(key in incomingAssignments)) {
+              persistAssignments[key] = null;
+            }
+          }
+          configUpdates.taskRouting = { assignments: persistAssignments };
         }
         if (routingDefaultModel !== undefined) {
           if (routingDefaultModel === null) {
@@ -7810,7 +7818,7 @@ EXPLANATION_END`;
       const result: Array<{ provider: string; displayName: string; models: Array<{ id: string; name: string; mode?: string; tier?: string; costTier?: string; capabilities?: string[] }> }> = [];
 
       for (const [providerName, providerSettings] of Object.entries(settings.providers)) {
-        if (!providerSettings.enabled) continue;
+        if (!providerSettings.enabled || !providerSettings.configured) continue;
         const seenIds = new Set<string>();
         const models: Array<{ id: string; name: string; mode?: string; tier?: string; costTier?: string; capabilities?: string[] }> = [];
 
@@ -7924,7 +7932,7 @@ EXPLANATION_END`;
       const settings = this.llmRouter!.getEnhancedSettings();
 
       for (const [providerName, providerSettings] of Object.entries(settings.providers)) {
-        if (!providerSettings.enabled) continue;
+        if (!providerSettings.enabled || !providerSettings.configured) continue;
         const seenIds = new Set<string>();
 
         for (const m of providerSettings.models ?? []) {
@@ -8617,10 +8625,10 @@ EXPLANATION_END`;
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
           const currentConfig = loadCfg(this.markusConfigPath);
-          const providers = { ...currentConfig.llm.providers };
-          delete providers[providerName];
-          const configUpdates: any = { llm: { providers } };
+          const configUpdates: any = { llm: { providers: { [providerName]: null } } };
           if (currentConfig.llm.defaultProvider === providerName) {
+            const providers = { ...currentConfig.llm.providers };
+            delete providers[providerName];
             const remaining = Object.keys(providers).filter(k => providers[k]?.enabled !== false);
             configUpdates.llm.defaultProvider = remaining[0] ?? 'anthropic';
           }
@@ -8714,12 +8722,11 @@ EXPLANATION_END`;
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
           const currentConfig = loadCfg(this.markusConfigPath);
-          const customModels = { ...(currentConfig.llm.customModels ?? {}) };
-          if (customModels[providerName]) {
-            customModels[providerName] = customModels[providerName].filter(m => m.id !== modelId);
-            if (customModels[providerName].length === 0) delete customModels[providerName];
-          }
-          saveConfig({ llm: { customModels } } as any, this.markusConfigPath);
+          const models = (currentConfig.llm.customModels?.[providerName] ?? []).filter(m => m.id !== modelId);
+          const customModelsUpdate: Record<string, unknown> = {
+            [providerName]: models.length > 0 ? models : null,
+          };
+          saveConfig({ llm: { customModels: customModelsUpdate } } as any, this.markusConfigPath);
         } catch (e) {
           log.warn('Failed to persist custom model removal', { error: String(e) });
         }

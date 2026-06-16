@@ -114,6 +114,7 @@
     "saving": "保存中...",
     "saved": "已保存",
     "saveError": "保存失败",
+    "mismatchHint": "模型与此任务类型不匹配 — 请选择兼容的模型",
     "staleProvider": "服务商未配置 — 请清除或重新配置",
     "noProvidersHint": "请先在上方配置至少一个服务商，才能为任务指定模型。",
     "tier": {

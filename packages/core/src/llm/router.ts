@@ -1,4 +1,4 @@
-import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type ModelTaskType, type CostTier, type TaskRoutingConfig, type TaskModelAssignment } from '@markus/shared';
+import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type ModelTaskType, type CostTier, type TaskRoutingConfig, type TaskModelAssignment, type ProviderCapabilities } from '@markus/shared';
 import { startSpan } from '../tracing.js';
 import type { LLMProviderInterface, MultiModalProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
@@ -14,6 +14,14 @@ import { OAuthManager } from './oauth-manager.js';
 import type { ModelCatalogService } from './model-catalog.js';
 
 const log = createLogger('llm-router');
+
+const TASK_CAPABILITY_KEY: Partial<Record<ModelTaskType, keyof ProviderCapabilities>> = {
+  image_generation: 'imageGeneration',
+  image_recognition: 'vision',
+  audio_tts: 'tts',
+  audio_stt: 'stt',
+  video_generation: 'videoGeneration',
+};
 
 const MINIMAX_NAMES = new Set(['minimax', 'minimax-cn']);
 const DASHSCOPE_NAMES = new Set(['dashscope']);
@@ -564,7 +572,22 @@ export class LLMRouter {
   get taskRouting(): TaskRoutingConfig { return this._taskRouting; }
 
   setTaskRouting(config: Partial<TaskRoutingConfig>): void {
-    this._taskRouting = { ...this._taskRouting, ...config };
+    const VALID_TASK_TYPES: Set<string> = new Set([
+      'text', 'image_recognition', 'image_generation',
+      'audio_tts', 'audio_stt', 'video_generation',
+    ]);
+
+    const incoming = config.assignments ?? {};
+    const cleaned: TaskRoutingConfig['assignments'] = {};
+    for (const [key, val] of Object.entries(incoming)) {
+      if (VALID_TASK_TYPES.has(key)) {
+        cleaned[key as ModelTaskType] = val;
+      } else {
+        log.warn('Ignoring invalid task type in routing assignment', { taskType: key });
+      }
+    }
+
+    this._taskRouting = { assignments: { ...this._taskRouting.assignments, ...cleaned } };
     log.info('Task routing updated', { assignments: Object.keys(this._taskRouting.assignments) });
   }
 
@@ -651,20 +674,38 @@ export class LLMRouter {
       seen.add(name);
     };
 
+    const capKey = TASK_CAPABILITY_KEY[taskType];
+    const needsCapFilter = taskType !== 'text' && !!capKey;
+
+    const addIfCapable = (name: string, model?: string) => {
+      if (seen.has(name)) return;
+      if (needsCapFilter) {
+        const p = this.providers.get(name) as MultiModalProviderInterface | undefined;
+        if (p && typeof p.getCapabilities === 'function') {
+          const caps = p.getCapabilities();
+          if (!caps[capKey!]) return;
+        }
+      }
+      add(name, model);
+    };
+
+    // Explicit assignment — always trust the user's choice
     const assignment = this._taskRouting.assignments[taskType];
     if (assignment) {
       add(assignment.provider, assignment.model);
       if (assignment.fallback) add(assignment.fallback.provider, assignment.fallback.model);
     }
 
+    // routingDefaultModel / defaultProvider are TEXT routing defaults;
+    // for non-text tasks, only add them if they actually support the modality.
     if (this._routingDefaultModel) {
-      add(this._routingDefaultModel.provider, this._routingDefaultModel.model);
+      addIfCapable(this._routingDefaultModel.provider, this._routingDefaultModel.model);
     }
-    add(this.defaultProvider);
+    addIfCapable(this.defaultProvider);
 
     if (this._autoFallback) {
       const order = this.fallbackOrder.length > 0 ? this.fallbackOrder : [...this.providers.keys()];
-      for (const name of order) add(name);
+      for (const name of order) addIfCapable(name);
     }
 
     return candidates;

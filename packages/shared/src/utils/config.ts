@@ -169,13 +169,25 @@ export function saveConfig(updates: Partial<MarkusConfig>, configPath?: string):
 
 type Obj = Record<string, unknown>;
 
+/**
+ * Deep-merge source into target.
+ * - `null` values in source DELETE the corresponding key from the result.
+ * - Arrays in source REPLACE the target array (no element-level merge).
+ * - Plain objects are recursively merged.
+ */
 function deepMerge(target: Obj, source: Obj): Obj {
   const result: Obj = { ...target };
   for (const key of Object.keys(source)) {
     const sv = source[key];
-    const tv = target[key];
-    if (sv && typeof sv === 'object' && !Array.isArray(sv) && tv && typeof tv === 'object' && !Array.isArray(tv)) {
-      result[key] = deepMerge(tv as Obj, sv as Obj);
+    if (sv === null || sv === undefined) {
+      delete result[key];
+    } else if (sv && typeof sv === 'object' && !Array.isArray(sv)) {
+      const tv = target[key];
+      if (tv && typeof tv === 'object' && !Array.isArray(tv)) {
+        result[key] = deepMerge(tv as Obj, sv as Obj);
+      } else {
+        result[key] = sv;
+      }
     } else {
       result[key] = sv;
     }

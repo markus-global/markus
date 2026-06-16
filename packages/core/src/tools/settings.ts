@@ -416,19 +416,31 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
 
         try {
           if (!provider && !model) {
-            // Clear assignment
             const current = { ...ctx.llmRouter.taskRouting };
             delete current.assignments[taskType];
             ctx.llmRouter.setTaskRouting(current);
 
             if (ctx.persistConfig) {
-              try { ctx.persistConfig({ llm: { taskRouting: current } } as any); } catch { /* best effort */ }
+              try {
+                ctx.persistConfig({ llm: { taskRouting: { assignments: { [taskType]: null } } } } as any);
+              } catch { /* best effort */ }
             }
 
             return JSON.stringify({
               status: 'success',
               message: `Cleared task routing for ${taskType}`,
             });
+          }
+
+          if (taskType !== 'text') {
+            const mismatch = detectModelTaskMismatch(model, taskType);
+            if (mismatch) {
+              return JSON.stringify({
+                status: 'error',
+                error: mismatch,
+                hint: `Use llm_list_providers to find models that support ${taskType}.`,
+              });
+            }
           }
 
           const assignment: TaskModelAssignment = { provider, model };
@@ -465,4 +477,28 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
       },
     },
   ];
+}
+
+const TASK_MODEL_PATTERNS: Record<string, RegExp> = {
+  image_generation: /\bdall-?e\b|gpt-image|flux|stable.?diffusion|sdxl|imagen|wanx|wan[.-]?ai|kolors|playground|cogview|glm-image|seedream|grok-imagine|image-01/i,
+  image_recognition: /\bvl\b|vision|visual|eye|gpt-4o|gemini|claude/i,
+  audio_tts: /\btts\b|cosy.?voice|speech|bark|xtts|voice|orpheus|music/i,
+  audio_stt: /\bstt\b|whisper|sense.?voice|paraformer|speech.?to.?text|transcribe|asr|voxtral/i,
+  video_generation: /\bvideo\b|hailuo|wan.*[ti]2v|sora|kling|gen-?[23]|cogvideo|vidu|seedance|veo/i,
+};
+
+const TEXT_MODEL_PATTERN = /deepseek|qwen|gpt-[34]|gpt-5|claude|gemini|glm-[45]|llama|mistral|phi-|command|minimax-m/i;
+
+function detectModelTaskMismatch(model: string, taskType: ModelTaskType): string | null {
+  const expectedPattern = TASK_MODEL_PATTERNS[taskType];
+  if (!expectedPattern) return null;
+
+  if (expectedPattern.test(model)) return null;
+
+  if (TEXT_MODEL_PATTERN.test(model)) {
+    return `Model "${model}" appears to be a text/chat model, not suitable for ${taskType}. ` +
+      `Expected a model matching patterns like: ${expectedPattern.source}`;
+  }
+
+  return null;
 }
