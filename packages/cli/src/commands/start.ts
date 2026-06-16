@@ -16,6 +16,9 @@ import {
   TRIAGE_ALLOWED_TOOLS,
   type LLMProviderConfig,
   type DecisionType,
+  type RoutingConfig,
+  type RoutingStrategy,
+  type ModelTier,
 } from '@markus/shared';
 import {
   AgentManager,
@@ -228,6 +231,39 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   // Apply auto-fallback setting
   if (config.llm.autoFallback === false) {
     llmRouter.setAutoFallback(false);
+  }
+
+  // ── Apply routing config from config file + env var overrides ──
+  const routingCfg = config.llm.routing;
+  if (routingCfg) {
+    // Env var overrides — allow operators to tune routing at deploy time
+    const strategy: RoutingStrategy = (process.env['MARKUS_LLM_ROUTING_STRATEGY'] as RoutingStrategy)
+      ?? routingCfg.strategy;
+    const defaultTier: ModelTier = (process.env['MARKUS_LLM_ROUTING_DEFAULT_TIER'] as ModelTier)
+      ?? routingCfg.defaultTier;
+    const preferCacheHit = process.env['MARKUS_LLM_ROUTING_PREFER_CACHE'] !== undefined
+      ? process.env['MARKUS_LLM_ROUTING_PREFER_CACHE'] === 'true'
+      : routingCfg.preferCacheHit;
+    const budgetLimit = process.env['MARKUS_LLM_ROUTING_BUDGET']
+      ? Number(process.env['MARKUS_LLM_ROUTING_BUDGET'])
+      : routingCfg.budgetLimit;
+
+    llmRouter.setRoutingConfig({
+      strategy,
+      defaultTier,
+      preferCacheHit,
+      budgetLimit,
+      tierOverrides: routingCfg.tierOverrides,
+      taskRouting: routingCfg.taskRouting,
+    });
+    log.info('Applied routing config from markus.json', {
+      strategy,
+      defaultTier,
+      preferCacheHit,
+      budgetLimit,
+      hasTierOverrides: !!routingCfg.tierOverrides,
+      hasTaskRouting: !!routingCfg.taskRouting,
+    });
   }
 
   // Load custom models from config

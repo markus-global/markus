@@ -1,4 +1,4 @@
-import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile } from '@markus/shared';
+import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type RoutingConfig, type TaskRoutingConfig } from '@markus/shared';
 import { startSpan } from '../tracing.js';
 import type { LLMProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
@@ -112,6 +112,54 @@ export class LLMRouter {
 
   setLogCallback(cb: typeof this.logCallback): void {
     this.logCallback = cb;
+  }
+
+  private _routingConfig?: RoutingConfig;
+
+  /** The currently active routing configuration (immutable after startup). */
+  get routingConfig(): RoutingConfig | undefined {
+    return this._routingConfig;
+  }
+
+  /**
+   * Apply RoutingConfig to the router at startup.
+   *
+   * Stores the full config for runtime access by the routing engine and applies
+   * settings that the router can act on directly:
+   *
+   * - `strategy` → enables/disables auto-select; `always_max` forces highest
+   *   tier, `always_cheapest` forces lowest tier, `balanced`/`cache_optimized`
+   *   use auto-select with preference hints.
+   * - `preferCacheHit` → stored as a flag for downstream cache-aware routing.
+   * - `budgetLimit` → stored for runtime enforcement (applied during model
+   *   selection in a later phase).
+   */
+  setRoutingConfig(config: RoutingConfig): void {
+    this._routingConfig = config;
+
+    // Strategy-driven auto-select
+    switch (config.strategy) {
+      case 'always_max':
+        // Force highest tier — enable auto-select so the router picks from
+        // available high-tier providers.
+        this.autoSelect = true;
+        break;
+      case 'always_cheapest':
+        // Force lowest tier — disable auto-select so the default provider
+        // (typically the cheapest base-tier) is always used.
+        this.autoSelect = false;
+        break;
+      case 'balanced':
+        // Let the router balance tier selection based on complexity.
+        this.autoSelect = true;
+        break;
+      case 'cache_optimized':
+        // Prefer cached responses — enable auto-select for all tiers but
+        // the downstream routing engine will bias toward providers with
+        // cache hits.
+        this.autoSelect = true;
+        break;
+    }
   }
 
   constructor(defaultProvider?: string) {
