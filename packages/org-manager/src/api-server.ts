@@ -249,6 +249,7 @@ export class APIServer {
   private modelCatalog?: ModelCatalogService;
   private routingCandidatesCache: { data: unknown; expireAt: number } | null = null;
   private static readonly ROUTING_CACHE_TTL_MS = 5 * 60 * 1000;
+  private invalidateRoutingCache(): void { this.routingCandidatesCache = null; }
   private feishuRegisterSessions = new Map<string, { url: string; expireIn: number; status: string; createdAt: number }>();
   /** Aggregate today's tool calls from all agents' persisted metrics (the single source of truth) */
   private getToolCallsTodayFromAgents(): number {
@@ -8496,6 +8497,7 @@ EXPLANATION_END`;
             ...(cost ? { cost } : {}),
           });
         }
+        this.invalidateRoutingCache();
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
           const currentConfig = loadCfg(this.markusConfigPath);
@@ -8567,6 +8569,7 @@ EXPLANATION_END`;
             ...(cost ? { cost } : {}),
           });
         }
+        this.invalidateRoutingCache();
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
           const currentConfig = loadCfg(this.markusConfigPath);
@@ -8610,6 +8613,7 @@ EXPLANATION_END`;
       const providerName = path.split('/')[5]!;
       try {
         this.llmRouter.unregisterProvider(providerName);
+        this.invalidateRoutingCache();
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
           const currentConfig = loadCfg(this.markusConfigPath);
@@ -8666,6 +8670,7 @@ EXPLANATION_END`;
           ...(inputTypes ? { inputTypes } : {}),
         };
         this.llmRouter.addCustomModel(providerName, modelDef);
+        this.invalidateRoutingCache();
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
           const currentConfig = loadCfg(this.markusConfigPath);
@@ -8705,6 +8710,7 @@ EXPLANATION_END`;
       const modelId = decodeURIComponent(parts[7]!);
       try {
         this.llmRouter.removeCustomModel(providerName, modelId);
+        this.invalidateRoutingCache();
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
           const currentConfig = loadCfg(this.markusConfigPath);
@@ -8793,6 +8799,7 @@ EXPLANATION_END`;
       try {
         const prevDefault = this.llmRouter.getSettings().defaultProvider;
         this.llmRouter.setProviderEnabled(providerName, enabled);
+        this.invalidateRoutingCache();
         const newDefault = this.llmRouter.getSettings().defaultProvider;
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
@@ -9095,6 +9102,7 @@ EXPLANATION_END`;
               }
             }
           }
+          this.invalidateRoutingCache();
         }
         this.json(res, 200, {
           applied,

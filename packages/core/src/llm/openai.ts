@@ -33,12 +33,12 @@ export type TokenResolver = () => Promise<string>;
 export class OpenAIProvider implements MultiModalProviderInterface {
   name: string;
   model: string;
-  private apiKey: string;
-  private baseUrl: string;
-  private maxTokens: number;
-  private chatTimeoutMs: number;
-  private streamTimeoutMs: number;
-  private tokenResolver?: TokenResolver;
+  protected apiKey: string;
+  protected baseUrl: string;
+  protected maxTokens: number;
+  protected chatTimeoutMs: number;
+  protected streamTimeoutMs: number;
+  protected tokenResolver?: TokenResolver;
 
   constructor(config?: LLMProviderConfig, tokenResolver?: TokenResolver) {
     this.name = config?.provider ?? 'openai';
@@ -66,7 +66,13 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     this.tokenResolver = resolver;
   }
 
-  private async resolveAuthHeader(): Promise<string> {
+  /** Build a full endpoint URL by appending `path` to the base URL. */
+  protected buildEndpoint(path: string): string {
+    const base = this.baseUrl.replace(/\/+$/, '');
+    return /\/v\d+$/.test(base) ? `${base}${path}` : `${base}/v1${path}`;
+  }
+
+  protected async resolveAuthHeader(): Promise<string> {
     if (this.tokenResolver) {
       const token = await this.tokenResolver();
       return `Bearer ${token}`;
@@ -376,14 +382,12 @@ export class OpenAIProvider implements MultiModalProviderInterface {
   // Multi-modal: capabilities
   // ---------------------------------------------------------------------------
 
-  private get isNativeOpenAI(): boolean {
+  protected get isNativeOpenAI(): boolean {
     return this.baseUrl.includes('api.openai.com');
   }
 
   getCapabilities(): ProviderCapabilities {
     const isOpenAI = this.isNativeOpenAI;
-    // OpenAI-compatible providers (SiliconFlow, MiniMax, etc.) often expose
-    // /v1/images/generations; TTS/STT is less common outside native OpenAI.
     return {
       chat: true,
       vision: true,
@@ -403,6 +407,7 @@ export class OpenAIProvider implements MultiModalProviderInterface {
 
   async generateImage(prompt: string, options?: ImageGenOptions): Promise<ImageResult[]> {
     const base = this.baseUrl.replace(/\/+$/, '');
+    const authorization = await this.resolveAuthHeader();
     const endpoint = /\/v\d+$/.test(base) ? `${base}/images/generations` : `${base}/v1/images/generations`;
 
     const body: Record<string, unknown> = {
@@ -415,12 +420,11 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     if (options?.quality) body['quality'] = options.quality;
     if (options?.style) body['style'] = options.style;
 
-    const authorization = await this.resolveAuthHeader();
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authorization },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(120_000),
     });
 
     if (!res.ok) {
@@ -428,11 +432,15 @@ export class OpenAIProvider implements MultiModalProviderInterface {
       throw new Error(`Image generation API error ${res.status}: ${errText}`);
     }
 
-    const data = await res.json() as { data: Array<{ url?: string; b64_json?: string; revised_prompt?: string }> };
-    return (data.data ?? []).map(d => ({
+    const data = await res.json() as {
+      data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
+      images?: Array<{ url?: string }>;
+    };
+    const items = data.data ?? data.images ?? [];
+    return items.map(d => ({
       url: d.url,
-      base64: d.b64_json,
-      revisedPrompt: d.revised_prompt,
+      base64: (d as Record<string, unknown>).b64_json as string | undefined,
+      revisedPrompt: (d as Record<string, unknown>).revised_prompt as string | undefined,
     }));
   }
 

@@ -2,7 +2,10 @@ import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_
 import { startSpan } from '../tracing.js';
 import type { LLMProviderInterface, MultiModalProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
-import { OpenAIProvider } from './openai.js';
+import { OpenAIProvider, type TokenResolver } from './openai.js';
+import { MiniMaxProvider } from './minimax.js';
+import { DashScopeProvider } from './dashscope.js';
+import { FireworksProvider } from './fireworks.js';
 import { CodexResponsesProvider } from './openai-codex.js';
 import { GoogleProvider } from './google.js';
 import { OllamaProvider } from './ollama.js';
@@ -11,6 +14,34 @@ import { OAuthManager } from './oauth-manager.js';
 import type { ModelCatalogService } from './model-catalog.js';
 
 const log = createLogger('llm-router');
+
+const MINIMAX_NAMES = new Set(['minimax', 'minimax-cn']);
+const DASHSCOPE_NAMES = new Set(['dashscope']);
+const FIREWORKS_NAMES = new Set(['fireworks_ai', 'fireworks']);
+
+/**
+ * Factory: instantiate the correct OpenAI-compatible provider subclass.
+ * Providers with non-standard multimodal APIs get their own subclass;
+ * everything else falls back to the generic OpenAIProvider.
+ */
+function createOpenAICompatible(
+  name: string,
+  config: LLMProviderConfig,
+  tokenResolver?: TokenResolver,
+): OpenAIProvider {
+  const effectiveName = name as any;
+  const cfg = { ...config, provider: effectiveName };
+  if (MINIMAX_NAMES.has(name) || config.baseUrl?.includes('minimax')) {
+    return new MiniMaxProvider(cfg, tokenResolver);
+  }
+  if (DASHSCOPE_NAMES.has(name) || config.baseUrl?.includes('dashscope')) {
+    return new DashScopeProvider(cfg, tokenResolver);
+  }
+  if (FIREWORKS_NAMES.has(name) || config.baseUrl?.includes('fireworks.ai')) {
+    return new FireworksProvider(cfg, tokenResolver);
+  }
+  return new OpenAIProvider(cfg, tokenResolver);
+}
 
 export interface ChatOptions {
   sessionId?: string;
@@ -187,7 +218,8 @@ export class LLMRouter {
         maxTokens: config?.maxTokens,
         timeoutMs: config?.timeoutMs,
       };
-      provider = new OpenAIProvider(
+      provider = createOpenAICompatible(
+        name,
         { ...providerConfig, provider: name as any },
         tokenResolver,
       );
@@ -443,7 +475,7 @@ export class LLMRouter {
     } else if (name === 'ollama') {
       provider = new OllamaProvider(config);
     } else {
-      provider = new OpenAIProvider({ ...config, provider: name as any });
+      provider = createOpenAICompatible(name, config);
     }
     this.registerProvider(name, provider);
     this.refreshTiers();
@@ -573,25 +605,20 @@ export class LLMRouter {
 
   /**
    * Resolve a provider instance for a non-text modality (image_generation, audio_tts, etc.).
-   * Looks up taskRouting assignment, configures the model, and returns as MultiModalProviderInterface.
+   * Returns the provider and the assigned model name WITHOUT mutating provider state.
+   * The caller is responsible for passing `model` into the API call options.
    */
-  resolveModalityProvider(taskType: ModelTaskType): MultiModalProviderInterface | undefined {
+  resolveModalityProvider(taskType: ModelTaskType): { provider: MultiModalProviderInterface; model?: string } | undefined {
     const assignment = this._taskRouting.assignments[taskType];
     if (assignment) {
       const provider = this.providers.get(assignment.provider);
       if (provider && this.isAvailable(assignment.provider)) {
-        if (assignment.model) {
-          provider.configure({ provider: assignment.provider as any, model: assignment.model });
-        }
-        return provider as MultiModalProviderInterface;
+        return { provider: provider as MultiModalProviderInterface, model: assignment.model };
       }
       if (assignment.fallback) {
         const fallbackProvider = this.providers.get(assignment.fallback.provider);
         if (fallbackProvider && this.isAvailable(assignment.fallback.provider)) {
-          if (assignment.fallback.model) {
-            fallbackProvider.configure({ provider: assignment.fallback.provider as any, model: assignment.fallback.model });
-          }
-          return fallbackProvider as MultiModalProviderInterface;
+          return { provider: fallbackProvider as MultiModalProviderInterface, model: assignment.fallback.model };
         }
       }
     }
@@ -600,11 +627,47 @@ export class LLMRouter {
     if (this._routingDefaultModel) {
       const p = this.providers.get(this._routingDefaultModel.provider);
       if (p && this.isAvailable(this._routingDefaultModel.provider)) {
-        return p as MultiModalProviderInterface;
+        return { provider: p as MultiModalProviderInterface, model: this._routingDefaultModel.model };
       }
     }
     const p = this.providers.get(this.defaultProvider);
-    return p ? (p as MultiModalProviderInterface) : undefined;
+    return p && this.isAvailable(this.defaultProvider) ? { provider: p as MultiModalProviderInterface } : undefined;
+  }
+
+  /**
+   * Return an ordered list of provider candidates for a modality task.
+   * Always includes: assignment -> assignment.fallback -> routingDefaultModel -> defaultProvider.
+   * When autoFallback is ON, appends all remaining available providers in fallback order.
+   */
+  resolveModalityCandidates(taskType: ModelTaskType): Array<{ provider: MultiModalProviderInterface; model?: string; name: string }> {
+    const candidates: Array<{ provider: MultiModalProviderInterface; model?: string; name: string }> = [];
+    const seen = new Set<string>();
+
+    const add = (name: string, model?: string) => {
+      if (seen.has(name)) return;
+      const p = this.providers.get(name);
+      if (!p || !this.isAvailable(name)) return;
+      candidates.push({ provider: p as MultiModalProviderInterface, model, name });
+      seen.add(name);
+    };
+
+    const assignment = this._taskRouting.assignments[taskType];
+    if (assignment) {
+      add(assignment.provider, assignment.model);
+      if (assignment.fallback) add(assignment.fallback.provider, assignment.fallback.model);
+    }
+
+    if (this._routingDefaultModel) {
+      add(this._routingDefaultModel.provider, this._routingDefaultModel.model);
+    }
+    add(this.defaultProvider);
+
+    if (this._autoFallback) {
+      const order = this.fallbackOrder.length > 0 ? this.fallbackOrder : [...this.providers.keys()];
+      for (const name of order) add(name);
+    }
+
+    return candidates;
   }
 
   private selectProvider(request: LLMRequest, explicit?: string): string {
@@ -697,7 +760,7 @@ export class LLMRouter {
     for (const [name, cfg] of Object.entries(configs ?? {})) {
       if (['anthropic', 'openai', 'google', 'ollama'].includes(name)) continue;
       if (cfg?.apiKey) {
-        router.registerProvider(name, new OpenAIProvider(cfg));
+        router.registerProvider(name, createOpenAICompatible(name, cfg));
       }
     }
 
@@ -784,7 +847,7 @@ export class LLMRouter {
       primary = this.selectProvider(request, providerName);
     } else {
       const taskType = options?.taskType ?? LLMRouter.inferTaskType(request);
-      if (taskType === 'text') {
+      if (taskType === 'text' && !this._taskRouting.assignments.text) {
         primary = this.selectProvider(request);
       } else {
         const routeResult = this.selectForTask(taskType, request, options?.sessionId);
@@ -919,7 +982,7 @@ export class LLMRouter {
       primary = this.selectProvider(request, providerName);
     } else {
       const taskType = options?.taskType ?? LLMRouter.inferTaskType(request);
-      if (taskType === 'text') {
+      if (taskType === 'text' && !this._taskRouting.assignments.text) {
         primary = this.selectProvider(request);
       } else {
         const routeResult = this.selectForTask(taskType, request, options?.sessionId);

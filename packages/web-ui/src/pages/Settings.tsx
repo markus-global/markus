@@ -1039,32 +1039,58 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         </Section>
 
         {/* ───── Model Providers ───── */}
-        <CollapsibleSection title={t('modelProviders.title')}>
-          <div className="space-y-3">
-            {llm && (() => {
-              const allProviderEntries: Array<[string, ProviderInfo]> = [];
-              const seen = new Set<string>();
-              // First add configured providers
-              for (const [name, info] of Object.entries(llm.providers)) {
-                allProviderEntries.push([name, info]);
-                seen.add(name);
-              }
-              // Then add unconfigured providers from PROVIDER_OPTIONS
-              for (const po of PROVIDER_OPTIONS) {
-                if (!seen.has(po.id)) {
-                  allProviderEntries.push([po.id, {
-                    name: po.id,
-                    displayName: po.label,
-                    model: po.defaultModel,
-                    configured: false,
-                    enabled: false,
-                  }]);
-                  seen.add(po.id);
-                }
-              }
-              return allProviderEntries;
-            })().map(([name, info]) => (
-              <div key={name} className={`bg-surface-secondary border rounded-xl overflow-hidden transition-colors ${info.configured ? 'border-border-default hover:border-gray-600' : 'border-border-default/50 hover:border-brand-500/30'}`}>
+        {llm && (() => {
+          const allProviderEntries: Array<[string, ProviderInfo]> = [];
+          const seen = new Set<string>();
+          const configuredEntries: Array<[string, ProviderInfo]> = [];
+          const unconfiguredEntries: Array<[string, ProviderInfo]> = [];
+          for (const [name, info] of Object.entries(llm.providers)) {
+            if (info.configured) {
+              configuredEntries.push([name, info]);
+            } else {
+              unconfiguredEntries.push([name, info]);
+            }
+            seen.add(name);
+          }
+          for (const po of PROVIDER_OPTIONS) {
+            if (!seen.has(po.id)) {
+              unconfiguredEntries.push([po.id, {
+                name: po.id,
+                displayName: po.label,
+                model: po.defaultModel,
+                configured: false,
+                enabled: false,
+              }]);
+              seen.add(po.id);
+            }
+          }
+          // Configured: enabled first, then disabled
+          configuredEntries.sort((a, b) => (b[1].enabled ? 1 : 0) - (a[1].enabled ? 1 : 0));
+          allProviderEntries.push(...configuredEntries, ...unconfiguredEntries);
+          const hasConfigured = configuredEntries.length > 0;
+          return (
+            <ProviderSection
+              title={t('modelProviders.title')}
+              defaultCollapsed={hasConfigured}
+              configuredProviders={configuredEntries}
+              t={t}
+            >
+              <div className="space-y-3">
+                {hasConfigured && (
+                  <div className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider px-1">
+                    {t('modelProviders.groupConfigured', { count: configuredEntries.length })}
+                  </div>
+                )}
+                {allProviderEntries.map(([name, info], idx) => {
+                  const isFirstUnconfigured = !info.configured && (idx === 0 || allProviderEntries[idx - 1][1].configured);
+                  return (
+                    <div key={name}>
+                      {isFirstUnconfigured && hasConfigured && (
+                        <div className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider px-1 mt-4 mb-2">
+                          {t('modelProviders.groupUnconfigured')}
+                        </div>
+                      )}
+                      <div className={`bg-surface-secondary border rounded-xl overflow-hidden transition-colors ${info.configured ? 'border-border-default hover:border-gray-600' : 'border-border-default/50 hover:border-brand-500/30'}`}>
                 <div className="flex items-center justify-between px-5 py-4 cursor-pointer" onClick={() => { setExpandedProvider(expandedProvider === name ? null : name); setQuickSetupKey(''); setQuickSetupMsg(null); setAddProviderCatalogModels([]); setAddProviderForm(f => ({ ...f, name: '', model: '' })); }}>
                   <div className="flex items-center gap-3">
                     <span className={`w-2 h-2 rounded-full ${info.configured && info.enabled ? 'bg-green-400' : info.configured ? 'bg-amber-400' : 'bg-gray-600'}`} />
@@ -1368,11 +1394,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     )}
                   </div>
                 )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            ))}
-          </div>
 
-          {/* Custom Provider (OpenAI-compatible) */}
+              {/* Custom Provider (OpenAI-compatible) */}
           {!showAddProvider ? (
             <button onClick={() => setShowAddProvider(true)}
               className="w-full mt-3 px-4 py-2.5 border border-dashed border-border-default hover:border-brand-500/50 hover:bg-brand-500/5 rounded-xl text-xs text-fg-tertiary hover:text-brand-500 transition-colors">
@@ -1425,8 +1453,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </div>
               {addProviderMsg && <Msg type={addProviderMsg.type} text={addProviderMsg.text} />}
             </div>
-          )}
-        </CollapsibleSection>
+              )}
+            </ProviderSection>
+          );
+        })()}
 
         {/* ───── Auto-detect & Import ───── */}
         <CollapsibleSection title={t('autoDetect.title')} defaultOpen={false}>
@@ -2893,6 +2923,55 @@ function Msg({ type, text }: { type: 'ok' | 'err'; text: string }) {
     <div className={`text-xs px-3 py-2 rounded-lg ${type === 'ok' ? 'bg-green-500/10 text-green-600 border border-green-500/30' : 'bg-red-500/10 text-red-500 border border-red-500/30'}`}>
       {text}
     </div>
+  );
+}
+
+function ProviderSection({ title, defaultCollapsed, configuredProviders, t, children }: {
+  title: string;
+  defaultCollapsed: boolean;
+  configuredProviders: Array<[string, { displayName?: string; enabled: boolean }]>;
+  t: (key: string) => string;
+  children: React.ReactNode;
+}) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  return (
+    <section>
+      <button
+        type="button"
+        onClick={() => setCollapsed(!collapsed)}
+        className="flex items-center justify-between w-full group mb-4"
+      >
+        <div className="flex items-center gap-3">
+          <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider">{title}</h3>
+          {collapsed && configuredProviders.length > 0 && (
+            <span className="text-xs text-fg-tertiary">
+              ({configuredProviders.length} {t('modelProviders.configuredCount')})
+            </span>
+          )}
+        </div>
+        <span className={`text-fg-tertiary text-xs transition-transform group-hover:text-fg-secondary ${collapsed ? '-rotate-90' : ''}`}>
+          ▼
+        </span>
+      </button>
+      {collapsed && configuredProviders.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-2">
+          {configuredProviders.map(([name, info]) => (
+            <span
+              key={name}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border ${
+                info.enabled
+                  ? 'bg-green-500/10 border-green-500/30 text-green-400'
+                  : 'bg-surface-elevated border-border-default text-fg-tertiary'
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${info.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
+              {info.displayName ?? name}
+            </span>
+          ))}
+        </div>
+      )}
+      {!collapsed && <div className="space-y-4">{children}</div>}
+    </section>
   );
 }
 

@@ -243,7 +243,10 @@
       "tokens": "Tokens",
       "inputTokens": "input",
       "outputTokens": "output"
-    }
+    },
+    "configuredCount": "configured",
+    "groupConfigured": "Configured ({{count}})",
+    "groupUnconfigured": "More Providers"
   },
   "networkProxy": {
     "title": "Network Proxy",

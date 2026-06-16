@@ -243,7 +243,10 @@
       "tokens": "Token 用量",
       "inputTokens": "输入",
       "outputTokens": "输出"
-    }
+    },
+    "configuredCount": "已配置",
+    "groupConfigured": "已配置（{{count}}个）",
+    "groupUnconfigured": "更多提供商"
   },
   "networkProxy": {
     "title": "网络代理",

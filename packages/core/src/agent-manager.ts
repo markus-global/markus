@@ -1150,7 +1150,7 @@ export class AgentManager {
 
     // Multi-modal tools — image generation, TTS, STT, video generation
     for (const tool of createMultiModalTools({
-      resolveProvider: (taskType) => this.llmRouter.resolveModalityProvider(taskType),
+      resolveCandidates: (taskType) => this.llmRouter.resolveModalityCandidates(taskType),
     })) {
       agent.registerTool(tool);
     }
@@ -1936,7 +1936,7 @@ export class AgentManager {
     }
 
     for (const tool of createMultiModalTools({
-      resolveProvider: (taskType) => this.llmRouter.resolveModalityProvider(taskType),
+      resolveCandidates: (taskType) => this.llmRouter.resolveModalityCandidates(taskType),
     })) {
       agent.registerTool(tool);
     }

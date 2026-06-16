@@ -18,6 +18,10 @@ export interface ImageGenOptions {
   quality?: string;
   style?: string;
   n?: number;
+  negative_prompt?: string;
+  seed?: number;
+  output_dir?: string;
+  output_format?: string;
 }
 
 export interface ImageResult {

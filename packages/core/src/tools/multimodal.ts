@@ -8,8 +8,14 @@ import { createLogger, type ModelTaskType } from '@markus/shared';
 
 const log = createLogger('multimodal-tools');
 
+export interface ModalityCandidate {
+  provider: MultiModalProviderInterface;
+  model?: string;
+  name: string;
+}
+
 export interface MultiModalToolsContext {
-  resolveProvider: (taskType: ModelTaskType) => MultiModalProviderInterface | undefined;
+  resolveCandidates: (taskType: ModelTaskType) => ModalityCandidate[];
 }
 
 async function fetchAudioBuffer(source: string): Promise<Buffer> {
@@ -34,40 +40,63 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
   return [
     {
       name: 'generate_image',
-      description: 'Generate an image from a text prompt using an AI image generation model (e.g. DALL-E, Flux, Stable Diffusion).',
+      description:
+        'Generate images from a text prompt using the provider configured in Settings > Model Routing (image_generation task). ' +
+        'Use llm_get_task_routing to check current configuration, or llm_set_task_routing to configure.',
       inputSchema: {
         type: 'object',
         properties: {
-          prompt: { type: 'string', description: 'Detailed description of the image to generate' },
-          size: { type: 'string', description: 'Image size (e.g. "1024x1024", "1792x1024")', default: '1024x1024' },
-          quality: { type: 'string', description: 'Image quality ("standard" or "hd")', default: 'standard' },
-          n: { type: 'number', description: 'Number of images to generate (1-4)', default: 1 },
+          prompt:          { type: 'string', description: 'Detailed text description of the image to generate' },
+          size:            { type: 'string', description: 'Image dimensions, e.g. 1024x1024, 1792x1024, 768x1344' },
+          quality:         { type: 'string', enum: ['standard', 'hd'], description: 'Image quality (some providers)' },
+          style:           { type: 'string', description: 'Style preset: natural/vivid (OpenAI), or provider-specific style name' },
+          n:               { type: 'number', description: 'Number of images to generate (default: 1)' },
+          negative_prompt: { type: 'string', description: 'What to avoid in the image (some providers)' },
+          seed:            { type: 'number', description: 'Seed for reproducibility (some providers)' },
+          output_dir:      { type: 'string', description: 'Directory to save images' },
+          output_format:   { type: 'string', enum: ['png', 'jpeg', 'webp'], description: 'Output image format (default: png)' },
         },
         required: ['prompt'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
-        const provider = ctx.resolveProvider('image_generation');
-        if (!provider?.generateImage) {
-          return JSON.stringify({ error: 'No image generation provider configured. Please assign a model for "Image Generation" in Settings > Model Routing.' });
-        }
-        try {
-          const results = await provider.generateImage(args.prompt as string, {
-            size: args.size as string | undefined,
-            quality: args.quality as string | undefined,
-            n: args.n as number | undefined,
+        const candidates = ctx.resolveCandidates('image_generation').filter(c => c.provider.generateImage);
+        if (candidates.length === 0) {
+          return JSON.stringify({
+            error: 'No image generation provider configured. Use llm_set_task_routing to assign a provider+model for task_type "image_generation" (e.g. provider: "openai", model: "gpt-image-1").',
           });
-          log.info(`Generated ${results.length} image(s)`);
-          return JSON.stringify({ success: true, images: results });
-        } catch (err) {
-          log.error(`Image generation failed: ${err}`);
-          return JSON.stringify({ error: `Image generation failed: ${err instanceof Error ? err.message : String(err)}` });
         }
+        const opts = {
+          size: args.size as string | undefined,
+          quality: args.quality as string | undefined,
+          style: args.style as string | undefined,
+          n: args.n as number | undefined,
+          negative_prompt: args.negative_prompt as string | undefined,
+          seed: args.seed as number | undefined,
+          output_dir: args.output_dir as string | undefined,
+          output_format: args.output_format as string | undefined,
+        };
+        let lastError: unknown;
+        for (let i = 0; i < candidates.length; i++) {
+          const { provider, model, name } = candidates[i];
+          try {
+            const results = await provider.generateImage!(args.prompt as string, { ...opts, model });
+            log.info(`Generated ${results.length} image(s) via ${name}/${model ?? provider.model}`);
+            return JSON.stringify({ success: true, provider: name, model: model ?? provider.model, images: results });
+          } catch (err) {
+            lastError = err;
+            log.warn(`Image generation via ${name} failed${i < candidates.length - 1 ? ', trying next provider' : ''}: ${err}`);
+          }
+        }
+        log.error(`Image generation failed on all ${candidates.length} provider(s)`);
+        return JSON.stringify({ error: `Image generation failed: ${lastError instanceof Error ? lastError.message : String(lastError)}` });
       },
     },
 
     {
       name: 'text_to_speech',
-      description: 'Convert text to speech audio. Returns a file path to the generated audio.',
+      description:
+        'Convert text to speech audio. Returns a file path to the generated audio. ' +
+        'Requires a TTS provider to be configured via llm_set_task_routing (task_type: "audio_tts").',
       inputSchema: {
         type: 'object',
         properties: {
@@ -78,34 +107,33 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         required: ['text'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
-        const provider = ctx.resolveProvider('audio_tts');
-        if (!provider?.generateSpeech) {
-          return JSON.stringify({ error: 'No TTS provider configured. Please assign a model for "Text-to-Speech" in Settings > Model Routing.' });
+        const candidates = ctx.resolveCandidates('audio_tts').filter(c => c.provider.generateSpeech);
+        if (candidates.length === 0) {
+          return JSON.stringify({ error: 'No TTS provider configured. Use llm_set_task_routing to assign a provider+model for task_type "audio_tts" (e.g. provider: "openai", model: "tts-1").' });
         }
-        try {
-          const result = await provider.generateSpeech(args.text as string, {
-            voice: args.voice as string | undefined,
-            speed: args.speed as number | undefined,
-          });
-          const filepath = saveTempAudio(result.audio, result.format);
-          log.info(`Generated speech: ${result.format}, ${result.audio.length} bytes -> ${filepath}`);
-          return JSON.stringify({
-            success: true,
-            filePath: filepath,
-            format: result.format,
-            sizeBytes: result.audio.length,
-            durationMs: result.durationMs,
-          });
-        } catch (err) {
-          log.error(`TTS failed: ${err}`);
-          return JSON.stringify({ error: `TTS failed: ${err instanceof Error ? err.message : String(err)}` });
+        const opts = { voice: args.voice as string | undefined, speed: args.speed as number | undefined };
+        let lastError: unknown;
+        for (const { provider, model, name } of candidates) {
+          try {
+            const result = await provider.generateSpeech!(args.text as string, { ...opts, model });
+            const filepath = saveTempAudio(result.audio, result.format);
+            log.info(`Generated speech via ${name}: ${result.format}, ${result.audio.length} bytes -> ${filepath}`);
+            return JSON.stringify({ success: true, filePath: filepath, format: result.format, sizeBytes: result.audio.length, durationMs: result.durationMs });
+          } catch (err) {
+            lastError = err;
+            log.warn(`TTS via ${name} failed: ${err}`);
+          }
         }
+        log.error(`TTS failed on all ${candidates.length} provider(s)`);
+        return JSON.stringify({ error: `TTS failed: ${lastError instanceof Error ? lastError.message : String(lastError)}` });
       },
     },
 
     {
       name: 'speech_to_text',
-      description: 'Transcribe speech audio to text. Accepts a URL or local file path.',
+      description:
+        'Transcribe speech audio to text. Accepts a URL or local file path. ' +
+        'Requires an STT provider to be configured via llm_set_task_routing (task_type: "audio_stt").',
       inputSchema: {
         type: 'object',
         properties: {
@@ -115,28 +143,35 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         required: ['audio_url'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
-        const provider = ctx.resolveProvider('audio_stt');
-        if (!provider?.transcribeSpeech) {
-          return JSON.stringify({ error: 'No STT provider configured. Please assign a model for "Speech-to-Text" in Settings > Model Routing.' });
+        const candidates = ctx.resolveCandidates('audio_stt').filter(c => c.provider.transcribeSpeech);
+        if (candidates.length === 0) {
+          return JSON.stringify({ error: 'No STT provider configured. Use llm_set_task_routing to assign a provider+model for task_type "audio_stt" (e.g. provider: "openai", model: "whisper-1").' });
         }
-        try {
-          const audioUrl = args.audio_url as string;
-          log.info(`Transcribing audio from: ${audioUrl}`);
-          const audioBuffer = await fetchAudioBuffer(audioUrl);
-          const text = await provider.transcribeSpeech(audioBuffer, {
-            language: args.language as string | undefined,
-          });
-          return JSON.stringify({ success: true, text });
-        } catch (err) {
-          log.error(`STT failed: ${err}`);
-          return JSON.stringify({ error: `STT failed: ${err instanceof Error ? err.message : String(err)}` });
+        const audioUrl = args.audio_url as string;
+        log.info(`Transcribing audio from: ${audioUrl}`);
+        const audioBuffer = await fetchAudioBuffer(audioUrl);
+        let lastError: unknown;
+        for (let i = 0; i < candidates.length; i++) {
+          const { provider, model, name } = candidates[i];
+          try {
+            const text = await provider.transcribeSpeech!(audioBuffer, { model, language: args.language as string | undefined });
+            log.info(`Transcribed audio via ${name}`);
+            return JSON.stringify({ success: true, text });
+          } catch (err) {
+            lastError = err;
+            log.warn(`STT via ${name} failed${i < candidates.length - 1 ? ', trying next provider' : ''}: ${err}`);
+          }
         }
+        log.error(`STT failed on all ${candidates.length} provider(s)`);
+        return JSON.stringify({ error: `STT failed: ${lastError instanceof Error ? lastError.message : String(lastError)}` });
       },
     },
 
     {
       name: 'generate_video',
-      description: 'Generate a video from a text prompt using an AI video generation model.',
+      description:
+        'Generate a video from a text prompt using an AI video generation model. ' +
+        'Requires a video provider to be configured via llm_set_task_routing (task_type: "video_generation").',
       inputSchema: {
         type: 'object',
         properties: {
@@ -147,27 +182,25 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         required: ['prompt'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
-        const provider = ctx.resolveProvider('video_generation');
-        if (!provider?.generateVideo) {
-          return JSON.stringify({ error: 'No video generation provider configured. Please assign a model for "Video Generation" in Settings > Model Routing.' });
+        const candidates = ctx.resolveCandidates('video_generation').filter(c => c.provider.generateVideo);
+        if (candidates.length === 0) {
+          return JSON.stringify({ error: 'No video generation provider configured. Use llm_set_task_routing to assign a provider+model for task_type "video_generation".' });
         }
-        try {
-          const result = await provider.generateVideo(args.prompt as string, {
-            duration: args.duration as number | undefined,
-            size: args.size as string | undefined,
-          });
-          log.info(`Video generation ${result.status}`, { taskId: result.taskId });
-          return JSON.stringify({
-            success: true,
-            status: result.status,
-            taskId: result.taskId,
-            url: result.url,
-            durationSeconds: result.durationSeconds,
-          });
-        } catch (err) {
-          log.error(`Video generation failed: ${err}`);
-          return JSON.stringify({ error: `Video generation failed: ${err instanceof Error ? err.message : String(err)}` });
+        const opts = { duration: args.duration as number | undefined, size: args.size as string | undefined };
+        let lastError: unknown;
+        for (let i = 0; i < candidates.length; i++) {
+          const { provider, model, name } = candidates[i];
+          try {
+            const result = await provider.generateVideo!(args.prompt as string, { ...opts, model });
+            log.info(`Video generation via ${name} ${result.status}`, { taskId: result.taskId });
+            return JSON.stringify({ success: true, status: result.status, taskId: result.taskId, url: result.url, durationSeconds: result.durationSeconds });
+          } catch (err) {
+            lastError = err;
+            log.warn(`Video generation via ${name} failed${i < candidates.length - 1 ? ', trying next provider' : ''}: ${err}`);
+          }
         }
+        log.error(`Video generation failed on all ${candidates.length} provider(s)`);
+        return JSON.stringify({ error: `Video generation failed: ${lastError instanceof Error ? lastError.message : String(lastError)}` });
       },
     },
   ];
