@@ -62,6 +62,9 @@ vi.mock('node:fs', async (importOriginal) => {
         }
         return entries;
       }
+      if (s.includes('.markus')) {
+        return [];
+      }
       return actual.readdirSync(p, options as never);
     }),
     statSync: vi.fn((p: string) => {

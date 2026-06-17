@@ -190,8 +190,8 @@ export async function quickInit(options?: InitOptions) {
     try {
       const raw = readFileSync(openclawPath, 'utf-8');
       const cleaned = raw
-        .replace(/\/\/.*$/gm, '')
-        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/"(?:[^"\\]|\\.)*"|\/\/.*$/gm, (m) => m.startsWith('"') ? m : '')
+        .replace(/"(?:[^"\\]|\\.)*"|\/\*[\s\S]*?\*\//g, (m) => m.startsWith('"') ? m : '')
         .replace(/,\s*([\]}])/g, '$1');
       const parsed = JSON.parse(cleaned) as Record<string, unknown>;
       const modelsSection = parsed.models as { providers?: Record<string, { baseUrl?: string; models?: Array<{ id: string; name: string }> }> } | undefined;

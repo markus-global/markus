@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { BuilderService } from '../src/builder-service.js';
 
-function createMockOrgService() {
+function createMockOrgService(tmpHome: string) {
   const agent = {
     id: 'agent-installed',
     config: { name: 'Installed Agent' },
@@ -13,7 +13,7 @@ function createMockOrgService() {
     getState: vi.fn(() => ({ status: 'idle' })),
   };
   const agentManager = {
-    getDataDir: vi.fn(() => join(homedir(), '.markus', 'agents')),
+    getDataDir: vi.fn(() => join(tmpHome, '.markus', 'agents')),
     startAgent: vi.fn().mockResolvedValue(undefined),
   };
   return {
@@ -31,17 +31,20 @@ describe('BuilderService', () => {
   let service: BuilderService;
   let orgService: ReturnType<typeof createMockOrgService>;
   let artifactsRoot: string;
+  let tmpHome: string;
+  const originalHome = process.env.HOME;
 
   beforeEach(() => {
-    orgService = createMockOrgService();
+    tmpHome = mkdtempSync(join(tmpdir(), 'markus-builder-'));
+    process.env.HOME = tmpHome;
+    orgService = createMockOrgService(tmpHome);
     service = new BuilderService(orgService as never);
-    artifactsRoot = join(homedir(), '.markus', 'builder-artifacts');
+    artifactsRoot = join(tmpHome, '.markus', 'builder-artifacts');
   });
 
   afterEach(() => {
-    if (existsSync(artifactsRoot)) {
-      rmSync(artifactsRoot, { recursive: true, force: true });
-    }
+    process.env.HOME = originalHome;
+    rmSync(tmpHome, { recursive: true, force: true });
   });
 
   function writeAgentArtifact(name: string) {
@@ -166,7 +169,7 @@ describe('BuilderService', () => {
     });
 
     it('falls back to builtin team template directory', async () => {
-      const builtinDir = join(homedir(), '.markus', 'builtin-teams-test');
+      const builtinDir = join(tmpHome, '.markus', 'builtin-teams-test');
       const teamDir = join(builtinDir, 'builtin-team');
       mkdirSync(teamDir, { recursive: true });
       writeFileSync(join(teamDir, 'team.json'), JSON.stringify({
@@ -183,8 +186,6 @@ describe('BuilderService', () => {
       service.setBuiltinTeamTemplatesDir(builtinDir);
       const result = await service.installArtifact('team', 'builtin-team');
       expect(result.type).toBe('team');
-
-      rmSync(builtinDir, { recursive: true, force: true });
     });
   });
 });

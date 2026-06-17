@@ -61,6 +61,9 @@ vi.mock('node:fs', async (importOriginal) => {
       if (s.includes('.markus/agents')) {
         return [{ name: 'orphan-agent', isFile: () => false, isDirectory: () => true }];
       }
+      if (s.includes('.markus')) {
+        return [];
+      }
       return actual.readdirSync(p, options as never);
     }),
     statSync: vi.fn((p: string) => {

@@ -192,7 +192,7 @@ describe('quickInit', () => {
       }),
     );
 
-    await quickInit({ nonInteractive: true, force: true });
+    await quickInit({ nonInteractive: true, importFrom: 'openclaw', force: true });
     const output = logSpy.mock.calls.map(c => String(c[0])).join('\n');
     expect(output).toMatch(/OpenClaw|Found .* provider/);
     const cfg = JSON.parse(readFileSync(configPath, 'utf-8'));

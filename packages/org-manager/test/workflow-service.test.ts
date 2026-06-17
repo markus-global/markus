@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir, homedir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { WorkflowService } from '../src/workflow-service.js';
 
 const VALID_WORKFLOW_YAML = `
@@ -75,18 +75,22 @@ function createMockOrgService(teamId = 'team-1') {
 describe('WorkflowService', () => {
   let service: WorkflowService;
   let teamId: string;
+  let tmpHome: string;
   let workflowsDir: string;
+  const originalHome = process.env.HOME;
 
   beforeEach(() => {
+    tmpHome = mkdtempSync(join(tmpdir(), 'markus-wf-'));
+    process.env.HOME = tmpHome;
     teamId = `team-${Date.now()}`;
-    workflowsDir = join(homedir(), '.markus', 'teams', teamId, 'workflows');
+    workflowsDir = join(tmpHome, '.markus', 'teams', teamId, 'workflows');
     mkdirSync(workflowsDir, { recursive: true });
     service = new WorkflowService(createMockOrgService(teamId) as never);
   });
 
   afterEach(() => {
-    const teamDir = join(homedir(), '.markus', 'teams', teamId);
-    if (existsSync(teamDir)) rmSync(teamDir, { recursive: true, force: true });
+    process.env.HOME = originalHome;
+    rmSync(tmpHome, { recursive: true, force: true });
   });
 
   describe('CRUD', () => {

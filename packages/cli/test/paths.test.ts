@@ -1,6 +1,6 @@
 import { mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir, homedir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { resolveTemplatesDir, allTemplateDirs, resolveWebUiDir } from '../src/paths.js';
 
 describe('resolveTemplatesDir', () => {
@@ -38,6 +38,19 @@ describe('resolveTemplatesDir', () => {
 });
 
 describe('allTemplateDirs', () => {
+  let tmpHome: string;
+  const originalHome = process.env.HOME;
+
+  beforeEach(() => {
+    tmpHome = mkdtempSync(join(tmpdir(), 'markus-paths-tpl-'));
+    process.env.HOME = tmpHome;
+  });
+
+  afterEach(() => {
+    process.env.HOME = originalHome;
+    rmSync(tmpHome, { recursive: true, force: true });
+  });
+
   it('returns only existing template directories', () => {
     const dirs = allTemplateDirs('roles');
     for (const dir of dirs) {

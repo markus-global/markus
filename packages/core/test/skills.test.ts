@@ -1,11 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { InMemorySkillRegistry } from '../src/skills/registry.js';
-import { discoverSkillsInDir, createDefaultSkillRegistry } from '../src/skills/index.js';
+import { discoverSkillsInDir, createDefaultSkillRegistry, WELL_KNOWN_SKILL_DIRS } from '../src/skills/index.js';
 import { resolveMcpServerPaths } from '../src/skills/loader.js';
 import type { SkillManifest } from '../src/skills/types.js';
+
+vi.mock('../src/skills/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/skills/index.js')>();
+  return { ...actual, WELL_KNOWN_SKILL_DIRS: [] };
+});
 
 const TEST_DIR = join(tmpdir(), `markus-skills-test-${Date.now()}`);
 
