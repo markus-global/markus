@@ -110,7 +110,9 @@ export class MCPClientManager {
     proc.on('error', (err) => {
       log.error(`MCP server ${displayName} error`, { error: String(err) });
     });
-    proc.stdin?.on('error', () => { /* suppress EPIPE when server exits before write */ });
+    if (typeof proc.stdin?.on === 'function') {
+      proc.stdin.on('error', () => { /* suppress EPIPE when server exits before write */ });
+    }
 
     const stderrChunks: string[] = [];
     proc.stderr?.on('data', (data: Buffer) => {
