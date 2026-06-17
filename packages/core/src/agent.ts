@@ -347,6 +347,7 @@ export class Agent {
   private bgSessionOrigin = new Map<string, string>();
   private _maxToolIterations: number;
   private _bgCompletionUnsub?: () => void;
+  private _heartbeatUnsub?: () => void;
 
   /** Mailbox for single-threaded attention model */
   private mailbox: AgentMailbox;
@@ -448,7 +449,7 @@ export class Agent {
     // Initialize state manager
     this.stateManager = new AgentStateManager(this.id, this.taskExecutor);
 
-    this.eventBus.on('heartbeat:trigger', ctx => {
+    this._heartbeatUnsub = this.eventBus.on('heartbeat:trigger', ctx => {
       const { triggeredAt } = ctx as { agentId: string; triggeredAt: string };
       this.mailbox.enqueue('heartbeat', {
         summary: 'Scheduled heartbeat check-in',
@@ -606,6 +607,7 @@ export class Agent {
     this.attentionController.stop();
     this.heartbeat.stop();
     this._bgCompletionUnsub?.();
+    this._heartbeatUnsub?.();
     if (this.consolidationInitialTimer) {
       clearTimeout(this.consolidationInitialTimer);
       this.consolidationInitialTimer = undefined;
@@ -1344,7 +1346,7 @@ export class Agent {
               requirementId: item.payload.requirementId,
             });
           }
-        } catch { /* never fail the main flow */ }
+        } catch (err) { log.debug('Non-fatal error in requirement comment handling', { error: String(err) }); }
       }
     }
   }
@@ -1886,7 +1888,7 @@ export class Agent {
         if ('calibrate' in counter) {
           (counter as any).calibrate(this.lastEstimatedInputTokens, actualInputTokens);
         }
-      } catch { /* ignore */ }
+      } catch (err) { log.debug('Token counter calibration failed', { error: String(err) }); }
     }
     this.lastEstimatedInputTokens = 0;
   }
@@ -2474,7 +2476,7 @@ export class Agent {
     if (this.stateChangeCallback) {
       this.stateChangeCallback(this.id, {
         status: this.state.status,
-        tokensUsedToday: this.state.tokensUsedToday,
+        tokensUsedToday: this.getTokensUsed(),
         activeTaskIds: [...this.activeTasks],
         lastError: this.state.lastError,
         lastErrorAt: this.state.lastErrorAt,
@@ -2632,7 +2634,7 @@ export class Agent {
       }
     }
 
-    try { this.onActivityStartCb?.({ ...activity, agentId: this.id }); } catch { /* best effort */ }
+    try { this.onActivityStartCb?.({ ...activity, agentId: this.id }); } catch (err) { log.debug('Activity start callback error', { error: String(err) }); }
     this.emitActivityLog(id, 'status', `Started: ${label}`);
     this.notifyStateChange();
     return id;
@@ -2689,7 +2691,7 @@ export class Agent {
           summary,
           keywords,
         });
-      } catch { /* best effort */ }
+      } catch (err) { log.debug('Activity end callback error', { error: String(err) }); }
 
       this.activityLogs.delete(aid);
       this.activitySeqCounters.delete(aid);
@@ -2726,7 +2728,7 @@ export class Agent {
       logs.splice(0, logs.length - Agent.MAX_ACTIVITY_LOG_ENTRIES);
     }
 
-    try { this.onActivityLogCb?.({ activityId, agentId: this.id, seq, type, content: cleanContent, metadata }); } catch { /* best effort */ }
+    try { this.onActivityLogCb?.({ activityId, agentId: this.id, seq, type, content: cleanContent, metadata }); } catch (err) { log.debug('Activity log callback error', { error: String(err) }); }
 
     this.eventBus.emit('agent:activity_log', {
       agentId: this.id,
@@ -5719,7 +5721,7 @@ export class Agent {
           lastHeartbeatSummary = `\n## Last Heartbeat (${latest.timestamp ?? 'unknown'})\n${latest.content}\n`;
         }
       }
-    } catch { /* ignore search failures */ }
+    } catch (err) { log.debug('Heartbeat memory search failed', { error: String(err) }); }
 
     const checklist = this.role.heartbeatChecklist || '- Check assigned tasks with `task_list`';
 

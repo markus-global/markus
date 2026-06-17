@@ -681,10 +681,9 @@ export class LLMRouter {
       if (seen.has(name)) return;
       if (needsCapFilter) {
         const p = this.providers.get(name) as MultiModalProviderInterface | undefined;
-        if (p && typeof p.getCapabilities === 'function') {
-          const caps = p.getCapabilities();
-          if (!caps[capKey!]) return;
-        }
+        if (!p || typeof p.getCapabilities !== 'function') return;
+        const caps = p.getCapabilities();
+        if (!caps[capKey!]) return;
       }
       add(name, model);
     };

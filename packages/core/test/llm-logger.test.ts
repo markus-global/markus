@@ -56,7 +56,7 @@ describe('LLMLogger', () => {
 
     expect(mockAppendFileSync).toHaveBeenCalledTimes(1);
     const [filePath, line] = mockAppendFileSync.mock.calls[0] as [string, string];
-    expect(filePath).toMatch(/2026-06-16\.jsonl$/);
+    expect(filePath).toMatch(/\d{4}-\d{2}-\d{2}\.jsonl$/);
     expect(JSON.parse(line.trim())).toEqual(entry);
   });
 

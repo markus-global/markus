@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   resolveAndCheckAccess,
-  denyMessage,
   createFileReadTool,
   createFileWriteTool,
   createFileEditTool,
@@ -53,14 +52,6 @@ describe('resolveAndCheckAccess', () => {
     const policy = { denyWritePaths: [OTHER_AGENT] };
     const { access } = resolveAndCheckAccess('local.txt', WORKSPACE, policy);
     expect(access).toBe('readwrite');
-  });
-});
-
-describe('denyMessage', () => {
-  it('returns consistent write denial message', () => {
-    expect(denyMessage('/some/path')).toBe(
-      "Write denied: this path belongs to another agent's workspace.",
-    );
   });
 });
 

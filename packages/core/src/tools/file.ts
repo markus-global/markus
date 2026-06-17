@@ -45,9 +45,6 @@ function resolveAndCheckAccess(
   return { resolved, access: 'readwrite' };
 }
 
-function denyMessage(_resolved: string, _workspacePath?: string, _policy?: PathAccessPolicy): string {
-  return 'Write denied: this path belongs to another agent\'s workspace.';
-}
 
 export function createFileReadTool(security?: SecurityGuard, workspacePath?: string, policy?: PathAccessPolicy): AgentToolHandler {
   const guard = security ?? defaultSecurityGuard;
@@ -262,7 +259,7 @@ export function createFileEditTool(security?: SecurityGuard, workspacePath?: str
 }
 
 // Shared access helpers exported for other tools (patch, search, shell)
-export { resolveAndCheckAccess, denyMessage, type AccessLevel };
+export { resolveAndCheckAccess, type AccessLevel };
 
 // Backward-compatible exports
 export const FileReadTool = createFileReadTool();
