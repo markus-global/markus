@@ -17,10 +17,10 @@ import {
 const mockFetch = vi.fn();
 
 /** Wait until the mock response has ended (async route handlers). */
-async function waitForResponse(res: MockServerResponse, maxTicks = 50): Promise<void> {
-  for (let i = 0; i < maxTicks; i++) {
-    if (res.ended) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+async function waitForResponse(res: MockServerResponse, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!res.ended && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
 }
 
