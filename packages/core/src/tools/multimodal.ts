@@ -47,7 +47,7 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         type: 'object',
         properties: {
           prompt:          { type: 'string', description: 'Detailed text description of the image to generate' },
-          size:            { type: 'string', description: 'Image dimensions, e.g. 1024x1024, 1792x1024, 768x1344' },
+          size:            { type: 'string', description: 'Image size – pixel dimensions (e.g. "1024x1024", "1792x1024") or aspect ratio (e.g. "16:9", "1:1"). MiniMax only supports aspect ratios: 1:1, 16:9, 4:3, 3:2, 2:3, 3:4, 9:16, 21:9' },
           quality:         { type: 'string', enum: ['standard', 'hd'], description: 'Image quality (some providers)' },
           style:           { type: 'string', description: 'Style preset: natural/vivid (OpenAI), or provider-specific style name' },
           n:               { type: 'number', description: 'Number of images to generate (default: 1)' },

@@ -44,8 +44,7 @@ export class MiniMaxProvider extends OpenAIProvider {
     };
 
     if (options?.size) {
-      const m = options.size.match(/^(\d+)x(\d+)$/);
-      if (m) body['aspect_ratio'] = `${m[1]}:${m[2]}`;
+      body['aspect_ratio'] = sizeToAspectRatio(options.size);
     }
 
     const res = await fetch(endpoint, {
@@ -221,4 +220,30 @@ export class MiniMaxProvider extends OpenAIProvider {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+const VALID_ASPECT_RATIOS = ['1:1', '16:9', '4:3', '3:2', '2:3', '3:4', '9:16', '21:9'] as const;
+
+function sizeToAspectRatio(size: string): string {
+  // If already a valid ratio string, use it directly
+  if (VALID_ASPECT_RATIOS.includes(size as typeof VALID_ASPECT_RATIOS[number])) {
+    return size;
+  }
+  // Parse WxH pixel dimensions and find the closest valid aspect ratio
+  const m = size.match(/^(\d+)x(\d+)$/);
+  if (!m) return '1:1';
+  const w = parseInt(m[1], 10);
+  const h = parseInt(m[2], 10);
+  const target = w / h;
+  let best = VALID_ASPECT_RATIOS[0];
+  let bestDiff = Infinity;
+  for (const ratio of VALID_ASPECT_RATIOS) {
+    const [rw, rh] = ratio.split(':').map(Number);
+    const diff = Math.abs(rw / rh - target);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = ratio;
+    }
+  }
+  return best;
 }
