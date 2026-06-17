@@ -41,6 +41,18 @@ export function ModelPicker({ models, selectedModel, onSelect, onRefresh, refres
     return models.filter(m => m.id.toLowerCase().includes(q));
   }, [models, filter]);
 
+  const tiers = useMemo(() => {
+    const set = new Set(models.map(m => m.tier).filter(Boolean));
+    return Array.from(set) as string[];
+  }, [models]);
+
+  const filteredByTier = useMemo(() => {
+    if (!tierFilter || tierFilter === 'all') return filtered;
+    return filtered.filter(m => m.tier === tierFilter);
+  }, [filtered, tierFilter]);
+
+  const displayModels = filteredByTier;
+
   const limit = maxVisible ?? (compact ? 5 : 10);
   const visible = showAll ? displayModels : displayModels.slice(0, limit);
   const hasMore = displayModels.length > limit;
@@ -61,18 +73,6 @@ export function ModelPicker({ models, selectedModel, onSelect, onRefresh, refres
       </div>
     );
   }
-
-  const tiers = useMemo(() => {
-    const set = new Set(models.map(m => m.tier).filter(Boolean));
-    return Array.from(set) as string[];
-  }, [models]);
-
-  const filteredByTier = useMemo(() => {
-    if (!tierFilter || tierFilter === 'all') return filtered;
-    return filtered.filter(m => m.tier === tierFilter);
-  }, [filtered, tierFilter]);
-
-  const displayModels = filteredByTier;
 
   return (
     <div className="space-y-2">
