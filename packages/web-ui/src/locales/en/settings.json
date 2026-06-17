@@ -85,18 +85,18 @@
   "modelRouting": {
     "title": "Model Routing",
     "defaultModelTitle": "Default Model",
-    "defaultModelDesc": "Used as fallback when no specific model is assigned for a task.",
+    "defaultModelDesc": "Used as fallback when no specific model is assigned for a capability.",
     "defaultModelPlaceholder": "Select a default model...",
-    "taskAssignTitle": "Task Assignments",
-    "taskAssignDesc": "Each task type uses the assigned model. Unassigned tasks use the default model above.",
-    "taskGroups": {
+    "capabilityAssignTitle": "Capability Assignments",
+    "capabilityAssignDesc": "Each capability type uses the assigned model. Unassigned capabilities use the default model above.",
+    "capabilityGroups": {
       "text": "Text",
       "image": "Image",
       "audio": "Audio",
       "video": "Video",
       "other": "Other"
     },
-    "tasks": {
+    "capabilities": {
       "text": "General",
       "image_recognition": "Image Recognition",
       "image_generation": "Image Generation",
@@ -114,9 +114,9 @@
     "saving": "Saving...",
     "saved": "Saved",
     "saveError": "Save failed",
-    "mismatchHint": "Model does not match this task type — please select a compatible model",
+    "mismatchHint": "Model does not match this capability type — please select a compatible model",
     "staleProvider": "Provider not configured — clear or reconfigure",
-    "noProvidersHint": "Configure at least one provider above to assign models to tasks.",
+    "noProvidersHint": "Configure at least one provider above to assign models to capabilities.",
     "tier": {
       "base": "Base",
       "pro": "Pro",

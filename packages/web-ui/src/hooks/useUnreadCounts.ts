@@ -7,6 +7,7 @@ let _globalCounts: Record<string, number> = {};
 let _globalSessionAgentMap: Record<string, string> = {};
 const _listeners = new Set<() => void>();
 const _activeKeys = new Set<string>();
+let _graceUntil = 0;
 
 function notify() {
   for (const fn of _listeners) fn();
@@ -49,7 +50,10 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
   }, []);
 
   const setActiveKey = useCallback((key: string) => { _activeKeys.add(key); }, []);
-  const clearActiveKey = useCallback((key: string) => { _activeKeys.delete(key); }, []);
+  const clearActiveKey = useCallback((key: string) => {
+    _activeKeys.delete(key);
+    _graceUntil = Date.now() + 150;
+  }, []);
 
   useEffect(() => {
     if (!enabled) return;
@@ -58,7 +62,7 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
 
     const unsub = wsClient.on('chat:unread_update', (event) => {
       const key = (event.payload as { conversationKey?: string })?.conversationKey;
-      if (key && !_activeKeys.has(key)) {
+      if (key && !_activeKeys.has(key) && Date.now() > _graceUntil) {
         _globalCounts[key] = (_globalCounts[key] ?? 0) + 1;
         setCounts({ ..._globalCounts });
         notify();

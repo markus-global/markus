@@ -42,7 +42,7 @@ describe('MiniMaxProvider', () => {
     expect(results[0].url).toBe('https://minimax.example/img1.png');
 
     const body = JSON.parse((mockFetch.mock.calls[0]![1] as RequestInit).body as string);
-    expect(body.aspect_ratio).toBe('1024:1024');
+    expect(body.aspect_ratio).toBe('1:1');
   });
 
   it('throws on MiniMax image base_resp error', async () => {

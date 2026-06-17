@@ -85,10 +85,10 @@ describe('deepMerge (via loadConfig/saveConfig)', () => {
   it('nested null deletes deeply nested keys', () => {
     const cfgPath = join(tmpDir, 'markus.json');
     writeFileSync(cfgPath, JSON.stringify({
-      llm: { defaultProvider: 'openai', defaultModel: 'gpt-4o', providers: {}, taskRouting: { assignments: { text: { provider: 'openai' } } } },
+      llm: { defaultProvider: 'openai', defaultModel: 'gpt-4o', providers: {}, capabilityRouting: { assignments: { text: { provider: 'openai' } } } },
     }));
-    saveConfig({ llm: { taskRouting: { assignments: { text: null } } } } as any, cfgPath);
+    saveConfig({ llm: { capabilityRouting: { assignments: { text: null } } } } as any, cfgPath);
     const cfg = loadConfig(cfgPath);
-    expect((cfg.llm.taskRouting as any)?.assignments?.text).toBeUndefined();
+    expect((cfg.llm.capabilityRouting as any)?.assignments?.text).toBeUndefined();
   });
 });

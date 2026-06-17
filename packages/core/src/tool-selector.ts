@@ -43,7 +43,7 @@ const TOOL_GROUPS: ToolGroup[] = [
       'openai', 'anthropic', 'claude', 'gpt', 'gemini', 'deepseek', 'openrouter', 'ollama',
       '模型', '切换模型', '换模型', '大模型', '提供商', '默认模型', '模型配置', '模型路由'],
     toolNames: ['llm_list_providers', 'llm_switch_model', 'llm_switch_default_provider',
-      'llm_add_provider', 'llm_edit_provider', 'llm_add_model', 'llm_set_task_routing'],
+      'llm_add_provider', 'llm_edit_provider', 'llm_add_model', 'llm_set_capability_routing'],
   },
   {
     name: 'image-generation',
@@ -117,7 +117,7 @@ export class ToolSelector {
   }
 
   selectTools(opts: {
-    allTools: Map<string, { name: string; description: string; inputSchema: Record<string, unknown> }>;
+    allTools: Map<string, { name: string; description: string; inputSchema: Record<string, unknown>; getDescription?(): string; getInputSchema?(): Record<string, unknown> }>;
     userMessage: string;
     recentToolNames?: string[];
     isManager?: boolean;
@@ -197,7 +197,11 @@ export class ToolSelector {
     for (const name of selected) {
       const tool = opts.allTools.get(name);
       if (tool) {
-        result.push({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema });
+        result.push({
+          name: tool.name,
+          description: tool.getDescription?.() ?? tool.description,
+          inputSchema: tool.getInputSchema?.() ?? tool.inputSchema,
+        });
       }
     }
 

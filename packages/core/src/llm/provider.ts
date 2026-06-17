@@ -69,8 +69,21 @@ export interface VideoResult {
  * All methods are optional -- providers declare which modalities they support
  * via getCapabilities().
  */
+export interface ToolParamSchema {
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface MultiModalToolSchemas {
+  generate_image?: ToolParamSchema;
+  text_to_speech?: ToolParamSchema;
+  speech_to_text?: ToolParamSchema;
+  generate_video?: ToolParamSchema;
+}
+
 export interface MultiModalProviderInterface extends LLMProviderInterface {
   getCapabilities?(): ProviderCapabilities;
+  getToolSchemas?(): MultiModalToolSchemas;
   generateImage?(prompt: string, options?: ImageGenOptions): Promise<ImageResult[]>;
   generateSpeech?(text: string, options?: TTSOptions): Promise<AudioResult>;
   transcribeSpeech?(audio: Buffer, options?: STTOptions): Promise<string>;

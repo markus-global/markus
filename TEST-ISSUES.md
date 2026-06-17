@@ -14,7 +14,7 @@ Issues discovered during test coverage improvement. Each issue is categorized:
 | T-001 | Low | [DESIGN] | `core/src/llm/router.ts` | Providers without `getCapabilities()` bypass capability filter for non-text tasks — they are included as fallbacks even when they may not support the modality | **Fixed** — reject providers without `getCapabilities` for non-text tasks |
 | T-002 | Low | [DESIGN] | `core/src/llm/router.ts` | Auth/billing errors (401/402) trigger cross-provider fallback — intentional but can produce misleading errors when all providers fail for auth reasons | **Closed** — by design: correctly gated by `autoFallback` switch (ON=fallback, OFF=no fallback) |
 | T-003 | Low | [BUG] | `core/src/llm/openai.ts` | `Buffer.buffer` returns full underlying ArrayBuffer (larger than contents) — TTS consumers using `.buffer` directly get wrong data | Verified: code no longer uses `.buffer` |
-| T-004 | Low | [DESIGN] | `core/src/tools/settings.ts` | `detectModelTaskMismatch` is private/not exported — cannot be unit tested directly, only indirectly through `llm_set_task_routing` | **Closed** — acceptable; tested indirectly via `llm_set_task_routing` |
+| T-004 | Low | [DESIGN] | `core/src/tools/settings.ts` | `detectModelCapabilityMismatch` is private/not exported — cannot be unit tested directly, only indirectly through `llm_set_capability_routing` | **Closed** — acceptable; tested indirectly via `llm_set_capability_routing` |
 | T-005 | Low | [BUG] | `core/src/tools/web-fetch.ts` | `String(error)` produces `"Error: message"` not `"message"` — minor inconsistency in user-facing error strings | **Fixed** — use `error.message` for Error instances |
 | T-006 | Low | [DESIGN] | `core/src/tools/file.ts` | `denyMessage` is exported but unused internally — write/edit tools inline their own denial messages creating duplication | **Fixed** — removed unused function and export |
 | T-007 | Medium | [DESIGN] | `core/src/concurrent/state-manager.ts` | `activeTaskCount` only updates on progress events, not on task start/completion — can stay stale | **Fixed** — `activeTaskCount`/`activeTaskIds`/`currentTaskId` now derived from `taskExecutor` in real-time via `getState()` |
@@ -70,7 +70,7 @@ Issues discovered during test coverage improvement. Each issue is categorized:
 
 ### Closed (by design / not a bug / acceptable)
 - T-002: Auth/billing fallback — by design, gated by `autoFallback` switch
-- T-004: detectModelTaskMismatch private — acceptable, tested indirectly
+- T-004: detectModelCapabilityMismatch private — acceptable, tested indirectly
 - T-016: handleMessage concurrency — mitigated by attention loop serialization
 - T-018: Shell injection — by design, approval-gated
 - T-020: MCP partial JSON — not a bug, buffering is correct

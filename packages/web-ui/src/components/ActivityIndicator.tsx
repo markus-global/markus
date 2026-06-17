@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getToolMeta } from './execution-utils.ts';
 
@@ -100,28 +100,15 @@ function TimelineItem({ item, idx, total }: { item: ToolItem; idx: number; total
 export function ActivityIndicator({ activities, isActive, persistent }: Props) {
   const { t } = useTranslation('common');
   const timeline = buildTimeline(activities);
-  const [visible, setVisible] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    if (persistent || isActive || activities.length > 0) {
-      setVisible(true);
-      if (timerRef.current) clearTimeout(timerRef.current);
-    } else {
-      timerRef.current = setTimeout(() => setVisible(false), 800);
-    }
-    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
-  }, [persistent, isActive, activities.length]);
-
-  if (!visible) return null;
+  const shouldShow = persistent || isActive || activities.length > 0;
 
   const hasAny = timeline.length > 0;
   const allDone = hasAny && timeline.every(t => t.status !== 'running');
   const showThinking = isActive && !hasAny;
   const showWriting = isActive && hasAny && allDone;
 
-  // Persistent (historical) mode: show a compact collapsed summary with expand toggle
   if (persistent && allDone) {
     const errorCount = timeline.filter(t => t.status === 'error').length;
     const doneCount = timeline.filter(t => t.status === 'done').length;
@@ -136,7 +123,6 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
           {errorCount > 0 && (
             <span className="text-red-500 ml-0.5">· {t('activity.failed', { count: errorCount })}</span>
           )}
-          {/* Mini pill icons */}
           {!expanded && (
             <span className="ml-1 flex gap-0.5">
               {timeline.slice(0, 5).map(t => (
@@ -159,21 +145,33 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
     );
   }
 
-  // Active / live mode: show full timeline
   return (
-    <div className="mb-2 space-y-0.5">
+    <div
+      className="mb-2 space-y-0.5 transition-all duration-300 overflow-hidden"
+      style={{
+        maxHeight: shouldShow ? '500px' : '0px',
+        opacity: shouldShow ? 1 : 0,
+        marginBottom: shouldShow ? undefined : '0px',
+      }}
+    >
       {timeline.map((item, idx) => (
         <TimelineItem key={item.key} item={item} idx={idx} total={timeline.length} />
       ))}
 
-      {/* Thinking / Writing status */}
-      {showThinking && (
+      <div
+        className="transition-all duration-200 overflow-hidden"
+        style={{ maxHeight: showThinking ? '40px' : '0px', opacity: showThinking ? 1 : 0 }}
+      >
         <div className="flex items-center gap-1.5 text-xs text-fg-secondary py-0.5">
           <span className="mr-0.5">{t('activity.thinking')}</span>
           <PulsingDots />
         </div>
-      )}
-      {showWriting && (
+      </div>
+
+      <div
+        className="transition-all duration-200 overflow-hidden"
+        style={{ maxHeight: showWriting ? '40px' : '0px', opacity: showWriting ? 1 : 0 }}
+      >
         <div className="flex items-center gap-1.5 py-0.5">
           <div className="flex flex-col items-center self-stretch w-3 shrink-0">
             <div className="w-px h-2 bg-surface-overlay" />
@@ -184,7 +182,7 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
             <span>{t('activity.writingResponse')}</span>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }

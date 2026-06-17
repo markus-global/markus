@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, openSync, closeSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
-import type { TaskRoutingConfig } from '../types/model-catalog.js';
+import type { CapabilityRoutingConfig } from '../types/model-catalog.js';
 
 export interface MarkusConfig {
   org: {
@@ -32,8 +32,8 @@ export interface MarkusConfig {
     timeoutMs?: number;
     /** Allow automatic fallback to other providers/models when the primary fails (default: true) */
     autoFallback?: boolean;
-    /** Task-specific model routing (manual assignments per task type) */
-    taskRouting?: TaskRoutingConfig;
+    /** Capability-specific model routing (manual assignments per capability type) */
+    capabilityRouting?: CapabilityRoutingConfig;
     /** Global routing default model — used as fallback when routing can't find a tier match */
     routingDefaultModel?: { provider: string; model: string };
     /** Mirror URL for model catalog updates (default: GitHub raw + CDN mirrors). Set this if raw.githubusercontent.com is unreachable. */
@@ -146,6 +146,11 @@ export function loadConfig(configPath?: string): MarkusConfig {
 
   const raw = readFileSync(p, 'utf-8');
   const parsed = JSON.parse(raw) as Partial<MarkusConfig>;
+  // Migrate legacy 'taskRouting' key → 'capabilityRouting'
+  if (parsed.llm && (parsed.llm as any).taskRouting && !parsed.llm.capabilityRouting) {
+    parsed.llm.capabilityRouting = (parsed.llm as any).taskRouting;
+    delete (parsed.llm as any).taskRouting;
+  }
   return deepMerge(DEFAULT_CONFIG as unknown as Obj, parsed as unknown as Obj) as unknown as MarkusConfig;
 }
 

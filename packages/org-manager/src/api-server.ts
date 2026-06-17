@@ -7736,13 +7736,13 @@ EXPLANATION_END`;
         return;
       }
       const body = await this.readBody(req);
-      const { defaultProvider, autoFallback, taskRouting, routingDefaultModel } = body as {
+      const { defaultProvider, autoFallback, capabilityRouting, routingDefaultModel } = body as {
         defaultProvider?: string; autoFallback?: boolean;
-        taskRouting?: Record<string, unknown>;
+        capabilityRouting?: Record<string, unknown>;
         routingDefaultModel?: { provider: string; model: string } | null;
       };
-      if (!defaultProvider && autoFallback === undefined && !taskRouting && routingDefaultModel === undefined) {
-        this.json(res, 400, { error: 'defaultProvider, autoFallback, taskRouting, or routingDefaultModel is required' });
+      if (!defaultProvider && autoFallback === undefined && !capabilityRouting && routingDefaultModel === undefined) {
+        this.json(res, 400, { error: 'defaultProvider, autoFallback, capabilityRouting, or routingDefaultModel is required' });
         return;
       }
       try {
@@ -7755,17 +7755,17 @@ EXPLANATION_END`;
           this.llmRouter.setAutoFallback(autoFallback);
           configUpdates.autoFallback = autoFallback;
         }
-        if (taskRouting) {
-          const prevAssignments = { ...this.llmRouter.taskRouting.assignments };
-          this.llmRouter.setTaskRouting(taskRouting as any);
-          const incomingAssignments = (taskRouting as any).assignments ?? {};
+        if (capabilityRouting) {
+          const prevAssignments = { ...this.llmRouter.capabilityRouting.assignments };
+          this.llmRouter.setCapabilityRouting(capabilityRouting as any);
+          const incomingAssignments = (capabilityRouting as any).assignments ?? {};
           const persistAssignments: Record<string, unknown> = { ...incomingAssignments };
           for (const key of Object.keys(prevAssignments)) {
             if (!(key in incomingAssignments)) {
               persistAssignments[key] = null;
             }
           }
-          configUpdates.taskRouting = { assignments: persistAssignments };
+          configUpdates.capabilityRouting = { assignments: persistAssignments };
         }
         if (routingDefaultModel !== undefined) {
           if (routingDefaultModel === null) {
@@ -7788,7 +7788,7 @@ EXPLANATION_END`;
           orgId: 'system',
           type: 'settings_changed',
           action: 'llm_settings',
-          detail: `${defaultProvider ? `defaultProvider=${defaultProvider}` : ''}${autoFallback !== undefined ? ` autoFallback=${autoFallback}` : ''}${taskRouting ? ' taskRouting=updated' : ''}`.trim(),
+          detail: `${defaultProvider ? `defaultProvider=${defaultProvider}` : ''}${autoFallback !== undefined ? ` autoFallback=${autoFallback}` : ''}${capabilityRouting ? ' capabilityRouting=updated' : ''}`.trim(),
           userId: auth.userId,
           success: true,
         });
@@ -7825,13 +7825,17 @@ EXPLANATION_END`;
         for (const m of providerSettings.models ?? []) {
           seenIds.add(m.id);
           const enriched = enrichModelFromCatalog(m.id, m.tier, this.modelCatalog);
+          let caps = enriched.capabilities ?? (m as any).capabilities;
+          if (!caps && (m as any).inputTypes?.includes('image')) {
+            caps = ['vision'];
+          }
           models.push({
             id: m.id,
             name: m.name ?? m.id,
             mode: enriched.mode,
             tier: enriched.tier,
             costTier: enriched.costTier,
-            capabilities: enriched.capabilities,
+            capabilities: caps,
           });
         }
 
@@ -7896,14 +7900,14 @@ EXPLANATION_END`;
       const auth = await this.requireAuth(req, res);
       if (!auth) return;
 
-      const ALL_TASK_TYPES: string[] = [
+      const ALL_CAPABILITY_TYPES: string[] = [
         'text',
         'image_recognition', 'image_generation',
         'audio_tts', 'audio_stt',
         'video_generation',
       ];
 
-      const TEXT_TASKS = new Set(['text']);
+      const TEXT_CAPABILITIES = new Set(['text']);
 
       const CAP_MAP: Record<string, string[]> = {
         image_recognition: ['vision'],
@@ -7913,13 +7917,6 @@ EXPLANATION_END`;
         video_generation: ['videoGeneration'],
       };
 
-      const NON_TEXT_PATTERNS: Record<string, RegExp> = {
-        image_recognition: /\bvl\b|vision|visual|eye/i,
-        image_generation: /\bdall-?e\b|flux|stable.?diffusion|sdxl|imagen|wanx|wan[.-]?ai|kolors|playground/i,
-        audio_tts: /\btts\b|cosy.?voice|speech|bark|xtts|voice/i,
-        audio_stt: /\bstt\b|whisper|sense.?voice|paraformer|speech.?to.?text|audio/i,
-        video_generation: /\bvideo\b|wan.*t2v|sora|kling|gen-?[23]/i,
-      };
 
       interface CandidateModel {
         provider: string;
@@ -7938,11 +7935,15 @@ EXPLANATION_END`;
         for (const m of providerSettings.models ?? []) {
           seenIds.add(m.id);
           const enriched = enrichModelFromCatalog(m.id, m.tier, this.modelCatalog);
+          let caps = enriched.capabilities ?? (m as any).capabilities;
+          if (!caps && (m as any).inputTypes?.includes('image')) {
+            caps = ['vision'];
+          }
           allCandidates.push({
             provider: providerName,
             modelId: m.id,
             tier: enriched.tier,
-            capabilities: enriched.capabilities,
+            capabilities: caps,
           });
         }
 
@@ -7961,36 +7962,28 @@ EXPLANATION_END`;
         }
       }
 
-      // For each task type, find the best model
+      // For each capability type, find the best model
       const suggestions: Record<string, { provider: string; model: string; tier?: string } | null> = {};
 
-      for (const taskType of ALL_TASK_TYPES) {
+      for (const capabilityType of ALL_CAPABILITY_TYPES) {
         let candidates: CandidateModel[];
 
-        if (TEXT_TASKS.has(taskType)) {
-          // Text tasks: any model that isn't exclusively non-text
+        const NON_TEXT_CAPS = new Set(['imageGeneration', 'tts', 'stt', 'videoGeneration', 'audioOutput', 'audioInput']);
+        if (TEXT_CAPABILITIES.has(capabilityType)) {
           candidates = allCandidates.filter(m => {
-            const id = m.modelId.toLowerCase();
-            return !/\btts\b|\bwhisper\b|\bstt\b|\bdall-?e\b|\bstable.?diffusion\b|\bflux\b|\bwav2vec\b|\bembedding\b|\bembed\b/.test(id);
+            if (m.capabilities && m.capabilities.some(c => NON_TEXT_CAPS.has(c))) return false;
+            return true;
           });
         } else {
-          // Specialized tasks: require matching capability or name pattern
-          const requiredCaps = CAP_MAP[taskType] ?? [];
-          const namePattern = NON_TEXT_PATTERNS[taskType];
-
-          candidates = allCandidates.filter(m => {
-            if (m.capabilities && m.capabilities.length > 0) {
-              return requiredCaps.some(cap => m.capabilities!.includes(cap));
-            }
-            if (namePattern) {
-              return namePattern.test(m.modelId);
-            }
-            return false;
-          });
+          const requiredCaps = CAP_MAP[capabilityType] ?? [];
+          candidates = allCandidates.filter(m =>
+            m.capabilities && m.capabilities.length > 0 &&
+            requiredCaps.some(cap => m.capabilities!.includes(cap))
+          );
         }
 
         if (candidates.length === 0) {
-          suggestions[taskType] = null;
+          suggestions[capabilityType] = null;
           continue;
         }
 
@@ -8002,7 +7995,7 @@ EXPLANATION_END`;
         });
 
         const best = candidates[0];
-        suggestions[taskType] = { provider: best.provider, model: best.modelId, tier: best.tier };
+        suggestions[capabilityType] = { provider: best.provider, model: best.modelId, tier: best.tier };
       }
 
       this.json(res, 200, { suggestions });
@@ -8014,11 +8007,11 @@ EXPLANATION_END`;
       const auth = await this.requireAuth(req, res);
       if (!auth) return;
       if (!this.llmRouter) {
-        this.json(res, 200, { taskRouting: {}, routingDefaultModel: null });
+        this.json(res, 200, { capabilityRouting: {}, routingDefaultModel: null });
         return;
       }
       this.json(res, 200, {
-        taskRouting: this.llmRouter.taskRouting,
+        capabilityRouting: this.llmRouter.capabilityRouting,
         routingDefaultModel: this.llmRouter.routingDefaultModel ?? null,
       });
       return;

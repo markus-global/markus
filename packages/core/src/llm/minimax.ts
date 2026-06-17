@@ -1,5 +1,5 @@
 import type { ProviderCapabilities } from '@markus/shared';
-import type { ImageGenOptions, ImageResult, TTSOptions, AudioResult, VideoGenOptions, VideoResult } from './provider.js';
+import type { ImageGenOptions, ImageResult, TTSOptions, AudioResult, VideoGenOptions, VideoResult, MultiModalToolSchemas } from './provider.js';
 import { OpenAIProvider } from './openai.js';
 
 /**
@@ -25,6 +25,51 @@ export class MiniMaxProvider extends OpenAIProvider {
       embedding: false,
       reasoning: true,
       promptCaching: true,
+    };
+  }
+
+  override getToolSchemas(): MultiModalToolSchemas {
+    return {
+      generate_image: {
+        description: 'Generate images using MiniMax. Provide a detailed text prompt and choose an aspect ratio.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string', description: 'Detailed text description of the image to generate' },
+            model: { type: 'string', description: 'Model to use (default from routing config). e.g. "image-01"' },
+            aspect_ratio: { type: 'string', enum: ['1:1', '16:9', '4:3', '3:2', '2:3', '3:4', '9:16', '21:9'], description: 'Image aspect ratio (default: 1:1)' },
+            n: { type: 'number', description: 'Number of images to generate (default: 1)' },
+            output_dir: { type: 'string', description: 'Directory to save images' },
+          },
+          required: ['prompt'],
+        },
+      },
+      text_to_speech: {
+        description: 'Convert text to speech using MiniMax. Supports Chinese and English voices.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'The text to convert to speech' },
+            model: { type: 'string', description: 'Model to use (default from routing config). e.g. "speech-02-hd"' },
+            voice: { type: 'string', description: 'Voice ID. Chinese: "Chinese (Mandarin)_Gentle_Youth", "Chinese (Mandarin)_Sweet_Lady", "Chinese (Mandarin)_Gentleman", "Chinese (Mandarin)_Warm_Bestie". English: "English_CalmWoman", "English_Trustworth_Man", "English_Gentle-voiced_man"' },
+            speed: { type: 'number', description: 'Speech speed (0.5-2.0, default: 1.0)' },
+          },
+          required: ['text'],
+        },
+      },
+      generate_video: {
+        description: 'Generate video using MiniMax Hailuo. IMPORTANT: For text-to-video, you MUST set model to "MiniMax-Hailuo-2.3". The model "MiniMax-Hailuo-2.3-Fast" only supports image-to-video and will fail for text prompts.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string', description: 'Detailed description of the video to generate' },
+            model: { type: 'string', enum: ['MiniMax-Hailuo-2.3', 'MiniMax-Hailuo-2.3-Fast'], description: 'Model to use. "MiniMax-Hailuo-2.3" for text-to-video, "MiniMax-Hailuo-2.3-Fast" for image-to-video only. Default from routing config if not specified.' },
+            duration: { type: 'number', enum: [6, 10], description: 'Video duration in seconds (default: 6)' },
+            resolution: { type: 'string', enum: ['768P', '1080P'], description: 'Video resolution (default: 768P)' },
+          },
+          required: ['prompt'],
+        },
+      },
     };
   }
 
@@ -92,7 +137,7 @@ export class MiniMaxProvider extends OpenAIProvider {
       text,
       stream: false,
       voice_setting: {
-        voice_id: options?.voice ?? 'Calm_Woman',
+        voice_id: options?.voice ?? 'Chinese (Mandarin)_Gentle_Youth',
         speed: options?.speed ?? 1.0,
       },
       audio_setting: { format },
@@ -142,7 +187,7 @@ export class MiniMaxProvider extends OpenAIProvider {
       prompt,
     };
     if (options?.duration) body['duration'] = options.duration;
-    if (options?.size) body['resolution'] = options.size;
+    if (options?.size) body['resolution'] = sizeToResolution(options.size);
 
     const createEndpoint = this.buildEndpoint('/video_generation');
     const createRes = await fetch(createEndpoint, {
@@ -220,6 +265,17 @@ export class MiniMaxProvider extends OpenAIProvider {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function sizeToResolution(size: string): string {
+  const s = size.trim().toLowerCase();
+  if (s === '768p' || s === '1080p') return size.toUpperCase();
+  const m = s.match(/^(\d+)x(\d+)$/);
+  if (m) {
+    const h = parseInt(m[2], 10);
+    return h >= 1080 ? '1080P' : '768P';
+  }
+  return '768P';
 }
 
 const VALID_ASPECT_RATIOS = ['1:1', '16:9', '4:3', '3:2', '2:3', '3:4', '9:16', '21:9'] as const;

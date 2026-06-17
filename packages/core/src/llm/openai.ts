@@ -1,5 +1,5 @@
 import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, type ProviderCapabilities, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
-import type { MultiModalProviderInterface, ImageGenOptions, ImageResult, TTSOptions, AudioResult, STTOptions } from './provider.js';
+import type { MultiModalProviderInterface, MultiModalToolSchemas, ImageGenOptions, ImageResult, TTSOptions, AudioResult, STTOptions } from './provider.js';
 
 interface OpenAIMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -398,6 +398,53 @@ export class OpenAIProvider implements MultiModalProviderInterface {
       embedding: isOpenAI,
       reasoning: true,
       promptCaching: true,
+    };
+  }
+
+  getToolSchemas(): MultiModalToolSchemas {
+    return {
+      generate_image: {
+        description: 'Generate images using OpenAI. Provide a detailed text prompt.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string', description: 'Detailed text description of the image to generate' },
+            model: { type: 'string', description: 'Model to use (default from routing config). e.g. "gpt-image-1", "dall-e-3"' },
+            size: { type: 'string', enum: ['1024x1024', '1792x1024', '1024x1792'], description: 'Image dimensions (default: 1024x1024)' },
+            quality: { type: 'string', enum: ['standard', 'hd'], description: 'Image quality (default: standard)' },
+            style: { type: 'string', enum: ['natural', 'vivid'], description: 'Style preset (default: vivid)' },
+            n: { type: 'number', description: 'Number of images to generate (default: 1)' },
+            output_dir: { type: 'string', description: 'Directory to save images' },
+            output_format: { type: 'string', enum: ['png', 'jpeg', 'webp'], description: 'Output format (default: png)' },
+          },
+          required: ['prompt'],
+        },
+      },
+      text_to_speech: {
+        description: 'Convert text to speech using OpenAI.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'The text to convert to speech' },
+            model: { type: 'string', description: 'Model to use (default from routing config). e.g. "tts-1", "tts-1-hd"' },
+            voice: { type: 'string', enum: ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'], description: 'Voice to use (default: alloy)' },
+            speed: { type: 'number', description: 'Speech speed (0.25-4.0, default: 1.0)' },
+          },
+          required: ['text'],
+        },
+      },
+      speech_to_text: {
+        description: 'Transcribe speech audio to text using OpenAI Whisper.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            audio_url: { type: 'string', description: 'URL or local file path of the audio to transcribe' },
+            model: { type: 'string', description: 'Model to use (default from routing config). e.g. "whisper-1"' },
+            language: { type: 'string', description: 'Language code (e.g. "en", "zh") for better accuracy' },
+          },
+          required: ['audio_url'],
+        },
+      },
     };
   }
 

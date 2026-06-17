@@ -1,5 +1,5 @@
 import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, type ProviderCapabilities, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
-import type { MultiModalProviderInterface, ImageGenOptions, ImageResult } from './provider.js';
+import type { MultiModalProviderInterface, MultiModalToolSchemas, ImageGenOptions, ImageResult } from './provider.js';
 
 type GeminiPart =
   | { text: string }
@@ -326,6 +326,24 @@ export class GoogleProvider implements MultiModalProviderInterface {
       embedding: false,
       reasoning: true,
       promptCaching: false,
+    };
+  }
+
+  getToolSchemas(): MultiModalToolSchemas {
+    return {
+      generate_image: {
+        description: 'Generate images using Google Gemini. The model determines the image size automatically.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string', description: 'Detailed text description of the image to generate' },
+            model: { type: 'string', description: 'Model to use (default from routing config). e.g. "gemini-2.0-flash-preview-image-generation"' },
+            n: { type: 'number', description: 'Number of images to generate (default: 1)' },
+            output_dir: { type: 'string', description: 'Directory to save images' },
+          },
+          required: ['prompt'],
+        },
+      },
     };
   }
 

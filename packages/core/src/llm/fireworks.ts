@@ -1,4 +1,4 @@
-import type { ImageGenOptions, ImageResult } from './provider.js';
+import type { ImageGenOptions, ImageResult, MultiModalToolSchemas } from './provider.js';
 import { OpenAIProvider } from './openai.js';
 
 /**
@@ -10,6 +10,26 @@ import { OpenAIProvider } from './openai.js';
  * instead of the OpenAI-standard { data: [{ url, b64_json }] }.
  */
 export class FireworksProvider extends OpenAIProvider {
+
+  override getToolSchemas(): MultiModalToolSchemas {
+    return {
+      generate_image: {
+        description: 'Generate images using Fireworks AI. Provide a detailed text prompt.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string', description: 'Detailed text description of the image to generate' },
+            model: { type: 'string', description: 'Model to use (default from routing config). e.g. "accounts/fireworks/models/stable-diffusion-xl-1024-v1-0"' },
+            size: { type: 'string', description: 'Image dimensions as WxH (e.g. "1024x1024", "512x768", "768x512")' },
+            n: { type: 'number', description: 'Number of images to generate (default: 1)' },
+            seed: { type: 'number', description: 'Seed for reproducibility' },
+            output_dir: { type: 'string', description: 'Directory to save images' },
+          },
+          required: ['prompt'],
+        },
+      },
+    };
+  }
 
   override async generateImage(prompt: string, options?: ImageGenOptions): Promise<ImageResult[]> {
     const base = this.baseUrl.replace(/\/+$/, '');

@@ -2,8 +2,8 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AgentToolHandler } from '../agent.js';
-import type { MultiModalProviderInterface } from '../llm/provider.js';
-import { createLogger, type ModelTaskType } from '@markus/shared';
+import type { MultiModalProviderInterface, MultiModalToolSchemas } from '../llm/provider.js';
+import { createLogger, type ModelCapabilityType } from '@markus/shared';
 
 const log = createLogger('multimodal-tools');
 
@@ -14,7 +14,7 @@ export interface ModalityCandidate {
 }
 
 export interface MultiModalToolsContext {
-  resolveCandidates: (taskType: ModelTaskType) => ModalityCandidate[];
+  resolveCandidates: (capabilityType: ModelCapabilityType) => ModalityCandidate[];
 }
 
 async function fetchAudioBuffer(source: string): Promise<Buffer> {
@@ -35,37 +35,92 @@ function saveTempAudio(audio: Buffer, format: string): string {
   return filepath;
 }
 
+function getProviderSchema(ctx: MultiModalToolsContext, capabilityType: ModelCapabilityType, toolName: keyof MultiModalToolSchemas): { description: string; inputSchema: Record<string, unknown> } | undefined {
+  const candidates = ctx.resolveCandidates(capabilityType);
+  for (const { provider } of candidates) {
+    const schemas = (provider as MultiModalProviderInterface).getToolSchemas?.();
+    if (schemas?.[toolName]) {
+      const schema = schemas[toolName]!;
+      const props = (schema.inputSchema.properties ?? {}) as Record<string, unknown>;
+      if (!props.provider || !props.model) {
+        return {
+          description: schema.description,
+          inputSchema: {
+            ...schema.inputSchema,
+            properties: {
+              ...props,
+              provider: { type: 'string', description: 'Override which provider to use (e.g. "openai", "minimax"). If omitted, uses the configured routing default.' },
+              ...(!props.model ? { model: { type: 'string', description: 'Override which model to use. If omitted, uses the configured routing default.' } } : {}),
+            },
+          },
+        };
+      }
+      return schema;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Resolve effective candidates list based on agent-specified provider/model overrides.
+ * If agent specifies a provider, only that provider is used (with agent model if given).
+ * Otherwise, all routing candidates are used with agent model override applied.
+ */
+function resolveEffectiveCandidates(
+  candidates: ModalityCandidate[],
+  agentProvider?: string,
+  agentModel?: string,
+): Array<{ provider: MultiModalProviderInterface; model?: string; name: string }> {
+  if (agentProvider) {
+    const match = candidates.find(c => c.name === agentProvider);
+    if (match) {
+      return [{ provider: match.provider, model: agentModel ?? match.model, name: match.name }];
+    }
+    return [];
+  }
+  if (agentModel) {
+    return candidates.map(c => ({ ...c, model: agentModel }));
+  }
+  return candidates;
+}
+
+const PROVIDER_PARAM = { type: 'string', description: 'Override which provider to use (e.g. "openai", "minimax"). If omitted, uses the configured routing default.' } as const;
+const MODEL_PARAM = { type: 'string', description: 'Override which model to use. If omitted, uses the configured routing default.' } as const;
+
 export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHandler[] {
   return [
     {
       name: 'generate_image',
       description:
-        'Generate images from a text prompt using the provider configured in Settings > Model Routing (image_generation task). ' +
-        'Use llm_get_task_routing to check current configuration, or llm_set_task_routing to configure.',
+        'Generate images from a text prompt. Use llm_get_capability_routing to check current configuration.',
       inputSchema: {
         type: 'object',
         properties: {
-          prompt:          { type: 'string', description: 'Detailed text description of the image to generate' },
-          size:            { type: 'string', description: 'Image size – pixel dimensions (e.g. "1024x1024", "1792x1024") or aspect ratio (e.g. "16:9", "1:1"). MiniMax only supports aspect ratios: 1:1, 16:9, 4:3, 3:2, 2:3, 3:4, 9:16, 21:9' },
-          quality:         { type: 'string', enum: ['standard', 'hd'], description: 'Image quality (some providers)' },
-          style:           { type: 'string', description: 'Style preset: natural/vivid (OpenAI), or provider-specific style name' },
-          n:               { type: 'number', description: 'Number of images to generate (default: 1)' },
-          negative_prompt: { type: 'string', description: 'What to avoid in the image (some providers)' },
-          seed:            { type: 'number', description: 'Seed for reproducibility (some providers)' },
-          output_dir:      { type: 'string', description: 'Directory to save images' },
-          output_format:   { type: 'string', enum: ['png', 'jpeg', 'webp'], description: 'Output image format (default: png)' },
+          prompt: { type: 'string', description: 'Detailed text description of the image to generate' },
+          provider: PROVIDER_PARAM,
+          model: MODEL_PARAM,
         },
         required: ['prompt'],
       },
+      getDescription() {
+        return getProviderSchema(ctx, 'image_generation', 'generate_image')?.description ?? this.description;
+      },
+      getInputSchema() {
+        return getProviderSchema(ctx, 'image_generation', 'generate_image')?.inputSchema ?? this.inputSchema;
+      },
       async execute(args: Record<string, unknown>): Promise<string> {
-        const candidates = ctx.resolveCandidates('image_generation').filter(c => c.provider.generateImage);
+        const allCandidates = ctx.resolveCandidates('image_generation').filter(c => c.provider.generateImage);
+        const candidates = resolveEffectiveCandidates(allCandidates, args.provider as string | undefined, args.model as string | undefined);
         if (candidates.length === 0) {
+          if (args.provider) {
+            return JSON.stringify({ error: `Provider "${args.provider}" is not available for image generation. Use llm_get_capability_routing to see available providers.` });
+          }
           return JSON.stringify({
-            error: 'No image generation provider configured. Use llm_set_task_routing to assign a provider+model for task_type "image_generation" (e.g. provider: "openai", model: "gpt-image-1").',
+            error: 'No image generation provider configured. Use llm_set_capability_routing to assign a provider+model for capability_type "image_generation" (e.g. provider: "openai", model: "gpt-image-1").',
           });
         }
         const opts = {
-          size: args.size as string | undefined,
+          size: (args.size ?? args.aspect_ratio) as string | undefined,
           quality: args.quality as string | undefined,
           style: args.style as string | undefined,
           n: args.n as number | undefined,
@@ -94,21 +149,30 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
     {
       name: 'text_to_speech',
       description:
-        'Convert text to speech audio. Returns a file path to the generated audio. ' +
-        'Requires a TTS provider to be configured via llm_set_task_routing (task_type: "audio_tts").',
+        'Convert text to speech audio. Returns a file path to the generated audio.',
       inputSchema: {
         type: 'object',
         properties: {
           text: { type: 'string', description: 'The text to convert to speech' },
-          voice: { type: 'string', description: 'Voice to use (provider-specific, e.g. "alloy", "echo", "nova")' },
-          speed: { type: 'number', description: 'Speech speed multiplier (0.25-4.0)', default: 1.0 },
+          provider: PROVIDER_PARAM,
+          model: MODEL_PARAM,
         },
         required: ['text'],
       },
+      getDescription() {
+        return getProviderSchema(ctx, 'audio_tts', 'text_to_speech')?.description ?? this.description;
+      },
+      getInputSchema() {
+        return getProviderSchema(ctx, 'audio_tts', 'text_to_speech')?.inputSchema ?? this.inputSchema;
+      },
       async execute(args: Record<string, unknown>): Promise<string> {
-        const candidates = ctx.resolveCandidates('audio_tts').filter(c => c.provider.generateSpeech);
+        const allCandidates = ctx.resolveCandidates('audio_tts').filter(c => c.provider.generateSpeech);
+        const candidates = resolveEffectiveCandidates(allCandidates, args.provider as string | undefined, args.model as string | undefined);
         if (candidates.length === 0) {
-          return JSON.stringify({ error: 'No TTS provider configured. Use llm_set_task_routing to assign a provider+model for task_type "audio_tts" (e.g. provider: "openai", model: "tts-1").' });
+          if (args.provider) {
+            return JSON.stringify({ error: `Provider "${args.provider}" is not available for TTS. Use llm_get_capability_routing to see available providers.` });
+          }
+          return JSON.stringify({ error: 'No TTS provider configured. Use llm_set_capability_routing to assign a provider+model for capability_type "audio_tts" (e.g. provider: "openai", model: "tts-1").' });
         }
         const opts = { voice: args.voice as string | undefined, speed: args.speed as number | undefined };
         let lastError: unknown;
@@ -131,20 +195,30 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
     {
       name: 'speech_to_text',
       description:
-        'Transcribe speech audio to text. Accepts a URL or local file path. ' +
-        'Requires an STT provider to be configured via llm_set_task_routing (task_type: "audio_stt").',
+        'Transcribe speech audio to text. Accepts a URL or local file path.',
       inputSchema: {
         type: 'object',
         properties: {
           audio_url: { type: 'string', description: 'URL or local file path of the audio to transcribe' },
-          language: { type: 'string', description: 'Language code (e.g. "en", "zh", "ja") for better accuracy' },
+          provider: PROVIDER_PARAM,
+          model: MODEL_PARAM,
         },
         required: ['audio_url'],
       },
+      getDescription() {
+        return getProviderSchema(ctx, 'audio_stt', 'speech_to_text')?.description ?? this.description;
+      },
+      getInputSchema() {
+        return getProviderSchema(ctx, 'audio_stt', 'speech_to_text')?.inputSchema ?? this.inputSchema;
+      },
       async execute(args: Record<string, unknown>): Promise<string> {
-        const candidates = ctx.resolveCandidates('audio_stt').filter(c => c.provider.transcribeSpeech);
+        const allCandidates = ctx.resolveCandidates('audio_stt').filter(c => c.provider.transcribeSpeech);
+        const candidates = resolveEffectiveCandidates(allCandidates, args.provider as string | undefined, args.model as string | undefined);
         if (candidates.length === 0) {
-          return JSON.stringify({ error: 'No STT provider configured. Use llm_set_task_routing to assign a provider+model for task_type "audio_stt" (e.g. provider: "openai", model: "whisper-1").' });
+          if (args.provider) {
+            return JSON.stringify({ error: `Provider "${args.provider}" is not available for STT. Use llm_get_capability_routing to see available providers.` });
+          }
+          return JSON.stringify({ error: 'No STT provider configured. Use llm_set_capability_routing to assign a provider+model for capability_type "audio_stt" (e.g. provider: "openai", model: "whisper-1").' });
         }
         const audioUrl = args.audio_url as string;
         log.info(`Transcribing audio from: ${audioUrl}`);
@@ -169,23 +243,35 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
     {
       name: 'generate_video',
       description:
-        'Generate a video from a text prompt using an AI video generation model. ' +
-        'Requires a video provider to be configured via llm_set_task_routing (task_type: "video_generation").',
+        'Generate a video from a text prompt using an AI video generation model.',
       inputSchema: {
         type: 'object',
         properties: {
           prompt: { type: 'string', description: 'Detailed description of the video to generate' },
-          duration: { type: 'number', description: 'Desired video duration in seconds', default: 5 },
-          size: { type: 'string', description: 'Video resolution (e.g. "1280x720", "1920x1080")' },
+          provider: PROVIDER_PARAM,
+          model: MODEL_PARAM,
         },
         required: ['prompt'],
       },
+      getDescription() {
+        return getProviderSchema(ctx, 'video_generation', 'generate_video')?.description ?? this.description;
+      },
+      getInputSchema() {
+        return getProviderSchema(ctx, 'video_generation', 'generate_video')?.inputSchema ?? this.inputSchema;
+      },
       async execute(args: Record<string, unknown>): Promise<string> {
-        const candidates = ctx.resolveCandidates('video_generation').filter(c => c.provider.generateVideo);
+        const allCandidates = ctx.resolveCandidates('video_generation').filter(c => c.provider.generateVideo);
+        const candidates = resolveEffectiveCandidates(allCandidates, args.provider as string | undefined, args.model as string | undefined);
         if (candidates.length === 0) {
-          return JSON.stringify({ error: 'No video generation provider configured. Use llm_set_task_routing to assign a provider+model for task_type "video_generation".' });
+          if (args.provider) {
+            return JSON.stringify({ error: `Provider "${args.provider}" is not available for video generation. Use llm_get_capability_routing to see available providers.` });
+          }
+          return JSON.stringify({ error: 'No video generation provider configured. Use llm_set_capability_routing to assign a provider+model for capability_type "video_generation".' });
         }
-        const opts = { duration: args.duration as number | undefined, size: args.size as string | undefined };
+        const opts = {
+          duration: args.duration as number | undefined,
+          size: (args.size ?? args.resolution) as string | undefined,
+        };
         let lastError: unknown;
         for (let i = 0; i < candidates.length; i++) {
           const { provider, model, name } = candidates[i];

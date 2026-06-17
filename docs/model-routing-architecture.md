@@ -5,9 +5,9 @@
 Markus uses a multi-layer model routing system built into `LLMRouter` to solve four problems:
 
 1. **Cost optimization** — complexity-based tier selection routes simple requests to cheaper providers
-2. **Multi-modal support** — unified task routing covers text, vision, image generation, TTS, STT, and video
+2. **Multi-modal support** — unified capability routing covers text, vision, image generation, TTS, STT, and video
 3. **Resilience** — circuit breaker health tracking with automatic cross-provider fallback
-4. **Manual control** — users can assign specific provider/model pairs to each task type
+4. **Manual control** — users can assign specific provider/model pairs to each capability type
 
 ---
 
@@ -22,8 +22,8 @@ User Request
 │                                                          │
 │  Text path (no assignment)  Text/Non-text with assignment│
 │  ─────────────────────────  ────────────────────────────-│
-│  assessComplexity()         selectForTask()               │
-│       │                     (taskRouting.assignments      │
+│  assessComplexity()         selectForCapability()          │
+│       │                     (capabilityRouting.assignments │
 │       ▼                      → routingDefaultModel        │
 │  selectProvider()            → selectProvider fallback)   │
 │  (tier-based)                     │                      │
@@ -74,13 +74,13 @@ sequenceDiagram
         Router->>Router: selectProvider(request, providerName)
         Note right of Router: Honor if available, else fall through
     else No provider specified
-        Router->>Router: inferTaskType(request)
-        alt taskType = text AND no text assignment
+        Router->>Router: inferCapability(request)
+        alt capabilityType = text AND no text assignment
             Router->>Router: assessComplexity(request)
             Router->>Router: selectProvider(request)
             Note right of Router: Tier-based: default → anthropic → openai → others
-        else taskType = text WITH assignment, or non-text
-            Router->>Router: selectForTask(taskType)
+        else capabilityType = text WITH assignment, or non-text
+            Router->>Router: selectForCapability(capabilityType)
             Note right of Router: assignment → fallback → routingDefaultModel → selectProvider
         end
     end
@@ -122,9 +122,9 @@ sequenceDiagram
 | **openai** (non-default) | complex, moderate | |
 | **Everything else** | simple, moderate | |
 
-### Text Task Assignment
+### Text Capability Assignment
 
-When `taskRouting.assignments.text` is configured, text chat requests use `selectForTask()` instead of complexity-based `selectProvider()`. This lets users pin a specific provider/model for all text chat.
+When `capabilityRouting.assignments.text` is configured, text chat requests use `selectForCapability()` instead of complexity-based `selectProvider()`. This lets users pin a specific provider/model for all text chat.
 
 When no text assignment exists, the classic complexity-based tier routing applies.
 
@@ -138,9 +138,9 @@ sequenceDiagram
     participant Router as LLMRouter
     participant Provider
 
-    Tool->>Router: resolveModalityProvider(taskType)
+    Tool->>Router: resolveModalityProvider(capabilityType)
 
-    alt Assignment exists for taskType
+    alt Assignment exists for capabilityType
         Router-->>Tool: { provider, model: assignment.model }
     else Assignment fallback exists
         Router-->>Tool: { provider: fallbackProvider, model: fallback.model }
@@ -177,14 +177,14 @@ sequenceDiagram
 
 Registered via `createMultiModalTools()` in `AgentManager`:
 
-| Tool | TaskType | Provider Method | Default Model |
+| Tool | CapabilityType | Provider Method | Default Model |
 |------|----------|-----------------|---------------|
 | `generate_image` | `image_generation` | `generateImage()` | `dall-e-3` |
 | `text_to_speech` | `audio_tts` | `generateSpeech()` | `tts-1` |
 | `speech_to_text` | `audio_stt` | `transcribeSpeech()` | `whisper-1` |
 | `generate_video` | `video_generation` | `generateVideo()` | (none yet) |
 
-The assigned model from `taskRouting.assignments[taskType].model` is passed as `options.model` to each provider method. Provider methods use the assigned model if provided, otherwise fall back to their hardcoded defaults.
+The assigned model from `capabilityRouting.assignments[capabilityType].model` is passed as `options.model` to each provider method. Provider methods use the assigned model if provided, otherwise fall back to their hardcoded defaults.
 
 **Output behavior:**
 - `generate_image` → returns `{ url, revisedPrompt }` or `{ base64 }`
@@ -289,7 +289,7 @@ All routing configuration lives in `MarkusConfig.llm`:
 ```typescript
 interface MarkusConfig {
   llm: {
-    taskRouting?: TaskRoutingConfig;        // per-task model assignments
+    capabilityRouting?: CapabilityRoutingConfig;  // per-capability model assignments
     routingDefaultModel?: { provider: string; model: string };
     catalogMirrorUrl?: string;              // optional mirror for catalog fetch
     // ... existing fields
@@ -297,20 +297,20 @@ interface MarkusConfig {
 }
 ```
 
-### Task Routing Config
+### Capability Routing Config
 
 ```typescript
-interface TaskRoutingConfig {
-  assignments: Partial<Record<ModelTaskType, TaskModelAssignment>>;
+interface CapabilityRoutingConfig {
+  assignments: Partial<Record<ModelCapabilityType, CapabilityModelAssignment>>;
 }
 
-interface TaskModelAssignment {
+interface CapabilityModelAssignment {
   provider: string;
   model: string;
   fallback?: { provider: string; model: string };
 }
 
-type ModelTaskType = 'text' | 'image_recognition' | 'image_generation' | 'audio_tts' | 'audio_stt' | 'video_generation';
+type ModelCapabilityType = 'text' | 'image_recognition' | 'image_generation' | 'audio_tts' | 'audio_stt' | 'video_generation';
 ```
 
 ---
@@ -320,18 +320,18 @@ type ModelTaskType = 'text' | 'image_recognition' | 'image_generation' | 'audio_
 | Endpoint | Method | Description | Caching |
 |----------|--------|-------------|---------|
 | `/api/settings/llm/routing` | GET | Current routing config | None |
-| `/api/settings/llm` | POST | Update routing config (taskRouting, routingDefaultModel, etc.) | None |
+| `/api/settings/llm` | POST | Update routing config (capabilityRouting, routingDefaultModel, etc.) | None |
 | `/api/models/routing-candidates` | GET | All available models per provider | 5-min server-side TTL |
-| `/api/models/suggested-assignments` | GET | Auto-suggested best model per task | None |
+| `/api/models/suggested-assignments` | GET | Auto-suggested best model per capability | None |
 
 ---
 
 ## UI Components
 
-- **`ModelRoutingSection`** — task assignment table with per-task model selection
+- **`ModelRoutingSection`** — capability assignment table with per-capability model selection
 - **`ModelSelect`** — searchable model dropdown grouped by provider
 - **`ModelPicker`** — model selection with tier/cost badges for the main settings panel
 
 ### Stale Assignment Handling
 
-When a provider is removed from configuration, its task assignments become stale. The UI shows a yellow warning badge on stale assignments instead of auto-cleaning them, letting users decide whether to clear or reconfigure.
+When a provider is removed from configuration, its capability assignments become stale. The UI shows a yellow warning badge on stale assignments instead of auto-cleaning them, letting users decide whether to clear or reconfigure.

@@ -152,6 +152,10 @@ export interface AgentToolHandler {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** Dynamic description override — called at LLM request time for provider-aware tools */
+  getDescription?(): string;
+  /** Dynamic inputSchema override — called at LLM request time for provider-aware tools */
+  getInputSchema?(): Record<string, unknown>;
   execute(args: Record<string, unknown>, onOutput?: ToolOutputCallback): Promise<string>;
 }
 

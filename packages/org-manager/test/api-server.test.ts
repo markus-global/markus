@@ -641,7 +641,7 @@ function createTestServer(): TestContext {
       defaultProvider: 'openai',
       providers: {},
       autoFallback: true,
-      taskRouting: { assignments: {} },
+      capabilityRouting: { assignments: {} },
     })),
     updateSettings: vi.fn(),
     addProvider: vi.fn(),
@@ -653,9 +653,9 @@ function createTestServer(): TestContext {
     listProviders: vi.fn(() => []),
     setDefaultProvider: vi.fn(),
     setAutoFallback: vi.fn(),
-    setTaskRouting: vi.fn(),
+    setCapabilityRouting: vi.fn(),
     setRoutingDefaultModel: vi.fn(),
-    taskRouting: { assignments: {} },
+    capabilityRouting: { assignments: {} },
     getModelCatalog: vi.fn(() => [{ id: 'gpt-4', provider: 'openai' }]),
   } as never);
   server.setModelCatalog({

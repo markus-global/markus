@@ -3,7 +3,7 @@ import { createSettingsTools } from '../src/tools/settings.js';
 import type { LLMRouter } from '../src/llm/router.js';
 
 function createMockRouter(overrides: Partial<LLMRouter> = {}): LLMRouter {
-  const taskRouting = {
+  const capabilityRouting = {
     assignments: {} as Record<string, { provider: string; model: string; fallback?: { provider: string; model: string } } | undefined>,
   };
   return {
@@ -57,10 +57,10 @@ function createMockRouter(overrides: Partial<LLMRouter> = {}): LLMRouter {
     registerProviderFromConfig: vi.fn(),
     getProvider: vi.fn(),
     addCustomModel: vi.fn(),
-    taskRouting,
+    capabilityRouting,
     routingDefaultModel: 'gpt-4o',
-    setTaskRouting: vi.fn((routing) => {
-      Object.assign(taskRouting, routing);
+    setCapabilityRouting: vi.fn((routing) => {
+      Object.assign(capabilityRouting, routing);
     }),
     ...overrides,
   } as unknown as LLMRouter;
@@ -84,8 +84,8 @@ describe('createSettingsTools', () => {
       'llm_add_provider',
       'llm_edit_provider',
       'llm_add_model',
-      'llm_get_task_routing',
-      'llm_set_task_routing',
+      'llm_get_capability_routing',
+      'llm_set_capability_routing',
     ]);
   });
 
@@ -112,12 +112,12 @@ describe('createSettingsTools', () => {
     });
   });
 
-  describe('detectModelTaskMismatch (via llm_set_task_routing)', () => {
-    it('rejects text model for image_generation task', async () => {
+  describe('detectModelCapabilityMismatch (via llm_set_capability_routing)', () => {
+    it('rejects text model for image_generation capability', async () => {
       const router = createMockRouter();
-      const tool = findTool(router, 'llm_set_task_routing');
+      const tool = findTool(router, 'llm_set_capability_routing');
       const result = JSON.parse(await tool.execute({
-        task_type: 'image_generation',
+        capability_type: 'image_generation',
         provider: 'openai',
         model: 'gpt-4o',
       }));
@@ -130,23 +130,23 @@ describe('createSettingsTools', () => {
     it('accepts matching image model for image_generation', async () => {
       const router = createMockRouter();
       const persistConfig = vi.fn();
-      const tool = findTool(router, 'llm_set_task_routing', persistConfig);
+      const tool = findTool(router, 'llm_set_capability_routing', persistConfig);
       const result = JSON.parse(await tool.execute({
-        task_type: 'image_generation',
+        capability_type: 'image_generation',
         provider: 'openai',
         model: 'gpt-image-1',
       }));
       expect(result.status).toBe('success');
-      expect(result.task_type).toBe('image_generation');
-      expect(router.setTaskRouting).toHaveBeenCalled();
+      expect(result.capability_type).toBe('image_generation');
+      expect(router.setCapabilityRouting).toHaveBeenCalled();
       expect(persistConfig).toHaveBeenCalled();
     });
 
-    it('rejects text model for audio_tts task', async () => {
+    it('rejects text model for audio_tts capability', async () => {
       const router = createMockRouter();
-      const tool = findTool(router, 'llm_set_task_routing');
+      const tool = findTool(router, 'llm_set_capability_routing');
       const result = JSON.parse(await tool.execute({
-        task_type: 'audio_tts',
+        capability_type: 'audio_tts',
         provider: 'openai',
         model: 'claude-sonnet-4',
       }));
@@ -156,20 +156,20 @@ describe('createSettingsTools', () => {
 
     it('accepts whisper model for audio_stt', async () => {
       const router = createMockRouter();
-      const tool = findTool(router, 'llm_set_task_routing');
+      const tool = findTool(router, 'llm_set_capability_routing');
       const result = JSON.parse(await tool.execute({
-        task_type: 'audio_stt',
+        capability_type: 'audio_stt',
         provider: 'openai',
         model: 'whisper-1',
       }));
       expect(result.status).toBe('success');
     });
 
-    it('does not validate text task type', async () => {
+    it('does not validate text capability type', async () => {
       const router = createMockRouter();
-      const tool = findTool(router, 'llm_set_task_routing');
+      const tool = findTool(router, 'llm_set_capability_routing');
       const result = JSON.parse(await tool.execute({
-        task_type: 'text',
+        capability_type: 'text',
         provider: 'openai',
         model: 'gpt-4o',
       }));
@@ -178,9 +178,9 @@ describe('createSettingsTools', () => {
 
     it('allows unknown model names without text pattern match', async () => {
       const router = createMockRouter();
-      const tool = findTool(router, 'llm_set_task_routing');
+      const tool = findTool(router, 'llm_set_capability_routing');
       const result = JSON.parse(await tool.execute({
-        task_type: 'image_generation',
+        capability_type: 'image_generation',
         provider: 'custom',
         model: 'my-custom-image-model-v2',
       }));
@@ -188,27 +188,27 @@ describe('createSettingsTools', () => {
     });
   });
 
-  describe('llm_set_task_routing validation', () => {
+  describe('llm_set_capability_routing validation', () => {
     it('clears assignment when provider and model are empty', async () => {
       const router = createMockRouter();
-      router.taskRouting.assignments.image_generation = { provider: 'openai', model: 'gpt-image-1' };
+      router.capabilityRouting.assignments.image_generation = { provider: 'openai', model: 'gpt-image-1' };
       const persistConfig = vi.fn();
-      const tool = findTool(router, 'llm_set_task_routing', persistConfig);
+      const tool = findTool(router, 'llm_set_capability_routing', persistConfig);
       const result = JSON.parse(await tool.execute({
-        task_type: 'image_generation',
+        capability_type: 'image_generation',
         provider: '',
         model: '',
       }));
       expect(result.status).toBe('success');
-      expect(result.message).toContain('Cleared task routing');
-      expect(router.setTaskRouting).toHaveBeenCalled();
+      expect(result.message).toContain('Cleared capability routing');
+      expect(router.setCapabilityRouting).toHaveBeenCalled();
     });
 
     it('sets fallback provider when provided', async () => {
       const router = createMockRouter();
-      const tool = findTool(router, 'llm_set_task_routing');
+      const tool = findTool(router, 'llm_set_capability_routing');
       const result = JSON.parse(await tool.execute({
-        task_type: 'audio_tts',
+        capability_type: 'audio_tts',
         provider: 'openai',
         model: 'tts-1',
         fallback_provider: 'openai',
@@ -218,13 +218,13 @@ describe('createSettingsTools', () => {
       expect(result.fallback).toEqual({ provider: 'openai', model: 'tts-1-hd' });
     });
 
-    it('returns llm_get_task_routing with task types', async () => {
+    it('returns llm_get_capability_routing with capability types', async () => {
       const router = createMockRouter();
-      const tool = findTool(router, 'llm_get_task_routing');
+      const tool = findTool(router, 'llm_get_capability_routing');
       const result = JSON.parse(await tool.execute({}));
       expect(result.routing_default_model).toBe('gpt-4o');
-      expect(result.task_types).toContain('image_generation');
-      expect(result.task_types).toContain('audio_stt');
+      expect(result.capability_types).toContain('image_generation');
+      expect(result.capability_types).toContain('audio_stt');
     });
   });
 });

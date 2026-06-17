@@ -340,7 +340,7 @@ describe('start command integration', () => {
         org: { id: 'default', name: 'Test Org' },
         llm: {
           defaultProvider: 'siliconflow',
-          taskRouting: { coding: 'deepseek' },
+          capabilityRouting: { coding: 'deepseek' },
           routingDefaultModel: 'Qwen/Qwen3.5-35B-A3B',
           customModels: {
             siliconflow: [{ id: 'custom-model', name: 'Custom' }],

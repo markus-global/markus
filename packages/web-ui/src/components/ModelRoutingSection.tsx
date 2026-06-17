@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { TaskRoutingConfigDTO, ModelTaskTypeDTO, TaskModelAssignmentDTO } from '../api';
+import type { CapabilityRoutingConfigDTO, ModelCapabilityTypeDTO, CapabilityModelAssignmentDTO } from '../api';
 import { ModelSelect, type ModelOption } from './ModelSelect';
 
 interface Props {
-  onSave: (data: { taskRouting?: Partial<TaskRoutingConfigDTO>; routingDefaultModel?: { provider: string; model: string } | null }) => Promise<void>;
+  onSave: (data: { capabilityRouting?: Partial<CapabilityRoutingConfigDTO>; routingDefaultModel?: { provider: string; model: string } | null }) => Promise<void>;
   configuredProviders: Array<{ name: string; displayName?: string; model: string; models?: Array<{ id: string; name: string }> }>;
 }
 
@@ -12,11 +12,11 @@ type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
 const DEBOUNCE_MS = 500;
 
-const TASK_GROUPS: { groupKey: string; tasks: ModelTaskTypeDTO[] }[] = [
-  { groupKey: 'text', tasks: ['text'] },
-  { groupKey: 'image', tasks: ['image_recognition', 'image_generation'] },
-  { groupKey: 'audio', tasks: ['audio_tts', 'audio_stt'] },
-  { groupKey: 'video', tasks: ['video_generation'] },
+const CAPABILITY_GROUPS: { groupKey: string; capabilities: ModelCapabilityTypeDTO[] }[] = [
+  { groupKey: 'text', capabilities: ['text'] },
+  { groupKey: 'image', capabilities: ['image_recognition', 'image_generation'] },
+  { groupKey: 'audio', capabilities: ['audio_tts', 'audio_stt'] },
+  { groupKey: 'video', capabilities: ['video_generation'] },
 ];
 
 interface Suggestion {
@@ -27,7 +27,7 @@ interface Suggestion {
 
 export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
   const { t } = useTranslation('settings');
-  const [assignments, setAssignments] = useState<Partial<Record<ModelTaskTypeDTO, TaskModelAssignmentDTO>>>({});
+  const [assignments, setAssignments] = useState<Partial<Record<ModelCapabilityTypeDTO, CapabilityModelAssignmentDTO>>>({});
   const [defaultModel, setDefaultModel] = useState<{ provider: string; model: string } | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -36,7 +36,7 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
   const [suggestions, setSuggestions] = useState<Record<string, Suggestion | null>>({});
   const [suggestionsLoaded, setSuggestionsLoaded] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingSaveRef = useRef<{ taskRouting?: Partial<TaskRoutingConfigDTO>; routingDefaultModel?: { provider: string; model: string } | null } | null>(null);
+  const pendingSaveRef = useRef<{ capabilityRouting?: Partial<CapabilityRoutingConfigDTO>; routingDefaultModel?: { provider: string; model: string } | null } | null>(null);
 
   const providerKey = useMemo(
     () => configuredProviders.map(p => p.name).sort().join(','),
@@ -47,8 +47,8 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
   useEffect(() => {
     fetch('/api/settings/llm/routing', { credentials: 'include' })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then((data: { taskRouting?: TaskRoutingConfigDTO; routingDefaultModel?: { provider: string; model: string } | null }) => {
-        setAssignments(data.taskRouting?.assignments ?? {});
+      .then((data: { capabilityRouting?: CapabilityRoutingConfigDTO; routingDefaultModel?: { provider: string; model: string } | null }) => {
+        setAssignments(data.capabilityRouting?.assignments ?? {});
         setDefaultModel(data.routingDefaultModel ?? null);
         setLoaded(true);
       })
@@ -92,16 +92,16 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
       .catch(() => setSuggestionsLoaded(true));
   }, [providerKey]);
 
-  const doSave = useCallback((payload: { taskRouting?: Partial<TaskRoutingConfigDTO>; routingDefaultModel?: { provider: string; model: string } | null }) => {
+  const doSave = useCallback((payload: { capabilityRouting?: Partial<CapabilityRoutingConfigDTO>; routingDefaultModel?: { provider: string; model: string } | null }) => {
     setSaveStatus('saving');
     onSave(payload)
       .then(() => { setSaveStatus('saved'); setTimeout(() => setSaveStatus(prev => prev === 'saved' ? 'idle' : prev), 2000); })
       .catch(() => { setSaveStatus('error'); setTimeout(() => setSaveStatus(prev => prev === 'error' ? 'idle' : prev), 3000); });
   }, [onSave]);
 
-  const debouncedSave = useCallback((newAssignments?: Partial<Record<ModelTaskTypeDTO, TaskModelAssignmentDTO>>, rdm?: { provider: string; model: string } | null) => {
+  const debouncedSave = useCallback((newAssignments?: Partial<Record<ModelCapabilityTypeDTO, CapabilityModelAssignmentDTO>>, rdm?: { provider: string; model: string } | null) => {
     pendingSaveRef.current = {
-      taskRouting: newAssignments !== undefined ? { assignments: newAssignments } : pendingSaveRef.current?.taskRouting,
+      capabilityRouting: newAssignments !== undefined ? { assignments: newAssignments } : pendingSaveRef.current?.capabilityRouting,
       routingDefaultModel: rdm !== undefined ? rdm : pendingSaveRef.current?.routingDefaultModel,
     };
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -176,11 +176,11 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
         </div>
       </div>
 
-      {/* Task-Model Assignment Table */}
+      {/* Capability-Model Assignment Table */}
       <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
         <div>
-          <h3 className="text-sm font-semibold text-fg-primary">{t('modelRouting.taskAssignTitle')}</h3>
-          <p className="text-xs text-fg-tertiary mt-1">{t('modelRouting.taskAssignDesc')}</p>
+          <h3 className="text-sm font-semibold text-fg-primary">{t('modelRouting.capabilityAssignTitle')}</h3>
+          <p className="text-xs text-fg-tertiary mt-1">{t('modelRouting.capabilityAssignDesc')}</p>
         </div>
 
         {configuredProviders.length === 0 && (
@@ -191,22 +191,22 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
 
         {configuredProviders.length > 0 && (
           <div className="space-y-4">
-            {TASK_GROUPS.map(group => (
-              <TaskGroup
+            {CAPABILITY_GROUPS.map(group => (
+              <CapabilityGroup
                 key={group.groupKey}
                 groupKey={group.groupKey}
-                tasks={group.tasks}
+                capabilities={group.capabilities}
                 assignments={assignments}
                 suggestions={suggestions}
                 allModels={allModels}
                 configuredProviderNames={new Set(configuredProviders.map(p => p.name))}
                 t={t}
-                onAssign={(taskType, assignment) => {
+                onAssign={(capabilityType, assignment) => {
                   const newAssignments = { ...assignments };
                   if (assignment) {
-                    newAssignments[taskType] = assignment;
+                    newAssignments[capabilityType] = assignment;
                   } else {
-                    delete newAssignments[taskType];
+                    delete newAssignments[capabilityType];
                   }
                   setAssignments(newAssignments);
                   debouncedSave(newAssignments);
@@ -220,9 +220,9 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
   );
 }
 
-function TaskGroup({
+function CapabilityGroup({
   groupKey,
-  tasks,
+  capabilities,
   assignments,
   suggestions,
   allModels,
@@ -231,34 +231,37 @@ function TaskGroup({
   onAssign,
 }: {
   groupKey: string;
-  tasks: ModelTaskTypeDTO[];
-  assignments: Partial<Record<ModelTaskTypeDTO, TaskModelAssignmentDTO>>;
+  capabilities: ModelCapabilityTypeDTO[];
+  assignments: Partial<Record<ModelCapabilityTypeDTO, CapabilityModelAssignmentDTO>>;
   suggestions: Record<string, Suggestion | null>;
   allModels: ModelOption[];
   configuredProviderNames: Set<string>;
   t: (key: string) => string;
-  onAssign: (taskType: ModelTaskTypeDTO, assignment: TaskModelAssignmentDTO | null) => void;
+  onAssign: (capabilityType: ModelCapabilityTypeDTO, assignment: CapabilityModelAssignmentDTO | null) => void;
 }) {
   return (
     <div>
       <div className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2 px-1">
-        {t(`modelRouting.taskGroups.${groupKey}`)}
+        {t(`modelRouting.capabilityGroups.${groupKey}`)}
       </div>
       <div className="space-y-1">
-        {tasks.map(taskType => {
-          const assignment = assignments[taskType];
-          const suggestion = suggestions[taskType];
+        {capabilities.map(capabilityType => {
+          const assignment = assignments[capabilityType];
+          const suggestion = suggestions[capabilityType];
           const currentValue = assignment ? `${assignment.provider}/${assignment.model}` : '';
-          const filteredModels = filterModelsForTask(allModels, taskType);
+          const filteredModels = filterModelsForCapability(allModels, capabilityType);
+          const suggestionLabel = suggestion
+            ? (filteredModels.find(m => m.provider === suggestion.provider && m.modelId === suggestion.model)?.modelName ?? suggestion.model)
+            : undefined;
           const hasModels = filteredModels.length > 0;
           const tier = assignment ? getTierForModel(allModels, assignment.provider, assignment.model) : undefined;
           const isStale = assignment && !configuredProviderNames.has(assignment.provider);
-          const isMismatch = !!(assignment && hasModels && taskType !== 'text' &&
+          const isMismatch = !!(assignment && hasModels && capabilityType !== 'text' &&
             !filteredModels.some(m => m.provider === assignment.provider && m.modelId === assignment.model));
 
           return (
             <div
-              key={taskType}
+              key={capabilityType}
               className={`flex items-center gap-3 px-3 py-2 rounded-lg ${
                 isMismatch ? 'bg-red-500/10 border border-red-500/30'
                 : isStale ? 'bg-yellow-500/10 border border-yellow-500/30'
@@ -267,7 +270,7 @@ function TaskGroup({
               }`}
             >
               <div className="w-28 shrink-0">
-                <span className="text-xs text-fg-primary">{t(`modelRouting.tasks.${taskType}`)}</span>
+                <span className="text-xs text-fg-primary">{t(`modelRouting.capabilities.${capabilityType}`)}</span>
               </div>
               <div className="flex-1 min-w-0">
                 {isMismatch ? (
@@ -279,13 +282,13 @@ function TaskGroup({
                     <ModelSelect
                       value=""
                       options={filteredModels}
-                      placeholder={suggestion ? `${suggestion.model} (${t('modelRouting.suggested')})` : t('modelRouting.selectModel')}
+                      placeholder={suggestionLabel ? `${suggestionLabel} (${t('modelRouting.suggested')})` : t('modelRouting.selectModel')}
                       onChange={val => {
                         if (!val) {
-                          onAssign(taskType, null);
+                          onAssign(capabilityType, null);
                         } else {
                           const [provider, ...modelParts] = val.split('/');
-                          onAssign(taskType, { provider, model: modelParts.join('/') });
+                          onAssign(capabilityType, { provider, model: modelParts.join('/') });
                         }
                       }}
                     />
@@ -294,13 +297,13 @@ function TaskGroup({
                   <ModelSelect
                     value={currentValue}
                     options={filteredModels}
-                    placeholder={suggestion ? `${suggestion.model} (${t('modelRouting.suggested')})` : t('modelRouting.selectModel')}
+                    placeholder={suggestionLabel ? `${suggestionLabel} (${t('modelRouting.suggested')})` : t('modelRouting.selectModel')}
                     onChange={val => {
                       if (!val) {
-                        onAssign(taskType, null);
+                        onAssign(capabilityType, null);
                       } else {
                         const [provider, ...modelParts] = val.split('/');
-                        onAssign(taskType, { provider, model: modelParts.join('/') });
+                        onAssign(capabilityType, { provider, model: modelParts.join('/') });
                       }
                     }}
                   />
@@ -324,7 +327,7 @@ function TaskGroup({
               <div className="w-8 shrink-0 flex justify-end">
                 {assignment && (
                   <button
-                    onClick={() => onAssign(taskType, null)}
+                    onClick={() => onAssign(capabilityType, null)}
                     className="text-fg-tertiary hover:text-red-400 transition-colors"
                     title={t('modelRouting.clear')}
                   >
@@ -382,18 +385,17 @@ function TierBadge({ tier }: { tier: string }) {
   );
 }
 
-function filterModelsForTask(models: ModelOption[], taskType: ModelTaskTypeDTO): ModelOption[] {
-  if (taskType === 'text') {
+const NON_TEXT_CAPABILITIES = new Set(['imageGeneration', 'tts', 'stt', 'videoGeneration', 'audioOutput', 'audioInput']);
+
+function filterModelsForCapability(models: ModelOption[], capabilityType: ModelCapabilityTypeDTO): ModelOption[] {
+  if (capabilityType === 'text') {
     return models.filter(m => {
+      if (m.capabilities && m.capabilities.some(c => NON_TEXT_CAPABILITIES.has(c))) return false;
       if (m.mode && m.mode !== 'chat') return false;
-      if (!m.capabilities || m.capabilities.length === 0) {
-        return !isLikelyNonTextModel(m.modelId.toLowerCase());
-      }
       return true;
     });
   }
 
-  // Mode-based mapping for non-text tasks
   const modeMap: Record<string, string[]> = {
     image_generation: ['image_generation'],
     audio_tts: ['audio_speech'],
@@ -410,40 +412,14 @@ function filterModelsForTask(models: ModelOption[], taskType: ModelTaskTypeDTO):
     video_generation: ['videoGeneration'],
   };
 
-  const validModes = modeMap[taskType];
-  const required = capMap[taskType];
+  const validModes = modeMap[capabilityType];
+  const required = capMap[capabilityType];
 
   return models.filter(m => {
-    // Match by catalog mode (e.g. audio_speech, image_generation)
     if (validModes && m.mode && validModes.includes(m.mode)) return true;
-    // Match by capability flags
     if (m.capabilities && m.capabilities.length > 0 && required) {
       return required.some(cap => m.capabilities!.includes(cap));
     }
-    // Fallback: infer from model name
-    return inferCapabilityFromName(m.modelId.toLowerCase(), taskType);
+    return false;
   });
-}
-
-function isLikelyNonTextModel(modelId: string): boolean {
-  const patterns = [/\btts\b/, /\bwhisper\b/, /\bstt\b/, /\bdall-?e\b/, /\bstable.?diffusion\b/, /\bflux\b/, /\bwav2vec\b/, /\bembedding\b/, /\bembed\b/,
-    /gpt-image/, /hailuo/, /cogview/, /cogvideo/, /seedream/, /seedance/, /\bveo\b/, /\bmusic\b/, /\borpheus\b/, /grok-imagine/, /\bimage-01\b/, /\basr\b/, /transcribe/, /\bvidu\b/];
-  return patterns.some(p => p.test(modelId));
-}
-
-function inferCapabilityFromName(modelId: string, taskType: ModelTaskTypeDTO): boolean {
-  switch (taskType) {
-    case 'image_recognition':
-      return /\bvl\b|vision|visual|eye/.test(modelId);
-    case 'image_generation':
-      return /\bdall-?e\b|gpt-image|flux|stable.?diffusion|sdxl|imagen|wanx|wan[.-]?ai|kolors|playground|cogview|glm-image|seedream|grok-imagine-image/.test(modelId);
-    case 'audio_tts':
-      return /\btts\b|cosy.?voice|speech|bark|xtts|voice|orpheus|music/.test(modelId);
-    case 'audio_stt':
-      return /\bstt\b|whisper|sense.?voice|paraformer|speech.?to.?text|transcribe|asr|voxtral/.test(modelId);
-    case 'video_generation':
-      return /\bvideo\b|hailuo|wan.*[ti]2v|sora|kling|gen-?[23]|cogvideo|vidu|seedance|veo|grok-imagine-video/.test(modelId);
-    default:
-      return false;
-  }
 }

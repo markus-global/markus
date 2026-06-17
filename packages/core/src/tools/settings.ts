@@ -1,6 +1,6 @@
 import type { AgentToolHandler } from '../agent.js';
 import type { LLMRouter } from '../llm/router.js';
-import { createLogger, type MarkusConfig, type ModelTaskType, type TaskModelAssignment } from '@markus/shared';
+import { createLogger, type MarkusConfig, type ModelCapabilityType, type CapabilityModelAssignment } from '@markus/shared';
 
 const log = createLogger('settings-tools');
 
@@ -361,34 +361,34 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
       },
     },
     {
-      name: 'llm_get_task_routing',
+      name: 'llm_get_capability_routing',
       description:
-        'Get current task routing configuration. Shows which provider+model is assigned to each task type ' +
+        'Get current capability routing configuration. Shows which provider+model is assigned to each capability type ' +
         '(text, image_generation, audio_tts, audio_stt, video_generation) and the routing default model.',
       inputSchema: { type: 'object', properties: {} },
       async execute(): Promise<string> {
-        const routing = ctx.llmRouter.taskRouting;
+        const routing = ctx.llmRouter.capabilityRouting;
         const defaultModel = ctx.llmRouter.routingDefaultModel;
         return JSON.stringify({
           routing_default_model: defaultModel ?? null,
           assignments: routing.assignments,
-          task_types: ['text', 'image_recognition', 'image_generation', 'audio_tts', 'audio_stt', 'video_generation'],
+          capability_types: ['text', 'image_recognition', 'image_generation', 'audio_tts', 'audio_stt', 'video_generation'],
         });
       },
     },
     {
-      name: 'llm_set_task_routing',
+      name: 'llm_set_capability_routing',
       description:
-        'Assign a specific provider+model to a task type. For example, assign OpenAI gpt-image-1 to image_generation, ' +
-        'or assign a TTS model to audio_tts. Use llm_get_task_routing to see current assignments and llm_list_providers to see available providers. ' +
+        'Assign a specific provider+model to a capability type. For example, assign OpenAI gpt-image-1 to image_generation, ' +
+        'or assign a TTS model to audio_tts. Use llm_get_capability_routing to see current assignments and llm_list_providers to see available providers. ' +
         'Set provider and model to empty strings to clear an assignment.',
       inputSchema: {
         type: 'object',
         properties: {
-          task_type: {
+          capability_type: {
             type: 'string',
             enum: ['text', 'image_recognition', 'image_generation', 'audio_tts', 'audio_stt', 'video_generation'],
-            description: 'The task type to configure',
+            description: 'The capability type to configure',
           },
           provider: {
             type: 'string',
@@ -396,7 +396,7 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
           },
           model: {
             type: 'string',
-            description: 'Model ID to use for this task (e.g. "gpt-image-1", "tts-1", "whisper-1")',
+            description: 'Model ID to use for this capability (e.g. "gpt-image-1", "tts-1", "whisper-1")',
           },
           fallback_provider: {
             type: 'string',
@@ -407,43 +407,43 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
             description: 'Optional fallback model',
           },
         },
-        required: ['task_type', 'provider', 'model'],
+        required: ['capability_type', 'provider', 'model'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
-        const taskType = args['task_type'] as ModelTaskType;
+        const capabilityType = args['capability_type'] as ModelCapabilityType;
         const provider = args['provider'] as string;
         const model = args['model'] as string;
 
         try {
           if (!provider && !model) {
-            const current = { ...ctx.llmRouter.taskRouting };
-            delete current.assignments[taskType];
-            ctx.llmRouter.setTaskRouting(current);
+            const current = { ...ctx.llmRouter.capabilityRouting };
+            delete current.assignments[capabilityType];
+            ctx.llmRouter.setCapabilityRouting(current);
 
             if (ctx.persistConfig) {
               try {
-                ctx.persistConfig({ llm: { taskRouting: { assignments: { [taskType]: null } } } } as any);
+                ctx.persistConfig({ llm: { capabilityRouting: { assignments: { [capabilityType]: null } } } } as any);
               } catch { /* best effort */ }
             }
 
             return JSON.stringify({
               status: 'success',
-              message: `Cleared task routing for ${taskType}`,
+              message: `Cleared capability routing for ${capabilityType}`,
             });
           }
 
-          if (taskType !== 'text') {
-            const mismatch = detectModelTaskMismatch(model, taskType);
+          if (capabilityType !== 'text') {
+            const mismatch = detectModelCapabilityMismatch(model, capabilityType);
             if (mismatch) {
               return JSON.stringify({
                 status: 'error',
                 error: mismatch,
-                hint: `Use llm_list_providers to find models that support ${taskType}.`,
+                hint: `Use llm_list_providers to find models that support ${capabilityType}.`,
               });
             }
           }
 
-          const assignment: TaskModelAssignment = { provider, model };
+          const assignment: CapabilityModelAssignment = { provider, model };
           const fbProvider = args['fallback_provider'] as string | undefined;
           const fbModel = args['fallback_model'] as string | undefined;
           if (fbProvider && fbModel) {
@@ -451,25 +451,25 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
           }
 
           const updated = {
-            ...ctx.llmRouter.taskRouting,
+            ...ctx.llmRouter.capabilityRouting,
             assignments: {
-              ...ctx.llmRouter.taskRouting.assignments,
-              [taskType]: assignment,
+              ...ctx.llmRouter.capabilityRouting.assignments,
+              [capabilityType]: assignment,
             },
           };
-          ctx.llmRouter.setTaskRouting(updated);
+          ctx.llmRouter.setCapabilityRouting(updated);
 
           if (ctx.persistConfig) {
-            try { ctx.persistConfig({ llm: { taskRouting: updated } } as any); } catch { /* best effort */ }
+            try { ctx.persistConfig({ llm: { capabilityRouting: updated } } as any); } catch { /* best effort */ }
           }
 
           return JSON.stringify({
             status: 'success',
-            task_type: taskType,
+            capability_type: capabilityType,
             provider,
             model,
             fallback: assignment.fallback ?? null,
-            message: `Task ${taskType} now routed to ${provider}/${model}`,
+            message: `Capability ${capabilityType} now routed to ${provider}/${model}`,
           });
         } catch (err) {
           return JSON.stringify({ status: 'error', error: String(err) });
@@ -479,7 +479,7 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
   ];
 }
 
-const TASK_MODEL_PATTERNS: Record<string, RegExp> = {
+const CAPABILITY_MODEL_PATTERNS: Record<string, RegExp> = {
   image_generation: /\bdall-?e\b|gpt-image|flux|stable.?diffusion|sdxl|imagen|wanx|wan[.-]?ai|kolors|playground|cogview|glm-image|seedream|grok-imagine|image-01/i,
   image_recognition: /\bvl\b|vision|visual|eye|gpt-4o|gemini|claude/i,
   audio_tts: /\btts\b|cosy.?voice|speech|bark|xtts|voice|orpheus|music/i,
@@ -489,14 +489,14 @@ const TASK_MODEL_PATTERNS: Record<string, RegExp> = {
 
 const TEXT_MODEL_PATTERN = /deepseek|qwen|gpt-[34]|gpt-5|claude|gemini|glm-[45]|llama|mistral|phi-|command|minimax-m/i;
 
-function detectModelTaskMismatch(model: string, taskType: ModelTaskType): string | null {
-  const expectedPattern = TASK_MODEL_PATTERNS[taskType];
+function detectModelCapabilityMismatch(model: string, capabilityType: ModelCapabilityType): string | null {
+  const expectedPattern = CAPABILITY_MODEL_PATTERNS[capabilityType];
   if (!expectedPattern) return null;
 
   if (expectedPattern.test(model)) return null;
 
   if (TEXT_MODEL_PATTERN.test(model)) {
-    return `Model "${model}" appears to be a text/chat model, not suitable for ${taskType}. ` +
+    return `Model "${model}" appears to be a text/chat model, not suitable for ${capabilityType}. ` +
       `Expected a model matching patterns like: ${expectedPattern.source}`;
   }
 

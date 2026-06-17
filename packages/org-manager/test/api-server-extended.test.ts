@@ -723,7 +723,7 @@ describe('APIServer extended route coverage', () => {
       const res = await request(ctx.server, 'POST', '/api/settings/llm', {
         defaultProvider: 'openai',
         autoFallback: true,
-        taskRouting: { assignments: { coding: 'openai/gpt-4' } },
+        capabilityRouting: { assignments: { coding: 'openai/gpt-4' } },
         routingDefaultModel: { provider: 'openai', model: 'gpt-4' },
       });
       expect(res.status).toBe(200);
@@ -1288,7 +1288,7 @@ describe('APIServer extended route coverage', () => {
         getEnhancedSettings: vi.fn(() => ({
           defaultProvider: 'openai',
           autoFallback: true,
-          taskRouting: { assignments: {} },
+          capabilityRouting: { assignments: {} },
           providers: {
             openai: {
               enabled: true, configured: true, displayName: 'OpenAI',
@@ -1297,7 +1297,7 @@ describe('APIServer extended route coverage', () => {
           },
         })),
         getProvider: vi.fn(() => ({ apiKey: 'sk-live', baseUrl: 'https://api.openai.com/v1' })),
-        taskRouting: { assignments: {} },
+        capabilityRouting: { assignments: {} },
       } as never);
       mockFetch.mockResolvedValueOnce({
         status: 200, ok: true,

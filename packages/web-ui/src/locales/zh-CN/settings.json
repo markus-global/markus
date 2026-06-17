@@ -85,18 +85,18 @@
   "modelRouting": {
     "title": "模型路由",
     "defaultModelTitle": "默认模型",
-    "defaultModelDesc": "当任务没有指定模型时，使用此默认模型。",
+    "defaultModelDesc": "当能力没有指定模型时，使用此默认模型。",
     "defaultModelPlaceholder": "选择默认模型...",
-    "taskAssignTitle": "任务分配",
-    "taskAssignDesc": "为每种任务类型指定使用的模型。未指定的任务将使用上方的默认模型。",
-    "taskGroups": {
+    "capabilityAssignTitle": "能力分配",
+    "capabilityAssignDesc": "为每种能力类型指定使用的模型。未指定的能力将使用上方的默认模型。",
+    "capabilityGroups": {
       "text": "文本",
       "image": "图像",
       "audio": "音频",
       "video": "视频",
       "other": "其他"
     },
-    "tasks": {
+    "capabilities": {
       "text": "通用",
       "image_recognition": "图像识别",
       "image_generation": "图像生成",
@@ -114,9 +114,9 @@
     "saving": "保存中...",
     "saved": "已保存",
     "saveError": "保存失败",
-    "mismatchHint": "模型与此任务类型不匹配 — 请选择兼容的模型",
+    "mismatchHint": "模型与此能力类型不匹配 — 请选择兼容的模型",
     "staleProvider": "服务商未配置 — 请清除或重新配置",
-    "noProvidersHint": "请先在上方配置至少一个服务商，才能为任务指定模型。",
+    "noProvidersHint": "请先在上方配置至少一个服务商，才能为能力指定模型。",
     "tier": {
       "base": "基础",
       "pro": "专业",

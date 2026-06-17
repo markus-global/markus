@@ -49,7 +49,7 @@ describe('createServices', () => {
       llm: {
         defaultProvider: 'openrouter',
         autoFallback: false,
-        taskRouting: { coding: 'deepseek' },
+        capabilityRouting: { coding: 'deepseek' },
         routingDefaultModel: 'deepseek-v4-flash',
         customModels: {
           openrouter: [{ id: 'custom/router-model', name: 'Router Custom' }],

@@ -266,9 +266,9 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
     llmRouter.setAutoFallback(false);
   }
 
-  // Apply task routing config
-  if (config.llm.taskRouting) {
-    llmRouter.setTaskRouting(config.llm.taskRouting);
+  // Apply capability routing config
+  if (config.llm.capabilityRouting) {
+    llmRouter.setCapabilityRouting(config.llm.capabilityRouting);
   }
   if (config.llm.routingDefaultModel) {
     llmRouter.setRoutingDefaultModel(config.llm.routingDefaultModel);

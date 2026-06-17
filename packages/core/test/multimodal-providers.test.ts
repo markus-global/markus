@@ -367,7 +367,7 @@ describe('resolveModalityCandidates capability filtering', () => {
 
   it('image_generation with assignment: only assigned provider, no deepseek fallback', () => {
     const router = createRouter();
-    router.setTaskRouting({ assignments: { image_generation: { provider: 'minimax-cn', model: 'image-01' } } });
+    router.setCapabilityRouting({ assignments: { image_generation: { provider: 'minimax-cn', model: 'image-01' } } });
     const candidates = router.resolveModalityCandidates('image_generation');
     const names = candidates.map(c => c.name);
     expect(names).toContain('minimax-cn');
@@ -383,7 +383,7 @@ describe('resolveModalityCandidates capability filtering', () => {
 
   it('text routing still includes routingDefaultModel and defaultProvider', () => {
     const router = createRouter();
-    router.setTaskRouting({ assignments: { text: { provider: 'minimax-cn', model: 'MiniMax-M3' } } });
+    router.setCapabilityRouting({ assignments: { text: { provider: 'minimax-cn', model: 'MiniMax-M3' } } });
     const candidates = router.resolveModalityCandidates('text');
     const names = candidates.map(c => c.name);
     expect(names).toContain('minimax-cn');
@@ -399,7 +399,7 @@ describe('resolveModalityCandidates capability filtering', () => {
 
   it('assigned provider is always included even without capability declaration', () => {
     const router = createRouter();
-    router.setTaskRouting({ assignments: { image_generation: { provider: 'deepseek', model: 'some-model' } } });
+    router.setCapabilityRouting({ assignments: { image_generation: { provider: 'deepseek', model: 'some-model' } } });
     const candidates = router.resolveModalityCandidates('image_generation');
     expect(candidates.some(c => c.name === 'deepseek')).toBe(true);
   });
@@ -407,7 +407,7 @@ describe('resolveModalityCandidates capability filtering', () => {
   it('autoFallback respects capability filter for non-text tasks', () => {
     const router = createRouter();
     (router as any)._autoFallback = true;
-    router.setTaskRouting({ assignments: { image_generation: { provider: 'minimax-cn', model: 'image-01' } } });
+    router.setCapabilityRouting({ assignments: { image_generation: { provider: 'minimax-cn', model: 'image-01' } } });
     const candidates = router.resolveModalityCandidates('image_generation');
     const names = candidates.map(c => c.name);
     expect(names).toContain('minimax-cn');

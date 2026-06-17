@@ -593,13 +593,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   }, [sessionAgentMap, markChatRead]);
 
-  // Auto mark-read when a conversation becomes visible (chat tab active on L3)
+  // Mark-read + suppress unread increments for the active conversation (merged to avoid race)
   useEffect(() => {
     if (previewMode) return;
-    const isVisible = !isMobile || mobileLayer === 'chat';
+    const isVisible = (!isMobile || mobileLayer === 'chat') && mainTab === 'chat';
     if (!isVisible) return;
-    const isChatTab = mainTab === 'chat';
-    if (!isChatTab) return;
+
+    // Mark read
     if (chatMode === 'direct' && selectedAgent) {
       markAgentNotificationsRead(selectedAgent);
     }
@@ -611,14 +611,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const dmChannel = `dm:${[authUser?.id, activeDmUserId].sort().join(':')}`;
       markChatRead(`channel:${dmChannel}`);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewMode, chatMode, activeChannel, activeSessionId, activeDmUserId, mobileLayer, mainTab]);
 
-  // Suppress unread increments for the conversation currently being viewed
-  useEffect(() => {
-    if (previewMode) return;
-    const isVisible = (!isMobile || mobileLayer === 'chat') && mainTab === 'chat';
-    if (!isVisible) return;
+    // Suppress WS increments for all keys belonging to this conversation
     const keys: string[] = [];
     if (chatMode === 'direct' && activeSessionId) {
       keys.push(`session:${activeSessionId}`);
@@ -1054,6 +1048,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (prevKey && prevKey !== newKey) {
       sessionTabsBuffer.current.set(prevKey, openSessionTabs);
       activeSessionBuffer.current.set(prevKey, activeSessionId);
+      userAtBottomRef.current = true;
+      setShowScrollBtn(false);
+      newMsgCountRef.current = 0;
+      setNewMsgCount(0);
     }
 
     // Restore displayed state from this conv's buffer
@@ -2017,6 +2015,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     setShowSessions(false);
     setHasMore(false);
     oldestMsgId.current = null;
+    userAtBottomRef.current = true;
+    setShowScrollBtn(false);
+    newMsgCountRef.current = 0;
+    setNewMsgCount(0);
     const key = currentConvKeyRef.current;
     msgBuffers.current.delete(key);
     setMessages([]);

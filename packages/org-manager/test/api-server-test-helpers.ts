@@ -489,12 +489,12 @@ export function createTestServer(): TestContext {
   server.setKnowledgeService({ search: vi.fn(() => []), addEntry: vi.fn(async () => ({ id: 'know-1' })) } as never);
   const oauthPromise = Promise.resolve({ id: 'oauth-profile-1', provider: 'openai-codex' });
   server.setLLMRouter({
-    getEnhancedSettings: vi.fn(() => ({ defaultProvider: 'openai', providers: {}, autoFallback: true, taskRouting: { assignments: {} } })),
+    getEnhancedSettings: vi.fn(() => ({ defaultProvider: 'openai', providers: {}, autoFallback: true, capabilityRouting: { assignments: {} } })),
     updateSettings: vi.fn(), addProvider: vi.fn(), removeProvider: vi.fn(), updateProvider: vi.fn(),
     getProvider: vi.fn(() => ({ apiKey: 'test-key', baseUrl: 'https://api.openai.com' })),
     updateProviderModelConfig: vi.fn(), testProvider: vi.fn(async () => ({ ok: true })),
     listProviders: vi.fn(() => []), setDefaultProvider: vi.fn(), setAutoFallback: vi.fn(),
-    setTaskRouting: vi.fn(), setRoutingDefaultModel: vi.fn(), taskRouting: { assignments: {} },
+    setCapabilityRouting: vi.fn(), setRoutingDefaultModel: vi.fn(), capabilityRouting: { assignments: {} },
     getModelCatalog: vi.fn(() => [{ id: 'gpt-4', provider: 'openai' }]),
     registerOAuthProvider: vi.fn(),
     setProviderEnabled: vi.fn(),

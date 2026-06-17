@@ -374,19 +374,19 @@ export function invalidateApiCache(pathPrefix?: string) {
 // ── Model Routing Types ──────────────────────────────────────────────────
 
 export type ModelTier = 'base' | 'pro' | 'max';
-export type ModelTaskTypeDTO =
+export type ModelCapabilityTypeDTO =
   | 'text'
   | 'image_recognition' | 'image_generation' | 'audio_tts' | 'audio_stt'
   | 'video_generation';
 
-export interface TaskModelAssignmentDTO {
+export interface CapabilityModelAssignmentDTO {
   provider: string;
   model: string;
   fallback?: { provider: string; model: string };
 }
 
-export interface TaskRoutingConfigDTO {
-  assignments: Partial<Record<ModelTaskTypeDTO, TaskModelAssignmentDTO>>;
+export interface CapabilityRoutingConfigDTO {
+  assignments: Partial<Record<ModelCapabilityTypeDTO, CapabilityModelAssignmentDTO>>;
 }
 
 // ── Model Catalog Types ───────────────────────────────────────────────────
@@ -1339,8 +1339,8 @@ export const api = {
   },
   settings: {
     getLlm: () => request<{ defaultProvider: string; providers: Record<string, { model: string; configured: boolean }> }>('/settings/llm'),
-    getRouting: () => request<{ taskRouting: TaskRoutingConfigDTO }>('/settings/llm/routing'),
-    updateRouting: (data: { taskRouting?: Partial<TaskRoutingConfigDTO> }) =>
+    getRouting: () => request<{ capabilityRouting: CapabilityRoutingConfigDTO }>('/settings/llm/routing'),
+    updateRouting: (data: { capabilityRouting?: Partial<CapabilityRoutingConfigDTO> }) =>
       request('/settings/llm', { method: 'POST', body: JSON.stringify(data) }),
     getAgent: () => request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent'),
     updateAgent: (settings: { maxToolIterations?: number; cognitive?: { enabled?: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }) =>

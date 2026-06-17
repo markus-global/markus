@@ -1,5 +1,5 @@
 import type { ProviderCapabilities } from '@markus/shared';
-import type { ImageGenOptions, ImageResult, TTSOptions, AudioResult } from './provider.js';
+import type { ImageGenOptions, ImageResult, TTSOptions, AudioResult, MultiModalToolSchemas } from './provider.js';
 import { OpenAIProvider } from './openai.js';
 
 /**
@@ -31,6 +31,40 @@ export class DashScopeProvider extends OpenAIProvider {
       embedding: true,
       reasoning: true,
       promptCaching: true,
+    };
+  }
+
+  override getToolSchemas(): MultiModalToolSchemas {
+    return {
+      generate_image: {
+        description: 'Generate images using DashScope/Qwen. Provide a detailed text prompt.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string', description: 'Detailed text description of the image to generate' },
+            model: { type: 'string', description: 'Model to use (default from routing config). e.g. "wanx-v1", "wanx2.1-t2i-turbo"' },
+            size: { type: 'string', description: 'Image dimensions (e.g. "1024*1024", "720*1280", "1280*720")' },
+            n: { type: 'number', description: 'Number of images to generate (default: 1)' },
+            negative_prompt: { type: 'string', description: 'What to avoid in the image' },
+            seed: { type: 'number', description: 'Seed for reproducibility' },
+            output_dir: { type: 'string', description: 'Directory to save images' },
+          },
+          required: ['prompt'],
+        },
+      },
+      text_to_speech: {
+        description: 'Convert text to speech using DashScope/Qwen TTS.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'The text to convert to speech' },
+            model: { type: 'string', description: 'Model to use (default from routing config). e.g. "cosyvoice-v1", "qwen3-tts-flash"' },
+            voice: { type: 'string', description: 'Voice name (e.g. "Cherry", "Aura", "Serene", "Ethan")' },
+            speed: { type: 'number', description: 'Speech speed (0.5-2.0, default: 1.0)' },
+          },
+          required: ['text'],
+        },
+      },
     };
   }
 

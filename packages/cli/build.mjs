@@ -38,6 +38,7 @@ async function main() {
     target: 'node22',
     format: 'esm',
     external,
+    inject: [resolve(__dirname, 'cjs-shims.js')],
     banner: {
       js: [
         '#!/usr/bin/env -S node --disable-warning=ExperimentalWarning',

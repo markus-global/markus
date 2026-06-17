@@ -105,38 +105,38 @@ describe('LLMRouter.createDefault', () => {
   });
 });
 
-describe('LLMRouter.setTaskRouting', () => {
+describe('LLMRouter.setCapabilityRouting', () => {
   let router: LLMRouter;
 
   beforeEach(() => {
     router = new LLMRouter('anthropic');
   });
 
-  it('accepts valid task type assignments', () => {
-    router.setTaskRouting({
+  it('accepts valid capability type assignments', () => {
+    router.setCapabilityRouting({
       assignments: {
         text: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
         image_generation: { provider: 'openai', model: 'dall-e-3' },
       },
     });
 
-    expect(router.getTaskAssignment('text')).toEqual({
+    expect(router.getCapabilityAssignment('text')).toEqual({
       provider: 'anthropic',
       model: 'claude-sonnet-4-20250514',
     });
-    expect(router.getTaskAssignment('image_generation')?.provider).toBe('openai');
+    expect(router.getCapabilityAssignment('image_generation')?.provider).toBe('openai');
   });
 
-  it('filters invalid task type keys', () => {
-    router.setTaskRouting({
+  it('filters invalid capability type keys', () => {
+    router.setCapabilityRouting({
       assignments: {
-        invalid_task: { provider: 'openai', model: 'gpt-4o' },
+        invalid_capability: { provider: 'openai', model: 'gpt-4o' },
         text: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
       } as any,
     });
 
-    expect(router.taskRouting.assignments).not.toHaveProperty('invalid_task');
-    expect(router.getTaskAssignment('text')).toBeDefined();
+    expect(router.capabilityRouting.assignments).not.toHaveProperty('invalid_capability');
+    expect(router.getCapabilityAssignment('text')).toBeDefined();
   });
 });
 
@@ -145,7 +145,7 @@ describe('LLMRouter.resolveModalityCandidates', () => {
     const router = new LLMRouter('deepseek');
     router.registerProvider('deepseek', mockProvider('deepseek', 'deepseek-v4-flash', undefined, { imageGeneration: false }));
     router.registerProvider('minimax', mockProvider('minimax', 'MiniMax-M3', undefined, { imageGeneration: true }));
-    router.setTaskRouting({ assignments: { image_generation: { provider: 'minimax', model: 'image-01' } } });
+    router.setCapabilityRouting({ assignments: { image_generation: { provider: 'minimax', model: 'image-01' } } });
 
     const names = router.resolveModalityCandidates('image_generation').map(c => c.name);
     expect(names).toContain('minimax');
@@ -155,7 +155,7 @@ describe('LLMRouter.resolveModalityCandidates', () => {
   it('includes assignment even when provider lacks capability declaration', () => {
     const router = new LLMRouter('deepseek');
     router.registerProvider('deepseek', mockProvider('deepseek', 'deepseek-v4-flash'));
-    router.setTaskRouting({ assignments: { image_generation: { provider: 'deepseek', model: 'some-model' } } });
+    router.setCapabilityRouting({ assignments: { image_generation: { provider: 'deepseek', model: 'some-model' } } });
 
     const names = router.resolveModalityCandidates('image_generation').map(c => c.name);
     expect(names).toContain('deepseek');
@@ -165,7 +165,7 @@ describe('LLMRouter.resolveModalityCandidates', () => {
     const router = new LLMRouter('deepseek');
     router.registerProvider('minimax', mockProvider('minimax', 'MiniMax-M3', undefined, { imageGeneration: true }));
     router.registerProvider('openai', mockProvider('openai', 'gpt-4o', undefined, { imageGeneration: true }));
-    router.setTaskRouting({
+    router.setCapabilityRouting({
       assignments: {
         image_generation: {
           provider: 'minimax',
@@ -179,7 +179,7 @@ describe('LLMRouter.resolveModalityCandidates', () => {
     expect(names).toEqual(expect.arrayContaining(['minimax', 'openai']));
   });
 
-  it('includes text providers without capability filter for text task', () => {
+  it('includes text providers without capability filter for text capability', () => {
     const router = new LLMRouter('deepseek');
     router.registerProvider('deepseek', mockProvider('deepseek', 'deepseek-v4-flash'));
     router.registerProvider('minimax', mockProvider('minimax', 'MiniMax-M3', undefined, { imageGeneration: true }));
@@ -192,13 +192,13 @@ describe('LLMRouter.resolveModalityCandidates', () => {
 });
 
 describe('LLMRouter.chat routing', () => {
-  it('routes to task assignment provider', async () => {
+  it('routes to capability assignment provider', async () => {
     const router = new LLMRouter('anthropic');
     const anthropic = mockProvider('anthropic', 'claude-sonnet-4-20250514');
     const openai = mockProvider('openai', 'gpt-4o');
     router.registerProvider('anthropic', anthropic);
     router.registerProvider('openai', openai);
-    router.setTaskRouting({ assignments: { text: { provider: 'openai', model: 'gpt-4o' } } });
+    router.setCapabilityRouting({ assignments: { text: { provider: 'openai', model: 'gpt-4o' } } });
 
     const response = await router.chat({ messages: [{ role: 'user', content: 'Hi' }] });
     expect(response.content).toBe('from openai');
@@ -325,22 +325,22 @@ describe('LLMRouter utilities', () => {
     })).toBe('complex');
   });
 
-  it('inferTaskType detects image recognition', () => {
-    const taskType = LLMRouter.inferTaskType({
+  it('inferCapability detects image recognition', () => {
+    const capabilityType = LLMRouter.inferCapability({
       messages: [{
         role: 'user',
         content: [{ type: 'image_url', image_url: { url: 'https://example.com/img.png' } }],
       }],
     });
-    expect(taskType).toBe('image_recognition');
+    expect(capabilityType).toBe('image_recognition');
   });
 
-  it('selectForTask uses assignment fallback when primary unavailable', () => {
+  it('selectForCapability uses assignment fallback when primary unavailable', () => {
     const router = new LLMRouter('anthropic');
     router.registerProvider('primary', mockProvider('primary', 'm1'));
     router.registerProvider('fallback', mockProvider('fallback', 'm2'));
     router.setProviderEnabled('primary', false);
-    router.setTaskRouting({
+    router.setCapabilityRouting({
       assignments: {
         text: {
           provider: 'primary',
@@ -350,7 +350,7 @@ describe('LLMRouter utilities', () => {
       },
     });
 
-    const selected = router.selectForTask('text', { messages: [{ role: 'user', content: 'Hi' }] });
+    const selected = router.selectForCapability('text', { messages: [{ role: 'user', content: 'Hi' }] });
     expect(selected.provider).toBe('fallback');
   });
 
@@ -358,7 +358,7 @@ describe('LLMRouter utilities', () => {
     const router = new LLMRouter('anthropic');
     const minimax = mockProvider('minimax', 'MiniMax-M3', undefined, { imageGeneration: true }) as MultiModalProviderInterface;
     router.registerProvider('minimax', minimax);
-    router.setTaskRouting({ assignments: { image_generation: { provider: 'minimax', model: 'image-01' } } });
+    router.setCapabilityRouting({ assignments: { image_generation: { provider: 'minimax', model: 'image-01' } } });
 
     const resolved = router.resolveModalityProvider('image_generation');
     expect(resolved?.provider).toBe(minimax);
@@ -624,11 +624,11 @@ describe('LLMRouter model metadata', () => {
     expect(router.getModelInputTypes('missing')).toEqual(['text']);
   });
 
-  it('setRoutingDefaultModel is used by selectForTask fallback', () => {
+  it('setRoutingDefaultModel is used by selectForCapability fallback', () => {
     const router = new LLMRouter('anthropic');
     router.registerProvider('anthropic', mockProvider('anthropic', 'claude-sonnet-4-20250514'));
     router.setRoutingDefaultModel({ provider: 'anthropic', model: 'claude-sonnet-4-20250514' });
-    const selected = router.selectForTask('text', { messages: [{ role: 'user', content: 'Hi' }] });
+    const selected = router.selectForCapability('text', { messages: [{ role: 'user', content: 'Hi' }] });
     expect(selected.provider).toBe('anthropic');
     expect(selected.model).toBe('claude-sonnet-4-20250514');
   });
@@ -649,7 +649,7 @@ describe('LLMRouter resolveModalityProvider fallbacks', () => {
     router.registerProvider('openai', openai);
     router.registerProvider('minimax', minimax);
     router.setProviderEnabled('openai', false);
-    router.setTaskRouting({
+    router.setCapabilityRouting({
       assignments: {
         image_generation: {
           provider: 'openai',
@@ -683,17 +683,17 @@ describe('LLMRouter resolveModalityProvider fallbacks', () => {
   });
 });
 
-describe('LLMRouter selectForTask fallthrough', () => {
+describe('LLMRouter selectForCapability fallthrough', () => {
   it('falls through to selectProvider when assignment and default are unavailable', () => {
     const router = new LLMRouter('anthropic');
     router.registerProvider('anthropic', mockProvider('anthropic', 'claude-sonnet-4-20250514'));
     router.registerProvider('openai', mockProvider('openai', 'gpt-4o'));
-    router.setTaskRouting({
+    router.setCapabilityRouting({
       assignments: { text: { provider: 'missing', model: 'x' } },
     });
     router.setProviderEnabled('anthropic', false);
 
-    const selected = router.selectForTask('text', { messages: [{ role: 'user', content: 'Hi' }] });
+    const selected = router.selectForCapability('text', { messages: [{ role: 'user', content: 'Hi' }] });
     expect(selected.provider).toBe('openai');
   });
 });

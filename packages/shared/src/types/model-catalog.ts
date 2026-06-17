@@ -1,12 +1,12 @@
 // ---------------------------------------------------------------------------
-// Model Tier & Task Routing types
+// Model Tier & Capability Routing types
 // ---------------------------------------------------------------------------
 
 export type ModelTier = 'base' | 'pro' | 'max';
 
 export type CostTier = '$' | '$$' | '$$$' | '$$$$';
 
-export type ModelTaskType =
+export type ModelCapabilityType =
   | 'text'
   | 'image_recognition'
   | 'image_generation'
@@ -14,15 +14,24 @@ export type ModelTaskType =
   | 'audio_stt'
   | 'video_generation';
 
-export interface TaskModelAssignment {
+/** @deprecated Use ModelCapabilityType instead */
+export type ModelTaskType = ModelCapabilityType;
+
+export interface CapabilityModelAssignment {
   provider: string;
   model: string;
   fallback?: { provider: string; model: string };
 }
 
-export interface TaskRoutingConfig {
-  assignments: Partial<Record<ModelTaskType, TaskModelAssignment>>;
+/** @deprecated Use CapabilityModelAssignment instead */
+export type TaskModelAssignment = CapabilityModelAssignment;
+
+export interface CapabilityRoutingConfig {
+  assignments: Partial<Record<ModelCapabilityType, CapabilityModelAssignment>>;
 }
+
+/** @deprecated Use CapabilityRoutingConfig instead */
+export type TaskRoutingConfig = CapabilityRoutingConfig;
 
 // ---------------------------------------------------------------------------
 // Provider capability declaration

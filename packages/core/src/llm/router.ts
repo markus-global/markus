@@ -1,4 +1,4 @@
-import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type ModelTaskType, type CostTier, type TaskRoutingConfig, type TaskModelAssignment, type ProviderCapabilities } from '@markus/shared';
+import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type ModelCapabilityType, type CostTier, type CapabilityRoutingConfig, type CapabilityModelAssignment, type ProviderCapabilities } from '@markus/shared';
 import { startSpan } from '../tracing.js';
 import type { LLMProviderInterface, MultiModalProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
@@ -15,7 +15,7 @@ import type { ModelCatalogService } from './model-catalog.js';
 
 const log = createLogger('llm-router');
 
-const TASK_CAPABILITY_KEY: Partial<Record<ModelTaskType, keyof ProviderCapabilities>> = {
+const CAPABILITY_KEY_MAP: Partial<Record<ModelCapabilityType, keyof ProviderCapabilities>> = {
   image_generation: 'imageGeneration',
   image_recognition: 'vision',
   audio_tts: 'tts',
@@ -53,7 +53,7 @@ function createOpenAICompatible(
 
 export interface ChatOptions {
   sessionId?: string;
-  taskType?: ModelTaskType;
+  capabilityType?: ModelCapabilityType;
 }
 
 /** Regional variants that share the same model catalog as their parent provider. */
@@ -139,7 +139,7 @@ export class LLMRouter {
   private _modelCatalogService?: ModelCatalogService;
 
   // -- Model routing config --
-  private _taskRouting: TaskRoutingConfig = {
+  private _capabilityRouting: CapabilityRoutingConfig = {
     assignments: {},
   };
   private _routingDefaultModel?: { provider: string; model: string };
@@ -503,6 +503,10 @@ export class LLMRouter {
   }
 
   addCustomModel(providerName: string, model: ModelDefinition): void {
+    if (!model.id) {
+      log.warn(`Skipping custom model with missing id for provider ${providerName}`);
+      return;
+    }
     const existing = this.customModelCatalog.get(providerName) ?? [];
     const filtered = existing.filter(m => m.id !== model.id);
     filtered.push(model);
@@ -542,9 +546,9 @@ export class LLMRouter {
   }
 
   /**
-   * Infer the task type from a request based on tools, keywords, and context.
+   * Infer the capability type from a request based on tools, keywords, and context.
    */
-  static inferTaskType(request: LLMRequest): ModelTaskType {
+  static inferCapability(request: LLMRequest): ModelCapabilityType {
     const hasImage = request.messages.some(m =>
       Array.isArray(m.content) && m.content.some(p => p.type === 'image_url'),
     );
@@ -569,52 +573,52 @@ export class LLMRouter {
     this._modelCatalogService = service;
   }
 
-  get taskRouting(): TaskRoutingConfig { return this._taskRouting; }
+  get capabilityRouting(): CapabilityRoutingConfig { return this._capabilityRouting; }
 
-  setTaskRouting(config: Partial<TaskRoutingConfig>): void {
-    const VALID_TASK_TYPES: Set<string> = new Set([
+  setCapabilityRouting(config: Partial<CapabilityRoutingConfig>): void {
+    const VALID_CAPABILITY_TYPES: Set<string> = new Set([
       'text', 'image_recognition', 'image_generation',
       'audio_tts', 'audio_stt', 'video_generation',
     ]);
 
     const incoming = config.assignments ?? {};
-    const cleaned: TaskRoutingConfig['assignments'] = {};
+    const cleaned: CapabilityRoutingConfig['assignments'] = {};
     for (const [key, val] of Object.entries(incoming)) {
-      if (VALID_TASK_TYPES.has(key)) {
-        cleaned[key as ModelTaskType] = val;
+      if (VALID_CAPABILITY_TYPES.has(key)) {
+        cleaned[key as ModelCapabilityType] = val;
       } else {
-        log.warn('Ignoring invalid task type in routing assignment', { taskType: key });
+        log.warn('Ignoring invalid capability type in routing assignment', { capabilityType: key });
       }
     }
 
-    this._taskRouting = { assignments: { ...this._taskRouting.assignments, ...cleaned } };
-    log.info('Task routing updated', { assignments: Object.keys(this._taskRouting.assignments) });
+    this._capabilityRouting = { assignments: { ...this._capabilityRouting.assignments, ...cleaned } };
+    log.info('Capability routing updated', { assignments: Object.keys(this._capabilityRouting.assignments) });
   }
 
   /**
-   * Look up the task routing assignment for a specific task type.
+   * Look up the routing assignment for a specific capability type.
    * Returns the assignment if set, else undefined (falls through to default model).
    */
-  getTaskAssignment(taskType: ModelTaskType): TaskModelAssignment | undefined {
-    return this._taskRouting.assignments[taskType];
+  getCapabilityAssignment(capabilityType: ModelCapabilityType): CapabilityModelAssignment | undefined {
+    return this._capabilityRouting.assignments[capabilityType];
   }
 
   /**
-   * Select a provider+model for a given task type.
+   * Select a provider+model for a given capability type.
    * Pure lookup: explicit assignment -> default model -> any available provider.
    */
-  selectForTask(taskType: ModelTaskType, request: LLMRequest, _sessionId?: string): { provider: string; model?: string } {
+  selectForCapability(capabilityType: ModelCapabilityType, request: LLMRequest, _sessionId?: string): { provider: string; model?: string } {
     // 1. Check explicit assignment
-    const assignment = this._taskRouting.assignments[taskType];
+    const assignment = this._capabilityRouting.assignments[capabilityType];
     if (assignment) {
       if (this.isAvailable(assignment.provider)) {
         return { provider: assignment.provider, model: assignment.model };
       }
       if (assignment.fallback && this.isAvailable(assignment.fallback.provider)) {
-        log.warn(`Task ${taskType} primary ${assignment.provider} unavailable, using fallback`);
+        log.warn(`Capability ${capabilityType} primary ${assignment.provider} unavailable, using fallback`);
         return { provider: assignment.fallback.provider, model: assignment.fallback.model };
       }
-      log.warn(`Task ${taskType} assignment ${assignment.provider} unavailable, falling through to default`);
+      log.warn(`Capability ${capabilityType} assignment ${assignment.provider} unavailable, falling through to default`);
     }
 
     // 2. Fallback to default model
@@ -631,8 +635,8 @@ export class LLMRouter {
    * Returns the provider and the assigned model name WITHOUT mutating provider state.
    * The caller is responsible for passing `model` into the API call options.
    */
-  resolveModalityProvider(taskType: ModelTaskType): { provider: MultiModalProviderInterface; model?: string } | undefined {
-    const assignment = this._taskRouting.assignments[taskType];
+  resolveModalityProvider(capabilityType: ModelCapabilityType): { provider: MultiModalProviderInterface; model?: string } | undefined {
+    const assignment = this._capabilityRouting.assignments[capabilityType];
     if (assignment) {
       const provider = this.providers.get(assignment.provider);
       if (provider && this.isAvailable(assignment.provider)) {
@@ -658,11 +662,11 @@ export class LLMRouter {
   }
 
   /**
-   * Return an ordered list of provider candidates for a modality task.
+   * Return an ordered list of provider candidates for a capability.
    * Always includes: assignment -> assignment.fallback -> routingDefaultModel -> defaultProvider.
    * When autoFallback is ON, appends all remaining available providers in fallback order.
    */
-  resolveModalityCandidates(taskType: ModelTaskType): Array<{ provider: MultiModalProviderInterface; model?: string; name: string }> {
+  resolveModalityCandidates(capabilityType: ModelCapabilityType): Array<{ provider: MultiModalProviderInterface; model?: string; name: string }> {
     const candidates: Array<{ provider: MultiModalProviderInterface; model?: string; name: string }> = [];
     const seen = new Set<string>();
 
@@ -674,8 +678,8 @@ export class LLMRouter {
       seen.add(name);
     };
 
-    const capKey = TASK_CAPABILITY_KEY[taskType];
-    const needsCapFilter = taskType !== 'text' && !!capKey;
+    const capKey = CAPABILITY_KEY_MAP[capabilityType];
+    const needsCapFilter = capabilityType !== 'text' && !!capKey;
 
     const addIfCapable = (name: string, model?: string) => {
       if (seen.has(name)) return;
@@ -689,7 +693,7 @@ export class LLMRouter {
     };
 
     // Explicit assignment — always trust the user's choice
-    const assignment = this._taskRouting.assignments[taskType];
+    const assignment = this._capabilityRouting.assignments[capabilityType];
     if (assignment) {
       add(assignment.provider, assignment.model);
       if (assignment.fallback) add(assignment.fallback.provider, assignment.fallback.model);
@@ -886,11 +890,11 @@ export class LLMRouter {
     if (providerName) {
       primary = this.selectProvider(request, providerName);
     } else {
-      const taskType = options?.taskType ?? LLMRouter.inferTaskType(request);
-      if (taskType === 'text' && !this._taskRouting.assignments.text) {
+      const capabilityType = options?.capabilityType ?? LLMRouter.inferCapability(request);
+      if (capabilityType === 'text' && !this._capabilityRouting.assignments.text) {
         primary = this.selectProvider(request);
       } else {
-        const routeResult = this.selectForTask(taskType, request, options?.sessionId);
+        const routeResult = this.selectForCapability(capabilityType, request, options?.sessionId);
         primary = routeResult.provider;
         routedModel = routeResult.model;
       }
@@ -1021,11 +1025,11 @@ export class LLMRouter {
     if (providerName) {
       primary = this.selectProvider(request, providerName);
     } else {
-      const taskType = options?.taskType ?? LLMRouter.inferTaskType(request);
-      if (taskType === 'text' && !this._taskRouting.assignments.text) {
+      const capabilityType = options?.capabilityType ?? LLMRouter.inferCapability(request);
+      if (capabilityType === 'text' && !this._capabilityRouting.assignments.text) {
         primary = this.selectProvider(request);
       } else {
-        const routeResult = this.selectForTask(taskType, request, options?.sessionId);
+        const routeResult = this.selectForCapability(capabilityType, request, options?.sessionId);
         primary = routeResult.provider;
         routedModel = routeResult.model;
       }
@@ -1417,6 +1421,12 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 2.5, output: 15, cacheRead: 0.25 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
   { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 2.5, output: 10 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'max' },
   { id: 'o4-mini', name: 'o4-mini', provider: 'openai', contextWindow: 200000, maxOutputTokens: 100000, cost: { input: 1.1, output: 4.4 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro' },
+  // OpenAI Multimodal — image, TTS, STT
+  { id: 'gpt-image-1', name: 'GPT Image 1', provider: 'openai', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['imageGeneration'] },
+  { id: 'dall-e-3', name: 'DALL-E 3', provider: 'openai', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['imageGeneration'] },
+  { id: 'tts-1-hd', name: 'TTS-1 HD', provider: 'openai', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['tts'] },
+  { id: 'tts-1', name: 'TTS-1', provider: 'openai', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'base', capabilities: ['tts'] },
+  { id: 'whisper-1', name: 'Whisper-1', provider: 'openai', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['stt'] },
   // OpenAI Codex (OAuth — uses ChatGPT subscription)
   { id: 'gpt-5.5', name: 'GPT-5.5 (Codex)', provider: 'openai-codex', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 0, output: 0 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max', description: 'Uses ChatGPT subscription via OAuth' },
   { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini (Codex)', provider: 'openai-codex', contextWindow: 512000, maxOutputTokens: 64000, cost: { input: 0, output: 0 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro', description: 'Uses ChatGPT subscription via OAuth — fast' },
@@ -1424,10 +1434,19 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   // Google — https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini
   { id: 'gemini-3-1-pro', name: 'Gemini 3.1 Pro', provider: 'google', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
   { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'google', contextWindow: 1048576, maxOutputTokens: 65536, cost: { input: 0.30, output: 2.50 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro' },
+  // Google Multimodal — image, video
+  { id: 'imagen-3.0-generate-002', name: 'Imagen 3', provider: 'google', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['imageGeneration'] },
+  { id: 'veo-2.0-generate-001', name: 'Veo 2', provider: 'google', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'max', capabilities: ['videoGeneration'] },
   // MiniMax Global — https://platform.minimax.io
   { id: 'MiniMax-M3', name: 'MiniMax M3', provider: 'minimax', contextWindow: 512000, maxOutputTokens: 128000, cost: { input: 0.6, output: 2.4, cacheRead: 0.12 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
   { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
   { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2, cacheRead: 0.03, cacheWrite: 0.375 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
+  // MiniMax Multimodal — image, TTS, video
+  { id: 'image-01', name: 'MiniMax Image-01', provider: 'minimax', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['imageGeneration'] },
+  { id: 'speech-02-hd', name: 'MiniMax Speech-02-HD', provider: 'minimax', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['tts'] },
+  { id: 'speech-02', name: 'MiniMax Speech-02', provider: 'minimax', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'base', capabilities: ['tts'] },
+  { id: 'MiniMax-Hailuo-2.3', name: 'Hailuo 2.3', provider: 'minimax', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'max', capabilities: ['videoGeneration'] },
+  { id: 'MiniMax-Hailuo-2.3-Fast', name: 'Hailuo 2.3 Fast', provider: 'minimax', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['videoGeneration'] },
   // MiniMax China shares the same models as MiniMax Global (resolved via REGIONAL_PROVIDER_ALIASES)
   // OpenRouter — https://openrouter.ai/models (pass-through pricing varies by upstream provider)
   { id: 'xiaomi/mimo-v2-pro', name: 'MiMo-V2-Pro', provider: 'openrouter', contextWindow: 1048576, maxOutputTokens: 131072, cost: { input: 1, output: 3, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
@@ -1447,6 +1466,8 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'deepseek-ai/DeepSeek-V3', name: 'DeepSeek-V3 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 163840, maxOutputTokens: 163840, cost: { input: 0.25, output: 1.00 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
   { id: 'deepseek-ai/DeepSeek-V3.2', name: 'DeepSeek-V3.2 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 163840, maxOutputTokens: 163840, cost: { input: 0.27, output: 0.42 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
   { id: 'moonshotai/Kimi-K2.5', name: 'Kimi-K2.5 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 0.60, output: 3.00 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
+  // SiliconFlow Multimodal — STT
+  { id: 'FunAudioLLM/SenseVoiceSmall', name: 'SenseVoice Small', provider: 'siliconflow', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['stt'] },
   // SiliconFlow Global shares the same models as SiliconFlow China (resolved via REGIONAL_PROVIDER_ALIASES)
   // ZAI (Zhipu) — https://docs.z.ai/guides/overview/pricing
   { id: 'glm-5.1', name: 'GLM-5.1', provider: 'zai', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 1.4, output: 4.4, cacheRead: 0.26 }, reasoning: true, inputTypes: ['text'], tier: 'max' },
@@ -1471,7 +1492,7 @@ export function estimateQualityScore(_modelId: string, reasoning?: boolean, inpu
     else score = 38;
   }
 
-  const paramMatch = _modelId.match(/(\d+)[bB]\b/);
+  const paramMatch = (_modelId ?? '').match(/(\d+)[bB]\b/);
   if (paramMatch) {
     const params = parseInt(paramMatch[1], 10);
     if (params >= 70) score = Math.max(score, 75);

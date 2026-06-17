@@ -6,6 +6,7 @@
  * to keep this file components-only for Vite HMR Fast Refresh compatibility.
  */
 import { useState, useRef, useEffect, useCallback, memo, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { api, wsClient, type TaskLogEntry } from '../api.ts';
 import { navBus } from '../navBus.ts';
@@ -545,7 +546,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
           )}
         </div>
       </div>
-      {expanded && <ToolDetailModal info={info} onClose={() => setExpanded(false)} />}
+      {expanded && createPortal(<ToolDetailModal info={info} onClose={() => setExpanded(false)} />, document.body)}
       {isDone && (() => {
         const taskApproval = parseTaskApprovalFromResult(info.tool, info.result);
         if (taskApproval) return <TaskApprovalCard info={taskApproval} />;

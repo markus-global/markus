@@ -26,9 +26,9 @@ function createMockRouter(overrides: Partial<LLMRouter> = {}): LLMRouter {
     registerProviderFromConfig: vi.fn(),
     getProvider: vi.fn((name: string) => (name === 'openai' ? mockProvider : undefined)),
     addCustomModel: vi.fn(),
-    taskRouting: { assignments: {} },
+    capabilityRouting: { assignments: {} },
     routingDefaultModel: 'gpt-4o',
-    setTaskRouting: vi.fn(),
+    setCapabilityRouting: vi.fn(),
     ...overrides,
   } as unknown as LLMRouter;
 }

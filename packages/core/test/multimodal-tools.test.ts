@@ -13,9 +13,9 @@ function createMockProvider(overrides: Partial<MultiModalProviderInterface> = {}
   } as MultiModalProviderInterface;
 }
 
-function createContext(candidatesByTask: Record<string, ModalityCandidate[]>) {
+function createContext(candidatesByCapability: Record<string, ModalityCandidate[]>) {
   return {
-    resolveCandidates: vi.fn((taskType: string) => candidatesByTask[taskType] ?? []),
+    resolveCandidates: vi.fn((capabilityType: string) => candidatesByCapability[capabilityType] ?? []),
   };
 }
 
