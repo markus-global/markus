@@ -6,6 +6,8 @@ interface ModelPickerProps {
   models: CatalogModel[];
   selectedModel?: string;
   onSelect: (modelId: string) => void;
+  onRefresh?: () => void;
+  refreshing?: boolean;
   loading?: boolean;
   compact?: boolean;
   maxVisible?: number;
@@ -28,9 +30,10 @@ function hasMetadata(model: CatalogModel): boolean {
   return model.maxInputTokens > 0 || model.inputCostPer1MTokens > 0 || model.outputCostPer1MTokens > 0;
 }
 
-export function ModelPicker({ models, selectedModel, onSelect, loading, compact, maxVisible }: ModelPickerProps) {
+export function ModelPicker({ models, selectedModel, onSelect, onRefresh, refreshing, loading, compact, maxVisible }: ModelPickerProps) {
   const [filter, setFilter] = useState('');
   const [showAll, setShowAll] = useState(false);
+  const [tierFilter, setTierFilter] = useState<string>('all');
 
   const filtered = useMemo(() => {
     if (!filter) return models;
@@ -39,8 +42,8 @@ export function ModelPicker({ models, selectedModel, onSelect, loading, compact,
   }, [models, filter]);
 
   const limit = maxVisible ?? (compact ? 5 : 10);
-  const visible = showAll ? filtered : filtered.slice(0, limit);
-  const hasMore = filtered.length > limit;
+  const visible = showAll ? displayModels : displayModels.slice(0, limit);
+  const hasMore = displayModels.length > limit;
 
   if (loading) {
     return (
@@ -59,16 +62,66 @@ export function ModelPicker({ models, selectedModel, onSelect, loading, compact,
     );
   }
 
+  const tiers = useMemo(() => {
+    const set = new Set(models.map(m => m.tier).filter(Boolean));
+    return Array.from(set) as string[];
+  }, [models]);
+
+  const filteredByTier = useMemo(() => {
+    if (!tierFilter || tierFilter === 'all') return filtered;
+    return filtered.filter(m => m.tier === tierFilter);
+  }, [filtered, tierFilter]);
+
+  const displayModels = filteredByTier;
+
   return (
     <div className="space-y-2">
-      {models.length > 5 && (
-        <input
-          type="text"
-          value={filter}
-          onChange={e => { setFilter(e.target.value); setShowAll(false); }}
-          placeholder="Filter models..."
-          className="w-full px-3 py-1.5 bg-surface-overlay border border-border-default rounded-lg text-xs text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:border-brand-500"
-        />
+      {/* Header row: filter + refresh */}
+      <div className="flex items-center gap-1.5">
+        {models.length > 5 && (
+          <input
+            type="text"
+            value={filter}
+            onChange={e => { setFilter(e.target.value); setShowAll(false); }}
+            placeholder="Filter models..."
+            className="flex-1 px-3 py-1.5 bg-surface-overlay border border-border-default rounded-lg text-xs text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:border-brand-500"
+          />
+        )}
+        {onRefresh && (
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={refreshing}
+            className="px-2 py-1.5 text-[10px] font-medium bg-surface-overlay border border-border-default rounded-lg hover:bg-surface-hover transition-colors disabled:opacity-50 flex items-center gap-1"
+            title="Refresh models"
+          >
+            <span className={`${refreshing ? 'animate-spin' : ''}`}>⟳</span>
+            {refreshing ? '···' : 'Refresh'}
+          </button>
+        )}
+      </div>
+
+      {/* Tier filter tabs */}
+      {tiers.length > 1 && (
+        <div className="flex items-center gap-1 flex-wrap">
+          <button
+            type="button"
+            onClick={() => setTierFilter('all')}
+            className={`px-2 py-0.5 text-[10px] rounded-md transition-colors ${tierFilter === 'all' ? 'bg-brand-500/10 text-brand-500 border border-brand-500/30' : 'bg-surface-overlay text-fg-tertiary border border-border-default hover:bg-surface-hover'}`}
+          >
+            All
+          </button>
+          {tiers.map(tier => (
+            <button
+              key={tier}
+              type="button"
+              onClick={() => setTierFilter(tier)}
+              className={`px-2 py-0.5 text-[10px] rounded-md transition-colors ${tierFilter === tier ? 'bg-brand-500/10 text-brand-500 border border-brand-500/30' : 'bg-surface-overlay text-fg-tertiary border border-border-default hover:bg-surface-hover'}`}
+            >
+              {tier}
+            </button>
+          ))}
+        </div>
       )}
 
       <div className={`space-y-1 ${compact ? 'max-h-[280px] overflow-y-auto' : ''}`}>
@@ -131,7 +184,7 @@ export function ModelPicker({ models, selectedModel, onSelect, loading, compact,
           onClick={() => setShowAll(true)}
           className="text-xs text-brand-500 hover:text-brand-400 px-3"
         >
-          Show all {filtered.length} models...
+          Show all {displayModels.length} models...
         </button>
       )}
       {showAll && hasMore && (

@@ -387,6 +387,7 @@ export interface CatalogModel {
   id: string;
   provider: string;
   mode: string;
+  tier?: string;
   maxInputTokens: number;
   maxOutputTokens: number;
   inputCostPer1MTokens: number;
