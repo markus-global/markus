@@ -13,6 +13,8 @@ const log = createLogger('storage-bridge');
  * Falls back gracefully to in-memory mode only if SQLite init fails.
  */
 export interface StorageBridge {
+  /** Run a synchronous function inside a SQLite transaction (auto-rollback on throw). */
+  runInTransaction<T>(fn: () => T): T;
   orgRepo: any;
   taskRepo: any;
   taskLogRepo: any;
@@ -66,6 +68,7 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
     const db = storage.openSqlite(dbPath);
 
     const bridge: StorageBridge = {
+      runInTransaction: <T>(fn: () => T) => storage.runInTransaction(db, fn),
       orgRepo: new storage.SqliteOrgRepo(db) as any,
       taskRepo: new storage.SqliteTaskRepo(db) as any,
       taskLogRepo: new storage.SqliteTaskLogRepo(db) as any,

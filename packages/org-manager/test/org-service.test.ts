@@ -96,6 +96,7 @@ function createMockAgentManager() {
 
 function createMockStorage() {
   return {
+    runInTransaction: <T>(fn: () => T) => fn(),
     orgRepo: {
       createOrg: vi.fn().mockResolvedValue(undefined),
       updateManagerAgentId: vi.fn().mockResolvedValue(undefined),

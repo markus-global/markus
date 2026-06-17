@@ -17,6 +17,7 @@ export type {
 export {
   openSqlite,
   closeSqlite,
+  runInTransaction,
   SqliteOrgRepo,
   SqliteAgentRepo,
   SqliteTaskRepo,

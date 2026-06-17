@@ -55,32 +55,30 @@ export class AgentStateManager {
   /**
    * 处理任务进度事件
    */
-  private handleTaskProgress(event: TaskProgressEvent): void {
+  private handleTaskProgress(_event: TaskProgressEvent): void {
+    this.notifyStateChange();
+  }
+
+  /**
+   * Derive active task fields from taskExecutor so they are always fresh.
+   */
+  private deriveTaskFields(): { activeTaskCount: number; activeTaskIds: string[]; currentTaskId?: string } {
     const tasks = this.taskExecutor.getAllTasks();
     const runningTasks = tasks.filter((task: any) => task.status === TaskStatus.RUNNING);
-    
-    // 更新任务状态（不更新Agent状态）
-    this.state.activeTaskCount = runningTasks.length;
-    this.state.activeTaskIds = runningTasks.map((task: any) => task.id);
-
-    // 如果有当前任务，更新currentTaskId
+    const activeTaskIds = runningTasks.map((task: any) => task.id as string);
+    let currentTaskId: string | undefined;
     if (runningTasks.length > 0) {
-      // 优先显示高优先级任务
       const highPriorityTask = runningTasks.find((task: any) => task.priority === TaskPriority.HIGH);
-      this.state.currentTaskId = highPriorityTask?.id || runningTasks[0].id;
-    } else {
-      this.state.currentTaskId = undefined;
+      currentTaskId = highPriorityTask?.id || runningTasks[0].id;
     }
-
-    // 通知监听器
-    this.notifyStateChange();
+    return { activeTaskCount: runningTasks.length, activeTaskIds, currentTaskId };
   }
 
   /**
    * 获取当前状态
    */
   getState(): AgentState {
-    return { ...this.state };
+    return { ...this.state, ...this.deriveTaskFields() };
   }
 
   /**

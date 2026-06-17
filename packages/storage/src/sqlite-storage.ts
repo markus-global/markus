@@ -744,6 +744,35 @@ export function closeSqlite(): void {
   }
 }
 
+/**
+ * Run a synchronous function inside a SQLite transaction (BEGIN/COMMIT/ROLLBACK).
+ * Supports nesting via SAVEPOINTs. If `fn` throws, changes are rolled back.
+ */
+export function runInTransaction<T>(db: DatabaseSync, fn: () => T): T {
+  const nested = db.isTransaction;
+  if (nested) {
+    const sp = `sp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    db.exec(`SAVEPOINT ${sp}`);
+    try {
+      const result = fn();
+      db.exec(`RELEASE ${sp}`);
+      return result;
+    } catch (err) {
+      db.exec(`ROLLBACK TO ${sp}`);
+      throw err;
+    }
+  }
+  db.exec('BEGIN');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
 // ─── Repo implementations ────────────────────────────────────────────────────
 
 export class SqliteOrgRepo {
@@ -2073,17 +2102,19 @@ export class SqliteChatSessionRepo {
    * and its preceding user message.
    */
   deleteLastExchange(sessionId: string): void {
-    const rows = this.db.prepare(
-      'SELECT id, role FROM chat_messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 10'
-    ).all(sessionId) as Array<Record<string, unknown>>;
-    let foundAssistant = false;
-    for (const row of rows) {
-      const role = row['role'] as string;
-      const id = row['id'] as string;
-      this.db.prepare('DELETE FROM chat_messages WHERE id = ?').run(id);
-      if (role === 'assistant') foundAssistant = true;
-      if (role === 'user' && foundAssistant) break;
-    }
+    runInTransaction(this.db, () => {
+      const rows = this.db.prepare(
+        'SELECT id, role FROM chat_messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 10'
+      ).all(sessionId) as Array<Record<string, unknown>>;
+      let foundAssistant = false;
+      for (const row of rows) {
+        const role = row['role'] as string;
+        const id = row['id'] as string;
+        this.db.prepare('DELETE FROM chat_messages WHERE id = ?').run(id);
+        if (role === 'assistant') foundAssistant = true;
+        if (role === 'user' && foundAssistant) break;
+      }
+    });
   }
 
   private _mapSession(r: Record<string, unknown>) {
@@ -2104,39 +2135,41 @@ export class SqliteChatSessionRepo {
    * Should be called once at startup.
    */
   migrateLegacyMessages(): number {
-    const rows = this.db.prepare(
-      `SELECT id, content, metadata, created_at FROM chat_messages
-       WHERE role = 'assistant'
-         AND (metadata IS NULL OR metadata = 'null' OR json_extract(metadata, '$.segments') IS NULL)
-         AND content IS NOT NULL AND content != ''`
-    ).all() as Array<Record<string, unknown>>;
+    return runInTransaction(this.db, () => {
+      const rows = this.db.prepare(
+        `SELECT id, content, metadata, created_at FROM chat_messages
+         WHERE role = 'assistant'
+           AND (metadata IS NULL OR metadata = 'null' OR json_extract(metadata, '$.segments') IS NULL)
+           AND content IS NOT NULL AND content != ''`
+      ).all() as Array<Record<string, unknown>>;
 
-    if (rows.length === 0) return 0;
+      if (rows.length === 0) return 0;
 
-    const update = this.db.prepare(
-      'UPDATE chat_messages SET metadata = ? WHERE id = ?'
-    );
-    let migrated = 0;
+      const update = this.db.prepare(
+        'UPDATE chat_messages SET metadata = ? WHERE id = ?'
+      );
+      let migrated = 0;
 
-    for (const row of rows) {
-      const id = row['id'] as string;
-      const content = row['content'] as string;
-      const rawMeta = row['metadata'] as string | null;
-      const existingMeta = rawMeta && rawMeta !== 'null' ? JSON.parse(rawMeta) : {};
-      const createdAt = row['created_at'] as string | null;
+      for (const row of rows) {
+        const id = row['id'] as string;
+        const content = row['content'] as string;
+        const rawMeta = row['metadata'] as string | null;
+        const existingMeta = rawMeta && rawMeta !== 'null' ? JSON.parse(rawMeta) : {};
+        const createdAt = row['created_at'] as string | null;
 
-      const segments = this._parseContentToSegments(content, createdAt ?? undefined);
-      if (segments.length === 0) continue;
+        const segments = this._parseContentToSegments(content, createdAt ?? undefined);
+        if (segments.length === 0) continue;
 
-      existingMeta.segments = segments;
-      update.run(JSON.stringify(existingMeta), id);
-      migrated++;
-    }
+        existingMeta.segments = segments;
+        update.run(JSON.stringify(existingMeta), id);
+        migrated++;
+      }
 
-    if (migrated > 0) {
-      log.info(`Migrated ${migrated} legacy chat messages to segment format`);
-    }
-    return migrated;
+      if (migrated > 0) {
+        log.info(`Migrated ${migrated} legacy chat messages to segment format`);
+      }
+      return migrated;
+    });
   }
 
   /**
@@ -4791,25 +4824,27 @@ export function migrateToExecutionStreamLogs(db: DatabaseSync): void {
   const countRow = db.prepare('SELECT COUNT(*) as cnt FROM execution_stream_logs').get() as { cnt: number };
   if (countRow.cnt > 0) return;
 
-  const taskLogCount = (db.prepare('SELECT COUNT(*) as cnt FROM task_logs').get() as { cnt: number }).cnt;
-  if (taskLogCount > 0) {
-    db.exec(`
-      INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, execution_round, created_at)
-      SELECT id, 'task', task_id, agent_id, seq, type, content, metadata, execution_round, created_at
-      FROM task_logs
-    `);
-    log.info(`Migration: copied ${taskLogCount} task_logs to execution_stream_logs`);
-  }
+  runInTransaction(db, () => {
+    const taskLogCount = (db.prepare('SELECT COUNT(*) as cnt FROM task_logs').get() as { cnt: number }).cnt;
+    if (taskLogCount > 0) {
+      db.exec(`
+        INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, execution_round, created_at)
+        SELECT id, 'task', task_id, agent_id, seq, type, content, metadata, execution_round, created_at
+        FROM task_logs
+      `);
+      log.info(`Migration: copied ${taskLogCount} task_logs to execution_stream_logs`);
+    }
 
-  const actLogCount = (db.prepare('SELECT COUNT(*) as cnt FROM agent_activity_logs').get() as { cnt: number }).cnt;
-  if (actLogCount > 0) {
-    db.exec(`
-      INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, execution_round, created_at)
-      SELECT 'alog_' || id, 'activity', activity_id,
-             COALESCE((SELECT agent_id FROM agent_activities WHERE id = activity_id), ''),
-             seq, type, content, metadata, NULL, created_at
-      FROM agent_activity_logs
-    `);
-    log.info(`Migration: copied ${actLogCount} agent_activity_logs to execution_stream_logs`);
-  }
+    const actLogCount = (db.prepare('SELECT COUNT(*) as cnt FROM agent_activity_logs').get() as { cnt: number }).cnt;
+    if (actLogCount > 0) {
+      db.exec(`
+        INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, execution_round, created_at)
+        SELECT 'alog_' || id, 'activity', activity_id,
+               COALESCE((SELECT agent_id FROM agent_activities WHERE id = activity_id), ''),
+               seq, type, content, metadata, NULL, created_at
+        FROM agent_activity_logs
+      `);
+      log.info(`Migration: copied ${actLogCount} agent_activity_logs to execution_stream_logs`);
+    }
+  });
 }

@@ -2837,6 +2837,12 @@ export class Agent {
       : 0;
   }
 
+  /**
+   * INVARIANT: This method must only be called through processMailboxItem() in the
+   * attention loop (AttentionController.runLoop), which serializes execution.
+   * Direct concurrent calls would corrupt session state and interleave tool execution.
+   * External callers should use agent.enqueue() to go through the mailbox.
+   */
   async handleMessage(
     userMessage: string,
     senderId?: string,
