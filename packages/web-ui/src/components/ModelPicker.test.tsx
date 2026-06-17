@@ -7,7 +7,7 @@ import type { CatalogModel } from '../api.ts';
 function makeModel(overrides: Partial<CatalogModel> & { id: string }): CatalogModel {
   return {
     id: overrides.id,
-    name: overrides.name ?? overrides.id,
+    mode: overrides.mode ?? 'chat',
     provider: overrides.provider ?? 'test-provider',
     tier: overrides.tier ?? 'pro',
     maxInputTokens: overrides.maxInputTokens ?? 8000,
@@ -15,22 +15,24 @@ function makeModel(overrides: Partial<CatalogModel> & { id: string }): CatalogMo
     inputCostPer1MTokens: overrides.inputCostPer1MTokens ?? 0,
     outputCostPer1MTokens: overrides.outputCostPer1MTokens ?? 0,
     capabilities: {
-      functionCalling: overrides.capabilities?.functionCalling ?? false,
       vision: overrides.capabilities?.vision ?? false,
+      functionCalling: overrides.capabilities?.functionCalling ?? false,
       reasoning: overrides.capabilities?.reasoning ?? false,
       promptCaching: overrides.capabilities?.promptCaching ?? false,
       webSearch: overrides.capabilities?.webSearch ?? false,
+      audioInput: overrides.capabilities?.audioInput ?? false,
+      audioOutput: overrides.capabilities?.audioOutput ?? false,
     },
   };
 }
 
 const sampleModels: CatalogModel[] = [
-  makeModel({ id: 'claude-sonnet-4', tier: 'max', maxInputTokens: 200000, inputCostPer1MTokens: 3, outputCostPer1MTokens: 15, capabilities: { functionCalling: true, vision: true, reasoning: true, promptCaching: true, webSearch: false } }),
-  makeModel({ id: 'claude-haiku-3', tier: 'base', maxInputTokens: 200000, inputCostPer1MTokens: 0.25, outputCostPer1MTokens: 1.25, capabilities: { functionCalling: true, vision: true, reasoning: false, promptCaching: true, webSearch: false } }),
-  makeModel({ id: 'gpt-4o', tier: 'max', maxInputTokens: 128000, inputCostPer1MTokens: 2.5, outputCostPer1MTokens: 10, capabilities: { functionCalling: true, vision: true, reasoning: false, promptCaching: false, webSearch: true } }),
-  makeModel({ id: 'gpt-4o-mini', tier: 'base', maxInputTokens: 128000, inputCostPer1MTokens: 0.15, outputCostPer1MTokens: 0.6, capabilities: { functionCalling: true, vision: true, reasoning: false, promptCaching: false, webSearch: false } }),
-  makeModel({ id: 'deepseek-v3', tier: 'pro', maxInputTokens: 64000, inputCostPer1MTokens: 0.5, outputCostPer1MTokens: 1.5, capabilities: { functionCalling: true, vision: false, reasoning: true, promptCaching: false, webSearch: false } }),
-  makeModel({ id: 'gemini-2.5-flash', tier: 'base', maxInputTokens: 1000000, inputCostPer1MTokens: 0.1, outputCostPer1MTokens: 0.4, capabilities: { functionCalling: true, vision: true, reasoning: true, promptCaching: false, webSearch: true } }),
+  makeModel({ id: 'claude-sonnet-4', tier: 'max', maxInputTokens: 200000, inputCostPer1MTokens: 3, outputCostPer1MTokens: 15, capabilities: { functionCalling: true, vision: true, reasoning: true, promptCaching: true, webSearch: false, audioInput: false, audioOutput: false } }),
+  makeModel({ id: 'claude-haiku-3', tier: 'base', maxInputTokens: 200000, inputCostPer1MTokens: 0.25, outputCostPer1MTokens: 1.25, capabilities: { functionCalling: true, vision: true, reasoning: false, promptCaching: true, webSearch: false, audioInput: false, audioOutput: false } }),
+  makeModel({ id: 'gpt-4o', tier: 'max', maxInputTokens: 128000, inputCostPer1MTokens: 2.5, outputCostPer1MTokens: 10, capabilities: { functionCalling: true, vision: true, reasoning: false, promptCaching: false, webSearch: true, audioInput: false, audioOutput: false } }),
+  makeModel({ id: 'gpt-4o-mini', tier: 'base', maxInputTokens: 128000, inputCostPer1MTokens: 0.15, outputCostPer1MTokens: 0.6, capabilities: { functionCalling: true, vision: true, reasoning: false, promptCaching: false, webSearch: false, audioInput: false, audioOutput: false } }),
+  makeModel({ id: 'deepseek-v3', tier: 'pro', maxInputTokens: 64000, inputCostPer1MTokens: 0.5, outputCostPer1MTokens: 1.5, capabilities: { functionCalling: true, vision: false, reasoning: true, promptCaching: false, webSearch: false, audioInput: false, audioOutput: false } }),
+  makeModel({ id: 'gemini-2.5-flash', tier: 'base', maxInputTokens: 1000000, inputCostPer1MTokens: 0.1, outputCostPer1MTokens: 0.4, capabilities: { functionCalling: true, vision: true, reasoning: true, promptCaching: false, webSearch: true, audioInput: false, audioOutput: false } }),
 ];
 
 describe('ModelPicker', () => {
