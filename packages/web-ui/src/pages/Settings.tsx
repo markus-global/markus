@@ -54,7 +54,6 @@ const SETTINGS_TABS: Array<{ id: SettingsTab; labelKey: string; adminOnly?: bool
   { id: 'account', labelKey: 'nav.account' },
   { id: 'remote', labelKey: 'nav.remote', adminOnly: true },
   { id: 'integrations', labelKey: 'nav.integrations', adminOnly: true },
-  { id: 'routing', labelKey: 'nav.routing', adminOnly: true },
 ];
 
 const LEGACY_TAB_ALIASES: Record<string, SettingsTab> = { users: 'account', organization: 'account', license: 'account' };
