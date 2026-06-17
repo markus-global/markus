@@ -22,10 +22,10 @@ User Request
 │                                                          │
 │  Text path (no assignment)  Text/Non-text with assignment│
 │  ─────────────────────────  ────────────────────────────-│
-│  assessComplexity()         selectForCapability()          │
-│       │                     (capabilityRouting.assignments │
-│       ▼                      → routingDefaultModel        │
-│  selectProvider()            → selectProvider fallback)   │
+│  assessComplexity()         selectForCapability()        │
+│       │                   (capabilityRouting.assignments │
+│       ▼                      → routingDefaultModel       │
+│  selectProvider()            → selectProvider fallback)  │
 │  (tier-based)                     │                      │
 │       │                           │                      │
 │       ▼                           ▼                      │
@@ -34,24 +34,25 @@ User Request
 │                                                          │
 │  Multimodal tools path                                   │
 │  ─────────────────────                                   │
-│  resolveModalityProvider()                                │
-│  → returns { provider, model }                           │
+│  resolveModalityCandidates(capabilityType)               │
+│  → returns ordered list of { provider, model, name }     │
+│  → tools loop candidates with try/catch fallback         │
 │  → caller passes model to API (no shared state mutation) │
 └──────────────────────────────────────────────────────────┘
          │
          ▼
 ┌──────────────────────────────────────────────────────────┐
-│              Provider Implementations                     │
+│              Provider Implementations                    │
 │                                                          │
-│  OpenAIProvider (implements MultiModalProviderInterface)  │
+│  OpenAIProvider (implements MultiModalProviderInterface) │
 │    - chat, chatStream                                    │
 │    - generateImage (options.model ?? 'dall-e-3')         │
 │    - generateSpeech (options.model ?? 'tts-1')           │
 │    - transcribeSpeech (options.model ?? 'whisper-1')     │
 │                                                          │
-│  GoogleProvider (implements MultiModalProviderInterface)  │
+│  GoogleProvider (implements MultiModalProviderInterface) │
 │    - chat, chatStream                                    │
-│    - generateImage (options.model ?? gemini-image-gen)   │
+│    - generateImage (options.model ?? gemini-2.0-flash..) │
 │                                                          │
 │  AnthropicProvider, OllamaProvider, etc.                 │
 │    - chat only                                           │
@@ -86,6 +87,7 @@ sequenceDiagram
     end
 
     Router->>Provider: tryChat(primary, request, routedModel?)
+    Note right of Router: tryChat temporarily configures altModel<br/>on the provider, always restores original<br/>model in finally block
     alt Success
         Provider-->>Router: response
         Router->>Router: recordSuccess(provider, model)
@@ -105,22 +107,30 @@ sequenceDiagram
     end
 ```
 
+
+
+**Note on text chat model switching:** Unlike the multimodal path which avoids provider mutation entirely, `tryChat()` / `tryStream()` temporarily mutate the provider's model via `configure()` when using an alternate model (routed or fallback). The original model is always restored in a `finally` block after each attempt to prevent state leakage across calls.
+
 ### Complexity Assessment
 
-| Level | Condition (any triggers) |
-|-------|--------------------------|
-| **complex** | `toolCount > 5` OR `totalChars > 8000` OR `msgCount > 15` |
-| **moderate** | `toolCount > 0` OR `totalChars > 2000` OR `msgCount > 5` |
-| **simple** | everything else |
+
+| Level        | Condition (any triggers)                                  |
+| ------------ | --------------------------------------------------------- |
+| **complex**  | `toolCount > 5` OR `totalChars > 8000` OR `msgCount > 15` |
+| **moderate** | `toolCount > 0` OR `totalChars > 2000` OR `msgCount > 5`  |
+| **simple**   | everything else                                           |
+
 
 ### Provider Tier Mapping
 
-| Provider kind | Complexity levels | Precedence |
-|---------------|-------------------|------------|
-| **Default provider** | simple, moderate, complex | Always first |
-| **anthropic** (non-default) | complex only | |
-| **openai** (non-default) | complex, moderate | |
-| **Everything else** | simple, moderate | |
+
+| Provider kind               | Complexity levels         | Precedence   |
+| --------------------------- | ------------------------- | ------------ |
+| **Default provider**        | simple, moderate, complex | Always first |
+| **anthropic** (non-default) | complex only              |              |
+| **openai** (non-default)    | complex, moderate         |              |
+| **Everything else**         | simple, moderate          |              |
+
 
 ### Text Capability Assignment
 
@@ -138,55 +148,63 @@ sequenceDiagram
     participant Router as LLMRouter
     participant Provider
 
-    Tool->>Router: resolveModalityProvider(capabilityType)
+    Tool->>Router: resolveModalityCandidates(capabilityType)
 
-    alt Assignment exists for capabilityType
-        Router-->>Tool: { provider, model: assignment.model }
-    else Assignment fallback exists
-        Router-->>Tool: { provider: fallbackProvider, model: fallback.model }
-    else routingDefaultModel configured
-        Router-->>Tool: { provider, model: routingDefaultModel.model }
-    else
-        Router-->>Tool: { provider: defaultProvider }
+    Note over Router: Build ordered candidate list:<br/>1. assignment -> 2. assignment.fallback<br/>3. routingDefaultModel (if capable)<br/>4. defaultProvider (if capable)<br/>5. all remaining providers (if autoFallback)
+    Router-->>Tool: candidates[]
+
+    Note over Tool: Filter candidates by capability<br/>(e.g. provider.generateImage exists)
+
+    loop Each candidate (try until success)
+        alt generate_image
+            Tool->>Provider: generateImage(prompt, { model, size, ... })
+            Note right of Provider: Uses options.model ?? 'dall-e-3'
+        else text_to_speech
+            Tool->>Provider: generateSpeech(text, { model, voice, ... })
+            Note right of Provider: Uses options.model ?? 'tts-1'
+        else speech_to_text
+            Tool->>Provider: transcribeSpeech(audio, { model, language, ... })
+            Note right of Provider: Uses options.model ?? 'whisper-1'
+        else generate_video
+            Tool->>Provider: generateVideo(prompt, { model, duration, ... })
+        end
+
+        alt Success
+            Provider-->>Tool: result
+            Tool-->>Tool: Format and return JSON
+        else Failure
+            Tool-->>Tool: Log error, try next candidate
+        end
     end
-
-    Note over Tool: Provider instance is NOT mutated.<br/>Model is passed via API options.
-
-    alt generate_image
-        Tool->>Provider: generateImage(prompt, { model, size, ... })
-        Note right of Provider: Uses options.model ?? 'dall-e-3'
-    else text_to_speech
-        Tool->>Provider: generateSpeech(text, { model, voice, ... })
-        Note right of Provider: Uses options.model ?? 'tts-1'
-    else speech_to_text
-        Tool->>Provider: transcribeSpeech(audio, { model, language, ... })
-        Note right of Provider: Uses options.model ?? 'whisper-1'
-    else generate_video
-        Tool->>Provider: generateVideo(prompt, { model, duration, ... })
-    end
-
-    Provider-->>Tool: result
-    Tool-->>Tool: Format and return JSON
 ```
+
+
 
 ### Key Design: No Shared State Mutation
 
-`resolveModalityProvider()` returns a `{ provider, model }` tuple. The caller passes `model` into the provider method's `options` parameter. This prevents a critical bug where mutating `provider.model` (via `configure()`) for a modality call would corrupt subsequent chat requests on the same provider instance.
+`resolveModalityCandidates()` returns a list of `{ provider, model, name }` tuples. The caller passes `model` into the provider method's `options` parameter. This prevents a critical bug where mutating `provider.model` (via `configure()`) for a modality call would corrupt subsequent chat requests on the same provider instance.
+
+### Agent-Level Overrides
+
+Each multimodal tool accepts optional `provider` and `model` parameters from the agent. When provided, `resolveEffectiveCandidates()` filters the candidate list: an explicit `provider` restricts to that single provider, and an explicit `model` overrides the routing-assigned model on all candidates. This lets agents dynamically select providers without changing the global routing configuration.
 
 ### Multi-Modal Tools
 
 Registered via `createMultiModalTools()` in `AgentManager`:
 
-| Tool | CapabilityType | Provider Method | Default Model |
-|------|----------|-----------------|---------------|
-| `generate_image` | `image_generation` | `generateImage()` | `dall-e-3` |
-| `text_to_speech` | `audio_tts` | `generateSpeech()` | `tts-1` |
-| `speech_to_text` | `audio_stt` | `transcribeSpeech()` | `whisper-1` |
-| `generate_video` | `video_generation` | `generateVideo()` | (none yet) |
+
+| Tool             | CapabilityType     | Provider Method      | Default Model |
+| ---------------- | ------------------ | -------------------- | ------------- |
+| `generate_image` | `image_generation` | `generateImage()`    | `dall-e-3`    |
+| `text_to_speech` | `audio_tts`        | `generateSpeech()`   | `tts-1`       |
+| `speech_to_text` | `audio_stt`        | `transcribeSpeech()` | `whisper-1`   |
+| `generate_video` | `video_generation` | `generateVideo()`    | (none yet)    |
+
 
 The assigned model from `capabilityRouting.assignments[capabilityType].model` is passed as `options.model` to each provider method. Provider methods use the assigned model if provided, otherwise fall back to their hardcoded defaults.
 
 **Output behavior:**
+
 - `generate_image` → returns `{ url, revisedPrompt }` or `{ base64 }`
 - `text_to_speech` → saves audio to temp file, returns `{ filePath, format, sizeBytes }`
 - `speech_to_text` → accepts URL or local file path, returns `{ text }`
@@ -232,13 +250,17 @@ sequenceDiagram
     end
 ```
 
+
+
 ### Circuit Breaker Thresholds
 
-| Scope | Trigger | Cooldown | Effect |
-|-------|---------|----------|--------|
-| **Provider** | Any non-retryable error (401/402/403, billing, invalid key) | **30 min** | Entire provider skipped |
-| **Model** | 2 consecutive retryable failures | **5 min** | That `provider:model` pair skipped |
-| **Model (rate limit)** | 2 consecutive 429 errors | **30 sec** | That `provider:model` pair skipped |
+
+| Scope                  | Trigger                                                     | Cooldown   | Effect                             |
+| ---------------------- | ----------------------------------------------------------- | ---------- | ---------------------------------- |
+| **Provider**           | Any non-retryable error (401/402/403, billing, invalid key) | **30 min** | Entire provider skipped            |
+| **Model**              | 2 consecutive retryable failures                            | **5 min**  | That `provider:model` pair skipped |
+| **Model (rate limit)** | 2 consecutive 429 errors                                    | **30 sec** | That `provider:model` pair skipped |
+
 
 Recovery is lazy: checked on next `isAvailable()` / `isModelAvailable()` call after the cooldown period.
 
@@ -273,11 +295,12 @@ REGIONAL_PROVIDER_ALIASES = {
 Models are classified into three tiers: `base`, `pro`, `max`.
 
 **Classification sources (in priority order):**
+
 1. Explicit `tier` field on `ModelDefinition` (BUILTIN_MODEL_CATALOG entries)
 2. `estimateQualityScore()` using input cost per 1M tokens:
-   - `>= $3` → `max` (score >= 75)
-   - `>= $0.50` → `pro` (score >= 50)
-   - `< $0.50` → `base`
+  - `>= $3` → `max` (score >= 75)
+  - `>= $0.50` → `pro` (score >= 50)
+  - `< $0.50` → `base`
 3. Parameter count from model name (`\d+B`) as secondary signal
 
 ---
@@ -317,20 +340,22 @@ type ModelCapabilityType = 'text' | 'image_recognition' | 'image_generation' | '
 
 ## API Endpoints
 
-| Endpoint | Method | Description | Caching |
-|----------|--------|-------------|---------|
-| `/api/settings/llm/routing` | GET | Current routing config | None |
-| `/api/settings/llm` | POST | Update routing config (capabilityRouting, routingDefaultModel, etc.) | None |
-| `/api/models/routing-candidates` | GET | All available models per provider | 5-min server-side TTL |
-| `/api/models/suggested-assignments` | GET | Auto-suggested best model per capability | None |
+
+| Endpoint                            | Method | Description                                                          | Caching               |
+| ----------------------------------- | ------ | -------------------------------------------------------------------- | --------------------- |
+| `/api/settings/llm/routing`         | GET    | Current routing config                                               | None                  |
+| `/api/settings/llm`                 | POST   | Update routing config (capabilityRouting, routingDefaultModel, etc.) | None                  |
+| `/api/models/routing-candidates`    | GET    | All available models per provider                                    | 5-min server-side TTL |
+| `/api/models/suggested-assignments` | GET    | Auto-suggested best model per capability                             | None                  |
+
 
 ---
 
 ## UI Components
 
-- **`ModelRoutingSection`** — capability assignment table with per-capability model selection
-- **`ModelSelect`** — searchable model dropdown grouped by provider
-- **`ModelPicker`** — model selection with tier/cost badges for the main settings panel
+- `**ModelRoutingSection**` — capability assignment table with per-capability model selection
+- `**ModelSelect**` — searchable model dropdown grouped by provider
+- `**ModelPicker**` — model selection with tier/cost badges for the main settings panel
 
 ### Stale Assignment Handling
 

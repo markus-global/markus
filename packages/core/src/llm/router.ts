@@ -874,11 +874,11 @@ export class LLMRouter {
       return { response, model: activeModel };
     } catch (error) {
       this.recordFailure(providerName, activeModel, error);
+      throw LLMRouter.enrichError(error, providerName, activeModel);
+    } finally {
       if (altModel && altModel !== originalModel) {
         provider.configure({ provider: providerName as any, model: originalModel });
       }
-      throw LLMRouter.enrichError(error, providerName, activeModel);
-    } finally {
       this.releaseInflight(providerName);
     }
   }
@@ -1009,11 +1009,11 @@ export class LLMRouter {
       return { response, model: activeModel };
     } catch (error) {
       this.recordFailure(providerName, activeModel, error);
+      throw LLMRouter.enrichError(error, providerName, activeModel);
+    } finally {
       if (altModel && altModel !== originalModel) {
         provider.configure({ provider: providerName as any, model: originalModel });
       }
-      throw LLMRouter.enrichError(error, providerName, activeModel);
-    } finally {
       this.releaseInflight(providerName);
     }
   }

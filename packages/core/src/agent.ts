@@ -2391,10 +2391,21 @@ export class Agent {
     return this.metricsCollector.getUsageStats();
   }
 
-  private computeCallCost(inputTokens: number, outputTokens: number): number {
+  private computeCallCost(inputTokens: number, outputTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number): number {
     const modelCost = this.llmRouter.getModelCost(this.getEffectiveProvider());
     if (!modelCost) return 0;
-    return (inputTokens / 1_000_000) * modelCost.input + (outputTokens / 1_000_000) * modelCost.output;
+
+    const cacheRead = cacheReadTokens ?? 0;
+    const cacheWrite = cacheWriteTokens ?? 0;
+    const regularInput = Math.max(0, inputTokens - cacheRead - cacheWrite);
+
+    let cost = (regularInput / 1_000_000) * modelCost.input
+             + (outputTokens / 1_000_000) * modelCost.output;
+
+    cost += (cacheRead / 1_000_000) * (modelCost.cacheRead ?? modelCost.input);
+    cost += (cacheWrite / 1_000_000) * (modelCost.cacheWrite ?? modelCost.input);
+
+    return cost;
   }
 
   private emitAudit(event: {
@@ -3051,7 +3062,7 @@ export class Agent {
         outputTokens: response.usage.outputTokens,
         cacheReadTokens: response.usage.cacheReadTokens,
         cacheWriteTokens: response.usage.cacheWriteTokens,
-        cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens),
+        cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens),
         durationMs: Date.now() - llmStart,
         success: true,
       });
@@ -3278,7 +3289,7 @@ export class Agent {
           outputTokens: response.usage.outputTokens,
           cacheReadTokens: response.usage.cacheReadTokens,
           cacheWriteTokens: response.usage.cacheWriteTokens,
-          cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens),
+          cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens),
           durationMs: Date.now() - llmStart2,
           success: true,
         });
@@ -3716,7 +3727,7 @@ export class Agent {
         tokensUsed: tokensThisCall,
         inputTokens: response.usage.inputTokens,
         outputTokens: response.usage.outputTokens,
-        cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens),
+        cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens),
         durationMs: Date.now() - llmStart,
         success: true,
       });
@@ -3927,7 +3938,7 @@ export class Agent {
           tokensUsed: tokens2,
           inputTokens: response.usage.inputTokens,
           outputTokens: response.usage.outputTokens,
-          cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens),
+          cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens),
           durationMs: Date.now() - llmStart2,
           success: true,
         });
@@ -4357,7 +4368,7 @@ export class Agent {
       let taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(taskLlmTokens);
       this.calibrateTokenCounter(response.usage.inputTokens);
-      this.emitAudit({ type: 'llm_request', action: 'task_execution', tokensUsed: taskLlmTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens), durationMs: Date.now() - taskLlmStart, success: true });
+      this.emitAudit({ type: 'llm_request', action: 'task_execution', tokensUsed: taskLlmTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens), durationMs: Date.now() - taskLlmStart, success: true });
 
       while (
         (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
@@ -4581,7 +4592,7 @@ export class Agent {
         taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(taskLlmTokens);
         this.calibrateTokenCounter(response.usage.inputTokens);
-        this.emitAudit({ type: 'llm_request', action: 'task_execution', tokensUsed: taskLlmTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens), durationMs: Date.now() - taskLlmStart, success: true });
+        this.emitAudit({ type: 'llm_request', action: 'task_execution', tokensUsed: taskLlmTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens), durationMs: Date.now() - taskLlmStart, success: true });
       }
 
       // Final cancel check after the tool loop exits
@@ -4880,7 +4891,7 @@ export class Agent {
       let risTokens = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(risTokens);
       this.calibrateTokenCounter(response.usage.inputTokens);
-      this.emitAudit({ type: 'llm_request', action: 'respond_in_session', tokensUsed: risTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens), durationMs: Date.now() - risLlmStart, success: true });
+      this.emitAudit({ type: 'llm_request', action: 'respond_in_session', tokensUsed: risTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens), durationMs: Date.now() - risLlmStart, success: true });
 
       let toolIter = 0;
       while (
@@ -4982,7 +4993,7 @@ export class Agent {
         risTokens = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(risTokens);
         this.calibrateTokenCounter(response.usage.inputTokens);
-        this.emitAudit({ type: 'llm_request', action: 'respond_in_session', tokensUsed: risTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens), durationMs: Date.now() - risLlmStart, success: true });
+        this.emitAudit({ type: 'llm_request', action: 'respond_in_session', tokensUsed: risTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens), durationMs: Date.now() - risLlmStart, success: true });
       }
 
       flushText();
