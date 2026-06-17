@@ -235,7 +235,7 @@ function sizeToAspectRatio(size: string): string {
   const w = parseInt(m[1], 10);
   const h = parseInt(m[2], 10);
   const target = w / h;
-  let best = VALID_ASPECT_RATIOS[0];
+  let best: string = VALID_ASPECT_RATIOS[0];
   let bestDiff = Infinity;
   for (const ratio of VALID_ASPECT_RATIOS) {
     const [rw, rh] = ratio.split(':').map(Number);
