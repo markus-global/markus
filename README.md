@@ -42,7 +42,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/dashboard.png" alt="Markus Dashboard — desktop and mobile, manage your AI workforce from anywhere" width="800" />
+  <img src="docs/images/markus-og.jpg" alt="Markus Dashboard — desktop and mobile, manage your AI workforce from anywhere" width="800" />
 </p>
 
 

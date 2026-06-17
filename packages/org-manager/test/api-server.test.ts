@@ -179,8 +179,9 @@ async function request(
   const res = new MockServerResponse();
   server.handleRequest(req as unknown as IncomingMessage, res as unknown as ServerResponse);
   req._simulate();
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  for (let i = 0; i < 20 && !res.ended; i++) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
   let json: Record<string, unknown> = {};
   try {
     if (res.body) json = JSON.parse(res.body) as Record<string, unknown>;
