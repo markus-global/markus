@@ -12,7 +12,8 @@
     "integrations": "Integrations",
     "license": "License",
     "organization": "Organization",
-    "account": "Organization & License"
+    "account": "Organization & License",
+    "routing": "Model Routing"
   },
   "appearance": {
     "title": "Appearance",
@@ -664,5 +665,67 @@
     "testFailed": "Connection failed",
     "disconnected": "Disconnected from Feishu",
     "disconnect": "Disconnect"
+  },
+  "modelRouting": {
+    "title": "Model Routing",
+    "description": "Configure which AI models handle different types of tasks",
+    "refresh": "Refresh",
+    "refreshing": "Refreshing…",
+    "refreshSuccess": "Updated {{time}}",
+    "refreshDone": "Done",
+    "refreshFailed": "Refresh failed",
+    "suggest": "Auto Suggest",
+    "suggestLoading": "Analyzing…",
+    "suggestApplied": "Applied {{count}} suggestion(s)",
+    "suggestFailed": "Suggestion failed",
+    "loadingCatalog": "Loading model catalog…",
+    "defaultModel": "Default Model",
+    "selectDefaultModel": "Select default model…",
+    "taskTypeRouting": "Task Type Routing",
+    "taskCount": "{{count}} task types",
+    "autoStrategy": "Auto-Strategy",
+    "defaultTier": "Default Tier",
+    "noChanges": "No changes to save",
+    "saveSuccess": "Settings saved",
+    "saveFailed": "Failed to save",
+    "unsavedChanges": "Unsaved changes",
+    "cancel": "Cancel",
+    "save": "Save Changes",
+    "saving": "Saving…",
+    "close": "Close",
+    "apply": "Apply",
+    "clearFallback": "Clear fallback model",
+    "strategies": {
+      "alwaysMax": "Always Max",
+      "alwaysMaxDesc": "Best quality, highest cost",
+      "alwaysCheapest": "Always Cheapest",
+      "alwaysCheapestDesc": "Lowest cost, may sacrifice quality",
+      "balanced": "Balanced",
+      "balancedDesc": "Quality/cost tradeoff based on task type",
+      "cacheOptimized": "Cache Optimized",
+      "cacheOptimizedDesc": "Prioritize models with prompt caching"
+    },
+    "tiers": {
+      "base": "Base",
+      "baseDesc": "Entry-level models",
+      "pro": "Pro",
+      "proDesc": "Production-grade models",
+      "max": "Max",
+      "maxDesc": "Best-in-class models"
+    },
+    "taskTypes": {
+      "text_chat": "Chat",
+      "text_reasoning": "Reasoning",
+      "text_coding": "Coding",
+      "text_translation": "Translation",
+      "text_summary": "Summary",
+      "image_recognition": "Image Recognition",
+      "image_generation": "Image Generation",
+      "audio_tts": "Audio TTS",
+      "audio_stt": "Audio STT",
+      "video_generation": "Video Generation",
+      "embedding": "Embedding",
+      "web_search": "Web Search"
+    }
   }
 }

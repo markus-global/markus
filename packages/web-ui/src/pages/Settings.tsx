@@ -11,6 +11,7 @@ import { BrowserTestPanel } from '../components/BrowserTestPanel.tsx';
 import { ModelPicker } from '../components/ModelPicker.tsx';
 import { PROVIDER_OPTIONS } from '../constants/providers.ts';
 import { FeishuIntegrationSection } from '../components/FeishuIntegrationSection.tsx';
+import { ModelRoutingSection } from '../components/ModelRoutingSection.tsx';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[] }
@@ -40,11 +41,12 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
-type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'storage' | 'users' | 'organization' | 'account' | 'remote' | 'integrations' | 'license';
+type SettingsTab = 'appearance' | 'providers' | 'routing' | 'execution' | 'browser' | 'search' | 'storage' | 'users' | 'organization' | 'account' | 'remote' | 'integrations' | 'license';
 
 const SETTINGS_TABS: Array<{ id: SettingsTab; labelKey: string; adminOnly?: boolean }> = [
   { id: 'appearance', labelKey: 'nav.appearance' },
   { id: 'providers', labelKey: 'nav.providers', adminOnly: true },
+  { id: 'routing', labelKey: 'nav.routing', adminOnly: true },
   { id: 'execution', labelKey: 'nav.execution', adminOnly: true },
   { id: 'browser', labelKey: 'nav.browser', adminOnly: true },
   { id: 'search', labelKey: 'nav.search', adminOnly: true },
@@ -52,6 +54,7 @@ const SETTINGS_TABS: Array<{ id: SettingsTab; labelKey: string; adminOnly?: bool
   { id: 'account', labelKey: 'nav.account' },
   { id: 'remote', labelKey: 'nav.remote', adminOnly: true },
   { id: 'integrations', labelKey: 'nav.integrations', adminOnly: true },
+  { id: 'routing', labelKey: 'nav.routing', adminOnly: true },
 ];
 
 const LEGACY_TAB_ALIASES: Record<string, SettingsTab> = { users: 'account', organization: 'account', license: 'account' };
@@ -2500,6 +2503,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         {resolvedTab === 'remote' && <RemoteAccessSection />}
 
         {resolvedTab === 'integrations' && <FeishuIntegrationSection />}
+
+        {resolvedTab === 'routing' && <ModelRoutingSection />}
 
         </>
         )}

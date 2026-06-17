@@ -12,7 +12,8 @@
     "integrations": "外部IM集成",
     "license": "许可证",
     "organization": "组织",
-    "account": "组织与许可证"
+    "account": "组织与许可证",
+    "routing": "模型路由"
   },
   "appearance": {
     "title": "外观",
@@ -664,5 +665,67 @@
     "testFailed": "连接失败",
     "disconnected": "已断开飞书连接",
     "disconnect": "断开连接"
+  },
+  "modelRouting": {
+    "title": "模型路由",
+    "description": "配置不同类型的任务由哪些 AI 模型处理",
+    "refresh": "刷新",
+    "refreshing": "正在刷新…",
+    "refreshSuccess": "已更新 {{time}}",
+    "refreshDone": "完成",
+    "refreshFailed": "刷新失败",
+    "suggest": "自动推荐",
+    "suggestLoading": "正在分析…",
+    "suggestApplied": "已应用 {{count}} 条推荐",
+    "suggestFailed": "推荐失败",
+    "loadingCatalog": "正在加载模型目录…",
+    "defaultModel": "默认模型",
+    "selectDefaultModel": "请选择默认模型…",
+    "taskTypeRouting": "任务类型路由",
+    "taskCount": "共 {{count}} 种任务类型",
+    "autoStrategy": "自动策略",
+    "defaultTier": "默认层级",
+    "noChanges": "没有需要保存的更改",
+    "saveSuccess": "设置已保存",
+    "saveFailed": "保存失败",
+    "unsavedChanges": "有未保存的更改",
+    "cancel": "取消",
+    "save": "保存更改",
+    "saving": "保存中…",
+    "close": "关闭",
+    "apply": "应用",
+    "clearFallback": "清除备用模型",
+    "strategies": {
+      "alwaysMax": "始终最优",
+      "alwaysMaxDesc": "最佳质量，最高成本",
+      "alwaysCheapest": "始终最省",
+      "alwaysCheapestDesc": "最低成本，可能牺牲质量",
+      "balanced": "均衡模式",
+      "balancedDesc": "根据任务类型平衡质量与成本",
+      "cacheOptimized": "缓存优先",
+      "cacheOptimizedDesc": "优先使用支持提示缓存的模型"
+    },
+    "tiers": {
+      "base": "基础",
+      "baseDesc": "入门级模型",
+      "pro": "专业",
+      "proDesc": "生产级模型",
+      "max": "顶级",
+      "maxDesc": "顶尖模型"
+    },
+    "taskTypes": {
+      "text_chat": "对话",
+      "text_reasoning": "推理",
+      "text_coding": "编码",
+      "text_translation": "翻译",
+      "text_summary": "总结",
+      "image_recognition": "图像识别",
+      "image_generation": "图像生成",
+      "audio_tts": "语音合成",
+      "audio_stt": "语音识别",
+      "video_generation": "视频生成",
+      "embedding": "向量嵌入",
+      "web_search": "网络搜索"
+    }
   }
 }

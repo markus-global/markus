@@ -435,6 +435,21 @@ export interface SuggestedAssignment {
   reason: string;
 }
 
+/** Task type identifiers for model routing configuration. */
+export type ModelTaskType =
+  | 'text_chat'
+  | 'text_reasoning'
+  | 'text_coding'
+  | 'text_translation'
+  | 'text_summary'
+  | 'image_recognition'
+  | 'image_generation'
+  | 'audio_tts'
+  | 'audio_stt'
+  | 'video_generation'
+  | 'embedding'
+  | 'web_search';
+
 export interface RoutingConfig {
   defaultModel: string;
   taskRouting: Array<{
