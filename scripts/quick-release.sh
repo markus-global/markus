@@ -80,6 +80,13 @@ BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 # ── Run CI checks locally ────────────────────────────────────────────────
 printf "\n${BLUE}→${NC} Running local CI checks before release…\n"
 
+printf "  ${YELLOW}▸${NC} Updating bundled data (model catalog)…"
+if bash "$ROOT_DIR/scripts/update-model-catalog.sh" >/dev/null 2>&1; then
+  printf " ${GREEN}✓${NC}\n"
+else
+  printf " ${YELLOW}⚠${NC} (non-critical, using existing data)\n"
+fi
+
 printf "  ${YELLOW}▸${NC} Lint…"
 if ! LINT_OUT="$(pnpm lint 2>&1)"; then
   printf " ${RED}✗${NC}\n"

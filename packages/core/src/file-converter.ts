@@ -69,9 +69,10 @@ async function convertWithMarkitdown(filePath: string): Promise<string> {
   });
 }
 
-function fallbackImageDescription(name: string, mimeType: string, sizeBytes: number): string {
+function fallbackFileDescription(name: string, mimeType: string, sizeBytes: number): string {
   const sizeKB = Math.round(sizeBytes / 1024);
-  return `[Image: ${name} (${mimeType}, ${sizeKB} KB) — image content not available because the current model does not support vision and markitdown CLI is not installed. Install with: pip install "markitdown[all]"]`;
+  const label = mimeType.startsWith('image/') ? 'Image' : 'File';
+  return `[${label}: ${name} (${mimeType}, ${sizeKB} KB) — content not available because markitdown CLI is not installed. Install with: pip install "markitdown[all]"]`;
 }
 
 /**
@@ -111,10 +112,10 @@ export async function convertFilesToText(
           await unlink(filePath).catch(() => {});
         } catch (err) {
           log.warn(`markitdown conversion failed for ${name}: ${err}`);
-          results.push({ name, mimeType: parsed.mimeType, text: fallbackImageDescription(name, parsed.mimeType, parsed.data.length) });
+          results.push({ name, mimeType: parsed.mimeType, text: fallbackFileDescription(name, parsed.mimeType, parsed.data.length) });
         }
       } else {
-        results.push({ name, mimeType: parsed.mimeType, text: fallbackImageDescription(name, parsed.mimeType, parsed.data.length) });
+        results.push({ name, mimeType: parsed.mimeType, text: fallbackFileDescription(name, parsed.mimeType, parsed.data.length) });
       }
     }
   } finally {

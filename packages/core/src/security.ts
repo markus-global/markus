@@ -31,7 +31,6 @@ const DEFAULT_PATH_DENY = [
 
 export class SecurityGuard {
   private policy: SecurityPolicy;
-  private pendingApprovals = new Map<string, { command: string; resolve: (approved: boolean) => void }>();
 
   constructor(policy?: SecurityPolicy) {
     this.policy = policy ?? {};

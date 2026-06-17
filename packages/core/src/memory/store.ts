@@ -444,7 +444,8 @@ export class MemoryStore implements IMemoryStore {
         try {
           const stat = statSync(join(this.sessionsDir, f));
           return { f, mtime: stat.mtimeMs };
-        } catch {
+        } catch (err) {
+          log.debug('Failed to stat session file', { file: f, error: String(err) });
           return { f, mtime: 0 };
         }
       });
@@ -462,8 +463,8 @@ export class MemoryStore implements IMemoryStore {
         }
       }
       log.info(`Loaded ${this.sessions.size} of ${files.length} conversation sessions (max ${MemoryStore.MAX_SESSIONS_IN_MEMORY} in memory)`);
-    } catch {
-      // sessions dir may not exist yet
+    } catch (err) {
+      log.debug('Sessions directory not accessible', { dir: this.sessionsDir, error: String(err) });
     }
   }
 
@@ -473,7 +474,8 @@ export class MemoryStore implements IMemoryStore {
       if (!existsSync(sessionFile)) return undefined;
       const raw = readFileSync(sessionFile, 'utf-8');
       return JSON.parse(raw) as ConversationSession;
-    } catch {
+    } catch (err) {
+      log.debug('Failed to load session from disk', { error: String(err) });
       return undefined;
     }
   }

@@ -65,6 +65,7 @@ class ManagedSession {
 
     proc.stdout?.on('data', (chunk: Buffer) => this.onData(chunk.toString()));
     proc.stderr?.on('data', (chunk: Buffer) => this.onData(chunk.toString()));
+    proc.stdin?.on('error', () => { /* suppress EPIPE when shell exits before write */ });
 
     proc.on('exit', () => {
       this.alive = false;
@@ -189,10 +190,12 @@ class ManagedSession {
         };
       }
 
-      // Write the command followed by a sentinel echo.
-      // The sentinel captures $? (exit code of the user's command).
       const script = `${command}\necho ${sentinel}_$?_\n`;
-      this.process.stdin?.write(script);
+      try {
+        this.process.stdin?.write(script);
+      } catch {
+        /* EPIPE: shell already exited; the 'exit' handler will resolve */
+      }
     });
   }
 
@@ -352,7 +355,9 @@ export class ShellSessionManager {
 
   private createSession(sessionId: string, agentId: string, cwd?: string): ManagedSession {
     const shell = process.env['SHELL'] || '/bin/sh';
-    const child = spawn(shell, ['--norc', '--noprofile', '-i'], {
+    const isBashLike = /\b(bash|zsh)\b/.test(shell);
+    const args = isBashLike ? ['--norc', '--noprofile', '-i'] : [];
+    const child = spawn(shell, args, {
       cwd: cwd ?? process.cwd(),
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
@@ -361,6 +366,7 @@ export class ShellSessionManager {
         PS2: '',
         PROMPT_COMMAND: '',
         TERM: 'dumb',
+        ENV: '',
       },
     });
 

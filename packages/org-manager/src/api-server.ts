@@ -27,7 +27,10 @@ import {
   discoverSkillsInDir,
   WELL_KNOWN_SKILL_DIRS,
   type AgentManager,
-  type ModelCatalogService,
+  ModelCatalogService,
+  estimateQualityScore,
+  tierFromQualityScore,
+  costTierFromPrice,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
@@ -163,6 +166,38 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
   return hashHex === expectedHash;
 }
 
+function stripProviderPrefix(catalogId: string): string {
+  return ModelCatalogService.stripProviderPrefix(catalogId);
+}
+
+interface ModelEnrichment {
+  tier?: string;
+  costTier?: string;
+  capabilities?: string[];
+  mode?: string;
+}
+
+function enrichModelFromCatalog(
+  modelId: string,
+  builtinTier: string | undefined,
+  catalog: ModelCatalogService | undefined,
+): ModelEnrichment {
+  const catalogEntry = catalog?.getModelInfo(modelId);
+  const tier = builtinTier ?? tierFromQualityScore(
+    estimateQualityScore(modelId, catalogEntry?.capabilities?.reasoning, catalogEntry?.inputCostPer1MTokens),
+  );
+  const costTier = catalogEntry
+    ? costTierFromPrice(catalogEntry.inputCostPer1MTokens)
+    : undefined;
+  const capabilities = catalogEntry
+    ? Object.entries(catalogEntry.capabilities)
+        .filter(([, v]) => v)
+        .map(([k]) => k)
+    : undefined;
+  const mode = catalogEntry?.mode;
+  return { tier, costTier, capabilities, mode };
+}
+
 function generateInviteToken(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -212,6 +247,9 @@ export class APIServer {
   private remoteAgent?: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void };
   private remoteAgentFactory?: () => Promise<{ getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void } | null>;
   private modelCatalog?: ModelCatalogService;
+  private routingCandidatesCache: { data: unknown; expireAt: number } | null = null;
+  private static readonly ROUTING_CACHE_TTL_MS = 5 * 60 * 1000;
+  private invalidateRoutingCache(): void { this.routingCandidatesCache = null; }
   private feishuRegisterSessions = new Map<string, { url: string; expireIn: number; status: string; createdAt: number }>();
   /** Aggregate today's tool calls from all agents' persisted metrics (the single source of truth) */
   private getToolCallsTodayFromAgents(): number {
@@ -5715,7 +5753,7 @@ EXPLANATION_END`;
       return;
     }
 
-    if (path.match(/^\/api\/skills\/[^/]+$/) && req.method === 'GET') {
+    if (path.match(/^\/api\/skills\/[^/]+$/) && !path.startsWith('/api/skills/registry') && req.method === 'GET') {
       const skillName = decodeURIComponent(path.split('/')[3]!);
       if (!this.skillRegistry) {
         this.json(res, 404, { error: 'Skill registry not configured' });
@@ -6607,7 +6645,7 @@ EXPLANATION_END`;
       return;
     }
 
-    if (path.match(/^\/api\/templates\/[^/]+$/) && req.method === 'GET') {
+    if (path.match(/^\/api\/templates\/[^/]+$/) && path !== '/api/templates/teams' && req.method === 'GET') {
       if (!this.templateRegistry) {
         this.json(res, 404, { error: 'Template registry not configured' });
         return;
@@ -7663,8 +7701,9 @@ EXPLANATION_END`;
         const baseUrl = (providerInstance as any)?.baseUrl;
 
         if (!apiKey) {
-          // No key available, fallback to catalog
-          const catalogModels = this.modelCatalog?.getModelsByProvider(providerName) ?? [];
+          // No key available, fallback to catalog (strip LiteLLM provider prefixes)
+          const catalogModels = (this.modelCatalog?.getModelsByProvider(providerName) ?? [])
+            .map(cm => ({ ...cm, id: stripProviderPrefix(cm.id) }));
           this.json(res, 200, { provider: providerName, models: catalogModels, source: 'catalog' });
           return;
         }
@@ -7672,7 +7711,8 @@ EXPLANATION_END`;
         const result = await this.validateProviderKey(providerName, apiKey, baseUrl);
         this.json(res, 200, { provider: providerName, models: result.models, source: result.valid ? 'live' : 'catalog' });
       } catch (err) {
-        const catalogModels = this.modelCatalog?.getModelsByProvider(providerName) ?? [];
+        const catalogModels = (this.modelCatalog?.getModelsByProvider(providerName) ?? [])
+          .map(cm => ({ ...cm, id: stripProviderPrefix(cm.id) }));
         this.json(res, 200, { provider: providerName, models: catalogModels, source: 'catalog', error: err instanceof Error ? err.message : String(err) });
       }
       return;
@@ -7696,9 +7736,13 @@ EXPLANATION_END`;
         return;
       }
       const body = await this.readBody(req);
-      const { defaultProvider, autoFallback } = body as { defaultProvider?: string; autoFallback?: boolean };
-      if (!defaultProvider && autoFallback === undefined) {
-        this.json(res, 400, { error: 'defaultProvider or autoFallback is required' });
+      const { defaultProvider, autoFallback, capabilityRouting, routingDefaultModel } = body as {
+        defaultProvider?: string; autoFallback?: boolean;
+        capabilityRouting?: Record<string, unknown>;
+        routingDefaultModel?: { provider: string; model: string } | null;
+      };
+      if (!defaultProvider && autoFallback === undefined && !capabilityRouting && routingDefaultModel === undefined) {
+        this.json(res, 400, { error: 'defaultProvider, autoFallback, capabilityRouting, or routingDefaultModel is required' });
         return;
       }
       try {
@@ -7711,6 +7755,30 @@ EXPLANATION_END`;
           this.llmRouter.setAutoFallback(autoFallback);
           configUpdates.autoFallback = autoFallback;
         }
+        if (capabilityRouting) {
+          const prevAssignments = { ...this.llmRouter.capabilityRouting.assignments };
+          this.llmRouter.setCapabilityRouting(capabilityRouting as any);
+          const incomingAssignments = (capabilityRouting as any).assignments ?? {};
+          const persistAssignments: Record<string, unknown> = { ...incomingAssignments };
+          for (const key of Object.keys(prevAssignments)) {
+            if (!(key in incomingAssignments)) {
+              persistAssignments[key] = null;
+            }
+          }
+          configUpdates.capabilityRouting = { assignments: persistAssignments };
+        }
+        if (routingDefaultModel !== undefined) {
+          if (routingDefaultModel === null) {
+            this.llmRouter.setRoutingDefaultModel(undefined);
+            configUpdates.routingDefaultModel = undefined;
+          } else if (routingDefaultModel.provider && routingDefaultModel.model) {
+            this.llmRouter.setRoutingDefaultModel(routingDefaultModel);
+            configUpdates.routingDefaultModel = routingDefaultModel;
+          } else {
+            this.json(res, 400, { error: 'routingDefaultModel must have provider and model fields' });
+            return;
+          }
+        }
         try {
           saveConfig({ llm: configUpdates } as any, this.markusConfigPath);
         } catch (e) {
@@ -7720,7 +7788,7 @@ EXPLANATION_END`;
           orgId: 'system',
           type: 'settings_changed',
           action: 'llm_settings',
-          detail: `${defaultProvider ? `defaultProvider=${defaultProvider}` : ''}${autoFallback !== undefined ? ` autoFallback=${autoFallback}` : ''}`.trim(),
+          detail: `${defaultProvider ? `defaultProvider=${defaultProvider}` : ''}${autoFallback !== undefined ? ` autoFallback=${autoFallback}` : ''}${capabilityRouting ? ' capabilityRouting=updated' : ''}`.trim(),
           userId: auth.userId,
           success: true,
         });
@@ -7728,6 +7796,224 @@ EXPLANATION_END`;
       } catch (err) {
         this.json(res, 400, { error: String(err) });
       }
+      return;
+    }
+
+    // Models — Routing candidates (enriched model list for task routing UI)
+    if (path === '/api/models/routing-candidates' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter) {
+        this.json(res, 200, { providers: [] });
+        return;
+      }
+
+      // Serve from cache if still valid
+      if (this.routingCandidatesCache && Date.now() < this.routingCandidatesCache.expireAt) {
+        this.json(res, 200, this.routingCandidatesCache.data);
+        return;
+      }
+
+      const settings = this.llmRouter.getEnhancedSettings();
+      const result: Array<{ provider: string; displayName: string; models: Array<{ id: string; name: string; mode?: string; tier?: string; costTier?: string; capabilities?: string[] }> }> = [];
+
+      for (const [providerName, providerSettings] of Object.entries(settings.providers)) {
+        if (!providerSettings.enabled || !providerSettings.configured) continue;
+        const seenIds = new Set<string>();
+        const models: Array<{ id: string; name: string; mode?: string; tier?: string; costTier?: string; capabilities?: string[] }> = [];
+
+        for (const m of providerSettings.models ?? []) {
+          seenIds.add(m.id);
+          const enriched = enrichModelFromCatalog(m.id, m.tier, this.modelCatalog);
+          let caps = enriched.capabilities ?? (m as any).capabilities;
+          if (!caps && (m as any).inputTypes?.includes('image')) {
+            caps = ['vision'];
+          }
+          models.push({
+            id: m.id,
+            name: m.name ?? m.id,
+            mode: enriched.mode,
+            tier: enriched.tier,
+            costTier: enriched.costTier,
+            capabilities: caps,
+          });
+        }
+
+        try {
+          const providerInstance = this.llmRouter?.getProvider(providerName);
+          const apiKey = (providerInstance as any)?.apiKey ?? '';
+          const providerBaseUrl = (providerInstance as any)?.baseUrl;
+          if (apiKey) {
+            const liveResult = await this.validateProviderKey(providerName, apiKey, providerBaseUrl);
+            if (liveResult.valid && Array.isArray(liveResult.models)) {
+              for (const lm of liveResult.models as Array<{ id?: string; name?: string }>) {
+                const rawId = String(lm.id ?? lm.name ?? '');
+                if (!rawId) continue;
+                const modelId = stripProviderPrefix(rawId);
+                if (seenIds.has(modelId)) continue;
+                seenIds.add(modelId);
+                seenIds.add(rawId);
+                const enriched = enrichModelFromCatalog(modelId, undefined, this.modelCatalog);
+                models.push({
+                  id: modelId,
+                  name: modelId,
+                  mode: enriched.mode,
+                  tier: enriched.tier,
+                  costTier: enriched.costTier,
+                  capabilities: enriched.capabilities,
+                });
+              }
+            }
+          }
+        } catch { /* non-critical: live fetch failure just means fewer results */ }
+
+        if (this.modelCatalog) {
+          for (const cm of this.modelCatalog.getModelsByProvider(providerName)) {
+            if (seenIds.has(cm.id)) continue;
+            seenIds.add(cm.id);
+            const enriched = enrichModelFromCatalog(cm.id, undefined, this.modelCatalog);
+            models.push({
+              id: cm.id,
+              name: cm.id,
+              mode: enriched.mode,
+              tier: enriched.tier,
+              costTier: enriched.costTier,
+              capabilities: enriched.capabilities,
+            });
+          }
+        }
+
+        result.push({
+          provider: providerName,
+          displayName: providerSettings.displayName ?? providerName,
+          models,
+        });
+      }
+      const payload = { providers: result };
+      this.routingCandidatesCache = { data: payload, expireAt: Date.now() + APIServer.ROUTING_CACHE_TTL_MS };
+      this.json(res, 200, payload);
+      return;
+    }
+
+    // Models — Suggested assignments (auto-prefill best model per task type)
+    if (path === '/api/models/suggested-assignments' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+
+      const ALL_CAPABILITY_TYPES: string[] = [
+        'text',
+        'image_recognition', 'image_generation',
+        'audio_tts', 'audio_stt',
+        'video_generation',
+      ];
+
+      const TEXT_CAPABILITIES = new Set(['text']);
+
+      const CAP_MAP: Record<string, string[]> = {
+        image_recognition: ['vision'],
+        image_generation: ['imageGeneration'],
+        audio_tts: ['audioOutput', 'tts'],
+        audio_stt: ['audioInput', 'stt'],
+        video_generation: ['videoGeneration'],
+      };
+
+
+      interface CandidateModel {
+        provider: string;
+        modelId: string;
+        tier?: string;
+        capabilities?: string[];
+      }
+
+      const allCandidates: CandidateModel[] = [];
+      const settings = this.llmRouter!.getEnhancedSettings();
+
+      for (const [providerName, providerSettings] of Object.entries(settings.providers)) {
+        if (!providerSettings.enabled || !providerSettings.configured) continue;
+        const seenIds = new Set<string>();
+
+        for (const m of providerSettings.models ?? []) {
+          seenIds.add(m.id);
+          const enriched = enrichModelFromCatalog(m.id, m.tier, this.modelCatalog);
+          let caps = enriched.capabilities ?? (m as any).capabilities;
+          if (!caps && (m as any).inputTypes?.includes('image')) {
+            caps = ['vision'];
+          }
+          allCandidates.push({
+            provider: providerName,
+            modelId: m.id,
+            tier: enriched.tier,
+            capabilities: caps,
+          });
+        }
+
+        if (this.modelCatalog) {
+          for (const cm of this.modelCatalog.getModelsByProvider(providerName)) {
+            if (seenIds.has(cm.id)) continue;
+            seenIds.add(cm.id);
+            const enriched = enrichModelFromCatalog(cm.id, undefined, this.modelCatalog);
+            allCandidates.push({
+              provider: providerName,
+              modelId: cm.id,
+              tier: enriched.tier,
+              capabilities: enriched.capabilities,
+            });
+          }
+        }
+      }
+
+      // For each capability type, find the best model
+      const suggestions: Record<string, { provider: string; model: string; tier?: string } | null> = {};
+
+      for (const capabilityType of ALL_CAPABILITY_TYPES) {
+        let candidates: CandidateModel[];
+
+        const NON_TEXT_CAPS = new Set(['imageGeneration', 'tts', 'stt', 'videoGeneration', 'audioOutput', 'audioInput']);
+        if (TEXT_CAPABILITIES.has(capabilityType)) {
+          candidates = allCandidates.filter(m => {
+            if (m.capabilities && m.capabilities.some(c => NON_TEXT_CAPS.has(c))) return false;
+            return true;
+          });
+        } else {
+          const requiredCaps = CAP_MAP[capabilityType] ?? [];
+          candidates = allCandidates.filter(m =>
+            m.capabilities && m.capabilities.length > 0 &&
+            requiredCaps.some(cap => m.capabilities!.includes(cap))
+          );
+        }
+
+        if (candidates.length === 0) {
+          suggestions[capabilityType] = null;
+          continue;
+        }
+
+        const tierRank: Record<string, number> = { max: 3, pro: 2, base: 1 };
+        candidates.sort((a, b) => {
+          const ta = tierRank[a.tier ?? ''] ?? 0;
+          const tb = tierRank[b.tier ?? ''] ?? 0;
+          return tb - ta;
+        });
+
+        const best = candidates[0];
+        suggestions[capabilityType] = { provider: best.provider, model: best.modelId, tier: best.tier };
+      }
+
+      this.json(res, 200, { suggestions });
+      return;
+    }
+
+    // Settings — Model routing config (GET/POST)
+    if (path === '/api/settings/llm/routing' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter) {
+        this.json(res, 200, { capabilityRouting: {}, routingDefaultModel: null });
+        return;
+      }
+      this.json(res, 200, {
+        capabilityRouting: this.llmRouter.capabilityRouting,
+        routingDefaultModel: this.llmRouter.routingDefaultModel ?? null,
+      });
       return;
     }
 
@@ -8212,6 +8498,7 @@ EXPLANATION_END`;
             ...(cost ? { cost } : {}),
           });
         }
+        this.invalidateRoutingCache();
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
           const currentConfig = loadCfg(this.markusConfigPath);
@@ -8283,6 +8570,7 @@ EXPLANATION_END`;
             ...(cost ? { cost } : {}),
           });
         }
+        this.invalidateRoutingCache();
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
           const currentConfig = loadCfg(this.markusConfigPath);
@@ -8326,13 +8614,14 @@ EXPLANATION_END`;
       const providerName = path.split('/')[5]!;
       try {
         this.llmRouter.unregisterProvider(providerName);
+        this.invalidateRoutingCache();
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
           const currentConfig = loadCfg(this.markusConfigPath);
-          const providers = { ...currentConfig.llm.providers };
-          delete providers[providerName];
-          const configUpdates: any = { llm: { providers } };
+          const configUpdates: any = { llm: { providers: { [providerName]: null } } };
           if (currentConfig.llm.defaultProvider === providerName) {
+            const providers = { ...currentConfig.llm.providers };
+            delete providers[providerName];
             const remaining = Object.keys(providers).filter(k => providers[k]?.enabled !== false);
             configUpdates.llm.defaultProvider = remaining[0] ?? 'anthropic';
           }
@@ -8382,6 +8671,7 @@ EXPLANATION_END`;
           ...(inputTypes ? { inputTypes } : {}),
         };
         this.llmRouter.addCustomModel(providerName, modelDef);
+        this.invalidateRoutingCache();
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
           const currentConfig = loadCfg(this.markusConfigPath);
@@ -8421,15 +8711,15 @@ EXPLANATION_END`;
       const modelId = decodeURIComponent(parts[7]!);
       try {
         this.llmRouter.removeCustomModel(providerName, modelId);
+        this.invalidateRoutingCache();
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
           const currentConfig = loadCfg(this.markusConfigPath);
-          const customModels = { ...(currentConfig.llm.customModels ?? {}) };
-          if (customModels[providerName]) {
-            customModels[providerName] = customModels[providerName].filter(m => m.id !== modelId);
-            if (customModels[providerName].length === 0) delete customModels[providerName];
-          }
-          saveConfig({ llm: { customModels } } as any, this.markusConfigPath);
+          const models = (currentConfig.llm.customModels?.[providerName] ?? []).filter(m => m.id !== modelId);
+          const customModelsUpdate: Record<string, unknown> = {
+            [providerName]: models.length > 0 ? models : null,
+          };
+          saveConfig({ llm: { customModels: customModelsUpdate } } as any, this.markusConfigPath);
         } catch (e) {
           log.warn('Failed to persist custom model removal', { error: String(e) });
         }
@@ -8509,6 +8799,7 @@ EXPLANATION_END`;
       try {
         const prevDefault = this.llmRouter.getSettings().defaultProvider;
         this.llmRouter.setProviderEnabled(providerName, enabled);
+        this.invalidateRoutingCache();
         const newDefault = this.llmRouter.getSettings().defaultProvider;
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
@@ -8633,8 +8924,10 @@ EXPLANATION_END`;
         { provider: 'anthropic', displayName: 'Anthropic', keyEnv: 'ANTHROPIC_API_KEY', defaultModel: 'claude-opus-4-6' },
         { provider: 'openai', displayName: 'OpenAI', keyEnv: 'OPENAI_API_KEY', defaultModel: 'gpt-5.4' },
         { provider: 'google', displayName: 'Google Gemini', keyEnv: 'GOOGLE_API_KEY', defaultModel: 'gemini-3-1-pro' },
-        { provider: 'siliconflow', displayName: 'SiliconFlow', keyEnv: 'SILICONFLOW_API_KEY', modelEnv: 'SILICONFLOW_MODEL', baseUrlEnv: 'SILICONFLOW_BASE_URL', defaultModel: 'Qwen/Qwen3.5-35B-A3B', defaultBaseUrl: 'https://api.siliconflow.cn/v1' },
-        { provider: 'minimax', displayName: 'MiniMax', keyEnv: 'MINIMAX_API_KEY', modelEnv: 'MINIMAX_MODEL', baseUrlEnv: 'MINIMAX_BASE_URL', defaultModel: 'MiniMax-M2.7', defaultBaseUrl: 'https://api.minimax.io/v1' },
+        { provider: 'siliconflow', displayName: 'SiliconFlow (中国)', keyEnv: 'SILICONFLOW_API_KEY', modelEnv: 'SILICONFLOW_MODEL', baseUrlEnv: 'SILICONFLOW_BASE_URL', defaultModel: 'Qwen/Qwen3.5-35B-A3B', defaultBaseUrl: 'https://api.siliconflow.cn/v1' },
+        { provider: 'siliconflow-intl', displayName: 'SiliconFlow (Global)', keyEnv: 'SILICONFLOW_INTL_API_KEY', modelEnv: 'SILICONFLOW_INTL_MODEL', baseUrlEnv: 'SILICONFLOW_INTL_BASE_URL', defaultModel: 'Qwen/Qwen3.5-35B-A3B', defaultBaseUrl: 'https://api-st.siliconflow.cn/v1' },
+        { provider: 'minimax', displayName: 'MiniMax (Global)', keyEnv: 'MINIMAX_API_KEY', modelEnv: 'MINIMAX_MODEL', baseUrlEnv: 'MINIMAX_BASE_URL', defaultModel: 'MiniMax-M3', defaultBaseUrl: 'https://api.minimax.io/v1' },
+        { provider: 'minimax-cn', displayName: 'MiniMax (中国)', keyEnv: 'MINIMAX_CN_API_KEY', modelEnv: 'MINIMAX_CN_MODEL', baseUrlEnv: 'MINIMAX_CN_BASE_URL', defaultModel: 'MiniMax-M3', defaultBaseUrl: 'https://api.minimaxi.com/v1' },
         { provider: 'openrouter', displayName: 'OpenRouter', keyEnv: 'OPENROUTER_API_KEY', modelEnv: 'OPENROUTER_MODEL', baseUrlEnv: 'OPENROUTER_BASE_URL', defaultModel: 'xiaomi/mimo-v2-pro', defaultBaseUrl: 'https://openrouter.ai/api/v1' },
         { provider: 'zai', displayName: 'ZAI', keyEnv: 'ZAI_API_KEY', modelEnv: 'ZAI_MODEL', baseUrlEnv: 'ZAI_BASE_URL', defaultModel: 'glm-5.1', defaultBaseUrl: 'https://api.z.ai/api/paas/v4' },
         { provider: 'deepseek', displayName: 'DeepSeek', keyEnv: 'DEEPSEEK_API_KEY', modelEnv: 'DEEPSEEK_MODEL', baseUrlEnv: 'DEEPSEEK_BASE_URL', defaultModel: 'deepseek-v4-flash', defaultBaseUrl: 'https://api.deepseek.com' },
@@ -8771,7 +9064,9 @@ EXPLANATION_END`;
             openai: 'OPENAI_API_KEY',
             google: 'GOOGLE_API_KEY',
             siliconflow: 'SILICONFLOW_API_KEY',
+            'siliconflow-intl': 'SILICONFLOW_INTL_API_KEY',
             minimax: 'MINIMAX_API_KEY',
+            'minimax-cn': 'MINIMAX_CN_API_KEY',
             openrouter: 'OPENROUTER_API_KEY',
             zai: 'ZAI_API_KEY',
             deepseek: 'DEEPSEEK_API_KEY',
@@ -8807,6 +9102,7 @@ EXPLANATION_END`;
               }
             }
           }
+          this.invalidateRoutingCache();
         }
         this.json(res, 200, {
           applied,
@@ -11975,6 +12271,8 @@ EXPLANATION_END`;
       deepseek: 'https://api.deepseek.com',
       siliconflow: 'https://api.siliconflow.cn/v1',
       minimax: 'https://api.minimax.io/v1',
+      'minimax-cn': 'https://api.minimaxi.com/v1',
+      'siliconflow-intl': 'https://api-st.siliconflow.cn/v1',
       openrouter: 'https://openrouter.ai/api/v1',
       zai: 'https://api.z.ai/api/paas/v4',
       xai: 'https://api.x.ai/v1',
@@ -12012,21 +12310,12 @@ EXPLANATION_END`;
         // Anthropic models endpoint returns { data: [...] }
         const data = await resp.json() as { data?: Array<{ id: string }> };
         const modelIds = (data.data ?? []).map((m: { id: string }) => m.id);
-        // Cross-reference with catalog (try both bare ID and prefixed)
-        const catalogModels = modelIds
-          .map((id: string) => this.modelCatalog?.getModelInfo(id) || this.modelCatalog?.getModelInfo(`anthropic/${id}`))
-          .filter(Boolean);
-        // Also include catalog entries not returned by API
-        const allAnthropicCatalog = this.modelCatalog?.getModelsByProvider('anthropic') ?? [];
-        const seenIds = new Set(modelIds);
-        const merged = [...catalogModels];
-        for (const cm of allAnthropicCatalog) {
-          const bareId = cm.id.startsWith('anthropic/') ? cm.id.slice('anthropic/'.length) : cm.id;
-          if (!seenIds.has(cm.id) && !seenIds.has(bareId)) {
-            merged.push(cm);
-          }
-        }
-        const result = merged.length > 0 ? merged : allAnthropicCatalog;
+        // Cross-reference with catalog for enrichment (pricing, capabilities).
+        // Only enrich models that the API actually returned — don't add extras.
+        const result = modelIds.map((id: string) => {
+          const match = this.modelCatalog?.getModelInfo(id) || this.modelCatalog?.getModelInfo(`anthropic/${id}`);
+          return match ? { ...match, id } : { id, provider: 'anthropic', mode: 'chat' };
+        });
         result.sort((a, b) => ((a as { id?: string }).id ?? '').localeCompare((b as { id?: string }).id ?? ''));
         return { valid: true, models: result };
       } catch (err) {
@@ -12073,15 +12362,26 @@ EXPLANATION_END`;
             });
           }
         }
-        for (const cm of catalogModels) {
+        // Gemini API list is authoritative for chat; append non-chat catalog models
+        const catalogGoogle = this.modelCatalog?.getModelsByProvider('google') ?? [];
+        for (const cm of catalogGoogle) {
+          if (cm.mode === 'chat') continue;
           const bareId = cm.id.startsWith('gemini/') ? cm.id.slice('gemini/'.length) : cm.id;
-          if (!seenIds.has(cm.id) && !seenIds.has(bareId)) models.push(cm);
+          if (seenIds.has(bareId) || seenIds.has(cm.id)) continue;
+          seenIds.add(bareId);
+          models.push({ ...cm, id: bareId, provider: 'google' });
         }
         models.sort((a, b) => String((a as { id?: string }).id ?? '').localeCompare(String((b as { id?: string }).id ?? '')));
         return { valid: true, models };
       } catch (err) {
         const catalogModels = this.modelCatalog?.getModelsByProvider('google') ?? [];
-        if (catalogModels.length > 0) return { valid: false, error: `Could not verify key (${err instanceof Error ? err.message : String(err)})`, models: catalogModels };
+        if (catalogModels.length > 0) {
+          const stripped = catalogModels.map(cm => {
+            const bareId = cm.id.startsWith('gemini/') ? cm.id.slice('gemini/'.length) : cm.id;
+            return { ...cm, id: bareId };
+          });
+          return { valid: false, error: `Could not verify key (${err instanceof Error ? err.message : String(err)})`, models: stripped };
+        }
         return { valid: false, error: err instanceof Error ? err.message : String(err), models: [] };
       }
     }
@@ -12112,9 +12412,14 @@ EXPLANATION_END`;
       const data = await resp.json() as { data?: Array<Record<string, unknown>> };
       const remoteModels = (data.data ?? []) as Array<Record<string, unknown>>;
 
-      // Filter out obvious non-chat models (image/audio/video/embedding/tts/rerank)
-      const NON_CHAT_PATTERNS = /\b(image|img|video|audio|tts|speech|whisper|embed|rerank|moderat)/i;
-      const chatRemoteModels = remoteModels.filter(m => !NON_CHAT_PATTERNS.test(String(m.id ?? '')));
+      // Filter out moderation/safety models and embedding/rerank models (not usable for chat or multimodal).
+      // Keep image/audio/video/tts/speech/whisper models since multimodal routing needs them.
+      const remoteFiltered = remoteModels.filter(m => {
+        const id = String(m.id ?? '').toLowerCase();
+        if (/\b(moderat)\b/i.test(id)) return false;
+        if (/\b(embed|rerank)\b/.test(id)) return false;
+        return true;
+      });
 
       // Build multiple lookup indices for catalog matching
       const catalogModels = this.modelCatalog?.getModelsByProvider(provider) ?? [];
@@ -12220,7 +12525,7 @@ EXPLANATION_END`;
 
       const models: Array<unknown> = [];
       const seenIds = new Set<string>();
-      for (const rm of chatRemoteModels) {
+      for (const rm of remoteFiltered) {
         const id = String(rm.id ?? '');
         if (!id || seenIds.has(id)) continue;
         seenIds.add(id);
@@ -12252,21 +12557,30 @@ EXPLANATION_END`;
         }
       }
 
-      // Also include catalog models not in remote list
-      for (const cm of catalogModels) {
-        const strippedId = cm.id.startsWith(`${provider}/`) ? cm.id.slice(provider.length + 1) : cm.id;
-        if (!seenIds.has(cm.id) && !seenIds.has(strippedId)) {
-          models.push(cm);
-        }
+      // The live /v1/models is authoritative for chat models — don't append
+      // catalog chat aliases. But non-chat models (TTS, image, video, STT)
+      // are served via separate API endpoints and never appear in /v1/models,
+      // so append them from the catalog.
+      const catalogAll = this.modelCatalog?.getModelsByProvider(provider) ?? [];
+      for (const cm of catalogAll) {
+        if (cm.mode === 'chat') continue;
+        const stripped = ModelCatalogService.stripProviderPrefix(cm.id);
+        if (seenIds.has(stripped) || seenIds.has(cm.id)) continue;
+        seenIds.add(stripped);
+        models.push({ ...cm, id: stripped, provider });
       }
 
       models.sort((a, b) => String((a as { id?: string }).id ?? '').localeCompare(String((b as { id?: string }).id ?? '')));
       return { valid: true, models };
     } catch (err) {
-      // If /v1/models fails, try to return catalog models and mark key as valid if catalog has data
+      // If /v1/models fails, fall back to catalog models (with stripped provider prefixes)
       const catalogModels = this.modelCatalog?.getModelsByProvider(provider) ?? [];
       if (catalogModels.length > 0) {
-        return { valid: false, error: `Could not verify key (${err instanceof Error ? err.message : String(err)}), showing catalog models`, models: catalogModels };
+        const stripped = catalogModels.map(cm => {
+          const strippedId = cm.id.startsWith(`${provider}/`) ? cm.id.slice(provider.length + 1) : cm.id;
+          return { ...cm, id: strippedId };
+        });
+        return { valid: false, error: `Could not verify key (${err instanceof Error ? err.message : String(err)}), showing catalog models`, models: stripped };
       }
       return { valid: false, error: err instanceof Error ? err.message : String(err), models: [] };
     }

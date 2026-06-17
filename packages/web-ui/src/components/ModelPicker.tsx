@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
-import type { CatalogModel } from '../api';
+import { useTranslation } from 'react-i18next';
+import type { CatalogModel, ModelTier } from '../api';
 
 interface ModelPickerProps {
   provider: string;
@@ -9,6 +10,7 @@ interface ModelPickerProps {
   loading?: boolean;
   compact?: boolean;
   maxVisible?: number;
+  showTiers?: boolean;
 }
 
 function formatTokens(count: number): string {
@@ -28,15 +30,67 @@ function hasMetadata(model: CatalogModel): boolean {
   return model.maxInputTokens > 0 || model.inputCostPer1MTokens > 0 || model.outputCostPer1MTokens > 0;
 }
 
-export function ModelPicker({ models, selectedModel, onSelect, loading, compact, maxVisible }: ModelPickerProps) {
+function inferTier(model: CatalogModel): ModelTier {
+  // Use server-provided tier when available
+  if (model.tier) return model.tier;
+  // Regex fallback for models without server data
+  const id = model.id.toLowerCase();
+  const maxPatterns = /opus|5\.4|o3-(?!mini)|o1-(?!mini)|gemini.*ultra|sonnet-4-20/;
+  const basePatterns = /haiku|flash|nano|lite|small|fast|free|8b|7b|1b|3b/;
+  // Avoid misclassifying reasoning models as base
+  const proReasoningPatterns = /o4-mini|o3-mini|o1-mini|gpt-4o-mini/;
+  if (proReasoningPatterns.test(id)) return 'pro';
+  if (maxPatterns.test(id)) return 'max';
+  if (basePatterns.test(id)) return 'base';
+  return 'pro';
+}
+
+function costTier(inputCost: number, outputCost: number): string {
+  const avg = (inputCost + outputCost) / 2;
+  if (avg === 0) return 'free';
+  if (avg < 0.5) return '$';
+  if (avg < 3) return '$$';
+  if (avg < 15) return '$$$';
+  return '$$$$';
+}
+
+const TIER_COLORS: Record<ModelTier, string> = {
+  max: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
+  pro: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  base: 'bg-gray-500/20 text-gray-400 border-gray-500/30',
+};
+
+const COST_COLORS: Record<string, string> = {
+  free: 'text-green-400',
+  '$': 'text-green-400',
+  '$$': 'text-yellow-400',
+  '$$$': 'text-orange-400',
+  '$$$$': 'text-red-400',
+};
+
+export function ModelPicker({ models, selectedModel, onSelect, loading, compact, maxVisible, showTiers }: ModelPickerProps) {
+  const { t } = useTranslation('settings');
   const [filter, setFilter] = useState('');
   const [showAll, setShowAll] = useState(false);
+  const [tierFilter, setTierFilter] = useState<ModelTier | ''>('');
 
   const filtered = useMemo(() => {
-    if (!filter) return models;
-    const q = filter.toLowerCase();
-    return models.filter(m => m.id.toLowerCase().includes(q));
-  }, [models, filter]);
+    let result = models;
+    if (filter) {
+      const q = filter.toLowerCase();
+      result = result.filter(m => m.id.toLowerCase().includes(q));
+    }
+    if (tierFilter) {
+      result = result.filter(m => inferTier(m) === tierFilter);
+    }
+    return result;
+  }, [models, filter, tierFilter]);
+
+  const tierCounts = useMemo(() => {
+    const counts = { max: 0, pro: 0, base: 0 };
+    for (const m of models) counts[inferTier(m)]++;
+    return counts;
+  }, [models]);
 
   const limit = maxVisible ?? (compact ? 5 : 10);
   const visible = showAll ? filtered : filtered.slice(0, limit);
@@ -46,7 +100,7 @@ export function ModelPicker({ models, selectedModel, onSelect, loading, compact,
     return (
       <div className="flex items-center gap-2 py-4 text-sm text-fg-tertiary">
         <div className="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
-        Loading models...
+        {t('modelPicker.loading')}
       </div>
     );
   }
@@ -54,19 +108,43 @@ export function ModelPicker({ models, selectedModel, onSelect, loading, compact,
   if (models.length === 0) {
     return (
       <div className="py-3 text-sm text-fg-tertiary">
-        No models available for this provider.
+        {t('modelPicker.empty')}
       </div>
     );
   }
 
   return (
     <div className="space-y-2">
+      {showTiers && models.length > 3 && (
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setTierFilter('')}
+            className={`px-2 py-0.5 rounded text-[10px] transition-colors ${
+              !tierFilter ? 'bg-brand-500/20 text-brand-500' : 'bg-surface-overlay text-fg-tertiary hover:text-fg-secondary'
+            }`}
+          >
+            {t('modelPicker.allCount', { count: models.length })}
+          </button>
+          {(['max', 'pro', 'base'] as ModelTier[]).filter(tier => tierCounts[tier] > 0).map(tier => (
+            <button
+              key={tier}
+              onClick={() => setTierFilter(tierFilter === tier ? '' : tier)}
+              className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase transition-colors border ${
+                tierFilter === tier ? TIER_COLORS[tier] : 'border-transparent bg-surface-overlay text-fg-tertiary hover:text-fg-secondary'
+              }`}
+            >
+              {t('modelPicker.tierCount', { tier: t(`modelRouting.tier.${tier}`), count: tierCounts[tier] })}
+            </button>
+          ))}
+        </div>
+      )}
+
       {models.length > 5 && (
         <input
           type="text"
           value={filter}
           onChange={e => { setFilter(e.target.value); setShowAll(false); }}
-          placeholder="Filter models..."
+          placeholder={t('modelPicker.filterPlaceholder')}
           className="w-full px-3 py-1.5 bg-surface-overlay border border-border-default rounded-lg text-xs text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:border-brand-500"
         />
       )}
@@ -74,6 +152,9 @@ export function ModelPicker({ models, selectedModel, onSelect, loading, compact,
       <div className={`space-y-1 ${compact ? 'max-h-[280px] overflow-y-auto' : ''}`}>
         {visible.map(model => {
           const isActive = model.id === selectedModel;
+          const tier = inferTier(model);
+          const cost = costTier(model.inputCostPer1MTokens, model.outputCostPer1MTokens);
+          const costLabel = cost === 'free' ? t('modelPicker.costFree') : cost;
           return (
             <button
               key={model.id}
@@ -95,29 +176,39 @@ export function ModelPicker({ models, selectedModel, onSelect, loading, compact,
                   <span className={`text-xs font-medium ${isActive ? 'text-brand-500' : 'text-fg-primary'}`}>
                     {model.id}
                   </span>
+                  {showTiers && (
+                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase border ${TIER_COLORS[tier]}`}>
+                      {t(`modelRouting.tier.${tier}`)}
+                    </span>
+                  )}
                 </div>
-                {isActive && (
-                  <span className="text-[10px] text-brand-500 font-medium">Active</span>
-                )}
+                <div className="flex items-center gap-2">
+                  {hasMetadata(model) && (
+                    <span className={`text-[9px] font-medium ${COST_COLORS[cost]}`}>{costLabel}</span>
+                  )}
+                  {isActive && (
+                    <span className="text-[10px] text-brand-500 font-medium">{t('modelPicker.active')}</span>
+                  )}
+                </div>
               </div>
 
               {hasMetadata(model) && (
                 <div className="ml-5 mt-0.5 flex items-center gap-2 text-[10px] text-fg-tertiary flex-wrap">
-                  {model.maxInputTokens > 0 && <span>{formatTokens(model.maxInputTokens)} ctx</span>}
+                  {model.maxInputTokens > 0 && <span>{formatTokens(model.maxInputTokens)} {t('modelPicker.ctx')}</span>}
                   {model.maxInputTokens > 0 && (model.inputCostPer1MTokens > 0 || model.outputCostPer1MTokens > 0) && <span className="text-fg-quaternary">|</span>}
                   {(model.inputCostPer1MTokens > 0 || model.outputCostPer1MTokens > 0) && (
-                    <span>{formatCost(model.inputCostPer1MTokens)}/{formatCost(model.outputCostPer1MTokens)} per 1M</span>
+                    <span>{formatCost(model.inputCostPer1MTokens)}/{formatCost(model.outputCostPer1MTokens)} {t('modelPicker.perMillion')}</span>
                   )}
                 </div>
               )}
 
               {!compact && (
                 <div className="ml-5 mt-1 flex items-center gap-1.5 flex-wrap">
-                  {model.capabilities.functionCalling && <CapBadge label="Tools" />}
-                  {model.capabilities.vision && <CapBadge label="Vision" />}
-                  {model.capabilities.reasoning && <CapBadge label="Reasoning" />}
-                  {model.capabilities.promptCaching && <CapBadge label="Caching" />}
-                  {model.capabilities.webSearch && <CapBadge label="Search" />}
+                  {model.capabilities.functionCalling && <CapBadge label={t('modelPicker.capabilities.tools')} />}
+                  {model.capabilities.vision && <CapBadge label={t('modelPicker.capabilities.vision')} />}
+                  {model.capabilities.reasoning && <CapBadge label={t('modelPicker.capabilities.reasoning')} />}
+                  {model.capabilities.promptCaching && <CapBadge label={t('modelPicker.capabilities.caching')} />}
+                  {model.capabilities.webSearch && <CapBadge label={t('modelPicker.capabilities.search')} />}
                 </div>
               )}
             </button>
@@ -131,7 +222,7 @@ export function ModelPicker({ models, selectedModel, onSelect, loading, compact,
           onClick={() => setShowAll(true)}
           className="text-xs text-brand-500 hover:text-brand-400 px-3"
         >
-          Show all {filtered.length} models...
+          {t('modelPicker.showAll', { count: filtered.length })}
         </button>
       )}
       {showAll && hasMore && (
@@ -140,7 +231,7 @@ export function ModelPicker({ models, selectedModel, onSelect, loading, compact,
           onClick={() => setShowAll(false)}
           className="text-xs text-fg-tertiary hover:text-fg-secondary px-3"
         >
-          Show less
+          {t('modelPicker.showLess')}
         </button>
       )}
     </div>

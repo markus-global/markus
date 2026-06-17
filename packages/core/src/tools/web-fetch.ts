@@ -183,7 +183,7 @@ export const WebFetchTool: AgentToolHandler = {
         note: 'Readability extraction failed, returning stripped text',
       });
     } catch (error) {
-      return JSON.stringify({ status: 'error', error: `Fetch failed: ${String(error)}` });
+      return JSON.stringify({ status: 'error', error: `Fetch failed: ${error instanceof Error ? error.message : String(error)}` });
     }
   },
 };

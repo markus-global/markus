@@ -49,30 +49,30 @@ export class AuthProfileStore {
    */
   private acquireLock(): () => void {
     const lockContent = `${process.pid}-${Date.now()}`;
-    try {
-      writeFileSync(this.lockPath, lockContent, { flag: 'wx' });
-      return () => {
-        try {
-          unlinkSync(this.lockPath);
-        } catch { /* already released */ }
-      };
-    } catch {
-      // Lock already held — check staleness (>30s = stale)
+    const releaseFn = () => { try { unlinkSync(this.lockPath); } catch { /* already released */ } };
+    const STALE_MS = 30_000;
+    const MAX_RETRIES = 3;
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
-        const existing = readFileSync(this.lockPath, 'utf-8');
-        const ts = Number(existing.split('-').pop());
-        if (Date.now() - ts > 30_000) {
-          writeFileSync(this.lockPath, lockContent, { mode: 0o600 });
-          return () => {
-            try {
-              unlinkSync(this.lockPath);
-            } catch { /* ok */ }
-          };
-        }
-      } catch { /* ignore */ }
-      log.debug('Auth profile lock contention, proceeding without lock');
-      return () => {};
+        writeFileSync(this.lockPath, lockContent, { flag: 'wx', mode: 0o600 });
+        return releaseFn;
+      } catch {
+        try {
+          const existing = readFileSync(this.lockPath, 'utf-8');
+          const ts = Number(existing.split('-').pop());
+          if (Date.now() - ts > STALE_MS) {
+            // Remove stale lock then retry with wx — avoids two processes
+            // both deciding the lock is stale and both overwriting it
+            try { unlinkSync(this.lockPath); } catch { /* another process cleaned it */ }
+            continue;
+          }
+        } catch { /* lock file disappeared — retry */ continue; }
+      }
     }
+
+    log.debug('Auth profile lock contention, proceeding without lock');
+    return () => {};
   }
 
   listProfiles(provider?: string): AuthProfile[] {

@@ -110,6 +110,9 @@ export class MCPClientManager {
     proc.on('error', (err) => {
       log.error(`MCP server ${displayName} error`, { error: String(err) });
     });
+    if (typeof proc.stdin?.on === 'function') {
+      proc.stdin.on('error', () => { /* suppress EPIPE when server exits before write */ });
+    }
 
     const stderrChunks: string[] = [];
     proc.stderr?.on('data', (data: Buffer) => {
@@ -414,13 +417,13 @@ export class MCPClientManager {
       }, timeoutMs);
 
       this.pendingRequests.set(id, { resolve, reject, method, timer, proc });
-      proc.stdin?.write(message);
+      try { proc.stdin?.write(message); } catch { /* EPIPE */ }
     });
   }
 
   private sendNotification(proc: ChildProcess, method: string, params: unknown): Promise<void> {
     const message = JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n';
-    proc.stdin?.write(message);
+    try { proc.stdin?.write(message); } catch { /* EPIPE */ }
     return Promise.resolve();
   }
 }

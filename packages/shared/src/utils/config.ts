@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, openSync, closeSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
+import type { CapabilityRoutingConfig } from '../types/model-catalog.js';
 
 export interface MarkusConfig {
   org: {
@@ -31,6 +32,12 @@ export interface MarkusConfig {
     timeoutMs?: number;
     /** Allow automatic fallback to other providers/models when the primary fails (default: true) */
     autoFallback?: boolean;
+    /** Capability-specific model routing (manual assignments per capability type) */
+    capabilityRouting?: CapabilityRoutingConfig;
+    /** Global routing default model — used as fallback when routing can't find a tier match */
+    routingDefaultModel?: { provider: string; model: string };
+    /** Mirror URL for model catalog updates (default: GitHub raw + CDN mirrors). Set this if raw.githubusercontent.com is unreachable. */
+    catalogMirrorUrl?: string;
   };
   server: {
     apiPort: number;
@@ -139,36 +146,98 @@ export function loadConfig(configPath?: string): MarkusConfig {
 
   const raw = readFileSync(p, 'utf-8');
   const parsed = JSON.parse(raw) as Partial<MarkusConfig>;
+  // Migrate legacy 'taskRouting' key → 'capabilityRouting'
+  if (parsed.llm && (parsed.llm as any).taskRouting && !parsed.llm.capabilityRouting) {
+    parsed.llm.capabilityRouting = (parsed.llm as any).taskRouting;
+    delete (parsed.llm as any).taskRouting;
+  }
   return deepMerge(DEFAULT_CONFIG as unknown as Obj, parsed as unknown as Obj) as unknown as MarkusConfig;
 }
 
 /**
+ * Acquire a simple filesystem lock. Returns a release function.
+ * Uses O_EXCL to atomically create the lock file.
+ */
+function acquireConfigLock(configPath: string, timeoutMs = 5000): () => void {
+  const lockPath = configPath + '.lock';
+  const deadline = Date.now() + timeoutMs;
+  const SPIN_MS = 50;
+
+  while (Date.now() < deadline) {
+    try {
+      const fd = openSync(lockPath, 'wx');
+      closeSync(fd);
+      writeFileSync(lockPath, `${process.pid}-${Date.now()}`, 'utf-8');
+      return () => { try { unlinkSync(lockPath); } catch { /* already released */ } };
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+        // Check for stale lock (>10s)
+        try {
+          const content = readFileSync(lockPath, 'utf-8');
+          const ts = Number(content.split('-').pop());
+          if (Date.now() - ts > 10_000) {
+            try { unlinkSync(lockPath); } catch { /* race with another cleaner */ }
+            continue;
+          }
+        } catch { /* lock file disappeared — retry */ continue; }
+
+        // Spin-wait
+        const waitUntil = Date.now() + SPIN_MS;
+        while (Date.now() < waitUntil) { /* busy wait */ }
+        continue;
+      }
+      break;
+    }
+  }
+  // Fallback: proceed without lock (better than deadlocking)
+  return () => {};
+}
+
+/**
  * Merge partial updates into the on-disk markus.json (creates it if absent).
+ * Uses a filesystem lock to prevent concurrent write races.
  */
 export function saveConfig(updates: Partial<MarkusConfig>, configPath?: string): void {
   const p = configPath ?? getDefaultConfigPath();
   mkdirSync(resolve(p, '..'), { recursive: true });
-  let existing: Obj = {};
-  if (existsSync(p)) {
-    try {
-      existing = JSON.parse(readFileSync(p, 'utf-8')) as Obj;
-    } catch {
-      existing = {};
+  const releaseLock = acquireConfigLock(p);
+  try {
+    let existing: Obj = {};
+    if (existsSync(p)) {
+      try {
+        existing = JSON.parse(readFileSync(p, 'utf-8')) as Obj;
+      } catch {
+        existing = {};
+      }
     }
+    const merged = deepMerge(existing, updates as unknown as Obj);
+    writeFileSync(p, JSON.stringify(merged, null, 2) + '\n', 'utf-8');
+  } finally {
+    releaseLock();
   }
-  const merged = deepMerge(existing, updates as unknown as Obj);
-  writeFileSync(p, JSON.stringify(merged, null, 2) + '\n', 'utf-8');
 }
 
 type Obj = Record<string, unknown>;
 
+/**
+ * Deep-merge source into target.
+ * - `null` values in source DELETE the corresponding key from the result.
+ * - Arrays in source REPLACE the target array (no element-level merge).
+ * - Plain objects are recursively merged.
+ */
 function deepMerge(target: Obj, source: Obj): Obj {
   const result: Obj = { ...target };
   for (const key of Object.keys(source)) {
     const sv = source[key];
-    const tv = target[key];
-    if (sv && typeof sv === 'object' && !Array.isArray(sv) && tv && typeof tv === 'object' && !Array.isArray(tv)) {
-      result[key] = deepMerge(tv as Obj, sv as Obj);
+    if (sv === null || sv === undefined) {
+      delete result[key];
+    } else if (sv && typeof sv === 'object' && !Array.isArray(sv)) {
+      const tv = target[key];
+      if (tv && typeof tv === 'object' && !Array.isArray(tv)) {
+        result[key] = deepMerge(tv as Obj, sv as Obj);
+      } else {
+        result[key] = sv;
+      }
     } else {
       result[key] = sv;
     }

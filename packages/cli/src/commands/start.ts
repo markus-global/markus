@@ -88,7 +88,7 @@ export function registerStartCommand(program: Command) {
     });
 }
 
-async function createServices(config: ReturnType<typeof loadConfig>) {
+export async function createServices(config: ReturnType<typeof loadConfig>) {
   const templateDirs = allTemplateDirs('roles');
   if (templateDirs.length === 0) templateDirs.push(resolveTemplatesDir('roles'));
   const roleLoader = new RoleLoader(templateDirs);
@@ -136,12 +136,30 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     }
   }
 
+  const siliconflowIntlKey =
+    config.llm.providers['siliconflow-intl']?.apiKey ?? process.env['SILICONFLOW_INTL_API_KEY'];
+  if (siliconflowIntlKey) {
+    providerConfigs['siliconflow-intl'] = {
+      provider: 'siliconflow',
+      model: config.llm.providers['siliconflow-intl']?.model ?? process.env['SILICONFLOW_INTL_MODEL'] ?? 'Qwen/Qwen3.5-35B-A3B',
+      apiKey: siliconflowIntlKey,
+      baseUrl:
+        config.llm.providers['siliconflow-intl']?.baseUrl ??
+        process.env['SILICONFLOW_INTL_BASE_URL'] ??
+        'https://api-st.siliconflow.cn/v1',
+      timeoutMs: llmTimeoutMs,
+    };
+    if (config.llm.defaultProvider === 'siliconflow-intl') {
+      defaultProvider = 'siliconflow-intl';
+    }
+  }
+
   const minimaxKey =
     config.llm.providers['minimax']?.apiKey ?? process.env['MINIMAX_API_KEY'];
   if (minimaxKey) {
     providerConfigs['minimax'] = {
       provider: 'openai',
-      model: config.llm.providers['minimax']?.model ?? process.env['MINIMAX_MODEL'] ?? 'MiniMax-M2.7',
+      model: config.llm.providers['minimax']?.model ?? process.env['MINIMAX_MODEL'] ?? 'MiniMax-M3',
       apiKey: minimaxKey,
       baseUrl:
         config.llm.providers['minimax']?.baseUrl ??
@@ -151,6 +169,24 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     };
     if (config.llm.defaultProvider === 'minimax') {
       defaultProvider = 'minimax';
+    }
+  }
+
+  const minimaxCnKey =
+    config.llm.providers['minimax-cn']?.apiKey ?? process.env['MINIMAX_CN_API_KEY'];
+  if (minimaxCnKey) {
+    providerConfigs['minimax-cn'] = {
+      provider: 'openai',
+      model: config.llm.providers['minimax-cn']?.model ?? process.env['MINIMAX_CN_MODEL'] ?? 'MiniMax-M3',
+      apiKey: minimaxCnKey,
+      baseUrl:
+        config.llm.providers['minimax-cn']?.baseUrl ??
+        process.env['MINIMAX_CN_BASE_URL'] ??
+        'https://api.minimaxi.com/v1',
+      timeoutMs: llmTimeoutMs,
+    };
+    if (config.llm.defaultProvider === 'minimax-cn') {
+      defaultProvider = 'minimax-cn';
     }
   }
 
@@ -228,6 +264,14 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   // Apply auto-fallback setting
   if (config.llm.autoFallback === false) {
     llmRouter.setAutoFallback(false);
+  }
+
+  // Apply capability routing config
+  if (config.llm.capabilityRouting) {
+    llmRouter.setCapabilityRouting(config.llm.capabilityRouting);
+  }
+  if (config.llm.routingDefaultModel) {
+    llmRouter.setRoutingDefaultModel(config.llm.routingDefaultModel);
   }
 
   // Load custom models from config
@@ -640,9 +684,11 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   apiServer.setConfigPath(values['config'] as string ?? getDefaultConfigPath());
 
   // Initialize model catalog service (loads baseline, tries to fetch latest in background)
-  const modelCatalog = new ModelCatalogService();
+  const modelCatalog = new ModelCatalogService({ mirrorUrl: config.llm?.catalogMirrorUrl });
   await modelCatalog.initialize();
   apiServer.setModelCatalog(modelCatalog);
+  llmRouter.setModelCatalogService(modelCatalog);
+
   if (config.hub?.url) apiServer.setHubUrl(config.hub.url);
 
   // Telemetry: connect stats provider and start background reporting
@@ -1634,7 +1680,12 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       .catch(() => process.exit(1));
   });
 
-  // Keep alive
+  // Keep alive (vitest sets process.env.VITEST so the start command can be tested)
+  if (process.env.VITEST) {
+    apiServer.stop();
+    await messageRouter.disconnectAll();
+    return;
+  }
   await new Promise(() => {});
 }
 

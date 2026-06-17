@@ -37,7 +37,7 @@ function isPlaceholder(key: string): boolean {
 }
 
 
-async function validateProviderKey(
+export async function validateProviderKey(
   id: string,
   apiKey: string,
   model: string,

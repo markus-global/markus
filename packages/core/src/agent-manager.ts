@@ -32,6 +32,7 @@ import { createProjectTools, type ProjectServiceBridge, type DeliverableServiceB
 import { createMemoryTools } from './tools/memory.js';
 import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
 import { createSettingsTools } from './tools/settings.js';
+import { createMultiModalTools } from './tools/multimodal.js';
 import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
@@ -626,7 +627,7 @@ export class AgentManager {
     if (this.chromeAutoClickRunning) return;
     this.chromeAutoClickRunning = true;
     clickChromeAllowDialog(60)
-      .catch(() => {})
+      .catch((err) => { log.debug('Chrome dialog auto-click failed', { error: String(err) }); })
       .finally(() => { this.chromeAutoClickRunning = false; });
   }
 
@@ -722,7 +723,8 @@ export class AgentManager {
             stepCount: w.stepCount,
           })),
         };
-      } catch {
+      } catch (err) {
+        log.debug('Failed to fetch workflow context', { teamId, error: String(err) });
         return undefined;
       }
     });
@@ -754,14 +756,14 @@ export class AgentManager {
   }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>): void {
     this.userApprovalRequester = cb;
     for (const info of this.listAgents()) {
-      try { this.getAgent(info.id).setUserApprovalRequester(cb); } catch { /* skip */ }
+      try { this.getAgent(info.id).setUserApprovalRequester(cb); } catch (err) { log.debug('Failed to set approval requester on agent', { agentId: info.id, error: String(err) }); }
     }
   }
 
   setUserNotifier(cb: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void): void {
     this.userNotifier = cb;
     for (const info of this.listAgents()) {
-      try { this.getAgent(info.id).setUserNotifier(cb); } catch { /* skip */ }
+      try { this.getAgent(info.id).setUserNotifier(cb); } catch (err) { log.debug('Failed to set notifier on agent', { agentId: info.id, error: String(err) }); }
     }
   }
 
@@ -1059,7 +1061,8 @@ export class AgentManager {
           try {
             const ag = this.getAgent(a.id);
             return { ...a, skills: ag.config.skills };
-          } catch {
+          } catch (err) {
+            log.debug('Agent not found while listing colleagues', { agentId: a.id, error: String(err) });
             return { ...a, skills: [] };
           }
         }),
@@ -1078,7 +1081,7 @@ export class AgentManager {
             );
             return `Status from ${senderName} noted.`;
           }
-        } catch { /* not JSON — fall through to full LLM handling */ }
+        } catch { /* not JSON — expected for non-broadcast messages, fall through to full LLM handling */ }
 
         const target = this.getAgent(targetId);
         const reply = await target.sendMessage(
@@ -1142,7 +1145,14 @@ export class AgentManager {
     // Settings tools — agents can list providers and switch models via chat
     for (const tool of createSettingsTools({
       llmRouter: this.llmRouter,
-      persistConfig: (updates) => { try { saveConfig(updates); } catch { /* best effort */ } },
+      persistConfig: (updates) => { try { saveConfig(updates); } catch (err) { log.debug('Failed to persist config', { error: String(err) }); } },
+    })) {
+      agent.registerTool(tool);
+    }
+
+    // Multi-modal tools — image generation, TTS, STT, video generation
+    for (const tool of createMultiModalTools({
+      resolveCandidates: (capabilityType) => this.llmRouter.resolveModalityCandidates(capabilityType),
     })) {
       agent.registerTool(tool);
     }
@@ -1341,7 +1351,8 @@ export class AgentManager {
               ? this.agents.get(t.assignedAgentId)?.config.name
               : undefined,
           }));
-        } catch {
+        } catch (err) {
+          log.debug('Failed to list tasks for agent context', { error: String(err) });
           return [];
         }
       });
@@ -1416,7 +1427,8 @@ export class AgentManager {
             try {
               const ag = this.getAgent(a.id);
               return { ...a, skills: ag.config.skills };
-            } catch {
+            } catch (err) {
+              log.debug('Agent not found while listing for manager tools', { agentId: a.id, error: String(err) });
               return { ...a, skills: [] };
             }
           }),
@@ -1435,7 +1447,8 @@ export class AgentManager {
                 currentTask: state.currentTaskId,
                 tokensUsedToday: state.tokensUsedToday,
               };
-            } catch {
+            } catch (err) {
+              log.debug('Agent not found while getting team status', { agentId: a.id, error: String(err) });
               return { ...a, tokensUsedToday: 0 };
             }
           }),
@@ -1621,14 +1634,14 @@ export class AgentManager {
       };
     } else {
       role = (() => {
-        try { return this.roleLoader.loadRole(row.roleId); } catch { /* try next */ }
-        try { return this.roleLoader.loadRole(row.roleName); } catch { /* try next */ }
+        try { return this.roleLoader.loadRole(row.roleId); } catch (err) { log.debug('Role not found by roleId, trying roleName', { roleId: row.roleId, error: String(err) }); }
+        try { return this.roleLoader.loadRole(row.roleName); } catch (err) { log.debug('Role not found by roleName, scanning templates', { roleName: row.roleName, error: String(err) }); }
         const available = this.roleLoader.listAvailableRoles();
         for (const templateName of available) {
           try {
             const candidate = this.roleLoader.loadRole(templateName);
             if (candidate.name.toLowerCase() === row.roleName.toLowerCase()) return candidate;
-          } catch { /* skip */ }
+          } catch (err) { log.debug('Failed to load role template', { templateName, error: String(err) }); }
         }
         throw new Error(`Role not found: ${row.roleName} (roleId: ${row.roleId})`);
       })();
@@ -1843,7 +1856,8 @@ export class AgentManager {
           try {
             const ag = this.getAgent(a.id);
             return { ...a, skills: ag.config.skills };
-          } catch {
+          } catch (err) {
+            log.debug('Agent not found while listing colleagues', { agentId: a.id, error: String(err) });
             return { ...a, skills: [] };
           }
         }),
@@ -1862,7 +1876,7 @@ export class AgentManager {
             );
             return `Status from ${senderName} noted.`;
           }
-        } catch { /* not JSON — fall through to full LLM handling */ }
+        } catch { /* not JSON — expected for non-broadcast messages, fall through to full LLM handling */ }
 
         const target = this.getAgent(targetId);
         return target.sendMessage(
@@ -1922,7 +1936,13 @@ export class AgentManager {
 
     for (const tool of createSettingsTools({
       llmRouter: this.llmRouter,
-      persistConfig: (updates) => { try { saveConfig(updates); } catch { /* best effort */ } },
+      persistConfig: (updates) => { try { saveConfig(updates); } catch (err) { log.debug('Failed to persist config', { error: String(err) }); } },
+    })) {
+      agent.registerTool(tool);
+    }
+
+    for (const tool of createMultiModalTools({
+      resolveCandidates: (capabilityType) => this.llmRouter.resolveModalityCandidates(capabilityType),
     })) {
       agent.registerTool(tool);
     }
@@ -2089,7 +2109,8 @@ export class AgentManager {
               ? this.agents.get(t.assignedAgentId)?.config.name
               : undefined,
           }));
-        } catch {
+        } catch (err) {
+          log.debug('Failed to list tasks for restored agent context', { error: String(err) });
           return [];
         }
       });
@@ -2160,7 +2181,8 @@ export class AgentManager {
             try {
               const ag = this.getAgent(a.id);
               return { ...a, skills: ag.config.skills };
-            } catch {
+            } catch (err) {
+              log.debug('Agent not found while listing for manager tools', { agentId: a.id, error: String(err) });
               return { ...a, skills: [] };
             }
           }),
@@ -2179,7 +2201,8 @@ export class AgentManager {
                 currentTask: state.currentTaskId,
                 tokensUsedToday: state.tokensUsedToday,
               };
-            } catch {
+            } catch (err) {
+              log.debug('Agent not found while getting team status', { agentId: a.id, error: String(err) });
               return { ...a, tokensUsedToday: 0 };
             }
           }),
@@ -2351,7 +2374,7 @@ export class AgentManager {
   async removeAgent(agentId: string, opts?: { purgeFiles?: boolean }): Promise<void> {
     const agent = this.agents.get(agentId);
     if (agent) {
-      try { await agent.stop(); } catch { /* proceed with removal even if stop fails */ }
+      try { await agent.stop(); } catch (err) { log.warn('Agent stop failed during removal, proceeding', { agentId, error: String(err) }); }
       this.cancelMcpRelease(agentId);
       this.browserSessionManager.cleanupAgent(agentId);
       await this.mcpManager.removeAllForScope(agentId);
@@ -2387,7 +2410,8 @@ export class AgentManager {
       try {
         rmSync(dirPath, { recursive: true, force: true });
         removed.push(entry.name);
-      } catch {
+      } catch (err) {
+        log.warn('Failed to remove orphaned agent directory', { dir: dirPath, error: String(err) });
         failed.push(entry.name);
       }
     }
@@ -2483,7 +2507,7 @@ export class AgentManager {
       this.mcpReleaseTimers.delete(agentId);
       // Disconnect idle non-browser MCP processes.
       // chrome-devtools manages its own lifecycle via the MCP idle timer (5min).
-      this.mcpManager.disconnectAllForScope(agentId, { skip: ['chrome-devtools'] }).catch(() => {});
+      this.mcpManager.disconnectAllForScope(agentId, { skip: ['chrome-devtools'] }).catch((err) => { log.debug('MCP disconnect failed for idle agent', { agentId, error: String(err) }); });
       log.info(`Released scoped MCP processes for idle agent: ${agentId}`);
     }, AgentManager.MCP_IDLE_GRACE_MS);
     timer.unref();
@@ -2590,7 +2614,7 @@ export class AgentManager {
       try {
         mailboxDepth = a.getMailbox().depth;
         attentionState = a.getAttentionController().getState();
-      } catch { /* mailbox may not be initialized */ }
+      } catch (err) { log.debug('Mailbox/attention not initialized', { agentId: a.id, error: String(err) }); }
       return {
         id: a.id,
         name: a.config.name,
@@ -2840,7 +2864,7 @@ export class AgentManager {
     for (const [, agent] of this.agents) {
       try {
         await agent.stop();
-      } catch { /* best effort */ }
+      } catch (err) { log.debug('Agent stop failed during shutdown', { agentId: agent.id, error: String(err) }); }
     }
     await this.mcpManager.disconnectAll();
     log.info('AgentManager shutdown complete — all metrics flushed');
@@ -2863,7 +2887,7 @@ export class AgentManager {
         if (origin.customRole) {
           return { agentId, roleId, templateId: roleId, hasTemplate: false, isUpToDate: true, files: [] };
         }
-      } catch { /* ignore malformed file */ }
+      } catch (err) { log.debug('Malformed .role-origin.json', { agentId, error: String(err) }); }
     }
 
     const templateDir = this.roleLoader.resolveTemplateDir(roleId);
@@ -2966,8 +2990,8 @@ export class AgentManager {
     for (const [agentId] of this.agents) {
       try {
         results.push(this.checkRoleUpdate(agentId));
-      } catch {
-        /* skip agents that fail to check */
+      } catch (err) {
+        log.debug('Role update check failed for agent', { agentId, error: String(err) });
       }
     }
     return results;
@@ -3060,7 +3084,7 @@ export class AgentManager {
               try {
                 const a = this.getAgent(aid);
                 return { id: a.id, name: a.config.name, role: a.role.name };
-              } catch { return null; }
+              } catch (err) { log.debug('Agent not found while mapping team members', { agentId: aid, error: String(err) }); return null; }
             })
             .filter((m): m is { id: string; name: string; role: string } => m !== null),
         }))

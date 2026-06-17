@@ -82,6 +82,68 @@
     "autoFallback": "Auto-switch Model",
     "autoFallbackDesc": "When enabled, automatically try other providers/models if the primary one fails. When disabled, only use the selected model — errors will not trigger fallback."
   },
+  "modelRouting": {
+    "title": "Model Routing",
+    "defaultModelTitle": "Default Model",
+    "defaultModelDesc": "Used as fallback when no specific model is assigned for a capability.",
+    "defaultModelPlaceholder": "Select a default model...",
+    "capabilityAssignTitle": "Capability Assignments",
+    "capabilityAssignDesc": "Each capability type uses the assigned model. Unassigned capabilities use the default model above.",
+    "capabilityGroups": {
+      "text": "Text",
+      "image": "Image",
+      "audio": "Audio",
+      "video": "Video",
+      "other": "Other"
+    },
+    "capabilities": {
+      "text": "General",
+      "image_recognition": "Image Recognition",
+      "image_generation": "Image Generation",
+      "audio_tts": "Text-to-Speech",
+      "audio_stt": "Speech-to-Text",
+      "video_generation": "Video Generation"
+    },
+    "auto": "Use default",
+    "selectModel": "Select model...",
+    "suggested": "suggested",
+    "noModelAvailable": "No capable model available",
+    "addProviderHint": "add a provider that supports this capability above",
+    "clear": "Clear",
+    "loadError": "Failed to load routing settings: {{error}}",
+    "saving": "Saving...",
+    "saved": "Saved",
+    "saveError": "Save failed",
+    "mismatchHint": "Model does not match this capability type — please select a compatible model",
+    "staleProvider": "Provider not configured — clear or reconfigure",
+    "noProvidersHint": "Configure at least one provider above to assign models to capabilities.",
+    "tier": {
+      "base": "Base",
+      "pro": "Pro",
+      "max": "Max"
+    }
+  },
+  "modelPicker": {
+    "loading": "Loading models...",
+    "empty": "No models available for this provider.",
+    "filterPlaceholder": "Filter models...",
+    "searchPlaceholder": "Search models...",
+    "showAll": "Show all {{count}} models...",
+    "showLess": "Show less",
+    "allCount": "All ({{count}})",
+    "tierCount": "{{tier}} ({{count}})",
+    "active": "Active",
+    "perMillion": "per 1M",
+    "ctx": "ctx",
+    "costFree": "Free",
+    "capabilities": {
+      "tools": "Tools",
+      "vision": "Vision",
+      "reasoning": "Reasoning",
+      "caching": "Caching",
+      "search": "Search"
+    }
+  },
   "modelProviders": {
     "title": "Model Providers & Pricing",
     "disabled": "disabled",
@@ -127,6 +189,10 @@
     "selectFromCatalog": "Select from catalog",
     "loadingCatalog": "Loading models from catalog...",
     "moreCatalogModels": "{{count}} more models available from catalog...",
+    "modelsAvailable": "{{count}} models available",
+    "andMoreModels": "... and {{count}} more models",
+    "catalogModelsAvailable": "{{count}} more models supported by this provider",
+    "collapseModels": "Collapse",
     "modelId": "Model ID",
     "displayName": "Display Name",
     "reasoning": "reasoning",
@@ -178,7 +244,10 @@
       "tokens": "Tokens",
       "inputTokens": "input",
       "outputTokens": "output"
-    }
+    },
+    "configuredCount": "configured",
+    "groupConfigured": "Configured ({{count}})",
+    "groupUnconfigured": "More Providers"
   },
   "networkProxy": {
     "title": "Network Proxy",

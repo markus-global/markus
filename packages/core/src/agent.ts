@@ -152,6 +152,10 @@ export interface AgentToolHandler {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** Dynamic description override — called at LLM request time for provider-aware tools */
+  getDescription?(): string;
+  /** Dynamic inputSchema override — called at LLM request time for provider-aware tools */
+  getInputSchema?(): Record<string, unknown>;
   execute(args: Record<string, unknown>, onOutput?: ToolOutputCallback): Promise<string>;
 }
 
@@ -347,6 +351,7 @@ export class Agent {
   private bgSessionOrigin = new Map<string, string>();
   private _maxToolIterations: number;
   private _bgCompletionUnsub?: () => void;
+  private _heartbeatUnsub?: () => void;
 
   /** Mailbox for single-threaded attention model */
   private mailbox: AgentMailbox;
@@ -448,7 +453,7 @@ export class Agent {
     // Initialize state manager
     this.stateManager = new AgentStateManager(this.id, this.taskExecutor);
 
-    this.eventBus.on('heartbeat:trigger', ctx => {
+    this._heartbeatUnsub = this.eventBus.on('heartbeat:trigger', ctx => {
       const { triggeredAt } = ctx as { agentId: string; triggeredAt: string };
       this.mailbox.enqueue('heartbeat', {
         summary: 'Scheduled heartbeat check-in',
@@ -606,6 +611,7 @@ export class Agent {
     this.attentionController.stop();
     this.heartbeat.stop();
     this._bgCompletionUnsub?.();
+    this._heartbeatUnsub?.();
     if (this.consolidationInitialTimer) {
       clearTimeout(this.consolidationInitialTimer);
       this.consolidationInitialTimer = undefined;
@@ -1000,6 +1006,7 @@ export class Agent {
       const continuation = await this.llmRouter.chat(
         { messages: prepared.messages },
         this.getEffectiveProvider(),
+        { sessionId: this.currentSessionId },
       );
 
       const contReply = continuation.content ?? '';
@@ -1343,7 +1350,7 @@ export class Agent {
               requirementId: item.payload.requirementId,
             });
           }
-        } catch { /* never fail the main flow */ }
+        } catch (err) { log.debug('Non-fatal error in requirement comment handling', { error: String(err) }); }
       }
     }
   }
@@ -1885,7 +1892,7 @@ export class Agent {
         if ('calibrate' in counter) {
           (counter as any).calibrate(this.lastEstimatedInputTokens, actualInputTokens);
         }
-      } catch { /* ignore */ }
+      } catch (err) { log.debug('Token counter calibration failed', { error: String(err) }); }
     }
     this.lastEstimatedInputTokens = 0;
   }
@@ -2384,10 +2391,21 @@ export class Agent {
     return this.metricsCollector.getUsageStats();
   }
 
-  private computeCallCost(inputTokens: number, outputTokens: number): number {
+  private computeCallCost(inputTokens: number, outputTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number): number {
     const modelCost = this.llmRouter.getModelCost(this.getEffectiveProvider());
     if (!modelCost) return 0;
-    return (inputTokens / 1_000_000) * modelCost.input + (outputTokens / 1_000_000) * modelCost.output;
+
+    const cacheRead = cacheReadTokens ?? 0;
+    const cacheWrite = cacheWriteTokens ?? 0;
+    const regularInput = Math.max(0, inputTokens - cacheRead - cacheWrite);
+
+    let cost = (regularInput / 1_000_000) * modelCost.input
+             + (outputTokens / 1_000_000) * modelCost.output;
+
+    cost += (cacheRead / 1_000_000) * (modelCost.cacheRead ?? modelCost.input);
+    cost += (cacheWrite / 1_000_000) * (modelCost.cacheWrite ?? modelCost.input);
+
+    return cost;
   }
 
   private emitAudit(event: {
@@ -2473,7 +2491,7 @@ export class Agent {
     if (this.stateChangeCallback) {
       this.stateChangeCallback(this.id, {
         status: this.state.status,
-        tokensUsedToday: this.state.tokensUsedToday,
+        tokensUsedToday: this.getTokensUsed(),
         activeTaskIds: [...this.activeTasks],
         lastError: this.state.lastError,
         lastErrorAt: this.state.lastErrorAt,
@@ -2551,7 +2569,7 @@ export class Agent {
           metadata: this.getLLMMetadata(sessionId),
           compaction: useCompaction,
           systemCacheSegments,
-        }, this.getEffectiveProvider()),
+        }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
         'Browser close-tabs follow-up',
       );
 
@@ -2589,7 +2607,7 @@ export class Agent {
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
             systemCacheSegments,
-          }, this.getEffectiveProvider()),
+          }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
           'Browser close-tabs follow-up continuation',
         );
       }
@@ -2631,7 +2649,7 @@ export class Agent {
       }
     }
 
-    try { this.onActivityStartCb?.({ ...activity, agentId: this.id }); } catch { /* best effort */ }
+    try { this.onActivityStartCb?.({ ...activity, agentId: this.id }); } catch (err) { log.debug('Activity start callback error', { error: String(err) }); }
     this.emitActivityLog(id, 'status', `Started: ${label}`);
     this.notifyStateChange();
     return id;
@@ -2688,7 +2706,7 @@ export class Agent {
           summary,
           keywords,
         });
-      } catch { /* best effort */ }
+      } catch (err) { log.debug('Activity end callback error', { error: String(err) }); }
 
       this.activityLogs.delete(aid);
       this.activitySeqCounters.delete(aid);
@@ -2725,7 +2743,7 @@ export class Agent {
       logs.splice(0, logs.length - Agent.MAX_ACTIVITY_LOG_ENTRIES);
     }
 
-    try { this.onActivityLogCb?.({ activityId, agentId: this.id, seq, type, content: cleanContent, metadata }); } catch { /* best effort */ }
+    try { this.onActivityLogCb?.({ activityId, agentId: this.id, seq, type, content: cleanContent, metadata }); } catch (err) { log.debug('Activity log callback error', { error: String(err) }); }
 
     this.eventBus.emit('agent:activity_log', {
       agentId: this.id,
@@ -2834,6 +2852,12 @@ export class Agent {
       : 0;
   }
 
+  /**
+   * INVARIANT: This method must only be called through processMailboxItem() in the
+   * attention loop (AttentionController.runLoop), which serializes execution.
+   * Direct concurrent calls would corrupt session state and interleave tool execution.
+   * External callers should use agent.enqueue() to go through the mailbox.
+   */
   async handleMessage(
     userMessage: string,
     senderId?: string,
@@ -3023,7 +3047,7 @@ export class Agent {
           metadata: this.getLLMMetadata(sessionId),
           compaction: useCompaction,
           systemCacheSegments,
-        }, this.getEffectiveProvider()),
+        }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
         'Chat LLM call',
       );
 
@@ -3038,7 +3062,7 @@ export class Agent {
         outputTokens: response.usage.outputTokens,
         cacheReadTokens: response.usage.cacheReadTokens,
         cacheWriteTokens: response.usage.cacheWriteTokens,
-        cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens),
+        cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens),
         durationMs: Date.now() - llmStart,
         success: true,
       });
@@ -3250,7 +3274,7 @@ export class Agent {
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
             systemCacheSegments,
-          }, this.getEffectiveProvider()),
+          }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
           'Chat LLM continuation',
         );
 
@@ -3265,7 +3289,7 @@ export class Agent {
           outputTokens: response.usage.outputTokens,
           cacheReadTokens: response.usage.cacheReadTokens,
           cacheWriteTokens: response.usage.cacheWriteTokens,
-          cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens),
+          cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens),
           durationMs: Date.now() - llmStart2,
           success: true,
         });
@@ -3309,7 +3333,7 @@ export class Agent {
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
             systemCacheSegments,
-          }, this.getEffectiveProvider()),
+          }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
           'Chat LLM comment-reminder',
         );
 
@@ -3372,7 +3396,7 @@ export class Agent {
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
               systemCacheSegments,
-            }, this.getEffectiveProvider()),
+            }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
             'Chat LLM comment-reminder-final',
           );
         }
@@ -3413,7 +3437,7 @@ export class Agent {
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
             systemCacheSegments,
-          }, this.getEffectiveProvider()),
+          }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
           'Chat LLM requirement-action-reminder',
         );
 
@@ -3474,7 +3498,7 @@ export class Agent {
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
               systemCacheSegments,
-            }, this.getEffectiveProvider()),
+            }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
             'Chat LLM requirement-action-reminder-final',
           );
         }
@@ -3687,6 +3711,7 @@ export class Agent {
           wrappedOnEvent,
           this.getEffectiveProvider(),
           abortController.signal,
+          { sessionId: this.currentSessionId },
         ),
         'Stream LLM call',
         abortController.signal,
@@ -3702,7 +3727,7 @@ export class Agent {
         tokensUsed: tokensThisCall,
         inputTokens: response.usage.inputTokens,
         outputTokens: response.usage.outputTokens,
-        cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens),
+        cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens),
         durationMs: Date.now() - llmStart,
         success: true,
       });
@@ -3897,6 +3922,7 @@ export class Agent {
             wrappedOnEvent,
             this.getEffectiveProvider(),
             abortController.signal,
+            { sessionId: this.currentSessionId },
           ),
           'Stream LLM continuation',
           abortController.signal,
@@ -3912,7 +3938,7 @@ export class Agent {
           tokensUsed: tokens2,
           inputTokens: response.usage.inputTokens,
           outputTokens: response.usage.outputTokens,
-          cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens),
+          cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens),
           durationMs: Date.now() - llmStart2,
           success: true,
         });
@@ -4334,6 +4360,7 @@ export class Agent {
           handleStreamEvent,
           this.getEffectiveProvider(),
           abortController.signal,
+          { sessionId: sessionId ?? this.currentSessionId },
         ),
         'Task execution LLM call',
         abortController.signal,
@@ -4341,7 +4368,7 @@ export class Agent {
       let taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(taskLlmTokens);
       this.calibrateTokenCounter(response.usage.inputTokens);
-      this.emitAudit({ type: 'llm_request', action: 'task_execution', tokensUsed: taskLlmTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens), durationMs: Date.now() - taskLlmStart, success: true });
+      this.emitAudit({ type: 'llm_request', action: 'task_execution', tokensUsed: taskLlmTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens), durationMs: Date.now() - taskLlmStart, success: true });
 
       while (
         (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
@@ -4557,6 +4584,7 @@ export class Agent {
             handleStreamEvent,
             this.getEffectiveProvider(),
             abortController.signal,
+            { sessionId: sessionId ?? this.currentSessionId },
           ),
           'Task execution LLM continuation',
           abortController.signal,
@@ -4564,7 +4592,7 @@ export class Agent {
         taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(taskLlmTokens);
         this.calibrateTokenCounter(response.usage.inputTokens);
-        this.emitAudit({ type: 'llm_request', action: 'task_execution', tokensUsed: taskLlmTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens), durationMs: Date.now() - taskLlmStart, success: true });
+        this.emitAudit({ type: 'llm_request', action: 'task_execution', tokensUsed: taskLlmTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens), durationMs: Date.now() - taskLlmStart, success: true });
       }
 
       // Final cancel check after the tool loop exits
@@ -4625,6 +4653,7 @@ export class Agent {
             handleStreamEvent,
             this.getEffectiveProvider(),
             abortController.signal,
+            { sessionId: sessionId ?? this.currentSessionId },
           ),
           'Task execution final submit reminder',
           abortController.signal,
@@ -4854,13 +4883,15 @@ export class Agent {
           { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments },
           handleStreamEvent,
           this.getEffectiveProvider(),
+          undefined,
+          { sessionId: sessionId ?? this.currentSessionId },
         ),
         'RespondInSession LLM call',
       );
       let risTokens = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(risTokens);
       this.calibrateTokenCounter(response.usage.inputTokens);
-      this.emitAudit({ type: 'llm_request', action: 'respond_in_session', tokensUsed: risTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens), durationMs: Date.now() - risLlmStart, success: true });
+      this.emitAudit({ type: 'llm_request', action: 'respond_in_session', tokensUsed: risTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens), durationMs: Date.now() - risLlmStart, success: true });
 
       let toolIter = 0;
       while (
@@ -4954,13 +4985,15 @@ export class Agent {
             { messages: preparedCont.messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments },
             handleStreamEvent,
             this.getEffectiveProvider(),
+            undefined,
+            { sessionId: sessionId ?? this.currentSessionId },
           ),
           'RespondInSession LLM continuation',
         );
         risTokens = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(risTokens);
         this.calibrateTokenCounter(response.usage.inputTokens);
-        this.emitAudit({ type: 'llm_request', action: 'respond_in_session', tokensUsed: risTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens), durationMs: Date.now() - risLlmStart, success: true });
+        this.emitAudit({ type: 'llm_request', action: 'respond_in_session', tokensUsed: risTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens), durationMs: Date.now() - risLlmStart, success: true });
       }
 
       flushText();
@@ -5709,7 +5742,7 @@ export class Agent {
           lastHeartbeatSummary = `\n## Last Heartbeat (${latest.timestamp ?? 'unknown'})\n${latest.content}\n`;
         }
       }
-    } catch { /* ignore search failures */ }
+    } catch (err) { log.debug('Heartbeat memory search failed', { error: String(err) }); }
 
     const checklist = this.role.heartbeatChecklist || '- Check assigned tasks with `task_list`';
 

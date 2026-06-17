@@ -145,6 +145,17 @@ describe('AuditService', () => {
       expect(results.every(entry => entry.orgId === 'org-123')).toBe(true);
     });
 
+    it('should query entries by type, since, and limit', () => {
+      const results = auditService.query({
+        orgId: 'org-123',
+        type: 'task_update',
+        since: '2000-01-01T00:00:00.000Z',
+        limit: 1,
+      });
+      expect(results.length).toBe(1);
+      expect(results[0]?.type).toBe('task_update');
+    });
+
     it('should query entries by agentId', () => {
       const results = auditService.query({ agentId: 'agent-456' });
       expect(results.length).toBe(2);
@@ -206,6 +217,40 @@ describe('AuditService', () => {
       // TypeScript will catch this at compile time, but we can test runtime validation
       // if it's implemented
       expect(true).toBe(true); // Placeholder
+    });
+  });
+
+  describe('token usage and summary', () => {
+    it('records and aggregates LLM token usage', () => {
+      auditService.recordLLMUsage('org-1', 'agent-1', 100, 50);
+      auditService.recordLLMUsage('org-1', 'agent-1', 200, 100);
+      auditService.recordLLMUsage('org-1', 'agent-2', 50, 25);
+
+      const usage = auditService.getTokenUsage('org-1', 'agent-1');
+      expect(usage).toHaveLength(1);
+      expect(usage[0]?.totalTokens).toBe(450);
+      expect(auditService.getTotalTokens('org-1')).toBe(525);
+    });
+
+    it('returns summary with events by type and agent activity', () => {
+      auditService.recordLLMUsage('org-1', 'agent-1', 100, 0);
+      auditService.record({ orgId: 'org-1', agentId: 'agent-1', type: 'error', action: 'Fail', success: false });
+      auditService.record({ orgId: 'org-1', agentId: 'agent-1', type: 'task_update', action: 'Update', success: true });
+
+      const summary = auditService.summary('org-1');
+      expect(summary.totalEvents).toBe(2);
+      expect(summary.errorCount).toBe(1);
+      expect(summary.totalTokens).toBe(100);
+      expect(summary.eventsByType.error).toBe(1);
+      expect(summary.agentActivity[0]?.agentId).toBe('agent-1');
+    });
+
+    it('persists entries via repository when configured', async () => {
+      const insert = vi.fn(async () => {});
+      auditService.setRepository({ insert });
+      auditService.record({ orgId: 'org-1', type: 'system', action: 'Persist', success: true });
+      await new Promise(r => setImmediate(r));
+      expect(insert).toHaveBeenCalled();
     });
   });
 });

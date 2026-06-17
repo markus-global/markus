@@ -1,6 +1,6 @@
 import type { AgentToolHandler } from '../agent.js';
 import type { LLMRouter } from '../llm/router.js';
-import { createLogger, type MarkusConfig } from '@markus/shared';
+import { createLogger, type MarkusConfig, type ModelCapabilityType, type CapabilityModelAssignment } from '@markus/shared';
 
 const log = createLogger('settings-tools');
 
@@ -14,19 +14,28 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
   return [
     {
       name: 'llm_list_providers',
-      description: 'List all configured LLM providers, their current models, and available alternative models.',
+      description:
+        'List LLM providers. By default only shows enabled (configured + active) providers. ' +
+        'Use show_all=true to include disabled and unconfigured providers.',
       inputSchema: {
         type: 'object',
-        properties: {},
+        properties: {
+          show_all: {
+            type: 'boolean',
+            description: 'When true, include disabled and unconfigured providers. Default: false (only enabled).',
+          },
+        },
       },
-      async execute(): Promise<string> {
+      async execute(args: Record<string, unknown>): Promise<string> {
         const settings = ctx.llmRouter.getEnhancedSettings();
-        const providers = Object.entries(settings.providers)
-          .filter(([, p]) => p.configured)
+        const showAll = args['show_all'] === true;
+        const entries = Object.entries(settings.providers)
+          .filter(([, p]) => showAll || (p.configured && p.enabled))
           .map(([name, p]) => ({
             name,
             displayName: p.displayName,
             currentModel: p.model,
+            configured: p.configured,
             enabled: p.enabled,
             isDefault: name === settings.defaultProvider,
             availableModels: p.models?.map(m => ({
@@ -39,9 +48,12 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
               vision: m.inputTypes?.includes('image'),
             })) ?? [],
           }));
+        const enabled = entries.filter(p => p.configured && p.enabled);
         return JSON.stringify({
           defaultProvider: settings.defaultProvider,
-          providers,
+          enabled_count: enabled.length,
+          total_count: entries.length,
+          providers: entries,
         });
       },
     },
@@ -53,7 +65,7 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
         properties: {
           provider: {
             type: 'string',
-            description: 'The provider name (e.g. "openrouter", "anthropic", "openai")',
+            description: 'The provider name (e.g. "openrouter", "anthropic", "openai"). Use llm_list_providers to see available names.',
           },
           model: {
             type: 'string',
@@ -100,7 +112,7 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
         properties: {
           provider: {
             type: 'string',
-            description: 'The provider name to set as default (e.g. "openrouter", "anthropic", "openai")',
+            description: 'The provider name to set as default. Use llm_list_providers to see available names.',
           },
         },
         required: ['provider'],
@@ -209,7 +221,7 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
         properties: {
           provider: {
             type: 'string',
-            description: 'The provider name to edit',
+            description: 'The provider name to edit. Use llm_list_providers to see available names.',
           },
           api_key: {
             type: 'string',
@@ -348,5 +360,145 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
         }
       },
     },
+    {
+      name: 'llm_get_capability_routing',
+      description:
+        'Get current capability routing configuration. Shows which provider+model is assigned to each capability type ' +
+        '(text, image_generation, audio_tts, audio_stt, video_generation) and the routing default model.',
+      inputSchema: { type: 'object', properties: {} },
+      async execute(): Promise<string> {
+        const routing = ctx.llmRouter.capabilityRouting;
+        const defaultModel = ctx.llmRouter.routingDefaultModel;
+        return JSON.stringify({
+          routing_default_model: defaultModel ?? null,
+          assignments: routing.assignments,
+          capability_types: ['text', 'image_recognition', 'image_generation', 'audio_tts', 'audio_stt', 'video_generation'],
+        });
+      },
+    },
+    {
+      name: 'llm_set_capability_routing',
+      description:
+        'Assign a specific provider+model to a capability type. For example, assign OpenAI gpt-image-1 to image_generation, ' +
+        'or assign a TTS model to audio_tts. Use llm_get_capability_routing to see current assignments and llm_list_providers to see available providers. ' +
+        'Set provider and model to empty strings to clear an assignment.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          capability_type: {
+            type: 'string',
+            enum: ['text', 'image_recognition', 'image_generation', 'audio_tts', 'audio_stt', 'video_generation'],
+            description: 'The capability type to configure',
+          },
+          provider: {
+            type: 'string',
+            description: 'Provider name (e.g. "openai", "anthropic"). Use llm_list_providers to see available names.',
+          },
+          model: {
+            type: 'string',
+            description: 'Model ID to use for this capability (e.g. "gpt-image-1", "tts-1", "whisper-1")',
+          },
+          fallback_provider: {
+            type: 'string',
+            description: 'Optional fallback provider if primary is unavailable',
+          },
+          fallback_model: {
+            type: 'string',
+            description: 'Optional fallback model',
+          },
+        },
+        required: ['capability_type', 'provider', 'model'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const capabilityType = args['capability_type'] as ModelCapabilityType;
+        const provider = args['provider'] as string;
+        const model = args['model'] as string;
+
+        try {
+          if (!provider && !model) {
+            const current = { ...ctx.llmRouter.capabilityRouting };
+            delete current.assignments[capabilityType];
+            ctx.llmRouter.setCapabilityRouting(current);
+
+            if (ctx.persistConfig) {
+              try {
+                ctx.persistConfig({ llm: { capabilityRouting: { assignments: { [capabilityType]: null } } } } as any);
+              } catch { /* best effort */ }
+            }
+
+            return JSON.stringify({
+              status: 'success',
+              message: `Cleared capability routing for ${capabilityType}`,
+            });
+          }
+
+          if (capabilityType !== 'text') {
+            const mismatch = detectModelCapabilityMismatch(model, capabilityType);
+            if (mismatch) {
+              return JSON.stringify({
+                status: 'error',
+                error: mismatch,
+                hint: `Use llm_list_providers to find models that support ${capabilityType}.`,
+              });
+            }
+          }
+
+          const assignment: CapabilityModelAssignment = { provider, model };
+          const fbProvider = args['fallback_provider'] as string | undefined;
+          const fbModel = args['fallback_model'] as string | undefined;
+          if (fbProvider && fbModel) {
+            assignment.fallback = { provider: fbProvider, model: fbModel };
+          }
+
+          const updated = {
+            ...ctx.llmRouter.capabilityRouting,
+            assignments: {
+              ...ctx.llmRouter.capabilityRouting.assignments,
+              [capabilityType]: assignment,
+            },
+          };
+          ctx.llmRouter.setCapabilityRouting(updated);
+
+          if (ctx.persistConfig) {
+            try { ctx.persistConfig({ llm: { capabilityRouting: updated } } as any); } catch { /* best effort */ }
+          }
+
+          return JSON.stringify({
+            status: 'success',
+            capability_type: capabilityType,
+            provider,
+            model,
+            fallback: assignment.fallback ?? null,
+            message: `Capability ${capabilityType} now routed to ${provider}/${model}`,
+          });
+        } catch (err) {
+          return JSON.stringify({ status: 'error', error: String(err) });
+        }
+      },
+    },
   ];
+}
+
+const CAPABILITY_MODEL_PATTERNS: Record<string, RegExp> = {
+  image_generation: /\bdall-?e\b|gpt-image|flux|stable.?diffusion|sdxl|imagen|wanx|wan[.-]?ai|kolors|playground|cogview|glm-image|seedream|grok-imagine|image-01/i,
+  image_recognition: /\bvl\b|vision|visual|eye|gpt-4o|gemini|claude/i,
+  audio_tts: /\btts\b|cosy.?voice|speech|bark|xtts|voice|orpheus|music/i,
+  audio_stt: /\bstt\b|whisper|sense.?voice|paraformer|speech.?to.?text|transcribe|asr|voxtral/i,
+  video_generation: /\bvideo\b|hailuo|wan.*[ti]2v|sora|kling|gen-?[23]|cogvideo|vidu|seedance|veo/i,
+};
+
+const TEXT_MODEL_PATTERN = /deepseek|qwen|gpt-[34]|gpt-5|claude|gemini|glm-[45]|llama|mistral|phi-|command|minimax-m/i;
+
+function detectModelCapabilityMismatch(model: string, capabilityType: ModelCapabilityType): string | null {
+  const expectedPattern = CAPABILITY_MODEL_PATTERNS[capabilityType];
+  if (!expectedPattern) return null;
+
+  if (expectedPattern.test(model)) return null;
+
+  if (TEXT_MODEL_PATTERN.test(model)) {
+    return `Model "${model}" appears to be a text/chat model, not suitable for ${capabilityType}. ` +
+      `Expected a model matching patterns like: ${expectedPattern.source}`;
+  }
+
+  return null;
 }

@@ -1,5 +1,8 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { createLogger } from '@markus/shared';
+
+const log = createLogger('agent-metrics');
 
 export interface TokenUsage {
   input: number;
@@ -357,8 +360,8 @@ export class AgentMetricsCollector {
         lastErrorDetail: this.lastErrorDetail,
       };
       writeFileSync(file, JSON.stringify(data));
-    } catch {
-      /* best effort */
+    } catch (err) {
+      log.warn('Failed to persist metrics to disk', { error: String(err), dir: this.dataDir });
     }
   }
 
@@ -373,8 +376,8 @@ export class AgentMetricsCollector {
       if (raw.lastErrorDetail) this.lastErrorDetail = raw.lastErrorDetail;
       if (Array.isArray(raw.taskEvents)) this.taskEvents = raw.taskEvents;
       if (Array.isArray(raw.heartbeatEvents)) this.heartbeatEvents = raw.heartbeatEvents;
-    } catch {
-      /* best effort */
+    } catch (err) {
+      log.warn('Failed to load metrics from disk', { error: String(err), dir: this.dataDir });
     }
   }
 }

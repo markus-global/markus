@@ -38,6 +38,28 @@ const TOOL_GROUPS: ToolGroup[] = [
     toolNames: ['web_fetch', 'web_search', 'web_extract'],
   },
   {
+    name: 'llm-settings',
+    keywords: ['model', 'provider', 'llm', 'switch model', 'change model', 'default model', 'api key',
+      'openai', 'anthropic', 'claude', 'gpt', 'gemini', 'deepseek', 'openrouter', 'ollama',
+      '模型', '切换模型', '换模型', '大模型', '提供商', '默认模型', '模型配置', '模型路由'],
+    toolNames: ['llm_list_providers', 'llm_switch_model', 'llm_switch_default_provider',
+      'llm_add_provider', 'llm_edit_provider', 'llm_add_model', 'llm_set_capability_routing'],
+  },
+  {
+    name: 'image-generation',
+    keywords: ['image', 'picture', 'photo', 'draw', 'paint', 'illustration', 'generate image', 'dall-e', 'dalle',
+      'stable diffusion', 'flux', 'midjourney', 'cogview', 'imagen',
+      '图片', '画图', '生成图', '画一', '图像', '插图', '绘画', '绘图', '照片'],
+    toolNames: ['generate_image'],
+  },
+  {
+    name: 'audio-video',
+    keywords: ['speech', 'voice', 'audio', 'tts', 'stt', 'transcribe', 'speak', 'read aloud',
+      'video', 'animate', 'clip',
+      '语音', '朗读', '转语音', '听写', '转文字', '视频', '动画'],
+    toolNames: ['text_to_speech', 'speech_to_text', 'generate_video'],
+  },
+  {
     name: 'a2a-extended',
     keywords: ['delegate', 'broadcast', 'group', 'channel', 'chat',
       '委派', '广播', '群聊', '频道', '群组'],
@@ -95,7 +117,7 @@ export class ToolSelector {
   }
 
   selectTools(opts: {
-    allTools: Map<string, { name: string; description: string; inputSchema: Record<string, unknown> }>;
+    allTools: Map<string, { name: string; description: string; inputSchema: Record<string, unknown>; getDescription?(): string; getInputSchema?(): Record<string, unknown> }>;
     userMessage: string;
     recentToolNames?: string[];
     isManager?: boolean;
@@ -175,7 +197,11 @@ export class ToolSelector {
     for (const name of selected) {
       const tool = opts.allTools.get(name);
       if (tool) {
-        result.push({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema });
+        result.push({
+          name: tool.name,
+          description: tool.getDescription?.() ?? tool.description,
+          inputSchema: tool.getInputSchema?.() ?? tool.inputSchema,
+        });
       }
     }
 
@@ -352,7 +378,7 @@ export class ToolSelector {
     const unloaded: string[] = [];
     for (const [name, tool] of allTools) {
       if (!alreadySelected.has(name)) {
-        unloaded.push(`${name}: ${tool.description.slice(0, 60)}`);
+        unloaded.push(`${name}: ${tool.description.slice(0, 120)}`);
       }
     }
     if (unloaded.length > 0) {

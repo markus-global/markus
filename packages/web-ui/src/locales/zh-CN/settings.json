@@ -82,6 +82,68 @@
     "autoFallback": "自动切换模型",
     "autoFallbackDesc": "启用后，当主模型出错时自动尝试其他提供商/模型。禁用后，仅使用所选模型 — 出错时不会自动切换。"
   },
+  "modelRouting": {
+    "title": "模型路由",
+    "defaultModelTitle": "默认模型",
+    "defaultModelDesc": "当能力没有指定模型时，使用此默认模型。",
+    "defaultModelPlaceholder": "选择默认模型...",
+    "capabilityAssignTitle": "能力分配",
+    "capabilityAssignDesc": "为每种能力类型指定使用的模型。未指定的能力将使用上方的默认模型。",
+    "capabilityGroups": {
+      "text": "文本",
+      "image": "图像",
+      "audio": "音频",
+      "video": "视频",
+      "other": "其他"
+    },
+    "capabilities": {
+      "text": "通用",
+      "image_recognition": "图像识别",
+      "image_generation": "图像生成",
+      "audio_tts": "文字转语音",
+      "audio_stt": "语音转文字",
+      "video_generation": "视频生成"
+    },
+    "auto": "使用默认",
+    "selectModel": "选择模型...",
+    "suggested": "推荐",
+    "noModelAvailable": "无可用模型",
+    "addProviderHint": "可在上方添加支持此功能的服务商",
+    "clear": "清除",
+    "loadError": "加载路由设置失败：{{error}}",
+    "saving": "保存中...",
+    "saved": "已保存",
+    "saveError": "保存失败",
+    "mismatchHint": "模型与此能力类型不匹配 — 请选择兼容的模型",
+    "staleProvider": "服务商未配置 — 请清除或重新配置",
+    "noProvidersHint": "请先在上方配置至少一个服务商，才能为能力指定模型。",
+    "tier": {
+      "base": "基础",
+      "pro": "专业",
+      "max": "旗舰"
+    }
+  },
+  "modelPicker": {
+    "loading": "正在加载模型…",
+    "empty": "此提供商暂无可用模型。",
+    "filterPlaceholder": "筛选模型…",
+    "searchPlaceholder": "搜索模型…",
+    "showAll": "显示全部 {{count}} 个模型…",
+    "showLess": "收起",
+    "allCount": "全部 ({{count}})",
+    "tierCount": "{{tier}} ({{count}})",
+    "active": "当前",
+    "perMillion": "每百万",
+    "ctx": "上下文",
+    "costFree": "免费",
+    "capabilities": {
+      "tools": "工具",
+      "vision": "视觉",
+      "reasoning": "推理",
+      "caching": "缓存",
+      "search": "搜索"
+    }
+  },
   "modelProviders": {
     "title": "模型提供商",
     "disabled": "已禁用",
@@ -127,6 +189,10 @@
     "selectFromCatalog": "从目录选择",
     "loadingCatalog": "正在从目录加载模型...",
     "moreCatalogModels": "目录中还有 {{count}} 个模型可用...",
+    "modelsAvailable": "{{count}} 个模型可用",
+    "andMoreModels": "... 以及另外 {{count}} 个模型",
+    "catalogModelsAvailable": "该提供商还支持 {{count}} 个其他模型",
+    "collapseModels": "收起",
     "modelId": "模型 ID",
     "displayName": "显示名称",
     "reasoning": "推理",
@@ -178,7 +244,10 @@
       "tokens": "Token 用量",
       "inputTokens": "输入",
       "outputTokens": "输出"
-    }
+    },
+    "configuredCount": "已配置",
+    "groupConfigured": "已配置（{{count}}个）",
+    "groupUnconfigured": "更多提供商"
   },
   "networkProxy": {
     "title": "网络代理",

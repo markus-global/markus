@@ -264,6 +264,7 @@ function localImageUrl(filePath: string): string {
 }
 
 const loadedImageCache = new Set<string>();
+const failedImageCache = new Set<string>();
 
 function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; alt?: string; onPreview?: (src: string) => void; basePath?: string }) {
   const effectiveSrc = useMemo(() => {
@@ -271,11 +272,40 @@ function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; alt?: s
     return localImageUrl(resolveImagePath(src, basePath));
   }, [src, basePath]);
 
-  const [loaded, setLoaded] = useState(() => loadedImageCache.has(effectiveSrc));
-  const [error, setError] = useState(false);
+  const alreadyCached = loadedImageCache.has(effectiveSrc);
+  const alreadyFailed = failedImageCache.has(effectiveSrc);
+  const [visible, setVisible] = useState(alreadyCached);
+  const [loaded, setLoaded] = useState(alreadyCached);
+  const [error, setError] = useState(alreadyFailed);
+  const containerRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (visible || alreadyCached || alreadyFailed) return;
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => { if (entry?.isIntersecting) { setVisible(true); observer.disconnect(); } },
+      { rootMargin: '200px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [visible, alreadyCached, alreadyFailed]);
+
+  if (alreadyFailed) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-3 py-2 text-xs text-fg-tertiary bg-surface-elevated rounded-lg border border-border-default">
+        <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+          <circle cx="8.5" cy="8.5" r="1.5" />
+          <polyline points="21 15 16 10 5 21" />
+        </svg>
+        Failed to load image
+      </span>
+    );
+  }
 
   return (
-    <span className="inline-block align-middle max-w-full">
+    <span ref={containerRef} className="inline-block align-middle max-w-full">
       {!loaded && !error && (
         <span className="block w-full min-h-[80px] max-w-[400px] bg-surface-elevated rounded-lg animate-pulse" />
       )}
@@ -288,18 +318,17 @@ function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; alt?: s
           </svg>
           Failed to load image
         </span>
-      ) : (
+      ) : visible ? (
         <img
           src={effectiveSrc}
           alt={alt ?? ''}
-          loading="lazy"
           onLoad={() => { loadedImageCache.add(effectiveSrc); setLoaded(true); }}
-          onError={() => setError(true)}
+          onError={() => { failedImageCache.add(effectiveSrc); setError(true); }}
           onClick={() => onPreview?.(effectiveSrc)}
-          className="max-w-full h-auto rounded-lg cursor-pointer hover:opacity-90 transition-opacity my-1"
+          className={`max-w-full h-auto rounded-lg cursor-pointer hover:opacity-90 transition-opacity my-1${!loaded ? ' absolute opacity-0 pointer-events-none' : ''}`}
           style={{ maxHeight: '400px', objectFit: 'contain' }}
         />
-      )}
+      ) : null}
     </span>
   );
 }
@@ -438,7 +467,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
     return {
       ...mdComponents,
       img: ({ src, alt }: { src?: string; alt?: string }) => (
-        <MarkdownImage src={src ?? ''} alt={alt} onPreview={setPreviewSrc} basePath={basePath} />
+        <MarkdownImage key={src ?? ''} src={src ?? ''} alt={alt} onPreview={setPreviewSrc} basePath={basePath} />
       ),
       a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
         if (href?.startsWith(MENTION_PREFIX)) {

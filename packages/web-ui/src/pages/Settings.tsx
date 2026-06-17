@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useTranslation, Trans } from 'react-i18next';
 import { api, type StorageInfo, type OrphanInfo, type AuthUser, type HumanUserInfo, type RemoteStatus, type CatalogModel, hubApi, getHubUser, getHubToken, ensureHubAuth, wsClient } from '../api.ts';
 import { THEME_OPTIONS, type ThemeMode } from '../hooks/useTheme.ts';
@@ -9,11 +9,12 @@ import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { BrowserTestPanel } from '../components/BrowserTestPanel.tsx';
 import { ModelPicker } from '../components/ModelPicker.tsx';
+import { ModelRoutingSection } from '../components/ModelRoutingSection.tsx';
 import { PROVIDER_OPTIONS } from '../constants/providers.ts';
 import { FeishuIntegrationSection } from '../components/FeishuIntegrationSection.tsx';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
-interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[] }
+interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[]; tier?: string }
 interface ProviderInfo {
   name: string; displayName?: string; model: string; baseUrl?: string; configured: boolean; enabled: boolean;
   apiKeyPreview?: string; apiKeySource?: 'config' | 'env' | 'oauth';
@@ -801,8 +802,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner',
   ]);
 
-  const [switchingModel, setSwitchingModel] = useState<string | null>(null);
-
   // Provider connectivity test state
   const [testingProvider, setTestingProvider] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; error?: string; errorCode?: number; durationMs?: number; reply?: string; model?: string; usage?: Record<string, number>; requestUrl?: string; requestBody?: unknown }>>({});
@@ -826,21 +825,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     } finally {
       setTestingProvider(null);
     }
-  };
-
-  const switchProviderModel = async (providerName: string, modelId: string) => {
-    setSwitchingModel(`${providerName}:${modelId}`);
-    try {
-      const res = await fetch(`/api/settings/llm/providers/${providerName}/model`, {
-        method: 'POST', headers: authHeaders(),
-        body: JSON.stringify({ model: modelId }),
-      });
-      if (res.ok) {
-        const data = await res.json() as LLMSettings;
-        setLlm(data);
-      }
-    } catch { /* ignore */ }
-    finally { setSwitchingModel(null); }
   };
 
   const saveSearchKeys = async () => {
@@ -1054,299 +1038,59 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           ) : <div className="text-sm text-fg-tertiary">{t('common:loading')}</div>}
         </Section>
 
-        {/* ───── Default Provider ───── */}
-        
-        <Section title={t('defaultProvider.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm font-medium">{t('defaultProvider.primaryProvider')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('defaultProvider.primaryProviderDesc')}</div>
-              </div>
-              <div className="flex items-center gap-3">
-                {llm ? (
-                  <select value={selectedProvider} onChange={e => { setSelectedProvider(e.target.value); setSaveMsg(null); }}
-                    className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm w-48 focus:border-brand-500 outline-none">
-                    {enabledProviders.length > 0 ? enabledProviders.map(p => <option key={p} value={p}>{llm.providers[p]?.displayName ?? p}</option>) : <option value="">{t('defaultProvider.noProviders')}</option>}
-                  </select>
-                ) : <div className="text-xs text-fg-tertiary">{t('common:loading')}</div>}
-                {selectedProvider !== llm?.defaultProvider && (
-                  <button onClick={() => void saveLLM()} disabled={saving}
-                    className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
-                    {saving ? t('common:saving') : t('common:save')}
-                  </button>
-                )}
-              </div>
-            </div>
-            {saveMsg && <Msg type={saveMsg.type} text={saveMsg.text} />}
-
-            <div className="flex items-center justify-between border-t border-border-default pt-4">
-              <div>
-                <div className="text-sm font-medium text-fg-primary">{t('defaultProvider.autoFallback')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('defaultProvider.autoFallbackDesc')}</div>
-              </div>
-              <button
-                onClick={async () => {
-                  const newVal = !(llm?.autoFallback ?? true);
-                  try {
-                    const res = await fetch('/api/settings/llm', {
-                      method: 'POST', headers: authHeaders(),
-                      body: JSON.stringify({ autoFallback: newVal }),
-                    });
-                    if (res.ok) {
-                      const data = await res.json() as LLMSettings;
-                      setLlm(data);
-                    }
-                  } catch { /* ignore */ }
-                }}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(llm?.autoFallback ?? true) ? 'bg-green-500' : 'bg-gray-600'}`}
-              >
-                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${(llm?.autoFallback ?? true) ? 'translate-x-4' : 'translate-x-1'}`} />
-              </button>
-            </div>
-          </div>
-        </Section>
-
-        {/* ───── Network / Proxy ───── */}
-        <Section title={t('networkProxy.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-fg-tertiary">{t('networkProxy.description')}</p>
-              </div>
-              <button
-                onClick={async () => {
-                  const newVal = !proxyEnabled;
-                  setProxyEnabled(newVal);
-                  try {
-                    await fetch('/api/settings/network', {
-                      method: 'POST', headers: authHeaders(),
-                      body: JSON.stringify({ proxyEnabled: newVal }),
-                    });
-                    loadNetworkSettings();
-                  } catch { setProxyEnabled(!newVal); }
-                }}
-                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${proxyEnabled ? 'bg-green-500' : 'bg-gray-600'}`}
-              >
-                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${proxyEnabled ? 'translate-x-4' : 'translate-x-1'}`} />
-              </button>
-            </div>
-
-            {/* Effective proxy status */}
-            {proxyEffective && (
-              <div className={`flex items-center gap-2 px-3 py-2.5 rounded-lg bg-surface-secondary border border-border-default transition-opacity ${!proxyEnabled ? 'opacity-50' : ''}`}>
-                <span className={`w-2 h-2 rounded-full ${
-                  !proxyEnabled ? 'bg-gray-600' : proxyEffective.proxy ? 'bg-green-400' : 'bg-gray-600'
-                }`} />
-                <span className="text-xs text-fg-secondary">
-                  {!proxyEnabled ? t('networkProxy.disabled') :
-                   proxyEffective.proxy ? (
-                    <>{t('networkProxy.active')} <code className="text-fg-primary font-mono">{proxyEffective.proxy}</code></>
-                  ) : t('networkProxy.noProxy')}
-                </span>
-                {proxyEnabled && proxyEffective.source !== 'none' && proxyEffective.source !== 'disabled' && (
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium ${
-                    proxyEffective.source === 'config' ? 'bg-brand-500/15 text-brand-500' :
-                    proxyEffective.source === 'env' ? 'bg-amber-500/15 text-amber-600' :
-                    proxyEffective.source === 'system' ? 'bg-blue-500/15 text-blue-500' :
-                    'bg-gray-500/15 text-fg-muted'
-                  }`}>
-                    {proxyEffective.source === 'config' ? t('networkProxy.sourceConfig') :
-                     proxyEffective.source === 'env' ? t('networkProxy.sourceEnv') :
-                     proxyEffective.source === 'system' ? t('networkProxy.sourceSystem') : ''}
-                  </span>
-                )}
-                <button
-                  onClick={() => loadNetworkSettings()}
-                  className="ml-auto text-[10px] px-1.5 py-0.5 rounded-md text-fg-muted hover:text-fg-secondary hover:bg-surface-tertiary transition-colors"
-                  title={t('networkProxy.refresh')}
-                >
-                  ↻ {t('networkProxy.refresh')}
-                </button>
-              </div>
-            )}
-
-            <div className={`flex gap-2 items-center transition-opacity ${!proxyEnabled ? 'opacity-50 pointer-events-none' : ''}`}>
-              <input
-                type="text"
-                value={proxyUrl}
-                onChange={e => setProxyUrl(e.target.value)}
-                placeholder={t('networkProxy.placeholder')}
-                className="flex-1 px-3 py-2 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/50 focus:border-brand-500 outline-none"
-              />
-              <button
-                onClick={async () => {
-                  setProxySaving(true); setProxyMsg(null);
-                  try {
-                    const res = await fetch('/api/settings/network', {
-                      method: 'POST', headers: authHeaders(),
-                      body: JSON.stringify({ proxy: proxyUrl.trim() }),
-                    });
-                    if (res.ok) {
-                      setProxyMsg({ type: 'ok', text: t('networkProxy.saved') });
-                      loadNetworkSettings();
-                    } else {
-                      const d = await res.json() as { error?: string };
-                      setProxyMsg({ type: 'err', text: d.error ?? t('networkProxy.saveFailed') });
-                    }
-                  } catch { setProxyMsg({ type: 'err', text: t('networkProxy.networkError') }); }
-                  finally { setProxySaving(false); }
-                }}
-                disabled={proxySaving}
-                className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors"
-              >
-                {proxySaving ? t('networkProxy.saving') : t('networkProxy.save')}
-              </button>
-            </div>
-            {proxyMsg && <Msg type={proxyMsg.type} text={proxyMsg.text} />}
-          </div>
-        </Section>
-
-        {/* ───── OAuth Authentication ───── */}
-        <Section title={t('oauthAuth.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
-            <p className="text-xs text-fg-tertiary">
-              {t('oauthAuth.description')}
-            </p>
-
-            {/* OAuth provider login buttons */}
-            <div className="flex flex-wrap gap-2">
-              {oauthProviders.map(p => (
-                <div key={p.name} className="flex">
-                  <button
-                    onClick={() => startOAuthLogin(p.name)}
-                    disabled={!!oauthLoading}
-                    className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-l-lg transition-colors"
-                  >
-                    {oauthLoading === p.name ? t('oauthAuth.connecting') : t('oauthAuth.signInWith', { name: p.displayName })}
-                  </button>
-                  <button
-                    onClick={() => startDeviceCodeLogin(p.name)}
-                    disabled={!!oauthLoading}
-                    title={t('oauthAuth.deviceTitle')}
-                    className="px-2.5 py-2 text-xs bg-surface-secondary text-fg-secondary border border-border-default border-l-0 rounded-r-lg hover:bg-surface-tertiary disabled:opacity-40 transition-colors"
-                  >
-                    {t('oauthAuth.device')}
-                  </button>
-                </div>
-              ))}
-              {oauthProviders.length === 0 && (
-                <span className="text-xs text-fg-tertiary">{t('oauthAuth.noProviders')}</span>
-              )}
-            </div>
-
-            {/* Device Code display */}
-            {deviceCode && (
-              <div className="p-4 rounded-lg bg-surface-secondary border border-border-default space-y-2">
-                <p className="text-xs text-fg-primary font-medium">{t('oauthAuth.deviceCodeTitle')}</p>
-                <p className="text-xs text-fg-tertiary">
-                  {t('oauthAuth.deviceInstructions')}
-                </p>
-                <div className="flex items-center gap-3">
-                  <a href={deviceCode.verificationUri} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-500 underline hover:text-brand-400">
-                    {deviceCode.verificationUri}
-                  </a>
-                  <code className="px-2.5 py-1 text-sm font-mono font-bold bg-surface-elevated border border-border-default rounded-lg text-fg-primary select-all">
-                    {deviceCode.userCode}
-                  </code>
-                </div>
-                <p className="text-[10px] text-fg-muted">{t('oauthAuth.deviceWaiting')}</p>
-              </div>
-            )}
-
-            {/* Manual callback URL input for headless/remote scenarios */}
-            {pendingOAuthProvider && !deviceCode && (
-              <div className="p-4 rounded-lg bg-surface-secondary border border-border-default space-y-2">
-                <p className="text-xs text-fg-tertiary">
-                  {t('oauthAuth.manualCallbackHint')}
-                </p>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={manualCallbackUrl}
-                    onChange={e => setManualCallbackUrl(e.target.value)}
-                    placeholder={t('oauthAuth.manualPlaceholder')}
-                    className="flex-1 px-3 py-2 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/50 focus:border-brand-500 outline-none"
-                  />
-                  <button
-                    onClick={handleManualCallback}
-                    disabled={!manualCallbackUrl.trim() || oauthLoading === 'manual'}
-                    className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors"
-                  >
-                    {t('oauthAuth.submit')}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Status message */}
-            {oauthMsg && <Msg type={oauthMsg.type} text={oauthMsg.text} />}
-
-            {/* Connected profiles */}
-            {authProfiles.filter(p => p.hasOAuth).length > 0 && (
-              <div className="space-y-2 border-t border-border-default pt-4">
-                <span className="text-xs font-medium text-fg-secondary">{t('oauthAuth.connectedAccounts')}</span>
-                {authProfiles.filter(p => p.hasOAuth).map(profile => (
-                  <div key={profile.id} className={`flex items-center justify-between px-4 py-3 rounded-lg border ${
-                    profile.oauthExpired ? 'bg-amber-500/5 border-amber-500/20' : 'bg-surface-secondary border-border-default'
-                  }`}>
-                    <div className="flex items-center gap-2.5">
-                      <span className={`w-2 h-2 rounded-full ${profile.oauthExpired ? 'bg-amber-400' : 'bg-green-400'}`} />
-                      <span className="text-xs text-fg-primary font-medium">{profile.label ?? profile.provider}</span>
-                      {profile.accountId && <span className="text-[10px] text-fg-muted">({profile.accountId.slice(0, 12)}...)</span>}
-                      {profile.oauthExpired && <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-600 font-medium">{t('oauthAuth.expired')}</span>}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {profile.oauthExpired && (
-                        <button
-                          onClick={() => startOAuthLogin(profile.provider)}
-                          disabled={!!oauthLoading}
-                          className="text-[10px] px-2 py-1 rounded-md text-brand-500 hover:text-brand-400 hover:bg-brand-500/10 transition-colors"
-                        >
-                          {t('oauthAuth.reconnect')}
-                        </button>
-                      )}
-                      <button
-                        onClick={() => deleteAuthProfile(profile.id)}
-                        className="text-[10px] px-2 py-1 rounded-md text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
-                      >
-                        {t('oauthAuth.disconnect')}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </Section>
-
         {/* ───── Model Providers ───── */}
-        <Section title={t('modelProviders.title')}>
-          <div className="space-y-3">
-            {llm && (() => {
-              const allProviderEntries: Array<[string, ProviderInfo]> = [];
-              const seen = new Set<string>();
-              // First add configured providers
-              for (const [name, info] of Object.entries(llm.providers)) {
-                allProviderEntries.push([name, info]);
-                seen.add(name);
-              }
-              // Then add unconfigured providers from PROVIDER_OPTIONS
-              for (const po of PROVIDER_OPTIONS) {
-                if (!seen.has(po.id)) {
-                  allProviderEntries.push([po.id, {
-                    name: po.id,
-                    displayName: po.label,
-                    model: po.defaultModel,
-                    configured: false,
-                    enabled: false,
-                  }]);
-                  seen.add(po.id);
-                }
-              }
-              return allProviderEntries;
-            })().map(([name, info]) => (
-              <div key={name} className={`bg-surface-secondary border rounded-xl overflow-hidden transition-colors ${info.configured ? 'border-border-default hover:border-gray-600' : 'border-border-default/50 hover:border-brand-500/30'}`}>
+        {llm && (() => {
+          const allProviderEntries: Array<[string, ProviderInfo]> = [];
+          const seen = new Set<string>();
+          const configuredEntries: Array<[string, ProviderInfo]> = [];
+          const unconfiguredEntries: Array<[string, ProviderInfo]> = [];
+          for (const [name, info] of Object.entries(llm.providers)) {
+            if (info.configured) {
+              configuredEntries.push([name, info]);
+            } else {
+              unconfiguredEntries.push([name, info]);
+            }
+            seen.add(name);
+          }
+          for (const po of PROVIDER_OPTIONS) {
+            if (!seen.has(po.id)) {
+              unconfiguredEntries.push([po.id, {
+                name: po.id,
+                displayName: po.label,
+                model: po.defaultModel,
+                configured: false,
+                enabled: false,
+              }]);
+              seen.add(po.id);
+            }
+          }
+          // Configured: enabled first, then disabled
+          configuredEntries.sort((a, b) => (b[1].enabled ? 1 : 0) - (a[1].enabled ? 1 : 0));
+          allProviderEntries.push(...configuredEntries, ...unconfiguredEntries);
+          const hasConfigured = configuredEntries.length > 0;
+          return (
+            <ProviderSection
+              title={t('modelProviders.title')}
+              defaultCollapsed={hasConfigured}
+              configuredProviders={configuredEntries}
+              t={t}
+            >
+              <div className="space-y-3">
+                {hasConfigured && (
+                  <div className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider px-1">
+                    {t('modelProviders.groupConfigured', { count: configuredEntries.length })}
+                  </div>
+                )}
+                {allProviderEntries.map(([name, info], idx) => {
+                  const isFirstUnconfigured = !info.configured && (idx === 0 || allProviderEntries[idx - 1][1].configured);
+                  return (
+                    <div key={name}>
+                      {isFirstUnconfigured && hasConfigured && (
+                        <div className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider px-1 mt-4 mb-2">
+                          {t('modelProviders.groupUnconfigured')}
+                        </div>
+                      )}
+                      <div className={`bg-surface-secondary border rounded-xl overflow-hidden transition-colors ${info.configured ? 'border-border-default hover:border-gray-600' : 'border-border-default/50 hover:border-brand-500/30'}`}>
                 <div className="flex items-center justify-between px-5 py-4 cursor-pointer" onClick={() => { setExpandedProvider(expandedProvider === name ? null : name); setQuickSetupKey(''); setQuickSetupMsg(null); setAddProviderCatalogModels([]); setAddProviderForm(f => ({ ...f, name: '', model: '' })); }}>
                   <div className="flex items-center gap-3">
                     <span className={`w-2 h-2 rounded-full ${info.configured && info.enabled ? 'bg-green-400' : info.configured ? 'bg-amber-400' : 'bg-gray-600'}`} />
@@ -1367,7 +1111,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                       </div>
                       <div className="text-xs text-fg-tertiary mt-0.5">
                         {info.configured ? (
-                          <>{info.model}{info.apiKeyPreview && <> · <code className="text-fg-secondary">{info.apiKeyPreview}</code></>}</>
+                          <>{info.models && info.models.length > 0 ? t('modelProviders.modelsAvailable', { count: info.models.length }) : ''}{info.apiKeyPreview && <> · <code className="text-fg-secondary">{info.apiKeyPreview}</code></>}</>
                         ) : t('modelProviders.notConfigured')}
                       </div>
                     </div>
@@ -1383,8 +1127,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                         <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${info.enabled ? 'translate-x-4' : 'translate-x-1'}`} />
                       </button>
                     )}
-                    {info.contextWindow != null && info.contextWindow > 0 && <span className="text-[10px] text-fg-tertiary">{t('modelProviders.ctxTokens', { size: (info.contextWindow / 1000).toFixed(0) })}</span>}
-                    {info.cost && (info.cost.input > 0 || info.cost.output > 0) && <span className="text-[10px] text-fg-tertiary">{t('modelProviders.costPerMillion', { input: info.cost.input, output: info.cost.output })}</span>}
                     <span className="text-fg-tertiary text-xs">{expandedProvider === name ? '▲' : '▼'}</span>
                   </div>
                 </div>
@@ -1393,18 +1135,11 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   <div className="px-5 pb-4 border-t border-border-default pt-4 space-y-4">
                     {info.configured && (
                       <>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                          <MiniStat label={t('modelProviders.model')} value={info.model} />
-                          <MiniStat label={t('modelProviders.contextWindow')} value={info.contextWindow ? t('modelProviders.kTokens', { k: (info.contextWindow / 1000).toFixed(0) }) : t('modelProviders.notApplicable')} />
-                          <MiniStat label={t('modelProviders.maxOutput')} value={info.maxOutputTokens ? t('modelProviders.kTokens', { k: (info.maxOutputTokens / 1000).toFixed(0) }) : t('modelProviders.notApplicable')} />
-                          <MiniStat label={t('modelProviders.baseUrlLabel')} value={info.baseUrl ?? t('modelProviders.baseUrlDisplayDefault')} />
-                        </div>
-
                         {/* Edit / Delete provider actions */}
                         {editingProvider === name ? (
                           <div className="bg-surface-elevated/40 rounded-lg p-4 space-y-3">
                             <div className="text-[10px] text-fg-tertiary uppercase tracking-wider">{t('modelProviders.editProvider')}</div>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                               <div>
                                 <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.apiKey')}</label>
                                 <input type="password" value={editProviderForm.apiKey}
@@ -1417,42 +1152,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                                 <input type="text" value={editProviderForm.baseUrl}
                                   onChange={e => setEditProviderForm({ ...editProviderForm, baseUrl: e.target.value })}
                                   placeholder={t('modelProviders.baseUrlDisplayDefault')}
-                                  className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
-                              </div>
-                              <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.model')}</label>
-                                <input type="text" value={editProviderForm.model}
-                                  onChange={e => setEditProviderForm({ ...editProviderForm, model: e.target.value })}
-                                  className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary focus:border-brand-500 outline-none" />
-                              </div>
-                            </div>
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                              <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.contextWindow')}</label>
-                                <input type="number" value={editProviderForm.contextWindow || ''}
-                                  onChange={e => setEditProviderForm({ ...editProviderForm, contextWindow: Number(e.target.value) })}
-                                  placeholder={t('modelProviders.placeholderContextExample')}
-                                  className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
-                              </div>
-                              <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.maxOutputTokens')}</label>
-                                <input type="number" value={editProviderForm.maxOutputTokens || ''}
-                                  onChange={e => setEditProviderForm({ ...editProviderForm, maxOutputTokens: Number(e.target.value) })}
-                                  placeholder={t('modelProviders.placeholderMaxOutputExample')}
-                                  className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
-                              </div>
-                              <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.inputCost')}</label>
-                                <input type="number" step="0.01" value={editProviderForm.costInput || ''}
-                                  onChange={e => setEditProviderForm({ ...editProviderForm, costInput: Number(e.target.value) })}
-                                  placeholder={t('modelProviders.placeholderCostInput')}
-                                  className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
-                              </div>
-                              <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.outputCost')}</label>
-                                <input type="number" step="0.01" value={editProviderForm.costOutput || ''}
-                                  onChange={e => setEditProviderForm({ ...editProviderForm, costOutput: Number(e.target.value) })}
-                                  placeholder={t('modelProviders.placeholderCostOutput')}
                                   className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                               </div>
                             </div>
@@ -1524,19 +1223,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                       </>
                     )}
 
-                    {info.cost && (
-                      <div className="bg-surface-elevated/40 rounded-lg p-3">
-                        <div className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-2">{t('modelProviders.pricingTitle')}</div>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                          <MiniStat label={t('modelProviders.input')} value={`$${info.cost.input}`} />
-                          <MiniStat label={t('modelProviders.output')} value={`$${info.cost.output}`} />
-                          {info.cost.cacheRead != null && <MiniStat label={t('modelProviders.cacheRead')} value={`$${info.cost.cacheRead}`} />}
-                          {info.cost.cacheWrite != null && <MiniStat label={t('modelProviders.cacheWrite')} value={`$${info.cost.cacheWrite}`} />}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Available Models */}
+                    {/* Available Models (read-only informational) */}
                     <div>
                       <div className="flex items-center justify-between mb-2">
                         <div className="text-[10px] text-fg-tertiary uppercase tracking-wider">{t('modelProviders.availableModels')}</div>
@@ -1564,50 +1251,21 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                       )}
 
                       {info.models && info.models.length > 0 && (
-                        <div className="space-y-1.5">
+                        <div className="space-y-1">
                           {info.models.map(m => {
-                            const isActive = m.id === info.model;
-                            const isSwitching = switchingModel === `${name}:${m.id}`;
                             const isCustom = !BUILTIN_MODEL_IDS.has(m.id);
                             return (
-                              <div
-                                key={m.id}
-                                className={`flex items-center justify-between px-3 py-2 rounded-lg text-xs transition-colors ${
-                                  isActive
-                                    ? 'bg-brand-500/15 border border-brand-500/30'
-                                    : info.configured
-                                      ? 'bg-surface-elevated/30 hover:bg-surface-elevated/60 cursor-pointer'
-                                      : 'bg-surface-elevated/30'
-                                }`}
-                                onClick={() => {
-                                  if (!isActive && info.configured && !isSwitching) {
-                                    void switchProviderModel(name, m.id);
-                                  }
-                                }}
-                              >
+                              <div key={m.id} className="flex items-center justify-between px-3 py-1.5 rounded-lg text-xs bg-surface-elevated/30">
                                 <div className="flex items-center gap-2">
-                                  {isActive && <span className="w-1.5 h-1.5 rounded-full bg-brand-500 shrink-0" />}
-                                  <span className={isActive ? 'text-brand-500 font-medium' : 'text-fg-secondary'}>{m.name}</span>
+                                  <span className="text-fg-secondary">{m.name}</span>
+                                  <InlineTierBadge modelId={m.id} tier={m.tier} />
                                   {m.reasoning && <span className="text-[9px] bg-amber-500/15 text-amber-600 px-1 py-0.5 rounded">{t('modelProviders.reasoning')}</span>}
                                   {m.inputTypes?.includes('image') && <span className="text-[9px] bg-blue-500/15 text-blue-600 px-1 py-0.5 rounded">{t('modelProviders.vision')}</span>}
                                   {isCustom && <span className="text-[9px] bg-purple-500/15 text-purple-400 px-1 py-0.5 rounded">{t('modelProviders.custom')}</span>}
                                 </div>
                                 <div className="flex items-center gap-3 text-fg-tertiary">
                                   {m.contextWindow > 0 && <span>{t('modelProviders.ctxTokens', { size: (m.contextWindow / 1000).toFixed(0) })}</span>}
-                                  {(m.cost.input > 0 || m.cost.output > 0) && <span>{t('modelProviders.costPair', { input: m.cost.input, output: m.cost.output })}</span>}
-                                  {info.configured && !isActive && (
-                                    <span className={`text-[9px] px-1.5 py-0.5 rounded transition-colors ${
-                                      isSwitching
-                                        ? 'bg-brand-500/30 text-brand-400'
-                                        : 'bg-surface-overlay text-fg-tertiary hover:bg-brand-500/20 hover:text-brand-500'
-                                    }`}>
-                                      {isSwitching ? t('modelProviders.switching') : t('modelProviders.use')}
-                                    </span>
-                                  )}
-                                  {isActive && (
-                                    <span className="text-[9px] bg-brand-500/15 text-brand-500 px-1.5 py-0.5 rounded">{t('modelProviders.active')}</span>
-                                  )}
-                                  {isCustom && !isActive && (
+                                  {isCustom && (
                                     <button onClick={e => { e.stopPropagation(); void deleteCustomModel(name, m.id); }}
                                       className="text-red-400 hover:text-red-300 transition-colors" title={t('modelProviders.deleteCustomModelTitle')}>
                                       <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
@@ -1620,7 +1278,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                         </div>
                       )}
 
-                      {/* Catalog models (auto-loaded from model catalog) */}
                       {info.configured && providerCatalogLoading === name && (
                         <div className="flex items-center gap-2 mt-2 text-xs text-fg-tertiary">
                           <div className="w-3 h-3 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
@@ -1629,41 +1286,30 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                       )}
                       {info.configured && providerCatalogModels[name] && providerCatalogModels[name].length > 0 && (() => {
                         const existingIds = new Set(info.models?.map(m => m.id) ?? []);
-                        const extraModels = providerCatalogModels[name].filter(cm => !existingIds.has(cm.id));
+                        const extraModels = providerCatalogModels[name].filter(cm => !existingIds.has(String(cm.id ?? '')));
                         if (extraModels.length === 0) return null;
                         return (
-                          <details className="mt-2 group">
-                            <summary className="text-[10px] text-fg-tertiary cursor-pointer hover:text-fg-secondary select-none">
-                              {t('modelProviders.moreCatalogModels', { count: extraModels.length })}
-                            </summary>
-                            <div className="mt-1.5 space-y-1">
-                              {extraModels.map(cm => {
-                                const isSwitching = switchingModel === `${name}:${cm.id}`;
-                                return (
-                                  <div
-                                    key={cm.id}
-                                    onClick={() => { if (!isSwitching) void switchProviderModel(name, cm.id); }}
-                                    className="flex items-center justify-between px-3 py-1.5 rounded-lg text-xs bg-surface-elevated/20 hover:bg-surface-elevated/50 cursor-pointer transition-colors"
-                                  >
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-fg-secondary">{cm.id}</span>
-                                      {cm.capabilities.reasoning && <span className="text-[9px] bg-amber-500/15 text-amber-600 px-1 py-0.5 rounded">{t('modelProviders.reasoning')}</span>}
-                                      {cm.capabilities.vision && <span className="text-[9px] bg-blue-500/15 text-blue-600 px-1 py-0.5 rounded">{t('modelProviders.vision')}</span>}
-                                    </div>
-                                    <div className="flex items-center gap-3 text-fg-tertiary">
-                                      {cm.maxInputTokens > 0 && <span>{Math.round(cm.maxInputTokens / 1000)}K ctx</span>}
-                                      {(cm.inputCostPer1MTokens > 0 || cm.outputCostPer1MTokens > 0) && <span>${cm.inputCostPer1MTokens}/{cm.outputCostPer1MTokens}</span>}
-                                      <span className={`text-[9px] px-1.5 py-0.5 rounded transition-colors ${
-                                        isSwitching ? 'bg-brand-500/30 text-brand-400' : 'bg-surface-overlay text-fg-tertiary hover:bg-brand-500/20 hover:text-brand-500'
-                                      }`}>
-                                        {isSwitching ? t('modelProviders.switching') : t('modelProviders.use')}
-                                      </span>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </details>
+                          <ExpandableCatalogModels
+                            models={extraModels}
+                            providerName={name}
+                            t={t}
+                            onAdd={(modelId) => {
+                              const m = extraModels.find(x => String(x.id ?? '') === modelId);
+                              if (m) {
+                                setAddingModelProvider(name);
+                                setAddModelForm({
+                                  id: String(m.id ?? ''),
+                                  name: String(m.id ?? ''),
+                                  contextWindow: (m as any).maxInputTokens ?? 128000,
+                                  maxOutputTokens: (m as any).maxOutputTokens ?? 16384,
+                                  costInput: (m as any).inputCostPer1MTokens ?? 1,
+                                  costOutput: (m as any).outputCostPer1MTokens ?? 5,
+                                  reasoning: (m as any).capabilities?.reasoning ?? false,
+                                  vision: (m as any).capabilities?.vision ?? false,
+                                });
+                              }
+                            }}
+                          />
                         );
                       })()}
                     </div>
@@ -1706,6 +1352,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                               provider={name}
                               models={addProviderCatalogModels}
                               selectedModel={addProviderForm.model}
+                              showTiers
                               onSelect={(modelId) => {
                                 const m = addProviderCatalogModels.find(x => x.id === modelId);
                                 setAddProviderForm(f => ({
@@ -1747,11 +1394,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     )}
                   </div>
                 )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            ))}
-          </div>
 
-          {/* Custom Provider (OpenAI-compatible) */}
+              {/* Custom Provider (OpenAI-compatible) */}
           {!showAddProvider ? (
             <button onClick={() => setShowAddProvider(true)}
               className="w-full mt-3 px-4 py-2.5 border border-dashed border-border-default hover:border-brand-500/50 hover:bg-brand-500/5 rounded-xl text-xs text-fg-tertiary hover:text-brand-500 transition-colors">
@@ -1804,13 +1453,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </div>
               {addProviderMsg && <Msg type={addProviderMsg.type} text={addProviderMsg.text} />}
             </div>
-          )}
-        </Section>
-
-        <div className="border-t border-border-default" />
+              )}
+            </ProviderSection>
+          );
+        })()}
 
         {/* ───── Auto-detect & Import ───── */}
-        <Section title={t('autoDetect.title')}>
+        <CollapsibleSection title={t('autoDetect.title')} defaultOpen={false}>
           <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
             <div className="text-sm text-fg-secondary">{t('autoDetect.description')}</div>
 
@@ -1946,7 +1595,297 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               {openclawMsg && <Msg type={openclawMsg.type} text={openclawMsg.text} />}
             </div>
           </div>
+        </CollapsibleSection>
+
+        {/* ───── OAuth Authentication ───── */}
+        <CollapsibleSection title={t('oauthAuth.title')} defaultOpen={false}>
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+            <p className="text-xs text-fg-tertiary">
+              {t('oauthAuth.description')}
+            </p>
+
+            {/* OAuth provider login buttons */}
+            <div className="flex flex-wrap gap-2">
+              {oauthProviders.map(p => (
+                <div key={p.name} className="flex">
+                  <button
+                    onClick={() => startOAuthLogin(p.name)}
+                    disabled={!!oauthLoading}
+                    className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-l-lg transition-colors"
+                  >
+                    {oauthLoading === p.name ? t('oauthAuth.connecting') : t('oauthAuth.signInWith', { name: p.displayName })}
+                  </button>
+                  <button
+                    onClick={() => startDeviceCodeLogin(p.name)}
+                    disabled={!!oauthLoading}
+                    title={t('oauthAuth.deviceTitle')}
+                    className="px-2.5 py-2 text-xs bg-surface-secondary text-fg-secondary border border-border-default border-l-0 rounded-r-lg hover:bg-surface-tertiary disabled:opacity-40 transition-colors"
+                  >
+                    {t('oauthAuth.device')}
+                  </button>
+                </div>
+              ))}
+              {oauthProviders.length === 0 && (
+                <span className="text-xs text-fg-tertiary">{t('oauthAuth.noProviders')}</span>
+              )}
+            </div>
+
+            {/* Device Code display */}
+            {deviceCode && (
+              <div className="p-4 rounded-lg bg-surface-secondary border border-border-default space-y-2">
+                <p className="text-xs text-fg-primary font-medium">{t('oauthAuth.deviceCodeTitle')}</p>
+                <p className="text-xs text-fg-tertiary">
+                  {t('oauthAuth.deviceInstructions')}
+                </p>
+                <div className="flex items-center gap-3">
+                  <a href={deviceCode.verificationUri} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-500 underline hover:text-brand-400">
+                    {deviceCode.verificationUri}
+                  </a>
+                  <code className="px-2.5 py-1 text-sm font-mono font-bold bg-surface-elevated border border-border-default rounded-lg text-fg-primary select-all">
+                    {deviceCode.userCode}
+                  </code>
+                </div>
+                <p className="text-[10px] text-fg-muted">{t('oauthAuth.deviceWaiting')}</p>
+              </div>
+            )}
+
+            {/* Manual callback URL input for headless/remote scenarios */}
+            {pendingOAuthProvider && !deviceCode && (
+              <div className="p-4 rounded-lg bg-surface-secondary border border-border-default space-y-2">
+                <p className="text-xs text-fg-tertiary">
+                  {t('oauthAuth.manualCallbackHint')}
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={manualCallbackUrl}
+                    onChange={e => setManualCallbackUrl(e.target.value)}
+                    placeholder={t('oauthAuth.manualPlaceholder')}
+                    className="flex-1 px-3 py-2 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/50 focus:border-brand-500 outline-none"
+                  />
+                  <button
+                    onClick={handleManualCallback}
+                    disabled={!manualCallbackUrl.trim() || oauthLoading === 'manual'}
+                    className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors"
+                  >
+                    {t('oauthAuth.submit')}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Status message */}
+            {oauthMsg && <Msg type={oauthMsg.type} text={oauthMsg.text} />}
+
+            {/* Connected profiles */}
+            {authProfiles.filter(p => p.hasOAuth).length > 0 && (
+              <div className="space-y-2 border-t border-border-default pt-4">
+                <span className="text-xs font-medium text-fg-secondary">{t('oauthAuth.connectedAccounts')}</span>
+                {authProfiles.filter(p => p.hasOAuth).map(profile => (
+                  <div key={profile.id} className={`flex items-center justify-between px-4 py-3 rounded-lg border ${
+                    profile.oauthExpired ? 'bg-amber-500/5 border-amber-500/20' : 'bg-surface-secondary border-border-default'
+                  }`}>
+                    <div className="flex items-center gap-2.5">
+                      <span className={`w-2 h-2 rounded-full ${profile.oauthExpired ? 'bg-amber-400' : 'bg-green-400'}`} />
+                      <span className="text-xs text-fg-primary font-medium">{profile.label ?? profile.provider}</span>
+                      {profile.accountId && <span className="text-[10px] text-fg-muted">({profile.accountId.slice(0, 12)}...)</span>}
+                      {profile.oauthExpired && <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-600 font-medium">{t('oauthAuth.expired')}</span>}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {profile.oauthExpired && (
+                        <button
+                          onClick={() => startOAuthLogin(profile.provider)}
+                          disabled={!!oauthLoading}
+                          className="text-[10px] px-2 py-1 rounded-md text-brand-500 hover:text-brand-400 hover:bg-brand-500/10 transition-colors"
+                        >
+                          {t('oauthAuth.reconnect')}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => deleteAuthProfile(profile.id)}
+                        className="text-[10px] px-2 py-1 rounded-md text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                      >
+                        {t('oauthAuth.disconnect')}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </CollapsibleSection>
+
+        {/* ───── Default Provider ───── */}
+        <Section title={t('defaultProvider.title')}>
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium">{t('defaultProvider.primaryProvider')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('defaultProvider.primaryProviderDesc')}</div>
+              </div>
+              <div className="flex items-center gap-3">
+                {llm ? (
+                  <select value={selectedProvider} onChange={e => { setSelectedProvider(e.target.value); setSaveMsg(null); }}
+                    className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm w-48 focus:border-brand-500 outline-none">
+                    {enabledProviders.length > 0 ? enabledProviders.map(p => <option key={p} value={p}>{llm.providers[p]?.displayName ?? p}</option>) : <option value="">{t('defaultProvider.noProviders')}</option>}
+                  </select>
+                ) : <div className="text-xs text-fg-tertiary">{t('common:loading')}</div>}
+                {selectedProvider !== llm?.defaultProvider && (
+                  <button onClick={() => void saveLLM()} disabled={saving}
+                    className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
+                    {saving ? t('common:saving') : t('common:save')}
+                  </button>
+                )}
+              </div>
+            </div>
+            {saveMsg && <Msg type={saveMsg.type} text={saveMsg.text} />}
+
+            <div className="flex items-center justify-between border-t border-border-default pt-4">
+              <div>
+                <div className="text-sm font-medium text-fg-primary">{t('defaultProvider.autoFallback')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('defaultProvider.autoFallbackDesc')}</div>
+              </div>
+              <button
+                onClick={async () => {
+                  const newVal = !(llm?.autoFallback ?? true);
+                  try {
+                    const res = await fetch('/api/settings/llm', {
+                      method: 'POST', headers: authHeaders(),
+                      body: JSON.stringify({ autoFallback: newVal }),
+                    });
+                    if (res.ok) {
+                      const data = await res.json() as LLMSettings;
+                      setLlm(data);
+                    }
+                  } catch { /* ignore */ }
+                }}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(llm?.autoFallback ?? true) ? 'bg-green-500' : 'bg-gray-600'}`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${(llm?.autoFallback ?? true) ? 'translate-x-4' : 'translate-x-1'}`} />
+              </button>
+            </div>
+          </div>
         </Section>
+
+        {/* ───── Model Routing ───── */}
+        <Section title={t('modelRouting.title')}>
+          <ModelRoutingSection
+            configuredProviders={
+              Object.entries(llm?.providers ?? {})
+                .filter(([, p]) => p.configured && p.enabled)
+                .map(([name, p]) => ({
+                  name,
+                  displayName: p.displayName,
+                  model: p.model,
+                  models: p.models?.map(m => ({ id: m.id, name: m.name })),
+                }))
+            }
+            onSave={async (data) => {
+              const res = await fetch('/api/settings/llm', {
+                method: 'POST',
+                headers: authHeaders(),
+                body: JSON.stringify(data),
+              });
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            }}
+          />
+        </Section>
+
+        {/* ───── Network / Proxy ───── */}
+        <CollapsibleSection title={t('networkProxy.title')} defaultOpen={false}>
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs text-fg-tertiary">{t('networkProxy.description')}</p>
+              </div>
+              <button
+                onClick={async () => {
+                  const newVal = !proxyEnabled;
+                  setProxyEnabled(newVal);
+                  try {
+                    await fetch('/api/settings/network', {
+                      method: 'POST', headers: authHeaders(),
+                      body: JSON.stringify({ proxyEnabled: newVal }),
+                    });
+                    loadNetworkSettings();
+                  } catch { setProxyEnabled(!newVal); }
+                }}
+                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${proxyEnabled ? 'bg-green-500' : 'bg-gray-600'}`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${proxyEnabled ? 'translate-x-4' : 'translate-x-1'}`} />
+              </button>
+            </div>
+
+            {/* Effective proxy status */}
+            {proxyEffective && (
+              <div className={`flex items-center gap-2 px-3 py-2.5 rounded-lg bg-surface-secondary border border-border-default transition-opacity ${!proxyEnabled ? 'opacity-50' : ''}`}>
+                <span className={`w-2 h-2 rounded-full ${
+                  !proxyEnabled ? 'bg-gray-600' : proxyEffective.proxy ? 'bg-green-400' : 'bg-gray-600'
+                }`} />
+                <span className="text-xs text-fg-secondary">
+                  {!proxyEnabled ? t('networkProxy.disabled') :
+                   proxyEffective.proxy ? (
+                    <>{t('networkProxy.active')} <code className="text-fg-primary font-mono">{proxyEffective.proxy}</code></>
+                  ) : t('networkProxy.noProxy')}
+                </span>
+                {proxyEnabled && proxyEffective.source !== 'none' && proxyEffective.source !== 'disabled' && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium ${
+                    proxyEffective.source === 'config' ? 'bg-brand-500/15 text-brand-500' :
+                    proxyEffective.source === 'env' ? 'bg-amber-500/15 text-amber-600' :
+                    proxyEffective.source === 'system' ? 'bg-blue-500/15 text-blue-500' :
+                    'bg-gray-500/15 text-fg-muted'
+                  }`}>
+                    {proxyEffective.source === 'config' ? t('networkProxy.sourceConfig') :
+                     proxyEffective.source === 'env' ? t('networkProxy.sourceEnv') :
+                     proxyEffective.source === 'system' ? t('networkProxy.sourceSystem') : ''}
+                  </span>
+                )}
+                <button
+                  onClick={() => loadNetworkSettings()}
+                  className="ml-auto text-[10px] px-1.5 py-0.5 rounded-md text-fg-muted hover:text-fg-secondary hover:bg-surface-tertiary transition-colors"
+                  title={t('networkProxy.refresh')}
+                >
+                  ↻ {t('networkProxy.refresh')}
+                </button>
+              </div>
+            )}
+
+            <div className={`flex gap-2 items-center transition-opacity ${!proxyEnabled ? 'opacity-50 pointer-events-none' : ''}`}>
+              <input
+                type="text"
+                value={proxyUrl}
+                onChange={e => setProxyUrl(e.target.value)}
+                placeholder={t('networkProxy.placeholder')}
+                className="flex-1 px-3 py-2 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/50 focus:border-brand-500 outline-none"
+              />
+              <button
+                onClick={async () => {
+                  setProxySaving(true); setProxyMsg(null);
+                  try {
+                    const res = await fetch('/api/settings/network', {
+                      method: 'POST', headers: authHeaders(),
+                      body: JSON.stringify({ proxy: proxyUrl.trim() }),
+                    });
+                    if (res.ok) {
+                      setProxyMsg({ type: 'ok', text: t('networkProxy.saved') });
+                      loadNetworkSettings();
+                    } else {
+                      const d = await res.json() as { error?: string };
+                      setProxyMsg({ type: 'err', text: d.error ?? t('networkProxy.saveFailed') });
+                    }
+                  } catch { setProxyMsg({ type: 'err', text: t('networkProxy.networkError') }); }
+                  finally { setProxySaving(false); }
+                }}
+                disabled={proxySaving}
+                className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors"
+              >
+                {proxySaving ? t('networkProxy.saving') : t('networkProxy.save')}
+              </button>
+            </div>
+            {proxyMsg && <Msg type={proxyMsg.type} text={proxyMsg.text} />}
+          </div>
+        </CollapsibleSection>
+
         </>}
 
         {resolvedTab === 'execution' && <>
@@ -2786,6 +2725,78 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
   );
 }
 
+/* ─── Expandable catalog models list ─── */
+
+const MODE_BADGE_MAP: Record<string, { label: string; color: string }> = {
+  audio_speech: { label: 'TTS', color: 'bg-purple-500/20 text-purple-400' },
+  image_generation: { label: 'Image', color: 'bg-blue-500/20 text-blue-400' },
+  video_generation: { label: 'Video', color: 'bg-pink-500/20 text-pink-400' },
+  audio_transcription: { label: 'STT', color: 'bg-teal-500/20 text-teal-400' },
+  ocr: { label: 'OCR', color: 'bg-orange-500/20 text-orange-400' },
+};
+
+const MODE_SORT_ORDER: Record<string, number> = {
+  chat: 0, image_generation: 1, video_generation: 2,
+  audio_speech: 3, audio_transcription: 4, ocr: 5,
+};
+
+function ExpandableCatalogModels({ models, providerName, t, onAdd }: {
+  models: Array<{ id?: string; mode?: string }>;
+  providerName: string;
+  t: (key: string, opts?: Record<string, unknown>) => string;
+  onAdd: (modelId: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  const sorted = useMemo(() => {
+    return [...models].sort((a, b) => {
+      const orderA = MODE_SORT_ORDER[a.mode ?? 'chat'] ?? 99;
+      const orderB = MODE_SORT_ORDER[b.mode ?? 'chat'] ?? 99;
+      if (orderA !== orderB) return orderA - orderB;
+      return String(a.id ?? '').localeCompare(String(b.id ?? ''));
+    });
+  }, [models]);
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-1.5 text-[10px] text-fg-tertiary hover:text-fg-secondary transition-colors px-1"
+      >
+        <svg className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+        {t('modelProviders.catalogModelsAvailable', { count: models.length })}
+      </button>
+      {expanded && (
+        <div className="mt-1 space-y-0.5 pl-1 max-h-64 overflow-y-auto">
+          {sorted.map(m => {
+            const id = String(m.id ?? '');
+            const mode = m.mode ?? 'chat';
+            const badge = MODE_BADGE_MAP[mode];
+            return (
+              <div key={id} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-overlay/60 group">
+                <span className="text-[11px] text-fg-secondary flex-1 truncate">{id}</span>
+                {badge && (
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded-full shrink-0 ${badge.color}`}>
+                    {badge.label}
+                  </span>
+                )}
+                <button
+                  onClick={() => onAdd(id)}
+                  className="text-[9px] text-brand-500 hover:text-brand-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                >
+                  {t('modelProviders.addModel')}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─── Add Model with Catalog Browse ─── */
 
 function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addModelSaving, onAdd, onCancel, t }: {
@@ -2830,6 +2841,7 @@ function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addM
             provider={providerName}
             models={catalogModels}
             selectedModel={addModelForm.id}
+            showTiers
             onSelect={(modelId) => {
               const m = catalogModels.find(x => x.id === modelId);
               if (m) {
@@ -2914,11 +2926,85 @@ function Msg({ type, text }: { type: 'ok' | 'err'; text: string }) {
   );
 }
 
+function ProviderSection({ title, defaultCollapsed, configuredProviders, t, children }: {
+  title: string;
+  defaultCollapsed: boolean;
+  configuredProviders: Array<[string, { displayName?: string; enabled: boolean }]>;
+  t: (key: string) => string;
+  children: React.ReactNode;
+}) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  return (
+    <section>
+      <button
+        type="button"
+        onClick={() => setCollapsed(!collapsed)}
+        className="flex items-center justify-between w-full group mb-4"
+      >
+        <div className="flex items-center gap-3">
+          <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider">{title}</h3>
+          {collapsed && configuredProviders.length > 0 && (
+            <span className="text-xs text-fg-tertiary">
+              ({configuredProviders.length} {t('modelProviders.configuredCount')})
+            </span>
+          )}
+        </div>
+        <span className={`text-fg-tertiary text-xs transition-transform group-hover:text-fg-secondary ${collapsed ? '-rotate-90' : ''}`}>
+          ▼
+        </span>
+      </button>
+      {collapsed && configuredProviders.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-2">
+          {configuredProviders.map(([name, info]) => (
+            <span
+              key={name}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border ${
+                info.enabled
+                  ? 'bg-green-500/10 border-green-500/30 text-green-400'
+                  : 'bg-surface-elevated border-border-default text-fg-tertiary'
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${info.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
+              {info.displayName ?? name}
+            </span>
+          ))}
+        </div>
+      )}
+      {!collapsed && <div className="space-y-4">{children}</div>}
+    </section>
+  );
+}
+
 function Section({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
   return (
     <section>
       <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider mb-4">{title}</h3>
       <div className="space-y-4">{children}</div>
+    </section>
+  );
+}
+
+function CollapsibleSection({ title, children, defaultOpen = true }: {
+  title: React.ReactNode;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex items-center justify-between w-full group mb-4"
+      >
+        <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider">
+          {title}
+        </h3>
+        <span className={`text-fg-tertiary text-xs transition-transform group-hover:text-fg-secondary ${open ? '' : '-rotate-90'}`}>
+          ▼
+        </span>
+      </button>
+      {open && <div className="space-y-4">{children}</div>}
     </section>
   );
 }
@@ -4062,4 +4148,23 @@ function LicensePlanCard({ isEnterprise, licenseInfo, daysRemaining, effectiveVa
       </div>
     </div>
   );
+}
+
+function InlineTierBadge({ modelId, tier: serverTier }: { modelId: string; tier?: string }) {
+  const { t } = useTranslation('settings');
+  let tier: 'max' | 'pro' | 'base';
+  if (serverTier === 'max' || serverTier === 'pro' || serverTier === 'base') {
+    tier = serverTier;
+  } else {
+    const id = modelId.toLowerCase();
+    const maxPat = /opus|5\.4|o3-(?!mini)|o1-(?!mini)|gemini.*ultra|sonnet-4-20/;
+    const basePat = /haiku|flash|nano|lite|small|fast|free|8b|7b|1b|3b/;
+    const proReasoningPat = /o4-mini|o3-mini|o1-mini|gpt-4o-mini/;
+    if (proReasoningPat.test(id)) tier = 'pro';
+    else if (maxPat.test(id)) tier = 'max';
+    else if (basePat.test(id)) tier = 'base';
+    else tier = 'pro';
+  }
+  const colors = { max: 'bg-purple-500/15 text-purple-400', pro: 'bg-blue-500/15 text-blue-400', base: 'bg-gray-500/15 text-gray-400' };
+  return <span className={`text-[9px] px-1 py-0.5 rounded font-semibold uppercase ${colors[tier]}`}>{t(`modelRouting.tier.${tier}`)}</span>;
 }

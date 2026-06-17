@@ -339,10 +339,12 @@ export class OrganizationService {
 
     // Bulk-clear ALL DB references to this team before deleting (avoids FK constraint failures)
     if (this.storage) {
-      try { await this.storage.agentRepo.clearTeamReferences(teamId); } catch { /* best effort */ }
-      try { await this.storage.userRepo.clearTeamReferences(teamId); } catch { /* best effort */ }
       try {
-        await this.storage.teamRepo.delete(teamId);
+        this.storage.runInTransaction(() => {
+          this.storage!.agentRepo.clearTeamReferences(teamId);
+          this.storage!.userRepo.clearTeamReferences(teamId);
+          this.storage!.teamRepo.delete(teamId);
+        });
       } catch (error) {
         log.error('Failed to delete team from DB', { teamId, error: String(error) });
       }

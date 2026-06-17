@@ -1,3 +1,5 @@
+import type { ModelTier } from './model-catalog.js';
+
 export type LLMProvider = 'anthropic' | 'openai' | 'openai-codex' | 'siliconflow' | 'openrouter' | 'google' | 'ollama' | 'minimax' | 'zai' | 'deepseek' | 'custom';
 
 export type LLMAuthType = 'api-key' | 'oauth' | 'setup-token';
@@ -60,6 +62,10 @@ export interface ModelDefinition {
   reasoning?: boolean;
   inputTypes?: Array<'text' | 'image'>;
   description?: string;
+  /** Model quality tier for routing decisions */
+  tier?: ModelTier;
+  /** Multimodal capability flags (e.g. 'imageGeneration', 'tts', 'stt', 'videoGeneration') */
+  capabilities?: string[];
 }
 
 export interface EnhancedProviderSettings {

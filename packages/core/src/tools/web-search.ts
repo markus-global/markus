@@ -11,11 +11,11 @@ const SEARCH_TIMEOUT_MS = 15_000;
 
 // ── Proxy-aware fetch ──────────────────────────────────────────────────────
 
-// Opaque handle — we only need to pass it through to fetch's `dispatcher` option.
-let _dispatcher: Record<string, unknown> | undefined | false = false; // false = not yet resolved
+const NOT_RESOLVED = Symbol('not-resolved');
+let _dispatcher: Record<string, unknown> | undefined | typeof NOT_RESOLVED = NOT_RESOLVED;
 
 async function resolveProxyDispatcher(): Promise<Record<string, unknown> | undefined> {
-  if (_dispatcher !== false) return _dispatcher || undefined;
+  if (_dispatcher !== NOT_RESOLVED) return _dispatcher;
   const proxyUrl =
     process.env['HTTPS_PROXY'] || process.env['HTTP_PROXY'] ||
     process.env['https_proxy'] || process.env['http_proxy'];
@@ -32,7 +32,7 @@ async function resolveProxyDispatcher(): Promise<Record<string, unknown> | undef
   } catch {
     _dispatcher = undefined;
   }
-  return _dispatcher || undefined;
+  return _dispatcher;
 }
 
 /**

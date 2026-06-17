@@ -35,17 +35,39 @@ export const PROVIDERS: ProviderModel[] = [
   },
   {
     id: 'minimax',
-    label: 'MiniMax',
+    label: 'MiniMax (Global)',
     envKey: 'MINIMAX_API_KEY',
     baseUrl: 'https://api.minimax.io/v1',
-    defaultModel: 'MiniMax-M2.7',
+    defaultModel: 'MiniMax-M3',
+    models: ['MiniMax-M2.7', 'MiniMax-M3', 'MiniMax-M3-high'],
+  },
+  {
+    id: 'minimax-cn',
+    label: 'MiniMax (中国)',
+    envKey: 'MINIMAX_CN_API_KEY',
+    baseUrl: 'https://api.minimaxi.com/v1',
+    defaultModel: 'MiniMax-M3',
     models: ['MiniMax-M2.7', 'MiniMax-M3', 'MiniMax-M3-high'],
   },
   {
     id: 'siliconflow',
-    label: 'SiliconFlow',
+    label: 'SiliconFlow (中国)',
     envKey: 'SILICONFLOW_API_KEY',
     baseUrl: 'https://api.siliconflow.cn/v1',
+    defaultModel: 'Qwen/Qwen3.5-35B-A3B',
+    models: [
+      'Qwen/Qwen3.5-35B-A3B',
+      'Qwen/Qwen3.5-32B-A3B',
+      'deepseek-ai/DeepSeek-V3',
+      'deepseek-ai/DeepSeek-Coder-V2',
+      'moonshotai/Kimi-K2.5',
+    ],
+  },
+  {
+    id: 'siliconflow-intl',
+    label: 'SiliconFlow (Global)',
+    envKey: 'SILICONFLOW_INTL_API_KEY',
+    baseUrl: 'https://api-st.siliconflow.cn/v1',
     defaultModel: 'Qwen/Qwen3.5-35B-A3B',
     models: [
       'Qwen/Qwen3.5-35B-A3B',
@@ -173,6 +195,23 @@ export const PROVIDERS: ProviderModel[] = [
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     defaultModel: 'qwen-max',
     models: ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen-long'],
+  },
+  // Full-modal aggregator providers (text + image + audio + video via single API key)
+  {
+    id: 'atlascloud',
+    label: 'Atlas Cloud (Full-Modal)',
+    envKey: 'ATLASCLOUD_API_KEY',
+    baseUrl: 'https://api.atlascloud.ai/v1',
+    defaultModel: 'claude-sonnet-4-6',
+    models: ['claude-sonnet-4-6', 'gpt-4.1', 'gemini-2.5-pro', 'deepseek-v3', 'flux-1-schnell'],
+  },
+  {
+    id: 'strongly',
+    label: 'Strongly.AI (Full-Modal)',
+    envKey: 'STRONGLY_API_KEY',
+    baseUrl: 'https://api.strongly.ai/v1',
+    defaultModel: 'claude-sonnet-4-6',
+    models: ['claude-sonnet-4-6', 'gpt-4.1', 'gemini-2.5-pro'],
   },
 ];
 

@@ -1,5 +1,5 @@
-import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
-import type { LLMProviderInterface } from './provider.js';
+import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, type ProviderCapabilities, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
+import type { MultiModalProviderInterface, MultiModalToolSchemas, ImageGenOptions, ImageResult, TTSOptions, AudioResult, STTOptions } from './provider.js';
 
 interface OpenAIMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -30,15 +30,15 @@ interface OpenAIResponse {
 
 export type TokenResolver = () => Promise<string>;
 
-export class OpenAIProvider implements LLMProviderInterface {
+export class OpenAIProvider implements MultiModalProviderInterface {
   name: string;
   model: string;
-  private apiKey: string;
-  private baseUrl: string;
-  private maxTokens: number;
-  private chatTimeoutMs: number;
-  private streamTimeoutMs: number;
-  private tokenResolver?: TokenResolver;
+  protected apiKey: string;
+  protected baseUrl: string;
+  protected maxTokens: number;
+  protected chatTimeoutMs: number;
+  protected streamTimeoutMs: number;
+  protected tokenResolver?: TokenResolver;
 
   constructor(config?: LLMProviderConfig, tokenResolver?: TokenResolver) {
     this.name = config?.provider ?? 'openai';
@@ -66,7 +66,13 @@ export class OpenAIProvider implements LLMProviderInterface {
     this.tokenResolver = resolver;
   }
 
-  private async resolveAuthHeader(): Promise<string> {
+  /** Build a full endpoint URL by appending `path` to the base URL. */
+  protected buildEndpoint(path: string): string {
+    const base = this.baseUrl.replace(/\/+$/, '');
+    return /\/v\d+$/.test(base) ? `${base}${path}` : `${base}/v1${path}`;
+  }
+
+  protected async resolveAuthHeader(): Promise<string> {
     if (this.tokenResolver) {
       const token = await this.tokenResolver();
       return `Bearer ${token}`;
@@ -370,5 +376,188 @@ export class OpenAIProvider implements LLMProviderInterface {
     };
     if (msg.reasoning_content) result.reasoningContent = msg.reasoning_content;
     return result;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-modal: capabilities
+  // ---------------------------------------------------------------------------
+
+  protected get isNativeOpenAI(): boolean {
+    return this.baseUrl.includes('api.openai.com');
+  }
+
+  getCapabilities(): ProviderCapabilities {
+    const isOpenAI = this.isNativeOpenAI;
+    return {
+      chat: true,
+      vision: true,
+      imageGeneration: isOpenAI,
+      tts: isOpenAI,
+      stt: isOpenAI,
+      videoGeneration: false,
+      embedding: isOpenAI,
+      reasoning: true,
+      promptCaching: true,
+    };
+  }
+
+  getToolSchemas(): MultiModalToolSchemas {
+    return {
+      generate_image: {
+        description: 'Generate images using OpenAI. Provide a detailed text prompt.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string', description: 'Detailed text description of the image to generate' },
+            model: { type: 'string', description: 'Model to use (default from routing config). e.g. "gpt-image-1", "dall-e-3"' },
+            size: { type: 'string', enum: ['1024x1024', '1792x1024', '1024x1792'], description: 'Image dimensions (default: 1024x1024)' },
+            quality: { type: 'string', enum: ['standard', 'hd'], description: 'Image quality (default: standard)' },
+            style: { type: 'string', enum: ['natural', 'vivid'], description: 'Style preset (default: vivid)' },
+            n: { type: 'number', description: 'Number of images to generate (default: 1)' },
+            output_dir: { type: 'string', description: 'Directory to save images' },
+            output_format: { type: 'string', enum: ['png', 'jpeg', 'webp'], description: 'Output format (default: png)' },
+          },
+          required: ['prompt'],
+        },
+      },
+      text_to_speech: {
+        description: 'Convert text to speech using OpenAI.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'The text to convert to speech' },
+            model: { type: 'string', description: 'Model to use (default from routing config). e.g. "tts-1", "tts-1-hd"' },
+            voice: { type: 'string', enum: ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'], description: 'Voice to use (default: alloy)' },
+            speed: { type: 'number', description: 'Speech speed (0.25-4.0, default: 1.0)' },
+          },
+          required: ['text'],
+        },
+      },
+      speech_to_text: {
+        description: 'Transcribe speech audio to text using OpenAI Whisper.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            audio_url: { type: 'string', description: 'URL or local file path of the audio to transcribe' },
+            model: { type: 'string', description: 'Model to use (default from routing config). e.g. "whisper-1"' },
+            language: { type: 'string', description: 'Language code (e.g. "en", "zh") for better accuracy' },
+          },
+          required: ['audio_url'],
+        },
+      },
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-modal: image generation (DALL-E)
+  // ---------------------------------------------------------------------------
+
+  async generateImage(prompt: string, options?: ImageGenOptions): Promise<ImageResult[]> {
+    const base = this.baseUrl.replace(/\/+$/, '');
+    const authorization = await this.resolveAuthHeader();
+    const endpoint = /\/v\d+$/.test(base) ? `${base}/images/generations` : `${base}/v1/images/generations`;
+
+    const body: Record<string, unknown> = {
+      model: options?.model ?? 'dall-e-3',
+      prompt,
+      n: options?.n ?? 1,
+      size: options?.size ?? '1024x1024',
+      response_format: 'url',
+    };
+    if (options?.quality) body['quality'] = options.quality;
+    if (options?.style) body['style'] = options.style;
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: authorization },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Image generation API error ${res.status}: ${errText}`);
+    }
+
+    const data = await res.json() as {
+      data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
+      images?: Array<{ url?: string }>;
+    };
+    const items = data.data ?? data.images ?? [];
+    return items.map(d => ({
+      url: d.url,
+      base64: (d as Record<string, unknown>).b64_json as string | undefined,
+      revisedPrompt: (d as Record<string, unknown>).revised_prompt as string | undefined,
+    }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-modal: text-to-speech
+  // ---------------------------------------------------------------------------
+
+  async generateSpeech(text: string, options?: TTSOptions): Promise<AudioResult> {
+    const base = this.baseUrl.replace(/\/+$/, '');
+    const endpoint = /\/v\d+$/.test(base) ? `${base}/audio/speech` : `${base}/v1/audio/speech`;
+
+    const format = options?.responseFormat ?? 'mp3';
+    const body: Record<string, unknown> = {
+      model: options?.model ?? 'tts-1',
+      input: text,
+      voice: options?.voice ?? 'alloy',
+      response_format: format,
+    };
+    if (options?.speed) body['speed'] = options.speed;
+
+    const authorization = await this.resolveAuthHeader();
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: authorization },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`TTS API error ${res.status}: ${errText}`);
+    }
+
+    const arrayBuf = await res.arrayBuffer();
+    return { audio: Buffer.from(arrayBuf), format };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-modal: speech-to-text (Whisper)
+  // ---------------------------------------------------------------------------
+
+  async transcribeSpeech(audio: Buffer, options?: STTOptions): Promise<string> {
+    const base = this.baseUrl.replace(/\/+$/, '');
+    const endpoint = /\/v\d+$/.test(base) ? `${base}/audio/transcriptions` : `${base}/v1/audio/transcriptions`;
+
+    const formData = new FormData();
+    formData.append('file', new Blob([audio as unknown as ArrayBuffer], { type: 'audio/wav' }), 'audio.wav');
+    formData.append('model', options?.model ?? 'whisper-1');
+    if (options?.language) formData.append('language', options.language);
+    if (options?.prompt) formData.append('prompt', options.prompt);
+    formData.append('response_format', options?.responseFormat ?? 'text');
+
+    const authorization = await this.resolveAuthHeader();
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { Authorization: authorization },
+      body: formData,
+      signal: AbortSignal.timeout(120_000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`STT API error ${res.status}: ${errText}`);
+    }
+
+    const responseFormat = options?.responseFormat ?? 'text';
+    if (responseFormat === 'text') {
+      return await res.text();
+    }
+    const data = await res.json() as { text: string };
+    return data.text;
   }
 }

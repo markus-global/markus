@@ -1,5 +1,5 @@
-import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
-import type { LLMProviderInterface } from './provider.js';
+import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, type ProviderCapabilities, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
+import type { MultiModalProviderInterface, MultiModalToolSchemas, ImageGenOptions, ImageResult } from './provider.js';
 
 type GeminiPart =
   | { text: string }
@@ -30,7 +30,7 @@ interface GeminiResponse {
  * Google Gemini LLM provider using the REST API.
  * Supports chat, tool use, and streaming.
  */
-export class GoogleProvider implements LLMProviderInterface {
+export class GoogleProvider implements MultiModalProviderInterface {
   name = 'google';
   model: string;
   private apiKey: string;
@@ -309,5 +309,87 @@ export class GoogleProvider implements LLMProviderInterface {
       },
       finishReason: this.mapFinishReason(candidate.finishReason),
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-modal capabilities
+  // ---------------------------------------------------------------------------
+
+  getCapabilities(): ProviderCapabilities {
+    return {
+      chat: true,
+      vision: true,
+      imageGeneration: true,
+      tts: false,
+      stt: false,
+      videoGeneration: false,
+      embedding: false,
+      reasoning: true,
+      promptCaching: false,
+    };
+  }
+
+  getToolSchemas(): MultiModalToolSchemas {
+    return {
+      generate_image: {
+        description: 'Generate images using Google Gemini. The model determines the image size automatically.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string', description: 'Detailed text description of the image to generate' },
+            model: { type: 'string', description: 'Model to use (default from routing config). e.g. "gemini-2.0-flash-preview-image-generation"' },
+            n: { type: 'number', description: 'Number of images to generate (default: 1)' },
+            output_dir: { type: 'string', description: 'Directory to save images' },
+          },
+          required: ['prompt'],
+        },
+      },
+    };
+  }
+
+  /**
+   * Generate images using Gemini's Imagen integration.
+   * Uses the generateContent endpoint with responseModalities: ["IMAGE", "TEXT"].
+   */
+  async generateImage(prompt: string, options?: ImageGenOptions): Promise<ImageResult[]> {
+    const model = options?.model ?? 'gemini-2.0-flash-preview-image-generation';
+    const base = this.baseUrl.replace(/\/+$/, '');
+    const endpoint = `${base}/v1beta/models/${model}:generateContent?key=${this.apiKey}`;
+
+    const body = {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        responseModalities: ['IMAGE', 'TEXT'],
+        ...(options?.n && options.n > 1 ? { candidateCount: Math.min(options.n, 4) } : {}),
+      },
+    };
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(90_000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Gemini image generation error ${res.status}: ${errText}`);
+    }
+
+    const data = await res.json() as {
+      candidates?: Array<{
+        content?: { parts?: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> };
+      }>;
+    };
+
+    const results: ImageResult[] = [];
+    for (const candidate of data.candidates ?? []) {
+      for (const part of candidate.content?.parts ?? []) {
+        if (part.inlineData) {
+          results.push({ base64: part.inlineData.data });
+        }
+      }
+    }
+    return results;
   }
 }

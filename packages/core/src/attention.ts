@@ -295,7 +295,7 @@ export class AttentionController {
               cleaned,
             });
           }
-        } catch { /* best-effort */ }
+        } catch (err) { log.debug('Triage scoring failed', { error: String(err) }); }
       }
     }, WATCHDOG_INTERVAL_MS);
 
@@ -329,7 +329,7 @@ export class AttentionController {
           this.delegate?.onFocusChanged(undefined);
 
           // Resurface deferred items that are due before waiting for new work
-          try { this.mailbox.resurfaceDue(); } catch { /* best-effort */ }
+          try { this.mailbox.resurfaceDue(); } catch (err) { log.debug('Resurface-due failed', { error: String(err) }); }
 
           let item: MailboxItem;
           try {
@@ -484,9 +484,9 @@ export class AttentionController {
             if (isUserInteraction) {
               // User-facing items may have already produced partial responses
               // and tool-call side effects — restarting would duplicate them.
-              try { this.mailbox.complete(item.id); } catch { /* best effort */ }
+              try { this.mailbox.complete(item.id); } catch (err) { log.debug('Failed to complete mailbox item', { id: item.id, error: String(err) }); }
             } else {
-              try { this.mailbox.requeue(item); } catch { /* item may already be back in queue */ }
+              try { this.mailbox.requeue(item); } catch (err) { log.debug('Failed to requeue item', { id: item.id, error: String(err) }); }
             }
           }
         } catch (outerErr) {
@@ -805,7 +805,8 @@ export class AttentionController {
       decisionType = this.delegate
         ? await this.delegate.evaluateInterrupt(this.currentFocus, newItem)
         : this.heuristicDecision(this.currentFocus, newItem);
-    } catch {
+    } catch (err) {
+      log.debug('Delegate evaluateInterrupt failed, falling back to heuristic', { error: String(err) });
       decisionType = this.heuristicDecision(this.currentFocus, newItem);
     }
 

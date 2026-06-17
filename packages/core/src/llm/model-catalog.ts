@@ -12,7 +12,12 @@ const DATA_DIR = join(__dirname, '..', '..', 'data');
 const log = createLogger('model-catalog');
 
 const LITELLM_JSON_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
+const LITELLM_MIRROR_URLS = [
+  'https://cdn.jsdelivr.net/gh/BerriAI/litellm@main/model_prices_and_context_window.json',
+  'https://raw.gitmirror.com/BerriAI/litellm/main/model_prices_and_context_window.json',
+];
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+const RETRY_BACKOFF_MS = 4 * 60 * 60 * 1000;  // 4 hours after failure (avoid spamming)
 const CACHE_FILENAME = 'model-catalog-cache.json';
 
 const PROVIDER_MAP: Record<string, string> = {
@@ -43,13 +48,33 @@ const PROVIDER_MAP: Record<string, string> = {
   dashscope: 'dashscope',
 };
 
+const PROVIDER_ALIASES: Record<string, string> = {
+  'minimax-cn': 'minimax',
+  'siliconflow-intl': 'siliconflow',
+};
+
+const KNOWN_LITELLM_PREFIXES = new Set(Object.keys(PROVIDER_MAP));
+
 export class ModelCatalogService {
+  /**
+   * Strip LiteLLM-style "provider/" prefix from a catalog key.
+   * Keeps IDs like "deepseek-ai/DeepSeek-V3" (org/model) intact.
+   */
+  static stripProviderPrefix(catalogId: string): string {
+    const slashIdx = catalogId.indexOf('/');
+    if (slashIdx < 0) return catalogId;
+    const prefix = catalogId.slice(0, slashIdx);
+    return KNOWN_LITELLM_PREFIXES.has(prefix) ? catalogId.slice(slashIdx + 1) : catalogId;
+  }
+
   private models: Map<string, CatalogModel> = new Map();
   private lastUpdated: string | null = null;
   private source: CatalogStatus['source'] = 'baseline';
   private markusDir: string;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private mirrorUrl?: string;
+  private consecutiveFailures = 0;
+  private lastFailureAt = 0;
 
   constructor(options?: { mirrorUrl?: string }) {
     this.markusDir = join(homedir(), '.markus');
@@ -80,9 +105,10 @@ export class ModelCatalogService {
   }
 
   getModelsByProvider(provider: string): CatalogModel[] {
+    const canonicalProvider = PROVIDER_ALIASES[provider] ?? provider;
     const results: CatalogModel[] = [];
     for (const model of this.models.values()) {
-      if (model.provider === provider) {
+      if (model.provider === canonicalProvider) {
         results.push(model);
       }
     }
@@ -128,30 +154,47 @@ export class ModelCatalogService {
   }
 
   async refresh(): Promise<boolean> {
-    try {
-      const url = this.mirrorUrl || LITELLM_JSON_URL;
-      log.info(`Refreshing model catalog from ${url}`);
-
-      const response = await fetch(url, {
-        signal: AbortSignal.timeout(30000),
-      });
-
-      if (!response.ok) {
-        log.warn(`Failed to fetch model catalog: HTTP ${response.status}`);
-        return false;
-      }
-
-      const rawText = await response.text();
-      const rawData = JSON.parse(rawText) as Record<string, LiteLLMRawModelEntry>;
-
-      this.parseAndLoad(rawData, 'remote');
-      this.persistCache(rawText);
-      log.info(`Model catalog refreshed: ${this.models.size} chat models loaded`);
-      return true;
-    } catch (err) {
-      log.warn(`Failed to refresh model catalog: ${err instanceof Error ? err.message : String(err)}`);
+    // Back off if we've been failing repeatedly
+    if (this.consecutiveFailures > 0 && Date.now() - this.lastFailureAt < RETRY_BACKOFF_MS) {
       return false;
     }
+
+    const urls = this.mirrorUrl
+      ? [this.mirrorUrl]
+      : [LITELLM_JSON_URL, ...LITELLM_MIRROR_URLS];
+
+    for (const url of urls) {
+      try {
+        log.info(`Refreshing model catalog from ${url}`);
+        const response = await fetch(url, {
+          signal: AbortSignal.timeout(30000),
+        });
+
+        if (!response.ok) {
+          log.warn(`Failed to fetch model catalog from ${url}: HTTP ${response.status}`);
+          continue;
+        }
+
+        const rawText = await response.text();
+        const rawData = JSON.parse(rawText) as Record<string, LiteLLMRawModelEntry>;
+
+        this.parseAndLoad(rawData, 'remote');
+        this.persistCache(rawText);
+        this.consecutiveFailures = 0;
+        log.info(`Model catalog refreshed: ${this.models.size} models loaded`);
+        return true;
+      } catch (err) {
+        log.warn(`Failed to fetch model catalog from ${url}: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+    }
+
+    this.consecutiveFailures++;
+    this.lastFailureAt = Date.now();
+    if (this.consecutiveFailures === 1) {
+      log.warn('All model catalog sources unreachable. Using bundled baseline data. Will retry in 4 hours.');
+    }
+    return false;
   }
 
   private loadBaseline(): void {
@@ -160,7 +203,7 @@ export class ModelCatalogService {
       const data = readFileSync(baselinePath, 'utf-8');
       const rawData = JSON.parse(data) as Record<string, LiteLLMRawModelEntry>;
       this.parseAndLoad(rawData, 'baseline');
-      log.info(`Loaded baseline catalog: ${this.models.size} chat models`);
+      log.info(`Loaded baseline catalog: ${this.models.size} models`);
     } catch (err) {
       log.error(`Failed to load baseline catalog: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -176,9 +219,8 @@ export class ModelCatalogService {
         if (key === '_meta' || !entry.litellm_provider) continue;
         const markusProvider = PROVIDER_MAP[entry.litellm_provider];
         if (!markusProvider) continue;
-        if (entry.mode && entry.mode !== 'chat') continue;
 
-        // For supplements, strip provider prefix for the model ID shown to user
+        // Strip provider prefix for the model ID shown to user
         const modelId = key.startsWith(`${entry.litellm_provider}/`)
           ? key.slice(entry.litellm_provider.length + 1)
           : key;
@@ -198,7 +240,7 @@ export class ModelCatalogService {
       const data = readFileSync(path, 'utf-8');
       const rawData = JSON.parse(data) as Record<string, LiteLLMRawModelEntry>;
       this.parseAndLoad(rawData, source);
-      log.info(`Loaded catalog from ${source}: ${this.models.size} chat models`);
+      log.info(`Loaded catalog from ${source}: ${this.models.size} models`);
     } catch (err) {
       log.warn(`Failed to load catalog from ${source}: ${err instanceof Error ? err.message : String(err)}`);
       if (source === 'cache') {
@@ -213,16 +255,21 @@ export class ModelCatalogService {
     for (const [key, entry] of Object.entries(rawData)) {
       if (key === 'sample_spec') continue;
       if (!entry.litellm_provider) continue;
-      if (entry.mode && entry.mode !== 'chat') continue;
       // Skip entries without mode that look non-chat (image gen prefixes, etc.)
       if (!entry.mode && key.match(/^\d+.*x.*\d+/)) continue;
 
       const markusProvider = PROVIDER_MAP[entry.litellm_provider];
       if (!markusProvider) continue;
 
-      const model = this.convertEntry(key, entry, markusProvider);
+      // Strip LiteLLM provider prefix (e.g. "minimax/MiniMax-M3" → "MiniMax-M3")
+      // so that catalog lookups by bare model ID work correctly.
+      const modelId = key.startsWith(`${entry.litellm_provider}/`)
+        ? key.slice(entry.litellm_provider.length + 1)
+        : key;
+
+      const model = this.convertEntry(modelId, entry, markusProvider);
       if (model) {
-        this.models.set(key, model);
+        this.models.set(modelId, model);
       }
     }
 
@@ -233,19 +280,34 @@ export class ModelCatalogService {
     this.source = source;
   }
 
+  private static readonly NON_CHAT_MODES = new Set([
+    'audio_speech', 'image_generation', 'video_generation',
+    'audio_transcription', 'ocr', 'moderation',
+  ]);
+
   private convertEntry(id: string, entry: LiteLLMRawModelEntry, provider: string): CatalogModel | null {
     const maxInput = entry.max_input_tokens ?? entry.max_tokens ?? 0;
     const maxOutput = entry.max_output_tokens ?? entry.max_tokens ?? 0;
+    const mode = entry.mode || 'chat';
 
-    if (maxInput === 0 && maxOutput === 0) return null;
+    // Allow non-chat models (TTS, image, video, STT) through even with zero tokens
+    if (maxInput === 0 && maxOutput === 0 && !ModelCatalogService.NON_CHAT_MODES.has(mode)) {
+      return null;
+    }
+
+    // For models priced per character (TTS), estimate token cost (~4 chars per token)
+    let inputCost = (entry.input_cost_per_token ?? 0) * 1_000_000;
+    if (inputCost === 0 && entry.input_cost_per_character) {
+      inputCost = entry.input_cost_per_character * 4 * 1_000_000;
+    }
 
     return {
       id,
       provider,
-      mode: entry.mode || 'chat',
+      mode,
       maxInputTokens: maxInput,
       maxOutputTokens: maxOutput,
-      inputCostPer1MTokens: (entry.input_cost_per_token ?? 0) * 1_000_000,
+      inputCostPer1MTokens: inputCost,
       outputCostPer1MTokens: (entry.output_cost_per_token ?? 0) * 1_000_000,
       cacheReadCostPer1MTokens: entry.cache_read_input_token_cost
         ? entry.cache_read_input_token_cost * 1_000_000
@@ -262,6 +324,7 @@ export class ModelCatalogService {
         audioInput: entry.supports_audio_input ?? false,
         audioOutput: entry.supports_audio_output ?? false,
       },
+      supportedEndpoints: entry.supported_endpoints,
       deprecationDate: entry.deprecation_date,
     };
   }
