@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, openSync, closeSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { TaskRoutingConfig } from '../types/model-catalog.js';
@@ -150,21 +150,66 @@ export function loadConfig(configPath?: string): MarkusConfig {
 }
 
 /**
+ * Acquire a simple filesystem lock. Returns a release function.
+ * Uses O_EXCL to atomically create the lock file.
+ */
+function acquireConfigLock(configPath: string, timeoutMs = 5000): () => void {
+  const lockPath = configPath + '.lock';
+  const deadline = Date.now() + timeoutMs;
+  const SPIN_MS = 50;
+
+  while (Date.now() < deadline) {
+    try {
+      const fd = openSync(lockPath, 'wx');
+      closeSync(fd);
+      writeFileSync(lockPath, `${process.pid}-${Date.now()}`, 'utf-8');
+      return () => { try { unlinkSync(lockPath); } catch { /* already released */ } };
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+        // Check for stale lock (>10s)
+        try {
+          const content = readFileSync(lockPath, 'utf-8');
+          const ts = Number(content.split('-').pop());
+          if (Date.now() - ts > 10_000) {
+            try { unlinkSync(lockPath); } catch { /* race with another cleaner */ }
+            continue;
+          }
+        } catch { /* lock file disappeared — retry */ continue; }
+
+        // Spin-wait
+        const waitUntil = Date.now() + SPIN_MS;
+        while (Date.now() < waitUntil) { /* busy wait */ }
+        continue;
+      }
+      break;
+    }
+  }
+  // Fallback: proceed without lock (better than deadlocking)
+  return () => {};
+}
+
+/**
  * Merge partial updates into the on-disk markus.json (creates it if absent).
+ * Uses a filesystem lock to prevent concurrent write races.
  */
 export function saveConfig(updates: Partial<MarkusConfig>, configPath?: string): void {
   const p = configPath ?? getDefaultConfigPath();
   mkdirSync(resolve(p, '..'), { recursive: true });
-  let existing: Obj = {};
-  if (existsSync(p)) {
-    try {
-      existing = JSON.parse(readFileSync(p, 'utf-8')) as Obj;
-    } catch {
-      existing = {};
+  const releaseLock = acquireConfigLock(p);
+  try {
+    let existing: Obj = {};
+    if (existsSync(p)) {
+      try {
+        existing = JSON.parse(readFileSync(p, 'utf-8')) as Obj;
+      } catch {
+        existing = {};
+      }
     }
+    const merged = deepMerge(existing, updates as unknown as Obj);
+    writeFileSync(p, JSON.stringify(merged, null, 2) + '\n', 'utf-8');
+  } finally {
+    releaseLock();
   }
-  const merged = deepMerge(existing, updates as unknown as Obj);
-  writeFileSync(p, JSON.stringify(merged, null, 2) + '\n', 'utf-8');
 }
 
 type Obj = Record<string, unknown>;

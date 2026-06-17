@@ -317,4 +317,81 @@ Some content`;
       expect(prompt).toContain('## Knowledge Base References');
     });
   });
+
+  describe('parseFullConfig', () => {
+    it('returns both role template and openClaw config', () => {
+      const markdown = `# Data Agent
+
+## Identity
+- **Name:** DataBot
+- **Role:** Data Engineer
+
+## Memory Configuration
+- short-term: 2000 tokens
+- long-term: 8000 tokens
+
+## Knowledge Base
+- Data dictionary
+- Schema docs`;
+
+      const { roleTemplate, openClawConfig } = parser.parseFullConfig(markdown);
+
+      expect(roleTemplate.name).toBe('DataBot');
+      expect(roleTemplate.category).toBe('engineering');
+      expect(openClawConfig.knowledgeBase).toContain('Data dictionary');
+      expect(openClawConfig.memoryConfig?.shortTerm).toBe(2000);
+    });
+
+    it('wraps parse errors with context', () => {
+      expect(() => parser.parseFullConfig('')).toThrow(/Failed to parse OpenClaw configuration/);
+    });
+  });
+
+  describe('inferCategory edge cases', () => {
+    it('maps operations and marketing roles', () => {
+      const opsMd = `# Ops Agent\n## Identity\n- Name: Ops\n- Role: Operations Manager`;
+      const mktMd = `# Mkt Agent\n## Identity\n- Name: Mkt\n- Role: Marketing Lead`;
+
+      expect(parser.parse(opsMd).category).toBe('operations');
+      expect(parser.parse(mktMd).category).toBe('marketing');
+    });
+  });
+
+  describe('parseKnowledgeBase', () => {
+    it('extracts knowledge base bullet items', () => {
+      const markdown = `# Agent
+
+## Identity
+- Name: KB Agent
+
+## Knowledge Base
+- API docs
+- Runbooks`;
+
+      // @ts-expect-error - private method
+      const kb = parser.parseKnowledgeBase(markdown);
+      expect(kb).toContain('API docs');
+      expect(kb).toContain('Runbooks');
+    });
+  });
+
+  describe('parseMemoryConfig', () => {
+    it('parses token limits from memory section', () => {
+      const markdown = `# Agent
+
+## Identity
+- Name: Mem Agent
+
+## Memory Configuration
+- short-term: 500 tokens
+- medium-term: 2500 tokens
+- long-term: 10000 tokens`;
+
+      // @ts-expect-error - private method
+      const config = parser.parseMemoryConfig(markdown);
+      expect(config.shortTerm).toBe(500);
+      expect(config.mediumTerm).toBe(2500);
+      expect(config.longTerm).toBe(10000);
+    });
+  });
 });

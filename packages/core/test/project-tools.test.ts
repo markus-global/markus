@@ -261,6 +261,14 @@ describe('deliverable_update', () => {
     expect(result.deliverableStatus).toBe('verified');
   });
 
+  it('accepts id alias field', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'deliverable_update');
+    const result = JSON.parse(await tool.execute({ id: 'dlv_001', title: 'Renamed' }));
+    expect(result.status).toBe('success');
+    expect(ctx.deliverableUpdate).toHaveBeenCalledWith('dlv_001', expect.objectContaining({ title: 'Renamed' }));
+  });
+
   it('returns error for missing deliverable', async () => {
     const ctx = createMockContext({
       deliverableUpdate: vi.fn(async () => undefined),
@@ -268,5 +276,161 @@ describe('deliverable_update', () => {
     const tool = findTool(ctx, 'deliverable_update');
     const result = JSON.parse(await tool.execute({ deliverable_id: 'dlv_missing' }));
     expect(result.status).toBe('error');
+  });
+
+  it('omits accessUrl when webUiBaseUrl is unset', async () => {
+    const ctx = createMockContext({ webUiBaseUrl: undefined });
+    const tool = findTool(ctx, 'deliverable_update');
+    const result = JSON.parse(await tool.execute({ deliverable_id: 'dlv_001', status: 'verified' }));
+    expect(result.accessUrl).toBeUndefined();
+  });
+});
+
+describe('update_project extended', () => {
+  it('requires approval for name change', async () => {
+    const approval = vi.fn(async () => ({ approved: true }));
+    const ctx = createMockContext({ requestApproval: approval });
+    const tool = findTool(ctx, 'update_project');
+    const result = JSON.parse(await tool.execute({ project_id: 'proj_001', name: 'Renamed App' }));
+    expect(result.status).toBe('success');
+    expect(approval).toHaveBeenCalledOnce();
+  });
+
+  it('requires approval for team_ids and governance_policy', async () => {
+    const approval = vi.fn(async () => ({ approved: true }));
+    const ctx = createMockContext({ requestApproval: approval });
+    const tool = findTool(ctx, 'update_project');
+    await tool.execute({
+      project_id: 'proj_001',
+      team_ids: ['team_002'],
+      governance_policy: { enabled: false, defaultTier: 'lite' },
+    });
+    expect(approval).toHaveBeenCalledOnce();
+  });
+});
+
+describe('get_project extended', () => {
+  it('returns error when no project_id and no current project', async () => {
+    const ctx = createMockContext({ getProjectInfo: vi.fn(async () => null) });
+    const tool = findTool(ctx, 'get_project');
+    const result = JSON.parse(await tool.execute({}));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('No current project');
+  });
+});
+
+describe('create_project extended', () => {
+  it('creates without approval callback', async () => {
+    const ctx = createMockContext({ requestApproval: undefined });
+    const tool = findTool(ctx, 'create_project');
+    const result = JSON.parse(await tool.execute({ name: 'Direct', description: 'No approval gate' }));
+    expect(result.status).toBe('success');
+  });
+});
+
+describe('project_stats extended', () => {
+  it('returns error when project not found', async () => {
+    const ctx = createMockContext({
+      getProjectStats: vi.fn(async () => null),
+    } as any);
+    const tool = findTool(ctx, 'project_stats');
+    const result = JSON.parse(await tool.execute({ project_id: 'proj_missing' }));
+    expect(result.status).toBe('error');
+  });
+});
+
+describe('tools without projectService', () => {
+  it('excludes CRUD tools when projectService is missing', () => {
+    const ctx = createMockContext({ projectService: undefined });
+    const tools = createProjectTools(ctx);
+    expect(tools.map(t => t.name)).not.toContain('list_projects');
+    expect(tools.map(t => t.name)).toContain('deliverable_create');
+  });
+});
+
+describe('deliverable error paths', () => {
+  it('deliverable_search returns error when search throws', async () => {
+    const ctx = createMockContext({
+      deliverableSearch: vi.fn(async () => { throw new Error('Search unavailable'); }),
+    });
+    const tool = findTool(ctx, 'deliverable_search');
+    const result = JSON.parse(await tool.execute({ query: 'api' }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Search unavailable');
+  });
+
+  it('deliverable_list returns error when list throws', async () => {
+    const ctx = createMockContext({
+      deliverableList: vi.fn(async () => { throw new Error('List failed'); }),
+    });
+    const tool = findTool(ctx, 'deliverable_list');
+    const result = JSON.parse(await tool.execute({}));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('List failed');
+  });
+
+  it('deliverable_create returns error when create throws', async () => {
+    const ctx = createMockContext({
+      deliverableCreate: vi.fn(async () => { throw new Error('Create failed'); }),
+    });
+    const tool = findTool(ctx, 'deliverable_create');
+    const result = JSON.parse(await tool.execute({
+      type: 'file',
+      title: 'Doc',
+      summary: 'Summary',
+      reference: '/doc.md',
+    }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Create failed');
+  });
+
+  it('create_project returns error when create throws', async () => {
+    const ctx = createMockContext({
+      projectService: {
+        ...createMockContext().projectService!,
+        createProject: vi.fn(() => { throw new Error('Create project failed'); }),
+      },
+    });
+    const tool = findTool(ctx, 'create_project');
+    const result = JSON.parse(await tool.execute({ name: 'Bad', description: 'Desc' }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Create project failed');
+  });
+
+  it('delete_project returns error when deleteProject throws', async () => {
+    const ctx = createMockContext({
+      requestApproval: vi.fn(async () => ({ approved: true })),
+      projectService: {
+        ...createMockContext().projectService!,
+        deleteProject: vi.fn(() => { throw new Error('Delete failed'); }),
+      },
+    });
+    const tool = findTool(ctx, 'delete_project');
+    const result = JSON.parse(await tool.execute({ project_id: 'proj_001', reason: 'Cleanup' }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Delete failed');
+  });
+
+  it('project_stats returns error when getProjectStats throws', async () => {
+    const ctx = createMockContext({
+      getProjectStats: vi.fn(async () => { throw new Error('Stats unavailable'); }),
+    } as Partial<ProjectToolsContext>);
+    const tool = findTool(ctx, 'project_stats');
+    const result = JSON.parse(await tool.execute({ project_id: 'proj_001' }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Stats unavailable');
+  });
+
+  it('update_project returns error when updateProject throws', async () => {
+    const ctx = createMockContext({
+      projectService: {
+        ...createMockContext().projectService!,
+        updateProject: vi.fn(() => { throw new Error('Update failed'); }),
+      },
+    });
+    const tool = findTool(ctx, 'update_project');
+    const result = JSON.parse(await tool.execute({ project_id: 'proj_001', description: 'Broken' }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Update failed');
   });
 });

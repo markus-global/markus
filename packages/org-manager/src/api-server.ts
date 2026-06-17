@@ -5753,7 +5753,7 @@ EXPLANATION_END`;
       return;
     }
 
-    if (path.match(/^\/api\/skills\/[^/]+$/) && req.method === 'GET') {
+    if (path.match(/^\/api\/skills\/[^/]+$/) && !path.startsWith('/api/skills/registry') && req.method === 'GET') {
       const skillName = decodeURIComponent(path.split('/')[3]!);
       if (!this.skillRegistry) {
         this.json(res, 404, { error: 'Skill registry not configured' });
@@ -6645,7 +6645,7 @@ EXPLANATION_END`;
       return;
     }
 
-    if (path.match(/^\/api\/templates\/[^/]+$/) && req.method === 'GET') {
+    if (path.match(/^\/api\/templates\/[^/]+$/) && path !== '/api/templates/teams' && req.method === 'GET') {
       if (!this.templateRegistry) {
         this.json(res, 404, { error: 'Template registry not configured' });
         return;

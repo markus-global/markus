@@ -257,6 +257,40 @@ describe('WorkflowEngine', () => {
     });
   });
 
+  describe('human_approval steps', () => {
+    it('auto-approves human approval steps', async () => {
+      const def: WorkflowDefinition = {
+        id: 'wf-hitl', name: 'HITL', description: '', version: '1.0.0', author: 'test',
+        steps: [
+          { id: 'approve', name: 'Approve', type: 'human_approval', dependsOn: [] },
+        ],
+      };
+      const result = await engine.start(def);
+      expect(result.status).toBe('completed');
+      expect(result.steps.get('approve')!.output).toMatchObject({ approved: true });
+    });
+  });
+
+  describe('agent task prompts', () => {
+    it('interpolates prompt templates from inputs', async () => {
+      const def: WorkflowDefinition = {
+        id: 'wf-prompt', name: 'Prompt', description: '', version: '1.0.0', author: 'test',
+        steps: [
+          {
+            id: 's1', name: 'S1', type: 'agent_task', dependsOn: [], agentId: 'agent-1',
+            taskConfig: { prompt: 'Build feature {{feature}} for {{project}}' },
+          },
+        ],
+      };
+      await engine.start(def, { feature: 'login', project: 'markus' });
+      expect(executor.executeStep).toHaveBeenCalledWith(
+        'agent-1',
+        'Build feature login for markus',
+        expect.objectContaining({ feature: 'login', project: 'markus' }),
+      );
+    });
+  });
+
   describe('retry', () => {
     it('should retry on failure up to maxRetries', async () => {
       let callCount = 0;
@@ -380,6 +414,26 @@ describe('Composition patterns', () => {
 
       expect(wf.steps).toHaveLength(4);
       expect(wf.steps.map(s => s.type)).toEqual(['agent_task', 'fan_out', 'fan_in', 'agent_task']);
+    });
+
+    it('should execute fan-out with prompt interpolation', async () => {
+      const executor = createMockExecutor({
+        'pm-1': { items: ['alpha', 'beta'] },
+        'agent-code': { processed: true },
+      });
+      const engine = new WorkflowEngine(executor);
+      const wf = createFanOut({
+        name: 'Fan-out Exec',
+        producer: { name: 'Plan', agentId: 'pm-1' },
+        worker: { requiredSkills: ['code'], prompt: 'Process {{item}}' },
+      });
+      // Override fan_out itemsFrom to use producer output
+      const fanOutStep = wf.steps.find(s => s.type === 'fan_out')!;
+      fanOutStep.fanOut!.itemsFrom = 'steps.producer.output.items';
+
+      const result = await engine.start(wf);
+      expect(result.status).toBe('completed');
+      expect(executor.executeStep).toHaveBeenCalled();
     });
   });
 

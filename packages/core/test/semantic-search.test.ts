@@ -178,3 +178,67 @@ describe('SemanticMemorySearch', () => {
     }, 'agent-1')).resolves.not.toThrow();
   });
 });
+
+describe('OpenAIEmbeddingProvider', () => {
+  it('embedBatch calls OpenAI-compatible API and sorts by index', async () => {
+    const { OpenAIEmbeddingProvider } = await import('../src/memory/semantic-search.js');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: [
+            { embedding: [0.1, 0.2], index: 1 },
+            { embedding: [0.3, 0.4], index: 0 },
+          ],
+        }),
+      }),
+    );
+
+    const provider = new OpenAIEmbeddingProvider({ apiKey: 'sk-test' });
+    const results = await provider.embedBatch(['first', 'second']);
+    expect(results[0]).toEqual([0.3, 0.4]);
+    expect(results[1]).toEqual([0.1, 0.2]);
+    vi.unstubAllGlobals();
+  });
+
+  it('embedBatch throws on API error', async () => {
+    const { OpenAIEmbeddingProvider } = await import('../src/memory/semantic-search.js');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, status: 401, text: async () => 'Unauthorized' }),
+    );
+
+    const provider = new OpenAIEmbeddingProvider({ apiKey: 'bad' });
+    await expect(provider.embed('hello')).rejects.toThrow('Embedding API error 401');
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('LocalVectorStore', () => {
+  it('persists vectors and finds similar entries', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vector-store-'));
+
+    try {
+      const { LocalVectorStore } = await import('../src/memory/semantic-search.js');
+      const store = new LocalVectorStore(tmp);
+
+      await store.upsert('a', [1, 0, 0], { agentId: 'agent-1', content: 'alpha', type: 'fact' });
+      await store.upsert('b', [0.9, 0.1, 0], { agentId: 'agent-1', content: 'beta', type: 'fact' });
+      await store.upsert('c', [0, 1, 0], { agentId: 'agent-2', content: 'gamma', type: 'note' });
+
+      const results = await store.search([1, 0, 0], { topK: 2, agentId: 'agent-1' });
+      expect(results[0]?.id).toBe('a');
+      expect(results.length).toBeGreaterThan(0);
+
+      await store.delete('a');
+      const afterDelete = await store.search([1, 0, 0], { topK: 5 });
+      expect(afterDelete.find(r => r.id === 'a')).toBeUndefined();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

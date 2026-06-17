@@ -21,7 +21,7 @@ interface ValidationResult {
   model?: string;
 }
 
-async function validateApiKey(
+export async function validateApiKey(
   providerId: string,
   apiKey: string,
   model: string,

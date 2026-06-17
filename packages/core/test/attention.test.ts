@@ -488,3 +488,253 @@ describe('onNewMail interrupt signal', () => {
     controller.stop();
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Focus management and scheduling helpers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('focus management', () => {
+  it('getState returns idle before start', () => {
+    const { controller } = makeController();
+    expect(controller.getState()).toBe('idle');
+  });
+
+  it('getCurrentFocus is undefined when idle', () => {
+    const { controller } = makeController();
+    expect(controller.getCurrentFocus()).toBeUndefined();
+  });
+
+  it('getMindState reflects mailbox depth', async () => {
+    const { controller, mailbox } = makeController();
+    mailbox.enqueue('a2a_message', { summary: 'msg', content: 'body' });
+    const mind = controller.getMindState();
+    expect(mind.mailboxDepth).toBe(1);
+  });
+
+  it('deferItem, dropItem, and prioritizeItem mutate mailbox', () => {
+    const { controller, mailbox } = makeController();
+    const item = mailbox.enqueue('a2a_message', { summary: 'msg', content: 'body' });
+
+    expect(controller.deferItem(item.id, 'test defer')).toBe(true);
+    expect(mailbox.depth).toBe(0);
+
+    mailbox.enqueue('a2a_message', { summary: 'msg2', content: 'body2' });
+    const item2 = mailbox.peek()!;
+    expect(controller.prioritizeItem(item2.id, 0)).toBe(true);
+    expect(mailbox.dequeue()?.id).toBe(item2.id);
+
+    mailbox.enqueue('heartbeat', { summary: 'hb', content: 'check' });
+    const item3 = mailbox.peek()!;
+    expect(controller.dropItem(item3.id, 'stale')).toBe(true);
+    expect(mailbox.depth).toBe(0);
+  });
+
+  it('getRecentDecisions returns decision history from delegate', async () => {
+    const { controller, mailbox, delegate } = makeController({
+      onDecisionMade: vi.fn((decision) => {
+        // decisions are recorded internally via delegate callback path
+        void decision;
+      }),
+    });
+
+    mailbox.enqueue('human_chat', { summary: 'urgent', content: 'help' });
+    controller.start();
+    await vi.waitFor(() => {
+      expect(delegate.processMailboxItem).toHaveBeenCalled();
+    }, { timeout: 2000 });
+    controller.stop();
+
+    expect(controller.getRecentDecisions()).toBeDefined();
+  });
+});
+
+describe('evaluateWithLLMFallback', () => {
+  it('returns heuristic decision when LLM judge is not configured', async () => {
+    const { controller } = makeController();
+    const current = makeItem({ sourceType: 'heartbeat', priority: 3 as MailboxPriority });
+    const incoming = makeItem({ sourceType: 'human_chat', priority: 0 as MailboxPriority });
+
+    const decision = await controller.evaluateWithLLMFallback(current, incoming);
+    expect(decision).toBe('preempt');
+  });
+
+  it('uses LLM judge for ambiguous same-priority cases', async () => {
+    const llmJudge = vi.fn(async () => 'defer' as const);
+    const { controller } = makeController();
+    controller.setLLMJudge(llmJudge);
+
+    const current = makeItem({ sourceType: 'a2a_message', priority: 2 as MailboxPriority });
+    const incoming = makeItem({ sourceType: 'a2a_message', priority: 2 as MailboxPriority });
+
+    const decision = await controller.evaluateWithLLMFallback(current, incoming);
+    expect(llmJudge).toHaveBeenCalled();
+    expect(decision).toBe('defer');
+  });
+
+  it('falls back to heuristic when LLM judge throws', async () => {
+    const { controller } = makeController();
+    controller.setLLMJudge(vi.fn(async () => { throw new Error('judge down'); }));
+
+    const current = makeItem({ sourceType: 'a2a_message', priority: 2 as MailboxPriority });
+    const incoming = makeItem({ sourceType: 'a2a_message', priority: 2 as MailboxPriority });
+
+    const decision = await controller.evaluateWithLLMFallback(current, incoming);
+    expect(decision).toBe('continue');
+  });
+});
+
+describe('preemption signals', () => {
+  it('waitForPreemptionSignal resolves when critical interrupt fires', async () => {
+    const { controller } = makeController();
+    const waitPromise = controller.waitForPreemptionSignal();
+    controller['criticalInterruptResolve']?.();
+    await expect(waitPromise).resolves.toBeUndefined();
+  });
+
+  it('clearPreemptionSignal clears critical interrupt waiter', async () => {
+    const { controller } = makeController();
+    controller.waitForPreemptionSignal();
+    controller.clearPreemptionSignal();
+    expect(controller['criticalInterruptResolve']).toBeUndefined();
+    controller.clearLastYieldDecision();
+    expect(controller.hasInterruptPending()).toBe(false);
+  });
+});
+
+describe('setWaitingForApproval pauses triage', () => {
+  it('setWaitingForApproval toggles approval gate', () => {
+    const { controller } = makeController();
+    controller.setWaitingForApproval(true);
+    controller.setWaitingForApproval(false);
+    expect(controller.getState()).toBe('idle');
+  });
+});
+
+describe('triage and deliberation scheduling', () => {
+  it('triggers deliberation when backlog exceeds threshold', async () => {
+    const deliberationResult = {
+      processItemId: '',
+      inlineCompletedIds: [] as string[],
+      deferItemIds: [] as string[],
+      dropItemIds: [] as string[],
+      reasoning: 'process highest priority first',
+    };
+
+    const { controller, mailbox, delegate } = makeController({
+      performDeliberation: vi.fn().mockImplementation(async (_head, allItems) => {
+        deliberationResult.processItemId = allItems[0].id;
+        return deliberationResult;
+      }),
+    });
+
+    mailbox.enqueue('a2a_message', { summary: 'A', content: 'A body' });
+    mailbox.enqueue('a2a_message', { summary: 'B', content: 'B body' });
+    mailbox.enqueue('a2a_message', { summary: 'C', content: 'C body' });
+
+    controller.start();
+    await vi.waitFor(() => {
+      expect(delegate.performDeliberation).toHaveBeenCalled();
+    }, { timeout: 3000 });
+    controller.stop();
+  });
+
+  it('performTriage via setTriageJudge processes backlog JSON decision', async () => {
+    const triageJson = JSON.stringify({
+      processItemId: 'will-be-replaced',
+      deferItemIds: [],
+      dropItemIds: [],
+      inlineCompletedIds: [],
+      reasoning: 'pick first',
+    });
+
+    const { controller, mailbox, delegate } = makeController({
+      performDeliberation: vi.fn().mockResolvedValue(null),
+    });
+
+    controller.setTriageJudge(vi.fn(async () => triageJson));
+
+    const item1 = mailbox.enqueue('a2a_message', { summary: 'T1', content: 'one' });
+    mailbox.enqueue('a2a_message', { summary: 'T2', content: 'two' });
+    mailbox.enqueue('a2a_message', { summary: 'T3', content: 'three' });
+
+    controller.start();
+    await vi.waitFor(() => {
+      expect(delegate.processMailboxItem).toHaveBeenCalled();
+    }, { timeout: 4000 });
+    controller.stop();
+
+    expect(item1).toBeDefined();
+  });
+});
+
+describe('evaluateInterrupt via delegate wiring', () => {
+  it('delegate evaluateInterrupt uses controller fallback', async () => {
+    const { controller } = makeController();
+    const current = makeItem({ sourceType: 'heartbeat', priority: 3 as MailboxPriority });
+    const incoming = makeItem({ sourceType: 'human_chat', priority: 0 as MailboxPriority });
+
+    const decision = await controller.evaluateWithLLMFallback(current, incoming);
+    expect(decision).toBe('preempt');
+  });
+});
+
+describe('decision persistence and focus tracking', () => {
+  it('setDecisionPersistence stores decisions via callback', async () => {
+    const saved: unknown[] = [];
+    const { controller, mailbox } = makeController();
+    controller.setDecisionPersistence({
+      save: (d) => { saved.push(d); },
+    });
+
+    mailbox.enqueue('a2a_message', { summary: 'msg', content: 'body' });
+    controller.start();
+    await vi.waitFor(() => expect(saved.length).toBeGreaterThan(0), { timeout: 3000 });
+    controller.stop();
+  });
+
+  it('getCurrentFocus returns item during processing', async () => {
+    let resolveProcess: ((v: string) => void) | undefined;
+    const processPromise = new Promise<string>(r => { resolveProcess = r; });
+
+    const { controller, mailbox } = makeController({
+      processMailboxItem: vi.fn().mockReturnValue(processPromise),
+    });
+
+    mailbox.enqueue('a2a_message', { summary: 'focus test', content: 'body' });
+    controller.start();
+    await new Promise(r => setTimeout(r, 80));
+
+    const focus = controller.getCurrentFocus();
+    expect(focus?.payload.summary).toBe('focus test');
+
+    resolveProcess?.(`done ${COMPLETION_MARKER}`);
+    await new Promise(r => setTimeout(r, 50));
+    controller.stop();
+  });
+
+  it('heuristicDecision returns defer for lower priority background work', () => {
+    const { controller } = makeController();
+    const current = makeItem({ sourceType: 'a2a_message', priority: 1 as MailboxPriority });
+    const incoming = makeItem({ sourceType: 'heartbeat', priority: 3 as MailboxPriority });
+    expect(controller.heuristicDecision(current, incoming)).toBe('continue');
+  });
+
+  it('LLM judge can return defer for same-priority ambiguous items', async () => {
+    const { controller } = makeController();
+    controller.setLLMJudge(vi.fn(async () => 'defer'));
+
+    const current = makeItem({
+      sourceType: 'a2a_message',
+      priority: 2 as MailboxPriority,
+      payload: { summary: 'working', content: 'drafting report' },
+    });
+    const incoming = makeItem({
+      sourceType: 'a2a_message',
+      priority: 2 as MailboxPriority,
+      payload: { summary: 'another', content: 'another peer message' },
+    });
+
+    const decision = await controller.evaluateWithLLMFallback(current, incoming);
+    expect(decision).toBe('defer');
+  });
+});

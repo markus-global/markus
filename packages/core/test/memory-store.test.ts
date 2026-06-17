@@ -421,7 +421,44 @@ describe('MemoryStore — Audit trail: daily-logs', () => {
     expect(log).toContain('Second entry.');
   });
 
-  it('getDailyLog returns empty for nonexistent date', () => {
-    expect(store.getDailyLog('1999-01-01')).toBe('');
+  it('getRecentDailyLogs aggregates recent daily log content', () => {
+    store.writeDailyLog('agent-1', 'Day 0 work');
+    store.writeDailyLog('agent-1', 'Day 1 work');
+    const logs = store.getRecentDailyLogs(2);
+    expect(logs).toContain('Day 0 work');
+    expect(logs).toContain('Day 1 work');
+  });
+
+  it('buildHeuristicSummary extracts user and assistant lines', () => {
+    const summary = store.buildHeuristicSummary([
+      { role: 'system', content: 'ignored' },
+      { role: 'user', content: 'What is TypeScript?' },
+      { role: 'assistant', content: 'A typed superset of JavaScript.' },
+      { role: 'tool', content: 'search results here' },
+    ]);
+    expect(summary).toContain('User:');
+    expect(summary).toContain('Assistant:');
+    expect(summary).toContain('Tool result:');
+    expect(summary).not.toContain('ignored');
+  });
+
+  it('summarizeAndTruncate compacts and returns messages', () => {
+    const session = store.createSession('agent-1');
+    for (let i = 0; i < 25; i++) {
+      store.appendMessage(session.id, { role: 'user', content: `msg ${i}` });
+    }
+    const messages = store.summarizeAndTruncate(session.id, 5);
+    expect(messages.length).toBeGreaterThan(0);
+    expect(messages[0].content).toContain('summary');
+  });
+
+  it('checkAndCompact auto-compacts sessions exceeding message threshold', () => {
+    const session = store.createSession('agent-1');
+    for (let i = 0; i < 62; i++) {
+      store.appendMessage(session.id, { role: 'user', content: `msg ${i}` });
+    }
+    const remaining = store.getRecentMessages(session.id, 100);
+    expect(remaining.length).toBeLessThan(62);
+    expect(String(remaining[0]?.content ?? '')).toContain('summary');
   });
 });

@@ -88,7 +88,7 @@ export function registerStartCommand(program: Command) {
     });
 }
 
-async function createServices(config: ReturnType<typeof loadConfig>) {
+export async function createServices(config: ReturnType<typeof loadConfig>) {
   const templateDirs = allTemplateDirs('roles');
   if (templateDirs.length === 0) templateDirs.push(resolveTemplatesDir('roles'));
   const roleLoader = new RoleLoader(templateDirs);
@@ -1680,7 +1680,12 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       .catch(() => process.exit(1));
   });
 
-  // Keep alive
+  // Keep alive (vitest sets process.env.VITEST so the start command can be tested)
+  if (process.env.VITEST) {
+    apiServer.stop();
+    await messageRouter.disconnectAll();
+    return;
+  }
   await new Promise(() => {});
 }
 

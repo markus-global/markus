@@ -8,6 +8,7 @@ dist/
 *.backup
 .DS_Store
 coverage/
+coverage-*/
 .turbo/
 .markus/
 .cursor/
@@ -17,6 +18,9 @@ packages/cli/templates/
 
 # Binary distribution build output (scripts/build-binary.sh)
 dist-binary/
+
+# Config lock files
+markus.json.lock
 
 # Auto-generated API docs (regenerate via typedoc)
 docs/api/

@@ -723,7 +723,8 @@ export class AgentManager {
             stepCount: w.stepCount,
           })),
         };
-      } catch {
+      } catch (err) {
+        log.debug('Failed to fetch workflow context', { teamId, error: String(err) });
         return undefined;
       }
     });
@@ -1349,7 +1350,8 @@ export class AgentManager {
               ? this.agents.get(t.assignedAgentId)?.config.name
               : undefined,
           }));
-        } catch {
+        } catch (err) {
+          log.debug('Failed to list tasks for agent context', { error: String(err) });
           return [];
         }
       });
@@ -2103,7 +2105,8 @@ export class AgentManager {
               ? this.agents.get(t.assignedAgentId)?.config.name
               : undefined,
           }));
-        } catch {
+        } catch (err) {
+          log.debug('Failed to list tasks for restored agent context', { error: String(err) });
           return [];
         }
       });
@@ -2401,7 +2404,8 @@ export class AgentManager {
       try {
         rmSync(dirPath, { recursive: true, force: true });
         removed.push(entry.name);
-      } catch {
+      } catch (err) {
+        log.warn('Failed to remove orphaned agent directory', { dir: dirPath, error: String(err) });
         failed.push(entry.name);
       }
     }
@@ -2980,8 +2984,8 @@ export class AgentManager {
     for (const [agentId] of this.agents) {
       try {
         results.push(this.checkRoleUpdate(agentId));
-      } catch {
-        /* skip agents that fail to check */
+      } catch (err) {
+        log.debug('Role update check failed for agent', { agentId, error: String(err) });
       }
     }
     return results;
