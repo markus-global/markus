@@ -713,7 +713,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           }
         }
         if (detail.params?.selectAgent) {
-          handleViewProfile(detail.params.selectAgent);
+          setChatMode('direct');
+          setSelectedAgent(detail.params.selectAgent);
+          setMainTab('chat');
+          if (isMobile) enterMobileDetail();
         }
         if (detail.params?.prefillMessage) {
           const msg = detail.params.prefillMessage;
@@ -764,14 +767,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       localStorage.removeItem('markus_nav_agentId');
       const pTab = localStorage.getItem('markus_nav_profileTab');
       localStorage.removeItem('markus_nav_profileTab');
-      const navPrefill = localStorage.getItem('markus_nav_prefillMessage');
-      if (navPrefill) {
-        setChatMode('direct');
-        setSelectedAgent(navAgent);
+      setChatMode('direct');
+      setSelectedAgent(navAgent);
+      if (pTab) {
+        handleViewProfile(navAgent, { tab: pTab as 'overview' });
+      } else {
         setMainTab('chat');
         if (isMobile) enterMobileDetail();
-      } else {
-        handleViewProfile(navAgent, pTab ? { tab: pTab as 'overview' } : undefined);
       }
     }
     const navDm = localStorage.getItem('markus_nav_dm');
@@ -800,7 +802,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     const selectAgent = localStorage.getItem('markus_nav_selectAgent');
     if (selectAgent) {
       localStorage.removeItem('markus_nav_selectAgent');
-      handleViewProfile(selectAgent);
+      setChatMode('direct');
+      setSelectedAgent(selectAgent);
+      setMainTab('chat');
+      if (isMobile) enterMobileDetail();
     }
     const selectTeam = localStorage.getItem('markus_nav_selectTeam');
     if (selectTeam) {
@@ -890,11 +895,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     isProgrammaticScrollRef.current = true;
     if (visibleMessages.length > 0) {
       chatVirtualizer.scrollToIndex(visibleMessages.length - 1, { align: 'end', behavior });
+      // Re-scroll after virtualizer measures actual item sizes
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          chatVirtualizer.scrollToIndex(visibleMessages.length - 1, { align: 'end', behavior: 'instant' });
+          requestAnimationFrame(() => { isProgrammaticScrollRef.current = false; });
+        });
+      });
     } else {
       const el = chatScrollRef.current;
       if (el) el.scrollTo({ top: el.scrollHeight, behavior });
+      requestAnimationFrame(() => { isProgrammaticScrollRef.current = false; });
     }
-    requestAnimationFrame(() => { isProgrammaticScrollRef.current = false; });
   }, [visibleMessages.length, chatVirtualizer]);
 
   // ── Preserve scroll position across page-level navigation ──
@@ -1048,6 +1060,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (prevKey && prevKey !== newKey) {
       sessionTabsBuffer.current.set(prevKey, openSessionTabs);
       activeSessionBuffer.current.set(prevKey, activeSessionId);
+    }
+    // Snap to bottom when entering a NEW conversation (or first mount)
+    if (prevKey !== newKey) {
       userAtBottomRef.current = true;
       setShowScrollBtn(false);
       newMsgCountRef.current = 0;
@@ -2382,21 +2397,25 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   <p className="text-[10px] font-semibold text-fg-muted uppercase tracking-wider px-2.5 pt-2">{t('chat.agents')}</p>
                   {l2Agents.map(agent => {
                     const agentUnread = unreadByAgent.get(agent.id) ?? 0;
+                    const isStopped = agent.status === 'offline';
                     return (
                       <button
                         key={agent.id}
                         onClick={() => { setChatMode('direct'); setSelectedAgent(agent.id); setMainTab('chat'); enterMobileDetail(); }}
-                        className="w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl hover:bg-surface-overlay transition-colors"
+                        className={`w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl hover:bg-surface-overlay transition-colors ${isStopped ? 'opacity-50' : ''}`}
                       >
                         <Avatar name={agent.name || 'Agent'} avatarUrl={agent.avatarUrl} size={36} />
                         <div className="flex-1 min-w-0 text-left">
-                          <div className="text-sm font-medium text-fg-primary truncate">{agent.name}</div>
+                          <div className="text-sm font-medium text-fg-primary truncate flex items-center gap-1.5">
+                            {agent.name}
+                            {isStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium leading-relaxed">{t('common:status.offline')}</span>}
+                          </div>
                           <div className="text-[10px] text-fg-tertiary truncate">{agent.role || agent.status}</div>
                         </div>
                         {agentUnread > 0 ? (
                           <span className="min-w-[16px] h-[16px] flex items-center justify-center text-[9px] font-semibold text-white bg-red-500 rounded-full px-1 leading-none shrink-0">{agentUnread}</span>
                         ) : (
-                          <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'active' || agent.status === 'idle' ? 'bg-green-500' : agent.status === 'working' || agent.status === 'busy' ? 'bg-blue-500' : agent.status === 'paused' ? 'bg-amber-500' : 'bg-gray-400'}`} />
+                          <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'idle' ? 'bg-green-500' : agent.status === 'working' ? 'bg-blue-500' : 'bg-gray-400'}`} />
                         )}
                       </button>
                     );
@@ -3019,7 +3038,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               teamId={activeTeamId}
               onBack={() => setMainTab('chat')}
               inline
-              onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); switchToProfile(); }}
+              onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); }}
             />
           </div>
         )}
@@ -3046,7 +3065,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               inline
               headless
               activeTab={mainTab as TeamTab}
-              onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('overview'); if (!showTeamDetailPanel && !l2SpaceTight) setShowTeamDetailPanel(true); }}
+              onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); }}
             />
           </div>
         )}
@@ -3216,7 +3235,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 <div
                   key={ta.id}
                   className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg cursor-pointer hover:bg-surface-elevated/60 transition-colors group/think"
-                  onClick={() => handleViewProfile(ta.id, { tab: 'overview' })}
+                  onClick={() => { setChatMode('direct'); setSelectedAgent(ta.id); setMainTab('chat'); }}
                 >
                   <div className="relative shrink-0">
                     <Avatar name={ta.name} avatarUrl={ta.avatarUrl} size={28} bgClass="bg-brand-500/15 text-brand-600" />

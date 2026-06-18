@@ -1518,6 +1518,27 @@ export class APIServer {
       const agentManager = this.orgService.getAgentManager();
       const eventBus = agentManager.getEventBus();
 
+      // Bridge critical EventBus events to WS broadcasts (for desktop notifications)
+      const lifecycleEvents = [
+        'task:completed',
+      ];
+      for (const evt of lifecycleEvents) {
+        eventBus.on(evt, (...args: unknown[]) => {
+          const payload = args[0] as Record<string, unknown> | undefined;
+          this.ws.broadcast({ type: evt, payload: payload ?? {}, timestamp: new Date().toISOString() });
+        });
+      }
+      // Bridge HITL notifications to WS broadcast for desktop
+      this.hitlService.onNotification(n => {
+        if (n.type === 'approval_request') {
+          this.ws.broadcast({
+            type: 'approval:requested',
+            payload: { title: n.title, body: n.body, priority: n.priority, approvalId: n.metadata?.approvalId },
+            timestamp: new Date().toISOString(),
+          });
+        }
+      });
+
       // Credentials from markus.json (single source of truth)
       const { loadConfig: loadCfg } = await import('@markus/shared');
       const markusCfg = loadCfg(this.markusConfigPath);
@@ -2772,20 +2793,17 @@ export class APIServer {
         return;
       }
       if (action === 'pause') {
-        const body = await this.readBody(req);
-        const reason = body['reason'] as string | undefined;
-        const agent = this.orgService.getAgentManager().getAgent(agentId!);
-        agent.pause(reason);
-        this.ws.broadcastAgentUpdate(agentId!, 'paused');
-        this.json(res, 200, { status: 'paused' });
+        // Unified: pause is now an alias for stop
+        await this.orgService.getAgentManager().stopAgent(agentId!);
+        this.ws.broadcastAgentUpdate(agentId!, 'offline');
+        this.json(res, 200, { status: 'stopped' });
         return;
       }
       if (action === 'resume') {
-        const agent = this.orgService.getAgentManager().getAgent(agentId!);
-        agent.resume();
-        const newStatus = agent.getState().status;
-        this.ws.broadcastAgentUpdate(agentId!, newStatus);
-        this.json(res, 200, { status: newStatus });
+        // Unified: resume is now an alias for start
+        await this.orgService.getAgentManager().startAgent(agentId!);
+        this.ws.broadcastAgentUpdate(agentId!, 'idle');
+        this.json(res, 200, { status: 'started' });
         return;
       }
       if (action === 'cancel-processing') {
@@ -3320,7 +3338,7 @@ export class APIServer {
       return;
     }
 
-    // Team batch pause
+    // Team batch pause (alias for stop)
     if (path.match(/^\/api\/teams\/[^/]+\/pause$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
@@ -3329,9 +3347,8 @@ export class APIServer {
         return;
       }
       const teamId = path.split('/')[3]!;
-      const body = await this.readBody(req);
       try {
-        const result = this.orgService.pauseTeamAgents(teamId, body['reason'] as string | undefined);
+        const result = await this.orgService.stopTeamAgents(teamId);
         this.json(res, 200, result);
       } catch (err) {
         this.json(res, 404, { error: String(err) });
@@ -3339,7 +3356,7 @@ export class APIServer {
       return;
     }
 
-    // Team batch resume
+    // Team batch resume (alias for start)
     if (path.match(/^\/api\/teams\/[^/]+\/resume$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
@@ -3349,7 +3366,7 @@ export class APIServer {
       }
       const teamId = path.split('/')[3]!;
       try {
-        const result = this.orgService.resumeTeamAgents(teamId);
+        const result = await this.orgService.startTeamAgents(teamId);
         this.json(res, 200, result);
       } catch (err) {
         this.json(res, 404, { error: String(err) });
@@ -5707,7 +5724,7 @@ EXPLANATION_END`;
 
     // Built-in skills — list templates/skills/
     if (path === '/api/skills/builtin' && req.method === 'GET') {
-      const builtinDir = resolve(process.cwd(), 'templates', 'skills');
+      const builtinDir = resolve(process.env['MARKUS_TEMPLATES_DIR'] ?? resolve(process.cwd(), 'templates'), 'skills');
       const found = discoverSkillsInDir(builtinDir);
       const installedSkills = new Map(
         (this.skillRegistry?.list() ?? []).map(s => [s.name, s])
@@ -6673,15 +6690,18 @@ EXPLANATION_END`;
       }
       const { existsSync: ex, readFileSync: rf, readdirSync: rd } = await import('node:fs');
       const roleId = template.roleId;
-      const candidates = [
-        resolve(process.cwd(), 'templates', 'roles', roleId),
-      ];
-      try {
-        const thisFile = (await import('node:url')).fileURLToPath(import.meta.url);
-        const thisDir = (await import('node:path')).dirname(thisFile);
-        candidates.unshift(resolve(thisDir, '..', 'templates', 'roles', roleId));
-        candidates.push(resolve(thisDir, '..', '..', '..', '..', 'templates', 'roles', roleId));
-      } catch { /* skip */ }
+      const envTemplates = process.env['MARKUS_TEMPLATES_DIR'];
+      const candidates = envTemplates
+        ? [resolve(envTemplates, 'roles', roleId)]
+        : [resolve(process.cwd(), 'templates', 'roles', roleId)];
+      if (!envTemplates) {
+        try {
+          const thisFile = (await import('node:url')).fileURLToPath(import.meta.url);
+          const thisDir = (await import('node:path')).dirname(thisFile);
+          candidates.unshift(resolve(thisDir, '..', 'templates', 'roles', roleId));
+          candidates.push(resolve(thisDir, '..', '..', '..', '..', 'templates', 'roles', roleId));
+        } catch { /* skip */ }
+      }
       const roleDir = candidates.find(d => ex(d));
       const files: Record<string, string> = {};
       if (roleDir) {
@@ -7302,11 +7322,21 @@ EXPLANATION_END`;
     // Team Templates
     if (path === '/api/templates/teams' && req.method === 'GET') {
       try {
-        const { readdirSync, readFileSync } = await import('node:fs');
-        const { resolve } = await import('node:path');
-        const teamsDir = resolve(process.cwd(), 'templates', 'teams');
-        const files = readdirSync(teamsDir).filter(f => f.endsWith('.json'));
-        const teams = files.map(f => JSON.parse(readFileSync(resolve(teamsDir, f), 'utf-8')));
+        const { readdirSync, readFileSync, existsSync: _exists } = await import('node:fs');
+        const { resolve, join: _join } = await import('node:path');
+        const teamsDir = resolve(process.env['MARKUS_TEMPLATES_DIR'] ?? resolve(process.cwd(), 'templates'), 'teams');
+        const entries = readdirSync(teamsDir, { withFileTypes: true });
+        const teams: unknown[] = [];
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            const teamFile = _join(teamsDir, entry.name, 'team.json');
+            if (_exists(teamFile)) {
+              try { teams.push(JSON.parse(readFileSync(teamFile, 'utf-8'))); } catch { /* skip */ }
+            }
+          } else if (entry.name.endsWith('.json')) {
+            try { teams.push(JSON.parse(readFileSync(resolve(teamsDir, entry.name), 'utf-8'))); } catch { /* skip */ }
+          }
+        }
         this.json(res, 200, { templates: teams });
       } catch {
         this.json(res, 200, { templates: [] });
@@ -10331,14 +10361,17 @@ EXPLANATION_END`;
         return;
       }
       const { existsSync: ex, readFileSync: rf, readdirSync: rd } = await import('node:fs');
-      const rolesDir = resolve(process.cwd(), 'templates', 'roles');
+      const envTemplates = process.env['MARKUS_TEMPLATES_DIR'];
+      const rolesDir = envTemplates ? resolve(envTemplates, 'roles') : resolve(process.cwd(), 'templates', 'roles');
       const rolesCandidates = [rolesDir];
-      try {
-        const thisFile = (await import('node:url')).fileURLToPath(import.meta.url);
-        const thisDir = (await import('node:path')).dirname(thisFile);
-        rolesCandidates.unshift(resolve(thisDir, '..', 'templates', 'roles'));
-        rolesCandidates.push(resolve(thisDir, '..', '..', '..', '..', 'templates', 'roles'));
-      } catch { /* skip */ }
+      if (!envTemplates) {
+        try {
+          const thisFile = (await import('node:url')).fileURLToPath(import.meta.url);
+          const thisDir = (await import('node:path')).dirname(thisFile);
+          rolesCandidates.unshift(resolve(thisDir, '..', 'templates', 'roles'));
+          rolesCandidates.push(resolve(thisDir, '..', '..', '..', '..', 'templates', 'roles'));
+        } catch { /* skip */ }
+      }
       const rolesRoot = rolesCandidates.find(d => ex(d)) ?? rolesDir;
       const files: Record<string, string> = {};
       for (const [idx, member] of tpl.members.entries()) {
@@ -10422,7 +10455,7 @@ EXPLANATION_END`;
       const body = await this.readBody(req);
       const authUser = await this.getAuthUser(req);
       const am = this.orgService.getAgentManager();
-      await am.pauseAllAgents(body['reason'] as string | undefined);
+      await am.stopAllAgents(body['reason'] as string | undefined);
       this.auditService?.record({
         orgId: 'system',
         type: 'system_pause_all',
@@ -10431,14 +10464,14 @@ EXPLANATION_END`;
         userId: authUser?.userId,
         success: true,
       });
-      this.json(res, 200, { status: 'paused', message: 'All agents paused' });
+      this.json(res, 200, { status: 'stopped', message: 'All agents stopped' });
       return;
     }
 
     if (path === '/api/system/resume-all' && req.method === 'POST') {
       const authUser = await this.getAuthUser(req);
       const am = this.orgService.getAgentManager();
-      await am.resumeAllAgents();
+      await am.startAllAgents();
       this.auditService?.record({
         orgId: 'system',
         type: 'system_resume_all',
@@ -10446,7 +10479,7 @@ EXPLANATION_END`;
         userId: authUser?.userId,
         success: true,
       });
-      this.json(res, 200, { status: 'resumed', message: 'All agents resumed' });
+      this.json(res, 200, { status: 'started', message: 'All agents started' });
       return;
     }
 
@@ -10468,7 +10501,7 @@ EXPLANATION_END`;
     if (path === '/api/system/status' && req.method === 'GET') {
       const am = this.orgService.getAgentManager();
       this.json(res, 200, {
-        globalPaused: am.isGlobalPaused(),
+        globalPaused: am.isGlobalStopped(),
         emergencyMode: am.isEmergencyMode(),
       });
       return;
@@ -12069,7 +12102,9 @@ EXPLANATION_END`;
     if (existsSync(join(agentRoleDir, 'ROLE.md'))) return agentRoleDir;
 
     // Fall back to shared template directory
-    const base = join(process.cwd(), 'templates', 'roles');
+    const base = process.env['MARKUS_TEMPLATES_DIR']
+      ? join(process.env['MARKUS_TEMPLATES_DIR'], 'roles')
+      : join(process.cwd(), 'templates', 'roles');
     if (!existsSync(base)) return null;
 
     const tryDir = (dirName: string): string | null => {

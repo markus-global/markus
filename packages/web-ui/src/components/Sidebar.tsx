@@ -84,7 +84,16 @@ export function Sidebar({ currentPage, onNavigate, authUser, collapsed, onToggle
           );
         })}
       </nav>
-      <div className={`shrink-0 ${collapsed ? 'p-1' : 'px-3 pb-2'} flex items-center ${collapsed ? 'flex-col' : 'justify-between'}`}>
+      <div className={`shrink-0 ${collapsed ? 'p-1' : 'px-3 pb-2'} flex items-center ${collapsed ? 'flex-col gap-1' : 'justify-between'}`}>
+        {window.markusDesktop && (
+          <button
+            onClick={() => window.markusDesktop?.openInBrowser()}
+            title={t('common:openInBrowser', 'Open in Browser')}
+            className="flex items-center justify-center w-8 h-8 rounded-lg transition-colors text-fg-secondary hover:bg-surface-overlay/60 hover:text-fg-primary"
+          >
+            <Icon d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14 21 3" size={16} />
+          </button>
+        )}
         <button
           onClick={() => onNavigate(PAGE.SETTINGS)}
           title={t(PAGE.SETTINGS)}

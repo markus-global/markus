@@ -108,7 +108,7 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
 
   return (
     <div className="flex-1 overflow-hidden flex flex-row">
-      <nav className="w-48 shrink-0 bg-surface-secondary rounded-xl m-1 mr-0 flex flex-col py-4 px-2 gap-1">
+      <nav className="w-36 shrink-0 bg-surface-secondary rounded-xl m-1 mr-0 flex flex-col py-4 px-2 gap-1">
         <div className="px-3 pb-3 mb-1">
           <h2 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('title')}</h2>
         </div>

@@ -332,20 +332,26 @@ LLMRouter
 
 | Function | Description |
 |----------|-------------|
-| `pauseAllAgents(reason)` | Pause all Agents with reason. Cancels active LLM streams, stops attention loops, requeues in-flight items. |
-| `resumeAllAgents()` | Resume all Agents. Attention loops restart, deferred items resurface. |
+| `stopAllAgents(reason)` | Stop all Agents with reason. Cancels active LLM streams, stops attention loops, requeues in-flight items. |
+| `startAllAgents()` | Start all stopped Agents. Attention loops restart, deferred items resurface. |
 | `emergencyStop()` | Emergency stop: cancel all active streams and stop all Agents |
-| `agent.stop()` | Stop a single agent. Cancels active LLM stream, stops attention, requeues in-flight item. |
-| `agent.pause(reason)` | Pause a single agent. Same as stop but sets `paused` status (resumable). |
+| `agent.stop(reason)` | Stop a single agent. Cancels active LLM stream, stops attention, sets status to `offline`. |
 | System announcements | Broadcast to all Agents and UI, injected into Agent system prompt |
 
-#### Pause State Persistence
+#### Stop State Persistence
 
-Agent paused state is persisted across process restarts at three levels:
+Agent stopped state is persisted across process restarts. There is a single "not running" status: `offline`. The former `paused` status has been unified into `offline`.
 
-- **Individual agent**: `agent.pause()` sets status to `paused`, which is written to the `agents.status` DB column via the `stateChangeHandler`. On shutdown, `agent.stop()` preserves the `paused` status (does not overwrite with `offline`). On restart, `loadFromDB` reads each agent's DB status, and `startRestoredAgentsInBackground` starts paused agents with `startAsPaused: true`, which initializes the agent (session, environment) but skips heartbeat and attention controller startup.
-- **Team-level pause**: Team pause (`pauseTeamAgents`) pauses each member agent individually. Persistence is implicit — each member's paused status is stored in DB. On restart, paused team members are restored as paused. No separate team-level flag is needed.
-- **Global pause**: `pauseAllAgents()` pauses every agent individually. The in-memory `globalPaused` flag is restored on startup: if all restored agents were in `paused` state, `globalPaused` is set to `true`, which ensures the frontend correctly shows the "Resume" button instead of "Pause".
+- **Individual agent**: `agent.stop()` sets status to `offline`, which is written to the `agents.status` DB column via the `stateChangeHandler`. On restart, `startRestoredAgentsInBackground` skips agents whose DB status is `offline`, keeping them stopped.
+- **Team-level stop**: `stopTeamAgents(teamId)` stops each member agent individually. Persistence is implicit — each member's `offline` status is stored in DB. On restart, stopped team members remain offline.
+- **Global stop**: `stopAllAgents()` stops every agent individually. On startup, `isGlobalStopped()` dynamically checks whether all agents are offline.
+
+#### Agent Management Tools
+
+Agents can manage other agents' lifecycle through tools with role-based permissions:
+
+- **Manager** (`agentRole: 'manager'`): gets `agent_stop` / `agent_start` tools, scoped to their own team members only.
+- **Secretary** (worker with `secretary` role): gets `team_stop` / `team_start` tools for managing any team.
 
 ### 4.2 Workspace Isolation
 
@@ -543,7 +549,7 @@ Connection: `ws://localhost:8056`
 
 | Event | Trigger |
 |-------|---------|
-| `agent:update` | Agent state change (idle/working/offline/paused) |
+| `agent:update` | Agent state change (idle/working/offline/error) |
 | `agent:mailbox` | New item enqueued to an agent's mailbox |
 | `agent:decision` | Agent attention decision (pick/defer/drop/triage) |
 | `agent:attention` | Attention controller state change |
@@ -551,8 +557,6 @@ Connection: `ws://localhost:8056`
 | `agent:triage` | Agent triage deliberation result (reasoning, process/defer/drop) |
 | `agent:started` | Agent process started |
 | `agent:stopped` | Agent process stopped |
-| `agent:paused` | Agent paused |
-| `agent:resumed` | Agent resumed |
 | `task:update` | Task state update (including review/accepted/archived) |
 | `task:create` | New task created |
 | `requirement:created` | Requirement proposed |

@@ -13,7 +13,14 @@ export class RoleLoader {
   private templateDirs: string[];
 
   constructor(templateDirs?: string[]) {
-    this.templateDirs = templateDirs ?? [resolve(process.cwd(), 'templates', 'roles')];
+    if (templateDirs) {
+      this.templateDirs = templateDirs;
+    } else {
+      const envDir = process.env['MARKUS_TEMPLATES_DIR'];
+      this.templateDirs = envDir
+        ? [resolve(envDir, 'roles')]
+        : [resolve(process.cwd(), 'templates', 'roles')];
+    }
   }
 
   getTemplateDirs(): string[] {

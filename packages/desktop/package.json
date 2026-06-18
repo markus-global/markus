@@ -1,0 +1,35 @@
+{
+  "name": "@markus/desktop",
+  "version": "0.8.3",
+  "private": true,
+  "productName": "Markus",
+  "author": "Markus Global",
+  "description": "Markus Desktop App — Electron wrapper for the AI Digital Workforce Platform",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "echo 'Use build:electron for desktop builds (requires electron devDep)'",
+    "build:typecheck": "tsc -b",
+    "build:electron": "node build.mjs",
+    "dev": "node build.mjs && electron .",
+    "clean": "rm -rf dist dist-electron *.tsbuildinfo",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux",
+    "dist:mas": "MARKUS_MAS=true electron-builder --mac mas"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@markus-global/cli": "workspace:*",
+    "@markus/shared": "workspace:*",
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.27.4",
+    "typescript": "^5.9.3"
+  }
+}

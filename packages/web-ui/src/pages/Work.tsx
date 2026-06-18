@@ -586,7 +586,7 @@ function MentionPopover({ agent, anchorRect, onClose }: {
     : agent.status === 'error' ? 'bg-red-400'
     : hasRecentError ? 'bg-amber-400'
     : 'bg-gray-500';
-  const statusLabel = agent.status === 'idle' ? t('work:task.online') : agent.status === 'working' ? t('work:task.working') : agent.status === 'error' ? t('work:task.error') : agent.status === 'paused' ? t('work:task.paused') : t('work:task.offline');
+  const statusLabel = agent.status === 'idle' ? t('work:task.online') : agent.status === 'working' ? t('work:task.working') : agent.status === 'error' ? t('work:task.error') : t('work:task.offline');
 
   return (
     <div

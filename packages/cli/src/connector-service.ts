@@ -203,7 +203,9 @@ export function installSkillTemplate(connector: ConnectorDescriptor): boolean {
   const templateName = connector.integration.skillTemplateName;
 
   // Find the template source
+  const envDir = process.env['MARKUS_TEMPLATES_DIR'];
   const candidates = [
+    ...(envDir ? [resolve(envDir, templateName)] : []),
     join(homedir(), '.markus', 'templates', templateName),
     resolve(process.cwd(), 'templates', templateName),
     resolve(__dirname, '..', 'templates', templateName),

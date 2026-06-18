@@ -250,20 +250,20 @@ export function ChatTeamSidebar({
     setTimeout(() => setToast(null), 3000);
   };
 
-  // System pause/resume – default to null (unknown) until API responds.
+  // System stop/start – default to null (unknown) until API responds.
   // WS events are ignored until the initial HTTP fetch completes to prevent
-  // a race where system:resume-all arrives first and flashes "Pause" briefly.
-  const [globalPaused, setGlobalPaused] = useState<boolean | null>(null);
+  // a race where system:resume-all arrives first and flashes stale state.
+  const [globalStopped, setGlobalStopped] = useState<boolean | null>(null);
   const [pauseLoading, setPauseLoading] = useState(false);
   const statusFetchedRef = useRef(false);
 
   useEffect(() => {
     if (previewMode) return;
     api.governance.getSystemStatus()
-      .then(s => { statusFetchedRef.current = true; setGlobalPaused(s.globalPaused); })
-      .catch(() => { statusFetchedRef.current = true; setGlobalPaused(false); });
-    const unsubPause = wsClient.on('system:pause-all', () => { if (statusFetchedRef.current) setGlobalPaused(true); });
-    const unsubResume = wsClient.on('system:resume-all', () => { if (statusFetchedRef.current) setGlobalPaused(false); });
+      .then(s => { statusFetchedRef.current = true; setGlobalStopped(s.globalPaused); })
+      .catch(() => { statusFetchedRef.current = true; setGlobalStopped(false); });
+    const unsubPause = wsClient.on('system:pause-all', () => { if (statusFetchedRef.current) setGlobalStopped(true); });
+    const unsubResume = wsClient.on('system:resume-all', () => { if (statusFetchedRef.current) setGlobalStopped(false); });
     return () => { unsubPause(); unsubResume(); };
   }, []);
 
@@ -280,23 +280,23 @@ export function ChatTeamSidebar({
   }, [previewMode]);
 
   const handlePauseClick = useCallback(() => {
-    if (globalPaused === null) return;
+    if (globalStopped === null) return;
     setPendingConfirm({
-      title: globalPaused ? t('modals.resumeAll.title') : t('modals.pauseAll.title'),
-      message: globalPaused
+      title: globalStopped ? t('modals.resumeAll.title') : t('modals.pauseAll.title'),
+      message: globalStopped
         ? t('modals.resumeAll.message')
         : t('modals.pauseAll.message'),
-      confirmLabel: globalPaused ? t('chat.resume') : t('chat.pause'),
+      confirmLabel: globalStopped ? t('chat.resume') : t('chat.pause'),
       onConfirm: async () => {
         setPauseLoading(true);
         try {
-          if (globalPaused) { await api.governance.resumeAll(); setGlobalPaused(false); }
-          else { await api.governance.pauseAll(); setGlobalPaused(true); }
+          if (globalStopped) { await api.governance.resumeAll(); setGlobalStopped(false); }
+          else { await api.governance.pauseAll(); setGlobalStopped(true); }
         } catch { /* ignore */ }
         setPauseLoading(false);
       },
     });
-  }, [globalPaused]);
+  }, [globalStopped]);
 
   // Confirm dialog
   const [pendingConfirm, setPendingConfirm] = useState<{
@@ -451,12 +451,9 @@ export function ChatTeamSidebar({
     );
   };
 
-  const handleBatchAction = async (teamId: string, action: 'start' | 'stop' | 'resume' | 'pause') => {
+  const handleBatchAction = async (teamId: string, action: 'start' | 'stop') => {
     try {
-      const fn = action === 'start' ? api.teams.startAll
-        : action === 'stop' ? api.teams.stopAll
-        : action === 'pause' ? api.teams.pauseAll
-        : api.teams.resumeAll;
+      const fn = action === 'start' ? api.teams.startAll : api.teams.stopAll;
       const result = await fn(teamId);
       const ok = result.success?.length ?? 0;
       const fail = result.failed?.length ?? 0;
@@ -608,11 +605,12 @@ export function ChatTeamSidebar({
     const isExt = externalMarkusIds.has(a.id);
     const hasRecentError = a.status !== 'error' && !!a.lastError && !!a.lastErrorAt
       && (Date.now() - new Date(a.lastErrorAt).getTime()) < 30 * 60 * 1000;
+    const isStopped = a.status === 'offline';
     const statusColor = a.status === 'idle' && !hasRecentError ? 'bg-green-500'
       : a.status === 'working' && !hasRecentError ? 'bg-blue-500 animate-pulse'
       : a.status === 'error' ? 'bg-red-500'
       : hasRecentError ? 'bg-amber-500'
-      : a.status === 'paused' ? 'bg-amber-500' : 'bg-gray-600';
+      : 'bg-gray-600';
 
     const team = teamId ? teamMap.get(teamId) : undefined;
     const isManager = team?.managerId === a.id;
@@ -623,7 +621,7 @@ export function ChatTeamSidebar({
     const subtitle = agentLastMsg.get(a.id)
       || (a.currentActivity?.label?.slice(0, 60) || '');
 
-    const statusTitle = a.status === 'idle' ? t('common:status.online') : a.status === 'working' ? t('common:status.working') : a.status === 'error' ? t('common:status.error') : a.status === 'paused' ? t('common:status.paused') : t('common:status.offline');
+    const statusTitle = a.status === 'idle' ? t('common:status.online') : a.status === 'working' ? t('common:status.working') : a.status === 'error' ? t('common:status.error') : t('common:status.offline');
 
     return (
       <div
@@ -643,8 +641,10 @@ export function ChatTeamSidebar({
             const pos = clampMenuPos(e);
             setAgentMenu({ agentId: a.id, teamId, ...pos });
           }}
-          className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs transition-colors select-none text-fg-primary ${
+          className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs transition-colors select-none ${
             isMobile ? '' : 'touch-none'
+          } ${
+            isStopped ? 'opacity-50 text-fg-tertiary' : 'text-fg-primary'
           } ${
             selected ? 'bg-surface-overlay' : 'hover:bg-surface-overlay/60'
           }`}
@@ -653,7 +653,7 @@ export function ChatTeamSidebar({
             name={a.name}
             avatarUrl={a.avatarUrl}
             size={28}
-            bgClass="bg-surface-overlay text-fg-primary"
+            bgClass={isStopped ? 'bg-surface-overlay/60 text-fg-tertiary' : 'bg-surface-overlay text-fg-primary'}
           />
           <div className="flex-1 min-w-0 text-left">
             <div className="flex items-center gap-1">
@@ -661,6 +661,7 @@ export function ChatTeamSidebar({
               {showRole && <span className="text-[9px] text-fg-secondary shrink-0 truncate max-w-[80px]">({a.role})</span>}
               {isManager && <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="text-amber-500 shrink-0"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>}
               {isExt && <span className="text-[8px] px-1 py-0 rounded bg-brand-500/20 text-brand-400 font-medium shrink-0 leading-relaxed">EXT</span>}
+              {isStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium shrink-0 leading-relaxed">{t('common:status.offline')}</span>}
             </div>
             <div className="truncate text-[10px] leading-tight mt-0.5 text-fg-secondary">
               {subtitle || '\u00A0'}
@@ -710,6 +711,13 @@ export function ChatTeamSidebar({
     const channelUnread = teamGc && unreadByChannel ? (unreadByChannel[teamGc.channelKey] ?? 0) : 0;
     const teamUnread = agentUnread + channelUnread;
 
+    const teamAgentList = agentsByTeam.byTeam.get(tid) ?? [];
+    const stoppedCount = teamAgentList.filter(a => a.status === 'offline').length;
+    const totalAgents = teamAgentList.length;
+    const allStopped = totalAgents > 0 && stoppedCount === totalAgents;
+    const someStopped = stoppedCount > 0 && !allStopped;
+    const teamStatusDot = allStopped ? 'bg-gray-500' : someStopped ? 'bg-amber-500' : 'bg-green-500';
+
     return (
       <div
         key={tid}
@@ -729,14 +737,17 @@ export function ChatTeamSidebar({
               const pos = clampMenuPos(e);
               setTeamMenu({ teamId: tid, ...pos });
             }}
-            className={`flex-1 flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs transition-colors min-w-0 text-fg-primary ${
+            className={`flex-1 flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs transition-colors min-w-0 ${
+              allStopped ? 'opacity-50 text-fg-tertiary' : 'text-fg-primary'
+            } ${
               isSelected
                 ? 'bg-surface-overlay'
                 : 'hover:bg-surface-overlay/60'
             }`}
           >
-            <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-surface-overlay text-fg-primary">
+            <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 relative ${allStopped ? 'bg-surface-overlay/60 text-fg-tertiary' : 'bg-surface-overlay text-fg-primary'}`}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+              {totalAgents > 0 && <span className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-surface-primary ${teamStatusDot}`} />}
             </div>
             <div className="flex-1 min-w-0 text-left">
               {editingTeam === tid ? (
@@ -752,7 +763,11 @@ export function ChatTeamSidebar({
               ) : (
                 <span className="truncate font-medium text-[12px] leading-tight block">{label}</span>
               )}
-              <div className="text-[10px] text-fg-secondary leading-tight mt-0.5">{t('chat.members_other', { count: memberCount })}</div>
+              <div className="text-[10px] text-fg-secondary leading-tight mt-0.5 flex items-center gap-1.5">
+                {t('chat.members_other', { count: memberCount })}
+                {allStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium leading-relaxed">{t('common:status.offline')}</span>}
+                {someStopped && <span className="text-[8px] px-1 py-0 rounded bg-amber-500/20 text-amber-500 font-medium leading-relaxed">{stoppedCount}/{totalAgents}</span>}
+              </div>
             </div>
             {teamUnread > 0 && (
               <span className="min-w-[16px] h-[16px] flex items-center justify-center text-[9px] font-semibold text-white bg-red-500 rounded-full px-1 leading-none shrink-0">{teamUnread}</span>
@@ -977,22 +992,22 @@ export function ChatTeamSidebar({
                     </div>
                     <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.newGroupChatDesc')}</div>
                   </button>
-                  {globalPaused !== null && (
+                  {globalStopped !== null && (
                     <button
                       onClick={() => { setActionMenu(false); handlePauseClick(); }}
                       disabled={pauseLoading}
                       className={`w-full text-left px-4 py-2.5 text-xs hover:bg-surface-elevated border-t border-border-default transition-colors disabled:opacity-50 ${
-                        globalPaused ? 'text-green-600' : 'text-amber-600'
+                        globalStopped ? 'text-green-600' : 'text-red-500'
                       }`}
                     >
                       <div className="font-medium flex items-center gap-1.5">
-                        {globalPaused ? (
+                        {globalStopped ? (
                           <><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg> {t('chat.resume')}</>
                         ) : (
-                          <><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg> {t('chat.pause')}</>
+                          <><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg> {t('contextMenu.stopAll')}</>
                         )}
                       </div>
-                      <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{globalPaused ? t('modals.resumeAll.title') : t('modals.pauseAll.title')}</div>
+                      <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{globalStopped ? t('modals.resumeAll.title') : t('modals.pauseAll.title')}</div>
                     </button>
                   )}
                 </div>
@@ -1187,8 +1202,6 @@ export function ChatTeamSidebar({
       {teamMenu && (() => {
         const teamAgents = agentsByTeam.byTeam.get(teamMenu.teamId) ?? [];
         const hasOffline = teamAgents.some(a => a.status === 'offline');
-        const hasRunning = teamAgents.some(a => a.status === 'idle' || a.status === 'working');
-        const hasPaused = teamAgents.some(a => a.status === 'paused');
         const hasActive = teamAgents.some(a => a.status !== 'offline');
         return (
           <div
@@ -1216,20 +1229,6 @@ export function ChatTeamSidebar({
                 className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-500 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
                 {t('contextMenu.stopAll')}
-              </button>
-            )}
-            {hasRunning && (
-              <button onClick={() => { handleBatchAction(teamMenu.teamId, 'pause'); setTeamMenu(null); }}
-                className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-amber-600 flex items-center gap-2">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
-                {t('contextMenu.pauseAll')}
-              </button>
-            )}
-            {hasPaused && (
-              <button onClick={() => { handleBatchAction(teamMenu.teamId, 'resume'); setTeamMenu(null); }}
-                className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-blue-600 flex items-center gap-2">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-                {t('contextMenu.resumeAll')}
               </button>
             )}
             <div className="border-t border-border-default/50 my-1" />

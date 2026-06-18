@@ -179,8 +179,9 @@ async function request(
   const res = new MockServerResponse();
   server.handleRequest(req as unknown as IncomingMessage, res as unknown as ServerResponse);
   req._simulate();
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  for (let i = 0; i < 20 && !res.ended; i++) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
   let json: Record<string, unknown> = {};
   try {
     if (res.body) json = JSON.parse(res.body) as Record<string, unknown>;
@@ -315,10 +316,10 @@ function createMockAgentManager() {
     hasAgent: vi.fn((id: string) => agents.has(id)),
     startAgent: vi.fn(async () => {}),
     stopAgent: vi.fn(async () => {}),
-    pauseAllAgents: vi.fn(async () => {}),
-    resumeAllAgents: vi.fn(async () => {}),
+    stopAllAgents: vi.fn(async () => {}),
+    startAllAgents: vi.fn(async () => {}),
     emergencyStop: vi.fn(async () => {}),
-    isGlobalPaused: vi.fn(() => false),
+    isGlobalStopped: vi.fn(() => false),
     isEmergencyMode: vi.fn(() => false),
     broadcastAnnouncement: vi.fn(),
     getActiveAnnouncements: vi.fn(() => []),

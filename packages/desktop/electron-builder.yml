@@ -1,0 +1,76 @@
+appId: com.markus.desktop
+productName: Markus
+directories:
+  output: dist-electron
+  buildResources: build
+files:
+  - dist/**/*
+  - "!dist/**/*.map"
+asar: true
+asarUnpack:
+  - dist/preload.js
+  - dist/splash.html
+  - dist/icon.png
+compression: maximum
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  notarize: true
+  icon: build/icon.icns
+
+mas:
+  hardenedRuntime: false
+  entitlements: build/entitlements.mas.plist
+  entitlementsInherit: build/entitlements.mas.inherit.plist
+  provisioningProfile: build/markus.provisionprofile
+  notarize: false
+  category: public.app-category.developer-tools
+  target:
+    - target: mas
+      arch: [universal]
+
+dmg:
+  sign: false
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+  category: Development
+  icon: build/icon.png
+
+publish:
+  provider: github
+  owner: markus-global
+  repo: markus

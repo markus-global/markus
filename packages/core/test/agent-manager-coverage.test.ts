@@ -387,14 +387,13 @@ describe('AgentManager lifecycle and role utilities', () => {
     await expect(manager.shutdown()).resolves.not.toThrow();
   });
 
-  it('clearEmergencyMode resets global pause flags', async () => {
+  it('clearEmergencyMode resets emergency mode flag', async () => {
     const manager = createManager();
     await manager.createAgent({ name: 'E1', roleName: 'custom', tools: [] });
     await manager.emergencyStop();
     expect(manager.isEmergencyMode()).toBe(true);
     manager.clearEmergencyMode();
     expect(manager.isEmergencyMode()).toBe(false);
-    expect(manager.isGlobalPaused()).toBe(false);
   });
 
   it('getRoleFileDiff returns agent and template contents', async () => {
@@ -644,7 +643,7 @@ describe('AgentManager comprehensive tool execution', () => {
     const { manager } = await createWiredManager();
     const a = await manager.createAgent({ name: 'Sender A', roleName: 'custom', orgId: 'org_a2a_full', tools: [] });
     const b = await manager.createAgent({ name: 'Receiver B', roleName: 'custom', orgId: 'org_a2a_full', tools: [] });
-    await manager.startAgent(b.id, { startAsPaused: false });
+    await manager.startAgent(b.id);
 
     const raw = await a.getTools().get('agent_send_message')!.execute({
       agent_id: b.id,
@@ -764,7 +763,7 @@ describe('AgentManager comprehensive tool execution', () => {
     manager.setStateChangeHandler(handler);
 
     const agent = await manager.createAgent({ name: 'State CB', roleName: 'custom', tools: [] });
-    await manager.startAgent(agent.id, { startAsPaused: false });
+    await manager.startAgent(agent.id);
     await agent.handleMessage('trigger state');
     expect(handler).toHaveBeenCalled();
     await manager.stopAgent(agent.id);

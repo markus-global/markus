@@ -87,9 +87,6 @@ function createMockAgentManager() {
     refreshIdentityContexts: vi.fn(),
     startAgentsByIds: vi.fn(async (ids: string[]) => ({ success: ids, failed: [] })),
     stopAgentsByIds: vi.fn(async (ids: string[]) => ({ success: ids, failed: [] })),
-    pauseAgentsByIds: vi.fn((ids: string[]) => ({ success: ids, failed: [] })),
-    resumeAgentsByIds: vi.fn((ids: string[]) => ({ success: ids, failed: [] })),
-    setGlobalPaused: vi.fn(),
     _agents: agents,
   };
 }
@@ -361,21 +358,20 @@ describe('OrganizationService', () => {
       expect(service.getTeam('team-db')?.humanMemberIds).toContain('user-db');
     });
 
-    it('starts restored agents in background', async () => {
+    it('starts restored agents in background, skips disabled ones', async () => {
       await service.createOrganization('Acme', 'owner-1', 'org-1');
       storage.teamRepo.findByOrgId.mockResolvedValue([]);
-      storage.agentRepo.findByOrgId.mockResolvedValue([{
-        id: 'agent-bg',
-        name: 'BG Agent',
-        orgId: 'org-1',
-        status: 'paused',
-      }]);
+      storage.agentRepo.findByOrgId.mockResolvedValue([
+        { id: 'agent-active', name: 'Active Agent', orgId: 'org-1', status: 'offline', disabled: false },
+        { id: 'agent-disabled', name: 'Disabled Agent', orgId: 'org-1', status: 'offline', disabled: true },
+      ]);
       storage.userRepo.listByOrg.mockResolvedValue([]);
       agentManager.hasAgent.mockReturnValue(false);
 
       await service.loadFromDB('org-1');
       await service.startRestoredAgentsInBackground();
-      expect(agentManager.startAgent).toHaveBeenCalledWith('agent-bg', expect.objectContaining({ startAsPaused: true }));
+      expect(agentManager.startAgent).toHaveBeenCalledWith('agent-active', expect.objectContaining({ skipDisabledFlag: true }));
+      expect(agentManager.startAgent).not.toHaveBeenCalledWith('agent-disabled', expect.anything());
     });
   });
 
@@ -384,7 +380,7 @@ describe('OrganizationService', () => {
       await service.createOrganization('Acme', 'owner-1', 'org-1');
     });
 
-    it('starts, stops, pauses, and resumes team agents', async () => {
+    it('starts and stops team agents', async () => {
       const team = await service.createTeam('org-1', 'Ops');
       const agent = createMockAgent({ id: 'agent-ops', config: { orgId: 'org-1' } });
       agentManager._agents.set('agent-ops', agent);
@@ -392,8 +388,6 @@ describe('OrganizationService', () => {
 
       await expect(service.startTeamAgents(team.id)).resolves.toEqual({ success: ['agent-ops'], failed: [] });
       await expect(service.stopTeamAgents(team.id)).resolves.toEqual({ success: ['agent-ops'], failed: [] });
-      expect(service.pauseTeamAgents(team.id, 'maintenance')).toEqual({ success: ['agent-ops'], failed: [] });
-      expect(service.resumeTeamAgents(team.id)).toEqual({ success: ['agent-ops'], failed: [] });
     });
 
     it('returns agent statuses for team members', async () => {

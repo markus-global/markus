@@ -171,26 +171,26 @@ describe('AgentManager integration (real Agent)', () => {
     expect(restored.getState().tokensUsedToday).toBe(100);
   });
 
-  it('pauseAllAgents emits system:pause-all event', async () => {
+  it('stopAllAgents emits system:pause-all event', async () => {
     const eventBus = new EventBus();
     const manager = createManager({ eventBus });
     const handler = vi.fn();
     eventBus.on('system:pause-all', handler);
 
     await manager.createAgent({ name: 'P1', roleName: 'custom', tools: [] });
-    await manager.pauseAllAgents('maintenance');
+    await manager.stopAllAgents('maintenance');
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ reason: 'maintenance' }));
   });
 
-  it('resumeAllAgents emits system:resume-all event', async () => {
+  it('startAllAgents emits system:resume-all event', async () => {
     const eventBus = new EventBus();
     const manager = createManager({ eventBus });
     const handler = vi.fn();
     eventBus.on('system:resume-all', handler);
 
     await manager.createAgent({ name: 'R1', roleName: 'custom', tools: [] });
-    await manager.pauseAllAgents();
-    await manager.resumeAllAgents();
+    await manager.stopAllAgents();
+    await manager.startAllAgents();
     expect(handler).toHaveBeenCalled();
   });
 
@@ -213,7 +213,7 @@ describe('AgentManager integration (real Agent)', () => {
   it('agent sendMessage through real attention loop', async () => {
     const manager = createManager();
     const agent = await manager.createAgent({ name: 'Messenger', roleName: 'custom', tools: [] });
-    await manager.startAgent(agent.id, { startAsPaused: false });
+    await manager.startAgent(agent.id);
 
     const reply = await agent.sendMessage('Hello integration');
     expect(reply).toContain('Integration reply');

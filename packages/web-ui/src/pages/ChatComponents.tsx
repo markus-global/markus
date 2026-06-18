@@ -112,7 +112,7 @@ export function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
     : agent.status === 'error' ? 'bg-red-400'
     : hasRecentError ? 'bg-amber-400'
     : 'bg-gray-500';
-  const statusLabel = agent.status === 'idle' ? t('common:status.online') : agent.status === 'working' ? t('common:status.working') : agent.status === 'error' ? t('common:status.error') : agent.status === 'paused' ? t('common:status.paused') : t('common:status.offline');
+  const statusLabel = agent.status === 'idle' ? t('common:status.online') : agent.status === 'working' ? t('common:status.working') : agent.status === 'error' ? t('common:status.error') : t('common:status.offline');
 
   const adjustRef = useCallback((el: HTMLDivElement | null) => {
     if (!el) return;

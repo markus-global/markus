@@ -164,13 +164,14 @@ export function TeamDetailPanel({
               {teamAgents.map(a => {
                 const isActive = chatMode === 'direct' && selectedAgent === a.id;
                 const isManager = team.managerId === a.id;
+                const isStopped = a.status === 'offline';
                 const hasRecentError = a.status !== 'error' && !!a.lastError && !!a.lastErrorAt
                   && (Date.now() - new Date(a.lastErrorAt).getTime()) < 30 * 60 * 1000;
                 const statusColor = a.status === 'idle' && !hasRecentError ? 'bg-green-500'
                   : a.status === 'working' && !hasRecentError ? 'bg-blue-500 animate-pulse'
                   : a.status === 'error' ? 'bg-red-500'
                   : hasRecentError ? 'bg-amber-500'
-                  : a.status === 'paused' ? 'bg-amber-500' : 'bg-gray-600';
+                  : 'bg-gray-600';
 
                 return (
                   <button
@@ -182,7 +183,9 @@ export function TeamDetailPanel({
                       const pos = clampMenuPos(e);
                       setAgentMenu({ agentId: a.id, ...pos });
                     }}
-                    className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
+                    className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors ${
+                      isStopped ? 'opacity-50 text-fg-tertiary' : 'text-fg-primary'
+                    } ${
                       isActive ? 'bg-surface-overlay' : 'hover:bg-surface-overlay/60'
                     }`}
                   >
@@ -190,12 +193,13 @@ export function TeamDetailPanel({
                       name={a.name}
                       avatarUrl={a.avatarUrl}
                       size={28}
-                      bgClass="bg-surface-overlay text-fg-primary"
+                      bgClass={isStopped ? 'bg-surface-overlay/60 text-fg-tertiary' : 'bg-surface-overlay text-fg-primary'}
                     />
                     <div className="flex-1 min-w-0 text-left">
                       <div className="flex items-center gap-1">
                         <span className="truncate font-medium text-[12px] leading-tight">{a.name}</span>
                         {isManager && <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="text-amber-500 shrink-0"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>}
+                        {isStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium shrink-0 leading-relaxed">{t('common:status.offline')}</span>}
                       </div>
                       <div className="truncate text-[10px] leading-tight mt-0.5 text-fg-secondary">
                         {a.role || '\u00A0'}

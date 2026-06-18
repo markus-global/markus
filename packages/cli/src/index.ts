@@ -66,6 +66,9 @@ async function registerCommands() {
   const { registerAuthCommand } = await import('./commands/auth.js');
   registerAuthCommand(program);
 
+  const { registerUpdateCommand } = await import('./commands/update.js');
+  registerUpdateCommand(program);
+
   const { registerInstallAgentCommands } = await import('./commands/install-agent.js');
   registerInstallAgentCommands(program);
 

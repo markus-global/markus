@@ -600,7 +600,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                       <div className="space-y-1">
                         {workingAgentsList.map(a => (
                           <div key={a.id} className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-surface-overlay/40 cursor-pointer transition-colors"
-                            onClick={() => navBus.navigate(PAGE.TEAM, { agentId: a.id, profileTab: 'overview' })}>
+                            onClick={() => navBus.navigate(PAGE.TEAM, { agentId: a.id })}>
                             <Avatar name={a.name} avatarUrl={(a as any).avatarUrl} size={24} bgClass="bg-brand-600/30 text-brand-300" />
                             <div className="flex-1 min-w-0">
                               <div className="text-xs font-medium text-fg-primary truncate">{a.name}</div>
@@ -970,7 +970,7 @@ function WorkingModal({ workingAgents, rankedAgents, onClose, t }: {
               <div className="space-y-0.5">
                 {workingAgents.map(a => (
                   <div key={a.id} className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-surface-overlay/40 cursor-pointer transition-colors"
-                    onClick={() => { onClose(); navBus.navigate(PAGE.TEAM, { agentId: a.id, profileTab: 'overview' }); }}>
+                    onClick={() => { onClose(); navBus.navigate(PAGE.TEAM, { agentId: a.id }); }}>
                     <Avatar name={a.name} avatarUrl={(a as any).avatarUrl} size={26} bgClass="bg-brand-600/30 text-brand-300" />
                     <div className="flex-1 min-w-0">
                       <div className="text-xs font-medium text-fg-primary truncate">{a.name}</div>

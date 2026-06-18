@@ -92,16 +92,16 @@ describe('AgentManager role sync and updates', () => {
     expect(status.isUpToDate).toBe(true);
   });
 
-  it('pauseAllAgents and resumeAllAgents toggle global pause state', async () => {
+  it('stopAllAgents and startAllAgents toggle global stopped state', async () => {
     const manager = createManager();
-    const agent = await manager.createAgent({ name: 'Pause Agent', roleName: 'developer', tools: [] });
+    const agent = await manager.createAgent({ name: 'Stop Agent', roleName: 'developer', tools: [] });
     await manager.startAgent(agent.id);
 
-    await manager.pauseAllAgents('maintenance');
-    expect(manager.isGlobalPaused()).toBe(true);
+    await manager.stopAllAgents('maintenance');
+    expect(manager.isGlobalStopped()).toBe(true);
 
-    await manager.resumeAllAgents();
-    expect(manager.isGlobalPaused()).toBe(false);
+    await manager.startAllAgents();
+    expect(manager.isGlobalStopped()).toBe(false);
     expect(manager.isEmergencyMode()).toBe(false);
     await manager.stopAgent(agent.id);
   });

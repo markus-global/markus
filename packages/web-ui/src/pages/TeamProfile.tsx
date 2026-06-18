@@ -28,7 +28,7 @@ export const TABS: Array<{ key: TeamTab; labelKey: string; icon: string }> = [
 
 const STATUS_DOT: Record<string, string> = {
   idle: 'bg-green-400', working: 'bg-blue-400 animate-pulse',
-  paused: 'bg-amber-400', offline: 'bg-gray-500', error: 'bg-red-400',
+  offline: 'bg-gray-500', error: 'bg-red-400',
 };
 
 export function TeamProfile({ teamId, onBack, inline, headless, activeTab: externalTab, onSelectAgent }: Props) {
