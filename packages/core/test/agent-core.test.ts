@@ -153,9 +153,9 @@ describe('Agent constructor', () => {
     expect(callCount).toBeLessThanOrEqual(4);
   });
 
-  it('initializes with idle state', () => {
+  it('initializes with offline state before start', () => {
     const agent = createTestAgent(makeMockRouter());
-    expect(agent.getState().status).toBe('idle');
+    expect(agent.getState().status).toBe('offline');
     expect(agent.getState().activeTaskCount).toBe(0);
   });
 });

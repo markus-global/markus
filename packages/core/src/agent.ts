@@ -368,7 +368,7 @@ export class Agent {
 
     this.state = {
       agentId: this.id,
-      status: 'idle',
+      status: 'offline',
       activeTaskCount: 0,
       activeTaskIds: [],
       tokensUsedToday: options.restoredState?.tokensUsedToday ?? 0,
