@@ -21,7 +21,9 @@
     "test:gui": "tsx test-gui-integration.ts",
     "example:gui": "tsx examples/gui-automation-workflow.ts",
     "markus": "node packages/cli/dist/index.js",
-    "build:publish": "pnpm build && pnpm --filter @markus/web-ui build && pnpm --filter @markus-global/cli build:bundle"
+    "build:publish": "pnpm build && pnpm --filter @markus/web-ui build && pnpm --filter @markus-global/cli build:bundle",
+    "dev:desktop": "pnpm build && concurrently -n backend,vite,electron -c blue,green,magenta \"node packages/cli/dist/index.js start\" \"node scripts/wait-for-api.mjs && pnpm --filter @markus/web-ui dev\" \"wait-on http://localhost:8056/api/health && cd packages/desktop && ELECTRON_DEV=1 electron .\"",
+    "build:desktop": "pnpm build && pnpm --filter @markus/web-ui build && pnpm --filter @markus/desktop build:electron"
   },
   "engines": {
     "node": ">=22.0.0",
@@ -47,6 +49,7 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild",
+      "electron",
       "node-datachannel"
     ]
   }

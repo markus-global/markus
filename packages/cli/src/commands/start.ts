@@ -399,24 +399,53 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   };
 }
 
+/**
+ * Headless server startup — no progress UI, no blocking, no browser open.
+ * Used by Electron desktop app and programmatic embedding.
+ */
+export async function startServerHeadless(
+  config: ReturnType<typeof loadConfig>,
+  values: { port?: unknown; config?: unknown; onProgress?: (step: string, message: string) => void },
+): Promise<import('../backend.js').BackendInstance> {
+  const instance = await startServerCore(config, values, { headless: true });
+  return instance!;
+}
+
+interface StartServerCoreOptions {
+  headless?: boolean;
+}
+
 async function startServer(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
+  await startServerCore(config, values, { headless: false });
+}
+
+async function startServerCore(
+  config: ReturnType<typeof loadConfig>,
+  values: { port?: unknown; config?: unknown; onProgress?: (step: string, message: string) => void },
+  opts: StartServerCoreOptions,
+): Promise<import('../backend.js').BackendInstance | undefined> {
+  const headless = opts.headless ?? false;
+  const onProgress = values.onProgress;
+
   // Initialize startup logger first — all startup output goes to file AND console
   const logPath = initStartupLogger();
 
-  // Boot the animated progress display
-  const progress = new StartupProgress(logPath);
-  progress.start();
+  // Boot the animated progress display (CLI only)
+  const progress = headless ? null : new StartupProgress(logPath);
+  progress?.start();
 
   // ── Step 0: Boot ──────────────────────────────────────────────────────────
-  progress.setActive(0);
-  progress.complete(0, 'markus CLI initialised');
+  progress?.setActive(0);
+  progress?.complete(0, 'markus CLI initialised');
+  onProgress?.('boot', 'markus initialised');
 
   startupSection('Markus 启动');
   startupLog('INFO', `日志文件: ${logPath}`);
 
   // ── Step 1: Config ─────────────────────────────────────────────────────────
-  progress.setActive(1);
-  progress.complete(1, `config loaded from ~/.markus/markus.json`);
+  progress?.setActive(1);
+  progress?.complete(1, `config loaded from ~/.markus/markus.json`);
+  onProgress?.('config', 'config loaded');
 
   // LLM preflight check: warn if no VALID LLM API key is configured
   // "***" or other placeholder patterns are NOT valid keys
@@ -432,14 +461,14 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   }
 
   // ── Step 2: LLM Providers ──────────────────────────────────────────────────
-  progress.setActive(2);
+  progress?.setActive(2);
   if (configuredLLMProviders.length > 0) {
-    progress.complete(2, `providers ready: ${configuredLLMProviders.join(', ')}`);
+    progress?.complete(2, `providers ready: ${configuredLLMProviders.join(', ')}`);
     for (const name of configuredLLMProviders) {
       startupLog('OK', `LLM Provider: ${name}`, (llmProviders[name] as any)?.model ?? 'default');
     }
   } else {
-    progress.fail(2, 'no valid LLM API key detected');
+    progress?.fail(2, 'no valid LLM API key detected');
     startupLog('FAIL', '未检测到有效的 LLM API key', '*** 占位符不会被识别为有效 key');
     startupLog('INFO', '请选择配置方式:', '');
     startupLog('INFO', '  1. 在浏览器中配置  → http://localhost:8056');
@@ -460,11 +489,11 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       if (key && !isPlaceholder(key)) configuredLLMProviders.push(name);
     }
     if (configuredLLMProviders.length > 0) {
-      progress.complete(2, `providers ready: ${configuredLLMProviders.join(', ')}`);
+      progress?.complete(2, `providers ready: ${configuredLLMProviders.join(', ')}`);
       startupLog('OK', 'LLM 配置成功', `已配置: ${configuredLLMProviders.join(', ')}`);
       startupBlank();
     } else {
-      progress.skip(2, 'LLM not configured — server will start with disabled provider');
+      progress?.skip(2, 'LLM not configured — server will start with disabled provider');
       startupLog('WARN', '仍未配置有效的 LLM key', '服务将使用 disabled provider 启动');
       startupLog('INFO', '稍后可运行 markus init 或 markus model 重新配置');
       startupBlank();
@@ -472,7 +501,8 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   }
 
   // ── Step 3: Database ───────────────────────────────────────────────────────
-  progress.setActive(3);
+  progress?.setActive(3);
+  onProgress?.('llm', 'LLM providers configured');
   startupLog('INFO', '正在启动服务...');
 
   // Ensure `markus` is available in PATH for agents invoking it via shell_execute.
@@ -537,8 +567,9 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     auditService,
     bootstrapOwnerId,
   } = await createServices(config);
-  progress.complete(3, 'SQLite storage initialised');
-  progress.complete(4, `services ready: agent manager, task service, api server on :${apiPort}`);
+  progress?.complete(3, 'SQLite storage initialised');
+  progress?.complete(4, `services ready: agent manager, task service, api server on :${apiPort}`);
+  onProgress?.('services', `services ready on :${apiPort}`);
 
   const apiServer = new APIServer(orgService, taskService, apiPort);
   apiServer.setSkillRegistry(skillRegistry);
@@ -1615,7 +1646,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   const commPort = apiPort + 2;
 
   // ── Step 5: Gateway ───────────────────────────────────────────────────────
-  progress.setActive(5);
+  progress?.setActive(5);
   await messageRouter.connectAll([{ platform: 'webui', port: commPort }]);
 
   // Check for Feishu config
@@ -1633,13 +1664,13 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         },
       ]);
       startupLog('OK', '飞书适配器已连接');
-      progress.complete(5, 'webhook adapters: WebUI + Feishu');
+      progress?.complete(5, 'webhook adapters: WebUI + Feishu');
     } catch (error) {
       startupLog('WARN', `飞书适配器连接失败，跳过: ${error instanceof Error ? error.message : String(error)}`);
-      progress.complete(5, 'webhook adapter: WebUI only (Feishu failed)');
+      progress?.complete(5, 'webhook adapter: WebUI only (Feishu failed)');
     }
   } else {
-    progress.complete(5, 'webhook adapter: WebUI only');
+    progress?.complete(5, 'webhook adapter: WebUI only');
   }
 
   startupBlank();
@@ -1649,7 +1680,40 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   const logFileName = logFile.split('/').pop() ?? logFile;
   const uiUrl = `http://localhost:${apiPort}`;
 
-  progress.finish(uiUrl);
+  progress?.finish(uiUrl);
+  onProgress?.('ready', `server ready at ${uiUrl}`);
+
+  // Build the shutdown function for programmatic use
+  const shutdown = async () => {
+    closeStartupLogger();
+    closeRuntimeLogger();
+    archiveService.stop();
+    staleDetector.stop();
+    scheduledTaskRunner.stop();
+    apiServer.stop();
+    await agentManager.shutdown();
+    await messageRouter.disconnectAll();
+  };
+
+  const instance: import('../backend.js').BackendInstance = {
+    apiServer,
+    port: apiPort,
+    url: uiUrl,
+    shutdown,
+  };
+
+  // In headless mode (Electron), return without blocking
+  if (headless) {
+    // Still start restored agents in background
+    orgService.startRestoredAgentsInBackground().then(async () => {
+      try {
+        await taskService.resumeInProgressTasks();
+      } catch (err) {
+        log.warn('Failed to auto-resume in_progress tasks', { error: String(err) });
+      }
+    });
+    return instance;
+  }
 
   // Auto-open browser after health check confirms the server is ready
   if (!process.env['NO_BROWSER'] && webUiDir) {
@@ -1676,24 +1740,16 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
   process.on('SIGINT', () => {
     console.error('\nShutting down...');
-    closeStartupLogger();
-    closeRuntimeLogger();
-    archiveService.stop();
-    staleDetector.stop();
-    scheduledTaskRunner.stop();
-    apiServer.stop();
-    agentManager.shutdown()
-      .then(() => messageRouter.disconnectAll())
-      .then(() => process.exit(0))
-      .catch(() => process.exit(1));
+    shutdown().then(() => process.exit(0)).catch(() => process.exit(1));
   });
 
   // Keep alive (vitest sets process.env.VITEST so the start command can be tested)
   if (process.env.VITEST) {
     apiServer.stop();
     await messageRouter.disconnectAll();
-    return;
+    return undefined;
   }
   await new Promise(() => {});
+  return undefined;
 }
 

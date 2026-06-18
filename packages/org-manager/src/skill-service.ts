@@ -219,7 +219,7 @@ export async function installSkill(
 
   // Strategy 0: Built-in skill — copy from templates/skills/
   if (source === 'builtin') {
-    const builtinDir = resolve(process.cwd(), 'templates', 'skills', safeName);
+    const builtinDir = resolve(process.env['MARKUS_TEMPLATES_DIR'] ?? resolve(process.cwd(), 'templates'), 'skills', safeName);
     if (existsSync(builtinDir)) {
       mkdirSync(targetDir, { recursive: true });
       for (const file of readdirSync(builtinDir)) {

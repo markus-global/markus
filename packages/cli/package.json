@@ -7,6 +7,10 @@
   "bin": {
     "markus": "dist/markus.mjs"
   },
+  "exports": {
+    ".": "./dist/index.js",
+    "./backend": "./dist/backend.js"
+  },
   "files": [
     "dist/",
     "templates/",

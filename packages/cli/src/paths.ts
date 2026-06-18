@@ -15,6 +15,12 @@ const __dirname = dirname(__filename);
  *   3. <pkg>/templates/<sub>           — npm global-install (shipped with the package)
  */
 export function resolveTemplatesDir(sub: string): string {
+  const envDir = process.env['MARKUS_TEMPLATES_DIR'];
+  if (envDir) {
+    const envSubDir = resolve(envDir, sub);
+    if (existsSync(envSubDir)) return envSubDir;
+  }
+
   const userDir = join(homedir(), '.markus', 'templates', sub);
   if (existsSync(userDir)) return userDir;
 
@@ -25,8 +31,8 @@ export function resolveTemplatesDir(sub: string): string {
   const pkgDir = resolve(__dirname, '..', 'templates', sub);
   if (existsSync(pkgDir)) return pkgDir;
 
-  // Fallback to cwd (will be created by init if needed)
-  return cwdDir;
+  // Fallback to env or cwd
+  return envDir ? resolve(envDir, sub) : cwdDir;
 }
 
 /**
@@ -36,11 +42,17 @@ export function resolveTemplatesDir(sub: string): string {
 export function allTemplateDirs(sub: string): string[] {
   const dirs: string[] = [];
 
+  const envDir = process.env['MARKUS_TEMPLATES_DIR'];
+  if (envDir) {
+    const envSubDir = resolve(envDir, sub);
+    if (existsSync(envSubDir)) dirs.push(envSubDir);
+  }
+
   const userDir = join(homedir(), '.markus', 'templates', sub);
   if (existsSync(userDir)) dirs.push(userDir);
 
   const cwdDir = resolve(process.cwd(), 'templates', sub);
-  if (existsSync(cwdDir)) dirs.push(cwdDir);
+  if (existsSync(cwdDir) && !dirs.includes(cwdDir)) dirs.push(cwdDir);
 
   const pkgDir = resolve(__dirname, '..', 'templates', sub);
   if (existsSync(pkgDir) && !dirs.includes(pkgDir)) dirs.push(pkgDir);

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { resolve, normalize, sep } from 'node:path';
-import { SHELL_TIMEOUT_DEFAULT_MS, SHELL_TIMEOUT_MAX_MS, sanitizeForLLM, type PathAccessPolicy } from '@markus/shared';
+import { SHELL_TIMEOUT_DEFAULT_MS, SHELL_TIMEOUT_MAX_MS, sanitizeForLLM, isToolDisabledInMAS, getMASToolBlockedMessage, type PathAccessPolicy } from '@markus/shared';
 import type { AgentToolHandler, ToolOutputCallback } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
 import { getShellSessionManager } from './shell-session.js';
@@ -117,6 +117,10 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
     },
 
     async execute(args: Record<string, unknown>, onOutput?: ToolOutputCallback): Promise<string> {
+      if (isToolDisabledInMAS('shell_execute')) {
+        return getMASToolBlockedMessage('shell_execute');
+      }
+
       const command = args['command'] as string;
       const requestedCwd = args['cwd'] as string | undefined;
       const timeoutMs = Math.min(

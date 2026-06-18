@@ -69,7 +69,14 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
       }
     });
 
-    const listener = () => { setCounts({ ..._globalCounts }); setSessionAgentMap({ ..._globalSessionAgentMap }); };
+    let _prevSessionAgentMapRef = _globalSessionAgentMap;
+    const listener = () => {
+      setCounts({ ..._globalCounts });
+      if (_prevSessionAgentMapRef !== _globalSessionAgentMap) {
+        _prevSessionAgentMapRef = _globalSessionAgentMap;
+        setSessionAgentMap({ ..._globalSessionAgentMap });
+      }
+    };
     _listeners.add(listener);
 
     return () => {

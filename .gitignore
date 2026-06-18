@@ -19,6 +19,10 @@ packages/cli/templates/
 # Binary distribution build output (scripts/build-binary.sh)
 dist-binary/
 
+# Electron desktop build output (packages/desktop/electron-builder)
+packages/desktop/dist-electron/
+packages/desktop/node_modules/
+
 # Config lock files
 markus.json.lock
 

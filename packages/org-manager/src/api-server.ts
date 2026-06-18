@@ -5703,7 +5703,7 @@ EXPLANATION_END`;
 
     // Built-in skills — list templates/skills/
     if (path === '/api/skills/builtin' && req.method === 'GET') {
-      const builtinDir = resolve(process.cwd(), 'templates', 'skills');
+      const builtinDir = resolve(process.env['MARKUS_TEMPLATES_DIR'] ?? resolve(process.cwd(), 'templates'), 'skills');
       const found = discoverSkillsInDir(builtinDir);
       const installedSkills = new Map(
         (this.skillRegistry?.list() ?? []).map(s => [s.name, s])
@@ -6669,15 +6669,18 @@ EXPLANATION_END`;
       }
       const { existsSync: ex, readFileSync: rf, readdirSync: rd } = await import('node:fs');
       const roleId = template.roleId;
-      const candidates = [
-        resolve(process.cwd(), 'templates', 'roles', roleId),
-      ];
-      try {
-        const thisFile = (await import('node:url')).fileURLToPath(import.meta.url);
-        const thisDir = (await import('node:path')).dirname(thisFile);
-        candidates.unshift(resolve(thisDir, '..', 'templates', 'roles', roleId));
-        candidates.push(resolve(thisDir, '..', '..', '..', '..', 'templates', 'roles', roleId));
-      } catch { /* skip */ }
+      const envTemplates = process.env['MARKUS_TEMPLATES_DIR'];
+      const candidates = envTemplates
+        ? [resolve(envTemplates, 'roles', roleId)]
+        : [resolve(process.cwd(), 'templates', 'roles', roleId)];
+      if (!envTemplates) {
+        try {
+          const thisFile = (await import('node:url')).fileURLToPath(import.meta.url);
+          const thisDir = (await import('node:path')).dirname(thisFile);
+          candidates.unshift(resolve(thisDir, '..', 'templates', 'roles', roleId));
+          candidates.push(resolve(thisDir, '..', '..', '..', '..', 'templates', 'roles', roleId));
+        } catch { /* skip */ }
+      }
       const roleDir = candidates.find(d => ex(d));
       const files: Record<string, string> = {};
       if (roleDir) {
@@ -7298,11 +7301,21 @@ EXPLANATION_END`;
     // Team Templates
     if (path === '/api/templates/teams' && req.method === 'GET') {
       try {
-        const { readdirSync, readFileSync } = await import('node:fs');
-        const { resolve } = await import('node:path');
-        const teamsDir = resolve(process.cwd(), 'templates', 'teams');
-        const files = readdirSync(teamsDir).filter(f => f.endsWith('.json'));
-        const teams = files.map(f => JSON.parse(readFileSync(resolve(teamsDir, f), 'utf-8')));
+        const { readdirSync, readFileSync, existsSync: _exists } = await import('node:fs');
+        const { resolve, join: _join } = await import('node:path');
+        const teamsDir = resolve(process.env['MARKUS_TEMPLATES_DIR'] ?? resolve(process.cwd(), 'templates'), 'teams');
+        const entries = readdirSync(teamsDir, { withFileTypes: true });
+        const teams: unknown[] = [];
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            const teamFile = _join(teamsDir, entry.name, 'team.json');
+            if (_exists(teamFile)) {
+              try { teams.push(JSON.parse(readFileSync(teamFile, 'utf-8'))); } catch { /* skip */ }
+            }
+          } else if (entry.name.endsWith('.json')) {
+            try { teams.push(JSON.parse(readFileSync(resolve(teamsDir, entry.name), 'utf-8'))); } catch { /* skip */ }
+          }
+        }
         this.json(res, 200, { templates: teams });
       } catch {
         this.json(res, 200, { templates: [] });
@@ -10327,14 +10340,17 @@ EXPLANATION_END`;
         return;
       }
       const { existsSync: ex, readFileSync: rf, readdirSync: rd } = await import('node:fs');
-      const rolesDir = resolve(process.cwd(), 'templates', 'roles');
+      const envTemplates = process.env['MARKUS_TEMPLATES_DIR'];
+      const rolesDir = envTemplates ? resolve(envTemplates, 'roles') : resolve(process.cwd(), 'templates', 'roles');
       const rolesCandidates = [rolesDir];
-      try {
-        const thisFile = (await import('node:url')).fileURLToPath(import.meta.url);
-        const thisDir = (await import('node:path')).dirname(thisFile);
-        rolesCandidates.unshift(resolve(thisDir, '..', 'templates', 'roles'));
-        rolesCandidates.push(resolve(thisDir, '..', '..', '..', '..', 'templates', 'roles'));
-      } catch { /* skip */ }
+      if (!envTemplates) {
+        try {
+          const thisFile = (await import('node:url')).fileURLToPath(import.meta.url);
+          const thisDir = (await import('node:path')).dirname(thisFile);
+          rolesCandidates.unshift(resolve(thisDir, '..', 'templates', 'roles'));
+          rolesCandidates.push(resolve(thisDir, '..', '..', '..', '..', 'templates', 'roles'));
+        } catch { /* skip */ }
+      }
       const rolesRoot = rolesCandidates.find(d => ex(d)) ?? rolesDir;
       const files: Record<string, string> = {};
       for (const [idx, member] of tpl.members.entries()) {
@@ -12065,7 +12081,9 @@ EXPLANATION_END`;
     if (existsSync(join(agentRoleDir, 'ROLE.md'))) return agentRoleDir;
 
     // Fall back to shared template directory
-    const base = join(process.cwd(), 'templates', 'roles');
+    const base = process.env['MARKUS_TEMPLATES_DIR']
+      ? join(process.env['MARKUS_TEMPLATES_DIR'], 'roles')
+      : join(process.cwd(), 'templates', 'roles');
     if (!existsSync(base)) return null;
 
     const tryDir = (dirName: string): string | null => {
