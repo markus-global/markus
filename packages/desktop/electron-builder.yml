@@ -9,6 +9,8 @@ files:
 asar: true
 asarUnpack:
   - dist/preload.js
+  - dist/splash.html
+  - dist/icon.png
 compression: maximum
 
 mac:

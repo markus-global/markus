@@ -51,12 +51,12 @@ app.whenReady().then(async () => {
     console.error('[main] renderer crashed:', details.reason);
   });
 
-  const splashHTML = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#0f0f23;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,sans-serif"><div style="text-align:center"><div style="width:80px;height:80px;margin:0 auto 24px;background:linear-gradient(135deg,#667eea,#764ba2);border-radius:20px;display:flex;align-items:center;justify-content:center;font-size:40px;font-weight:bold;color:#fff">M</div><h1 style="font-size:28px;margin:0 0 12px">Markus</h1><p id="status" style="font-size:14px;color:#94a3b8;margin:0">Starting server...</p></div></body></html>`;
+  const splashPath = join(app.getAppPath().replace('app.asar', 'app.asar.unpacked'), 'dist', 'splash.html');
   try {
-    await win.loadURL('data:text/html;base64,' + Buffer.from(splashHTML).toString('base64'));
-    console.log('[main] loadURL resolved successfully');
+    await win.loadFile(splashPath);
+    console.log('[main] splash loaded from file');
   } catch (err) {
-    console.error('[main] loadURL error:', err);
+    console.error('[main] splash loadFile error:', err);
   }
   win.show();
 

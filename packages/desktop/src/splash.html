@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; img-src 'self' file:">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -14,9 +14,8 @@ body {
 .container { text-align: center; }
 .logo {
   width: 80px; height: 80px; margin: 0 auto 24px;
-  background: linear-gradient(135deg, #667eea, #764ba2);
-  border-radius: 20px; display: flex; align-items: center; justify-content: center;
-  font-size: 40px; font-weight: bold; color: #fff;
+  border-radius: 20px;
+  object-fit: contain;
 }
 h1 { font-size: 28px; margin-bottom: 12px; }
 .spinner {
@@ -30,7 +29,7 @@ h1 { font-size: 28px; margin-bottom: 12px; }
 </head>
 <body>
 <div class="container">
-  <div class="logo">M</div>
+  <img class="logo" src="icon.png" alt="Markus">
   <h1>Markus</h1>
   <div class="spinner"></div>
   <p id="status">Starting server...</p>

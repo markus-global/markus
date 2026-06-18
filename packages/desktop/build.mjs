@@ -62,8 +62,9 @@ async function main() {
     minify: false,
   });
 
-  // Copy splash.html
+  // Copy splash.html and icon
   cpSync(resolve(__dirname, 'src/splash.html'), resolve(__dirname, 'dist/splash.html'));
+  cpSync(resolve(__dirname, 'build/icon.png'), resolve(__dirname, 'dist/icon.png'));
 
   // Copy web-ui dist if available
   const webUiDist = resolve(__dirname, '../web-ui/dist');
