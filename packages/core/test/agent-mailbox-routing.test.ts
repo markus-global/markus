@@ -89,7 +89,7 @@ describe('Agent mailbox item routing', () => {
   it('routes a2a_message through handleMessage', async () => {
     const router = makeRouter();
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await processViaMailbox(agent, 'a2a_message', {
       summary: 'Peer message',
@@ -104,7 +104,7 @@ describe('Agent mailbox item routing', () => {
   it('routes mention items with a2a scenario', async () => {
     const router = makeRouter();
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await processViaMailbox(agent, 'mention', {
       summary: '@agent please review',
@@ -118,7 +118,7 @@ describe('Agent mailbox item routing', () => {
   it('routes requirement_comment through comment_response scenario', async () => {
     const router = makeRouter();
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await processViaMailbox(agent, 'requirement_comment', {
       summary: 'Req comment',
@@ -133,7 +133,7 @@ describe('Agent mailbox item routing', () => {
   it('routes requirement_update with actionRequired', async () => {
     const router = makeRouter();
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await processViaMailbox(agent, 'requirement_update', {
       summary: 'Req approved',
@@ -149,7 +149,7 @@ describe('Agent mailbox item routing', () => {
   it('skips LLM for informational requirement_update', async () => {
     const router = makeRouter();
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await processViaMailbox(agent, 'requirement_update', {
       summary: 'Req status',
@@ -164,7 +164,7 @@ describe('Agent mailbox item routing', () => {
   it('routes workflow_update with actionRequired', async () => {
     const router = makeRouter();
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await processViaMailbox(agent, 'workflow_update', {
       summary: 'Workflow step',
@@ -179,7 +179,7 @@ describe('Agent mailbox item routing', () => {
   it('routes review_request through review scenario', async () => {
     const router = makeRouter();
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await processViaMailbox(agent, 'review_request', {
       summary: 'Review task',
@@ -194,7 +194,7 @@ describe('Agent mailbox item routing', () => {
   it('handles task_status_update without triggerExecution as informational', async () => {
     const router = makeRouter();
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await processViaMailbox(agent, 'task_status_update', {
       summary: 'Task in progress',
@@ -209,7 +209,7 @@ describe('Agent mailbox item routing', () => {
   it('routes task_comment when no active task', async () => {
     const router = makeRouter();
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await processViaMailbox(agent, 'task_comment', {
       summary: 'Comment',
@@ -225,7 +225,7 @@ describe('Agent mailbox item routing', () => {
   it('routes heartbeat through lightweight scenario', async () => {
     const router = makeRouter();
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await processViaMailbox(agent, 'heartbeat', {
       summary: 'Heartbeat',

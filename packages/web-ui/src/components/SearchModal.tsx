@@ -462,7 +462,6 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
 function StatusDot({ status }: { status: string }) {
   const color = status === 'active' || status === 'idle' ? 'bg-green-500'
     : status === 'working' || status === 'busy' ? 'bg-blue-500'
-    : status === 'paused' ? 'bg-amber-500'
     : 'bg-gray-400';
   return <span className={`w-2 h-2 rounded-full shrink-0 ${color}`} />;
 }

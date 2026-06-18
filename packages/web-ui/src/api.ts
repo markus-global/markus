@@ -988,8 +988,10 @@ export const api = {
       request('/agents', { method: 'POST', body: JSON.stringify({ name, ...(roleName ? { roleName } : {}), agentRole, teamId }) }),
     start: (id: string) => request(`/agents/${id}/start`, { method: 'POST' }),
     stop: (id: string) => request(`/agents/${id}/stop`, { method: 'POST' }),
-    pause: (id: string, reason?: string) => request(`/agents/${id}/pause`, { method: 'POST', body: JSON.stringify({ reason }) }),
-    resume: (id: string) => request<{ status: string }>(`/agents/${id}/resume`, { method: 'POST' }),
+    /** @deprecated Use stop() instead */
+    pause: (id: string, _reason?: string) => request(`/agents/${id}/stop`, { method: 'POST' }),
+    /** @deprecated Use start() instead */
+    resume: (id: string) => request<{ status: string }>(`/agents/${id}/start`, { method: 'POST' }),
     cancelProcessing: (id: string) => request(`/agents/${id}/cancel-processing`, { method: 'POST' }),
     remove: (id: string, opts?: { purgeFiles?: boolean }) =>
       request(`/agents/${id}${opts?.purgeFiles ? '?purgeFiles=true' : ''}`, { method: 'DELETE' }),
@@ -1155,10 +1157,12 @@ export const api = {
       request<{ success: string[]; failed: Array<{ id: string; error: string }> }>(`/teams/${teamId}/start`, { method: 'POST' }),
     stopAll: (teamId: string) =>
       request<{ success: string[]; failed: Array<{ id: string; error: string }> }>(`/teams/${teamId}/stop`, { method: 'POST' }),
-    pauseAll: (teamId: string, reason?: string) =>
-      request<{ success: string[]; failed: Array<{ id: string; error: string }> }>(`/teams/${teamId}/pause`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    /** @deprecated Use stopAll() instead */
+    pauseAll: (teamId: string, _reason?: string) =>
+      request<{ success: string[]; failed: Array<{ id: string; error: string }> }>(`/teams/${teamId}/stop`, { method: 'POST' }),
+    /** @deprecated Use startAll() instead */
     resumeAll: (teamId: string) =>
-      request<{ success: string[]; failed: Array<{ id: string; error: string }> }>(`/teams/${teamId}/resume`, { method: 'POST' }),
+      request<{ success: string[]; failed: Array<{ id: string; error: string }> }>(`/teams/${teamId}/start`, { method: 'POST' }),
     status: (teamId: string) =>
       request<{ agents: Array<{ id: string; name: string; status: string; role?: string }> }>(`/teams/${teamId}/status`),
     getFiles: (teamId: string) =>

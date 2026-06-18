@@ -26,7 +26,7 @@ export class OrganizationService {
   private teams = new Map<string, Team>();
   private humans = new Map<string, HumanUser>();
   private agentManager: AgentManager;
-  private pendingAgentStartIds: Array<{ id: string; dbStatus?: string }> = [];
+  private pendingAgentStartIds: Array<{ id: string; disabled: boolean }> = [];
   private roleLoader: RoleLoader;
   private storage?: StorageBridge;
   private deliverableService?: DeliverableService;
@@ -559,17 +559,6 @@ export class OrganizationService {
     return this.agentManager.stopAgentsByIds(team.memberAgentIds);
   }
 
-  pauseTeamAgents(teamId: string, reason?: string): { success: string[]; failed: Array<{ id: string; error: string }> } {
-    const team = this.teams.get(teamId);
-    if (!team) throw new Error(`Team not found: ${teamId}`);
-    return this.agentManager.pauseAgentsByIds(team.memberAgentIds, reason);
-  }
-
-  resumeTeamAgents(teamId: string): { success: string[]; failed: Array<{ id: string; error: string }> } {
-    const team = this.teams.get(teamId);
-    if (!team) throw new Error(`Team not found: ${teamId}`);
-    return this.agentManager.resumeAgentsByIds(team.memberAgentIds);
-  }
 
   getTeamAgentStatuses(teamId: string): Array<{ id: string; name: string; status: string; role?: string }> {
     const team = this.teams.get(teamId);
@@ -816,9 +805,9 @@ export class OrganizationService {
       const restorePromises = toRestore.map(async (row: typeof agentRows[number]) => {
           try {
             await this.agentManager.restoreAgent(row);
-            const dbStatus = row.status as string | undefined;
-            log.info(`Restored agent ${row.id} (${row.name}), DB status: ${dbStatus}`);
-            this.pendingAgentStartIds.push({ id: row.id, dbStatus });
+            const disabled = !!(row as Record<string, unknown>).disabled;
+            log.info(`Restored agent ${row.id} (${row.name}), disabled: ${disabled}`);
+            this.pendingAgentStartIds.push({ id: row.id, disabled });
 
             if (row.teamId) {
               const team = this.teams.get(row.teamId);
@@ -905,30 +894,30 @@ export class OrganizationService {
 
     const startAll = async () => {
       let started = 0;
-      let pausedCount = 0;
+      let skipped = 0;
       for (let i = 0; i < entries.length; i++) {
-        const { id, dbStatus } = entries[i]!;
+        const { id, disabled } = entries[i]!;
+        if (disabled) {
+          log.info(`Skipping agent ${id}: disabled by user`);
+          skipped++;
+          continue;
+        }
         try {
-          const startAsPaused = dbStatus === 'paused';
-          log.info(`Starting agent ${id}: dbStatus=${dbStatus}, startAsPaused=${startAsPaused}`);
-          const initialHeartbeatDelayMs = entries.length > 1
-            ? Math.floor((i / entries.length) * DEFAULT_HEARTBEAT_INTERVAL_MS) + Math.floor(Math.random() * HEARTBEAT_STARTUP_JITTER_MS)
+          log.info(`Starting agent ${id}`);
+          const activeEntries = entries.length - skipped;
+          const initialHeartbeatDelayMs = activeEntries > 1
+            ? Math.floor((started / activeEntries) * DEFAULT_HEARTBEAT_INTERVAL_MS) + Math.floor(Math.random() * HEARTBEAT_STARTUP_JITTER_MS)
             : undefined;
-          await this.agentManager.startAgent(id, { initialHeartbeatDelayMs, startAsPaused });
+          await this.agentManager.startAgent(id, { initialHeartbeatDelayMs, skipDisabledFlag: true });
           started++;
-          if (startAsPaused) pausedCount++;
-          if (started < entries.length) {
+          if (started < activeEntries) {
             await new Promise(r => setTimeout(r, STAGGER_MS));
           }
         } catch (err) {
           log.warn(`Failed to auto-start restored agent ${id}`, { error: String(err) });
         }
       }
-      log.info(`Background agent startup complete: ${started}/${entries.length} agents started${pausedCount > 0 ? ` (${pausedCount} restored as paused)` : ''}`);
-      if (pausedCount > 0 && pausedCount === started) {
-        this.agentManager.setGlobalPaused(true);
-        log.info('All restored agents were paused — restoring globalPaused state');
-      }
+      log.info(`Background agent startup complete: ${started}/${entries.length} agents started, ${skipped} skipped (stopped)`);
     };
 
     const p = startAll().catch(err => {

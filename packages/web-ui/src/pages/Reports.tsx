@@ -578,7 +578,6 @@ function AgentRow({ agent, maxTokens }: { agent: AgentUsageInfo; maxTokens: numb
   const barWidth = maxTokens > 0 ? Math.min(100, (agent.totalTokens / maxTokens) * 100) : 0;
   const statusColor = agent.status === 'working' ? 'bg-blue-500' :
     agent.status === 'idle' ? 'bg-green-500' :
-    agent.status === 'paused' ? 'bg-amber-500' :
     agent.status === 'error' ? 'bg-red-500' : 'bg-gray-600';
 
   return (

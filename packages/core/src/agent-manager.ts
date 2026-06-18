@@ -23,7 +23,7 @@ import { EventBus } from './events.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { MCPClientManager } from './tools/mcp-client.js';
 import { BrowserSessionManager } from './tools/browser-session.js';
-import { createManagerTools, createPackageTools } from './tools/manager.js';
+import { createManagerTools, createPackageTools, createSecretaryTools } from './tools/manager.js';
 import { createWorkflowTools, type WorkflowToolsContext } from './tools/workflow-tools.js';
 import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
@@ -349,6 +349,7 @@ export class AgentManager {
     agentId: string,
     state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
   ) => void;
+  private disabledChangeHandler?: (agentId: string, disabled: boolean) => void;
   /** Grace timers for releasing scoped MCP processes after agent goes idle */
   private mcpReleaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private static readonly MCP_IDLE_GRACE_MS = 30_000;
@@ -1474,10 +1475,41 @@ export class AgentManager {
           }
           return { id: agentId, name: targetAgent.config.name };
         },
+        stopAgent: async (agentId: string) => { await this.stopAgent(agentId); },
+        startAgent: async (agentId: string) => { await this.startAgent(agentId); },
       });
       for (const tool of managerTools) {
         agent.registerTool(tool);
       }
+    }
+
+    // Secretary tools (team_stop, team_start) — only for agents with secretary role
+    if (request.roleName?.toLowerCase() === 'secretary') {
+      const secretaryTools = createSecretaryTools({
+        listTeams: () => {
+          const teams: Array<{ id: string; name: string; memberCount: number; members: Array<{ id: string; name: string; status: string }> }> = [];
+          for (const [, ag] of this.agents) {
+            if (ag.config.teamId) {
+              const teamId = ag.config.teamId;
+              let team = teams.find(t => t.id === teamId);
+              if (!team) {
+                team = { id: teamId, name: teamId, memberCount: 0, members: [] };
+                teams.push(team);
+              }
+              team.members.push({ id: ag.id, name: ag.config.name, status: ag.getState().status });
+              team.memberCount = team.members.length;
+            }
+          }
+          return teams;
+        },
+        stopTeam: async (teamId: string) => this.stopAgentsByIds(
+          [...this.agents.values()].filter(a => a.config.teamId === teamId).map(a => a.id),
+        ),
+        startTeam: async (teamId: string) => this.startAgentsByIds(
+          [...this.agents.values()].filter(a => a.config.teamId === teamId && a.getState().status === 'offline').map(a => a.id),
+        ),
+      });
+      for (const tool of secretaryTools) agent.registerTool(tool);
     }
 
     // Package tools (package_install, package_list, hub_search, hub_install) — available to all agents
@@ -2228,8 +2260,39 @@ export class AgentManager {
           }
           return { id: agentId, name: targetAgent.config.name };
         },
+        stopAgent: async (agentId: string) => { await this.stopAgent(agentId); },
+        startAgent: async (agentId: string) => { await this.startAgent(agentId); },
       });
       for (const tool of managerTools) agent.registerTool(tool);
+    }
+
+    // Secretary tools (team_stop, team_start) — only for agents with secretary role
+    if (row.roleName?.toLowerCase() === 'secretary') {
+      const secretaryTools = createSecretaryTools({
+        listTeams: () => {
+          const teams: Array<{ id: string; name: string; memberCount: number; members: Array<{ id: string; name: string; status: string }> }> = [];
+          for (const [, ag] of this.agents) {
+            if (ag.config.teamId) {
+              const teamId = ag.config.teamId;
+              let team = teams.find(t => t.id === teamId);
+              if (!team) {
+                team = { id: teamId, name: teamId, memberCount: 0, members: [] };
+                teams.push(team);
+              }
+              team.members.push({ id: ag.id, name: ag.config.name, status: ag.getState().status });
+              team.memberCount = team.members.length;
+            }
+          }
+          return teams;
+        },
+        stopTeam: async (teamId: string) => this.stopAgentsByIds(
+          [...this.agents.values()].filter(a => a.config.teamId === teamId).map(a => a.id),
+        ),
+        startTeam: async (teamId: string) => this.startAgentsByIds(
+          [...this.agents.values()].filter(a => a.config.teamId === teamId && a.getState().status === 'offline').map(a => a.id),
+        ),
+      });
+      for (const tool of secretaryTools) agent.registerTool(tool);
     }
 
     // Package tools (package_install, package_list, hub_search, hub_install) — available to all agents
@@ -2358,9 +2421,12 @@ export class AgentManager {
     }
   }
 
-  async startAgent(agentId: string, options?: { initialHeartbeatDelayMs?: number; startAsPaused?: boolean }): Promise<void> {
+  async startAgent(agentId: string, options?: { initialHeartbeatDelayMs?: number; skipDisabledFlag?: boolean }): Promise<void> {
     const agent = this.getAgent(agentId);
     await agent.start(options);
+    if (!options?.skipDisabledFlag) {
+      this.disabledChangeHandler?.(agentId, false);
+    }
   }
 
   async stopAgent(agentId: string): Promise<void> {
@@ -2369,6 +2435,7 @@ export class AgentManager {
     this.cancelMcpRelease(agentId);
     this.browserSessionManager.cleanupAgent(agentId);
     await this.mcpManager.removeAllForScope(agentId);
+    this.disabledChangeHandler?.(agentId, true);
   }
 
   async removeAgent(agentId: string, opts?: { purgeFiles?: boolean }): Promise<void> {
@@ -2532,6 +2599,10 @@ export class AgentManager {
     for (const [, agent] of this.agents) {
       agent.setStateChangeCallback(this.buildStateChangeCallback());
     }
+  }
+
+  setDisabledChangeHandler(handler: (agentId: string, disabled: boolean) => void): void {
+    this.disabledChangeHandler = handler;
   }
 
   /**
@@ -2761,70 +2832,38 @@ export class AgentManager {
     return { success, failed };
   }
 
-  pauseAgentsByIds(ids: string[], reason?: string): { success: string[]; failed: Array<{ id: string; error: string }> } {
-    const success: string[] = [];
-    const failed: Array<{ id: string; error: string }> = [];
-    for (const id of ids) {
-      try {
-        const agent = this.getAgent(id);
-        agent.pause(reason);
-        success.push(id);
-      } catch (err) {
-        failed.push({ id, error: String(err) });
-      }
-    }
-    return { success, failed };
-  }
-
-  resumeAgentsByIds(ids: string[]): { success: string[]; failed: Array<{ id: string; error: string }> } {
-    const success: string[] = [];
-    const failed: Array<{ id: string; error: string }> = [];
-    for (const id of ids) {
-      try {
-        const agent = this.getAgent(id);
-        if (agent.getState().status === 'paused') {
-          agent.resume();
-        }
-        success.push(id);
-      } catch (err) {
-        failed.push({ id, error: String(err) });
-      }
-    }
-    return { success, failed };
-  }
 
   // ─── Global Agent Control ──────────────────────────────────────────────────
 
-  private globalPaused = false;
   private emergencyMode = false;
 
-  async pauseAllAgents(reason?: string): Promise<void> {
+  async stopAllAgents(reason?: string): Promise<void> {
     for (const [id, agent] of this.agents) {
       try {
-        agent.pause(reason);
+        await agent.stop(reason);
+        this.disabledChangeHandler?.(id, true);
       } catch (err) {
-        log.warn('Failed to pause agent', { agentId: id, error: String(err) });
+        log.warn('Failed to stop agent', { agentId: id, error: String(err) });
       }
     }
-    this.globalPaused = true;
     this.eventBus.emit('system:pause-all', { reason });
-    log.info('All agents paused', { reason });
+    log.info('All agents stopped', { reason });
   }
 
-  async resumeAllAgents(): Promise<void> {
+  async startAllAgents(): Promise<void> {
     for (const [id, agent] of this.agents) {
       try {
-        if (agent.getState().status === 'paused') {
-          agent.resume();
+        if (agent.getState().status === 'offline') {
+          await agent.start();
+          this.disabledChangeHandler?.(id, false);
         }
       } catch (err) {
-        log.warn('Failed to resume agent', { agentId: id, error: String(err) });
+        log.warn('Failed to start agent', { agentId: id, error: String(err) });
       }
     }
-    this.globalPaused = false;
     this.emergencyMode = false;
     this.eventBus.emit('system:resume-all', {});
-    log.info('All agents resumed');
+    log.info('All agents started');
   }
 
   async emergencyStop(): Promise<void> {
@@ -2837,17 +2876,15 @@ export class AgentManager {
       }
     }
     this.emergencyMode = true;
-    this.globalPaused = true;
     this.eventBus.emit('system:emergency-stop', {});
     log.warn('EMERGENCY STOP — all agents stopped');
   }
 
-  isGlobalPaused(): boolean {
-    return this.globalPaused;
-  }
-
-  setGlobalPaused(paused: boolean): void {
-    this.globalPaused = paused;
+  isGlobalStopped(): boolean {
+    for (const [, agent] of this.agents) {
+      if (agent.getState().status !== 'offline') return false;
+    }
+    return this.agents.size > 0;
   }
 
   isEmergencyMode(): boolean {
@@ -2856,7 +2893,6 @@ export class AgentManager {
 
   clearEmergencyMode(): void {
     this.emergencyMode = false;
-    this.globalPaused = false;
     log.info('Emergency mode cleared');
   }
 

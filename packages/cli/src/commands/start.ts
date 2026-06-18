@@ -1187,7 +1187,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       try {
         await storage.agentRepo.updateStatus(
           agentId,
-          state.status as 'idle' | 'working' | 'paused' | 'offline' | 'error'
+          state.status as 'idle' | 'working' | 'offline' | 'error'
         );
       } catch (err) {
         log.warn('Failed to persist agent state', { agentId, error: String(err) });
@@ -1198,6 +1198,14 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         lastErrorAt: state.lastErrorAt,
         currentActivity: state.currentActivity,
       });
+    });
+
+    agentManager.setDisabledChangeHandler((agentId, disabled) => {
+      try {
+        storage.agentRepo.setDisabled(agentId, disabled);
+      } catch (err) {
+        log.warn('Failed to persist agent disabled flag', { agentId, disabled, error: String(err) });
+      }
     });
   }
 

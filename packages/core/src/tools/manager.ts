@@ -12,6 +12,14 @@ export interface ManagerToolsContext {
   getTaskBoardHealth?: (orgId: string) => Record<string, unknown>;
   updateTeam?: (teamId: string, data: { name?: string; description?: string }) => Promise<{ id: string; name: string; description?: string }>;
   updateAgentConfig?: (agentId: string, data: { name?: string }) => Promise<{ id: string; name: string }>;
+  stopAgent?: (agentId: string) => Promise<void>;
+  startAgent?: (agentId: string) => Promise<void>;
+}
+
+export interface SecretaryToolsContext {
+  listTeams: () => Array<{ id: string; name: string; memberCount: number; members: Array<{ id: string; name: string; status: string }> }>;
+  stopTeam: (teamId: string) => Promise<{ success: string[]; failed: Array<{ id: string; error: string }> }>;
+  startTeam: (teamId: string) => Promise<{ success: string[]; failed: Array<{ id: string; error: string }> }>;
 }
 
 export interface PackageToolsContext {
@@ -410,5 +418,123 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
           } as AgentToolHandler,
         ]
       : []),
+
+    ...(ctx.stopAgent
+      ? [
+          {
+            name: 'agent_stop',
+            description: 'Stop a team member agent. The agent will go offline and will not process any tasks or messages until started again. The stopped state persists across system restarts. Only agents in your own team can be stopped.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                agent_id: { type: 'string', description: 'The ID of the agent to stop' },
+              },
+              required: ['agent_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const agentId = (args['agent_id'] as string | undefined)?.trim();
+                if (!agentId) return JSON.stringify({ status: 'error', error: 'agent_id is required' });
+                const teamMembers = ctx.listAgents();
+                if (!teamMembers.some(a => a.id === agentId)) {
+                  return JSON.stringify({ status: 'error', error: 'Agent not found in your team. You can only stop agents in your own team.' });
+                }
+                await ctx.stopAgent!(agentId);
+                log.info('Manager stopped agent via tool', { agentId });
+                return JSON.stringify({ status: 'success', message: `Agent ${agentId} has been stopped.` });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.startAgent
+      ? [
+          {
+            name: 'agent_start',
+            description: 'Start (wake) a stopped team member agent. The agent will come back online and resume processing tasks and messages. Only agents in your own team can be started.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                agent_id: { type: 'string', description: 'The ID of the agent to start' },
+              },
+              required: ['agent_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const agentId = (args['agent_id'] as string | undefined)?.trim();
+                if (!agentId) return JSON.stringify({ status: 'error', error: 'agent_id is required' });
+                const teamMembers = ctx.listAgents();
+                if (!teamMembers.some(a => a.id === agentId)) {
+                  return JSON.stringify({ status: 'error', error: 'Agent not found in your team. You can only start agents in your own team.' });
+                }
+                await ctx.startAgent!(agentId);
+                log.info('Manager started agent via tool', { agentId });
+                return JSON.stringify({ status: 'success', message: `Agent ${agentId} has been started.` });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+  ];
+}
+
+export function createSecretaryTools(ctx: SecretaryToolsContext): AgentToolHandler[] {
+  return [
+    {
+      name: 'team_stop',
+      description: 'Stop all agents in a team. All team members will go offline and will not process tasks or messages until started again. The stopped state persists across system restarts.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          team_id: { type: 'string', description: 'The ID of the team to stop' },
+        },
+        required: ['team_id'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        try {
+          const teamId = (args['team_id'] as string | undefined)?.trim();
+          if (!teamId) return JSON.stringify({ status: 'error', error: 'team_id is required' });
+          const teams = ctx.listTeams();
+          const team = teams.find(t => t.id === teamId);
+          if (!team) return JSON.stringify({ status: 'error', error: `Team not found: ${teamId}` });
+          const result = await ctx.stopTeam(teamId);
+          log.info('Secretary stopped team via tool', { teamId, success: result.success.length, failed: result.failed.length });
+          return JSON.stringify({ status: 'success', team: team.name, ...result });
+        } catch (error) {
+          return JSON.stringify({ status: 'error', error: String(error) });
+        }
+      },
+    } as AgentToolHandler,
+
+    {
+      name: 'team_start',
+      description: 'Start all stopped agents in a team. All offline team members will come back online and resume processing tasks and messages.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          team_id: { type: 'string', description: 'The ID of the team to start' },
+        },
+        required: ['team_id'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        try {
+          const teamId = (args['team_id'] as string | undefined)?.trim();
+          if (!teamId) return JSON.stringify({ status: 'error', error: 'team_id is required' });
+          const teams = ctx.listTeams();
+          const team = teams.find(t => t.id === teamId);
+          if (!team) return JSON.stringify({ status: 'error', error: `Team not found: ${teamId}` });
+          const result = await ctx.startTeam(teamId);
+          log.info('Secretary started team via tool', { teamId, success: result.success.length, failed: result.failed.length });
+          return JSON.stringify({ status: 'success', team: team.name, ...result });
+        } catch (error) {
+          return JSON.stringify({ status: 'error', error: String(error) });
+        }
+      },
+    } as AgentToolHandler,
   ];
 }

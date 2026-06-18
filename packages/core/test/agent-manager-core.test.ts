@@ -16,24 +16,14 @@ const { MockAgent, mockAgentInstances } = vi.hoisted(() => {
     config: AgentConfig;
     role: RoleTemplate;
 
-    private status: 'idle' | 'paused' | 'offline' | 'working' = 'idle';
+    private status: 'idle' | 'offline' | 'working' | 'error' = 'idle';
 
-    start = vi.fn(async (options?: { startAsPaused?: boolean }) => {
-      this.status = options?.startAsPaused ? 'paused' : 'idle';
+    start = vi.fn(async (_options?: { initialHeartbeatDelayMs?: number; skipDisabledFlag?: boolean }) => {
+      this.status = 'idle';
     });
 
     stop = vi.fn(async () => {
       this.status = 'offline';
-    });
-
-    pause = vi.fn((reason?: string) => {
-      this._pauseReason = reason;
-      this.status = 'paused';
-    });
-
-    resume = vi.fn(() => {
-      this._pauseReason = undefined;
-      this.status = 'idle';
     });
 
     cancelActiveStream = vi.fn();
@@ -76,7 +66,7 @@ const { MockAgent, mockAgentInstances } = vi.hoisted(() => {
     reloadRole = vi.fn();
     sendMessage = vi.fn(async () => 'ok');
 
-    private _pauseReason?: string;
+    private _stopReason?: string;
     private _eventBus = new EventBus();
 
     constructor(opts: AgentOptions) {
@@ -90,8 +80,8 @@ const { MockAgent, mockAgentInstances } = vi.hoisted(() => {
       return this._eventBus;
     }
 
-    getPauseReason() {
-      return this._pauseReason;
+    getStopReason() {
+      return this._stopReason;
     }
   }
 
@@ -278,8 +268,8 @@ describe('agent lifecycle', () => {
     const manager = createManager();
     const created = await manager.createAgent({ name: 'Starter', roleName: 'custom', tools: [] });
 
-    await manager.startAgent(created.id, { startAsPaused: true });
-    expect(created.start).toHaveBeenCalledWith({ startAsPaused: true });
+    await manager.startAgent(created.id, { initialHeartbeatDelayMs: 5000 });
+    expect(created.start).toHaveBeenCalledWith({ initialHeartbeatDelayMs: 5000 });
   });
 
   it('stopAgent delegates to agent.stop and cleans up scoped resources', async () => {
@@ -290,42 +280,36 @@ describe('agent lifecycle', () => {
     expect(created.stop).toHaveBeenCalled();
   });
 
-  it('pauseAgentsByIds pauses multiple agents', async () => {
+  it('stopAgentsByIds stops multiple agents', async () => {
     const manager = createManager();
     const a = await manager.createAgent({ name: 'A', roleName: 'custom', tools: [] });
     const b = await manager.createAgent({ name: 'B', roleName: 'custom', tools: [] });
 
-    const result = manager.pauseAgentsByIds([a.id, b.id], 'batch pause');
+    const result = await manager.stopAgentsByIds([a.id, b.id]);
     expect(result.success).toEqual([a.id, b.id]);
-    expect(a.pause).toHaveBeenCalledWith('batch pause');
-    expect(b.pause).toHaveBeenCalledWith('batch pause');
+    expect(a.stop).toHaveBeenCalled();
+    expect(b.stop).toHaveBeenCalled();
   });
 
-  it('resumeAgentsByIds resumes paused agents only', async () => {
+  it('startAgentsByIds starts offline agents', async () => {
     const manager = createManager();
-    const agent = await manager.createAgent({ name: 'Resume Me', roleName: 'custom', tools: [] });
-    (agent.getState as ReturnType<typeof vi.fn>).mockReturnValue({
-      agentId: agent.id,
-      status: 'paused',
-      activeTaskCount: 0,
-      activeTaskIds: [],
-      tokensUsedToday: 0,
-    });
+    const agent = await manager.createAgent({ name: 'Start Me', roleName: 'custom', tools: [] });
+    await manager.stopAgent(agent.id);
 
-    const result = manager.resumeAgentsByIds([agent.id]);
+    const result = await manager.startAgentsByIds([agent.id]);
     expect(result.success).toEqual([agent.id]);
-    expect(agent.resume).toHaveBeenCalled();
+    expect(agent.start).toHaveBeenCalled();
   });
 
-  it('pauseAllAgents and resumeAllAgents toggle global pause flag', async () => {
+  it('stopAllAgents and startAllAgents toggle global stopped state', async () => {
     const manager = createManager();
     await manager.createAgent({ name: 'Global', roleName: 'custom', tools: [] });
 
-    await manager.pauseAllAgents('maintenance');
-    expect(manager.isGlobalPaused()).toBe(true);
+    await manager.stopAllAgents('maintenance');
+    expect(manager.isGlobalStopped()).toBe(true);
 
-    await manager.resumeAllAgents();
-    expect(manager.isGlobalPaused()).toBe(false);
+    await manager.startAllAgents();
+    expect(manager.isGlobalStopped()).toBe(false);
   });
 });
 
@@ -513,7 +497,7 @@ describe('listAvailableRoles and data dir accessors', () => {
 });
 
 describe('emergency and global control', () => {
-  it('emergencyStop stops all agents and sets global pause', async () => {
+  it('emergencyStop stops all agents and sets emergency mode', async () => {
     const manager = createManager();
     const handler = vi.fn();
     manager.getEventBus().on('system:emergency-stop', handler);
@@ -524,16 +508,9 @@ describe('emergency and global control', () => {
     await manager.emergencyStop();
     expect(a.stop).toHaveBeenCalled();
     expect(b.stop).toHaveBeenCalled();
-    expect(manager.isGlobalPaused()).toBe(true);
+    expect(manager.isGlobalStopped()).toBe(true);
+    expect(manager.isEmergencyMode()).toBe(true);
     expect(handler).toHaveBeenCalled();
-  });
-
-  it('setGlobalPaused toggles global pause flag', () => {
-    const manager = createManager();
-    manager.setGlobalPaused(true);
-    expect(manager.isGlobalPaused()).toBe(true);
-    manager.setGlobalPaused(false);
-    expect(manager.isGlobalPaused()).toBe(false);
   });
 });
 
@@ -788,22 +765,23 @@ describe('service wiring setters', () => {
     expect(manager.getTemplateRegistry()).toBe(registry);
   });
 
-  it('pauseAgentsByIds reports failures for unknown agents', async () => {
+  it('stopAgentsByIds reports failures for unknown agents', async () => {
     const manager = createManager();
-    const agent = await manager.createAgent({ name: 'Pause Me', roleName: 'custom', tools: [] });
+    const agent = await manager.createAgent({ name: 'Stop Me', roleName: 'custom', tools: [] });
 
-    const result = manager.pauseAgentsByIds([agent.id, 'agt_missing'], 'test pause');
+    const result = await manager.stopAgentsByIds([agent.id, 'agt_missing']);
     expect(result.success).toEqual([agent.id]);
     expect(result.failed).toHaveLength(1);
   });
 
-  it('resumeAgentsByIds skips resume for agents that are not paused', async () => {
+  it('startAgentsByIds reports failures for unknown agents', async () => {
     const manager = createManager();
-    const agent = await manager.createAgent({ name: 'Idle Agent', roleName: 'custom', tools: [] });
+    const agent = await manager.createAgent({ name: 'Start Me', roleName: 'custom', tools: [] });
+    await manager.stopAgent(agent.id);
 
-    const result = manager.resumeAgentsByIds([agent.id]);
+    const result = await manager.startAgentsByIds([agent.id, 'agt_missing']);
     expect(result.success).toEqual([agent.id]);
-    expect(agent.resume).not.toHaveBeenCalled();
+    expect(result.failed).toHaveLength(1);
   });
 
   it('syncRoleFromTemplate syncs selected files only', async () => {

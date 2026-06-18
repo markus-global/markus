@@ -154,7 +154,7 @@ describe('handleMessage guardrails and errors', () => {
     expect(agent.getTokensUsedToday()).toBeGreaterThanOrEqual(120);
 
     await expect(agent.handleMessage('second message')).rejects.toThrow(/Daily token budget/);
-    expect(agent.getPauseReason()).toContain('Daily token budget');
+    expect(agent.getStopReason()).toContain('Daily token budget');
     expect(router.chat).toHaveBeenCalledTimes(1);
   });
 
@@ -434,7 +434,7 @@ describe('respondInSession and sendSessionReply', () => {
       },
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const sessionId = `ssr_${Date.now()}`;
     const logs: Array<{ type: string }> = [];
@@ -723,7 +723,7 @@ describe('mailbox routing extended', () => {
       chatFn: async () => makeResponse(`Consolidated. ${COMPLETION_MARKER}`, 'end_turn'),
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await processViaMailbox(agent, 'memory_consolidation', {
       summary: 'Memory flush',
@@ -739,7 +739,7 @@ describe('mailbox routing extended', () => {
       chatFn: async () => makeResponse(`System handled. ${COMPLETION_MARKER}`, 'end_turn'),
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await processViaMailbox(agent, 'system_event', {
       summary: 'System event',
@@ -762,7 +762,7 @@ describe('mailbox routing extended', () => {
       },
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await processViaMailbox(agent, 'a2a_message', {
       summary: 'Peer msg',
@@ -782,7 +782,7 @@ describe('mailbox routing extended', () => {
       },
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const deltas: string[] = [];
     const reply = await agent.sendMessageStream(
@@ -1149,7 +1149,7 @@ describe('executeChatTask and heartbeat', () => {
       chatFn: async () => makeResponse(`Heartbeat ok. ${COMPLETION_MARKER}`, 'end_turn'),
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     await processViaMailbox(agent, 'heartbeat', {
       summary: 'HB1',
@@ -1224,7 +1224,7 @@ describe('vision and channel key sessions', () => {
       chatFn: async () => makeResponse('Channel reply.', 'end_turn'),
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await agent.sendMessage('Hello channel', 'user_1', { name: 'User', role: 'human' }, {
       channelKey: 'general',
@@ -1313,7 +1313,7 @@ describe('approval profile and task progress', () => {
       chatFn: async () => makeResponse('Today I fixed bugs and reviewed PRs.', 'end_turn'),
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const report = await agent.generateDailyReport();
     expect(report).toContain('bugs');

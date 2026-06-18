@@ -321,7 +321,7 @@ export class Agent {
   private memoryConsolidationTimer?: ReturnType<typeof setInterval>;
   private loopDetector = new ToolLoopDetector();
   private dataDir: string;
-  private pauseReason?: string;
+  private stopReason?: string;
   private toolResultCounter = 0;
   private lastEstimatedInputTokens = 0;
   /** In-memory activity log buffer (keyed by activity ID, write-through cache) */
@@ -521,10 +521,9 @@ export class Agent {
     this.notifyStateChange();
   }
 
-  async start(options?: { initialHeartbeatDelayMs?: number; startAsPaused?: boolean }): Promise<void> {
-    const shouldPause = options?.startAsPaused || this.state.status === 'paused';
-
+  async start(options?: { initialHeartbeatDelayMs?: number }): Promise<void> {
     this.setStatus('idle');
+    this.stopReason = undefined;
 
     // Detect runtime environment (cached for 5 minutes)
     try {
@@ -548,14 +547,6 @@ export class Agent {
       const fallback = this.memory.createSession(this.id);
       this.currentSessionId = fallback.id;
       log.info(`Created fallback session for activity injection: ${fallback.id}`);
-    }
-
-    if (shouldPause) {
-      this.setStatus('paused');
-      this.pauseReason = this.pauseReason || 'Restored as paused from previous session';
-      this.eventBus.emit('agent:paused', { agentId: this.id, reason: this.pauseReason });
-      log.info(`Agent started as paused: ${this.config.name}`);
-      return;
     }
 
     this.heartbeat.start(options?.initialHeartbeatDelayMs);
@@ -606,7 +597,7 @@ export class Agent {
     if (next) next();
   }
 
-  async stop(): Promise<void> {
+  async stop(reason?: string): Promise<void> {
     this.cancelActiveStream();
     this.attentionController.stop();
     this.heartbeat.stop();
@@ -621,10 +612,10 @@ export class Agent {
       this.memoryConsolidationTimer = undefined;
     }
     this.metricsCollector.flush();
-    const wasPaused = this.state.status === 'paused';
-    this.setStatus(wasPaused ? 'paused' : 'offline');
+    this.stopReason = reason;
+    this.setStatus('offline');
     this.eventBus.emit('agent:stopped', { agentId: this.id });
-    log.info(`Agent stopped: ${this.config.name}${wasPaused ? ' (preserving paused state)' : ''}`);
+    log.info(`Agent stopped: ${this.config.name}`, { reason });
   }
 
   // ─── Mailbox & Attention ──────────────────────────────────────────────────
@@ -1509,41 +1500,8 @@ export class Agent {
     );
   }
 
-  pause(reason?: string): void {
-    this.pauseReason = reason;
-    if (this.state.status !== 'offline') {
-      this.cancelActiveStream();
-      this.heartbeat.stop();
-      this.attentionController.stop();
-      if (this.consolidationInitialTimer) {
-        clearTimeout(this.consolidationInitialTimer);
-        this.consolidationInitialTimer = undefined;
-      }
-      if (this.memoryConsolidationTimer) {
-        clearInterval(this.memoryConsolidationTimer);
-        this.memoryConsolidationTimer = undefined;
-      }
-    }
-    this.setStatus('paused');
-    this.eventBus.emit('agent:paused', { agentId: this.id, reason });
-    log.info(`Agent paused: ${this.config.name}`, { reason });
-  }
-
-  resume(): void {
-    if (this.state.status !== 'paused') return;
-    this.pauseReason = undefined;
-    this.heartbeat.start();
-    this.attentionController.start();
-    if (!this.memoryConsolidationTimer) {
-      this.scheduleConsolidationTimer();
-    }
-    this.setStatus(this.activeTasks.size > 0 ? 'working' : 'idle');
-    this.eventBus.emit('agent:resumed', { agentId: this.id });
-    log.info(`Agent resumed: ${this.config.name}`);
-  }
-
-  getPauseReason(): string | undefined {
-    return this.pauseReason;
+  getStopReason(): string | undefined {
+    return this.stopReason;
   }
 
   /**
@@ -1902,7 +1860,7 @@ export class Agent {
     if (dailyLimit && this.getTokensUsed() >= dailyLimit) {
       const msg = `Daily token budget exhausted (${this.getTokensUsed()} / ${dailyLimit})`;
       log.warn(msg, { agentId: this.id });
-      this.pause(msg);
+      this.stop(msg).catch(err => log.warn('Stop failed after token budget exhaustion', { error: String(err) }));
       throw new Error(`Agent ${this.id}: ${msg}`);
     }
   }

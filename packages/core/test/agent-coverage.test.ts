@@ -110,7 +110,7 @@ describe('executeTask and task lifecycle', () => {
       },
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const logs: Array<{ type: string; content: string }> = [];
     await agent.sendTaskExecution('task_exec_1', 'Implement a small feature', (entry) => {
@@ -190,7 +190,7 @@ describe('session reply and respondInSession', () => {
       },
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const session = agent.getMemory().createSession(agent.id);
     const logs: string[] = [];
@@ -238,7 +238,7 @@ describe('token budget and large tool results', () => {
 
     await agent.handleMessage('first message');
     await expect(agent.handleMessage('second message')).rejects.toThrow(/Daily token budget/);
-    expect(agent.getPauseReason()).toMatch(/Daily token budget/);
+    expect(agent.getStopReason()).toMatch(/Daily token budget/);
     expect(agent.getTokensUsedToday()).toBeGreaterThanOrEqual(100);
   });
 
@@ -492,7 +492,7 @@ describe('subagent and streaming paths', () => {
       },
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const deltas: string[] = [];
     const reply = await agent.sendMessageStream(
@@ -515,7 +515,7 @@ describe('subagent and streaming paths', () => {
       },
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await agent.sendMessage('needs marker', 'user_1', { name: 'User', role: 'human' }, {
       sourceType: 'a2a_message',
@@ -544,7 +544,7 @@ describe('mailbox scenarios not covered elsewhere', () => {
   it('routes memory_consolidation scenario', async () => {
     const router = makeMockRouter();
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await processViaMailbox(agent, 'memory_consolidation', {
       summary: 'Consolidate',
@@ -559,7 +559,7 @@ describe('mailbox scenarios not covered elsewhere', () => {
   it('routes system_event through heartbeat scenario', async () => {
     const router = makeMockRouter();
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await processViaMailbox(agent, 'system_event', {
       summary: 'System notice',
@@ -575,7 +575,7 @@ describe('mailbox scenarios not covered elsewhere', () => {
       streamFn: async () => makeResponse('Task running.', 'end_turn'),
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const taskPromise = agent.sendTaskExecution('task_cmt_active', 'Long running task', () => {});
     await new Promise(r => setTimeout(r, 30));
@@ -752,12 +752,12 @@ describe('handleMessageStream tool and guardrail paths', () => {
 });
 
 describe('agent lifecycle and metrics', () => {
-  it('start schedules consolidation and stop clears timers', async () => {
+  it('start sets idle and stop sets offline', async () => {
     const agent = createAgent(makeMockRouter());
-    await agent.start({ startAsPaused: true, initialHeartbeatDelayMs: 999999 });
-    expect(agent.getState().status).toBe('paused');
+    await agent.start({ initialHeartbeatDelayMs: 999999 });
+    expect(agent.getState().status).toBe('idle');
     await agent.stop();
-    expect(agent.getState().status).toBe('paused');
+    expect(agent.getState().status).toBe('offline');
   });
 
   it('getUsageStats includes request counts after chat', async () => {
@@ -971,7 +971,7 @@ describe('performDeliberation and cognitive pipeline', () => {
       },
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
     const session = agent.getMemory().createSession(agent.id);
 
     const reply = await new Promise<string>((resolve, reject) => {
@@ -993,7 +993,7 @@ describe('performDeliberation and cognitive pipeline', () => {
       streamFn: async () => makeResponse('Task executed via mailbox.', 'end_turn'),
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const logs: string[] = [];
     await new Promise<void>((resolve, reject) => {
@@ -1024,7 +1024,7 @@ describe('performDeliberation and cognitive pipeline', () => {
       chatFn: async () => { throw new Error('LLM unavailable'); },
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const report = await agent.generateDailyReport();
     expect(report).toContain('Unable to generate report');
@@ -1070,13 +1070,15 @@ describe('performDeliberation and cognitive pipeline', () => {
     expect(token.userStopped).toBe(true);
   });
 
-  it('resume after pause restarts heartbeat and attention controller', async () => {
+  it('start after stop restarts heartbeat and attention controller', async () => {
     const agent = createAgent(makeMockRouter());
-    await agent.start({ startAsPaused: true });
-    expect(agent.getState().status).toBe('paused');
-    agent.resume();
+    await agent.start();
+    await agent.stop('maintenance');
+    expect(agent.getState().status).toBe('offline');
+    expect(agent.getStopReason()).toBe('maintenance');
+    await agent.start();
     expect(agent.getState().status).toBe('idle');
-    expect(agent.getPauseReason()).toBeUndefined();
+    expect(agent.getStopReason()).toBeUndefined();
     await agent.stop();
   });
 
@@ -1103,7 +1105,7 @@ describe('performDeliberation and cognitive pipeline', () => {
   it('sendMessage returns promise from mailbox routing', async () => {
     const router = makeMockRouter();
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
     const reply = await agent.sendMessage('Hello via sendMessage', 'user_1', { name: 'User', role: 'human' });
     expect(reply).toContain('Default reply');
     await agent.stop();

@@ -337,15 +337,15 @@ describe('scenario-based behavior', () => {
 });
 
 describe('status and metrics helpers', () => {
-  it('getState reflects pause and resume transitions', () => {
+  it('getState reflects stop and start transitions', async () => {
     const agent = createTestAgent(makeMockRouter());
-    agent.pause('maintenance');
-    expect(agent.getState().status).toBe('paused');
-    expect(agent.getPauseReason()).toBe('maintenance');
+    await agent.stop('maintenance');
+    expect(agent.getState().status).toBe('offline');
+    expect(agent.getStopReason()).toBe('maintenance');
 
-    agent.resume();
+    await agent.start();
     expect(agent.getState().status).toBe('idle');
-    expect(agent.getPauseReason()).toBeUndefined();
+    expect(agent.getStopReason()).toBeUndefined();
   });
 
   it('getAgentStatusSummary reports busy when tasks are active', () => {
@@ -383,15 +383,15 @@ describe('status and metrics helpers', () => {
 });
 
 describe('lifecycle', () => {
-  it('start with startAsPaused keeps agent paused without heartbeat', async () => {
+  it('start sets agent to idle', async () => {
     const agent = createTestAgent(makeMockRouter());
-    await agent.start({ startAsPaused: true });
-    expect(agent.getState().status).toBe('paused');
+    await agent.start();
+    expect(agent.getState().status).toBe('idle');
   });
 
   it('stop can be called after start', async () => {
     const agent = createTestAgent(makeMockRouter());
-    await agent.start({ startAsPaused: true });
+    await agent.start();
     await expect(agent.stop()).resolves.not.toThrow();
   });
 });
@@ -596,7 +596,7 @@ describe('mailbox and mind state', () => {
   it('sendMessage resolves when agent processes mailbox item', async () => {
     const mockRouter = makeMockRouter(async () => makeResponse('Reply via mailbox.', 'end_turn'));
     const agent = createTestAgent(mockRouter);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const replyPromise = agent.sendMessage('Hello via sendMessage');
     const reply = await replyPromise;

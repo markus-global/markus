@@ -36,7 +36,6 @@ function agentRuntimeStatusLabel(status: string, t: TFunction): string {
     idle: 'common:status.idle',
     working: 'common:status.working',
     offline: 'common:status.offline',
-    paused: 'common:status.paused',
     error: 'common:status.error',
   };
   const key = map[status];
@@ -2086,8 +2085,8 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
             <span className="text-sm text-fg-tertiary">{t('agent:profilePage.mind.idleWaiting')}</span>
           )}
           <div className="ml-auto flex items-center gap-2">
-            {canManageAgents && agentStatus === 'paused' && (
-              <button onClick={() => { api.agents.resume(agentId).then(() => { onAgentStateChange?.(); load(); }); }}
+            {canManageAgents && agentStatus === 'offline' && (
+              <button onClick={() => { api.agents.start(agentId).then(() => { onAgentStateChange?.(); load(); }); }}
                 className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-green-500/15 text-green-500 hover:bg-green-500/25 transition-colors">
                 ▶ {t('agent:profilePage.mind.continueBtn')}
               </button>
@@ -2099,9 +2098,9 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
               </button>
             )}
             {canManageAgents && (agentStatus === 'working' || agentStatus === 'idle') && (
-              <button onClick={() => { api.agents.pause(agentId).then(() => { onAgentStateChange?.(); load(); }); }}
-                className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-amber-500/15 text-amber-500 hover:bg-amber-500/25 transition-colors">
-                ⏸ {t('agent:profilePage.mind.pauseBtn')}
+              <button onClick={() => { api.agents.stop(agentId).then(() => { onAgentStateChange?.(); load(); }); }}
+                className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-red-500/15 text-red-500 hover:bg-red-500/25 transition-colors">
+                ■ {t('contextMenu.stop')}
               </button>
             )}
             <button onClick={() => { load(); }} className="text-xs text-fg-tertiary hover:text-fg-secondary active:text-fg-primary transition-colors">{t('agent:profilePage.mind.refresh')}</button>

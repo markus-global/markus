@@ -702,6 +702,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'users', column: 'hub_user_id', sql: 'ALTER TABLE users ADD COLUMN hub_user_id TEXT' },
     { table: 'users', column: 'hub_username', sql: 'ALTER TABLE users ADD COLUMN hub_username TEXT' },
     { table: 'agents', column: 'deleted_at', sql: 'ALTER TABLE agents ADD COLUMN deleted_at TEXT' },
+    { table: 'agents', column: 'disabled', sql: 'ALTER TABLE agents ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0' },
     { table: 'deliverables', column: 'format', sql: 'ALTER TABLE deliverables ADD COLUMN format TEXT' },
     { table: 'task_comments', column: 'reply_to_id', sql: 'ALTER TABLE task_comments ADD COLUMN reply_to_id TEXT' },
     { table: 'requirement_comments', column: 'reply_to_id', sql: 'ALTER TABLE requirement_comments ADD COLUMN reply_to_id TEXT' },
@@ -972,10 +973,17 @@ export class SqliteAgentRepo {
       activeTaskIds: fromJson(r['active_task_ids'] as string),
       profile: fromJson(r['profile'] as string),
       avatarUrl: r['avatar_url'] as string | null,
+      disabled: !!(r['disabled'] as number | undefined),
       lastHeartbeat: toDate(r['last_heartbeat'] as string),
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),
     };
+  }
+
+  setDisabled(id: string, disabled: boolean) {
+    this.db
+      .prepare('UPDATE agents SET disabled = ?, updated_at = ? WHERE id = ?')
+      .run(disabled ? 1 : 0, now(), id);
   }
 }
 

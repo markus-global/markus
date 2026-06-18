@@ -127,7 +127,7 @@ describe('generateDailyReport', () => {
       }),
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const report = await agent.generateDailyReport();
     expect(report).toContain('reviewed PRs');
@@ -193,11 +193,12 @@ describe('task helpers', () => {
   });
 });
 
-describe('paused agent behavior', () => {
-  it('resume after pause restores idle status', async () => {
+describe('stopped agent behavior', () => {
+  it('start after stop restores idle status', async () => {
     const agent = createAgent(makeMockRouter());
-    await agent.start({ startAsPaused: true });
-    agent.resume();
+    await agent.stop();
+    expect(agent.getState().status).toBe('offline');
+    await agent.start();
     expect(agent.getState().status).toBe('idle');
     await agent.stop();
   });

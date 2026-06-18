@@ -345,7 +345,7 @@ describe('memory consolidation and dream cycle', () => {
       });
     }
 
-    await agent.start({ startAsPaused: false });
+    await agent.start();
     await (agent as unknown as PrivateAgent).dreamConsolidateMemory(agent.getMemory().getEntries());
     await agent.stop();
     // dreamConsolidateMemory should run without throwing; actual memory changes
@@ -387,7 +387,7 @@ describe('memory consolidation and dream cycle', () => {
       });
     }
 
-    await agent.start({ startAsPaused: false });
+    await agent.start();
     await (agent as unknown as PrivateAgent).consolidateMemory();
     await agent.stop();
 
@@ -514,7 +514,7 @@ describe('stream and task execution edge paths', () => {
       },
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     const reply = await agent.sendMessageStream(
       'Stop now',
@@ -532,7 +532,7 @@ describe('stream and task execution edge paths', () => {
       streamFn: async () => { throw new Error('Stream LLM exploded'); },
     });
     const agent = createAgent(router);
-    await agent.start({ startAsPaused: false });
+    await agent.start();
 
     await expect(agent.sendMessageStream('fail stream', () => {})).rejects.toThrow('Stream LLM exploded');
     await agent.stop();

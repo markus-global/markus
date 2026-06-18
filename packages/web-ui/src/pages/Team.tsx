@@ -2382,21 +2382,25 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   <p className="text-[10px] font-semibold text-fg-muted uppercase tracking-wider px-2.5 pt-2">{t('chat.agents')}</p>
                   {l2Agents.map(agent => {
                     const agentUnread = unreadByAgent.get(agent.id) ?? 0;
+                    const isStopped = agent.status === 'offline';
                     return (
                       <button
                         key={agent.id}
                         onClick={() => { setChatMode('direct'); setSelectedAgent(agent.id); setMainTab('chat'); enterMobileDetail(); }}
-                        className="w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl hover:bg-surface-overlay transition-colors"
+                        className={`w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl hover:bg-surface-overlay transition-colors ${isStopped ? 'opacity-50' : ''}`}
                       >
                         <Avatar name={agent.name || 'Agent'} avatarUrl={agent.avatarUrl} size={36} />
                         <div className="flex-1 min-w-0 text-left">
-                          <div className="text-sm font-medium text-fg-primary truncate">{agent.name}</div>
+                          <div className="text-sm font-medium text-fg-primary truncate flex items-center gap-1.5">
+                            {agent.name}
+                            {isStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium leading-relaxed">{t('common:status.offline')}</span>}
+                          </div>
                           <div className="text-[10px] text-fg-tertiary truncate">{agent.role || agent.status}</div>
                         </div>
                         {agentUnread > 0 ? (
                           <span className="min-w-[16px] h-[16px] flex items-center justify-center text-[9px] font-semibold text-white bg-red-500 rounded-full px-1 leading-none shrink-0">{agentUnread}</span>
                         ) : (
-                          <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'active' || agent.status === 'idle' ? 'bg-green-500' : agent.status === 'working' || agent.status === 'busy' ? 'bg-blue-500' : agent.status === 'paused' ? 'bg-amber-500' : 'bg-gray-400'}`} />
+                          <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'idle' ? 'bg-green-500' : agent.status === 'working' ? 'bg-blue-500' : 'bg-gray-400'}`} />
                         )}
                       </button>
                     );

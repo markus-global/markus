@@ -8,7 +8,7 @@ import { TaskStatus, type TaskType, TaskPriority } from './task-queue.js';
 
 export interface AgentState {
   agentId: string;
-  status: 'idle' | 'working' | 'paused' | 'offline' | 'error';
+  status: 'idle' | 'working' | 'offline' | 'error';
   activeTaskCount: number;
   activeTaskIds: string[];
   currentTaskId?: string;

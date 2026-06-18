@@ -69,9 +69,15 @@ const TOOL_GROUPS: ToolGroup[] = [
   },
   {
     name: 'manager',
-    keywords: ['team', 'delegate', 'status', 'manage', 'assign', 'route',
-      '团队', '管理', '委派', '分配', '路由'],
-    toolNames: ['team_list', 'team_status', 'delegate_message'],
+    keywords: ['team', 'delegate', 'status', 'manage', 'assign', 'route', 'stop', 'start', 'wake', 'shutdown',
+      '团队', '管理', '委派', '分配', '路由', '停止', '启动', '唤醒', '关闭'],
+    toolNames: ['team_list', 'team_status', 'delegate_message', 'agent_stop', 'agent_start'],
+  },
+  {
+    name: 'secretary',
+    keywords: ['stop', 'start', 'wake', 'shutdown', 'team', 'manage',
+      '停止', '启动', '唤醒', '关闭', '团队', '管理'],
+    toolNames: ['team_stop', 'team_start'],
   },
   {
     name: 'deliverables',

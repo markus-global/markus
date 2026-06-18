@@ -2772,20 +2772,17 @@ export class APIServer {
         return;
       }
       if (action === 'pause') {
-        const body = await this.readBody(req);
-        const reason = body['reason'] as string | undefined;
-        const agent = this.orgService.getAgentManager().getAgent(agentId!);
-        agent.pause(reason);
-        this.ws.broadcastAgentUpdate(agentId!, 'paused');
-        this.json(res, 200, { status: 'paused' });
+        // Unified: pause is now an alias for stop
+        await this.orgService.getAgentManager().stopAgent(agentId!);
+        this.ws.broadcastAgentUpdate(agentId!, 'offline');
+        this.json(res, 200, { status: 'stopped' });
         return;
       }
       if (action === 'resume') {
-        const agent = this.orgService.getAgentManager().getAgent(agentId!);
-        agent.resume();
-        const newStatus = agent.getState().status;
-        this.ws.broadcastAgentUpdate(agentId!, newStatus);
-        this.json(res, 200, { status: newStatus });
+        // Unified: resume is now an alias for start
+        await this.orgService.getAgentManager().startAgent(agentId!);
+        this.ws.broadcastAgentUpdate(agentId!, 'idle');
+        this.json(res, 200, { status: 'started' });
         return;
       }
       if (action === 'cancel-processing') {
@@ -3320,7 +3317,7 @@ export class APIServer {
       return;
     }
 
-    // Team batch pause
+    // Team batch pause (alias for stop)
     if (path.match(/^\/api\/teams\/[^/]+\/pause$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
@@ -3329,9 +3326,8 @@ export class APIServer {
         return;
       }
       const teamId = path.split('/')[3]!;
-      const body = await this.readBody(req);
       try {
-        const result = this.orgService.pauseTeamAgents(teamId, body['reason'] as string | undefined);
+        const result = await this.orgService.stopTeamAgents(teamId);
         this.json(res, 200, result);
       } catch (err) {
         this.json(res, 404, { error: String(err) });
@@ -3339,7 +3335,7 @@ export class APIServer {
       return;
     }
 
-    // Team batch resume
+    // Team batch resume (alias for start)
     if (path.match(/^\/api\/teams\/[^/]+\/resume$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
@@ -3349,7 +3345,7 @@ export class APIServer {
       }
       const teamId = path.split('/')[3]!;
       try {
-        const result = this.orgService.resumeTeamAgents(teamId);
+        const result = await this.orgService.startTeamAgents(teamId);
         this.json(res, 200, result);
       } catch (err) {
         this.json(res, 404, { error: String(err) });
@@ -10422,7 +10418,7 @@ EXPLANATION_END`;
       const body = await this.readBody(req);
       const authUser = await this.getAuthUser(req);
       const am = this.orgService.getAgentManager();
-      await am.pauseAllAgents(body['reason'] as string | undefined);
+      await am.stopAllAgents(body['reason'] as string | undefined);
       this.auditService?.record({
         orgId: 'system',
         type: 'system_pause_all',
@@ -10431,14 +10427,14 @@ EXPLANATION_END`;
         userId: authUser?.userId,
         success: true,
       });
-      this.json(res, 200, { status: 'paused', message: 'All agents paused' });
+      this.json(res, 200, { status: 'stopped', message: 'All agents stopped' });
       return;
     }
 
     if (path === '/api/system/resume-all' && req.method === 'POST') {
       const authUser = await this.getAuthUser(req);
       const am = this.orgService.getAgentManager();
-      await am.resumeAllAgents();
+      await am.startAllAgents();
       this.auditService?.record({
         orgId: 'system',
         type: 'system_resume_all',
@@ -10446,7 +10442,7 @@ EXPLANATION_END`;
         userId: authUser?.userId,
         success: true,
       });
-      this.json(res, 200, { status: 'resumed', message: 'All agents resumed' });
+      this.json(res, 200, { status: 'started', message: 'All agents started' });
       return;
     }
 
@@ -10468,7 +10464,7 @@ EXPLANATION_END`;
     if (path === '/api/system/status' && req.method === 'GET') {
       const am = this.orgService.getAgentManager();
       this.json(res, 200, {
-        globalPaused: am.isGlobalPaused(),
+        globalPaused: am.isGlobalStopped(),
         emergencyMode: am.isEmergencyMode(),
       });
       return;
