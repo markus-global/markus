@@ -38,12 +38,15 @@ async function main() {
     target: 'node22',
     format: 'esm',
     external,
-    inject: [resolve(__dirname, 'cjs-shims.js')],
     banner: {
       js: [
         '#!/usr/bin/env -S node --disable-warning=ExperimentalWarning',
         "import { createRequire as _createRequire } from 'module';",
+        "import { fileURLToPath as _filenameOf } from 'url';",
+        "import { dirname as _dirOf } from 'path';",
         'const require = _createRequire(import.meta.url);',
+        'var __filename = _filenameOf(import.meta.url);',
+        'var __dirname = _dirOf(__filename);',
       ].join('\n'),
     },
     sourcemap: false,
