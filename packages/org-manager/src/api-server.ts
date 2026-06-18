@@ -1518,6 +1518,27 @@ export class APIServer {
       const agentManager = this.orgService.getAgentManager();
       const eventBus = agentManager.getEventBus();
 
+      // Bridge critical EventBus events to WS broadcasts (for desktop notifications)
+      const lifecycleEvents = [
+        'task:completed',
+      ];
+      for (const evt of lifecycleEvents) {
+        eventBus.on(evt, (...args: unknown[]) => {
+          const payload = args[0] as Record<string, unknown> | undefined;
+          this.ws.broadcast({ type: evt, payload: payload ?? {}, timestamp: new Date().toISOString() });
+        });
+      }
+      // Bridge HITL notifications to WS broadcast for desktop
+      this.hitlService.onNotification(n => {
+        if (n.type === 'approval_request') {
+          this.ws.broadcast({
+            type: 'approval:requested',
+            payload: { title: n.title, body: n.body, priority: n.priority, approvalId: n.metadata?.approvalId },
+            timestamp: new Date().toISOString(),
+          });
+        }
+      });
+
       // Credentials from markus.json (single source of truth)
       const { loadConfig: loadCfg } = await import('@markus/shared');
       const markusCfg = loadCfg(this.markusConfigPath);
