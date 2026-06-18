@@ -1,4 +1,5 @@
 import type { Command } from 'commander';
+import type { BackendInstance } from '../backend.js';
 import { resolve, join, dirname } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -406,7 +407,7 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
 export async function startServerHeadless(
   config: ReturnType<typeof loadConfig>,
   values: { port?: unknown; config?: unknown; onProgress?: (step: string, message: string) => void },
-): Promise<import('../backend.js').BackendInstance> {
+): Promise<BackendInstance> {
   const instance = await startServerCore(config, values, { headless: true });
   return instance!;
 }
@@ -423,7 +424,7 @@ async function startServerCore(
   config: ReturnType<typeof loadConfig>,
   values: { port?: unknown; config?: unknown; onProgress?: (step: string, message: string) => void },
   opts: StartServerCoreOptions,
-): Promise<import('../backend.js').BackendInstance | undefined> {
+): Promise<BackendInstance | undefined> {
   const headless = opts.headless ?? false;
   const onProgress = values.onProgress;
 
@@ -1695,7 +1696,7 @@ async function startServerCore(
     await messageRouter.disconnectAll();
   };
 
-  const instance: import('../backend.js').BackendInstance = {
+  const instance: BackendInstance = {
     apiServer,
     port: apiPort,
     url: uiUrl,
