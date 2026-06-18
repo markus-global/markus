@@ -1942,7 +1942,7 @@ function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem, t:
 }
 
 function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentStateChange }: { agentId: string; highlightId?: string; agentStatus?: string; canManageAgents?: boolean; onAgentStateChange?: () => void }) {
-  const { t } = useTranslation(['agent', 'common']);
+  const { t } = useTranslation(['agent', 'common', 'team']);
   const [mind, setMind] = useState<import('../api.ts').AgentMindState | null>(null);
   const [mailbox, setMailbox] = useState<import('../api.ts').AgentMailboxResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -2100,7 +2100,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
             {canManageAgents && (agentStatus === 'working' || agentStatus === 'idle') && (
               <button onClick={() => { api.agents.stop(agentId).then(() => { onAgentStateChange?.(); load(); }); }}
                 className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-red-500/15 text-red-500 hover:bg-red-500/25 transition-colors">
-                ■ {t('contextMenu.stop')}
+                ■ {t('team:contextMenu.stop')}
               </button>
             )}
             <button onClick={() => { load(); }} className="text-xs text-fg-tertiary hover:text-fg-secondary active:text-fg-primary transition-colors">{t('agent:profilePage.mind.refresh')}</button>

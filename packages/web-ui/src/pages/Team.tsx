@@ -713,7 +713,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           }
         }
         if (detail.params?.selectAgent) {
-          handleViewProfile(detail.params.selectAgent);
+          setChatMode('direct');
+          setSelectedAgent(detail.params.selectAgent);
+          setMainTab('chat');
+          if (isMobile) enterMobileDetail();
         }
         if (detail.params?.prefillMessage) {
           const msg = detail.params.prefillMessage;
@@ -764,14 +767,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       localStorage.removeItem('markus_nav_agentId');
       const pTab = localStorage.getItem('markus_nav_profileTab');
       localStorage.removeItem('markus_nav_profileTab');
-      const navPrefill = localStorage.getItem('markus_nav_prefillMessage');
-      if (navPrefill) {
-        setChatMode('direct');
-        setSelectedAgent(navAgent);
+      setChatMode('direct');
+      setSelectedAgent(navAgent);
+      if (pTab) {
+        handleViewProfile(navAgent, { tab: pTab as 'overview' });
+      } else {
         setMainTab('chat');
         if (isMobile) enterMobileDetail();
-      } else {
-        handleViewProfile(navAgent, pTab ? { tab: pTab as 'overview' } : undefined);
       }
     }
     const navDm = localStorage.getItem('markus_nav_dm');
@@ -800,7 +802,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     const selectAgent = localStorage.getItem('markus_nav_selectAgent');
     if (selectAgent) {
       localStorage.removeItem('markus_nav_selectAgent');
-      handleViewProfile(selectAgent);
+      setChatMode('direct');
+      setSelectedAgent(selectAgent);
+      setMainTab('chat');
+      if (isMobile) enterMobileDetail();
     }
     const selectTeam = localStorage.getItem('markus_nav_selectTeam');
     if (selectTeam) {
@@ -890,11 +895,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     isProgrammaticScrollRef.current = true;
     if (visibleMessages.length > 0) {
       chatVirtualizer.scrollToIndex(visibleMessages.length - 1, { align: 'end', behavior });
+      // Re-scroll after virtualizer measures actual item sizes
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          chatVirtualizer.scrollToIndex(visibleMessages.length - 1, { align: 'end', behavior: 'instant' });
+          requestAnimationFrame(() => { isProgrammaticScrollRef.current = false; });
+        });
+      });
     } else {
       const el = chatScrollRef.current;
       if (el) el.scrollTo({ top: el.scrollHeight, behavior });
+      requestAnimationFrame(() => { isProgrammaticScrollRef.current = false; });
     }
-    requestAnimationFrame(() => { isProgrammaticScrollRef.current = false; });
   }, [visibleMessages.length, chatVirtualizer]);
 
   // ── Preserve scroll position across page-level navigation ──
@@ -1048,6 +1060,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (prevKey && prevKey !== newKey) {
       sessionTabsBuffer.current.set(prevKey, openSessionTabs);
       activeSessionBuffer.current.set(prevKey, activeSessionId);
+    }
+    // Snap to bottom when entering a NEW conversation (or first mount)
+    if (prevKey !== newKey) {
       userAtBottomRef.current = true;
       setShowScrollBtn(false);
       newMsgCountRef.current = 0;
@@ -3023,7 +3038,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               teamId={activeTeamId}
               onBack={() => setMainTab('chat')}
               inline
-              onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); switchToProfile(); }}
+              onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); }}
             />
           </div>
         )}
@@ -3050,7 +3065,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               inline
               headless
               activeTab={mainTab as TeamTab}
-              onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('overview'); if (!showTeamDetailPanel && !l2SpaceTight) setShowTeamDetailPanel(true); }}
+              onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); }}
             />
           </div>
         )}
@@ -3220,7 +3235,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 <div
                   key={ta.id}
                   className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg cursor-pointer hover:bg-surface-elevated/60 transition-colors group/think"
-                  onClick={() => handleViewProfile(ta.id, { tab: 'overview' })}
+                  onClick={() => { setChatMode('direct'); setSelectedAgent(ta.id); setMainTab('chat'); }}
                 >
                   <div className="relative shrink-0">
                     <Avatar name={ta.name} avatarUrl={ta.avatarUrl} size={28} bgClass="bg-brand-500/15 text-brand-600" />
