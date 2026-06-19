@@ -63,7 +63,7 @@ export function createMainWindow(): BrowserWindow {
     minHeight: 600,
     show: true,
     titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 14, y: 14 },
+    trafficLightPosition: { x: 16, y: 16 },
     webPreferences: {
       preload: join(app.getAppPath().replace('app.asar', 'app.asar.unpacked'), 'dist', 'preload.js'),
       contextIsolation: true,

@@ -13,6 +13,7 @@ interface MarkusDesktopAPI {
   onUpdateDownloaded(callback: (info: { version: string }) => void): void;
   onNotification(callback: (data: { title: string; body: string; type: string }) => void): void;
   onNotificationClick(callback: (nav: { page?: string; params?: Record<string, string>; openNotifications?: boolean }) => void): void;
+  setTrafficLightPosition(x: number, y: number): Promise<void>;
 }
 
 interface Window {

@@ -28,4 +28,7 @@ contextBridge.exposeInMainWorld('markusDesktop', {
   onNotificationClick: (callback: (nav: { page: string; params?: Record<string, string> }) => void) => {
     ipcRenderer.on('notification:navigate', (_event, nav) => callback(nav));
   },
+
+  setTrafficLightPosition: (x: number, y: number) =>
+    ipcRenderer.invoke('app:set-traffic-light-position', x, y),
 });

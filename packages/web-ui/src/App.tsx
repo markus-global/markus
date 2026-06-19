@@ -164,6 +164,17 @@ export function App() {
     navBus.setHandler((p) => navigate(p));
   }, [navigate]);
 
+  // Desktop: adjust traffic light position based on sidebar visibility
+  useEffect(() => {
+    if (!window.markusDesktop) return;
+    const hasSidebar = !isMobile && page !== PAGE.SETTINGS;
+    if (hasSidebar && !sidebar.collapsed) {
+      window.markusDesktop.setTrafficLightPosition(16, 16);
+    } else {
+      window.markusDesktop.setTrafficLightPosition(6, 16);
+    }
+  }, [sidebar.collapsed, page, isMobile]);
+
   // Desktop: handle OS notification click — open panel + navigate to content
   useEffect(() => {
     if (!window.markusDesktop) return;

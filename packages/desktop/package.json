@@ -13,7 +13,7 @@
     "build:electron": "node build.mjs",
     "dev": "node build.mjs && electron .",
     "clean": "rm -rf dist dist-electron *.tsbuildinfo",
-    "pack": "electron-builder --dir",
+    "pack": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
     "dist": "electron-builder",
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
