@@ -7,6 +7,12 @@ interface WSEvent {
   timestamp?: string;
 }
 
+interface NavContext {
+  page?: string;
+  params?: Record<string, string>;
+  openNotifications?: boolean;
+}
+
 let wsClient: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -65,39 +71,66 @@ function handleEvent(event: WSEvent): void {
     case 'task:update': {
       const status = payload?.status as string;
       const title = (payload?.title as string) ?? 'Task';
+      const taskId = payload?.taskId as string | undefined;
       if (status === 'completed') {
-        showOSNotification('Task Completed', `✓ ${title}`, 'task_complete');
+        showOSNotification('Task Completed', `✓ ${title}`, {
+          openNotifications: true,
+          page: 'work', params: taskId ? { openTask: taskId } : undefined,
+        });
       } else if (status === 'failed') {
-        showOSNotification('Task Failed', `✗ ${title}`, 'task_failed');
+        showOSNotification('Task Failed', `✗ ${title}`, {
+          openNotifications: true,
+          page: 'work', params: taskId ? { openTask: taskId } : undefined,
+        });
       } else if (status === 'review') {
-        showOSNotification('Review Required', `${title} needs review`, 'approval');
+        showOSNotification('Review Required', `${title} needs review`, {
+          openNotifications: true,
+          page: 'work', params: taskId ? { openTask: taskId } : undefined,
+        });
       }
       break;
     }
 
     case 'task:completed': {
       const title = (payload?.title as string) ?? (payload?.taskId as string) ?? 'Task';
-      showOSNotification('✅ Task Completed', title, 'task_complete');
+      const taskId = (payload?.taskId as string) ?? undefined;
+      showOSNotification('✅ Task Completed', title, {
+        openNotifications: true,
+        page: 'work', params: taskId ? { openTask: taskId } : undefined,
+      });
       break;
     }
 
-    case 'approval:requested':
+    case 'approval:requested': {
+      const taskId = payload?.taskId as string | undefined;
+      const agentId = payload?.agentId as string | undefined;
       showOSNotification(
         '🔔 Approval Required',
         (payload?.title as string) ?? 'An agent needs your approval',
-        'approval',
+        {
+          openNotifications: true,
+          page: taskId ? 'work' : agentId ? 'team' : undefined,
+          params: taskId ? { openTask: taskId } : agentId ? { agentId } : undefined,
+        },
       );
       break;
-
-    // agent:started, agent:stopped, agent:created etc. are intentionally
-    // NOT shown as OS notifications — too noisy for daily use.
+    }
 
     case 'chat:message':
       if (payload?.notifyUser) {
+        const agentId = payload?.agentId as string | undefined;
+        const sessionId = payload?.sessionId as string | undefined;
+        const params: Record<string, string> = {};
+        if (agentId) params.agentId = agentId;
+        if (sessionId) params.sessionId = sessionId;
         showOSNotification(
           (payload.agentName as string) ?? 'Markus Agent',
           ((payload.text as string) ?? '').slice(0, 100),
-          'mention',
+          {
+            openNotifications: true,
+            page: 'team',
+            params: Object.keys(params).length > 0 ? params : undefined,
+          },
         );
       }
       break;
@@ -106,14 +139,28 @@ function handleEvent(event: WSEvent): void {
       const n = payload?.notification as Record<string, unknown> | undefined;
       const title = (n?.title as string) ?? (payload?.title as string) ?? 'Markus';
       const body = (n?.body as string) ?? (payload?.body as string) ?? '';
-      showOSNotification(title, body, (n?.type as string) ?? 'info');
+      const meta = (n?.metadata ?? payload?.metadata ?? {}) as Record<string, string>;
+      showOSNotification(title, body, {
+        openNotifications: true,
+        ...buildNavFromMeta(meta),
+      });
       break;
     }
   }
 }
 
-function showOSNotification(title: string, body: string, type: string): void {
-  // Don't show notifications if the app window is focused
+function buildNavFromMeta(meta: Record<string, string>): Pick<NavContext, 'page' | 'params'> {
+  if (meta.taskId) return { page: 'work', params: { openTask: meta.taskId } };
+  if (meta.requirementId) return { page: 'work', params: { openRequirement: meta.requirementId } };
+  if (meta.agentId) {
+    const params: Record<string, string> = { agentId: meta.agentId };
+    if (meta.sessionId) params.sessionId = meta.sessionId;
+    return { page: 'team', params };
+  }
+  return {};
+}
+
+function showOSNotification(title: string, body: string, nav?: NavContext): void {
   const win = BrowserWindow.getAllWindows()[0];
   if (win && win.isFocused()) return;
 
@@ -123,13 +170,11 @@ function showOSNotification(title: string, body: string, type: string): void {
       if (win) {
         if (win.isMinimized()) win.restore();
         win.focus();
+        if (nav) {
+          win.webContents.send('notification:navigate', nav);
+        }
       }
     });
     notification.show();
-  }
-
-  // Also forward to renderer for in-app display
-  if (win) {
-    win.webContents.send('notification:show', { title, body, type });
   }
 }

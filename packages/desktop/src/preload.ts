@@ -24,4 +24,8 @@ contextBridge.exposeInMainWorld('markusDesktop', {
   onNotification: (callback: (data: { title: string; body: string; type: string }) => void) => {
     ipcRenderer.on('notification:show', (_event, data) => callback(data));
   },
+
+  onNotificationClick: (callback: (nav: { page: string; params?: Record<string, string> }) => void) => {
+    ipcRenderer.on('notification:navigate', (_event, nav) => callback(nav));
+  },
 });

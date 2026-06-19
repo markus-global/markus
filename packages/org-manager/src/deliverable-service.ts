@@ -64,14 +64,11 @@ export class DeliverableService {
         // Link taskId if the existing deliverable doesn't have one yet
         if (opts.taskId && !existing.taskId) patch.taskId = opts.taskId;
         const updated = await this.update(existing.id, patch);
-        log.info('Deliverable upserted (updated existing)', { id: existing.id, reference: ref });
-        this.ws?.broadcastDeliverableUpdate(existing.id, 'updated', {
-          type: opts.type,
-          title: opts.title,
-          agentId: opts.agentId,
-          projectId: opts.projectId,
-          taskId: opts.taskId,
-        });
+        if (updated && updated.updatedAt !== existing.updatedAt) {
+          log.info('Deliverable upserted (updated existing)', { id: existing.id, reference: ref });
+        } else {
+          log.debug('Deliverable upsert no-op', { id: existing.id, reference: ref });
+        }
         return updated ?? existing;
       }
     }
@@ -233,7 +230,16 @@ export class DeliverableService {
       return d;
     }
 
-    const now = new Date().toISOString();
+    // Only bump updatedAt for content-significant changes; metadata-only
+    // changes (title, summary, tags, link fields) are saved but don't
+    // push the deliverable to the top of time-sorted lists.
+    const SIGNIFICANT_FIELDS = new Set([
+      'type', 'reference', 'format', 'status',
+      'artifactType', 'artifactData', 'diffStats', 'testResults',
+    ]);
+    const hasSignificantChange = changed.some(f => SIGNIFICANT_FIELDS.has(f));
+    const now = hasSignificantChange ? new Date().toISOString() : d.updatedAt;
+
     if (data.type !== undefined) d.type = data.type;
     if (data.title !== undefined) d.title = data.title;
     if (data.summary !== undefined) d.summary = data.summary;
@@ -250,8 +256,8 @@ export class DeliverableService {
     if (data.testResults !== undefined) d.testResults = data.testResults;
     d.updatedAt = now;
 
-    await this.repo?.update(id, data);
-    log.info('Deliverable updated', { id, fields: changed });
+    await this.repo?.update(id, { ...data, updatedAt: now });
+    log.info('Deliverable updated', { id, fields: changed, significant: hasSignificantChange });
     this.ws?.broadcastDeliverableUpdate(id, 'updated', {
       type: d.type,
       title: d.title,
