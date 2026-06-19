@@ -40,8 +40,8 @@ describe('CognitiveDepth', () => {
 
 describe('PLAN_LIMITS', () => {
   it('defines free tier limits', () => {
-    expect(PLAN_LIMITS.free.maxTeams).toBe(1);
-    expect(PLAN_LIMITS.free.maxToolCallsPerDay).toBe(500);
+    expect(PLAN_LIMITS.free.maxTeams).toBe(5);
+    expect(PLAN_LIMITS.free.maxToolCallsPerDay).toBe(5000);
     expect(PLAN_LIMITS.free.maxUsers).toBe(1);
   });
 

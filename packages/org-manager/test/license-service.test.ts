@@ -28,7 +28,7 @@ function defaultLicenseJson() {
     limits: {
       maxAgents: -1,
       maxTokensPerMonth: -1,
-      maxToolCallsPerDay: 500,
+      maxToolCallsPerDay: 5000,
       maxMessagesPerDay: -1,
       maxStorageBytes: -1,
     },
@@ -76,7 +76,7 @@ describe('LicenseService', () => {
     it('returns license info and limits', () => {
       const info = service.getInfo();
       expect(info.plan).toBe('free');
-      expect(service.getLimits().maxToolCallsPerDay).toBe(500);
+      expect(service.getLimits().maxToolCallsPerDay).toBe(5000);
     });
   });
 
@@ -235,7 +235,7 @@ describe('LicenseService', () => {
       mockReadFileSync.mockImplementation((p: string) => {
         if (p === LICENSE_PATH) {
           return JSON.stringify({
-            plan: 'free', features: [], limits: { maxToolCallsPerDay: 500 }, instanceId: 'inst-123',
+            plan: 'free', features: [], limits: { maxToolCallsPerDay: 5000 }, instanceId: 'inst-123',
           });
         }
         if (p === HUB_TOKEN_PATH) return 'hub-token-value';
@@ -285,7 +285,7 @@ describe('LicenseService', () => {
 
     it('exposes features, limits, and hub url setter', () => {
       expect(service.getFeatures()).toEqual([]);
-      expect(service.getLimits().maxToolCallsPerDay).toBe(500);
+      expect(service.getLimits().maxToolCallsPerDay).toBe(5000);
       service.setHubUrl('https://hub2.test');
       expect(service.getInfo().plan).toBe('free');
     });

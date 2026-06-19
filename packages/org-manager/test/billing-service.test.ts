@@ -96,7 +96,7 @@ describe('BillingService', () => {
 
     it('enforces free tier tool call limit', () => {
       service.setOrgPlan('org-1', 'free');
-      for (let i = 0; i < 500; i++) {
+      for (let i = 0; i < 5000; i++) {
         service.recordUsage({ orgId: 'org-1', agentId: 'a', type: 'tool_call', amount: 1 });
       }
       const result = service.checkLimit('org-1', 'tool_call', 1);
@@ -106,7 +106,7 @@ describe('BillingService', () => {
 
     it('uses toolCallsTodayProvider when set', () => {
       service.setOrgPlan('org-1', 'free');
-      service.setToolCallsTodayProvider(() => 499);
+      service.setToolCallsTodayProvider(() => 4999);
       expect(service.checkLimit('org-1', 'tool_call', 1).allowed).toBe(true);
       expect(service.checkLimit('org-1', 'tool_call', 2).allowed).toBe(false);
     });
