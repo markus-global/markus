@@ -3,7 +3,11 @@
   "version": "0.8.4-rc.1",
   "private": true,
   "productName": "Markus",
-  "author": "Markus Global",
+  "author": {
+    "name": "Markus Global",
+    "email": "team@markus.global"
+  },
+  "homepage": "https://www.markus.global",
   "description": "Markus Desktop App — Electron wrapper for the AI Digital Workforce Platform",
   "type": "module",
   "main": "dist/main.js",
