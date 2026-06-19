@@ -19,26 +19,13 @@ mac:
   category: public.app-category.developer-tools
   target:
     - target: dmg
-      arch: [arm64, x64]
-    - target: zip
-      arch: [arm64, x64]
+      arch: [arm64]
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.inherit.plist
   notarize: true
   icon: build/icon.icns
-
-mas:
-  hardenedRuntime: false
-  entitlements: build/entitlements.mas.plist
-  entitlementsInherit: build/entitlements.mas.inherit.plist
-  provisioningProfile: build/markus.provisionprofile
-  notarize: false
-  category: public.app-category.developer-tools
-  target:
-    - target: mas
-      arch: [universal]
 
 dmg:
   sign: false
@@ -67,8 +54,6 @@ linux:
   executableName: markus
   target:
     - target: AppImage
-      arch: [x64]
-    - target: deb
       arch: [x64]
   category: Development
   icon: build/icon.png

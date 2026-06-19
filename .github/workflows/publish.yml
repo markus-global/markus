@@ -63,48 +63,9 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-  # publish-docker:
-  #   runs-on: ubuntu-latest
-  #   needs: publish-npm
-  #   if: ${{ secrets.DOCKERHUB_TOKEN != '' }}
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Extract version from tag
-  #       id: version
-  #       run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-  #     - uses: docker/setup-buildx-action@v3
-  #     - uses: docker/login-action@v3
-  #       with:
-  #         username: ${{ secrets.DOCKERHUB_USERNAME }}
-  #         password: ${{ secrets.DOCKERHUB_TOKEN }}
-  #     - uses: docker/build-push-action@v6
-  #       with:
-  #         context: .
-  #         push: true
-  #         tags: |
-  #           markus/markus:${{ steps.version.outputs.VERSION }}
-  #           markus/markus:latest
-  #         cache-from: type=gha
-  #         cache-to: type=gha,mode=max
-
-  build-binaries:
+  build-server-binary:
     needs: publish-npm
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            platform: linux
-            arch: x64
-          - os: macos-latest
-            platform: darwin
-            arch: arm64
-          - os: macos-latest
-            platform: darwin
-            arch: x64
-          - os: windows-latest
-            platform: win
-            arch: x64
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -128,106 +89,23 @@ jobs:
       - name: Bundle CLI for publishing
         run: pnpm --filter @markus-global/cli build:bundle
 
-      - name: Import Apple certificates
-        if: matrix.platform == 'darwin'
-        env:
-          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          if [ -z "$APPLE_CERTIFICATE_P12" ]; then
-            echo "⚠ Apple signing secrets not configured — skipping"
-            exit 0
-          fi
-
-          KEYCHAIN="build-$$.keychain-db"
-          KEYCHAIN_PASSWORD="$(openssl rand -hex 12)"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security set-keychain-settings -lut 900 "$KEYCHAIN"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-
-          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > /tmp/cert.p12
-          security import /tmp/cert.p12 -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -T /usr/bin/productsign -T /usr/bin/codesign
-          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          rm /tmp/cert.p12
-
-          # Export identities for later steps
-          APP_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/' || true)
-          INST_IDENTITY=$(security find-identity -v -p basic "$KEYCHAIN" | grep "Developer ID Installer" | head -1 | sed 's/.*"\(.*\)"/\1/' || true)
-
-          echo "APPLE_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
-          echo "APPLE_KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
-          [ -n "$APP_IDENTITY" ]  && echo "MACOS_CODESIGN_IDENTITY=$APP_IDENTITY" >> "$GITHUB_ENV" && echo "✓ Found Application identity: $APP_IDENTITY"
-          [ -n "$INST_IDENTITY" ] && echo "MACOS_INSTALLER_IDENTITY=$INST_IDENTITY" >> "$GITHUB_ENV" && echo "✓ Found Installer identity: $INST_IDENTITY"
-
-          if [ -z "$APP_IDENTITY" ]; then
-            echo "⚠ No 'Developer ID Application' certificate found — binaries will NOT be codesigned"
-            echo "  Notarization will likely fail. Add a Developer ID Application cert to the P12."
-          fi
-
       - name: Build binary archive
-        run: bash scripts/build-binary.sh ${{ matrix.platform }} ${{ matrix.arch }}
-
-      - name: Sign and notarize macOS .pkg
-        if: matrix.platform == 'darwin' && env.MACOS_INSTALLER_IDENTITY != ''
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          PKG="dist-binary/markus-v${VERSION}-darwin-${{ matrix.arch }}.pkg"
-          PKG_SIGNED="dist-binary/markus-v${VERSION}-darwin-${{ matrix.arch }}-signed.pkg"
-          FIXED="dist-binary/markus-setup-darwin-${{ matrix.arch }}.pkg"
-
-          echo "Signing .pkg with: $MACOS_INSTALLER_IDENTITY"
-          productsign --sign "$MACOS_INSTALLER_IDENTITY" --keychain "$APPLE_KEYCHAIN" "$PKG" "$PKG_SIGNED"
-          mv "$PKG_SIGNED" "$PKG"
-          cp "$PKG" "$FIXED"
-
-          # Notarize (non-fatal: .pkg is still usable without notarization)
-          SUBMISSION_OUT=$(xcrun notarytool submit "$PKG" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_ID_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 600 2>&1) || true
-          echo "$SUBMISSION_OUT"
-
-          SUBMISSION_ID=$(echo "$SUBMISSION_OUT" | grep "id:" | head -1 | awk '{print $2}')
-          if echo "$SUBMISSION_OUT" | grep -q "status: Invalid"; then
-            echo "⚠ Notarization failed — fetching log for details:"
-            xcrun notarytool log "$SUBMISSION_ID" \
-              --apple-id "$APPLE_ID" \
-              --password "$APPLE_ID_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" 2>&1 || true
-            echo "⚠ .pkg is signed but NOT notarized. Users will see a Gatekeeper warning."
-            echo "  To fix: add a 'Developer ID Application' cert to APPLE_CERTIFICATE_P12."
-          else
-            # Staple the notarization ticket
-            xcrun stapler staple "$PKG"
-            cp "$PKG" "$FIXED"
-            echo "✓ Signed and notarized: $PKG"
-          fi
-
-      - name: Cleanup Apple keychain
-        if: always() && matrix.platform == 'darwin' && env.APPLE_KEYCHAIN != ''
-        run: security delete-keychain "$APPLE_KEYCHAIN" 2>/dev/null || true
+        run: bash scripts/build-binary.sh linux x64
 
       - name: Upload versioned installer
         uses: actions/upload-artifact@v4
         with:
-          name: markus-${{ matrix.platform }}-${{ matrix.arch }}
+          name: markus-linux-x64
           path: |
-            dist-binary/markus-v*-${{ matrix.platform }}-${{ matrix.arch }}.*
-            !dist-binary/markus-v*-${{ matrix.platform }}-${{ matrix.arch }}/
+            dist-binary/markus-v*-linux-x64.*
+            !dist-binary/markus-v*-linux-x64/
           retention-days: 5
 
-      - name: Upload fixed-name installer (for /releases/latest/download/)
+      - name: Upload fixed-name installer
         uses: actions/upload-artifact@v4
         with:
-          name: markus-setup-${{ matrix.platform }}-${{ matrix.arch }}
-          path: dist-binary/markus-setup-${{ matrix.platform }}-${{ matrix.arch }}.*
+          name: markus-setup-linux-x64
+          path: dist-binary/markus-setup-linux-x64.*
           retention-days: 5
 
   build-desktop:
@@ -240,10 +118,6 @@ jobs:
             platform: darwin
             arch: arm64
             electron_args: "--mac --arm64"
-          - os: macos-latest
-            platform: darwin
-            arch: x64
-            electron_args: "--mac --x64"
           - os: windows-latest
             platform: win
             arch: x64
@@ -319,98 +193,13 @@ jobs:
           name: markus-desktop-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
             packages/desktop/dist-electron/*.dmg
-            packages/desktop/dist-electron/*.zip
             packages/desktop/dist-electron/*.exe
             packages/desktop/dist-electron/*.AppImage
-            packages/desktop/dist-electron/*.deb
           retention-days: 5
-
-  build-desktop-mas:
-    needs: publish-npm
-    if: needs.publish-npm.outputs.is_prerelease == 'false'
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: Build all packages
-        run: pnpm build
-
-      - name: Build Web UI
-        run: pnpm --filter @markus/web-ui build
-
-      - name: Build Electron app (MAS)
-        run: MARKUS_MAS=true pnpm --filter @markus/desktop build:electron
-
-      - name: Import MAS certificates
-        env:
-          MAS_CERTIFICATE_P12: ${{ secrets.MAS_CERTIFICATE_P12 }}
-          MAS_CERTIFICATE_PASSWORD: ${{ secrets.MAS_CERTIFICATE_PASSWORD }}
-          MAS_PROVISIONING_PROFILE: ${{ secrets.MAS_PROVISIONING_PROFILE }}
-        run: |
-          if [ -z "$MAS_CERTIFICATE_P12" ]; then
-            echo "⚠ MAS signing secrets not configured — skipping"
-            exit 0
-          fi
-          KEYCHAIN="mas-$$.keychain-db"
-          KEYCHAIN_PASSWORD="$(openssl rand -hex 12)"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security set-keychain-settings -lut 900 "$KEYCHAIN"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          echo "$MAS_CERTIFICATE_P12" | base64 --decode > /tmp/cert.p12
-          security import /tmp/cert.p12 -k "$KEYCHAIN" -P "$MAS_CERTIFICATE_PASSWORD" \
-            -T /usr/bin/codesign
-          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          rm /tmp/cert.p12
-          # Install provisioning profile
-          if [ -n "$MAS_PROVISIONING_PROFILE" ]; then
-            echo "$MAS_PROVISIONING_PROFILE" | base64 -d > packages/desktop/build/markus.provisionprofile
-          fi
-          echo "MAS_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
-
-      - name: Package MAS app
-        working-directory: packages/desktop
-        run: pnpm dist:mas
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload to App Store Connect
-        if: env.MAS_KEYCHAIN != ''
-        env:
-          ASC_API_KEY: ${{ secrets.ASC_API_KEY }}
-          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
-          ASC_API_ISSUER: ${{ secrets.ASC_API_ISSUER }}
-        run: |
-          if [ -z "$ASC_API_KEY" ]; then
-            echo "⚠ App Store Connect API key not configured — skipping upload"
-            exit 0
-          fi
-          mkdir -p ~/.private_keys
-          echo "$ASC_API_KEY" | base64 -d > ~/.private_keys/AuthKey_${ASC_API_KEY_ID}.p8
-          PKG_FILE=$(find packages/desktop/dist-electron -name "*.pkg" | head -1)
-          if [ -n "$PKG_FILE" ]; then
-            xcrun altool --upload-app --type macos -f "$PKG_FILE" \
-              --apiKey "$ASC_API_KEY_ID" --apiIssuer "$ASC_API_ISSUER"
-          fi
-
-      - name: Cleanup MAS keychain
-        if: always() && env.MAS_KEYCHAIN != ''
-        run: security delete-keychain "$MAS_KEYCHAIN" 2>/dev/null || true
 
   github-release:
     runs-on: ubuntu-latest
-    needs: [publish-npm, build-binaries, build-desktop]
+    needs: [publish-npm, build-server-binary, build-desktop]
     steps:
       - uses: actions/checkout@v4
 
@@ -418,7 +207,7 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
 
-      - name: Download all binary artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -438,39 +227,26 @@ jobs:
           body: |
             ## Desktop App (recommended)
 
-            Native application with auto-update, notifications, and full agent capabilities:
-
             | Platform | Download |
             |----------|----------|
-            | macOS Apple Silicon | [Markus-darwin-arm64.dmg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/Markus-${{ steps.version.outputs.VERSION }}-arm64.dmg) |
-            | macOS Intel | [Markus-darwin-x64.dmg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/Markus-${{ steps.version.outputs.VERSION }}.dmg) |
-            | Windows x64 | [Markus-win-x64-setup.exe](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/Markus-Setup-${{ steps.version.outputs.VERSION }}.exe) |
-            | Linux x64 | [Markus-linux-x64.AppImage](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/Markus-${{ steps.version.outputs.VERSION }}.AppImage) |
+            | macOS (Apple Silicon) | [Markus.dmg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/Markus-${{ steps.version.outputs.VERSION }}-arm64.dmg) |
+            | Windows x64 | [Markus-Setup.exe](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/Markus-Setup-${{ steps.version.outputs.VERSION }}.exe) |
+            | Linux x64 | [Markus.AppImage](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/Markus-${{ steps.version.outputs.VERSION }}.AppImage) |
 
-            Also available on the [Mac App Store](https://apps.apple.com/app/markus/id0000000000) (some features restricted).
+            ## Server / CLI
 
-            ## Server / CLI Install
-
-            **Binary installer** (includes Node.js runtime):
-
-            | Platform | Installer |
-            |----------|-----------|
-            | Windows x64 | [markus-setup-win-x64.exe](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-win-x64.exe) |
-            | macOS Apple Silicon | [markus-setup-darwin-arm64.pkg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-darwin-arm64.pkg) |
-            | macOS Intel | [markus-setup-darwin-x64.pkg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-darwin-x64.pkg) |
-            | Linux x64 (.deb) | [markus-setup-linux-x64.deb](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-linux-x64.deb) |
-
-            **Or via terminal:**
             ```bash
-            # macOS / Linux
+            # macOS / Linux (one-liner)
             curl -fsSL https://markus.global/install.sh | bash
 
             # Windows (PowerShell)
             irm https://markus.global/install.ps1 | iex
 
-            # npm (if you already have Node.js 22+)
+            # npm (requires Node.js 22+)
             npm install -g @markus-global/cli@${{ steps.version.outputs.VERSION }}
             ```
+
+            Linux server binary: [markus-setup-linux-x64.deb](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-linux-x64.deb)
 
       - name: Create GitHub Release (pre-release)
         if: needs.publish-npm.outputs.is_prerelease == 'true'
@@ -481,31 +257,15 @@ jobs:
           generate_release_notes: true
           files: artifacts/*
           body: |
-            > **Pre-release** — this version is for testing. Use `npm i -g @markus-global/cli@next` to install.
-            > The `install.sh` one-liner always installs the latest stable release.
-
-            ## Install (testers)
+            > **Pre-release** — for testing only. `install.sh` always installs the latest stable.
 
             ```bash
-            # npm (recommended for RC testing)
             npm install -g @markus-global/cli@${{ steps.version.outputs.VERSION }}
-
-            # or use the @next tag
-            npm install -g @markus-global/cli@next
             ```
-
-            ## Binary installers
-
-            | Platform | Installer |
-            |----------|-----------|
-            | Windows x64 | [markus-setup-win-x64.exe](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-win-x64.exe) |
-            | macOS Apple Silicon | [markus-setup-darwin-arm64.pkg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-darwin-arm64.pkg) |
-            | macOS Intel | [markus-setup-darwin-x64.pkg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-darwin-x64.pkg) |
-            | Linux x64 (.deb) | [markus-setup-linux-x64.deb](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/markus-setup-linux-x64.deb) |
 
   upload-to-hub:
     runs-on: ubuntu-latest
-    needs: [publish-npm, build-binaries, build-desktop, github-release]
+    needs: [publish-npm, build-server-binary, build-desktop, github-release]
     if: needs.publish-npm.outputs.is_prerelease == 'false'
     steps:
       - name: Download all artifacts
@@ -514,7 +274,7 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Upload binaries and desktop apps to R2
+      - name: Upload to R2
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
