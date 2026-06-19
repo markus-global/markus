@@ -26,12 +26,12 @@
     "clean": "rm -rf dist *.tsbuildinfo templates/"
   },
   "dependencies": {
-    "systray2": "^2.1.4",
     "ws": "^8.19.0"
   },
   "optionalDependencies": {
     "rfb2": "^0.2.2",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "systray2": "^2.1.4"
   },
   "devDependencies": {
     "@markus/comms": "workspace:*",
