@@ -46,6 +46,7 @@ export interface SystemAnnouncement {
 // ─── Task Delivery ───────────────────────────────────────────────────────────
 
 export interface TaskDeliverable {
+  /** @deprecated 'branch' type is no longer produced — kept temporarily for backward compat during migration */
   type: 'branch' | DeliverableType;
   reference: string;
   summary: string;

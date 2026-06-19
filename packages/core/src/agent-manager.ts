@@ -232,7 +232,7 @@ export interface TaskServiceBridge {
   addSubtask(taskId: string, title: string): { id: string; title: string; status: string };
   completeSubtask(taskId: string, subtaskId: string): { id: string; title: string; status: string };
   getSubtasks?(taskId: string): Array<{ id: string; title: string; status: string }>;
-  submitForReview(taskId: string, deliverables: Array<{ type: string; reference: string; summary: string; diffStats?: unknown; testResults?: unknown }>, reviewerId?: string): Promise<{ id: string; status: string }>;
+  submitForReview(taskId: string, deliverables: Array<{ type: string; reference: string; summary: string; diffStats?: unknown; testResults?: unknown }>, reviewerId?: string, completionSummary?: string): Promise<{ id: string; status: string }>;
   requestRevision(taskId: string, reason: string, author?: string): Promise<{ id: string; title: string; status: string }>;
   findDuplicateTasks?(orgId: string): Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
   cleanupDuplicateTasks?(orgId: string): { cancelledIds: string[]; count: number };
@@ -1247,10 +1247,8 @@ export class AgentManager {
           if (!task) throw new Error(`Task not found: ${taskId}`);
           const reviewerId = (task as Record<string, unknown>).reviewerId as string | undefined;
           const _validTypes = new Set(['file', 'directory']);
-          const deliverables: Array<{ type: string; reference: string; summary: string }> = [{
-            type: 'branch', reference: `task/${taskId}`,
-            summary: `${summary}${knownIssues ? `\n\nKnown issues: ${knownIssues}` : ''}`,
-          }];
+          const completionSummary = `${summary}${knownIssues ? `\n\nKnown issues: ${knownIssues}` : ''}`;
+          const deliverables: Array<{ type: string; reference: string; summary: string }> = [];
           if (Array.isArray(inputDeliverables)) {
             for (const d of inputDeliverables) {
               if (d?.reference) {
@@ -1261,7 +1259,7 @@ export class AgentManager {
               }
             }
           }
-          return ts.submitForReview(taskId, deliverables, reviewerId);
+          return ts.submitForReview(taskId, deliverables, reviewerId, completionSummary);
         },
         proposeRequirement: this.requirementService
           ? async params => {
@@ -2041,10 +2039,8 @@ export class AgentManager {
           if (!task) throw new Error(`Task not found: ${taskId}`);
           const reviewerId = (task as Record<string, unknown>).reviewerId as string | undefined;
           const _validTypes = new Set(['file', 'directory']);
-          const deliverables: Array<{ type: string; reference: string; summary: string }> = [{
-            type: 'branch', reference: `task/${taskId}`,
-            summary: `${summary}${knownIssues ? `\n\nKnown issues: ${knownIssues}` : ''}`,
-          }];
+          const completionSummary = `${summary}${knownIssues ? `\n\nKnown issues: ${knownIssues}` : ''}`;
+          const deliverables: Array<{ type: string; reference: string; summary: string }> = [];
           if (Array.isArray(inputDeliverables)) {
             for (const d of inputDeliverables) {
               if (d?.reference) {
@@ -2055,7 +2051,7 @@ export class AgentManager {
               }
             }
           }
-          return ts.submitForReview(taskId, deliverables, reviewerId);
+          return ts.submitForReview(taskId, deliverables, reviewerId, completionSummary);
         },
         proposeRequirement: this.requirementService
           ? async params => {

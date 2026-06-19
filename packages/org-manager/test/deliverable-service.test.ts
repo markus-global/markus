@@ -11,6 +11,7 @@ function createMockRepo() {
     }),
     listAll: vi.fn(async () => [...rows.values()]),
     recordAccess: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn(async (id: string) => { rows.delete(id); }),
     listTaskIdsWithDeliverables: vi.fn(async () => new Set<string>()),
     _rows: rows,
   };
@@ -187,17 +188,6 @@ describe('DeliverableService', () => {
       expect(service.get('dlv-db')?.title).toBe('Loaded');
     });
 
-    it('migrates deliverables from tasks', async () => {
-      const count = await service.migrateFromTasks([{
-        id: 'task-1',
-        projectId: 'proj-1',
-        assignedAgentId: 'agent-1',
-        deliverables: [{ type: 'file', reference: '/out.txt', summary: 'output' }],
-      } as never]);
-      expect(count).toBe(1);
-      expect(service.findByTask('task-1')).toHaveLength(1);
-    });
-
     it('finds deliverables by agent and checks file health', async () => {
       const created = await service.create({
         type: 'file',
@@ -210,13 +200,5 @@ describe('DeliverableService', () => {
       expect(service.checkFileHealth('agent-1')).toContain(created.id);
     });
 
-    it('skips re-migrating tasks that already have deliverables', async () => {
-      repo.listTaskIdsWithDeliverables.mockResolvedValue(new Set(['task-1']));
-      const count = await service.migrateFromTasks([{
-        id: 'task-1',
-        deliverables: [{ type: 'file', reference: '/out.txt', summary: 'output' }],
-      } as never]);
-      expect(count).toBe(0);
-    });
   });
 });

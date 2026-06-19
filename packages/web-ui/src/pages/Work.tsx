@@ -1708,6 +1708,14 @@ function TaskDetailPanel({
   const [showRevision, setShowRevision] = useState(false);
   const [revisionReason, setRevisionReason] = useState('');
   const [deliverablesPage, setDeliverablesPage] = useState(1);
+  const [unifiedDeliverables, setUnifiedDeliverables] = useState<Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string }>>([]);
+  const loadUnifiedDeliverables = useCallback(async () => {
+    try {
+      const { results } = await api.deliverables.search({ taskId: task.id, limit: 200 });
+      setUnifiedDeliverables(results.filter((d: any) => d.status !== 'outdated'));
+    } catch { /* ok */ }
+  }, [task.id]);
+  useEffect(() => { void loadUnifiedDeliverables(); }, [loadUnifiedDeliverables]);
   const [descExpanded, setDescExpanded] = useState(false);
   const isMobile = useIsMobile();
   const PAGE_SIZE = 20;
@@ -1858,7 +1866,7 @@ function TaskDetailPanel({
             {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" />}
           </button>
           <button onClick={() => switchTab('deliverables')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'deliverables' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-            {(() => { const c = (task.deliverables ?? []).filter(d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0).length; return c > 0 ? t('work:task.deliverablesCount', { count: c }) : t('work:task.deliverables'); })()}
+            {(() => { const c = unifiedDeliverables.filter(d => typeof d.reference === 'string' && d.reference.length > 0).length; return c > 0 ? t('work:task.deliverablesCount', { count: c }) : t('work:task.deliverables'); })()}
           </button>
           <button onClick={() => switchTab('history')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'history' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
             {t('work:task.historyTab')}
@@ -2145,8 +2153,8 @@ function TaskDetailPanel({
                 )}
                 {/* Deliverables preview — latest 3 (newest first) */}
                 {(() => {
-                  const validDeliverables = (task.deliverables ?? []).filter(
-                    d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0
+                  const validDeliverables = unifiedDeliverables.filter(
+                    d => typeof d.reference === 'string' && d.reference.length > 0
                   );
                   if (validDeliverables.length === 0) return null;
                   const typeColors: Record<string, string> = {
@@ -2167,11 +2175,11 @@ function TaskDetailPanel({
                         )}
                       </div>
                       <div className="space-y-1.5">
-                        {latest3.map((d, i) => {
+                        {latest3.map((d) => {
                           const isUrl = /^https?:\/\//i.test(d.reference);
                           const fileName = isUrl ? (d.summary || d.reference) : (d.reference.split('/').pop() ?? d.reference);
                           return (
-                            <div key={i} className="flex items-start gap-2.5 bg-surface-elevated/60 rounded-lg px-3 py-2 group hover:bg-surface-elevated/80 transition-colors">
+                            <div key={d.id} className="flex items-start gap-2.5 bg-surface-elevated/60 rounded-lg px-3 py-2 group hover:bg-surface-elevated/80 transition-colors">
                               <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 mt-0.5 ${typeColors[d.type] ?? 'bg-gray-500/15 text-fg-secondary'}`}>{d.type}</span>
                               <div className="flex-1 min-w-0">
                                 {isUrl ? (
@@ -2215,8 +2223,8 @@ function TaskDetailPanel({
 
           <div className={activeTab === 'deliverables' ? 'px-6 py-4' : 'hidden'}>
               {(() => {
-                const validDeliverables = (task.deliverables ?? []).filter(
-                  d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0
+                const validDeliverables = unifiedDeliverables.filter(
+                  d => typeof d.reference === 'string' && d.reference.length > 0
                 );
                 if (validDeliverables.length === 0) return <div className="flex items-center justify-center py-12 text-xs text-fg-tertiary">{t('work:task.noDeliverablesYet')}</div>;
                 const typeColors: Record<string, string> = {
@@ -2242,11 +2250,11 @@ function TaskDetailPanel({
                       )}
                     </div>
                     <div className="space-y-1.5">
-                      {paged.map((d, i) => {
+                      {paged.map((d) => {
                         const isUrl = /^https?:\/\//i.test(d.reference);
                         const fileName = isUrl ? (d.summary || d.reference) : (d.reference.split('/').pop() ?? d.reference);
                         return (
-                          <div key={i} className="flex items-start gap-2.5 bg-surface-elevated/60 rounded-lg px-3 py-2 group hover:bg-surface-elevated/80 transition-colors">
+                          <div key={d.id} className="flex items-start gap-2.5 bg-surface-elevated/60 rounded-lg px-3 py-2 group hover:bg-surface-elevated/80 transition-colors">
                             <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 mt-0.5 ${typeColors[d.type] ?? 'bg-gray-500/15 text-fg-secondary'}`}>{d.type}</span>
                             <div className="flex-1 min-w-0">
                               {isUrl ? (

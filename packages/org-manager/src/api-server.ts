@@ -3493,20 +3493,43 @@ export class APIServer {
 
     if (path === '/api/tasks/deliverables' && req.method === 'GET') {
       const projectId = url.searchParams.get('projectId') ?? undefined;
-      const all = this.taskService.listTasks({ projectId });
-      const items = all
-        .filter(t => t.deliverables && t.deliverables.length > 0)
-        .map(t => ({
-          taskId: t.id,
-          taskTitle: t.title,
-          taskStatus: t.status,
-          projectId: t.projectId,
-          requirementId: t.requirementId,
-          assignedAgentId: t.assignedAgentId,
-          updatedAt: t.updatedAt,
-          deliverables: t.deliverables,
-        }));
-      this.json(res, 200, { items });
+      if (this.deliverableService) {
+        const { results } = this.deliverableService.search({ projectId, limit: 500 });
+        const grouped = new Map<string, { taskId: string; taskTitle: string; taskStatus: string; projectId?: string; requirementId?: string; assignedAgentId?: string; updatedAt?: string; deliverables: typeof results }>();
+        for (const d of results) {
+          if (!d.taskId) continue;
+          if (!grouped.has(d.taskId)) {
+            const task = this.taskService.getTask(d.taskId);
+            grouped.set(d.taskId, {
+              taskId: d.taskId,
+              taskTitle: task?.title ?? '',
+              taskStatus: task?.status ?? '',
+              projectId: task?.projectId,
+              requirementId: task?.requirementId,
+              assignedAgentId: task?.assignedAgentId,
+              updatedAt: task?.updatedAt,
+              deliverables: [],
+            });
+          }
+          grouped.get(d.taskId)!.deliverables.push(d);
+        }
+        this.json(res, 200, { items: [...grouped.values()] });
+      } else {
+        const all = this.taskService.listTasks({ projectId });
+        const items = all
+          .filter(t => t.deliverables && t.deliverables.length > 0)
+          .map(t => ({
+            taskId: t.id,
+            taskTitle: t.title,
+            taskStatus: t.status,
+            projectId: t.projectId,
+            requirementId: t.requirementId,
+            assignedAgentId: t.assignedAgentId,
+            updatedAt: t.updatedAt,
+            deliverables: t.deliverables,
+          }));
+        this.json(res, 200, { items });
+      }
       return;
     }
 

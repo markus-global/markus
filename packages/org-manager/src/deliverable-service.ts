@@ -1,6 +1,6 @@
 import { existsSync, cpSync, mkdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { createLogger, generateId, type Deliverable, type TaskDeliverable, type Task } from '@markus/shared';
+import { createLogger, generateId, type Deliverable } from '@markus/shared';
 import type { DeliverableRepo } from '@markus/storage';
 import type { WSBroadcaster } from './ws-server.ts';
 const log = createLogger('deliverable-service');
@@ -405,62 +405,23 @@ export class DeliverableService {
   }
 
   /**
-   * One-time migration: scan existing tasks and create Deliverable entries
-   * for any task.deliverables that don't yet have a corresponding row.
-   * Also cleans up any legacy "branch"-type deliverables by marking them outdated.
+   * Clean up legacy migration markers and branch-type deliverables from the table.
+   * Safe to call on startup — removes only housekeeping rows.
    */
-  async migrateFromTasks(tasks: Task[]): Promise<number> {
-    // Clean up legacy branch-type deliverables (branch is task metadata, not a standalone deliverable)
-    let branchCleaned = 0;
+  async cleanupLegacyRows(): Promise<void> {
+    let cleaned = 0;
     for (const [id, d] of this.cache) {
-      if ((d.type as string) === 'branch' && d.status !== 'outdated') {
-        d.status = 'outdated';
-        d.updatedAt = new Date().toISOString();
-        await this.repo?.update(id, { status: 'outdated' });
-        branchCleaned++;
+      const isMigrationMarker = d.title === '[migration-processed]' && d.status === 'outdated';
+      const isBranchType = (d.type as string) === 'branch';
+      if (isMigrationMarker || isBranchType) {
+        this.cache.delete(id);
+        await this.repo?.delete(id);
+        cleaned++;
       }
     }
-    if (branchCleaned > 0) {
-      log.info('Cleaned up legacy branch-type deliverables', { count: branchCleaned });
+    if (cleaned > 0) {
+      log.info('Cleaned up legacy deliverable rows', { count: cleaned });
     }
-
-    // Query ALL task IDs that have ever had deliverables (including outdated/deleted)
-    // so we don't re-import items the user already removed.
-    const existingTaskIds = this.repo
-      ? await this.repo.listTaskIdsWithDeliverables()
-      : new Set([...this.cache.values()].map(d => d.taskId).filter(Boolean) as string[]);
-
-    let migrated = 0;
-    for (const task of tasks) {
-      if (!task.deliverables?.length) continue;
-      if (existingTaskIds.has(task.id)) continue;
-
-      for (const d of task.deliverables) {
-        if (d.type === 'branch') continue;
-        try {
-          await this.create({
-            type: this.mapTaskDeliverableType(d.type),
-            title: d.summary?.slice(0, 200) || d.reference,
-            summary: d.summary || '',
-            reference: d.reference,
-            taskId: task.id,
-            agentId: task.assignedAgentId,
-            projectId: task.projectId,
-            requirementId: task.requirementId,
-            diffStats: d.diffStats,
-            testResults: d.testResults,
-          });
-          migrated++;
-        } catch (err) {
-          log.warn('Failed to migrate task deliverable', { taskId: task.id, ref: d.reference, error: String(err) });
-        }
-      }
-    }
-
-    if (migrated > 0) {
-      log.info('Migrated task deliverables to unified table', { migrated });
-    }
-    return migrated;
   }
 
   private parseTags(raw: unknown): string[] {
@@ -475,12 +436,6 @@ export class DeliverableService {
     return [];
   }
 
-  private mapTaskDeliverableType(type: TaskDeliverable['type']): Deliverable['type'] {
-    switch (type) {
-      case 'file': return 'file';
-      default: return 'file';
-    }
-  }
 
   private rowToDeliverable(r: {
     id: string;

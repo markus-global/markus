@@ -706,6 +706,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'deliverables', column: 'format', sql: 'ALTER TABLE deliverables ADD COLUMN format TEXT' },
     { table: 'task_comments', column: 'reply_to_id', sql: 'ALTER TABLE task_comments ADD COLUMN reply_to_id TEXT' },
     { table: 'requirement_comments', column: 'reply_to_id', sql: 'ALTER TABLE requirement_comments ADD COLUMN reply_to_id TEXT' },
+    { table: 'tasks', column: 'completion_summary', sql: 'ALTER TABLE tasks ADD COLUMN completion_summary TEXT' },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -1163,6 +1164,12 @@ export class SqliteTaskRepo {
       .run(toJson(deliverables), now(), id);
   }
 
+  async updateCompletionSummary(id: string, summary: string) {
+    this.db
+      .prepare('UPDATE tasks SET completion_summary = ?, updated_at = ? WHERE id = ?')
+      .run(summary, now(), id);
+  }
+
   listByOrg(orgId: string, filters?: { status?: string; assignedAgentId?: string; projectId?: string; taskType?: string }) {
     let q = 'SELECT * FROM tasks WHERE org_id = ?';
     const vals: SqlParams = [orgId];
@@ -1291,6 +1298,7 @@ export class SqliteTaskRepo {
       completedAt: toDate(r['completed_at'] as string),
       taskType: (r['task_type'] as string) ?? 'standard',
       scheduleConfig: fromJson(r['schedule_config'] as string),
+      completionSummary: (r['completion_summary'] as string) ?? undefined,
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),
       dueAt: toDate(r['due_at'] as string),
@@ -3523,6 +3531,10 @@ export class SqliteDeliverableRepo {
 
   async remove(id: string) {
     this.db.prepare("UPDATE deliverables SET status = 'outdated', updated_at = ? WHERE id = ?").run(now(), id);
+  }
+
+  async delete(id: string) {
+    this.db.prepare('DELETE FROM deliverables WHERE id = ?').run(id);
   }
 
   async listAll(limit = 500) {

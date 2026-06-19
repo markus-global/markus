@@ -597,10 +597,9 @@ async function startServerCore(
   const deliverableService = new DeliverableService(storage?.deliverableRepo);
   await deliverableService.load();
 
-  // One-time migration: sync existing task.deliverables into the unified deliverables table
-  const allTasks = taskService.listTasks({ orgId: 'default' });
-  await deliverableService.migrateFromTasks(allTasks);
-  await deliverableService.deduplicateByReference();
+  // One-time migrations
+  await taskService.migrateBranchToCompletionSummary();
+  await deliverableService.cleanupLegacyRows();
 
   const reportService = new ReportService(taskService, billingService, auditService, knowledgeService);
   const _trustService = new TrustService();

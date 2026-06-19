@@ -332,6 +332,7 @@ export interface TaskRepo {
   assign(id: string, agentId: string, updatedBy?: string): Promise<void>;
   update(id: string, data: Record<string, unknown>): Promise<void>;
   updateDeliverables(id: string, deliverables: unknown): Promise<void>;
+  updateCompletionSummary(id: string, summary: string): Promise<void>;
 }
 
 /** Contract for task log persistence */
@@ -358,6 +359,7 @@ export interface DeliverableRepo {
   create(data: Record<string, unknown>): Promise<unknown>;
   update(id: string, data: Record<string, unknown>): Promise<unknown>;
   recordAccess(id: string): Promise<void>;
+  delete(id: string): Promise<void>;
   listAll(limit?: number): Promise<DeliverableRow[]>;
   listTaskIdsWithDeliverables(): Promise<Set<string>>;
 }
