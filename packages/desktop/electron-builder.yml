@@ -64,6 +64,7 @@ nsis:
   createStartMenuShortcut: true
 
 linux:
+  executableName: markus
   target:
     - target: AppImage
       arch: [x64]
