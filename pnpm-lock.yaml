@@ -69,9 +69,6 @@ importers:
 
   packages/cli:
     dependencies:
-      systray2:
-        specifier: ^2.1.4
-        version: 2.1.4
       ws:
         specifier: ^8.19.0
         version: 8.19.0
@@ -3635,10 +3632,6 @@ packages:
   supports-color@8.1.1:
     resolution: {integrity: sha512-MpUEN2OodtUzxvKQl72cUF7RQ5EiHsGvSsVG0ia9c5RbWGL2CI4C7EpPS8UTBIplnlzZiNuV56w+FuNxy3ty2Q==}
     engines: {node: '>=10'}
-
-  systray2@2.1.4:
-    resolution: {integrity: sha512-ncviZ7m2fecb2tAAx7pl4nlbnwvSyL4GIKnRUvfiJXTsHysh3chSlxVxNk7Yj8jlfF2TsBn2CjLwCfhJQkR7/w==}
-    engines: {node: '>=4.0.0'}
 
   tailwindcss@4.2.1:
     resolution: {integrity: sha512-/tBrSQ36vCleJkAOsy9kbNTgaxvGbyOamC30PRePTQe/o1MFwEKHQk4Cn7BNGaPtjp+PuUrByJehM1hgxfq4sw==}
@@ -7629,13 +7622,6 @@ snapshots:
   supports-color@8.1.1:
     dependencies:
       has-flag: 4.0.0
-
-  systray2@2.1.4:
-    dependencies:
-      debug: 4.4.3
-      fs-extra: 10.1.0
-    transitivePeerDependencies:
-      - supports-color
 
   tailwindcss@4.2.1: {}
 
