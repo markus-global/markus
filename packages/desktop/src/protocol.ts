@@ -1,4 +1,4 @@
-import { app, shell } from 'electron';
+import { app } from 'electron';
 import { restoreOrCreateWindow } from './window.js';
 
 const PROTOCOL = 'markus';
@@ -6,22 +6,37 @@ const PROTOCOL = 'markus';
 export function registerProtocol(): void {
   if (process.defaultApp) {
     if (process.argv.length >= 2) {
-      app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [process.argv[1]]);
+      app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [process.argv[1]!]);
     }
   } else {
     app.setAsDefaultProtocolClient(PROTOCOL);
   }
 
-  // Handle protocol URL on macOS
+  // macOS: protocol URLs arrive via open-url event
   app.on('open-url', (event, url) => {
     event.preventDefault();
     handleProtocolUrl(url);
   });
+
+  // Windows/Linux: protocol URL on cold start arrives in process.argv
+  if (process.platform !== 'darwin') {
+    const protocolUrl = process.argv.find(arg => arg.startsWith(`${PROTOCOL}://`));
+    if (protocolUrl) handleProtocolUrl(protocolUrl);
+  }
+}
+
+/**
+ * Handle a protocol URL from a second instance launch (Windows/Linux).
+ * Called from the second-instance handler in main.ts.
+ */
+export function handleSecondInstanceArgs(argv: string[]): void {
+  const protocolUrl = argv.find(arg => arg.startsWith(`${PROTOCOL}://`));
+  if (protocolUrl) {
+    handleProtocolUrl(protocolUrl);
+  }
 }
 
 function handleProtocolUrl(url: string): void {
-  // markus://invite?token=xxx → open invite setup page
-  // markus://open?path=/team/t/123 → navigate to path
   try {
     const parsed = new URL(url);
     const backendUrl = 'http://localhost:8056';

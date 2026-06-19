@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
+import { platform } from 'node:os';
 import type { AgentToolHandler } from '../agent.js';
 
 interface BackgroundSession {
@@ -120,10 +121,16 @@ export function createBackgroundExecTool(workspacePath?: string): AgentToolHandl
 
       const id = `bg_${++sessionCounter}_${Date.now()}`;
 
-      const child = spawn('sh', ['-c', command], {
-        cwd: effectiveCwd,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      const isWin = platform() === 'win32';
+      const child = spawn(
+        isWin ? process.env['COMSPEC'] || 'cmd.exe' : 'sh',
+        isWin ? ['/d', '/s', '/c', command] : ['-c', command],
+        {
+          cwd: effectiveCwd,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+        },
+      );
 
       const session: BackgroundSession = {
         id,

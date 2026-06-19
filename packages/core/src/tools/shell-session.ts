@@ -354,20 +354,20 @@ export class ShellSessionManager {
   }
 
   private createSession(sessionId: string, agentId: string, cwd?: string): ManagedSession {
-    const shell = process.env['SHELL'] || '/bin/sh';
-    const isBashLike = /\b(bash|zsh)\b/.test(shell);
-    const args = isBashLike ? ['--norc', '--noprofile', '-i'] : [];
+    const isWin = process.platform === 'win32';
+    const shell = isWin
+      ? (process.env['COMSPEC'] || 'cmd.exe')
+      : (process.env['SHELL'] || '/bin/sh');
+    const isBashLike = !isWin && /\b(bash|zsh)\b/.test(shell);
+    const args = isWin ? ['/Q'] : (isBashLike ? ['--norc', '--noprofile', '-i'] : []);
     const child = spawn(shell, args, {
       cwd: cwd ?? process.cwd(),
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
-        PS1: '',
-        PS2: '',
-        PROMPT_COMMAND: '',
-        TERM: 'dumb',
-        ENV: '',
+        ...(isWin ? {} : { PS1: '', PS2: '', PROMPT_COMMAND: '', TERM: 'dumb', ENV: '' }),
       },
+      windowsHide: true,
     });
 
     const session = new ManagedSession(sessionId, agentId, child);

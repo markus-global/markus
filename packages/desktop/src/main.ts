@@ -6,7 +6,7 @@ import { setupMenu } from './menu.js';
 import { setupTray, destroyTray } from './tray.js';
 import { setupIpcHandlers } from './ipc-handlers.js';
 import { setupAutoUpdater } from './updater.js';
-import { registerProtocol } from './protocol.js';
+import { registerProtocol, handleSecondInstanceArgs } from './protocol.js';
 import { startNotificationBridge, stopNotificationBridge } from './notifications.js';
 
 app.setName('Markus');
@@ -20,7 +20,8 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    handleSecondInstanceArgs(argv);
     restoreOrCreateWindow(backendUrl);
   });
 }
