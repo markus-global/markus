@@ -105,43 +105,15 @@ ok "Node.js binary extracted"
 
 cp "$CLI_BUNDLE" "$STAGE_DIR/bin/markus.mjs"
 
-# Copy tray controller
-TRAY_BUNDLE="$ROOT_DIR/packages/cli/dist/tray.mjs"
-if [[ -f "$TRAY_BUNDLE" ]]; then
-  cp "$TRAY_BUNDLE" "$STAGE_DIR/bin/tray.mjs"
-  ok "Tray controller copied"
-else
-  warn "tray.mjs not found — desktop tray will not be available"
-fi
-
 # Install native/external dependencies that esbuild cannot bundle
 info "Installing native dependencies into staging dir..."
 cat > "$STAGE_DIR/bin/package.json" << 'PKGJSON'
 { "private": true, "type": "module" }
 PKGJSON
-(cd "$STAGE_DIR/bin" && npm install --no-save ws sharp rfb2 systray2 node-datachannel@0.12.0 2>&1) \
+(cd "$STAGE_DIR/bin" && npm install --no-save ws sharp rfb2 node-datachannel@0.12.0 2>&1) \
   || die "Failed to install native dependencies"
 rm -f "$STAGE_DIR/bin/package.json" "$STAGE_DIR/bin/package-lock.json"
-
-# Ensure systray2 tray binaries have execute permission (npm install doesn't always set +x)
-find "$STAGE_DIR/bin/node_modules/systray2/traybin" -type f 2>/dev/null | while read -r tb; do
-  chmod +x "$tb"
-done
-
-# Verify systray2 tray binary exists for the target platform
-if [[ "$PLATFORM" == "win" ]]; then
-  TRAY_BIN="$STAGE_DIR/bin/node_modules/systray2/traybin/tray_windows_release.exe"
-elif [[ "$PLATFORM" == "darwin" ]]; then
-  TRAY_BIN="$STAGE_DIR/bin/node_modules/systray2/traybin/tray_darwin_release"
-else
-  TRAY_BIN="$STAGE_DIR/bin/node_modules/systray2/traybin/tray_linux_release"
-fi
-if [[ -f "$TRAY_BIN" ]]; then
-  ok "Native dependencies installed (tray binary: $(basename "$TRAY_BIN"))"
-else
-  warn "systray2 tray binary not found at $TRAY_BIN — tray icon will be unavailable"
-  ok "Native dependencies installed (without tray binary)"
-fi
+ok "Native dependencies installed"
 
 # Version marker so the bundled CLI can detect its own version
 # (version.ts looks for ../package.json relative to bin/markus.mjs)
@@ -175,52 +147,6 @@ if [[ "$PLATFORM" == "win" ]]; then
 "%~dp0\bin\node.exe" "%~dp0\bin\markus.mjs" %*
 LAUNCHER
 
-  # VBS launcher to run tray.mjs without a console window (wscript hides it)
-  cat > "$STAGE_DIR/markus-tray.vbs" << 'VBS'
-On Error Resume Next
-
-Set fso = CreateObject("Scripting.FileSystemObject")
-Set wshShell = CreateObject("WScript.Shell")
-
-appDir = fso.GetParentFolderName(WScript.ScriptFullName)
-nodeExe = fso.BuildPath(appDir, "bin\node.exe")
-trayMjs = fso.BuildPath(appDir, "bin\tray.mjs")
-logDir = fso.BuildPath(wshShell.ExpandEnvironmentStrings("%USERPROFILE%"), ".markus\logs")
-logFile = fso.BuildPath(logDir, "tray-vbs.log")
-
-Sub WriteLog(msg)
-    On Error Resume Next
-    If Not fso.FolderExists(logDir) Then fso.CreateFolder(logDir)
-    Set f = fso.OpenTextFile(logFile, 8, True)
-    f.WriteLine Now() & " " & msg
-    f.Close
-End Sub
-
-If Not fso.FileExists(nodeExe) Then
-    WriteLog "ERROR: node.exe not found at " & nodeExe
-    MsgBox "Markus cannot start: node.exe not found." & vbCrLf & vbCrLf & nodeExe, vbCritical, "Markus"
-    WScript.Quit 1
-End If
-
-If Not fso.FileExists(trayMjs) Then
-    WriteLog "ERROR: tray.mjs not found at " & trayMjs
-    MsgBox "Markus cannot start: tray.mjs not found." & vbCrLf & vbCrLf & trayMjs, vbCritical, "Markus"
-    WScript.Quit 1
-End If
-
-WriteLog "Launching: " & nodeExe & " " & trayMjs
-cmdLine = """" & nodeExe & """ """ & trayMjs & """"
-exitCode = wshShell.Run(cmdLine, 0, False)
-
-If Err.Number <> 0 Then
-    WriteLog "ERROR: Run failed: " & Err.Description
-    MsgBox "Markus failed to start:" & vbCrLf & Err.Description, vbCritical, "Markus"
-    WScript.Quit 1
-End If
-
-WriteLog "Process launched successfully"
-VBS
-  ok "VBS tray launcher created"
 else
   cat > "$STAGE_DIR/markus" << 'LAUNCHER'
 #!/usr/bin/env bash
@@ -304,10 +230,6 @@ if [ -n "$PIDS" ]; then
   sleep 1
 fi
 
-# Kill tray process if still running
-pkill -f "tray.mjs" 2>/dev/null || true
-pkill -f "tray_darwin_release" 2>/dev/null || true
-
 exit 0
 PREINSTALL
   chmod +x "$SCRIPTS_DIR/preinstall"
@@ -346,7 +268,7 @@ cat > "$ENTITLEMENTS_TMP" << 'ENTXML'
 </plist>
 ENTXML
 
-for bin_file in "$INSTALL_DIR/bin/Markus" "$INSTALL_DIR/bin/node_modules/systray2/traybin/tray_darwin_release"; do
+for bin_file in "$INSTALL_DIR/bin/Markus"; do
   if [ -f "$bin_file" ]; then
     chmod +x "$bin_file"
     codesign --force --options runtime --entitlements "$ENTITLEMENTS_TMP" --sign - "$bin_file" 2>/dev/null || true
@@ -394,13 +316,7 @@ LOG_DIR="$HOME/.markus/logs"
 PORT=8056
 mkdir -p "$LOG_DIR"
 
-# Always launch the tray controller — it handles server start, existing server
-# detection, port conflicts, browser open, and keeps the menu bar icon alive.
-if [ -f "$MARKUS_DIR/bin/tray.mjs" ]; then
-  exec "$NODE" "$MARKUS_DIR/bin/tray.mjs" 2>>"$LOG_DIR/tray-stderr.log"
-fi
-
-# Fallback if tray.mjs is missing: start server directly
+# Start server directly
 if curl -s --max-time 2 -o /dev/null "http://localhost:$PORT/api/health" 2>/dev/null; then
   open "http://localhost:$PORT"
   exit 0
@@ -587,7 +503,7 @@ if [ -d "$DESKTOP_DIR" ]; then
 Type=Application
 Name=Markus
 Comment=AI Digital Workforce Platform
-Exec=/usr/local/lib/markus/bin/node /usr/local/lib/markus/bin/tray.mjs
+Exec=/usr/local/bin/markus start
 Icon=/usr/local/lib/markus/logo.png
 Terminal=false
 Categories=Development;
@@ -604,7 +520,7 @@ cat > "$AUTOSTART_DIR/markus.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=Markus
-Exec=/usr/local/lib/markus/bin/node /usr/local/lib/markus/bin/tray.mjs
+Exec=/usr/local/bin/markus start
 Icon=/usr/local/lib/markus/logo.png
 Terminal=false
 X-GNOME-Autostart-enabled=true
@@ -680,13 +596,12 @@ Source: "${WIN_STAGE_DIR}\\*"; DestDir: "{app}"; Flags: recursesubdirs
 Name: "autostart"; Description: "Start Markus automatically on login"; GroupDescription: "Additional options:"; Flags: checkedonce
 
 [Icons]
-Name: "{userdesktop}\\Markus"; Filename: "wscript.exe"; Parameters: """{app}\\markus-tray.vbs"""; WorkingDir: "{app}"; Comment: "Markus - AI Digital Workforce Platform"${WIN_ICON_REF}
-Name: "{userstartup}\\Markus"; Filename: "wscript.exe"; Parameters: """{app}\\markus-tray.vbs"""; WorkingDir: "{app}"; Comment: "Markus auto-start"${WIN_ICON_REF}; Tasks: autostart
-Name: "{group}\\Markus"; Filename: "wscript.exe"; Parameters: """{app}\\markus-tray.vbs"""; WorkingDir: "{app}"${WIN_ICON_REF}
+Name: "{userdesktop}\\Markus"; Filename: "{app}\\markus.cmd"; Parameters: "start"; WorkingDir: "{app}"; Comment: "Markus - AI Digital Workforce Platform"${WIN_ICON_REF}
+Name: "{group}\\Markus"; Filename: "{app}\\markus.cmd"; Parameters: "start"; WorkingDir: "{app}"${WIN_ICON_REF}
 Name: "{group}\\Uninstall Markus"; Filename: "{uninstallexe}"
 
 [Run]
-Filename: "wscript.exe"; Parameters: """{app}\\markus-tray.vbs"""; Description: "Launch Markus"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\\markus.cmd"; Parameters: "start"; Description: "Launch Markus"; Flags: postinstall nowait skipifsilent runhidden
 
 [Code]
 function NeedsAddPath(Param: string): boolean;

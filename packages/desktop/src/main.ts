@@ -127,34 +127,36 @@ app.whenReady().then(async () => {
     const currentUrl = win.webContents.getURL();
     if (currentUrl.startsWith('http://localhost') || currentUrl.startsWith(backendUrl)) {
       win.webContents.executeJavaScript(`window.__MARKUS_ELECTRON__ = true;`).catch(() => {});
-      // Inject CSS for traffic light clearance and drag region (works even if preload fails)
-      win.webContents.insertCSS(`
-        html.electron-app aside {
-          padding-top: 48px !important;
-        }
-        html.electron-app aside > :first-child {
-          -webkit-app-region: drag;
-        }
-        html.electron-app body::before {
-          content: '';
-          display: block;
-          position: fixed;
-          top: 0; left: 0; right: 0;
-          height: 48px;
-          -webkit-app-region: drag;
-          z-index: 99999;
-          pointer-events: none;
-        }
-        html.electron-app button,
-        html.electron-app a,
-        html.electron-app input,
-        html.electron-app select,
-        html.electron-app textarea,
-        html.electron-app [role="button"],
-        html.electron-app [data-no-drag] {
-          -webkit-app-region: no-drag;
-        }
-      `).catch(() => {});
+      if (process.platform === 'darwin') {
+        // macOS: inject CSS for traffic light clearance and drag region
+        win.webContents.insertCSS(`
+          html.electron-app aside {
+            padding-top: 48px !important;
+          }
+          html.electron-app aside > :first-child {
+            -webkit-app-region: drag;
+          }
+          html.electron-app body::before {
+            content: '';
+            display: block;
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            height: 48px;
+            -webkit-app-region: drag;
+            z-index: 99999;
+            pointer-events: none;
+          }
+          html.electron-app button,
+          html.electron-app a,
+          html.electron-app input,
+          html.electron-app select,
+          html.electron-app textarea,
+          html.electron-app [role="button"],
+          html.electron-app [data-no-drag] {
+            -webkit-app-region: no-drag;
+          }
+        `).catch(() => {});
+      }
       win.webContents.executeJavaScript(`document.documentElement.classList.add('electron-app');`).catch(() => {});
     }
   });

@@ -1,6 +1,6 @@
 {
   "name": "@markus-global/cli",
-  "version": "0.8.4-rc.3",
+  "version": "0.8.4-rc.4",
   "description": "Markus — AI Digital Workforce Platform",
   "type": "module",
   "license": "AGPL-3.0-or-later",
@@ -30,8 +30,7 @@
   },
   "optionalDependencies": {
     "rfb2": "^0.2.2",
-    "sharp": "^0.34.5",
-    "systray2": "^2.1.4"
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "@markus/comms": "workspace:*",

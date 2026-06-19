@@ -5,7 +5,7 @@ import { restoreOrCreateWindow } from './window.js';
 let tray: Tray | null = null;
 
 export function setupTray(backendUrl: string): void {
-  const iconPath = join(app.getAppPath(), 'build', 'icon.png');
+  const iconPath = join(app.getAppPath().replace('app.asar', 'app.asar.unpacked'), 'dist', 'icon.png');
   let icon: Electron.NativeImage;
   try {
     icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });

@@ -118,6 +118,10 @@ jobs:
             platform: darwin
             arch: arm64
             electron_args: "--mac --arm64"
+          - os: macos-latest
+            platform: darwin
+            arch: x64
+            electron_args: "--mac --x64"
           - os: windows-latest
             platform: win
             arch: x64
@@ -230,6 +234,7 @@ jobs:
             | Platform | Download |
             |----------|----------|
             | macOS (Apple Silicon) | [Markus.dmg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/Markus-${{ steps.version.outputs.VERSION }}-arm64.dmg) |
+            | macOS (Intel) | [Markus.dmg](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/Markus-${{ steps.version.outputs.VERSION }}.dmg) |
             | Windows x64 | [Markus-Setup.exe](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/Markus-Setup-${{ steps.version.outputs.VERSION }}.exe) |
             | Linux x64 | [Markus.AppImage](https://github.com/markus-global/markus/releases/download/v${{ steps.version.outputs.VERSION }}/Markus-${{ steps.version.outputs.VERSION }}.AppImage) |
 
