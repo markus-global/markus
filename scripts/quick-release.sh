@@ -107,7 +107,12 @@ printf "${GREEN}✓${NC} All CI checks passed.\n\n"
 
 # ── Update all package.json ───────────────────────────────────────────────
 for f in package.json packages/*/package.json; do
-  sed -i '' "s/\"version\": \"$CURRENT\"/\"version\": \"$VER\"/" "$f"
+  node -e "
+    const fs = require('fs');
+    const p = JSON.parse(fs.readFileSync('$f','utf8'));
+    p.version = '$VER';
+    fs.writeFileSync('$f', JSON.stringify(p, null, 2) + '\n');
+  "
 done
 
 # ── Sync install scripts to markus-hub ──────────────────────────────────

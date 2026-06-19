@@ -1,6 +1,6 @@
 {
   "name": "@markus/shared",
-  "version": "0.8.4-rc.8",
+  "version": "0.8.4-rc.9",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
