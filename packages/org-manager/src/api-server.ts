@@ -7389,7 +7389,7 @@ EXPLANATION_END`;
     if (path === '/api/license' && req.method === 'GET') {
       const raw = this.licenseService
         ? this.licenseService.getInfo()
-        : { plan: 'free', features: [], limits: { maxTeams: 1, maxToolCallsPerDay: 500, maxUsers: 1 } };
+        : { plan: 'free', features: [], limits: { maxTeams: 5, maxToolCallsPerDay: 5000, maxUsers: 1 } };
       this.json(res, 200, await this.buildLicenseResponse(raw, req));
       return;
     }

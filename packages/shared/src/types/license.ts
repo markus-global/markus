@@ -8,8 +8,8 @@ export interface PlanLimits {
 
 export const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
   free: {
-    maxTeams: 1,
-    maxToolCallsPerDay: 500,
+    maxTeams: 5,
+    maxToolCallsPerDay: 5000,
     maxUsers: 1,
   },
   enterprise: {

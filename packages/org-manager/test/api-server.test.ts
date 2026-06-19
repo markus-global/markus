@@ -569,9 +569,9 @@ function createTestServer(): TestContext {
     revokeAPIKey: vi.fn(() => true),
   } as never);
   server.setLicenseService({
-    getInfo: vi.fn(() => ({ plan: 'free', features: [], limits: { maxTeams: 100, maxToolCallsPerDay: 500, maxUsers: 100 } })),
-    revalidate: vi.fn(async () => ({ plan: 'free', features: [], limits: { maxTeams: 100, maxToolCallsPerDay: 500, maxUsers: 100 } })),
-    getLimits: vi.fn(() => ({ maxTeams: 100, maxToolCallsPerDay: 500, maxUsers: 100 })),
+    getInfo: vi.fn(() => ({ plan: 'free', features: [], limits: { maxTeams: 100, maxToolCallsPerDay: 5000, maxUsers: 100 } })),
+    revalidate: vi.fn(async () => ({ plan: 'free', features: [], limits: { maxTeams: 100, maxToolCallsPerDay: 5000, maxUsers: 100 } })),
+    getLimits: vi.fn(() => ({ maxTeams: 100, maxToolCallsPerDay: 5000, maxUsers: 100 })),
     getLicenseInfo: vi.fn(async () => ({ plan: 'free', valid: true })),
     refreshLicense: vi.fn(async () => ({ success: true })),
     activateLicense: vi.fn(async () => ({ success: true })),

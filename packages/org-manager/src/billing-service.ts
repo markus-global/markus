@@ -51,7 +51,7 @@ const DEFAULT_PLANS: Record<PlanTier, OrgPlan['limits']> = {
   free: {
     maxAgents: -1,
     maxTokensPerMonth: -1,
-    maxToolCallsPerDay: 500,
+    maxToolCallsPerDay: 5000,
     maxMessagesPerDay: -1,
     maxStorageBytes: -1,
   },
