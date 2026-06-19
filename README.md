@@ -62,18 +62,24 @@ Unlike agent orchestrators that dispatch tasks to external CLI tools, **Markus i
 
 ## Quick Start
 
-```bash
-# Install
-curl -fsSL https://markus.global/install.sh | bash
-# or: npm install -g @markus-global/cli
+**Desktop App** — download from [Releases](https://github.com/markus-global/markus/releases/latest) (macOS `.dmg` / Windows `.exe` / Linux `.AppImage`)
 
-# Launch
+**Command line** (requires Node.js 22+):
+
+```bash
+npm install -g @markus-global/cli
 markus start
+```
+
+**Linux one-liner** (works without Node.js):
+
+```bash
+curl -fsSL https://markus.global/install.sh | bash
 ```
 
 Open **http://localhost:8056** — the onboarding wizard will guide you to set up your name, email, and password. Initial login: `admin@markus.local` / `markus123`.
 
-That's it. SQLite database, bundled web UI, zero dependencies to install separately.
+That's it. SQLite database, bundled web UI, zero external dependencies.
 
 > **From source:** `git clone https://github.com/markus-global/markus.git && cd markus && pnpm install && pnpm build && pnpm dev`
 

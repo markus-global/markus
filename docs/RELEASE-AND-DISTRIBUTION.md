@@ -21,6 +21,7 @@ Markus 提供三种安装方式：
 | 平台 | 格式 | 文件名 |
 |------|------|--------|
 | macOS (Apple Silicon) | DMG | `Markus-{VER}-arm64.dmg` |
+| macOS (Intel) | DMG | `Markus-{VER}.dmg` |
 | Windows x64 | NSIS EXE | `Markus-Setup-{VER}.exe` |
 | Linux x64 | AppImage | `Markus-{VER}.AppImage` |
 
@@ -67,9 +68,9 @@ npm install -g @markus-global/cli@next   # 预发布版
 
 ---
 
-## 3. Server Binary (Linux)
+## 3. Server Binary (仅 Linux)
 
-用于 Linux 服务器无头部署，内嵌 Node.js 运行时。
+用于 Linux 服务器无头部署，内嵌 Node.js 运行时。macOS / Windows 不再提供独立二进制，请使用 Desktop App 或 npm。
 
 ### 产物
 
@@ -81,12 +82,10 @@ npm install -g @markus-global/cli@next   # 预发布版
 ### 一键安装脚本
 
 ```bash
-# macOS / Linux
 curl -fsSL https://markus.global/install.sh | bash
-
-# Windows (PowerShell)
-irm https://markus.global/install.ps1 | iex
 ```
+
+该脚本在 Linux 上自动检测 Node.js：有则用 npm 安装，无则下载 standalone binary。macOS 用户执行此脚本会提示安装 Node.js 或下载 Desktop App。
 
 ---
 
@@ -105,8 +104,9 @@ push tag v*
   │     │
   │     ├─→ build-server-binary  Linux x64 (.deb + .tar.gz)
   │     │
-  │     └─→ build-desktop        3 平台 Electron 桌面版
+  │     └─→ build-desktop        4 平台 Electron 桌面版
   │           ├── macOS arm64    (.dmg)
+  │           ├── macOS x64      (.dmg)
   │           ├── Windows x64    (.exe)
   │           └── Linux x64      (.AppImage)
   │
@@ -115,7 +115,7 @@ push tag v*
   └─→ upload-to-hub             上传到 R2 (仅正式版)
 ```
 
-**5 个 CI job，6 个产物。**
+**5 个 CI job，7 个产物。**
 
 ### 所需 Secrets
 
@@ -142,7 +142,7 @@ push tag v*
 | GitHub Releases | 全部产物 | `github.com/markus-global/markus/releases` |
 | npm | CLI 包 | `npmjs.com/package/@markus-global/cli` |
 | Cloudflare R2 | 二进制 + Desktop (CN 加速) | `markus.global/releases/` |
-| install.sh | 一键安装脚本 | `curl -fsSL https://markus.global/install.sh \| bash` |
+| install.sh | Linux 一键安装脚本 | `curl -fsSL https://markus.global/install.sh \| bash` |
 
 ---
 
@@ -151,6 +151,7 @@ push tag v*
 | 平台 | Desktop App | Server Binary | npm |
 |------|-------------|--------------|-----|
 | macOS arm64 | ✅ DMG | — | ✅ |
+| macOS x64 | ✅ DMG | — | ✅ |
 | Windows x64 | ✅ NSIS | — | ✅ |
 | Linux x64 | ✅ AppImage | ✅ DEB | ✅ |
 
@@ -158,6 +159,5 @@ push tag v*
 
 ## 已知限制
 
-1. **macOS x64 (Intel)** — 未单独构建，Apple Silicon 版本可通过 Rosetta 运行
-2. **Windows 代码签名** — 未实现，用户会看到 SmartScreen 警告
-3. **Linux arm64** — 暂不支持
+1. **Windows 代码签名** — 未实现，用户会看到 SmartScreen 警告
+2. **Linux arm64** — 暂不支持
