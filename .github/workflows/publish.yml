@@ -504,16 +504,16 @@ jobs:
 
   upload-to-hub:
     runs-on: ubuntu-latest
-    needs: [publish-npm, build-binaries, github-release]
+    needs: [publish-npm, build-binaries, build-desktop, github-release]
     if: needs.publish-npm.outputs.is_prerelease == 'false'
     steps:
-      - name: Download all binary artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: Upload binaries directly to R2
+      - name: Upload binaries and desktop apps to R2
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -523,7 +523,7 @@ jobs:
         run: |
           set -e
           uploaded=0
-          for file in artifacts/markus-setup-* artifacts/markus-v${VERSION}-*; do
+          for file in artifacts/markus-setup-* artifacts/markus-v${VERSION}-* artifacts/Markus-*.dmg artifacts/Markus-*.exe artifacts/Markus-*.AppImage; do
             [ -f "$file" ] || continue
             filename=$(basename "$file")
             echo "Uploading $filename to R2..."
@@ -534,7 +534,7 @@ jobs:
           done
 
           if [ "$uploaded" -eq 0 ]; then
-            echo "::error::No binary artifacts found to upload"
+            echo "::error::No artifacts found to upload"
             exit 1
           fi
 
