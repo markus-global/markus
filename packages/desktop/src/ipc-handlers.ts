@@ -31,6 +31,13 @@ export function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('app:set-traffic-light-position', (event, x: number, y: number) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
+    if (win && process.platform === 'darwin') {
+      win.setWindowButtonPosition({ x, y });
+    }
+  });
+
   ipcMain.handle('app:check-for-updates', async () => {
     if (process.env['MARKUS_MAS'] === 'true') {
       return { available: false, message: 'Updates managed by App Store' };

@@ -3495,8 +3495,9 @@ export class SqliteDeliverableRepo {
   }
 
   async update(id: string, patch: Record<string, unknown>) {
+    const updatedAt = (patch.updatedAt as string | undefined) ?? now();
     const sets: string[] = ['updated_at = ?'];
-    const vals: SqlParams = [now()];
+    const vals: SqlParams = [updatedAt];
     if (patch.title !== undefined) { sets.push('title = ?'); vals.push(patch.title as SQLInputValue); }
     if (patch.summary !== undefined) { sets.push('summary = ?'); vals.push(patch.summary as SQLInputValue); }
     if (patch.status !== undefined) { sets.push('status = ?'); vals.push(patch.status as SQLInputValue); }

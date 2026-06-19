@@ -164,6 +164,35 @@ export function App() {
     navBus.setHandler((p) => navigate(p));
   }, [navigate]);
 
+  // Desktop: adjust traffic light position based on sidebar visibility
+  useEffect(() => {
+    if (!window.markusDesktop) return;
+    const hasSidebar = !isMobile && page !== PAGE.SETTINGS;
+    if (hasSidebar && !sidebar.collapsed) {
+      window.markusDesktop.setTrafficLightPosition(16, 16);
+    } else {
+      window.markusDesktop.setTrafficLightPosition(6, 16);
+    }
+  }, [sidebar.collapsed, page, isMobile]);
+
+  // Desktop: handle OS notification click — open panel + navigate to content
+  useEffect(() => {
+    if (!window.markusDesktop) return;
+    window.markusDesktop.onNotificationClick((nav) => {
+      if (nav.openNotifications) {
+        window.dispatchEvent(new CustomEvent('markus:open-notifications'));
+      }
+      if (nav.page) {
+        const page = resolvePageId(nav.page as PageId);
+        if (nav.params) {
+          Object.entries(nav.params).forEach(([k, v]) => localStorage.setItem(`markus_nav_${k}`, v));
+        }
+        navigate(page);
+        window.dispatchEvent(new CustomEvent('markus:navigate', { detail: { page, params: nav.params } }));
+      }
+    });
+  }, [navigate]);
+
   const checkLlmConfig = useCallback(() => {
     fetch('/api/settings/llm')
       .then(r => r.ok ? r.json() : null)
