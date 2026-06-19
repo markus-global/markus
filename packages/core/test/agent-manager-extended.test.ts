@@ -147,6 +147,7 @@ describe('AgentManager extended coverage', () => {
       'live_task',
       expect.any(Array),
       expect.anything(),
+      expect.anything(),
     );
     await execPromise;
   });
