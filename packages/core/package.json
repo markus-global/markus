@@ -1,6 +1,6 @@
 {
   "name": "@markus/core",
-  "version": "0.8.4-rc.2",
+  "version": "0.8.4-rc.3",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
