@@ -12,5 +12,5 @@
     "esbuild": "^0.25.0",
     "typescript": "^5.6.0"
   },
-  "version": "0.8.4-rc.10"
+  "version": "0.8.4-rc.11"
 }
