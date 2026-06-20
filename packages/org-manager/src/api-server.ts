@@ -10466,10 +10466,15 @@ EXPLANATION_END`;
           this.json(res, 400, { error: 'Invalid or non-existent path' });
           return;
         }
-        const platform = process.platform;
-        if (platform === 'darwin') execSync(`open ${JSON.stringify(dirPath)}`);
-        else if (platform === 'win32') execSync(`explorer ${JSON.stringify(dirPath)}`);
-        else execSync(`xdg-open ${JSON.stringify(dirPath)}`);
+        const { spawn: spawnChild } = await import('node:child_process');
+        const plat = process.platform;
+        if (plat === 'darwin') {
+          spawnChild('open', [dirPath], { detached: true, stdio: 'ignore' }).unref();
+        } else if (plat === 'win32') {
+          spawnChild('explorer', [dirPath], { detached: true, stdio: 'ignore', shell: true }).unref();
+        } else {
+          spawnChild('xdg-open', [dirPath], { detached: true, stdio: 'ignore' }).unref();
+        }
         this.json(res, 200, { ok: true });
       } catch {
         this.json(res, 500, { error: 'Failed to open path' });
