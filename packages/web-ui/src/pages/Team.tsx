@@ -434,6 +434,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   type EntityMentionItem = { id: string; name: string; entityType: 'workflow' | 'project' | 'requirement' | 'task' | 'deliverable'; role?: string };
   const [entityMentionItems, setEntityMentionItems] = useState<EntityMentionItem[]>([]);
   useEffect(() => {
+    if (previewMode) return;
     let cancelled = false;
     const load = async () => {
       const items: EntityMentionItem[] = [];
@@ -460,7 +461,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     };
     void load();
     return () => { cancelled = true; };
-  }, []);
+  }, [previewMode]);
 
   const activeTeamId = chatMode === 'channel'
     ? groupChats.find(gc => gc.channelKey === activeChannel)?.teamId
@@ -661,7 +662,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     setHumans(previewData.humans ?? []);
     setTeams(previewData.teams ?? []);
     setGroupChats(previewData.groupChats ?? []);
-    if (previewData.channelMessages) {
+    if (previewData.channelMessages && !previewData.streamLastMessage) {
       const ch = previewData.activeChannel ?? 'custom:general';
       setMessages(previewData.channelMessages.filter(m => m.channel === ch).map(m => channelMsgToChat(m)));
     }
@@ -3084,8 +3085,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           <div ref={chatScrollRef} className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto ${isMobile ? 'p-2.5' : 'p-5 2xl:pr-[280px]'}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
 
           {visibleMessages.length > 0 && (
-          <div style={{ height: chatVirtualizer.getTotalSize(), width: '100%', position: 'relative' }}>
-            {chatVirtualizer.getVirtualItems().map(virtualRow => {
+          <div style={previewMode ? undefined : { height: chatVirtualizer.getTotalSize(), width: '100%', position: 'relative' }}>
+            {(previewMode ? (() => { const start = Math.max(0, visibleMessages.length - 6); return visibleMessages.slice(start).map((_, i) => ({ index: start + i, start: 0 })); })() : chatVirtualizer.getVirtualItems()).map(virtualRow => {
               const vIdx = virtualRow.index;
               const msg = visibleMessages[vIdx]!;
               const prevMsg = vIdx > 0 ? visibleMessages[vIdx - 1] : null;
@@ -3102,8 +3103,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 <div
                   key={msg.id}
                   data-index={vIdx}
-                  ref={chatVirtualizer.measureElement}
-                  style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${virtualRow.start}px)` }}
+                  ref={previewMode ? undefined : chatVirtualizer.measureElement}
+                  style={previewMode ? undefined : { position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${virtualRow.start}px)` }}
                 >
                 <div className="pb-3">
                 {showDateSep && (
