@@ -326,23 +326,6 @@
     "urlLabel": "URL：",
     "llmTimeout": "LLM 超时：{{ms}}ms（来自 LLM_TIMEOUT_MS）"
   },
-  "openClaw": {
-    "title": "从 OpenClaw 导入",
-    "description": "检测并从已有的 OpenClaw 安装导入 LLM 配置。",
-    "detect": "检测 OpenClaw 配置",
-    "detectShort": "检测 OpenClaw",
-    "detectFailed": "检测失败",
-    "foundAt": "已找到 OpenClaw 配置：",
-    "providersModels": "{{providers}} 个提供商，{{models}} 个模型",
-    "importConfigs": "导入模型配置",
-    "importFailed": "导入失败",
-    "importedFrom": "已从 OpenClaw 导入 {{count}} 条模型配置",
-    "notFound": "未找到 OpenClaw 配置。",
-    "modelProvidersFound": "找到 {{count}} 个模型提供商：",
-    "modelsCountSuffix": "{{count}} 个模型",
-    "withBaseUrl": "（{{url}}）",
-    "channelsPrefix": "通道："
-  },
   "agentExecution": {
     "title": "智能体执行",
     "maxToolIterations": "最大工具迭代次数",

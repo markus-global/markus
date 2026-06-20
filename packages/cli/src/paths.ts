@@ -31,6 +31,10 @@ export function resolveTemplatesDir(sub: string): string {
   const pkgDir = resolve(__dirname, '..', 'templates', sub);
   if (existsSync(pkgDir)) return pkgDir;
 
+  // Electron bundle: templates/ copied into dist/
+  const electronDir = resolve(__dirname, 'templates', sub);
+  if (existsSync(electronDir)) return electronDir;
+
   // Fallback to env or cwd
   return envDir ? resolve(envDir, sub) : cwdDir;
 }
@@ -56,6 +60,10 @@ export function allTemplateDirs(sub: string): string[] {
 
   const pkgDir = resolve(__dirname, '..', 'templates', sub);
   if (existsSync(pkgDir) && !dirs.includes(pkgDir)) dirs.push(pkgDir);
+
+  // Electron bundle: templates/ copied into dist/
+  const electronDir = resolve(__dirname, 'templates', sub);
+  if (existsSync(electronDir) && !dirs.includes(electronDir)) dirs.push(electronDir);
 
   return dirs;
 }

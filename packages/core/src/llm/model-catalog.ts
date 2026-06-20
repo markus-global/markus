@@ -6,8 +6,11 @@ import { createLogger, type CatalogModel, type CatalogStatus, type LiteLLMRawMod
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-// data/ lives at packages/core/data/ regardless of whether we're running from src/ or dist/
-const DATA_DIR = join(__dirname, '..', '..', 'data');
+// data/ lives at packages/core/data/ in dev, or dist/data/ in Electron bundle
+const DATA_DIR = [
+  join(__dirname, '..', '..', 'data'),       // dev: packages/core/src/../../data
+  join(__dirname, 'data'),                    // Electron bundle: dist/data
+].find(d => existsSync(d)) ?? join(__dirname, '..', '..', 'data');
 
 const log = createLogger('model-catalog');
 

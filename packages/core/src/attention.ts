@@ -15,7 +15,7 @@ import {
   MailboxPriorityLevel,
   MAILBOX_TYPE_REGISTRY,
   MAILBOX_ITEM_MAX_RETRIES,
-  COMPLETION_MARKER,
+  hasCompletionMarker,
   PRIORITY_LABELS,
   TRIAGE_PROMPT_MAX_ITEMS,
   MAILBOX_PROCESSING_TIMEOUT_MS,
@@ -65,7 +65,7 @@ export function detectAbnormalCompletion(
     return 'empty reply from LLM-invoking item';
   }
 
-  if (!reply.includes(COMPLETION_MARKER)) {
+  if (!hasCompletionMarker(reply)) {
     return 'completion marker missing from reply';
   }
 

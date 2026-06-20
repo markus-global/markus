@@ -1,6 +1,5 @@
 {
   "name": "@markus/shared",
-  "version": "0.8.4-rc.9",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -9,5 +8,6 @@
     "build": "tsc -b",
     "dev": "tsc -b --watch",
     "clean": "rm -rf dist *.tsbuildinfo"
-  }
+  },
+  "version": "0.8.4-rc.10"
 }

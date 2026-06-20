@@ -1,6 +1,5 @@
 {
   "name": "@markus/remote",
-  "version": "0.8.4-rc.9",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -17,5 +16,6 @@
   },
   "devDependencies": {
     "@types/ws": "^8.18.1"
-  }
+  },
+  "version": "0.8.4-rc.10"
 }

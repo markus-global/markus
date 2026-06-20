@@ -13,6 +13,9 @@ asarUnpack:
   - dist/preload.js
   - dist/splash.html
   - dist/icon.png
+  - dist/templates/**
+  - dist/markus-browser-extension.zip
+  - dist/data/**
 compression: maximum
 
 mac:

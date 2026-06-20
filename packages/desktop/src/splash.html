@@ -32,7 +32,11 @@ h1 { font-size: 28px; margin-bottom: 12px; }
   <img class="logo" src="icon.png" alt="Markus">
   <h1>Markus</h1>
   <div class="spinner"></div>
-  <p id="status">Starting server...</p>
+  <p id="status"></p>
 </div>
+<script>
+const zh = (navigator.language || '').startsWith('zh');
+document.getElementById('status').textContent = zh ? '正在启动服务...' : 'Starting server...';
+</script>
 </body>
 </html>

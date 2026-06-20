@@ -8237,8 +8237,14 @@ EXPLANATION_END`;
         const { existsSync: ex, readFileSync, statSync } = await import('node:fs');
 
         const thisDir = dn(fileURLToPath(import.meta.url));
-        // Search order: dev workspace → binary install → cwd fallback
+        // Search order: Electron bundled → dev workspace → binary install → cwd fallback
         const zipCandidates = [
+          // Electron desktop: zip is sibling of main.js in dist/ (unpacked from asar)
+          jn(thisDir, 'markus-browser-extension.zip'),
+          // Also check MARKUS_TEMPLATES_DIR parent (points to unpacked dist/)
+          ...(process.env.MARKUS_TEMPLATES_DIR
+            ? [jn(rslv(process.env.MARKUS_TEMPLATES_DIR, '..'), 'markus-browser-extension.zip')]
+            : []),
           jn(rslv(thisDir, '..', '..', 'chrome-extension'), 'dist', 'markus-browser-extension.zip'),
           jn(rslv(thisDir, '..', 'chrome-extension'), 'markus-browser-extension.zip'),
           jn(rslv(thisDir, '..', '..', '..', 'chrome-extension'), 'markus-browser-extension.zip'),
@@ -8552,6 +8558,11 @@ EXPLANATION_END`;
           });
         }
         this.invalidateRoutingCache();
+        // Auto-set routing default model if none configured yet
+        if (!this.llmRouter.routingDefaultModel && enabled !== false) {
+          this.llmRouter.setRoutingDefaultModel({ provider: name, model });
+          log.info('Auto-set routing default model for first provider', { provider: name, model });
+        }
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
           const currentConfig = loadCfg(this.markusConfigPath);
@@ -8563,7 +8574,11 @@ EXPLANATION_END`;
             ...(baseUrl ? { baseUrl } : {}),
             enabled: enabled !== false,
           };
-          saveConfig({ llm: { providers } } as any, this.markusConfigPath);
+          const configUpdates: Record<string, unknown> = { providers };
+          if (!currentConfig.llm.routingDefaultModel && enabled !== false) {
+            configUpdates.routingDefaultModel = { provider: name, model };
+          }
+          saveConfig({ llm: configUpdates } as any, this.markusConfigPath);
         } catch (e) {
           log.warn('Failed to persist new provider', { error: String(e) });
         }
@@ -9156,6 +9171,15 @@ EXPLANATION_END`;
             }
           }
           this.invalidateRoutingCache();
+          // Auto-set routing default model if none configured yet
+          if (!this.llmRouter.routingDefaultModel && applied.length > 0) {
+            const first = providerUpdates.find(pu => applied.includes(pu.provider));
+            if (first) {
+              this.llmRouter.setRoutingDefaultModel({ provider: first.provider, model: first.model });
+              saveConfig({ llm: { routingDefaultModel: { provider: first.provider, model: first.model } } } as any, this.markusConfigPath);
+              log.info('Auto-set routing default model from env detection', { provider: first.provider, model: first.model });
+            }
+          }
         }
         this.json(res, 200, {
           applied,

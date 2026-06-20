@@ -153,8 +153,6 @@ export function ModelPicker({ models, selectedModel, onSelect, loading, compact,
         {visible.map(model => {
           const isActive = model.id === selectedModel;
           const tier = inferTier(model);
-          const cost = costTier(model.inputCostPer1MTokens, model.outputCostPer1MTokens);
-          const costLabel = cost === 'free' ? t('modelPicker.costFree') : cost;
           return (
             <button
               key={model.id}
@@ -183,22 +181,15 @@ export function ModelPicker({ models, selectedModel, onSelect, loading, compact,
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {hasMetadata(model) && (
-                    <span className={`text-[9px] font-medium ${COST_COLORS[cost]}`}>{costLabel}</span>
-                  )}
                   {isActive && (
                     <span className="text-[10px] text-brand-500 font-medium">{t('modelPicker.active')}</span>
                   )}
                 </div>
               </div>
 
-              {hasMetadata(model) && (
+              {hasMetadata(model) && model.maxInputTokens > 0 && (
                 <div className="ml-5 mt-0.5 flex items-center gap-2 text-[10px] text-fg-tertiary flex-wrap">
-                  {model.maxInputTokens > 0 && <span>{formatTokens(model.maxInputTokens)} {t('modelPicker.ctx')}</span>}
-                  {model.maxInputTokens > 0 && (model.inputCostPer1MTokens > 0 || model.outputCostPer1MTokens > 0) && <span className="text-fg-quaternary">|</span>}
-                  {(model.inputCostPer1MTokens > 0 || model.outputCostPer1MTokens > 0) && (
-                    <span>{formatCost(model.inputCostPer1MTokens)}/{formatCost(model.outputCostPer1MTokens)} {t('modelPicker.perMillion')}</span>
-                  )}
+                  <span>{formatTokens(model.maxInputTokens)} {t('modelPicker.ctx')}</span>
                 </div>
               )}
 

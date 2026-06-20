@@ -1,6 +1,5 @@
 {
   "name": "@markus/web-ui",
-  "version": "0.8.4-rc.9",
   "private": true,
   "type": "module",
   "exports": {
@@ -41,5 +40,6 @@
     "tailwindcss": "^4.2.1",
     "typescript": "^5.9.3",
     "vite": "^7.3.1"
-  }
+  },
+  "version": "0.8.4-rc.10"
 }

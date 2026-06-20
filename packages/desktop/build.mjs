@@ -84,6 +84,25 @@ async function main() {
     cpSync(templatesRoot, templatesDest, { recursive: true });
   }
 
+  // Copy Chrome extension zip
+  const extZip = resolve(__dirname, '../chrome-extension/dist/markus-browser-extension.zip');
+  if (existsSync(extZip)) {
+    cpSync(extZip, resolve(__dirname, 'dist/markus-browser-extension.zip'));
+    console.log('  Chrome extension zip copied');
+  }
+
+  // Copy model catalog data (baseline + supplements)
+  const coreDataDir = resolve(__dirname, '../core/data');
+  const dataDest = resolve(__dirname, 'dist/data');
+  if (existsSync(coreDataDir)) {
+    mkdirSync(dataDest, { recursive: true });
+    for (const f of ['model-catalog-baseline.json', 'model-catalog-supplements.json']) {
+      const src = resolve(coreDataDir, f);
+      if (existsSync(src)) cpSync(src, resolve(dataDest, f));
+    }
+    console.log('  Model catalog data copied');
+  }
+
   console.log('  Done → dist/main.js + dist/preload.js');
 }
 

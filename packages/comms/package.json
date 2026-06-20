@@ -1,6 +1,5 @@
 {
   "name": "@markus/comms",
-  "version": "0.8.4-rc.9",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -12,5 +11,6 @@
   },
   "dependencies": {
     "@markus/shared": "workspace:*"
-  }
+  },
+  "version": "0.8.4-rc.10"
 }

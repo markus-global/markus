@@ -13,7 +13,6 @@ type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 const DEBOUNCE_MS = 500;
 
 const CAPABILITY_GROUPS: { groupKey: string; capabilities: ModelCapabilityTypeDTO[] }[] = [
-  { groupKey: 'text', capabilities: ['text'] },
   { groupKey: 'image', capabilities: ['image_recognition', 'image_generation'] },
   { groupKey: 'audio', capabilities: ['audio_tts', 'audio_stt'] },
   { groupKey: 'video', capabilities: ['video_generation'] },
@@ -169,7 +168,15 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
                 const [provider, ...modelParts] = val.split('/');
                 const newDefault = { provider, model: modelParts.join('/') };
                 setDefaultModel(newDefault);
-                debouncedSave(undefined, newDefault);
+                // Clear any legacy 'text' capability assignment so default model takes effect
+                if (assignments.text) {
+                  const newAssignments = { ...assignments };
+                  delete newAssignments.text;
+                  setAssignments(newAssignments);
+                  debouncedSave(newAssignments, newDefault);
+                } else {
+                  debouncedSave(undefined, newDefault);
+                }
               }
             }}
           />
@@ -401,7 +408,6 @@ function filterModelsForCapability(models: ModelOption[], capabilityType: ModelC
     audio_tts: ['audio_speech'],
     audio_stt: ['audio_transcription'],
     video_generation: ['video_generation'],
-    image_recognition: ['chat'],
   };
 
   const capMap: Record<string, string[]> = {
@@ -416,10 +422,14 @@ function filterModelsForCapability(models: ModelOption[], capabilityType: ModelC
   const required = capMap[capabilityType];
 
   return models.filter(m => {
-    if (validModes && m.mode && validModes.includes(m.mode)) return true;
+    // For capabilities that require specific model capabilities (e.g. vision),
+    // always check capabilities first
     if (m.capabilities && m.capabilities.length > 0 && required) {
-      return required.some(cap => m.capabilities!.includes(cap));
+      if (required.some(cap => m.capabilities!.includes(cap))) return true;
     }
+    // Mode-based matching (e.g. image_generation mode) — but NOT for image_recognition
+    // which requires explicit vision capability
+    if (validModes && m.mode && validModes.includes(m.mode)) return true;
     return false;
   });
 }
