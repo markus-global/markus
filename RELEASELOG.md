@@ -2,35 +2,48 @@
 
 ## v0.8.4
 
-Electron 桌面应用；智能模型路由（多模态模型发现 + 区域提供商拆分 + 路由 UI）；Free 计划更名 Community 并提升上限；CI Desktop 构建修复；R2 上传 Electron 产物。
+Electron 桌面应用全平台发布（macOS ARM/Intel、Windows、Linux）；分发策略重构（macOS/Windows 以桌面端为主、npm 为辅，Linux 保留服务器二进制）；模型路由 UI 优化；Agent 完成标记修复；CI 流水线精简。
 
 ### New Features
 
-- **Electron 桌面应用** — 全新 `packages/desktop`，支持 macOS/Windows/Linux；启动闪屏、系统通知（仅关键事件）、应用菜单中英双语 i18n、macOS 签名与公证
-- **智能模型路由** — 动态提供商 schema 发现、多模态模型自动检测（所有提供商）、区域提供商拆分、路由 UI 与定价同步
+- **Electron 桌面应用** — 全新 `packages/desktop`，支持 macOS (ARM + Intel) / Windows / Linux；启动闪屏 i18n、系统托盘、OAuth 弹窗、文件下载处理、单实例与端口冲突检测、自动更新
+- **智能模型路由** — 动态提供商 schema 发现、多模态模型自动检测、区域提供商拆分、模型目录补充文件 (SiliconFlow/ZAI/MiniMax 等)
+- **首次配置 Provider 自动设置默认模型** — 添加 LLM Provider 时，若尚无默认模型则自动设置
 - **Community 计划** — Free 计划更名为 Community，提升 Agent 和团队数量上限
+- **科技前沿智库团队模板** — 首页引导创建科技前沿分析智库（Elon Musk / Steve Jobs / Sam Altman / Jensen Huang）
+- **一键桌面端构建脚本** — `scripts/build-desktop.sh` 完整编译所有包并打包 Electron 应用
 
 ### Bug Fixes
 
-- **修复 Desktop 构建 CI** — 添加 `APPLE_APP_SPECIFIC_PASSWORD` 环境变量解决 macOS 公证失败；Linux `executableName` 设为 `markus` 解决 AppImage 包名含 `@` 非法字符
-- **修复 R2 上传遗漏 Desktop 产物** — `upload-to-hub` 增加 `build-desktop` 依赖，上传 `.dmg`/`.exe`/`.AppImage` 到 R2
+- **修复 Electron 静态文件路径** — esbuild 打包后 `__dirname` 指向 `dist/`，导致 model-catalog 数据、templates、version、chrome-dialog-clicker 脚本路径全部失效；统一改为多路径探测 + `asarUnpack`
+- **修复 Chrome 扩展下载 404** — `build.mjs` 自动执行 `pack.mjs` 生成 zip；添加到 `asarUnpack`；扩展搜索路径覆盖 Electron 打包环境
+- **修复 Windows "打开"按钮无效** — `execSync + explorer` 引号问题改为 `spawn` 参数数组
+- **修复模型能力过滤** — `image_recognition` 错误映射到 `['chat']` 导致 DeepSeek 等文本模型出现在图像识别列表；改为要求 `vision` capability
+- **修复 completion marker 误判** — `<think>` 块内出现 `<<HANDLE_COMPLETE>>` 导致 Agent 提前终止；新增 `hasCompletionMarker()` 剥离思考块后再检测
+- **修复 Desktop EADDRINUSE** — 启动前探测已有服务，版本不同则优雅关闭旧进程
+- **修复 Desktop OAuth 弹窗被拦截** — `setWindowOpenHandler` 扩展 `/auth/connect` 路径
+- **修复 Desktop templates ENOTDIR** — ASAR 内路径无法 `lstat`，改用 `app.asar.unpacked`
+- **修复 Windows getPids TypeError** — `netstat | findstr` 无结果时 `split` 空指针，改用 PowerShell
+- **修复 CI draft release 冲突** — `softprops/action-gh-release@v2` 已知并发 bug，升级到 `@v3`
+- **修复跨平台 shell 执行** — `process.env.PATH` 使用 `node:path.delimiter`；`cmd.exe /c` 替代 `sh -c`；深链协议 Windows 注册
+- **修复 CI 测试失败** — `submitForReview` 参数增加、`api-server-deep` 异步竞态
+- **修复 Desktop 闪屏与通知** — 启动闪屏 i18n、通知精简仅关键事件
 - **修复暗色主题与 traffic light** — 冷中性暗色主题、macOS 窗口交通灯动态定位
-- **修复交付物时间戳与聊天滚动** — deliverable 时间戳稳定性、聊天滚动、桌面通知导航
 - **修复飞书 dirname 未定义** — Lark adapter `__dirname` 引用修复
-- **修复 Agent 初始状态** — 新 Agent 初始状态改为 offline 而非 idle；desired-state 与 runtime-state 分离确保重启持久化
-- **修复模型路由多模态兼容** — 多模态 provider API 兼容性问题、模型 ID 解析、定价同步
-- **修复深度审计发现的 9 项问题** — T-001/006/011/014/015/017/019/022/026
-- **修复 MCP client EPIPE 与 mock 兼容** — stdin.on() 空指针保护、登录测试竞态、CI 测试隔离 ~/.markus
 
 ### Improvements
 
-- **Desktop 通知精简** — 仅显示关键事件通知，减少噪音
-- **Desktop 闪屏改用 Logo** — 启动闪屏使用 Logo 图片替代文字
+- **分发策略重构** — macOS / Windows 不再构建独立二进制，以 Desktop App + npm 为主；Linux 保留 `.deb` / `.tar.gz`；`install.sh` macOS 分支引导安装 Node.js 或 Desktop
+- **CI 流水线精简** — 13 jobs → 5，17 artifacts → 7；移除 `install.ps1` 及所有引用
+- **移除 systray2 依赖** — CLI 不再包含系统托盘（已由 Electron 原生 Tray 取代），消除 npm install 崩溃
+- **模型路由 UI 优化** — 移除 Text 能力与默认模型的冗余设置；移除价格显示；Provider 添加后自动设置默认模型
+- **移除 OpenClaw 导入功能** — Settings 中移除不再使用的 OpenClaw 配置导入
+- **Work 页面空状态改进** — 有项目无任务时显示项目卡片网格；点击进入项目详情（ProjectSettingsPanel）
 - **单测覆盖率 80%+** — 深度代码审计与测试补全
 
 ### Stats
 
-- 307 files changed, +52,928 / −3,266 lines
+- 326 files changed, +53,776 / −5,442 lines
 
 ---
 
