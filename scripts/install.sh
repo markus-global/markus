@@ -284,6 +284,19 @@ main() {
       install_mode="binary"
     fi
   else
+    if [ "$os" != "linux" ]; then
+      # Standalone binaries are only available for Linux; macOS/Windows users need Node.js or the Desktop App
+      printf "\n"
+      error "Node.js 22+ is required to install Markus on ${os}."
+      printf "\n"
+      printf "  ${BOLD}Option 1:${NC} Install Node.js first, then re-run this script\n"
+      printf "    → ${CYAN}https://nodejs.org${NC}\n"
+      printf "\n"
+      printf "  ${BOLD}Option 2:${NC} Download the Markus Desktop App\n"
+      printf "    → ${CYAN}https://github.com/${GITHUB_REPO}/releases/latest${NC}\n"
+      printf "\n"
+      exit 1
+    fi
     if command -v node &>/dev/null; then
       warn "Node.js $(node -v) is too old (22+ required) — using standalone binary"
     else

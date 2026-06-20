@@ -1082,13 +1082,18 @@ export class TaskService {
             lines.push(`- ${note.slice(0, PROMPT_DEP_NOTE_CHARS)}`);
           }
         }
+        if (depTask.completionSummary) {
+          lines.push(`**Completion Summary:** ${depTask.completionSummary}`);
+        }
         if (depTask.deliverables?.length) {
-          lines.push('**Deliverables (review these for background context):**');
-          for (const d of depTask.deliverables) {
-            const refInfo = d.type === 'file' ? ` — File: \`${d.reference}\` (use \`file_read\` to inspect)` :
-                            d.type === 'branch' ? ` [branch: ${d.reference}]` :
-                            d.reference ? ` — ref: \`${d.reference}\`` : '';
-            lines.push(`- ${d.summary ?? '(no summary)'}${refInfo}`);
+          const files = depTask.deliverables.filter(d => d.type !== 'branch' && d.reference);
+          if (files.length > 0) {
+            lines.push('**Deliverables (review these for background context):**');
+            for (const d of files) {
+              const refInfo = d.type === 'file' ? ` — File: \`${d.reference}\` (use \`file_read\` to inspect)` :
+                              d.reference ? ` — ref: \`${d.reference}\`` : '';
+              lines.push(`- ${d.summary ?? '(no summary)'}${refInfo}`);
+            }
           }
         }
         depSections.push(lines.join('\n'));
@@ -1622,6 +1627,7 @@ export class TaskService {
           blockedBy,
           result: (row.result as Task['result']) ?? undefined,
           deliverables: Array.isArray((row as any).deliverables) ? ((row as any).deliverables as Task['deliverables']) : undefined,
+          completionSummary: (row as any).completionSummary ?? undefined,
           notes: Array.isArray(row.notes) ? (row.notes as string[]) : undefined,
           createdAt:
             row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
@@ -1646,6 +1652,36 @@ export class TaskService {
       log.info(`Loaded ${rows.length} tasks from DB for org ${orgId}`);
     } catch (err) {
       log.warn('Failed to load tasks from DB', { error: String(err) });
+    }
+  }
+
+  /**
+   * One-time migration: extract branch deliverable summaries into task.completionSummary
+   * and remove branch items from task.deliverables JSON.
+   */
+  async migrateBranchToCompletionSummary(): Promise<void> {
+    let migrated = 0;
+    for (const [taskId, task] of this.tasks) {
+      if (task.completionSummary) continue;
+      if (!task.deliverables?.length) continue;
+
+      const branchItem = task.deliverables.find(d => d.type === 'branch');
+      if (!branchItem) continue;
+
+      task.completionSummary = branchItem.summary;
+      task.deliverables = task.deliverables.filter(d => d.type !== 'branch');
+      task.updatedAt = new Date().toISOString();
+
+      if (this.taskRepo) {
+        this.taskRepo.updateCompletionSummary(taskId, task.completionSummary)
+          .catch(err => log.warn('Failed to persist completionSummary migration', { taskId, error: String(err) }));
+        this.taskRepo.updateDeliverables(taskId, task.deliverables)
+          .catch(err => log.warn('Failed to persist deliverables cleanup', { taskId, error: String(err) }));
+      }
+      migrated++;
+    }
+    if (migrated > 0) {
+      log.info(`Migrated branch->completionSummary for ${migrated} tasks`);
     }
   }
 
@@ -2968,7 +3004,7 @@ export class TaskService {
 
   // ─── Governance: Submit for Review ─────────────────────────────────────────
 
-  async submitForReview(taskId: string, deliverables: TaskDeliverable[], reviewerId?: string): Promise<Task> {
+  async submitForReview(taskId: string, deliverables: TaskDeliverable[], reviewerId?: string, completionSummary?: string): Promise<Task> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (task.status !== 'in_progress') {
@@ -3022,17 +3058,26 @@ export class TaskService {
       task.reviewerId = reviewerId;
     }
 
-    // Persist deliverables (and reviewerId if changed) to DB
+    // Persist completionSummary to the task
+    if (completionSummary) {
+      task.completionSummary = completionSummary;
+    }
+
+    // Persist deliverables (and reviewerId/completionSummary if changed) to DB
     if (this.taskRepo) {
       this.taskRepo.updateDeliverables(task.id, task.deliverables)
         .catch(err => log.warn('Failed to persist deliverables to DB', { taskId: task.id, error: String(err) }));
+      if (completionSummary) {
+        this.taskRepo.updateCompletionSummary(task.id, completionSummary)
+          .catch(err => log.warn('Failed to persist completionSummary to DB', { taskId: task.id, error: String(err) }));
+      }
       if (reviewerId) {
         this.taskRepo.update(task.id, { reviewerId })
           .catch(err => log.warn('Failed to persist reviewer change to DB', { taskId: task.id, error: String(err) }));
       }
     }
 
-    // Persist each task deliverable as a standalone Deliverable entity (skip branch — it's task metadata)
+    // Persist each task deliverable as a standalone Deliverable entity
     if (this.deliverableService && deliverables.length > 0) {
       const builderMode = this.detectBuilderMode(task.assignedAgentId);
 
@@ -3143,8 +3188,13 @@ export class TaskService {
       parts.push('');
       parts.push(`**Description:** ${task.description}`);
 
+      if (task.completionSummary) {
+        parts.push('');
+        parts.push(`**Summary:** ${task.completionSummary}`);
+      }
+
       if (task.deliverables && task.deliverables.length > 0) {
-        const files = task.deliverables.filter(d => d.type !== 'branch');
+        const files = task.deliverables.filter(d => d.type !== 'branch' && d.reference);
         if (files.length > 0) {
           parts.push('');
           parts.push('**Deliverables:**');
@@ -3152,11 +3202,6 @@ export class TaskService {
             parts.push(`- [${d.type}] ${d.reference}${d.summary ? ` — ${d.summary}` : ''}`);
           }
           if (files.length > REVIEWER_FILE_LIST_MAX) parts.push(`  ... and ${files.length - REVIEWER_FILE_LIST_MAX} more`);
-        }
-        const branch = task.deliverables.find(d => d.type === 'branch');
-        if (branch) {
-          parts.push(`**Branch:** ${branch.reference}`);
-          if (branch.summary) parts.push(`**Summary:** ${branch.summary}`);
         }
       }
 
@@ -3866,13 +3911,18 @@ export class TaskService {
           lines.push('**Notes (most recent first):**');
           for (const note of depTask.notes.slice(-PROMPT_DEP_NOTES_MAX).reverse()) lines.push(`- ${note.slice(0, PROMPT_DEP_NOTE_CHARS)}`);
         }
+        if (depTask.completionSummary) {
+          lines.push(`**Completion Summary:** ${depTask.completionSummary}`);
+        }
         if (depTask.deliverables?.length) {
-          lines.push('**Deliverables (review these for background context):**');
-          for (const d of depTask.deliverables) {
-            const refInfo = d.type === 'file' ? ` — File: \`${d.reference}\` (use \`file_read\` to inspect)` :
-                            d.type === 'branch' ? ` [branch: ${d.reference}]` :
-                            d.reference ? ` — ref: \`${d.reference}\`` : '';
-            lines.push(`- ${d.summary ?? '(no summary)'}${refInfo}`);
+          const files = depTask.deliverables.filter(d => d.type !== 'branch' && d.reference);
+          if (files.length > 0) {
+            lines.push('**Deliverables (review these for background context):**');
+            for (const d of files) {
+              const refInfo = d.type === 'file' ? ` — File: \`${d.reference}\` (use \`file_read\` to inspect)` :
+                              d.reference ? ` — ref: \`${d.reference}\`` : '';
+              lines.push(`- ${d.summary ?? '(no summary)'}${refInfo}`);
+            }
           }
         }
         depSections.push(lines.join('\n'));

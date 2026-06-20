@@ -1,6 +1,5 @@
 {
   "name": "@markus/chrome-extension",
-  "version": "1.0.0",
   "private": true,
   "scripts": {
     "build": "esbuild src/background.ts --bundle --outfile=dist/background.js --format=esm --target=es2022 --platform=browser",
@@ -12,5 +11,6 @@
     "@types/chrome": "^0.0.300",
     "esbuild": "^0.25.0",
     "typescript": "^5.6.0"
-  }
+  },
+  "version": "0.8.4-rc.12"
 }

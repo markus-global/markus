@@ -765,8 +765,8 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
               {/* Metadata */}
               <div className="flex items-center gap-4 text-[10px] text-fg-tertiary flex-wrap">
-                <span>{t('metadata.created')} {new Date(selected.createdAt).toLocaleDateString()}</span>
-                <span>{t('metadata.updated')} {new Date(selected.updatedAt).toLocaleDateString()}</span>
+                <span>{t('metadata.created')} {new Date(selected.createdAt).toLocaleString()}</span>
+                <span>{t('metadata.updated')} {new Date(selected.updatedAt).toLocaleString()}</span>
                 <span className="text-fg-muted select-all">{selected.id.slice(0, 12)}</span>
               </div>
 

@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
-import { platform } from 'node:os';
-import { resolve, dirname } from 'node:path';
+import { platform, homedir } from 'node:os';
+import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { createLogger } from '@markus/shared';
@@ -10,7 +10,11 @@ const log = createLogger('chrome-dialog-clicker');
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const SCRIPTS_DIR = resolve(__dirname, '../../../../scripts/markus-chrome-allow');
+const SCRIPTS_DIR = [
+  resolve(__dirname, '../../../../scripts/markus-chrome-allow'),  // monorepo dev
+  resolve(__dirname, 'scripts', 'markus-chrome-allow'),           // Electron bundle
+  join(homedir(), '.markus', 'scripts', 'markus-chrome-allow'),   // user-installed
+].find(d => existsSync(d)) ?? resolve(__dirname, '../../../../scripts/markus-chrome-allow');
 
 export interface AutoClickCheckResult {
   platform: 'darwin' | 'win32' | 'linux' | string;

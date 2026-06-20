@@ -107,7 +107,12 @@ printf "${GREEN}✓${NC} All CI checks passed.\n\n"
 
 # ── Update all package.json ───────────────────────────────────────────────
 for f in package.json packages/*/package.json; do
-  sed -i '' "s/\"version\": \"$CURRENT\"/\"version\": \"$VER\"/" "$f"
+  node -e "
+    const fs = require('fs');
+    const p = JSON.parse(fs.readFileSync('$f','utf8'));
+    p.version = '$VER';
+    fs.writeFileSync('$f', JSON.stringify(p, null, 2) + '\n');
+  "
 done
 
 # ── Sync install scripts to markus-hub ──────────────────────────────────
@@ -115,8 +120,7 @@ MARKUS_HUB_DIR="$ROOT_DIR/../markus-hub"
 if [[ -d "$MARKUS_HUB_DIR" ]]; then
   mkdir -p "$MARKUS_HUB_DIR/scripts"
   cp "$ROOT_DIR/scripts/install.sh"  "$MARKUS_HUB_DIR/scripts/install.sh"
-  cp "$ROOT_DIR/scripts/install.ps1" "$MARKUS_HUB_DIR/scripts/install.ps1"
-  printf "  ${GREEN}✓${NC} install.sh + install.ps1 synced to markus-hub\n"
+  printf "  ${GREEN}✓${NC} install.sh synced to markus-hub\n"
 fi
 
 # ── Commit, tag, push ────────────────────────────────────────────────────

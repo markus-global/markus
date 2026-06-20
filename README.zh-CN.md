@@ -61,13 +61,19 @@ Markus 是一个**运行完整 AI 团队的开源平台** — 不是对其他智
 
 ## 快速开始
 
-```bash
-# 安装
-curl -fsSL https://markus.global/install.sh | bash
-# 或者: npm install -g @markus-global/cli
+**桌面应用** — 从 [Releases](https://github.com/markus-global/markus/releases/latest) 下载（macOS `.dmg` / Windows `.exe` / Linux `.AppImage`）
 
-# 启动
+**命令行安装**（需要 Node.js 22+）：
+
+```bash
+npm install -g @markus-global/cli
 markus start
+```
+
+**Linux 一键安装**（无需 Node.js）：
+
+```bash
+curl -fsSL https://markus.global/install.sh | bash
 ```
 
 打开 **http://localhost:8056** — 引导向导将引导你设置姓名、邮箱和密码。初始登录：`admin@markus.local` / `markus123`。

@@ -1,6 +1,5 @@
 {
   "name": "@markus/core",
-  "version": "0.8.3",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -25,5 +24,6 @@
   "devDependencies": {
     "@types/turndown": "^5.0.6",
     "@types/ws": "^8.18.1"
-  }
+  },
+  "version": "0.8.4-rc.12"
 }

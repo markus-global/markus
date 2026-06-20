@@ -1708,6 +1708,14 @@ function TaskDetailPanel({
   const [showRevision, setShowRevision] = useState(false);
   const [revisionReason, setRevisionReason] = useState('');
   const [deliverablesPage, setDeliverablesPage] = useState(1);
+  const [unifiedDeliverables, setUnifiedDeliverables] = useState<Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string }>>([]);
+  const loadUnifiedDeliverables = useCallback(async () => {
+    try {
+      const { results } = await api.deliverables.search({ taskId: task.id, limit: 200 });
+      setUnifiedDeliverables(results.filter((d: any) => d.status !== 'outdated'));
+    } catch { /* ok */ }
+  }, [task.id]);
+  useEffect(() => { void loadUnifiedDeliverables(); }, [loadUnifiedDeliverables]);
   const [descExpanded, setDescExpanded] = useState(false);
   const isMobile = useIsMobile();
   const PAGE_SIZE = 20;
@@ -1858,7 +1866,7 @@ function TaskDetailPanel({
             {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" />}
           </button>
           <button onClick={() => switchTab('deliverables')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'deliverables' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-            {(() => { const c = (task.deliverables ?? []).filter(d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0).length; return c > 0 ? t('work:task.deliverablesCount', { count: c }) : t('work:task.deliverables'); })()}
+            {(() => { const c = unifiedDeliverables.filter(d => typeof d.reference === 'string' && d.reference.length > 0).length; return c > 0 ? t('work:task.deliverablesCount', { count: c }) : t('work:task.deliverables'); })()}
           </button>
           <button onClick={() => switchTab('history')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'history' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
             {t('work:task.historyTab')}
@@ -2145,8 +2153,8 @@ function TaskDetailPanel({
                 )}
                 {/* Deliverables preview — latest 3 (newest first) */}
                 {(() => {
-                  const validDeliverables = (task.deliverables ?? []).filter(
-                    d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0
+                  const validDeliverables = unifiedDeliverables.filter(
+                    d => typeof d.reference === 'string' && d.reference.length > 0
                   );
                   if (validDeliverables.length === 0) return null;
                   const typeColors: Record<string, string> = {
@@ -2167,11 +2175,11 @@ function TaskDetailPanel({
                         )}
                       </div>
                       <div className="space-y-1.5">
-                        {latest3.map((d, i) => {
+                        {latest3.map((d) => {
                           const isUrl = /^https?:\/\//i.test(d.reference);
                           const fileName = isUrl ? (d.summary || d.reference) : (d.reference.split('/').pop() ?? d.reference);
                           return (
-                            <div key={i} className="flex items-start gap-2.5 bg-surface-elevated/60 rounded-lg px-3 py-2 group hover:bg-surface-elevated/80 transition-colors">
+                            <div key={d.id} className="flex items-start gap-2.5 bg-surface-elevated/60 rounded-lg px-3 py-2 group hover:bg-surface-elevated/80 transition-colors">
                               <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 mt-0.5 ${typeColors[d.type] ?? 'bg-gray-500/15 text-fg-secondary'}`}>{d.type}</span>
                               <div className="flex-1 min-w-0">
                                 {isUrl ? (
@@ -2215,8 +2223,8 @@ function TaskDetailPanel({
 
           <div className={activeTab === 'deliverables' ? 'px-6 py-4' : 'hidden'}>
               {(() => {
-                const validDeliverables = (task.deliverables ?? []).filter(
-                  d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0
+                const validDeliverables = unifiedDeliverables.filter(
+                  d => typeof d.reference === 'string' && d.reference.length > 0
                 );
                 if (validDeliverables.length === 0) return <div className="flex items-center justify-center py-12 text-xs text-fg-tertiary">{t('work:task.noDeliverablesYet')}</div>;
                 const typeColors: Record<string, string> = {
@@ -2242,11 +2250,11 @@ function TaskDetailPanel({
                       )}
                     </div>
                     <div className="space-y-1.5">
-                      {paged.map((d, i) => {
+                      {paged.map((d) => {
                         const isUrl = /^https?:\/\//i.test(d.reference);
                         const fileName = isUrl ? (d.summary || d.reference) : (d.reference.split('/').pop() ?? d.reference);
                         return (
-                          <div key={i} className="flex items-start gap-2.5 bg-surface-elevated/60 rounded-lg px-3 py-2 group hover:bg-surface-elevated/80 transition-colors">
+                          <div key={d.id} className="flex items-start gap-2.5 bg-surface-elevated/60 rounded-lg px-3 py-2 group hover:bg-surface-elevated/80 transition-colors">
                             <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 mt-0.5 ${typeColors[d.type] ?? 'bg-gray-500/15 text-fg-secondary'}`}>{d.type}</span>
                             <div className="flex-1 min-w-0">
                               {isUrl ? (
@@ -5206,6 +5214,24 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               onRefresh={() => { refreshProjects(); }}
             />
           </div>
+        ) : totalTaskCount === 0 && filteredReqs.length === 0 && viewMode === 'project' && selectedProject ? (
+          <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">
+            <div className="px-6 py-2 flex items-center gap-2 border-b border-border-default/60 shrink-0 sticky top-0 bg-surface-primary z-10">
+              <button onClick={selectAllTasks} className="text-[11px] text-brand-500 hover:text-brand-400 font-medium flex items-center gap-1 shrink-0">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+                {t('common:back')}
+              </button>
+            </div>
+            <ProjectSettingsPanel
+              project={selectedProject}
+              tasks={[]}
+              requirements={[]}
+              agents={agents}
+              onDeleteProject={() => handleDeleteProject(selectedProject.id)}
+              onUpdateProject={async (data) => { await api.projects.update(selectedProject.id, data); }}
+              onRefresh={() => { refreshProjects(); }}
+            />
+          </div>
         ) : totalTaskCount === 0 && filteredReqs.length === 0 ? (
           <div className="flex-1 flex items-center justify-center p-8">
             {projects.length === 0 ? (
@@ -5220,15 +5246,34 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 </button>
               </div>
             ) : (
-              <div className="max-w-sm w-full text-center space-y-3">
-                <div className="w-12 h-12 mx-auto rounded-xl bg-brand-500/10 flex items-center justify-center">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-brand-500"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="12" y1="18" x2="12" y2="12" /><line x1="9" y1="15" x2="15" y2="15" /></svg>
+              <div className="w-full max-w-2xl mx-auto space-y-4">
+                <p className="text-xs text-fg-tertiary text-center">{t('work:task.emptyNoReqsHint')}</p>
+                <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}>
+                  {projects.map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => selectProject(p.id)}
+                      className="group flex items-start gap-3 p-4 rounded-xl border border-border-default bg-surface-elevated hover:border-brand-500/50 hover:bg-brand-500/5 transition-all text-left"
+                    >
+                      <div className="w-9 h-9 shrink-0 rounded-lg bg-brand-500/10 flex items-center justify-center">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-brand-500"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium text-fg-primary group-hover:text-brand-500 truncate transition-colors">{p.name}</div>
+                        {p.description && <div className="text-[11px] text-fg-tertiary mt-0.5 line-clamp-2">{p.description}</div>}
+                        <div className="text-[10px] text-fg-quaternary mt-1.5">
+                          {new Date(p.createdAt).toLocaleDateString()}
+                        </div>
+                      </div>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-fg-quaternary group-hover:text-brand-500 shrink-0 mt-1 transition-colors"><polyline points="9 18 15 12 9 6" /></svg>
+                    </button>
+                  ))}
                 </div>
-                <h3 className="text-sm font-medium text-fg-secondary">{t('work:task.emptyNoReqsTitle')}</h3>
-                <p className="text-xs text-fg-tertiary leading-relaxed whitespace-pre-line">{t('work:task.emptyNoReqsHint')}</p>
-                <button onClick={openCreateReq} className="inline-flex items-center gap-1.5 px-4 py-2 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors">
-                  {t('work:task.createRequirementCta')}
-                </button>
+                <div className="text-center pt-2">
+                  <button onClick={openCreateReq} className="inline-flex items-center gap-1.5 px-4 py-2 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors">
+                    {t('work:task.createRequirementCta')}
+                  </button>
+                </div>
               </div>
             )}
           </div>

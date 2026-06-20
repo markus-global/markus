@@ -1,6 +1,5 @@
 {
   "name": "@markus/gui",
-  "version": "0.8.3",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -17,5 +16,6 @@
   },
   "devDependencies": {
     "@types/sharp": "^0.32.0"
-  }
+  },
+  "version": "0.8.4-rc.12"
 }

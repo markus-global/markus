@@ -134,6 +134,19 @@ export const COMPLETION_MARKER = '<<HANDLE_COMPLETE>>';
 export const COMPLETION_MARKER_INSTRUCTION =
   `\n\n[IMPORTANT: When you have finished processing this request, you MUST end your final response with the exact token: ${COMPLETION_MARKER}]`;
 
+/**
+ * Check whether the completion marker is present in the *visible* portion of
+ * a reply — i.e. outside any `<think>…</think>` reasoning blocks.
+ *
+ * Some models quote the marker instruction inside their `<think>` block while
+ * reasoning about it, which causes a false positive if we simply use
+ * `reply.includes(COMPLETION_MARKER)`.
+ */
+export function hasCompletionMarker(reply: string): boolean {
+  const outside = reply.replace(/<think>[\s\S]*?<\/think>/g, '');
+  return outside.includes(COMPLETION_MARKER);
+}
+
 /** Max auto-retries when execution finishes without task_submit_review. */
 export const TASK_MAX_NO_SUBMIT_RETRIES = 8;
 

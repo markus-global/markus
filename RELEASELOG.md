@@ -1,5 +1,206 @@
 # Release Log
 
+## v0.8.4
+
+Electron 桌面应用；智能模型路由（多模态模型发现 + 区域提供商拆分 + 路由 UI）；Free 计划更名 Community 并提升上限；CI Desktop 构建修复；R2 上传 Electron 产物。
+
+### New Features
+
+- **Electron 桌面应用** — 全新 `packages/desktop`，支持 macOS/Windows/Linux；启动闪屏、系统通知（仅关键事件）、应用菜单中英双语 i18n、macOS 签名与公证
+- **智能模型路由** — 动态提供商 schema 发现、多模态模型自动检测（所有提供商）、区域提供商拆分、路由 UI 与定价同步
+- **Community 计划** — Free 计划更名为 Community，提升 Agent 和团队数量上限
+
+### Bug Fixes
+
+- **修复 Desktop 构建 CI** — 添加 `APPLE_APP_SPECIFIC_PASSWORD` 环境变量解决 macOS 公证失败；Linux `executableName` 设为 `markus` 解决 AppImage 包名含 `@` 非法字符
+- **修复 R2 上传遗漏 Desktop 产物** — `upload-to-hub` 增加 `build-desktop` 依赖，上传 `.dmg`/`.exe`/`.AppImage` 到 R2
+- **修复暗色主题与 traffic light** — 冷中性暗色主题、macOS 窗口交通灯动态定位
+- **修复交付物时间戳与聊天滚动** — deliverable 时间戳稳定性、聊天滚动、桌面通知导航
+- **修复飞书 dirname 未定义** — Lark adapter `__dirname` 引用修复
+- **修复 Agent 初始状态** — 新 Agent 初始状态改为 offline 而非 idle；desired-state 与 runtime-state 分离确保重启持久化
+- **修复模型路由多模态兼容** — 多模态 provider API 兼容性问题、模型 ID 解析、定价同步
+- **修复深度审计发现的 9 项问题** — T-001/006/011/014/015/017/019/022/026
+- **修复 MCP client EPIPE 与 mock 兼容** — stdin.on() 空指针保护、登录测试竞态、CI 测试隔离 ~/.markus
+
+### Improvements
+
+- **Desktop 通知精简** — 仅显示关键事件通知，减少噪音
+- **Desktop 闪屏改用 Logo** — 启动闪屏使用 Logo 图片替代文字
+- **单测覆盖率 80%+** — 深度代码审计与测试补全
+
+### Stats
+
+- 307 files changed, +52,928 / −3,266 lines
+
+---
+
+## v0.8.3
+
+防止通信适配器连接失败导致服务崩溃；侧边栏设置按钮简化；登录提示可见性修复。
+
+### Bug Fixes
+
+- **修复通信适配器崩溃** — comm adapter（飞书/Slack/WhatsApp）连接失败时捕获异常，防止整个服务进程退出
+- **修复侧边栏设置按钮** — 简化设置入口，修复登录提示在特定条件下不可见
+
+### Stats
+
+- 15 files changed, +41 / −37 lines
+
+---
+
+## v0.8.2
+
+飞书集成全链路（QR 码注册、消息路由、通知转发）；工作流系统（Phase 1）；Codex OAuth 支持；暗色主题重设计；聊天输入与侧边栏优化。
+
+### New Features
+
+- **飞书集成** — 一键扫码注册飞书应用、消息路由至 Secretary、通知转发、markus.json 作为凭据唯一来源、私信回退提示
+- **工作流系统 Phase 1** — 工作流创建与运行、自动启动任务、Secretary 审批回退、搜索/mention/实体渲染集成
+- **OpenAI Codex OAuth** — Codex OAuth 代理与 token 刷新、Settings UI 配置
+- **Hub 分享可见性** — Hub 分享状态持久化到 localStorage，新增可见性级别与组织资产标签
+
+### Bug Fixes
+
+- **修复 OAuth 登录竞态** — 解决 OAuth 登录过程中的竞态条件，补充缺失的 i18n key
+- **修复 License 同步与引导简化** — License 同步流程优化，Onboarding 简化
+- **修复 Markdown 实体链接** — 正确渲染被反引号包裹的实体链接
+- **修复工作流持久化与重试** — 工作流验证、持久化、重试机制加固
+
+### Improvements
+
+- **暗色主题重设计** — Codex 风格暖中性色调
+- **聊天输入框与侧边栏优化** — 输入框交互改进，侧边栏折叠优化，未读计数
+- **交付物页面聊天面板** — 支持上下文感知的 @mention 和选择工具栏
+- **Work 页面团队分组** — Agent 筛选栏替换为团队分组视图
+
+### Stats
+
+- 101 files changed, +12,620 / −1,484 lines
+
+---
+
+## v0.8.1
+
+Windows 安装包修复；企业版试用期调整；UI 小改进。
+
+### Bug Fixes
+
+- **修复 Windows 安装包** — 安装器自动关闭占用进程，chrome:// 按钮回退方案，引导清单移除搜索步骤
+- **调整企业版试用期** — 试用期从 3 天延长至 7 天
+
+### Stats
+
+- 16 files changed, +56 / −45 lines
+
+---
+
+## v0.8.0
+
+企业版授权系统（Hub OAuth、组织管理与计费）；License 限额看板；工具调用统计统一。
+
+### New Features
+
+- **企业版授权系统** — 基于 Hub OAuth 的企业授权，组织管理与计费 UI，License 激活后自动刷新，Hub 组织成员数展示
+- **License 限额看板** — 统一从 Agent 指标提取工具调用计数，超限横幅提醒
+
+### Bug Fixes
+
+- **修复 Hub 重定向 Auth Header 丢失** — 保留 Hub 重定向时的认证头
+- **修复本地登录路径** — 恢复 Hub 连接后的本地登录入口，版本横幅改为指向网站下载
+
+### Stats
+
+- 48 files changed, +2,802 / −306 lines
+
+---
+
+## v0.7.14
+
+完成标记会话内续接修复；注意力重试逻辑改进；聊天滚动 UX 优化。
+
+### Bug Fixes
+
+- **修复完成标记重试** — 完成标记（completion marker）通过会话内续接重试，而非重新创建会话
+- **修复注意力重试逻辑** — attention controller 重试逻辑改进，避免无效重试
+- **修复聊天滚动 UX** — 聊天滚动行为优化
+
+### Stats
+
+- 14 files changed, +144 / −52 lines
+
+---
+
+## v0.7.13
+
+修复 Windows 打开 Chrome 扩展页面的启动命令。
+
+### Bug Fixes
+
+- **修复 Windows Chrome 扩展页面** — 修正 Windows 上打开 `chrome://extensions` 的 `start` 命令参数
+
+### Stats
+
+- 12 files changed, +12 / −12 lines (version bump)
+
+---
+
+## v0.7.12
+
+修复二进制构建中 node-datachannel 版本不稳定问题。
+
+### Bug Fixes
+
+- **固定 node-datachannel 版本** — 二进制构建中将 node-datachannel 固定为 0.12.0，避免不兼容的版本更新
+
+### Stats
+
+- 12 files changed, +12 / −12 lines (version bump)
+
+---
+
+## v0.7.11
+
+修复 Chrome Extension 打包脚本跨平台路径问题。
+
+### Bug Fixes
+
+- **修复跨平台路径解析** — Chrome Extension `pack.mjs` 使用 `fileURLToPath` 替代直接路径操作，修复 Windows 路径兼容性
+
+### Stats
+
+- 12 files changed, +15 / −14 lines
+
+---
+
+## v0.7.10
+
+CI 改为直接上传 release 二进制到 R2，不再走 API 中转。
+
+### Improvements
+
+- **R2 直传** — CI 发布流程改为直接上传二进制到 Cloudflare R2，移除 API 中转环节，提升上传可靠性
+
+### Stats
+
+- 12 files changed, +34 / −20 lines
+
+---
+
+## v0.7.9
+
+安装脚本添加 markus.global 镜像回退，提升中国区安装体验。
+
+### Improvements
+
+- **安装脚本镜像回退** — `install.sh` 和 `install.ps1` 添加 markus.global 作为下载源回退，GitHub 不可达时自动切换
+
+### Stats
+
+- 14 files changed, +85 / −31 lines
+
+---
+
 ## v0.7.8
 
 LiteLLM 模型目录集成（动态模型选择）；聊天与工作台 UX 全面优化；Windows 安装包修复；SSE 断连韧性增强；执行时间线 i18n 支持。

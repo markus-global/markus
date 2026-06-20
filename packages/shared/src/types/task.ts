@@ -122,6 +122,8 @@ export interface Task {
   /** Whether the reviewer is an agent or a human user (default: 'agent') */
   reviewerType?: 'agent' | 'human';
   deliverables?: TaskDeliverable[];
+  /** Agent's completion summary (set on task_submit_review) */
+  completionSummary?: string;
 
   // ── Scheduling fields ──
   /** 'standard' (default) or 'scheduled' for cron/recurring tasks */

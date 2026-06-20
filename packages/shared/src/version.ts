@@ -6,8 +6,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function findVersion(): string {
   const candidates = [
-    resolve(__dirname, '..', 'package.json'),             // npm global: dist/ → ../package.json
+    resolve(__dirname, '..', 'package.json'),             // npm global: dist/ → ../package.json  (also Electron: dist/ → app.asar root)
     resolve(__dirname, '..', '..', '..', 'package.json'),  // monorepo: packages/shared/dist/ → root
+    resolve(__dirname, 'package.json'),                    // fallback: same dir as bundle
   ];
   for (const p of candidates) {
     if (existsSync(p)) {

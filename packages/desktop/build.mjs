@@ -84,6 +84,33 @@ async function main() {
     cpSync(templatesRoot, templatesDest, { recursive: true });
   }
 
+  // Copy Chrome extension zip (build it first if needed)
+  const extDir = resolve(__dirname, '../chrome-extension');
+  const extZip = resolve(extDir, 'dist/markus-browser-extension.zip');
+  if (!existsSync(extZip) && existsSync(resolve(extDir, 'pack.mjs'))) {
+    console.log('  Building Chrome extension zip...');
+    const { execSync } = await import('node:child_process');
+    try { execSync('node pack.mjs', { cwd: extDir, stdio: 'inherit' }); } catch { /* non-critical */ }
+  }
+  if (existsSync(extZip)) {
+    cpSync(extZip, resolve(__dirname, 'dist/markus-browser-extension.zip'));
+    console.log('  Chrome extension zip copied');
+  } else {
+    console.warn('  ⚠ Chrome extension zip not found — browser extension download will be unavailable');
+  }
+
+  // Copy model catalog data (baseline + supplements)
+  const coreDataDir = resolve(__dirname, '../core/data');
+  const dataDest = resolve(__dirname, 'dist/data');
+  if (existsSync(coreDataDir)) {
+    mkdirSync(dataDest, { recursive: true });
+    for (const f of ['model-catalog-baseline.json', 'model-catalog-supplements.json']) {
+      const src = resolve(coreDataDir, f);
+      if (existsSync(src)) cpSync(src, resolve(dataDest, f));
+    }
+    console.log('  Model catalog data copied');
+  }
+
   console.log('  Done → dist/main.js + dist/preload.js');
 }
 

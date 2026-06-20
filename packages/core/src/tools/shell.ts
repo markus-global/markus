@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { resolve, normalize, sep } from 'node:path';
+import { platform } from 'node:os';
 import { SHELL_TIMEOUT_DEFAULT_MS, SHELL_TIMEOUT_MAX_MS, sanitizeForLLM, isToolDisabledInMAS, getMASToolBlockedMessage, type PathAccessPolicy } from '@markus/shared';
 import type { AgentToolHandler, ToolOutputCallback } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
@@ -221,14 +222,19 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
           resolve(result);
         };
 
-        const child = spawn('sh', ['-c', finalCommand], {
-          cwd: effectiveCwd ?? undefined,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          detached: true,
-          env: { ...process.env },
-        });
-        // Don't let the detached child prevent Node from exiting
-        child.unref();
+        const isWin = platform() === 'win32';
+        const child = spawn(
+          isWin ? process.env['COMSPEC'] || 'cmd.exe' : 'sh',
+          isWin ? ['/d', '/s', '/c', finalCommand] : ['-c', finalCommand],
+          {
+            cwd: effectiveCwd ?? undefined,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            detached: !isWin,
+            env: { ...process.env },
+            windowsHide: true,
+          },
+        );
+        if (!isWin) child.unref();
 
         let stdout = '';
         let stderr = '';
@@ -237,10 +243,13 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
 
         const timeout = setTimeout(() => {
           killed = true;
-          // Kill the entire process group (shell + any children it spawned)
-          try { process.kill(-child.pid!, 'SIGTERM'); } catch { /* already dead */ }
+          try {
+            if (isWin) { child.kill(); } else { process.kill(-child.pid!, 'SIGTERM'); }
+          } catch { /* already dead */ }
           setTimeout(() => {
-            try { process.kill(-child.pid!, 'SIGKILL'); } catch { /* already dead */ }
+            try {
+              if (isWin) { child.kill('SIGKILL'); } else { process.kill(-child.pid!, 'SIGKILL'); }
+            } catch { /* already dead */ }
             // Force-destroy stdio streams so the `close` event fires even when
             // grandchild processes still hold inherited pipe file descriptors.
             child.stdout?.destroy();

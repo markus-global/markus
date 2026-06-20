@@ -67,9 +67,9 @@
       "agent": "Hire an Agent",
       "agentDesc": "Hire a specialized agent like a researcher, developer, or analyst",
       "agentAction": "Ask Secretary",
-      "team": "Build a Team",
-      "teamDesc": "Group agents into a team to collaborate on complex tasks",
-      "teamAction": "Ask Secretary"
+      "team": "Create Tech Frontier Think Tank",
+      "teamDesc": "Build an AI think tank with 4 tech visionary personas — Elon Musk, Steve Jobs, Sam Altman, and Jensen Huang — to analyze cutting-edge technology trends from different perspectives",
+      "teamAction": "Create Now"
     }
   },
   "heroBanner": {

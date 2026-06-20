@@ -3493,20 +3493,43 @@ export class APIServer {
 
     if (path === '/api/tasks/deliverables' && req.method === 'GET') {
       const projectId = url.searchParams.get('projectId') ?? undefined;
-      const all = this.taskService.listTasks({ projectId });
-      const items = all
-        .filter(t => t.deliverables && t.deliverables.length > 0)
-        .map(t => ({
-          taskId: t.id,
-          taskTitle: t.title,
-          taskStatus: t.status,
-          projectId: t.projectId,
-          requirementId: t.requirementId,
-          assignedAgentId: t.assignedAgentId,
-          updatedAt: t.updatedAt,
-          deliverables: t.deliverables,
-        }));
-      this.json(res, 200, { items });
+      if (this.deliverableService) {
+        const { results } = this.deliverableService.search({ projectId, limit: 500 });
+        const grouped = new Map<string, { taskId: string; taskTitle: string; taskStatus: string; projectId?: string; requirementId?: string; assignedAgentId?: string; updatedAt?: string; deliverables: typeof results }>();
+        for (const d of results) {
+          if (!d.taskId) continue;
+          if (!grouped.has(d.taskId)) {
+            const task = this.taskService.getTask(d.taskId);
+            grouped.set(d.taskId, {
+              taskId: d.taskId,
+              taskTitle: task?.title ?? '',
+              taskStatus: task?.status ?? '',
+              projectId: task?.projectId,
+              requirementId: task?.requirementId,
+              assignedAgentId: task?.assignedAgentId,
+              updatedAt: task?.updatedAt,
+              deliverables: [],
+            });
+          }
+          grouped.get(d.taskId)!.deliverables.push(d);
+        }
+        this.json(res, 200, { items: [...grouped.values()] });
+      } else {
+        const all = this.taskService.listTasks({ projectId });
+        const items = all
+          .filter(t => t.deliverables && t.deliverables.length > 0)
+          .map(t => ({
+            taskId: t.id,
+            taskTitle: t.title,
+            taskStatus: t.status,
+            projectId: t.projectId,
+            requirementId: t.requirementId,
+            assignedAgentId: t.assignedAgentId,
+            updatedAt: t.updatedAt,
+            deliverables: t.deliverables,
+          }));
+        this.json(res, 200, { items });
+      }
       return;
     }
 
@@ -8214,8 +8237,14 @@ EXPLANATION_END`;
         const { existsSync: ex, readFileSync, statSync } = await import('node:fs');
 
         const thisDir = dn(fileURLToPath(import.meta.url));
-        // Search order: dev workspace → binary install → cwd fallback
+        // Search order: Electron bundled → dev workspace → binary install → cwd fallback
         const zipCandidates = [
+          // Electron desktop: zip is sibling of main.js in dist/ (unpacked from asar)
+          jn(thisDir, 'markus-browser-extension.zip'),
+          // Also check MARKUS_TEMPLATES_DIR parent (points to unpacked dist/)
+          ...(process.env.MARKUS_TEMPLATES_DIR
+            ? [jn(rslv(process.env.MARKUS_TEMPLATES_DIR, '..'), 'markus-browser-extension.zip')]
+            : []),
           jn(rslv(thisDir, '..', '..', 'chrome-extension'), 'dist', 'markus-browser-extension.zip'),
           jn(rslv(thisDir, '..', 'chrome-extension'), 'markus-browser-extension.zip'),
           jn(rslv(thisDir, '..', '..', '..', 'chrome-extension'), 'markus-browser-extension.zip'),
@@ -8529,6 +8558,11 @@ EXPLANATION_END`;
           });
         }
         this.invalidateRoutingCache();
+        // Auto-set routing default model if none configured yet
+        if (!this.llmRouter.routingDefaultModel && enabled !== false) {
+          this.llmRouter.setRoutingDefaultModel({ provider: name, model });
+          log.info('Auto-set routing default model for first provider', { provider: name, model });
+        }
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
           const currentConfig = loadCfg(this.markusConfigPath);
@@ -8540,7 +8574,11 @@ EXPLANATION_END`;
             ...(baseUrl ? { baseUrl } : {}),
             enabled: enabled !== false,
           };
-          saveConfig({ llm: { providers } } as any, this.markusConfigPath);
+          const configUpdates: Record<string, unknown> = { providers };
+          if (!currentConfig.llm.routingDefaultModel && enabled !== false) {
+            configUpdates.routingDefaultModel = { provider: name, model };
+          }
+          saveConfig({ llm: configUpdates } as any, this.markusConfigPath);
         } catch (e) {
           log.warn('Failed to persist new provider', { error: String(e) });
         }
@@ -9133,6 +9171,15 @@ EXPLANATION_END`;
             }
           }
           this.invalidateRoutingCache();
+          // Auto-set routing default model if none configured yet
+          if (!this.llmRouter.routingDefaultModel && applied.length > 0) {
+            const first = providerUpdates.find(pu => applied.includes(pu.provider));
+            if (first) {
+              this.llmRouter.setRoutingDefaultModel({ provider: first.provider, model: first.model });
+              saveConfig({ llm: { routingDefaultModel: { provider: first.provider, model: first.model } } } as any, this.markusConfigPath);
+              log.info('Auto-set routing default model from env detection', { provider: first.provider, model: first.model });
+            }
+          }
         }
         this.json(res, 200, {
           applied,
@@ -10419,10 +10466,15 @@ EXPLANATION_END`;
           this.json(res, 400, { error: 'Invalid or non-existent path' });
           return;
         }
-        const platform = process.platform;
-        if (platform === 'darwin') execSync(`open ${JSON.stringify(dirPath)}`);
-        else if (platform === 'win32') execSync(`explorer ${JSON.stringify(dirPath)}`);
-        else execSync(`xdg-open ${JSON.stringify(dirPath)}`);
+        const { spawn: spawnChild } = await import('node:child_process');
+        const plat = process.platform;
+        if (plat === 'darwin') {
+          spawnChild('open', [dirPath], { detached: true, stdio: 'ignore' }).unref();
+        } else if (plat === 'win32') {
+          spawnChild('explorer', [dirPath], { detached: true, stdio: 'ignore', shell: true }).unref();
+        } else {
+          spawnChild('xdg-open', [dirPath], { detached: true, stdio: 'ignore' }).unref();
+        }
         this.json(res, 200, { ok: true });
       } catch {
         this.json(res, 500, { error: 'Failed to open path' });

@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import type { BackendInstance } from '../backend.js';
-import { resolve, join, dirname } from 'node:path';
+import { resolve, join, dirname, delimiter } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { allTemplateDirs, resolveTemplatesDir, resolveWebUiDir } from '../paths.js';
@@ -516,7 +516,7 @@ async function startServerCore(
   const cwdBin = join(process.cwd(), 'node_modules', '.bin');
   if (existsSync(cwdBin) && !currentPath.includes(cwdBin)) extraPaths.push(cwdBin);
   if (extraPaths.length > 0) {
-    process.env['PATH'] = `${extraPaths.join(':')}:${currentPath}`;
+    process.env['PATH'] = `${extraPaths.join(delimiter)}${delimiter}${currentPath}`;
   }
 
   // Propagate markus.json security settings into env so downstream services can read them
@@ -597,10 +597,9 @@ async function startServerCore(
   const deliverableService = new DeliverableService(storage?.deliverableRepo);
   await deliverableService.load();
 
-  // One-time migration: sync existing task.deliverables into the unified deliverables table
-  const allTasks = taskService.listTasks({ orgId: 'default' });
-  await deliverableService.migrateFromTasks(allTasks);
-  await deliverableService.deduplicateByReference();
+  // One-time migrations
+  await taskService.migrateBranchToCompletionSummary();
+  await deliverableService.cleanupLegacyRows();
 
   const reportService = new ReportService(taskService, billingService, auditService, knowledgeService);
   const _trustService = new TrustService();
@@ -1678,7 +1677,7 @@ async function startServerCore(
 
   // ── Done — replace console.error spam with progress.finish() ────────────────
   const logFile = getStartupLogFile();
-  const logFileName = logFile.split('/').pop() ?? logFile;
+  const logFileName = logFile.replace(/.*[/\\]/, '') || logFile;
   const uiUrl = `http://localhost:${apiPort}`;
 
   progress?.finish(uiUrl);

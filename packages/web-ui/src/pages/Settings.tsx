@@ -28,7 +28,6 @@ interface AuthProfileSafe {
   createdAt: number; updatedAt: number;
   hasApiKey: boolean; hasOAuth: boolean; oauthExpired?: boolean; accountId?: string;
 }
-interface OpenClawPreview { found: boolean; summary: { configPath: string; models?: { providerCount: number; providers: Array<{ name: string; modelCount: number; baseUrl?: string }> }; channels?: string[] } }
 interface OllamaModelInfo { name: string; size?: number; parameterSize?: string; family?: string }
 interface EnvModelDetected {
   provider: string; displayName: string; apiKeySet: boolean; apiKeyPreview: string;
@@ -120,11 +119,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [togglingProvider, setTogglingProvider] = useState<string | null>(null);
   const [providerCatalogModels, setProviderCatalogModels] = useState<Record<string, CatalogModel[]>>({});
   const [providerCatalogLoading, setProviderCatalogLoading] = useState<string | null>(null);
-
-  // OpenClaw import state
-  const [openclawPreview, setOpenclawPreview] = useState<OpenClawPreview | null>(null);
-  const [openclawLoading, setOpenclawLoading] = useState(false);
-  const [openclawMsg, setOpenclawMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   // Environment variable model detection state
   const [envModels, setEnvModels] = useState<EnvModelsResponse | null>(null);
@@ -386,34 +380,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
       }
     } catch { /* ignore */ }
     finally { setTogglingProvider(null); }
-  };
-
-  const detectOpenclaw = async () => {
-    setOpenclawLoading(true); setOpenclawMsg(null);
-    try {
-      const res = await fetch('/api/settings/import/openclaw', {
-        method: 'POST', headers: authHeaders(),
-        body: JSON.stringify({ preview: true }),
-      });
-      const data = await res.json() as OpenClawPreview | { error: string };
-      if ('error' in data) { setOpenclawMsg({ type: 'err', text: data.error }); }
-      else { setOpenclawPreview(data); }
-    } catch { setOpenclawMsg({ type: 'err', text: t('openClaw.detectFailed') }); }
-    finally { setOpenclawLoading(false); }
-  };
-
-  const importOpenclaw = async () => {
-    setOpenclawLoading(true); setOpenclawMsg(null);
-    try {
-      const res = await fetch('/api/settings/import/openclaw', {
-        method: 'POST', headers: authHeaders(),
-        body: JSON.stringify({ preview: false }),
-      });
-      const data = await res.json() as { applied: boolean; appliedModels: number } | { error: string };
-      if ('error' in data) { setOpenclawMsg({ type: 'err', text: data.error }); }
-      else { setOpenclawMsg({ type: 'ok', text: t('openClaw.importedFrom', { count: data.appliedModels }) }); loadSettings(); }
-    } catch { setOpenclawMsg({ type: 'err', text: t('openClaw.importFailed') }); }
-    finally { setOpenclawLoading(false); }
   };
 
   const applyEnvModels = async () => {
@@ -1554,46 +1520,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               {ollamaMsg && <Msg type={ollamaMsg.type} text={ollamaMsg.text} />}
             </div>
 
-            <div className="border-t border-border-default" />
-
-            {/* — Import from OpenClaw — */}
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <h4 className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{t('openClaw.title')}</h4>
-                <button onClick={() => void detectOpenclaw()} disabled={openclawLoading}
-                  className="px-3 py-1 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-tertiary text-xs rounded-md transition-colors flex items-center gap-1.5">
-                  {openclawLoading ? t('common:detecting') : t('openClaw.detectShort')}
-                </button>
-              </div>
-              {openclawPreview && openclawPreview.found && (
-                <div className="space-y-2">
-                  <div className="text-xs text-green-600">{t('openClaw.foundAt')} <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code></div>
-                  {openclawPreview.summary.models && (
-                    <div className="bg-surface-elevated/30 rounded-lg p-3">
-                      <div className="text-xs text-fg-tertiary mb-2">{t('openClaw.modelProvidersFound', { count: openclawPreview.summary.models.providerCount })}</div>
-                      <div className="space-y-1">
-                        {openclawPreview.summary.models.providers.map(p => (
-                          <div key={p.name} className="flex items-center justify-between text-xs">
-                            <span className="text-fg-secondary">{p.name}</span>
-                            <span className="text-fg-tertiary">{t('openClaw.modelsCountSuffix', { count: p.modelCount })}{p.baseUrl ? t('openClaw.withBaseUrl', { url: p.baseUrl }) : ''}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {openclawPreview.summary.channels && openclawPreview.summary.channels.length > 0 && (
-                    <div className="bg-surface-elevated/30 rounded-lg p-3">
-                      <div className="text-xs text-fg-tertiary mb-1">{t('openClaw.channelsPrefix')} {openclawPreview.summary.channels.join(', ')}</div>
-                    </div>
-                  )}
-                  <button onClick={() => void importOpenclaw()} disabled={openclawLoading}
-                    className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                    {openclawLoading ? t('common:importing') : t('openClaw.importConfigs')}
-                  </button>
-                </div>
-              )}
-              {openclawMsg && <Msg type={openclawMsg.type} text={openclawMsg.text} />}
-            </div>
           </div>
         </CollapsibleSection>
 

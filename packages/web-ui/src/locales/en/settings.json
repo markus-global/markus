@@ -326,23 +326,6 @@
     "urlLabel": "URL:",
     "llmTimeout": "LLM Timeout: {{ms}}ms (from LLM_TIMEOUT_MS)"
   },
-  "openClaw": {
-    "title": "Import from OpenClaw",
-    "description": "Detect and import LLM configurations from an existing OpenClaw installation.",
-    "detect": "Detect OpenClaw Config",
-    "detectShort": "Detect OpenClaw",
-    "detectFailed": "Detection failed",
-    "foundAt": "Found OpenClaw config at:",
-    "providersModels": "{{providers}} providers, {{models}} models",
-    "importConfigs": "Import Model Configs",
-    "importFailed": "Import failed",
-    "importedFrom": "Imported {{count}} model configs from OpenClaw",
-    "notFound": "No OpenClaw config found.",
-    "modelProvidersFound": "{{count}} model providers found:",
-    "modelsCountSuffix": "{{count}} models",
-    "withBaseUrl": " ({{url}})",
-    "channelsPrefix": "Channels:"
-  },
   "agentExecution": {
     "title": "Agent Execution",
     "maxToolIterations": "Max Tool Iterations",

@@ -31,6 +31,7 @@ import {
   HEARTBEAT_DAILY_LOG_CHARS,
   COMPLETION_MARKER_INSTRUCTION,
   COMPLETION_MARKER,
+  hasCompletionMarker,
   TRIAGE_CONTEXT_MESSAGES_MAX,
   TRIAGE_CONTEXT_MSG_CHARS,
   DELIBERATION_ALLOWED_TOOLS,
@@ -967,7 +968,7 @@ export class Agent {
    */
   private async ensureCompletionMarker(reply: string, sessionId?: string): Promise<string> {
     if (!reply || reply === '[cancelled]' || reply === '[preempted]' || reply === '[merged]') return reply;
-    if (reply.includes(COMPLETION_MARKER)) return reply;
+    if (hasCompletionMarker(reply)) return reply;
     if (!sessionId || !this.memory.getSession(sessionId)) return reply;
 
     log.info('Completion marker missing — continuing in-session to obtain marker', {
