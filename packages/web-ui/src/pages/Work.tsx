@@ -5227,6 +5227,17 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                   {t('work:project.newProject')}
                 </button>
               </div>
+            ) : viewMode === 'project' ? (
+              <div className="max-w-sm w-full text-center space-y-3">
+                <div className="w-12 h-12 mx-auto rounded-xl bg-brand-500/10 flex items-center justify-center">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-brand-500"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="12" y1="18" x2="12" y2="12" /><line x1="9" y1="15" x2="15" y2="15" /></svg>
+                </div>
+                <h3 className="text-sm font-medium text-fg-secondary">{t('work:task.emptyNoReqsTitle')}</h3>
+                <p className="text-xs text-fg-tertiary leading-relaxed whitespace-pre-line">{t('work:task.emptyNoReqsHint')}</p>
+                <button onClick={openCreateReq} className="inline-flex items-center gap-1.5 px-4 py-2 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors">
+                  {t('work:task.createRequirementCta')}
+                </button>
+              </div>
             ) : (
               <div className="w-full max-w-2xl mx-auto space-y-4">
                 <p className="text-xs text-fg-tertiary text-center">{t('work:task.emptyNoReqsHint')}</p>
