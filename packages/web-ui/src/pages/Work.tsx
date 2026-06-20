@@ -5229,6 +5229,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               </div>
             ) : viewMode === 'project' && selectedProject ? (
               <div className="flex-1 overflow-y-auto">
+                <div className="px-6 py-2 flex items-center gap-2 border-b border-border-default/60 shrink-0">
+                  <button onClick={selectAllTasks} className="text-[11px] text-brand-500 hover:text-brand-400 font-medium flex items-center gap-1 shrink-0">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+                    {t('common:back')}
+                  </button>
+                </div>
                 <ProjectSettingsPanel
                   project={selectedProject}
                   tasks={[]}
