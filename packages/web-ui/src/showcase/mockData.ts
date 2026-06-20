@@ -10,6 +10,11 @@ import type { WorkPreviewData } from '../pages/Work.tsx';
 import type { DeliverablesPreviewData } from '../pages/Deliverables.tsx';
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Inline avatar data URLs (avoids repeated network requests during demo cycling)
+// ═══════════════════════════════════════════════════════════════════════════
+import { AVATAR_ALEX, AVATAR_SARAH, AVATAR_JAMES } from './avatars.ts';
+
+// ═══════════════════════════════════════════════════════════════════════════
 // IDs
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -53,9 +58,9 @@ export function createMockData(t: TFunction) {
 
   // ── Founding Team (3 humans) ───────────────────────────────────────────
   const humans: HumanUserInfo[] = [
-    { id: HUMAN_IDS.alex, name: ts('humans.alex.name'), role: 'owner', orgId: ORG, avatarUrl: '/avatars/alex.jpg' },
-    { id: HUMAN_IDS.sarah, name: ts('humans.sarah.name'), role: 'admin', orgId: ORG, avatarUrl: '/avatars/sarah.jpg' },
-    { id: HUMAN_IDS.james, name: ts('humans.james.name'), role: 'admin', orgId: ORG, avatarUrl: '/avatars/james.jpg' },
+    { id: HUMAN_IDS.alex, name: ts('humans.alex.name'), role: 'owner', orgId: ORG, avatarUrl: AVATAR_ALEX },
+    { id: HUMAN_IDS.sarah, name: ts('humans.sarah.name'), role: 'admin', orgId: ORG, avatarUrl: AVATAR_SARAH },
+    { id: HUMAN_IDS.james, name: ts('humans.james.name'), role: 'admin', orgId: ORG, avatarUrl: AVATAR_JAMES },
   ];
 
   // ── Digital Employees (30 agents) ──────────────────────────────────────
