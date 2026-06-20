@@ -5228,15 +5228,34 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 </button>
               </div>
             ) : (
-              <div className="max-w-sm w-full text-center space-y-3">
-                <div className="w-12 h-12 mx-auto rounded-xl bg-brand-500/10 flex items-center justify-center">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-brand-500"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="12" y1="18" x2="12" y2="12" /><line x1="9" y1="15" x2="15" y2="15" /></svg>
+              <div className="w-full max-w-2xl mx-auto space-y-4">
+                <p className="text-xs text-fg-tertiary text-center">{t('work:task.emptyNoReqsHint')}</p>
+                <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}>
+                  {projects.map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => selectProject(p.id)}
+                      className="group flex items-start gap-3 p-4 rounded-xl border border-border-default bg-surface-elevated hover:border-brand-500/50 hover:bg-brand-500/5 transition-all text-left"
+                    >
+                      <div className="w-9 h-9 shrink-0 rounded-lg bg-brand-500/10 flex items-center justify-center">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-brand-500"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium text-fg-primary group-hover:text-brand-500 truncate transition-colors">{p.name}</div>
+                        {p.description && <div className="text-[11px] text-fg-tertiary mt-0.5 line-clamp-2">{p.description}</div>}
+                        <div className="text-[10px] text-fg-quaternary mt-1.5">
+                          {new Date(p.createdAt).toLocaleDateString()}
+                        </div>
+                      </div>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-fg-quaternary group-hover:text-brand-500 shrink-0 mt-1 transition-colors"><polyline points="9 18 15 12 9 6" /></svg>
+                    </button>
+                  ))}
                 </div>
-                <h3 className="text-sm font-medium text-fg-secondary">{t('work:task.emptyNoReqsTitle')}</h3>
-                <p className="text-xs text-fg-tertiary leading-relaxed whitespace-pre-line">{t('work:task.emptyNoReqsHint')}</p>
-                <button onClick={openCreateReq} className="inline-flex items-center gap-1.5 px-4 py-2 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors">
-                  {t('work:task.createRequirementCta')}
-                </button>
+                <div className="text-center pt-2">
+                  <button onClick={openCreateReq} className="inline-flex items-center gap-1.5 px-4 py-2 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors">
+                    {t('work:task.createRequirementCta')}
+                  </button>
+                </div>
               </div>
             )}
           </div>
