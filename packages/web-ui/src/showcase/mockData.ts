@@ -403,6 +403,7 @@ export function createMockData(t: TFunction) {
     requirements,
     projects,
     deliverableTotal: deliverables.length,
+    recentDeliverables: deliverables.slice(0, 6),
     storageInfo,
     usageInfo,
   };
