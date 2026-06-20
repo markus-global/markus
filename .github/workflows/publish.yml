@@ -222,7 +222,7 @@ jobs:
 
       - name: Create GitHub Release (stable)
         if: needs.publish-npm.outputs.is_prerelease == 'false'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: v${{ steps.version.outputs.VERSION }}
           prerelease: false
@@ -252,7 +252,7 @@ jobs:
 
       - name: Create GitHub Release (pre-release)
         if: needs.publish-npm.outputs.is_prerelease == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: v${{ steps.version.outputs.VERSION }} (Pre-release)
           prerelease: true
