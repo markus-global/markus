@@ -12,6 +12,7 @@ import { api, wsClient, type TaskLogEntry } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
+import { CodingToolCard, type CodingToolSession } from './CodingToolCard.tsx';
 import {
   getToolMeta, getShellCommand, formatDuration, formatLogTime, truncate, prettyJson, formatArgsDetail,
   filterCompletedStarts, streamEntryToExecEntry, taskLogToEntry,
@@ -141,7 +142,7 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
           {!isRunning && info.error && (
             <div>
               <h4 className="text-[10px] font-semibold text-red-500 uppercase tracking-wider mb-2">{t('execution.error')}</h4>
-              <pre className="text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 overflow-x-auto max-h-40 whitespace-pre-wrap break-all font-mono">{prettyJson(String(info.error))}</pre>
+              <pre className="text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 overflow-x-auto max-h-60 overflow-y-auto whitespace-pre-wrap break-all font-mono">{prettyJson(String(info.error))}</pre>
             </div>
           )}
           {info.subagentLogs && info.subagentLogs.length > 0 && (
@@ -465,6 +466,208 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
   );
 }
 
+// ─── CodingToolDetailModal — rich detail view for coding tool invocations ─────
+
+const CODING_TOOL_META: Record<string, { label: string; badgeClass: string }> = {
+  'claude-code': { label: 'Claude Code', badgeClass: 'bg-orange-500/15 text-orange-500' },
+  codex: { label: 'Codex', badgeClass: 'bg-emerald-500/15 text-emerald-500' },
+  'cursor-agent': { label: 'Cursor', badgeClass: 'bg-blue-500/15 text-blue-500' },
+};
+
+function CodingToolDetailModal({ session, info, onClose }: { session: CodingToolSession; info: ToolCallInfo; onClose: () => void }) {
+  const args = (info.args && typeof info.args === 'object' && !Array.isArray(info.args))
+    ? info.args as Record<string, unknown>
+    : {};
+  const isRunning = session.status === 'running' || session.status === 'created' || session.status === 'context_injected';
+  const isFailed = session.status === 'failed' || session.status === 'timeout';
+  const isSuccess = session.status === 'completed';
+  const toolMeta = CODING_TOOL_META[session.tool] ?? { label: session.tool, badgeClass: 'bg-surface-elevated text-fg-tertiary' };
+  const [showRaw, setShowRaw] = useState(false);
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
+  const durationMs = session.cost?.durationMs ?? info.durationMs;
+  const modelUsed = typeof args.model === 'string' ? args.model : undefined;
+  const modeUsed = typeof args.mode === 'string' ? args.mode : undefined;
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60" />
+      <div className="relative bg-surface-secondary border border-border-default rounded-xl shadow-2xl w-[640px] max-w-[92vw] max-h-[80vh] overflow-hidden flex flex-col"
+        onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="px-5 py-3 border-b border-border-default flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`text-xs px-2 py-0.5 rounded font-medium ${toolMeta.badgeClass}`}>{toolMeta.label}</span>
+            <span className={`text-xs px-1.5 py-0.5 rounded ${isRunning ? 'bg-brand-500/15 text-brand-500' : isSuccess ? 'bg-green-500/15 text-green-600' : 'bg-red-500/15 text-red-500'}`}>
+              {isRunning ? 'Running' : isSuccess ? 'Completed' : isFailed ? 'Failed' : session.status}
+            </span>
+            {durationMs != null && <span className="text-xs text-fg-tertiary tabular-nums">{formatDuration(durationMs)}</span>}
+            {modelUsed && <span className="text-[10px] bg-surface-elevated px-1.5 py-0.5 rounded text-fg-tertiary font-mono">{modelUsed}</span>}
+            {modeUsed && <span className="text-[10px] bg-surface-elevated px-1.5 py-0.5 rounded text-fg-tertiary">{modeUsed}</span>}
+          </div>
+          <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-lg leading-none ml-2">×</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+          {/* Prompt */}
+          <div>
+            <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Prompt</h4>
+            <pre className="text-xs text-fg-secondary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap break-all font-mono">
+              {session.prompt}
+            </pre>
+          </div>
+
+          {/* Input arguments */}
+          {Object.keys(args).length > 0 && (
+            <div>
+              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Input Arguments</h4>
+              <div className="space-y-1.5">
+                {Object.entries(args).filter(([k]) => k !== 'prompt').map(([key, value]) => (
+                  <div key={key} className="flex items-start gap-2 text-xs">
+                    <span className="text-brand-500 font-medium shrink-0 font-mono">{key}:</span>
+                    <span className="text-fg-secondary font-mono break-all">{typeof value === 'string' ? value : JSON.stringify(value)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Result */}
+          {session.result && !isRunning && (
+            <div>
+              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Result</h4>
+              <div className="space-y-2">
+                {session.result.summary && (
+                  <div className="text-xs text-fg-secondary">{session.result.summary}</div>
+                )}
+                {session.result.diffStats && (
+                  <div className="flex items-center gap-3 text-xs font-mono">
+                    <span className="text-fg-tertiary">{session.result.diffStats.filesChanged} files changed</span>
+                    <span className="text-green-500">+{session.result.diffStats.additions}</span>
+                    <span className="text-red-500">-{session.result.diffStats.deletions}</span>
+                  </div>
+                )}
+                {session.result.modifiedFiles && session.result.modifiedFiles.length > 0 && (
+                  <div>
+                    <div className="text-[10px] text-fg-tertiary mb-1">Modified files:</div>
+                    <div className="bg-surface-elevated/70 rounded-lg px-3 py-2 max-h-32 overflow-y-auto">
+                      {session.result.modifiedFiles.map((f, i) => (
+                        <div key={i} className="text-[11px] text-fg-secondary font-mono truncate">{f}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {session.result.error && (
+                  <pre className="text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 overflow-x-auto max-h-60 overflow-y-auto whitespace-pre-wrap break-all font-mono">
+                    {session.result.error}
+                  </pre>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Cost */}
+          {session.cost && (session.cost.inputTokens != null || session.cost.outputTokens != null || session.cost.estimatedCostUsd != null) && (
+            <div>
+              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Cost</h4>
+              <div className="flex items-center gap-4 text-xs text-fg-secondary">
+                {session.cost.inputTokens != null && <span>{session.cost.inputTokens.toLocaleString()} input tokens</span>}
+                {session.cost.outputTokens != null && <span>{session.cost.outputTokens.toLocaleString()} output tokens</span>}
+                {session.cost.estimatedCostUsd != null && <span className="font-medium">${session.cost.estimatedCostUsd.toFixed(4)}</span>}
+                {durationMs != null && <span className="text-fg-tertiary">{formatDuration(durationMs)}</span>}
+              </div>
+            </div>
+          )}
+
+          {/* Raw output */}
+          {session.result?.rawOutput && (
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowRaw(!showRaw)}
+                className="flex items-center gap-1.5 text-[10px] text-fg-tertiary hover:text-fg-secondary transition-colors"
+              >
+                <svg className={`w-3 h-3 transition-transform ${showRaw ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                </svg>
+                <span className="font-semibold uppercase tracking-wider">Raw Output</span>
+              </button>
+              {showRaw && (
+                <pre className="mt-2 text-[11px] text-fg-tertiary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto max-h-[50vh] overflow-y-auto whitespace-pre-wrap break-all font-mono">
+                  {session.result.rawOutput}
+                </pre>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── toolCallInfoToSession — convert generic ToolCallInfo to CodingToolSession ─
+
+function toolCallInfoToSession(info: ToolCallInfo): CodingToolSession | null {
+  if (info.tool !== 'invoke_coding_tool') return null;
+  const args = (info.args && typeof info.args === 'object' && !Array.isArray(info.args))
+    ? info.args as Record<string, unknown>
+    : {};
+  const toolName = (typeof args.tool === 'string' ? args.tool : 'unknown') as string;
+  const prompt = typeof args.prompt === 'string' ? args.prompt : '';
+
+  const statusMap: Record<string, string> = { running: 'running', done: 'completed', error: 'failed', stopped: 'cancelled' };
+  const sessionStatus = statusMap[info.status] ?? info.status;
+
+  let result: CodingToolSession['result'] | undefined;
+  let cost: CodingToolSession['cost'] | undefined;
+  if (info.result) {
+    try {
+      const parsed = JSON.parse(info.result);
+      if (parsed && typeof parsed === 'object') {
+        const inner = parsed.result && typeof parsed.result === 'object' ? parsed.result : parsed;
+        result = {
+          success: inner.success ?? parsed.success ?? (info.status === 'done'),
+          summary: inner.summary ?? inner.message ?? parsed.summary ?? parsed.message ?? 'Completed',
+          diffStats: inner.diffStats ?? parsed.diffStats,
+          modifiedFiles: inner.modifiedFiles ?? parsed.modifiedFiles,
+          exitCode: inner.exitCode ?? parsed.exitCode,
+          rawOutput: inner.rawOutput ?? inner.output ?? parsed.rawOutput ?? parsed.output,
+          error: inner.error ?? parsed.error,
+        };
+        if (inner.cost) cost = inner.cost;
+        else if (parsed.cost) cost = parsed.cost;
+      }
+    } catch {
+      result = { success: info.status === 'done', summary: info.result.slice(0, 500), rawOutput: info.result };
+    }
+  }
+  if (info.durationMs != null) {
+    cost = { ...cost, durationMs: info.durationMs };
+  }
+
+  let progressMessage: string | undefined;
+  if (info.liveOutput && info.status === 'running') {
+    const lines = info.liveOutput.trim().split('\n');
+    progressMessage = lines[lines.length - 1]?.slice(0, 200);
+  }
+
+  return {
+    id: `tc-${toolName}-${Date.now()}`,
+    tool: toolName,
+    status: sessionStatus,
+    prompt,
+    progressMessage,
+    result,
+    cost,
+    createdAt: new Date().toISOString(),
+  };
+}
+
 // ─── ToolCallRow — unified rendering for a single tool call ───────────────────
 
 export function ToolCallRow({ info, showTime, time, isLast }: {
@@ -482,6 +685,9 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
   const hasSubagentLogs = isSubagentTool && info.subagentLogs && info.subagentLogs.length > 0;
   const clickable = true;
 
+  const codingSession = useMemo(() => toolCallInfoToSession(info), [info]);
+  const [codingModalOpen, setCodingModalOpen] = useState(false);
+
   const shellCmd = getShellCommand(info);
   const outputRef = useRef<HTMLPreElement>(null);
 
@@ -490,6 +696,20 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
     }
   }, [info.liveOutput]);
+
+  if (codingSession) {
+    return (
+      <>
+        <div className="cursor-pointer" onClick={() => setCodingModalOpen(true)}>
+          <CodingToolCard session={codingSession} />
+        </div>
+        {codingModalOpen && createPortal(
+          <CodingToolDetailModal session={codingSession} info={info} onClose={() => setCodingModalOpen(false)} />,
+          document.body,
+        )}
+      </>
+    );
+  }
 
   return (
     <>

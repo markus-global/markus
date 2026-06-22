@@ -3640,6 +3640,101 @@ export class APIServer {
       return;
     }
 
+    if (path.match(/^\/api\/tasks\/[^/]+\/context$/) && req.method === 'GET') {
+      const taskId = path.split('/')[3]!;
+      try {
+        const task = this.taskService.getTask(taskId);
+        if (!task) {
+          this.json(res, 404, { error: 'Task not found' });
+          return;
+        }
+
+        const result: Record<string, unknown> = {
+          task: {
+            id: task.id,
+            title: task.title,
+            description: task.description,
+            status: task.status,
+            priority: task.priority,
+            subtasks: task.subtasks || [],
+            notes: task.notes || [],
+            deliverables: task.deliverables || [],
+            completionSummary: task.completionSummary,
+            assignedAgentId: task.assignedAgentId,
+            reviewerId: task.reviewerId,
+            executionRound: task.executionRound,
+            createdAt: task.createdAt,
+            updatedAt: task.updatedAt,
+          },
+          upstream: [] as Array<Record<string, unknown>>,
+          downstream: [] as Array<Record<string, unknown>>,
+        };
+
+        if (task.requirementId && this.requirementService) {
+          try {
+            const reqData = this.requirementService.getRequirement(task.requirementId);
+            if (reqData) {
+              result.requirement = {
+                id: reqData.id,
+                title: reqData.title,
+                description: reqData.description,
+                status: reqData.status,
+              };
+            }
+          } catch { /* requirement may not exist */ }
+        }
+
+        if (task.projectId && this.projectService) {
+          try {
+            const project = this.projectService.getProject(task.projectId);
+            if (project) {
+              result.project = {
+                id: project.id,
+                name: project.name,
+                description: project.description,
+                repositories: project.repositories || [],
+              };
+            }
+          } catch { /* project may not exist */ }
+        }
+
+        if (task.blockedBy && task.blockedBy.length > 0) {
+          for (const depId of task.blockedBy) {
+            try {
+              const dep = this.taskService.getTask(depId);
+              if (dep) {
+                (result.upstream as Array<Record<string, unknown>>).push({
+                  id: dep.id,
+                  title: dep.title,
+                  status: dep.status,
+                  notes: dep.notes,
+                  completionSummary: dep.completionSummary,
+                  deliverables: dep.deliverables,
+                });
+              }
+            } catch { /* dep may not exist */ }
+          }
+        }
+
+        try {
+          const allTasks = this.taskService.queryTasks({ orgId: task.orgId });
+          const downstream = allTasks.tasks.filter(t =>
+            t.blockedBy && t.blockedBy.includes(task.id),
+          );
+          result.downstream = downstream.map(t => ({
+            id: t.id,
+            title: t.title,
+            status: t.status,
+          }));
+        } catch { /* ignore */ }
+
+        this.json(res, 200, result);
+      } catch {
+        this.json(res, 500, { error: 'Failed to fetch task context' });
+      }
+      return;
+    }
+
     if (path.match(/^\/api\/tasks\/[^/]+$/) && req.method === 'GET') {
       const taskId = path.split('/')[3]!;
       const task = this.taskService.getTask(taskId);
@@ -8472,6 +8567,416 @@ EXPLANATION_END`;
       return;
     }
 
+    // Settings — Coding Tools
+    if (path === '/api/settings/coding-tools/detect' && req.method === 'GET') {
+      const { resolveWhich: _resolveWhich, execSafeSync: _execSafe } = await import('@markus/shared');
+      const toolDefs = [
+        { name: 'claude-code' as const, displayName: 'Claude Code', binaryName: 'claude', installHint: 'npm install -g @anthropic-ai/claude-code', authArgs: ['api-key-status'], authFailPattern: /not authenticated|invalid api key/i, authHint: 'Run `claude` to complete interactive login, or set ANTHROPIC_API_KEY' },
+        { name: 'codex' as const, displayName: 'Codex', binaryName: 'codex', installHint: 'npm install -g @openai/codex', authArgs: null as string[] | null, authEnv: 'OPENAI_API_KEY', authFailPattern: null as RegExp | null, authHint: 'Set OPENAI_API_KEY environment variable' },
+        { name: 'cursor-agent' as const, displayName: 'Cursor Agent', binaryName: 'cursor', installHint: 'Install Cursor from https://cursor.com/downloads then run: cursor agent install-shell-integration', authArgs: ['agent', 'status'], authFailPattern: /not logged in/i, authHint: 'Run `cursor agent login` or set CURSOR_API_KEY environment variable' },
+      ];
+      const tools = toolDefs.map(def => {
+        const binPath = _resolveWhich(def.binaryName);
+        if (!binPath) {
+          return { name: def.name, displayName: def.displayName, binaryName: def.binaryName, available: false, installHint: def.installHint };
+        }
+
+        let version: string | undefined;
+        const verResult = _execSafe(binPath, ['--version'], { timeout: 5000 });
+        if (verResult.exitCode === 0 && verResult.stdout) version = verResult.stdout;
+
+        let authenticated = false;
+        let authUser: string | undefined;
+        if (def.authArgs) {
+          const statusResult = _execSafe(binPath, def.authArgs, { timeout: 10_000 });
+          const statusOut = statusResult.stdout;
+          if (statusOut && def.authFailPattern) {
+            authenticated = !def.authFailPattern.test(statusOut);
+            if (authenticated && statusOut.length < 200) authUser = statusOut;
+          }
+        } else if (def.authEnv) {
+          authenticated = !!process.env[def.authEnv];
+        }
+
+        return {
+          name: def.name, displayName: def.displayName, binaryName: def.binaryName,
+          available: true, path: binPath, version,
+          authenticated, authHint: authenticated ? undefined : def.authHint, authUser,
+        };
+      });
+      this.json(res, 200, { tools });
+      return;
+    }
+
+    // Settings — Coding Tools: detect single tool
+    const perToolDetectMatch = path.match(/^\/api\/settings\/coding-tools\/detect\/([a-z-]+)$/);
+    if (perToolDetectMatch && req.method === 'GET') {
+      const toolName = perToolDetectMatch[1] as string;
+      const { resolveWhich: _resolveWhich, execSafeSync: _execSafe, loadConfig: _loadCfgDetect } = await import('@markus/shared');
+      const toolDefs: Record<string, { displayName: string; binaryName: string; installHint: string; authArgs: string[] | null; authEnv?: string; authFailPattern: RegExp | null; authHint: string }> = {
+        'claude-code': { displayName: 'Claude Code', binaryName: 'claude', installHint: 'npm install -g @anthropic-ai/claude-code', authArgs: ['api-key-status'], authFailPattern: /not authenticated|invalid api key/i, authHint: 'Run `claude` to complete interactive login, or set ANTHROPIC_API_KEY' },
+        'codex': { displayName: 'Codex', binaryName: 'codex', installHint: 'npm install -g @openai/codex', authArgs: null, authEnv: 'OPENAI_API_KEY', authFailPattern: null, authHint: 'Set OPENAI_API_KEY environment variable' },
+        'cursor-agent': { displayName: 'Cursor Agent', binaryName: 'cursor', installHint: 'Install Cursor from https://cursor.com/downloads then run: cursor agent install-shell-integration', authArgs: ['agent', 'status'], authFailPattern: /not logged in/i, authHint: 'Run `cursor agent login` or set CURSOR_API_KEY environment variable' },
+      };
+      const def = toolDefs[toolName];
+      if (!def) {
+        this.json(res, 404, { error: `Unknown tool: ${toolName}` });
+        return;
+      }
+      const cfgForDetect = _loadCfgDetect(this.markusConfigPath);
+      const toolCfgForDetect = cfgForDetect.codingTools?.tools?.[toolName];
+      const binPath = toolCfgForDetect?.binaryPath || _resolveWhich(def.binaryName);
+      if (!binPath) {
+        this.json(res, 200, { name: toolName, displayName: def.displayName, binaryName: def.binaryName, available: false, installHint: def.installHint });
+        return;
+      }
+      const detectEnv = { ...process.env, ...(toolCfgForDetect?.env ?? {}) };
+      let version: string | undefined;
+      const verResult = _execSafe(binPath, ['--version'], { timeout: 5000 });
+      if (verResult.exitCode === 0 && verResult.stdout) version = verResult.stdout;
+      let authenticated = false;
+      let authUser: string | undefined;
+      if (def.authArgs) {
+        const statusResult = _execSafe(binPath, def.authArgs, { timeout: 10_000, env: detectEnv });
+        const statusOut = statusResult.stdout;
+        if (statusOut && def.authFailPattern) {
+          authenticated = !def.authFailPattern.test(statusOut);
+          if (authenticated && statusOut.length < 200) authUser = statusOut;
+        }
+      } else if (def.authEnv) {
+        authenticated = !!(detectEnv[def.authEnv]);
+      }
+      this.json(res, 200, {
+        name: toolName, displayName: def.displayName, binaryName: def.binaryName,
+        available: true, path: binPath, version,
+        authenticated, authHint: authenticated ? undefined : def.authHint, authUser,
+      });
+      return;
+    }
+
+    // Settings — Coding Tools: quick test
+    const testMatch = path.match(/^\/api\/settings\/coding-tools\/([a-z-]+)\/test$/);
+    if (testMatch && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+
+      const toolName = testMatch[1] as string;
+      const { resolveWhich: _resolveWhich, loadConfig: _loadCfg } = await import('@markus/shared');
+
+      const binaryMap: Record<string, string> = {
+        'claude-code': 'claude',
+        codex: 'codex',
+        'cursor-agent': 'cursor',
+      };
+      const binaryName = binaryMap[toolName];
+      if (!binaryName) {
+        this.json(res, 404, { error: `Unknown tool: ${toolName}` });
+        return;
+      }
+
+      const cfg = _loadCfg(this.markusConfigPath);
+      const toolCfg = cfg.codingTools?.tools?.[toolName];
+      const binPath = toolCfg?.binaryPath || _resolveWhich(binaryName);
+      if (!binPath) {
+        this.json(res, 200, { success: false, error: `${binaryName} not found in PATH` });
+        return;
+      }
+
+      const env = { ...process.env, ...(toolCfg?.env ?? {}) };
+
+      const spawnAsync = async (bin: string, args: string[], spawnEnv: Record<string, string | undefined>, timeoutMs: number) => {
+        const { spawn: _spawn } = await import('node:child_process');
+        return new Promise<{ stdout: string; stderr: string; code: number }>((resolve) => {
+          const proc = _spawn(bin, args, { env: spawnEnv as NodeJS.ProcessEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+          proc.stdin.end();
+          let stdout = '', stderr = '';
+          proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+          proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+          const timer = setTimeout(() => { try { proc.kill(); } catch { /* */ } }, timeoutMs);
+          proc.on('close', (code: number | null) => { clearTimeout(timer); resolve({ stdout, stderr, code: code ?? 1 }); });
+          proc.on('error', (e: Error) => { clearTimeout(timer); resolve({ stdout, stderr: e.message, code: 1 }); });
+        });
+      };
+
+      try {
+        if (toolName === 'cursor-agent') {
+          const r = await spawnAsync(binPath, ['agent', 'about', '--format', 'json'], env, 15_000);
+          try {
+            const info = JSON.parse(r.stdout);
+            const hasEmail = !!(info.userEmail);
+            this.json(res, 200, {
+              success: hasEmail,
+              apiKeySource: hasEmail ? (info.userEmail as string) : null,
+              model: (info.model as string) ?? null,
+              detail: hasEmail ? `${info.subscriptionTier ?? ''} · ${info.userEmail ?? ''}`.trim() : 'Not authenticated',
+            });
+          } catch {
+            this.json(res, 200, { success: false, error: 'Failed to parse output', output: r.stdout.slice(0, 500) });
+          }
+        } else if (toolName === 'claude-code') {
+          const hasEnvKey = !!(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN);
+          if (hasEnvKey) {
+            const model = env.ANTHROPIC_MODEL;
+            const baseUrl = env.ANTHROPIC_BASE_URL;
+            const parts = ['API key configured'];
+            if (baseUrl) parts.push(`endpoint: ${baseUrl}`);
+            if (model) parts.push(`model: ${model}`);
+            this.json(res, 200, {
+              success: true,
+              apiKeySource: env.ANTHROPIC_API_KEY ? 'ANTHROPIC_API_KEY' : 'ANTHROPIC_AUTH_TOKEN',
+              model: model ?? null,
+              detail: parts.join(' · '),
+            });
+          } else {
+            const r = await spawnAsync(binPath, ['api-key-status'], env, 10_000);
+            const output = r.stdout.trim();
+            const isAuth = !!output && !/not authenticated|invalid api key|not logged in/i.test(output);
+            this.json(res, 200, {
+              success: isAuth,
+              apiKeySource: isAuth ? 'CLI login' : null,
+              model: null,
+              detail: isAuth ? output.slice(0, 200) : (output || 'Not authenticated'),
+            });
+          }
+        } else if (toolName === 'codex') {
+          const hasKey = !!(env.OPENAI_API_KEY);
+          const r = await spawnAsync(binPath, ['--version'], env, 5_000);
+          const version = r.stdout.trim();
+          this.json(res, 200, {
+            success: hasKey,
+            apiKeySource: hasKey ? 'OPENAI_API_KEY' : null,
+            model: env.OPENAI_MODEL ?? null,
+            detail: hasKey ? `${version} · API key configured` : 'OPENAI_API_KEY not set',
+          });
+        } else {
+          this.json(res, 200, { success: false, error: `No test strategy for ${toolName}` });
+        }
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        this.json(res, 200, { success: false, error: errMsg.slice(0, 500) });
+      }
+      return;
+    }
+
+    if (path === '/api/settings/coding-tools' && req.method === 'GET') {
+      const { loadConfig: loadCfg } = await import('@markus/shared');
+      const currentConfig = loadCfg(this.markusConfigPath);
+      const ct = currentConfig.codingTools ?? {};
+      const toolNames = ['claude-code', 'codex', 'cursor-agent'] as const;
+      const tools: Record<string, unknown> = {};
+      for (const name of toolNames) {
+        const cfg = ct.tools?.[name] ?? {};
+        tools[name] = {
+          tool: name,
+          enabled: cfg.enabled ?? true,
+          binaryPath: cfg.binaryPath,
+          defaultArgs: cfg.defaultArgs ?? [],
+          timeoutMs: cfg.timeoutMs ?? 600_000,
+          defaultModel: cfg.defaultModel,
+          maxBudgetPerSessionUsd: cfg.maxBudgetPerSessionUsd,
+          approvalRequired: cfg.approvalRequired,
+          env: cfg.env,
+        };
+      }
+      this.json(res, 200, { enabled: ct.enabled ?? false, tools });
+      return;
+    }
+
+    if (path === '/api/settings/coding-tools' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const { loadConfig: loadCfg } = await import('@markus/shared');
+      const currentConfig = loadCfg(this.markusConfigPath);
+      const existing = currentConfig.codingTools ?? {};
+      const updates: Record<string, unknown> = {
+        enabled: typeof body['enabled'] === 'boolean' ? body['enabled'] : (existing.enabled ?? false),
+        tools: { ...(existing.tools ?? {}) },
+      };
+      const toolsBody = body['tools'];
+      if (toolsBody && typeof toolsBody === 'object') {
+        for (const [name, cfg] of Object.entries(toolsBody as Record<string, Record<string, unknown>>)) {
+          if (!['claude-code', 'codex', 'cursor-agent'].includes(name)) continue;
+          const prev = (updates.tools as Record<string, unknown>)[name] as Record<string, unknown> ?? {};
+          const merged: Record<string, unknown> = { ...prev };
+          if (typeof cfg.enabled === 'boolean') merged.enabled = cfg.enabled;
+          if (typeof cfg.binaryPath === 'string') merged.binaryPath = cfg.binaryPath || undefined;
+          if (Array.isArray(cfg.defaultArgs)) merged.defaultArgs = cfg.defaultArgs.filter(a => typeof a === 'string');
+          if (typeof cfg.timeoutMs === 'number' && cfg.timeoutMs > 0) merged.timeoutMs = cfg.timeoutMs;
+          if (typeof cfg.defaultModel === 'string') merged.defaultModel = cfg.defaultModel || undefined;
+          if (typeof cfg.maxBudgetPerSessionUsd === 'number' && cfg.maxBudgetPerSessionUsd > 0) merged.maxBudgetPerSessionUsd = cfg.maxBudgetPerSessionUsd;
+          else if (cfg.maxBudgetPerSessionUsd === undefined || cfg.maxBudgetPerSessionUsd === null) merged.maxBudgetPerSessionUsd = undefined;
+          if (typeof cfg.approvalRequired === 'boolean') merged.approvalRequired = cfg.approvalRequired || undefined;
+          if (cfg.env !== undefined) {
+            if (cfg.env && typeof cfg.env === 'object' && !Array.isArray(cfg.env)) {
+              const sanitized: Record<string, string> = {};
+              for (const [k, v] of Object.entries(cfg.env as Record<string, unknown>)) {
+                if (typeof k === 'string' && typeof v === 'string') sanitized[k] = v;
+              }
+              merged.env = Object.keys(sanitized).length > 0 ? sanitized : undefined;
+            } else {
+              merged.env = undefined;
+            }
+          }
+          (updates.tools as Record<string, unknown>)[name] = merged;
+        }
+      }
+      try {
+        saveConfig({ codingTools: updates } as any, this.markusConfigPath);
+        const am = this.orgService.getAgentManager();
+        am.setCodingToolsConfig(updates as Parameters<typeof am.setCodingToolsConfig>[0]);
+      } catch (e) {
+        log.warn('Failed to persist coding tools settings', { error: String(e) });
+        this.json(res, 500, { error: `Failed to save coding tools settings: ${e}` });
+        return;
+      }
+      this.auditService?.record({
+        orgId: 'system',
+        type: 'settings_changed',
+        action: 'coding_tools',
+        detail: 'Coding tools settings updated',
+        userId: auth.userId,
+        success: true,
+      });
+      const ct = updates;
+      const toolNames = ['claude-code', 'codex', 'cursor-agent'] as const;
+      const tools: Record<string, unknown> = {};
+      for (const name of toolNames) {
+        const cfg = (ct.tools as Record<string, Record<string, unknown>>)?.[name] ?? {};
+        tools[name] = {
+          tool: name,
+          enabled: cfg.enabled ?? true,
+          binaryPath: cfg.binaryPath,
+          defaultArgs: cfg.defaultArgs ?? [],
+          timeoutMs: cfg.timeoutMs ?? 600_000,
+        };
+      }
+      this.json(res, 200, { enabled: ct.enabled ?? false, tools });
+      return;
+    }
+
+    // Coding tool models: list available models for a tool
+    const modelsMatch = path.match(/^\/api\/settings\/coding-tools\/([^/]+)\/models$/);
+    if (modelsMatch && req.method === 'GET') {
+      const toolName = modelsMatch[1] as string;
+      if (!['claude-code', 'codex', 'cursor-agent'].includes(toolName)) {
+        this.json(res, 400, { error: `Unknown tool: ${toolName}` });
+        return;
+      }
+      try {
+        const { loadConfig: loadCfg3 } = await import('@markus/shared');
+        const cfg3 = loadCfg3(this.markusConfigPath);
+        const toolEnv = (cfg3.codingTools?.tools as Record<string, Record<string, unknown>> | undefined)?.[toolName]?.env as Record<string, string> | undefined;
+        const savedEnv: Record<string, string | undefined> = {};
+        if (toolEnv) {
+          for (const [k, v] of Object.entries(toolEnv)) {
+            if (v) { savedEnv[k] = process.env[k]; process.env[k] = v; }
+          }
+        }
+
+        let result;
+        try {
+          const { getAdapter: _getAdapter } = await import('@markus/core');
+          const adapter = _getAdapter(toolName as 'claude-code' | 'codex' | 'cursor-agent');
+          result = await adapter.listModels();
+        } finally {
+          for (const [k, orig] of Object.entries(savedEnv)) {
+            if (orig === undefined) delete process.env[k]; else process.env[k] = orig;
+          }
+        }
+        this.json(res, 200, { tool: toolName, models: result.models, source: result.source, hint: result.hint });
+      } catch (err) {
+        log.error(`Failed to list models for ${toolName}`, { error: err instanceof Error ? err.message : String(err) });
+        this.json(res, 200, { tool: toolName, models: [], source: 'cli', error: err instanceof Error ? err.message : 'Unknown error' });
+      }
+      return;
+    }
+
+    // Coding tool auth: CLI login or API key
+    const authMatch = path.match(/^\/api\/settings\/coding-tools\/([^/]+)\/auth$/);
+    if (authMatch && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const toolName = authMatch[1];
+      if (!['claude-code', 'codex', 'cursor-agent'].includes(toolName)) {
+        this.json(res, 400, { error: `Unknown tool: ${toolName}` });
+        return;
+      }
+      const body = await this.readBody(req);
+      const method = body['method'] as string; // 'cli_login' or 'api_key'
+
+      if (method === 'api_key') {
+        const apiKey = body['apiKey'] as string;
+        if (!apiKey || typeof apiKey !== 'string') {
+          this.json(res, 400, { error: 'apiKey is required' });
+          return;
+        }
+        const envVarMap: Record<string, string> = {
+          'cursor-agent': 'CURSOR_API_KEY',
+          'claude-code': 'ANTHROPIC_API_KEY',
+          codex: 'OPENAI_API_KEY',
+        };
+        const envVar = envVarMap[toolName];
+        if (envVar) {
+          process.env[envVar] = apiKey;
+          // Also persist to config env
+          const { loadConfig: loadCfg2 } = await import('@markus/shared');
+          const cfg2 = loadCfg2(this.markusConfigPath);
+          const ctCfg = cfg2.codingTools ?? {};
+          const toolsCfg = (ctCfg.tools ?? {}) as Record<string, Record<string, unknown>>;
+          const toolCfg = toolsCfg[toolName] ?? {};
+          const envCfg = (toolCfg.env ?? {}) as Record<string, string>;
+          envCfg[envVar] = apiKey;
+          toolCfg.env = envCfg;
+          toolsCfg[toolName] = toolCfg;
+          try {
+            saveConfig({ codingTools: { ...ctCfg, tools: toolsCfg } } as any, this.markusConfigPath);
+          } catch (e) {
+            log.warn('Failed to persist API key to config', { error: String(e) });
+          }
+        }
+        this.json(res, 200, { success: true, method: 'api_key', envVar });
+        return;
+      }
+
+      if (method === 'cli_login') {
+        const { resolveWhich: _rw, execSafeSync: _es } = await import('@markus/shared');
+        const loginCmds: Record<string, { bin: string; args: string[] }> = {
+          'cursor-agent': { bin: 'cursor', args: ['agent', 'login'] },
+          'claude-code': { bin: 'claude', args: ['login'] },
+        };
+        const loginDef = loginCmds[toolName];
+        if (!loginDef) {
+          this.json(res, 400, { error: `CLI login not supported for ${toolName}. Use API key instead.` });
+          return;
+        }
+        const loginBin = _rw(loginDef.bin) ?? loginDef.bin;
+        try {
+          const { exec } = await import('node:child_process');
+          const { promisify } = await import('node:util');
+          const execAsync = promisify(exec);
+          const loginCmd = [loginBin, ...loginDef.args].join(' ');
+          const { stdout, stderr } = await execAsync(loginCmd, { timeout: 60_000 });
+          // Re-detect auth status after login
+          let authenticated = false;
+          if (toolName === 'cursor-agent') {
+            const { stdout: status } = _es(loginBin, ['agent', 'status'], { timeout: 5000 });
+            authenticated = !!status && !status.toLowerCase().includes('not logged in');
+          } else if (toolName === 'claude-code') {
+            const { stdout: status } = _es(loginBin, ['api-key-status'], { timeout: 10_000 });
+            authenticated = !!status && !status.toLowerCase().includes('not authenticated');
+          }
+          this.json(res, 200, { success: true, method: 'cli_login', authenticated, output: (stdout + stderr).slice(0, 500) });
+        } catch (e: any) {
+          this.json(res, 200, { success: false, method: 'cli_login', error: e.message?.slice(0, 300) ?? String(e) });
+        }
+        return;
+      }
+
+      this.json(res, 400, { error: 'method must be "cli_login" or "api_key"' });
+      return;
+    }
+
     if (path === '/api/settings/llm/models' && req.method === 'GET') {
       if (!this.llmRouter) {
         this.json(res, 200, { models: [] });
@@ -11677,6 +12182,7 @@ EXPLANATION_END`;
       regex(/^\/api\/tasks\/[^/]+\/approve$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/reject$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/cancel$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/context$/, 'GET'),
       regex(/^\/api\/tasks\/[^/]+\/dependents$/, 'GET'),
       regex(/^\/api\/tasks\/[^/]+\/run$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/subtasks$/, 'GET', 'POST'),

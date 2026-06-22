@@ -33,7 +33,7 @@
         "role": "worker",
         "roleName": "developer",
         "count": 2,
-        "skills": ["chrome-devtools", "self-evolution"]
+        "skills": ["chrome-devtools", "self-evolution", "coding-tools"]
       },
       {
         "name": "Growth Lead",

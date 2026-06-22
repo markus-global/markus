@@ -32,7 +32,8 @@ describe('runDoctor', () => {
   });
 
   it('completes without throwing', async () => {
-    await expect(runDoctor()).resolves.toBeUndefined();
+    const result = await runDoctor();
+    expect(result).toEqual({ issuesFound: true });
     expect(logSpy).toHaveBeenCalled();
     const output = logSpy.mock.calls.map(c => String(c[0])).join('\n');
     expect(output).toContain('Markus Doctor');

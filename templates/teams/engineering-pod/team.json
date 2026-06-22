@@ -35,28 +35,28 @@
         "role": "worker",
         "roleName": "developer",
         "count": 1,
-        "skills": ["self-evolution"]
+        "skills": ["self-evolution", "coding-tools"]
       },
       {
         "name": "Frontend Engineer",
         "role": "worker",
         "roleName": "developer",
         "count": 1,
-        "skills": ["chrome-devtools", "self-evolution"]
+        "skills": ["chrome-devtools", "self-evolution", "coding-tools"]
       },
       {
         "name": "Infra Engineer",
         "role": "worker",
         "roleName": "devops",
         "count": 1,
-        "skills": ["self-evolution"]
+        "skills": ["self-evolution", "coding-tools"]
       },
       {
         "name": "Senior Reviewer",
         "role": "worker",
         "roleName": "reviewer",
         "count": 1,
-        "skills": ["self-evolution"]
+        "skills": ["self-evolution", "coding-tools"]
       }
     ]
   }

@@ -255,3 +255,4 @@ export {
 export { MarkusBrowserBridge } from './tools/markus-browser-bridge.js';
 export { createBridgeToolHandlers, getBridgeToolDescriptors } from './tools/markus-browser-mcp.js';
 export type { BrowserTestResult, BrowserTestStep, ChaosEvent, ChaosOpResult, ChaosStats, ChaosDone } from './tools/browser-test.js';
+export { getAdapter, getAllAdapters } from './coding-tools/index.js';

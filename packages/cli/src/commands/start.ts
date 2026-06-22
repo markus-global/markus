@@ -347,6 +347,9 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
       timeoutMs: cc.timeoutMs,
     };
   }
+  if (config.codingTools) {
+    agentManager.setCodingToolsConfig(config.codingTools);
+  }
   if (config.browser?.bringToFront !== undefined) {
     agentManager.setBrowserBringToFront(config.browser.bringToFront);
   }

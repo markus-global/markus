@@ -3,6 +3,9 @@
  * Supports --json for machine-readable output and table/list for humans.
  */
 
+import { CLI_EXIT_CODES } from '@markus/shared';
+import { ApiError } from './api-client.js';
+
 export interface OutputOptions {
   json?: boolean;
 }
@@ -86,20 +89,50 @@ export function detail(data: Record<string, unknown>, opts?: OutputOptions & { t
 /** Print JSON or simple success message */
 export function success(message: string, data?: unknown, opts?: OutputOptions) {
   if (isJson(opts)) {
-    console.log(JSON.stringify(data ?? { ok: true, message }, null, 2));
+    const payload = data !== undefined ? data : { message };
+    console.log(JSON.stringify({ ok: true, data: payload }, null, 2));
     return;
   }
   console.log(message);
 }
 
 /** Print error and exit */
-export function fail(message: string, exitCode = 1): never {
+export function fail(message: string, exitCode: number = CLI_EXIT_CODES.USER_ERROR, code = 'USER_ERROR'): never {
   if (_globalJson) {
-    console.error(JSON.stringify({ error: message }));
+    console.error(JSON.stringify({ ok: false, error: message, code }));
   } else {
     console.error(`Error: ${message}`);
   }
   process.exit(exitCode);
+}
+
+function apiErrorCode(status: number): string {
+  if (status === 404) return 'NOT_FOUND';
+  return `API_${status}`;
+}
+
+function isNetworkError(err: Error): boolean {
+  return err.message.includes('Cannot connect to Markus server');
+}
+
+/** Wrap a command action with standardized API/network error handling */
+export function withErrorHandling<A extends unknown[]>(fn: (...args: A) => Promise<void>): (...args: A) => Promise<void> {
+  return async (...args: A) => {
+    try {
+      await fn(...args);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        fail(err.message, CLI_EXIT_CODES.SERVER_ERROR, apiErrorCode(err.status));
+        return;
+      }
+      if (err instanceof Error && isNetworkError(err)) {
+        fail(err.message, CLI_EXIT_CODES.NETWORK_ERROR, 'NETWORK_ERROR');
+        return;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      fail(msg, CLI_EXIT_CODES.USER_ERROR, 'UNKNOWN_ERROR');
+    }
+  };
 }
 
 /** Extract array rows from API responses that wrap data under varying keys */

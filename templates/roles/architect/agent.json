@@ -8,7 +8,7 @@
   "category": "engineering",
   "tags": ["architecture", "design", "system-design", "adr", "engineering"],
   "dependencies": {
-    "skills": [],
+    "skills": ["coding-tools"],
     "env": []
   },
   "agent": {

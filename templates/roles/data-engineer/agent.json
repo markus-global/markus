@@ -8,7 +8,7 @@
   "category": "engineering",
   "tags": ["data", "etl", "sql", "pipeline", "engineering", "analytics"],
   "dependencies": {
-    "skills": ["self-evolution"],
+    "skills": ["self-evolution", "coding-tools"],
     "env": ["python3", "sqlite3"]
   },
   "agent": {

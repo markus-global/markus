@@ -1,0 +1,17 @@
+{
+  "type": "skill",
+  "name": "claude-code",
+  "displayName": "Claude Code",
+  "version": "1.0.0",
+  "description": "Use the Claude Code CLI for complex refactors, multi-file changes, and deep codebase exploration",
+  "author": "markus",
+  "category": "development",
+  "tags": ["coding", "claude-code", "anthropic", "refactoring"],
+  "i18n": {
+    "zh-CN": {
+      "displayName": "Claude Code",
+      "description": "使用 Claude Code CLI 进行复杂重构、多文件修改和深度代码库探索"
+    }
+  },
+  "skill": { "skillFile": "SKILL.md" }
+}

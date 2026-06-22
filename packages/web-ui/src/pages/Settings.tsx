@@ -12,6 +12,8 @@ import { ModelPicker } from '../components/ModelPicker.tsx';
 import { ModelRoutingSection } from '../components/ModelRoutingSection.tsx';
 import { PROVIDER_OPTIONS } from '../constants/providers.ts';
 import { FeishuIntegrationSection } from '../components/FeishuIntegrationSection.tsx';
+import { CodingToolsSettings } from './CodingToolsSettings.tsx';
+import { WebSearchSettings } from './WebSearchSettings.tsx';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[]; tier?: string }
@@ -40,18 +42,29 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
-type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'storage' | 'users' | 'organization' | 'account' | 'remote' | 'integrations' | 'license';
+type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'users' | 'organization' | 'account' | 'remote' | 'integrations' | 'license';
 
-const SETTINGS_TABS: Array<{ id: SettingsTab; labelKey: string; adminOnly?: boolean }> = [
+interface SettingsTabDef { id: SettingsTab; labelKey: string; adminOnly?: boolean }
+
+const SETTINGS_TABS: SettingsTabDef[] = [
   { id: 'appearance', labelKey: 'nav.appearance' },
+  { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
   { id: 'providers', labelKey: 'nav.providers', adminOnly: true },
   { id: 'execution', labelKey: 'nav.execution', adminOnly: true },
   { id: 'browser', labelKey: 'nav.browser', adminOnly: true },
+  { id: 'coding-tools', labelKey: 'nav.codingTools', adminOnly: true },
   { id: 'search', labelKey: 'nav.search', adminOnly: true },
-  { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
-  { id: 'account', labelKey: 'nav.account' },
-  { id: 'remote', labelKey: 'nav.remote', adminOnly: true },
   { id: 'integrations', labelKey: 'nav.integrations', adminOnly: true },
+  { id: 'remote', labelKey: 'nav.remote', adminOnly: true },
+  { id: 'account', labelKey: 'nav.account' },
+];
+
+const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] }> = [
+  { labelKey: 'nav.group.general', tabs: ['appearance', 'storage'] },
+  { labelKey: 'nav.group.aiConfig', tabs: ['providers', 'execution'] },
+  { labelKey: 'nav.group.tools', tabs: ['browser', 'coding-tools', 'search'] },
+  { labelKey: 'nav.group.connections', tabs: ['integrations', 'remote'] },
+  { labelKey: 'nav.group.account', tabs: ['account'] },
 ];
 
 const LEGACY_TAB_ALIASES: Record<string, SettingsTab> = { users: 'account', organization: 'account', license: 'account' };
@@ -175,15 +188,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [browserMsg, setBrowserMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   // Search API key settings
-  const [searchKeys, setSearchKeys] = useState<{ serper: { configured: boolean; preview: string }; tavily: { configured: boolean; preview: string }; bing: { configured: boolean; preview: string }; google: { configured: boolean; preview: string }; serpapi: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; exa: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } } | null>(null);
-  const [searchForm, setSearchForm] = useState({ serperApiKey: '', tavilyApiKey: '', bingApiKey: '', googleSearchApiKey: '', googleSearchCx: '', serpApiKey: '', braveApiKey: '', exaApiKey: '', bochaApiKey: '' });
-  const [searchSaving, setSearchSaving] = useState(false);
-  const [searchMsg, setSearchMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   // Storage transparency
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
   const [storageLoading, setStorageLoading] = useState(false);
-  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
   const [orphanInfo, setOrphanInfo] = useState<OrphanInfo | null>(null);
   const [orphanLoading, setOrphanLoading] = useState(false);
 
@@ -192,8 +200,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     Authorization: `Bearer ${localStorage.getItem('markus_token') ?? ''}`,
   });
 
-  const loadSettings = useCallback(() => {
+  const tabLoadedRef = useRef<Set<string>>(new Set());
+
+  const loadHealth = useCallback(() => {
     api.health().then(setHealth).catch(() => {});
+  }, []);
+
+  const loadLlmSettings = useCallback(() => {
     fetch('/api/settings/llm')
       .then(r => r.ok ? r.json() as Promise<LLMSettings> : Promise.reject(r.status))
       .then(d => {
@@ -259,11 +272,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
       .catch(() => {});
   }, []);
 
-  const loadSearchSettings = useCallback(() => {
-    api.settings.getSearch()
-      .then(d => { if (d) setSearchKeys(d); })
-      .catch(() => {});
-  }, []);
 
   const loadStorage = useCallback(() => {
     setStorageLoading(true);
@@ -271,7 +279,35 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     api.system.orphans().then(setOrphanInfo).catch(() => {});
   }, []);
 
-  useEffect(() => { loadSettings(); loadNetworkSettings(); loadOAuthProviders(); loadAuthProfiles(true); loadAgentSettings(); loadBrowserSettings(); loadSearchSettings(); loadStorage(); }, [loadSettings, loadNetworkSettings, loadOAuthProviders, loadAuthProfiles, loadAgentSettings, loadBrowserSettings, loadSearchSettings, loadStorage]);
+  // Global: only health check on mount
+  useEffect(() => { loadHealth(); }, [loadHealth]);
+
+  // Per-tab lazy loading
+  useEffect(() => {
+    if (!resolvedTab) return;
+    if (tabLoadedRef.current.has(resolvedTab)) return;
+    tabLoadedRef.current.add(resolvedTab);
+
+    switch (resolvedTab) {
+      case 'providers':
+        loadLlmSettings();
+        loadNetworkSettings();
+        loadOAuthProviders();
+        loadAuthProfiles(true);
+        break;
+      case 'execution':
+        loadAgentSettings();
+        break;
+      case 'browser':
+        loadBrowserSettings();
+        break;
+      case 'storage':
+        loadStorage();
+        break;
+      default:
+        break;
+    }
+  }, [resolvedTab, loadLlmSettings, loadNetworkSettings, loadOAuthProviders, loadAuthProfiles, loadAgentSettings, loadBrowserSettings, loadStorage]);
 
   useEffect(() => {
     const handler = () => loadStorage();
@@ -409,7 +445,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
       const data = await res.json() as { applied: string[]; message: string };
       setEnvMsg({ type: 'ok', text: data.message });
       setEnvModels(null); setEnvSelected({});
-      loadSettings();
+      loadLlmSettings();
     } catch { setEnvMsg({ type: 'err', text: t('envConfig.failedToApply') }); }
     finally { setEnvApplying(false); }
   };
@@ -467,7 +503,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               setPendingOAuthProvider(null);
               setAuthProfiles(statusData.profiles);
               setOauthMsg({ type: 'ok', text: t('oauthConnected', { provider }) });
-              loadSettings();
+              loadLlmSettings();
             }
           } catch { /* continue polling */ }
         }, 2000);
@@ -504,7 +540,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               setPendingOAuthProvider(null); setDeviceCode(null);
               setAuthProfiles(statusData.profiles);
               setOauthMsg({ type: 'ok', text: t('oauthConnected', { provider }) });
-              loadSettings();
+              loadLlmSettings();
             }
           } catch { /* continue polling */ }
         }, 3000);
@@ -530,7 +566,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
       setManualCallbackUrl('');
       setPendingOAuthProvider(null);
       if (oauthPollRef.current) { clearInterval(oauthPollRef.current); oauthPollRef.current = null; }
-      loadAuthProfiles(); loadSettings();
+      loadAuthProfiles(); loadLlmSettings();
     } catch { setOauthMsg({ type: 'err', text: t('common:networkError') }); }
     finally { setOauthLoading(null); }
   };
@@ -541,7 +577,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         method: 'DELETE', headers: authHeaders(),
       });
       if (res.ok) {
-        loadAuthProfiles(); loadSettings();
+        loadAuthProfiles(); loadLlmSettings();
         setOauthMsg({ type: 'ok', text: t('authProfileDeleted') });
       }
     } catch { /* ignore */ }
@@ -793,28 +829,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     }
   };
 
-  const saveSearchKeys = async () => {
-    const hasAny = searchForm.serperApiKey || searchForm.tavilyApiKey || searchForm.bingApiKey || searchForm.googleSearchApiKey || searchForm.googleSearchCx || searchForm.serpApiKey || searchForm.braveApiKey || searchForm.exaApiKey || searchForm.bochaApiKey;
-    if (!hasAny) return;
-    setSearchSaving(true); setSearchMsg(null);
-    try {
-      const updates: Record<string, string> = {};
-      if (searchForm.serperApiKey) updates.serperApiKey = searchForm.serperApiKey;
-      if (searchForm.tavilyApiKey) updates.tavilyApiKey = searchForm.tavilyApiKey;
-      if (searchForm.bingApiKey) updates.bingApiKey = searchForm.bingApiKey;
-      if (searchForm.googleSearchApiKey) updates.googleSearchApiKey = searchForm.googleSearchApiKey;
-      if (searchForm.googleSearchCx) updates.googleSearchCx = searchForm.googleSearchCx;
-      if (searchForm.serpApiKey) updates.serpApiKey = searchForm.serpApiKey;
-      if (searchForm.braveApiKey) updates.braveApiKey = searchForm.braveApiKey;
-      if (searchForm.exaApiKey) updates.exaApiKey = searchForm.exaApiKey;
-      if (searchForm.bochaApiKey) updates.bochaApiKey = searchForm.bochaApiKey;
-      const d = await api.settings.updateSearch(updates);
-      setSearchKeys(d);
-      setSearchForm({ serperApiKey: '', tavilyApiKey: '', bingApiKey: '', googleSearchApiKey: '', googleSearchCx: '', serpApiKey: '', braveApiKey: '', exaApiKey: '', bochaApiKey: '' });
-      setSearchMsg({ type: 'ok', text: t('searchApi.saved') });
-    } catch { setSearchMsg({ type: 'err', text: t('searchApi.failedToSave') }); }
-    finally { setSearchSaving(false); }
-  };
 
   const enabledProviders = llm?.providers
     ? Object.entries(llm.providers).filter(([, v]) => v.configured && v.enabled).map(([k]) => k) : [];
@@ -847,20 +861,33 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         <div className="px-5 pb-4">
           <h2 className="text-base font-semibold text-fg-primary">{t('title')}</h2>
         </div>
-        <nav className="flex-1 px-3 pb-4 space-y-0.5">
-          {visibleTabs.map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => navigateTab(tab.id)}
-              className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors text-fg-primary ${
-                resolvedTab === tab.id
-                  ? 'bg-surface-overlay'
-                  : 'hover:bg-surface-overlay/60'
-              }`}
-            >
-              {t(`settings:${tab.labelKey}`)}
-            </button>
-          ))}
+        <nav className="flex-1 px-3 pb-4 space-y-3">
+          {SETTINGS_TAB_GROUPS.map(group => {
+            const groupTabs = group.tabs
+              .map(id => visibleTabs.find(vt => vt.id === id))
+              .filter((vt): vt is SettingsTabDef => !!vt);
+            if (groupTabs.length === 0) return null;
+            return (
+              <div key={group.labelKey}>
+                <div className="px-3 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-fg-tertiary">{t(`settings:${group.labelKey}`)}</div>
+                <div className="space-y-0.5">
+                  {groupTabs.map(tab => (
+                    <button
+                      key={tab.id}
+                      onClick={() => navigateTab(tab.id)}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors text-fg-primary ${
+                        resolvedTab === tab.id
+                          ? 'bg-surface-overlay'
+                          : 'hover:bg-surface-overlay/60'
+                      }`}
+                    >
+                      {t(`settings:${tab.labelKey}`)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
         </nav>
         {authUser && (
           <div className="px-3 pb-4 border-t border-border-default pt-3">
@@ -918,16 +945,28 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             <h1 className="text-base font-semibold text-fg-primary">{t('title')}</h1>
           </div>
           <nav className="flex-1 overflow-y-auto py-2 px-3">
-            {visibleTabs.map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => navigateTab(tab.id)}
-                className="w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm text-fg-primary hover:bg-surface-overlay transition-colors"
-              >
-                <span>{t(`settings:${tab.labelKey}`)}</span>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-fg-tertiary"><polyline points="9 18 15 12 9 6" /></svg>
-              </button>
-            ))}
+            {SETTINGS_TAB_GROUPS.map((group, gi) => {
+              const groupTabs = group.tabs
+                .map(id => visibleTabs.find(vt => vt.id === id))
+                .filter((vt): vt is SettingsTabDef => !!vt);
+              if (groupTabs.length === 0) return null;
+              return (
+                <div key={group.labelKey}>
+                  {gi > 0 && <div className="border-t border-border-default my-2 mx-2" />}
+                  <div className="px-4 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-tertiary">{t(`settings:${group.labelKey}`)}</div>
+                  {groupTabs.map(tab => (
+                    <button
+                      key={tab.id}
+                      onClick={() => navigateTab(tab.id)}
+                      className="w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm text-fg-primary hover:bg-surface-overlay transition-colors"
+                    >
+                      <span>{t(`settings:${tab.labelKey}`)}</span>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-fg-tertiary"><polyline points="9 18 15 12 9 6" /></svg>
+                    </button>
+                  ))}
+                </div>
+              );
+            })}
           </nav>
         </div>
       )}
@@ -2194,78 +2233,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         {import.meta.env.DEV && <BrowserTestPanel extensionConnected={browserExtensionConnected} />}
         </>}
 
-        {resolvedTab === 'search' && <>
-        <Section title={t('searchApi.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
-            <div className="text-xs text-fg-tertiary">{t('searchApi.description')}</div>
-
-            {([
-              { id: 'serper' as const, label: t('searchApi.serper'), hint: t('searchApi.serperHint'), field: 'serperApiKey' as const },
-              { id: 'tavily' as const, label: t('searchApi.tavily'), hint: t('searchApi.tavilyHint'), field: 'tavilyApiKey' as const },
-              { id: 'bing' as const, label: t('searchApi.bing'), hint: t('searchApi.bingHint'), field: 'bingApiKey' as const },
-              { id: 'google' as const, label: t('searchApi.google'), hint: t('searchApi.googleHint'), field: 'googleSearchApiKey' as const, extraField: 'googleSearchCx' as const, extraPlaceholder: t('searchApi.googleCxPlaceholder') },
-              { id: 'serpapi' as const, label: t('searchApi.serpapi'), hint: t('searchApi.serpapiHint'), field: 'serpApiKey' as const },
-              { id: 'brave' as const, label: t('searchApi.brave'), hint: t('searchApi.braveHint'), field: 'braveApiKey' as const },
-              { id: 'exa' as const, label: t('searchApi.exa'), hint: t('searchApi.exaHint'), field: 'exaApiKey' as const },
-              { id: 'bocha' as const, label: t('searchApi.bocha'), hint: t('searchApi.bochaHint'), field: 'bochaApiKey' as const },
-            ] as Array<{ id: 'serper' | 'tavily' | 'bing' | 'google' | 'serpapi' | 'brave' | 'exa' | 'bocha'; label: string; hint: string; field: keyof typeof searchForm; extraField?: keyof typeof searchForm; extraPlaceholder?: string }>).map((item, idx) => (
-              <div key={item.id} className={idx > 0 ? 'border-t border-border-default pt-4' : ''}>
-                <div className="flex items-center justify-between mb-2">
-                  <div>
-                    <div className="text-sm font-medium text-fg-primary">{item.label}</div>
-                    <div className="text-xs text-fg-tertiary mt-0.5">{item.hint}</div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {searchKeys?.[item.id]?.configured && (
-                      <>
-                        <span className="w-2 h-2 rounded-full bg-green-400" />
-                        <span className="text-xs text-green-600">{t('searchApi.configured')}</span>
-                        <code className="text-[10px] text-fg-tertiary">{searchKeys[item.id].preview}</code>
-                      </>
-                    )}
-                    {searchKeys && !searchKeys[item.id]?.configured && (
-                      <>
-                        <span className="w-2 h-2 rounded-full bg-gray-500" />
-                        <span className="text-xs text-fg-tertiary">{t('searchApi.notConfigured')}</span>
-                      </>
-                    )}
-                  </div>
-                </div>
-                <input
-                  type="password"
-                  value={searchForm[item.field]}
-                  onChange={e => setSearchForm({ ...searchForm, [item.field]: e.target.value })}
-                  placeholder={searchKeys?.[item.id]?.configured ? t('modelProviders.apiKeyPlaceholder') : t('searchApi.apiKeyPlaceholder')}
-                  className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none"
-                />
-                {item.extraField && (
-                  <input
-                    type="text"
-                    value={searchForm[item.extraField]}
-                    onChange={e => setSearchForm({ ...searchForm, [item.extraField!]: e.target.value })}
-                    placeholder={item.extraPlaceholder ?? ''}
-                    className="w-full mt-2 px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none"
-                  />
-                )}
-              </div>
-            ))}
-
-            <div className="text-xs text-fg-tertiary italic">{t('searchApi.freeBackend')}</div>
-
-            <div className="flex items-center justify-between pt-2 border-t border-border-default">
-              {searchMsg && <Msg type={searchMsg.type} text={searchMsg.text} />}
-              {!searchMsg && <div />}
-              <button
-                disabled={searchSaving || (!searchForm.serperApiKey && !searchForm.tavilyApiKey && !searchForm.bingApiKey && !searchForm.googleSearchApiKey && !searchForm.googleSearchCx && !searchForm.serpApiKey && !searchForm.braveApiKey && !searchForm.exaApiKey && !searchForm.bochaApiKey)}
-                onClick={() => void saveSearchKeys()}
-                className="px-4 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
-              >
-                {searchSaving ? t('common:saving') : t('common:save')}
-              </button>
-            </div>
-          </div>
-        </Section>
-        </>}
+        {resolvedTab === 'search' && <WebSearchSettings />}
 
         {resolvedTab === 'storage' && <>
         <Section title={t('dataStorage.title')}>
@@ -2307,48 +2275,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   </div>
                 </div>
 
-                {/* Per-agent storage */}
-                {storageInfo.agents.length > 0 && (
-                  <div className="border-t border-border-default pt-4">
-                    <h4 className="text-xs font-semibold text-fg-secondary mb-3">{t('dataStorage.agentStorage', { count: storageInfo.agents.length })}</h4>
-                    <div className="space-y-1">
-                      {storageInfo.agents.map(ag => {
-                        const expanded = expandedAgents.has(ag.id);
-                        return (
-                          <div key={ag.id} className="rounded-lg bg-surface-elevated/40 overflow-hidden">
-                            <div className="flex items-center justify-between py-2 px-3 cursor-pointer hover:bg-surface-elevated/70"
-                              onClick={() => setExpandedAgents(prev => { const n = new Set(prev); if (n.has(ag.id)) n.delete(ag.id); else n.add(ag.id); return n; })}>
-                              <div className="flex items-center gap-2 min-w-0">
-                                <span className="text-[10px] text-fg-tertiary">{expanded ? '▼' : '▶'}</span>
-                                <button onClick={e => { e.stopPropagation(); navBus.navigate(PAGE.TEAM, { agentId: ag.id }); }}
-                                  className="text-sm text-brand-500 hover:text-brand-400 truncate">
-                                  {ag.name}
-                                </button>
-                                <span className="text-[10px] text-fg-tertiary font-mono truncate">{ag.id}</span>
-                              </div>
-                              <span className="text-xs font-medium text-fg-secondary tabular-nums shrink-0 ml-3">{formatBytes(ag.size, t)}</span>
-                            </div>
-                            {expanded && (
-                              <div className="px-3 pb-2 pt-0.5 space-y-0.5">
-                                {ag.subItems.filter(s => s.size > 0).map(sub => (
-                                  <div key={sub.name} className="flex items-center justify-between text-xs py-0.5 pl-5">
-                                    <span className="text-fg-tertiary">{sub.name}</span>
-                                    <span className="text-fg-secondary tabular-nums">{formatBytes(sub.size, t)}</span>
-                                  </div>
-                                ))}
-                                <div className="pl-5 pt-1">
-                                  <button onClick={() => void api.system.openPath(storageInfo.dataDir + '/agents/' + ag.id)}
-                                    className="text-[10px] text-fg-tertiary hover:text-fg-secondary underline">{t('dataStorage.openFolder')}</button>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
                 {/* Orphan cleanup */}
                 {orphanInfo && (orphanInfo.orphanAgents.length > 0 || orphanInfo.orphanTeams.length > 0) && (
                   <OrphanSection orphanInfo={orphanInfo} dataDir={storageInfo.dataDir} onPurged={loadStorage} formatBytes={(n) => formatBytes(n, t)} />
@@ -2364,7 +2290,16 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {resolvedTab === 'remote' && <RemoteAccessSection />}
 
-        {resolvedTab === 'integrations' && <FeishuIntegrationSection />}
+        {resolvedTab === 'integrations' && <>
+          <section>
+            <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider mb-4">{t('nav.integrations')}</h3>
+            <div className="space-y-3">
+              <FeishuIntegrationSection />
+            </div>
+          </section>
+        </>}
+
+        {resolvedTab === 'coding-tools' && <CodingToolsSettings />}
 
         </>
         )}

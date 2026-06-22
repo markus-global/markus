@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import { PROVIDERS } from '@markus/shared';
+import { detail, fail } from '../output.js';
 
 const C = { GREEN: '\x1b[32m', CYAN: '\x1b[36m', DIM: '\x1b[2m', RESET: '\x1b[0m', BOLD: '\x1b[1m' };
 
@@ -7,19 +8,19 @@ export function registerModelsCommand(program: Command) {
   program
     .command('models [provider]')
     .description('List available models for providers')
-    .option('--json', 'Output as JSON')
-    .action(async (provider, opts) => {
-      const { json } = opts as { json?: boolean };
+    .action(async (provider: string | undefined) => {
+      const json = program.optsWithGlobals().json;
 
       if (provider) {
         const pdef = PROVIDERS.find(p => p.id === provider);
         if (!pdef) {
-          console.log(`Unknown provider: ${provider}`);
-          console.log(`Available: ${PROVIDERS.map(p => p.id).join(', ')}`);
+          fail(
+            `Unknown provider: ${provider}. Available: ${PROVIDERS.map(p => p.id).join(', ')}`,
+          );
           return;
         }
         if (json) {
-          console.log(JSON.stringify({ [pdef.id]: pdef.models }, null, 2));
+          detail({ [pdef.id]: pdef.models });
           return;
         }
         console.log(`\n${C.BOLD}${pdef.label} Models${C.RESET}\n`);
@@ -32,7 +33,7 @@ export function registerModelsCommand(program: Command) {
       }
 
       if (json) {
-        console.log(JSON.stringify(Object.fromEntries(PROVIDERS.map(p => [p.id, p.models])), null, 2));
+        detail(Object.fromEntries(PROVIDERS.map(p => [p.id, p.models])));
         return;
       }
 

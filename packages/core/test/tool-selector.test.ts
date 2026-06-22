@@ -90,6 +90,7 @@ describe('ToolSelector', () => {
       'task_get', 'task_note', 'task_assign', 'subtask_create',
       'subtask_complete', 'subtask_list', 'task_submit_review',
       'requirement_get', 'requirement_update', 'requirement_resubmit',
+      'invoke_coding_tool', 'coding_tool_apply',
     ]);
     const selected = selector.selectTools({
       allTools,
@@ -101,6 +102,8 @@ describe('ToolSelector', () => {
     expect(names).toContain('file_read');
     expect(names).toContain('task_get');
     expect(names).toContain('subtask_create');
+    expect(names).toContain('invoke_coding_tool');
+    expect(names).toContain('coding_tool_apply');
   });
 
   it('includes review tools when isReview is true', () => {

@@ -488,6 +488,52 @@ export interface RemoteStatus {
   peers: RemotePeerInfo[];
 }
 
+export type CodingToolName = 'claude-code' | 'codex' | 'cursor-agent';
+
+export interface CodingToolConfigDTO {
+  tool: CodingToolName;
+  enabled?: boolean;
+  binaryPath?: string;
+  defaultArgs?: string[];
+  timeoutMs?: number;
+  defaultModel?: string;
+  maxBudgetPerSessionUsd?: number;
+  approvalRequired?: boolean;
+  env?: Record<string, string>;
+}
+
+export interface CodingToolModelDTO {
+  id: string;
+  name: string;
+  isDefault?: boolean;
+}
+
+export interface CodingToolModelsResponse {
+  tool: string;
+  models: CodingToolModelDTO[];
+  source?: 'api' | 'cli' | 'static';
+  hint?: string;
+  error?: string;
+}
+
+export interface CodingToolsSettingsResponse {
+  enabled: boolean;
+  tools: Record<CodingToolName, CodingToolConfigDTO>;
+}
+
+export interface CodingToolDetection {
+  name: CodingToolName;
+  displayName: string;
+  binaryName: string;
+  available: boolean;
+  version?: string;
+  path?: string;
+  installHint?: string;
+  authenticated?: boolean;
+  authHint?: string;
+  authUser?: string;
+}
+
 export type AgentActivityType = 'task' | 'heartbeat' | 'chat' | 'a2a' | 'internal' | 'respond_in_session';
 
 export interface AgentActivityInfo {
@@ -1445,6 +1491,23 @@ export const api = {
       request<{ success: boolean; appId?: string; connected?: boolean; userInfo?: { open_id?: string; tenant_brand?: string }; error?: string; message?: string }>('/settings/integrations/feishu/register', { method: 'POST' }),
     getFeishuRegisterStatus: () =>
       request<{ active: boolean; url?: string; expireIn?: number; status?: string; elapsed?: number }>('/settings/integrations/feishu/register/status'),
+    getCodingTools: () => request<CodingToolsSettingsResponse>('/settings/coding-tools'),
+    updateCodingTools: (data: { enabled?: boolean; tools?: Partial<Record<CodingToolName, CodingToolConfigDTO>> }) =>
+      request<CodingToolsSettingsResponse>('/settings/coding-tools', { method: 'POST', body: JSON.stringify(data) }),
+    detectCodingTools: () => request<{ tools: CodingToolDetection[] }>('/settings/coding-tools/detect'),
+    detectCodingTool: (tool: CodingToolName) => request<CodingToolDetection>(`/settings/coding-tools/detect/${tool}`),
+    authCodingTool: (tool: CodingToolName, method: 'cli_login' | 'api_key', apiKey?: string) =>
+      request<{ success: boolean; method: string; authenticated?: boolean; error?: string; envVar?: string; output?: string }>(
+        `/settings/coding-tools/${tool}/auth`,
+        { method: 'POST', body: JSON.stringify({ method, apiKey }) },
+      ),
+    listCodingToolModels: (tool: CodingToolName) =>
+      request<CodingToolModelsResponse>(`/settings/coding-tools/${tool}/models`),
+    testCodingTool: (tool: CodingToolName) =>
+      request<{ success: boolean; apiKeySource?: string | null; model?: string | null; detail?: string; error?: string; output?: string }>(
+        `/settings/coding-tools/${tool}/test`,
+        { method: 'POST' },
+      ),
   },
   modelCatalog: {
     getByProvider: (provider: string) => request<{ provider: string; models: CatalogModel[] }>(`/models/catalog/${provider}`),
