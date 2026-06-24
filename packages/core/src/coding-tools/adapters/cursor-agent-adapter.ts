@@ -103,17 +103,9 @@ export class CursorAgentAdapter implements ToolAdapter {
       return _cursorModelsCache.result;
     }
 
-    const apiKey = process.env.CURSOR_API_KEY;
-    if (apiKey) {
-      try {
-        const result = await this.listModelsViaApi(apiKey);
-        _cursorModelsCache = { result, expiresAt: Date.now() + MODEL_CACHE_TTL_MS };
-        return result;
-      } catch (err) {
-        console.warn(`[cursor-adapter] Cloud API model list failed, falling back to CLI: ${err instanceof Error ? err.message : err}`);
-      }
-    }
-
+    // Always use CLI models since execution goes through `cursor agent` CLI.
+    // The Cloud API (/v1/models) returns models for the REST API which are
+    // NOT compatible with the CLI's --model flag.
     const cliResult = await this.listModelsViaCli();
     if (cliResult.models.length > 0) {
       _cursorModelsCache = { result: cliResult, expiresAt: Date.now() + MODEL_CACHE_TTL_MS };
@@ -179,10 +171,7 @@ export class CursorAgentAdapter implements ToolAdapter {
       models.push({ id, name, isDefault: (isDefault || isCurrent) || undefined });
     }
 
-    const hint = !process.env.CURSOR_API_KEY
-      ? 'For the full model list, add a Cursor API Key from your Dashboard (cursor.com/dashboard/cloud-agents)'
-      : undefined;
-    return { models, source: 'cli', hint };
+    return { models, source: 'cli' };
   }
 
   buildArgs(opts: ToolAdapterBuildOpts): ToolAdapterBuildArgsResult {

@@ -71,7 +71,7 @@ export class ClaudeCodeAdapter implements ToolAdapter {
     const effectiveModel = opts.model || opts.config?.defaultModel;
     if (effectiveModel) args.push('--model', effectiveModel);
 
-    const mode = opts.mode || 'auto';
+    const mode = opts.mode || 'bypassPermissions';
     args.push('--permission-mode', mode);
 
     if (opts.effort) args.push('--effort', opts.effort);

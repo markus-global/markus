@@ -8568,89 +8568,70 @@ EXPLANATION_END`;
     }
 
     // Settings — Coding Tools
+    // Settings — Coding Tools: shared detection logic
+    const _detectOneTool = async (toolName: string) => {
+      const { resolveWhich: _resolveWhich, execSafeSync: _execSafe, loadConfig: _loadCfg } = await import('@markus/shared');
+      const toolDefs: Record<string, { displayName: string; binaryName: string; installHint: string; authEnvKeys: string[]; authArgs: string[] | null; authFailPattern: RegExp | null; authHint: string }> = {
+        'claude-code': { displayName: 'Claude Code', binaryName: 'claude', installHint: 'npm install -g @anthropic-ai/claude-code', authEnvKeys: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'], authArgs: ['api-key-status'], authFailPattern: /not authenticated|invalid api key/i, authHint: 'Run `claude` to complete interactive login, or set ANTHROPIC_API_KEY' },
+        'codex': { displayName: 'Codex', binaryName: 'codex', installHint: 'npm install -g @openai/codex', authEnvKeys: ['CODEX_API_KEY', 'OPENAI_API_KEY'], authArgs: null, authFailPattern: null, authHint: 'Run `codex login` or set CODEX_API_KEY environment variable' },
+        'cursor-agent': { displayName: 'Cursor Agent', binaryName: 'cursor', installHint: 'Install Cursor from https://cursor.com/downloads then run: cursor agent install-shell-integration', authEnvKeys: ['CURSOR_API_KEY'], authArgs: ['agent', 'status'], authFailPattern: /not logged in/i, authHint: 'Run `cursor agent login` or set CURSOR_API_KEY environment variable' },
+      };
+      const def = toolDefs[toolName];
+      if (!def) return null;
+
+      const cfg = _loadCfg(this.markusConfigPath);
+      const toolCfg = cfg.codingTools?.tools?.[toolName];
+      const binPath = toolCfg?.binaryPath || _resolveWhich(def.binaryName);
+      if (!binPath) {
+        return { name: toolName, displayName: def.displayName, binaryName: def.binaryName, available: false, installHint: def.installHint };
+      }
+
+      let version: string | undefined;
+      const verResult = _execSafe(binPath, ['--version'], { timeout: 5000 });
+      if (verResult.exitCode === 0 && verResult.stdout) version = verResult.stdout;
+
+      const detectEnv = { ...process.env, ...(toolCfg?.env ?? {}) };
+
+      // Check auth: env vars first (fast, reliable), then CLI command (slower, may not detect third-party keys)
+      let authenticated = false;
+      let authUser: string | undefined;
+      if (def.authEnvKeys.some(k => !!detectEnv[k])) {
+        authenticated = true;
+      } else if (def.authArgs && def.authFailPattern) {
+        const statusResult = _execSafe(binPath, def.authArgs, { timeout: 10_000, env: detectEnv });
+        const statusOut = statusResult.stdout;
+        if (statusOut) {
+          authenticated = !def.authFailPattern.test(statusOut);
+          if (authenticated && statusOut.length < 200) authUser = statusOut;
+        }
+      }
+
+      return {
+        name: toolName, displayName: def.displayName, binaryName: def.binaryName,
+        available: true, path: binPath, version,
+        authenticated, authHint: authenticated ? undefined : def.authHint, authUser,
+      };
+    };
+
     if (path === '/api/settings/coding-tools/detect' && req.method === 'GET') {
-      const { resolveWhich: _resolveWhich, execSafeSync: _execSafe } = await import('@markus/shared');
-      const toolDefs = [
-        { name: 'claude-code' as const, displayName: 'Claude Code', binaryName: 'claude', installHint: 'npm install -g @anthropic-ai/claude-code', authArgs: ['api-key-status'], authFailPattern: /not authenticated|invalid api key/i, authHint: 'Run `claude` to complete interactive login, or set ANTHROPIC_API_KEY' },
-        { name: 'codex' as const, displayName: 'Codex', binaryName: 'codex', installHint: 'npm install -g @openai/codex', authArgs: null as string[] | null, authEnv: 'OPENAI_API_KEY', authFailPattern: null as RegExp | null, authHint: 'Set OPENAI_API_KEY environment variable' },
-        { name: 'cursor-agent' as const, displayName: 'Cursor Agent', binaryName: 'cursor', installHint: 'Install Cursor from https://cursor.com/downloads then run: cursor agent install-shell-integration', authArgs: ['agent', 'status'], authFailPattern: /not logged in/i, authHint: 'Run `cursor agent login` or set CURSOR_API_KEY environment variable' },
-      ];
-      const tools = toolDefs.map(def => {
-        const binPath = _resolveWhich(def.binaryName);
-        if (!binPath) {
-          return { name: def.name, displayName: def.displayName, binaryName: def.binaryName, available: false, installHint: def.installHint };
-        }
-
-        let version: string | undefined;
-        const verResult = _execSafe(binPath, ['--version'], { timeout: 5000 });
-        if (verResult.exitCode === 0 && verResult.stdout) version = verResult.stdout;
-
-        let authenticated = false;
-        let authUser: string | undefined;
-        if (def.authArgs) {
-          const statusResult = _execSafe(binPath, def.authArgs, { timeout: 10_000 });
-          const statusOut = statusResult.stdout;
-          if (statusOut && def.authFailPattern) {
-            authenticated = !def.authFailPattern.test(statusOut);
-            if (authenticated && statusOut.length < 200) authUser = statusOut;
-          }
-        } else if (def.authEnv) {
-          authenticated = !!process.env[def.authEnv];
-        }
-
-        return {
-          name: def.name, displayName: def.displayName, binaryName: def.binaryName,
-          available: true, path: binPath, version,
-          authenticated, authHint: authenticated ? undefined : def.authHint, authUser,
-        };
-      });
+      const tools = [];
+      for (const name of ['claude-code', 'codex', 'cursor-agent']) {
+        const result = await _detectOneTool(name);
+        if (result) tools.push(result);
+      }
       this.json(res, 200, { tools });
       return;
     }
 
-    // Settings — Coding Tools: detect single tool
     const perToolDetectMatch = path.match(/^\/api\/settings\/coding-tools\/detect\/([a-z-]+)$/);
     if (perToolDetectMatch && req.method === 'GET') {
       const toolName = perToolDetectMatch[1] as string;
-      const { resolveWhich: _resolveWhich, execSafeSync: _execSafe, loadConfig: _loadCfgDetect } = await import('@markus/shared');
-      const toolDefs: Record<string, { displayName: string; binaryName: string; installHint: string; authArgs: string[] | null; authEnv?: string; authFailPattern: RegExp | null; authHint: string }> = {
-        'claude-code': { displayName: 'Claude Code', binaryName: 'claude', installHint: 'npm install -g @anthropic-ai/claude-code', authArgs: ['api-key-status'], authFailPattern: /not authenticated|invalid api key/i, authHint: 'Run `claude` to complete interactive login, or set ANTHROPIC_API_KEY' },
-        'codex': { displayName: 'Codex', binaryName: 'codex', installHint: 'npm install -g @openai/codex', authArgs: null, authEnv: 'OPENAI_API_KEY', authFailPattern: null, authHint: 'Set OPENAI_API_KEY environment variable' },
-        'cursor-agent': { displayName: 'Cursor Agent', binaryName: 'cursor', installHint: 'Install Cursor from https://cursor.com/downloads then run: cursor agent install-shell-integration', authArgs: ['agent', 'status'], authFailPattern: /not logged in/i, authHint: 'Run `cursor agent login` or set CURSOR_API_KEY environment variable' },
-      };
-      const def = toolDefs[toolName];
-      if (!def) {
+      const result = await _detectOneTool(toolName);
+      if (!result) {
         this.json(res, 404, { error: `Unknown tool: ${toolName}` });
         return;
       }
-      const cfgForDetect = _loadCfgDetect(this.markusConfigPath);
-      const toolCfgForDetect = cfgForDetect.codingTools?.tools?.[toolName];
-      const binPath = toolCfgForDetect?.binaryPath || _resolveWhich(def.binaryName);
-      if (!binPath) {
-        this.json(res, 200, { name: toolName, displayName: def.displayName, binaryName: def.binaryName, available: false, installHint: def.installHint });
-        return;
-      }
-      const detectEnv = { ...process.env, ...(toolCfgForDetect?.env ?? {}) };
-      let version: string | undefined;
-      const verResult = _execSafe(binPath, ['--version'], { timeout: 5000 });
-      if (verResult.exitCode === 0 && verResult.stdout) version = verResult.stdout;
-      let authenticated = false;
-      let authUser: string | undefined;
-      if (def.authArgs) {
-        const statusResult = _execSafe(binPath, def.authArgs, { timeout: 10_000, env: detectEnv });
-        const statusOut = statusResult.stdout;
-        if (statusOut && def.authFailPattern) {
-          authenticated = !def.authFailPattern.test(statusOut);
-          if (authenticated && statusOut.length < 200) authUser = statusOut;
-        }
-      } else if (def.authEnv) {
-        authenticated = !!(detectEnv[def.authEnv]);
-      }
-      this.json(res, 200, {
-        name: toolName, displayName: def.displayName, binaryName: def.binaryName,
-        available: true, path: binPath, version,
-        authenticated, authHint: authenticated ? undefined : def.authHint, authUser,
-      });
+      this.json(res, 200, result);
       return;
     }
 
@@ -8711,43 +8692,36 @@ EXPLANATION_END`;
               detail: hasEmail ? `${info.subscriptionTier ?? ''} · ${info.userEmail ?? ''}`.trim() : 'Not authenticated',
             });
           } catch {
-            this.json(res, 200, { success: false, error: 'Failed to parse output', output: r.stdout.slice(0, 500) });
+            const errOutput = (r.stderr || r.stdout || '').trim().slice(0, 300);
+            this.json(res, 200, { success: false, error: errOutput || 'Not authenticated or unable to connect' });
           }
         } else if (toolName === 'claude-code') {
-          const hasEnvKey = !!(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN);
-          if (hasEnvKey) {
-            const model = env.ANTHROPIC_MODEL;
-            const baseUrl = env.ANTHROPIC_BASE_URL;
-            const parts = ['API key configured'];
-            if (baseUrl) parts.push(`endpoint: ${baseUrl}`);
-            if (model) parts.push(`model: ${model}`);
-            this.json(res, 200, {
-              success: true,
-              apiKeySource: env.ANTHROPIC_API_KEY ? 'ANTHROPIC_API_KEY' : 'ANTHROPIC_AUTH_TOKEN',
-              model: model ?? null,
-              detail: parts.join(' · '),
-            });
+          const r = await spawnAsync(binPath, [
+            '--print', '--output-format', 'text', '--max-turns', '1',
+            '--permission-mode', 'plan',
+            'respond with exactly: MARKUS_TEST_OK',
+          ], env, 30_000);
+          const output = (r.stdout || '').trim();
+          const success = r.code === 0 && output.length > 0;
+          if (success) {
+            this.json(res, 200, { success: true, detail: output.slice(0, 200) });
           } else {
-            const r = await spawnAsync(binPath, ['api-key-status'], env, 10_000);
-            const output = r.stdout.trim();
-            const isAuth = !!output && !/not authenticated|invalid api key|not logged in/i.test(output);
-            this.json(res, 200, {
-              success: isAuth,
-              apiKeySource: isAuth ? 'CLI login' : null,
-              model: null,
-              detail: isAuth ? output.slice(0, 200) : (output || 'Not authenticated'),
-            });
+            const errOutput = (r.stderr || r.stdout || '').trim().slice(0, 500);
+            this.json(res, 200, { success: false, error: errOutput || `Exit code ${r.code}` });
           }
         } else if (toolName === 'codex') {
-          const hasKey = !!(env.OPENAI_API_KEY);
-          const r = await spawnAsync(binPath, ['--version'], env, 5_000);
-          const version = r.stdout.trim();
-          this.json(res, 200, {
-            success: hasKey,
-            apiKeySource: hasKey ? 'OPENAI_API_KEY' : null,
-            model: env.OPENAI_MODEL ?? null,
-            detail: hasKey ? `${version} · API key configured` : 'OPENAI_API_KEY not set',
-          });
+          const r = await spawnAsync(binPath, [
+            'exec', '--full-auto', '--skip-git-repo-check',
+            'respond with exactly: MARKUS_TEST_OK',
+          ], env, 30_000);
+          const output = (r.stdout || '').trim();
+          const success = r.code === 0 && output.length > 0;
+          if (success) {
+            this.json(res, 200, { success: true, detail: output.slice(0, 200) });
+          } else {
+            const errOutput = (r.stderr || r.stdout || '').trim().slice(0, 500);
+            this.json(res, 200, { success: false, error: errOutput || `Exit code ${r.code}` });
+          }
         } else {
           this.json(res, 200, { success: false, error: `No test strategy for ${toolName}` });
         }
@@ -8914,7 +8888,7 @@ EXPLANATION_END`;
         const envVarMap: Record<string, string> = {
           'cursor-agent': 'CURSOR_API_KEY',
           'claude-code': 'ANTHROPIC_API_KEY',
-          codex: 'OPENAI_API_KEY',
+          codex: 'CODEX_API_KEY',
         };
         const envVar = envVarMap[toolName];
         if (envVar) {

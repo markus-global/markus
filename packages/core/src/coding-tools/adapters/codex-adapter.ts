@@ -29,14 +29,14 @@ export class CodexAdapter implements ToolAdapter {
     const verResult = execSafeSync(path, ['--version'], { timeout: 5000 });
     if (verResult.exitCode === 0 && verResult.stdout) version = verResult.stdout;
 
-    const authenticated = !!process.env.OPENAI_API_KEY;
+    const authenticated = !!(process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY);
 
     return {
       available: true,
       version,
       path,
       authenticated,
-      authHint: authenticated ? undefined : 'Set OPENAI_API_KEY environment variable',
+      authHint: authenticated ? undefined : 'Run `codex login` or set CODEX_API_KEY environment variable',
     };
   }
 

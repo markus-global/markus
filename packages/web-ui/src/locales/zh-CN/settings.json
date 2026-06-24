@@ -740,8 +740,7 @@
     "stepInstall": "安装 CLI 工具",
     "stepAuth": "完成认证",
     "stepEnable": "在 Markus 中启用",
-    "authOrEnvHint": "通过浏览器登录、输入 API Key，或在下方「环境变量」中配置",
-    "authViaEnvVar": "已通过环境变量 {{envVar}} 认证",
+    "authHint": "通过浏览器登录或输入 API Key 进行认证",
     "sectionModelExec": "模型与执行",
     "sectionAdvanced": "高级设置",
     "loginBtn": "通过浏览器登录",
@@ -758,11 +757,6 @@
     "binaryPathPlaceholder": "留空则使用 PATH",
     "defaultArgs": "默认 CLI 参数",
     "defaultArgsPlaceholder": "例如 --verbose",
-    "envVars": "环境变量",
-    "envVarsHint": "传递给工具进程的自定义环境变量（如 ANTHROPIC_BASE_URL、OPENAI_API_KEY）",
-    "envVarValuePlaceholder": "值",
-    "addEnvVar": "添加变量",
-    "addCustomEnvVar": "自定义变量",
     "testConfig": "测试配置",
     "testing": "测试中…",
     "testConfigHint": "发送最小请求以验证凭据、API 密钥和连接状态",
@@ -801,14 +795,8 @@
     "testModel": "模型：{{model}}",
     "testAuthVia": "认证方式：{{source}}",
     "testFailedHint": "请检查上方的 API 密钥、端点 URL 或 CLI 安装状态",
-    "authViaApiKey": "已通过 API 密钥认证",
-    "modelGuidanceCursorCli": "CLI 返回的模型有限。在下方「环境变量」中添加 <1>CURSOR_API_KEY</1> 可解锁全部模型。<3>获取密钥</3>",
-    "modelGuidanceCursorApi": "已通过 Cursor API 加载完整模型列表",
+    "modelGuidanceCursor": "Cursor CLI 支持的模型。选择「auto」可让 Cursor 自动选择最佳模型。",
     "modelGuidanceClaude": "显示标准模型列表。可手动输入自定义模型名称。",
-    "modelGuidanceCodex": "显示标准模型列表。可手动输入自定义模型名称。",
-    "envTip_cursor_agent": "添加 CURSOR_API_KEY 可启用完整模型列表和 CLI 认证。",
-    "envTip_claude_code": "添加 ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL 可使用第三方 API 服务商，替代浏览器登录。",
-    "envTip_codex": "添加 OPENAI_API_KEY 进行认证。可选配置 OPENAI_BASE_URL 使用自定义端点。",
-    "getKey": "获取密钥"
+    "modelGuidanceCodex": "显示标准模型列表。可手动输入自定义模型名称。"
   }
 }

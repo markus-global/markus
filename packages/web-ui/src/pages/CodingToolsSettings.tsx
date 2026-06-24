@@ -1,45 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Trans } from 'react-i18next';
 import { api, type CodingToolDetection, type CodingToolName, type CodingToolModelDTO, type CodingToolsSettingsResponse } from '../api.ts';
 
 const TOOL_ORDER: CodingToolName[] = ['claude-code', 'codex', 'cursor-agent'];
 
 const DEFAULT_TIMEOUT_MIN = 10;
-
-interface EnvEntry { key: string; value: string }
-
-interface EnvPreset { key: string; hint: string; isAuthKey?: boolean }
-
-const ENV_PRESETS: Record<CodingToolName, EnvPreset[]> = {
-  'claude-code': [
-    { key: 'ANTHROPIC_API_KEY', hint: 'Anthropic API key', isAuthKey: true },
-    { key: 'ANTHROPIC_BASE_URL', hint: 'Custom API endpoint (proxy/gateway)' },
-    { key: 'ANTHROPIC_AUTH_TOKEN', hint: 'Bearer token for custom endpoint' },
-    { key: 'ANTHROPIC_MODEL', hint: 'Override default model' },
-    { key: 'ANTHROPIC_SMALL_FAST_MODEL', hint: 'Model for lightweight tasks' },
-    { key: 'HTTP_PROXY', hint: 'HTTP proxy' },
-    { key: 'HTTPS_PROXY', hint: 'HTTPS proxy' },
-  ],
-  codex: [
-    { key: 'OPENAI_API_KEY', hint: 'OpenAI API key', isAuthKey: true },
-    { key: 'OPENAI_BASE_URL', hint: 'Custom API endpoint (deprecated, prefer config.toml)' },
-    { key: 'CODEX_REASONING_EFFORT', hint: 'Reasoning effort (low/medium/high)' },
-    { key: 'HTTP_PROXY', hint: 'HTTP proxy' },
-    { key: 'HTTPS_PROXY', hint: 'HTTPS proxy' },
-  ],
-  'cursor-agent': [
-    { key: 'CURSOR_API_KEY', hint: 'Cursor User API Key', isAuthKey: true },
-    { key: 'HTTP_PROXY', hint: 'HTTP proxy' },
-    { key: 'HTTPS_PROXY', hint: 'HTTPS proxy' },
-  ],
-};
-
-const AUTH_KEY_ENV_VARS: Record<CodingToolName, string> = {
-  'claude-code': 'ANTHROPIC_API_KEY',
-  codex: 'OPENAI_API_KEY',
-  'cursor-agent': 'CURSOR_API_KEY',
-};
 
 interface ToolFormState {
   enabled: boolean;
@@ -49,7 +14,6 @@ interface ToolFormState {
   defaultModel: string;
   maxBudgetPerSessionUsd: string;
   approvalRequired: boolean;
-  envVars: EnvEntry[];
 }
 
 function buildFormFromSettings(data: CodingToolsSettingsResponse): Record<CodingToolName, ToolFormState> {
@@ -57,8 +21,6 @@ function buildFormFromSettings(data: CodingToolsSettingsResponse): Record<Coding
   for (const name of TOOL_ORDER) {
     const cfg = data.tools[name];
     const ms = cfg?.timeoutMs ?? DEFAULT_TIMEOUT_MIN * 60_000;
-    const envObj = cfg?.env ?? {};
-    const envVars: EnvEntry[] = Object.entries(envObj).map(([key, value]) => ({ key, value }));
     form[name] = {
       enabled: cfg?.enabled ?? true,
       binaryPath: cfg?.binaryPath ?? '',
@@ -67,15 +29,9 @@ function buildFormFromSettings(data: CodingToolsSettingsResponse): Record<Coding
       defaultModel: (cfg as any)?.defaultModel ?? '',
       maxBudgetPerSessionUsd: (cfg as any)?.maxBudgetPerSessionUsd ? String((cfg as any).maxBudgetPerSessionUsd) : '',
       approvalRequired: (cfg as any)?.approvalRequired ?? false,
-      envVars,
     };
   }
   return form;
-}
-
-function hasAuthKeyInEnv(name: CodingToolName, envVars: EnvEntry[]): boolean {
-  const authKey = AUTH_KEY_ENV_VARS[name];
-  return envVars.some(e => e.key === authKey && e.value.trim().length > 0);
 }
 
 // ─── Primitives ──────────────────────────────────────────────────────────────
@@ -124,19 +80,18 @@ function ChevronIcon({ expanded }: { expanded: boolean }) {
 
 // ─── Status ──────────────────────────────────────────────────────────────────
 
-function StatusBadge({ info, hasEnvAuth }: { info?: CodingToolDetection; hasEnvAuth?: boolean }) {
+function StatusBadge({ info }: { info?: CodingToolDetection }) {
   const { t } = useTranslation('settings');
-  const effectiveAuth = (info?.authenticated) || hasEnvAuth;
-  const ready = info?.available && effectiveAuth;
+  const ready = info?.available && info?.authenticated;
   const installed = info?.available;
   const label = ready ? t('codingTools.ready')
-    : installed ? (hasEnvAuth ? t('codingTools.ready') : t('codingTools.needsAuth'))
+    : installed ? t('codingTools.needsAuth')
     : t('codingTools.notInstalled');
-  const colorCls = ready || (installed && hasEnvAuth)
+  const colorCls = ready
     ? 'bg-green-500/15 text-green-500'
     : installed ? 'bg-amber-500/15 text-amber-500'
     : 'bg-gray-600/20 text-fg-tertiary';
-  const dotCls = ready || (installed && hasEnvAuth) ? 'bg-green-400' : installed ? 'bg-amber-400' : 'bg-gray-500';
+  const dotCls = ready ? 'bg-green-400' : installed ? 'bg-amber-400' : 'bg-gray-500';
   return (
     <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium ${colorCls}`}>
       <span className={`w-1.5 h-1.5 rounded-full ${dotCls}`} />
@@ -151,7 +106,7 @@ const CLI_LOGIN_TOOLS = new Set<CodingToolName>(['cursor-agent', 'claude-code'])
 const API_KEY_LABELS: Partial<Record<CodingToolName, string>> = {
   'cursor-agent': 'CURSOR_API_KEY',
   'claude-code': 'ANTHROPIC_API_KEY',
-  codex: 'OPENAI_API_KEY',
+  codex: 'CODEX_API_KEY',
 };
 
 const AUTH_POLL_INTERVAL = 15_000;
@@ -398,14 +353,12 @@ function ModelCombobox({ name, value, onChange }: { name: CodingToolName; value:
   );
 
   const modelGuidanceKey = name === 'cursor-agent'
-    ? (source === 'cli' ? 'codingTools.modelGuidanceCursorCli' : source === 'api' ? 'codingTools.modelGuidanceCursorApi' : null)
+    ? 'codingTools.modelGuidanceCursor'
     : name === 'claude-code'
     ? 'codingTools.modelGuidanceClaude'
     : name === 'codex'
     ? 'codingTools.modelGuidanceCodex'
     : null;
-
-  const guidanceIsAction = name === 'cursor-agent' && source === 'cli';
 
   return (
     <div ref={containerRef} className="relative">
@@ -433,15 +386,8 @@ function ModelCombobox({ name, value, onChange }: { name: CodingToolName; value:
       </div>
       {error && !loading && <div className="text-[10px] text-amber-500 mt-0.5">{error}</div>}
       {modelGuidanceKey && !loading && (
-        <div className={`text-[10px] mt-1 ${guidanceIsAction ? 'text-amber-500/80' : 'text-fg-tertiary'}`}>
-          {guidanceIsAction ? (
-            <Trans i18nKey="codingTools.modelGuidanceCursorCli" ns="settings">
-              CLI returns limited models. Add <code className="text-[9px] bg-surface-primary px-1 rounded">CURSOR_API_KEY</code> in Environment Variables below to unlock all models.
-              <a href={t('codingTools.cursorDashboardUrl')} target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:underline ml-0.5">Get key</a>
-            </Trans>
-          ) : (
-            t(modelGuidanceKey)
-          )}
+        <div className="text-[10px] mt-1 text-fg-tertiary">
+          {t(modelGuidanceKey)}
         </div>
       )}
       {open && (
@@ -489,7 +435,7 @@ function ModelCombobox({ name, value, onChange }: { name: CodingToolName; value:
 type PerToolDetectionState = { status: 'idle' } | { status: 'loading' } | { status: 'done'; data: CodingToolDetection };
 
 const DETECT_CACHE_KEY = 'markus_coding_tool_detect';
-const DETECT_CACHE_MAX_AGE_MS = 10 * 60 * 1000;
+const DETECT_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 interface DetectCacheEntry { data: CodingToolDetection; ts: number }
 
@@ -512,6 +458,15 @@ function loadCachedDetection(): Record<CodingToolName, PerToolDetectionState> {
     }
     return result;
   } catch { return fallback; }
+}
+
+function hasCachedData(name: CodingToolName): boolean {
+  try {
+    const raw = localStorage.getItem(DETECT_CACHE_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw) as Record<string, DetectCacheEntry | CodingToolDetection>;
+    return !!parsed[name];
+  } catch { return false; }
 }
 
 function isCacheStale(name: CodingToolName): boolean {
@@ -554,10 +509,6 @@ function buildPayload(globalEnabled: boolean, toolForms: Record<CodingToolName, 
     const minutes = parseFloat(form.timeoutMin);
     const timeoutMs = Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 60_000) : DEFAULT_TIMEOUT_MIN * 60_000;
     const budgetVal = parseFloat(form.maxBudgetPerSessionUsd);
-    const envEntries = form.envVars.filter(e => e.key.trim());
-    const env = envEntries.length > 0
-      ? Object.fromEntries(envEntries.map(e => [e.key.trim(), e.value]))
-      : undefined;
     tools[name] = {
       tool: name,
       enabled: form.enabled,
@@ -567,7 +518,6 @@ function buildPayload(globalEnabled: boolean, toolForms: Record<CodingToolName, 
       defaultModel: form.defaultModel.trim() || undefined,
       maxBudgetPerSessionUsd: name === 'claude-code' && Number.isFinite(budgetVal) && budgetVal > 0 ? budgetVal : undefined,
       approvalRequired: form.approvalRequired || undefined,
-      env,
     };
   }
   return { enabled: globalEnabled, tools };
@@ -592,8 +542,10 @@ export function CodingToolsSettings() {
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initializedRef = useRef(false);
 
-  const detectTool = useCallback(async (name: CodingToolName) => {
-    setPerToolDetection(prev => ({ ...prev, [name]: { status: 'loading' } }));
+  const detectTool = useCallback(async (name: CodingToolName, silent = false) => {
+    if (!silent) {
+      setPerToolDetection(prev => ({ ...prev, [name]: { status: 'loading' } }));
+    }
     try {
       const data = await api.settings.detectCodingTool(name);
       setPerToolDetection(prev => {
@@ -602,7 +554,9 @@ export function CodingToolsSettings() {
         return next;
       });
     } catch {
-      setPerToolDetection(prev => ({ ...prev, [name]: { status: 'idle' } }));
+      if (!silent) {
+        setPerToolDetection(prev => ({ ...prev, [name]: { status: 'idle' } }));
+      }
     }
   }, []);
 
@@ -627,6 +581,17 @@ export function CodingToolsSettings() {
           : t('codingTools.testFailed');
       }
       setTestResult(prev => ({ ...prev, [name]: { success: res.success, detail } }));
+      if (res.success) {
+        setPerToolDetection(prev => {
+          const existing = prev[name];
+          if (existing.status === 'done' && !existing.data.authenticated) {
+            const updated = { ...prev, [name]: { status: 'done' as const, data: { ...existing.data, authenticated: true } } };
+            saveCachedDetection(updated);
+            return updated;
+          }
+          return prev;
+        });
+      }
     } catch (err) {
       setTestResult(prev => ({ ...prev, [name]: { success: false, detail: t('codingTools.testFailed') } }));
     } finally {
@@ -662,7 +627,7 @@ export function CodingToolsSettings() {
         for (const name of TOOL_ORDER) {
           const toolCfg = settings.tools[name];
           if (toolCfg?.enabled && isCacheStale(name)) {
-            void detectTool(name);
+            void detectTool(name, hasCachedData(name));
           }
         }
       }
@@ -753,10 +718,8 @@ export function CodingToolsSettings() {
             const DISPLAY_NAMES: Record<CodingToolName, string> = { 'claude-code': 'Claude Code', 'codex': 'Codex', 'cursor-agent': 'Cursor Agent' };
             const displayName = info?.displayName ?? DISPLAY_NAMES[name] ?? name;
             const isExpanded = expanded.has(name);
-            const envAuth = hasAuthKeyInEnv(name, form.envVars);
-            const effectiveAuth = info?.authenticated || envAuth;
             const needsSetup = info && !info.available;
-            const needsAuth = info?.available && !effectiveAuth;
+            const needsAuth = info?.available && !info?.authenticated;
             const showBinaryPath = info ? !info.available : false;
 
             return (
@@ -776,7 +739,7 @@ export function CodingToolsSettings() {
                         {t('codingTools.detectingTool')}
                       </span>
                     ) : (
-                      <StatusBadge info={info} hasEnvAuth={envAuth} />
+                      <StatusBadge info={info} />
                     )}
                     {info?.version && (
                       <span className="text-[10px] text-fg-tertiary font-mono truncate">{info.version}</span>
@@ -806,22 +769,12 @@ export function CodingToolsSettings() {
                       </div>
                     )}
 
-                    {/* ── Setup: needs auth (only when no env key configured) ── */}
+                    {/* ── Setup: needs auth ── */}
                     {needsAuth && (
                       <div className="mt-3 p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg">
                         <div className="text-xs text-amber-500 font-medium mb-2">{t('codingTools.stepAuth')}</div>
-                        <div className="text-[10px] text-fg-tertiary mb-2">{t('codingTools.authOrEnvHint')}</div>
+                        <div className="text-[10px] text-fg-tertiary mb-2">{t('codingTools.authHint')}</div>
                         <AuthActions name={name} onAuthDone={() => void detectTool(name)} />
-                      </div>
-                    )}
-
-                    {/* ── Auth via env var indicator ── */}
-                    {info?.available && envAuth && !info?.authenticated && (
-                      <div className="mt-3 p-2 bg-green-500/5 border border-green-500/20 rounded-lg flex items-center gap-2">
-                        <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
-                        <span className="text-[10px] text-green-600">
-                          {t('codingTools.authViaApiKey')}
-                        </span>
                       </div>
                     )}
 
@@ -914,91 +867,6 @@ export function CodingToolsSettings() {
                           placeholder={t('codingTools.defaultArgsPlaceholder')}
                           className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none font-mono"
                         />
-                      </div>
-
-                      {/* Environment Variables */}
-                      <div>
-                        <label className="text-xs text-fg-secondary block mb-1">{t('codingTools.envVars')}</label>
-                        <div className="text-[10px] text-fg-tertiary mb-1 leading-relaxed">
-                          {t(`codingTools.envTip_${name.replace('-', '_')}` as any)}
-                          {name === 'cursor-agent' && (
-                            <> <a href={t('codingTools.cursorDashboardUrl')} target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:underline">{t('codingTools.getKey')}</a></>
-                          )}
-                        </div>
-                        <div className="space-y-1.5">
-                          {form.envVars.map((entry, idx) => {
-                            const isAuth = entry.key === AUTH_KEY_ENV_VARS[name] && entry.value.trim().length > 0;
-                            return (
-                              <div key={idx} className={`flex items-center gap-1.5 ${isAuth ? 'ring-1 ring-green-500/30 rounded-md p-0.5 -m-0.5' : ''}`}>
-                                <input
-                                  type="text"
-                                  value={entry.key}
-                                  onChange={e => {
-                                    const next = [...form.envVars];
-                                    next[idx] = { ...next[idx], key: e.target.value };
-                                    updateTool(name, { envVars: next });
-                                  }}
-                                  placeholder="VARIABLE_NAME"
-                                  className="w-2/5 px-2 py-1 text-[11px] bg-surface-primary border border-border-default rounded-md text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none font-mono"
-                                />
-                                <span className="text-[10px] text-fg-tertiary">=</span>
-                                <input
-                                  type={isAuth ? 'password' : 'text'}
-                                  value={entry.value}
-                                  onChange={e => {
-                                    const next = [...form.envVars];
-                                    next[idx] = { ...next[idx], value: e.target.value };
-                                    updateTool(name, { envVars: next });
-                                  }}
-                                  placeholder={ENV_PRESETS[name]?.find(p => p.key === entry.key)?.hint ?? t('codingTools.envVarValuePlaceholder')}
-                                  className="flex-1 px-2 py-1 text-[11px] bg-surface-primary border border-border-default rounded-md text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none font-mono"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const next = form.envVars.filter((_, i) => i !== idx);
-                                    updateTool(name, { envVars: next });
-                                  }}
-                                  className="p-0.5 text-fg-tertiary hover:text-red-400 transition-colors shrink-0"
-                                  title={t('common:delete')}
-                                >
-                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-                                </button>
-                              </div>
-                            );
-                          })}
-                          {(() => {
-                            const usedKeys = new Set(form.envVars.map(e => e.key));
-                            const available = (ENV_PRESETS[name] ?? []).filter(p => !usedKeys.has(p.key));
-                            return (
-                              <div className="flex items-center gap-2 flex-wrap">
-                                {available.length > 0 && (
-                                  <select
-                                    value=""
-                                    onChange={e => {
-                                      if (e.target.value) {
-                                        updateTool(name, { envVars: [...form.envVars, { key: e.target.value, value: '' }] });
-                                      }
-                                    }}
-                                    className="px-2 py-0.5 text-[10px] bg-surface-primary border border-border-default rounded-md text-fg-secondary focus:border-brand-500 outline-none cursor-pointer"
-                                  >
-                                    <option value="">+ {t('codingTools.addEnvVar')}…</option>
-                                    {available.map(p => (
-                                      <option key={p.key} value={p.key}>{p.key} — {p.hint}</option>
-                                    ))}
-                                  </select>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={() => updateTool(name, { envVars: [...form.envVars, { key: '', value: '' }] })}
-                                  className="text-[10px] text-fg-tertiary hover:text-fg-secondary transition-colors"
-                                >
-                                  + {t('codingTools.addCustomEnvVar')}
-                                </button>
-                              </div>
-                            );
-                          })()}
-                        </div>
                       </div>
 
                       {/* ── Test ── */}
