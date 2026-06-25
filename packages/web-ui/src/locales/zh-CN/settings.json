@@ -184,6 +184,7 @@
     "quickSetupSubmit": "启用",
     "quickSetupSaving": "启用中...",
     "quickSetupSuccess": "{{name}} 已就绪！",
+    "keyReadOnly": "密钥（只读）",
     "pricingTitle": "定价（每百万 Token）",
     "input": "输入",
     "output": "输出",
