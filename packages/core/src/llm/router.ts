@@ -287,6 +287,12 @@ export class LLMRouter {
     return /\b429\b/.test(msg) || /rate.limit/i.test(msg);
   }
 
+  /** Detect CU-exhausted errors — return friendly error, do NOT fall back to direct mode. */
+  static isCUExceededError(error: unknown): boolean {
+    const msg = error instanceof Error ? error.message : String(error);
+    return msg.includes('CU_EXCEEDED:');
+  }
+
   /**
    * Apply random jitter when a provider has many concurrent in-flight requests.
    * Spreads burst traffic to avoid thundering-herd 429 cascades.
@@ -967,6 +973,11 @@ export class LLMRouter {
       lastError = error;
       log.error(`LLM request failed for ${primary}:${routedModel ?? provider.model}`, { error: String(error) });
 
+      // CU_EXCEEDED is fatal — do NOT fall back to other providers
+      if (LLMRouter.isCUExceededError(error)) {
+        throw lastError;
+      }
+
       // Try alternate models on the same provider (only when auto-fallback is enabled)
       if (this._autoFallback && !LLMRouter.isNonRetryableError(error)) {
         const altModel = this.findHealthyModel(primary);
@@ -1104,6 +1115,13 @@ export class LLMRouter {
         throw lastError;
       }
       log.error(`LLM stream request failed for ${primary}:${provider.model}`, { error: String(error) });
+
+      // CU_EXCEEDED is fatal — do NOT fall back to other providers
+      if (LLMRouter.isCUExceededError(error)) {
+        span.setError(lastError instanceof Error ? lastError : String(lastError));
+        span.end();
+        throw lastError;
+      }
 
       // Try alternate models on the same provider (only when auto-fallback is enabled)
       if (this._autoFallback && !LLMRouter.isNonRetryableError(error)) {
@@ -1402,13 +1420,15 @@ export class LLMRouter {
   }
 
   private emitLog(providerName: string, model: string, request: LLMRequest, response: LLMResponse, durationMs: number): void {
-    // Feed token usage into CU cache for all modes (direct + proxy)
-    this._cuCache.recordUsage(
-      providerName,
-      model,
-      response.usage.inputTokens,
-      response.usage.outputTokens,
-    );
+    // Feed token usage into CU cache only when running in proxy mode
+    if (providerName === 'proxy') {
+      this._cuCache.recordUsage(
+        providerName,
+        model,
+        response.usage.inputTokens,
+        response.usage.outputTokens,
+      );
+    }
 
     if (!this.logCallback) return;
     try {

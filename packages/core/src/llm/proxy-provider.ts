@@ -49,6 +49,8 @@ export class ProxyProvider implements LLMProviderInterface {
   private apiKey: string;
   private chatTimeoutMs: number;
   private streamTimeoutMs: number;
+  /** Max retry attempts for transient network failures (timeout, DNS, TCP reset) */
+  private maxRetries = 1;
   private cuCache?: CUCache;
 
   constructor(config: ProxyProviderConfig) {
@@ -89,15 +91,14 @@ export class ProxyProvider implements LLMProviderInterface {
     const timeout = setTimeout(() => controller.abort(), this.chatTimeoutMs);
 
     try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: this.buildHeaders(),
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+      const { res } = await this.fetchWithRetry(endpoint, body, controller, false);
 
       if (!res.ok) {
         const errText = await res.text();
+        // CU exhausted (402 Payment Required) — return friendly error, do NOT degrade
+        if (res.status === 402 || /cu.*(exhausted|limit|insufficient)/i.test(errText)) {
+          throw new Error(`CU_EXCEEDED: ${errText}`);
+        }
         throw new Error(`Proxy API error ${res.status}: ${errText}`);
       }
 
@@ -111,6 +112,10 @@ export class ProxyProvider implements LLMProviderInterface {
       const msg = err instanceof Error ? err.message : String(err);
       if ((err as Error).name === 'AbortError') {
         throw new Error(`Proxy request timed out after ${this.chatTimeoutMs}ms`);
+      }
+      // Wrap with PROXY_UNAVAILABLE prefix so the router can degrade to direct mode
+      if (this.isProxyUnavailableError(err)) {
+        throw new Error(`PROXY_UNAVAILABLE: ${msg}`);
       }
       throw new Error(`Proxy chat failed: ${msg}`);
     } finally {
@@ -135,15 +140,14 @@ export class ProxyProvider implements LLMProviderInterface {
     const timeout = setTimeout(() => controller.abort(), this.streamTimeoutMs);
 
     try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { ...this.buildHeaders(), Accept: 'text/event-stream' },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+      const { res } = await this.fetchWithRetry(endpoint, body, controller, true);
 
       if (!res.ok) {
         const errText = await res.text();
+        // CU exhausted (402 Payment Required) — return friendly error, do NOT degrade
+        if (res.status === 402 || /cu.*(exhausted|limit|insufficient)/i.test(errText)) {
+          throw new Error(`CU_EXCEEDED: ${errText}`);
+        }
         throw new Error(`Proxy stream error ${res.status}: ${errText}`);
       }
 
@@ -158,6 +162,10 @@ export class ProxyProvider implements LLMProviderInterface {
       if ((err as Error).name === 'AbortError') {
         throw new Error(`Proxy stream timed out after ${this.streamTimeoutMs}ms`);
       }
+      // Wrap with PROXY_UNAVAILABLE prefix so the router can degrade to direct mode
+      if (this.isProxyUnavailableError(err)) {
+        throw new Error(`PROXY_UNAVAILABLE: ${msg}`);
+      }
       throw new Error(`Proxy stream failed: ${msg}`);
     } finally {
       clearTimeout(timeout);
@@ -166,6 +174,62 @@ export class ProxyProvider implements LLMProviderInterface {
   }
 
   // ---- Private helpers ----------------------------------------------------
+
+  /**
+   * Fetch from the proxy endpoint with automatic retry on transient failures.
+   * Retries once on network-level errors (timeout, DNS, TCP reset).
+   * Does NOT retry on HTTP error responses (4xx/5xx) — those are valid responses.
+   */
+  private async fetchWithRetry(
+    endpoint: string,
+    body: Record<string, unknown>,
+    controller: AbortController,
+    stream: boolean,
+  ): Promise<{ res: Response; retried: boolean }> {
+    const headers = stream
+      ? { ...this.buildHeaders(), Accept: 'text/event-stream' }
+      : this.buildHeaders();
+
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        return { res, retried: attempt > 0 };
+      } catch (err) {
+        const isLastAttempt = attempt >= this.maxRetries;
+        // Only retry on transient network failures (TypeError: fetch failed)
+        if (!(err instanceof TypeError) || isLastAttempt) {
+          throw err;
+        }
+        // Don't retry if the controller was aborted (timeout or external signal)
+        if (controller.signal.aborted) {
+          throw err;
+        }
+        log.warn(`Proxy fetch attempt ${attempt + 1} failed, retrying...`, { error: String(err) });
+        // Brief backoff before retry
+        await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+      }
+    }
+    // Should never reach here
+    throw new Error('Proxy fetch failed after all retries');
+  }
+
+  /**
+   * Detect whether an error indicates the proxy is unreachable.
+   * These errors should trigger the router to fall back to direct mode.
+   */
+  private isProxyUnavailableError(err: unknown): boolean {
+    if (err instanceof TypeError) {
+      // fetch() throws TypeError on network failures
+      return true;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    return /ECONNREFUSED|ENOTFOUND|fetch failed|network.*error|connect.*refused/i.test(msg);
+  }
 
   private buildHeaders(): Record<string, string> {
     const headers: Record<string, string> = {
