@@ -65,7 +65,7 @@ export default {
     }
 
     // ----- 4. Auth ----------------------------------------------------------
-    const authResponse = handleAuth(request, env);
+    const authResponse = await handleAuth(request, env);
     if (authResponse) {
       finishLog(authResponse);
       return transformResponse(authResponse);
@@ -90,7 +90,7 @@ export default {
 // Routing
 // ---------------------------------------------------------------------------
 
-async function routeRequest(request: Request, _env: Record<string, unknown>, _ctx: ExecutionContext): Promise<Response> {
+async function routeRequest(request: Request, env: Record<string, unknown>, _ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
 
   switch (url.pathname) {
@@ -98,7 +98,7 @@ async function routeRequest(request: Request, _env: Record<string, unknown>, _ct
       return json(handleHealth(request));
 
     case '/v1/chat/completions':
-      return handleChat(request);
+      return handleChat(request, env);
 
     default:
       return notFoundResponse(notFound(url.pathname));

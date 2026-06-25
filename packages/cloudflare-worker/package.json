@@ -7,11 +7,17 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "build": "wrangler deploy --dry-run"
+    "build": "wrangler deploy --dry-run",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250401.0",
     "typescript": "^5.9.3",
+    "vitest": "^4.0.18",
     "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "jose": "^6.2.3"
   }
 }
