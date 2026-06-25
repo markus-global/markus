@@ -44,6 +44,7 @@ export { CodexResponsesProvider } from './llm/openai-codex.js';
 export { getEffectiveProxy, type EffectiveProxy, type ProxySource } from './llm/proxy-fetch.js';
 export { GoogleProvider } from './llm/google.js';
 export { OllamaProvider } from './llm/ollama.js';
+export { MarkusProvider } from './llm/markus-provider.js';
 export { AuthProfileStore } from './llm/auth-profiles.js';
 export { OAuthManager } from './llm/oauth-manager.js';
 export { ModelCatalogService } from './llm/model-catalog.js';

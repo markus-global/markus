@@ -9,12 +9,11 @@ import { FireworksProvider } from './fireworks.js';
 import { CodexResponsesProvider } from './openai-codex.js';
 import { GoogleProvider } from './google.js';
 import { OllamaProvider } from './ollama.js';
+import { MarkusProvider } from './markus-provider.js';
 import { AuthProfileStore } from './auth-profiles.js';
 import { OAuthManager } from './oauth-manager.js';
 import type { ModelCatalogService } from './model-catalog.js';
-import type { ProxyProviderConfig } from './proxy-provider.js';
-import { CUCache } from './cu-cache.js';
-import { ProxyProvider } from './proxy-provider.js';
+
 
 const log = createLogger('llm-router');
 
@@ -133,9 +132,6 @@ export class LLMRouter {
   private customModelConfigs = new Map<string, { contextWindow?: number; maxOutputTokens?: number; cost?: ModelCostConfig }>();
   private customModelCatalog = new Map<string, ModelDefinition[]>();
   private disabledProviders = new Set<string>();
-
-  /** CU (Compute Unit) usage cache for proxy-mode tracking */
-  private _cuCache = new CUCache();
 
   /** Per-provider in-flight request counter for concurrency-aware jitter */
   private inFlight = new Map<string, number>();
@@ -547,44 +543,6 @@ export class LLMRouter {
   get autoFallback(): boolean { return this._autoFallback; }
   setAutoFallback(enabled: boolean): void { this._autoFallback = enabled; }
 
-  // ---- CU cache ----------------------------------------------------------
-
-  /** Access the CU (Compute Unit) usage cache (populated by proxy mode). */
-  getCUCache(): CUCache {
-    return this._cuCache;
-  }
-
-  /**
-   * Enable proxy mode — register a ProxyProvider that routes all LLM
-   * requests through the CF Worker proxy (platform-credit mode).
-   *
-   * After calling this, the proxy provider is registered under the name
-   * "proxy" and set as the default provider.  The ProxyProvider automatically
-   * records CU usage from proxy response headers into the built-in cache.
-   */
-  enableProxyMode(config: ProxyProviderConfig): void {
-    const provider = new ProxyProvider(config);
-    provider.setCUCache(this._cuCache);
-
-    // Re-use the existing provider lifecycle — register, then switch default
-    this.registerProvider('proxy', provider);
-    this.defaultProvider = 'proxy';
-    this.refreshTiers();
-    log.info('Proxy mode enabled', { proxyUrl: config.proxyUrl });
-  }
-
-  /** Disable proxy mode — unregister the proxy provider and restore defaults. */
-  disableProxyMode(): void {
-    if (!this.providers.has('proxy')) return;
-    this.unregisterProvider('proxy');
-    // Restore default to the first non-proxy provider
-    const remaining = this.listProviders();
-    if (remaining.length > 0) {
-      this.defaultProvider = remaining[0]!;
-    }
-    log.info('Proxy mode disabled');
-  }
-
   static assessComplexity(request: LLMRequest): ComplexityLevel {
     const totalChars = request.messages.reduce((s, m) => s + getTextContent(m.content).length, 0);
     const toolCount = request.tools?.length ?? 0;
@@ -851,8 +809,13 @@ export class LLMRouter {
       router.registerProvider('ollama', new OllamaProvider(ollamaConfig));
     }
 
+    const markusConfig = configs?.['markus'];
+    if (markusConfig?.apiKey) {
+      router.registerProvider('markus', new MarkusProvider(markusConfig));
+    }
+
     for (const [name, cfg] of Object.entries(configs ?? {})) {
-      if (['anthropic', 'openai', 'google', 'ollama'].includes(name)) continue;
+      if (['anthropic', 'openai', 'google', 'ollama', 'markus'].includes(name)) continue;
       if (cfg?.apiKey) {
         router.registerProvider(name, createOpenAICompatible(name, cfg));
       }
@@ -1209,7 +1172,7 @@ export class LLMRouter {
     for (const [name, p] of this.providers.entries()) {
       providers[name] = { model: p.model, configured: true };
     }
-    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'minimax-cn', 'siliconflow', 'siliconflow-intl', 'openrouter', 'zai', 'deepseek']) {
+    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'minimax-cn', 'siliconflow', 'siliconflow-intl', 'openrouter', 'zai', 'deepseek', 'markus']) {
       if (!providers[name]) {
         providers[name] = { model: '', configured: false };
       }
@@ -1251,7 +1214,7 @@ export class LLMRouter {
       };
     }
 
-    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'minimax-cn', 'siliconflow', 'siliconflow-intl', 'openrouter', 'zai', 'deepseek']) {
+    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'minimax-cn', 'siliconflow', 'siliconflow-intl', 'openrouter', 'zai', 'deepseek', 'markus']) {
       if (!providers[name]) {
         const oauthProfile = this._profileStore?.getDefaultProfile(name);
         const enrichedModels = this.getProviderModels(name);
@@ -1420,16 +1383,6 @@ export class LLMRouter {
   }
 
   private emitLog(providerName: string, model: string, request: LLMRequest, response: LLMResponse, durationMs: number): void {
-    // Feed token usage into CU cache only when running in proxy mode
-    if (providerName === 'proxy') {
-      this._cuCache.recordUsage(
-        providerName,
-        model,
-        response.usage.inputTokens,
-        response.usage.outputTokens,
-      );
-    }
-
     if (!this.logCallback) return;
     try {
       this.logCallback({
@@ -1453,6 +1406,7 @@ export class LLMRouter {
 }
 
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  markus: 'Markus',
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   'openai-codex': 'OpenAI Codex (OAuth)',
@@ -1545,6 +1499,8 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'glm-5.1', name: 'GLM-5.1', provider: 'zai', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 1.4, output: 4.4, cacheRead: 0.26 }, reasoning: true, inputTypes: ['text'], tier: 'max' },
   { id: 'glm-5', name: 'GLM-5', provider: 'zai', contextWindow: 205000, maxOutputTokens: 16384, cost: { input: 1.0, output: 3.2, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro' },
   { id: 'glm-4.7-flashx', name: 'GLM-4.7 FlashX', provider: 'zai', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 0.07, output: 0.4 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
+  // Markus (token-billing gateway — routes through CF Worker Proxy)
+  { id: 'markus-default', name: 'Markus Default', provider: 'markus', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 0, output: 0 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'base', description: 'Routes via token-billing gateway (subscription key required)' },
 ];
 
 // ---------------------------------------------------------------------------
