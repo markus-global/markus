@@ -1,0 +1,12 @@
+name = "markus-proxy"
+main = "src/index.ts"
+compatibility_date = "2025-04-01"
+
+# Workers Logs
+[observability]
+enabled = true
+head_sampling_rate = 1.0
+
+# Development environment
+[env.dev]
+vars = { ENVIRONMENT = "development" }
