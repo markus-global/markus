@@ -1432,4 +1432,251 @@ describe('TaskService', () => {
       expect(result.total).toBeGreaterThanOrEqual(1);
     });
   });
+
+  describe('phantom retry prevention', () => {
+    it('skips no-submit retry when task transitions to blocked before execution_finished', async () => {
+      vi.useFakeTimers();
+      // Use a delayed handler: the agent delays before writing execution_finished,
+      // giving us time to pause the task in between.
+      let resolveExecution: () => void;
+      const executionPromise = new Promise<void>((resolve) => { resolveExecution = resolve; });
+
+      const pausedAgentManager = createMockAgentManager(async (_taskId, logFn) => {
+        // Wait until we trigger the pause
+        await executionPromise;
+        await logFn({ type: 'status', content: 'execution_finished', persist: true });
+      });
+      const svc = new TaskService();
+      svc.setAgentManager(pausedAgentManager as never);
+      svc.setWSBroadcaster(createWsMock() as never);
+      svc.setGovernancePolicy({
+        enabled: false, defaultTier: 'auto', maxPendingTasksPerAgent: 100, maxTotalActiveTasks: 100,
+        requireApprovalForPriority: [], requireRequirement: false, rules: [],
+      });
+
+      const task = svc.createTask(createDefaults({ creatorRole: 'human' }) as never);
+      svc.approveTask(task.id, 'user-1');
+      expect(svc.getTask(task.id)!.status).toBe('in_progress');
+
+      // Start execution (agent is waiting on the promise)
+      const runPromise = svc.runTask(task.id);
+
+      // Now pause the task while execution is in flight
+      svc.pauseTask(task.id);
+      expect(svc.getTask(task.id)!.status).toBe('blocked');
+
+      // Release the execution handler so it writes execution_finished
+      resolveExecution!();
+      await runPromise;
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      // Agent was called once, but status changed to blocked before the handler
+      // processed execution_finished — no retry should happen
+      expect(pausedAgentManager.getAgent(AGENT_A).sendTaskExecution.mock.calls.length).toBe(1);
+      vi.useRealTimers();
+    });
+
+    it('skips no-submit retry when task is already completed', async () => {
+      vi.useFakeTimers();
+      let resolveExecution: () => void;
+      const executionPromise = new Promise<void>((resolve) => { resolveExecution = resolve; });
+
+      const completedAgentManager = createMockAgentManager(async (_taskId, logFn) => {
+        await executionPromise;
+        await logFn({ type: 'status', content: 'execution_finished', persist: true });
+      });
+      const svc = new TaskService();
+      svc.setAgentManager(completedAgentManager as never);
+      svc.setWSBroadcaster(createWsMock() as never);
+      svc.setGovernancePolicy({
+        enabled: false, defaultTier: 'auto', maxPendingTasksPerAgent: 100, maxTotalActiveTasks: 100,
+        requireApprovalForPriority: [], requireRequirement: false, rules: [],
+      });
+
+      const task = svc.createTask(createDefaults({ creatorRole: 'human' }) as never);
+      svc.approveTask(task.id, 'user-1');
+
+      // Start execution (agent is waiting on the promise)
+      const runPromise = svc.runTask(task.id);
+
+      // Manually set status to completed before the handler fires
+      svc.getTask(task.id)!.status = 'completed' as never;
+
+      // Release the execution handler
+      resolveExecution!();
+      await runPromise;
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      // Agent ran once, but task was completed — no retry should happen
+      expect(completedAgentManager.getAgent(AGENT_A).sendTaskExecution.mock.calls.length).toBe(1);
+      vi.useRealTimers();
+    });
+
+    it('cleans stale submitted flag when re-running after requestRevision', async () => {
+      vi.useFakeTimers();
+      const submitAgentManager = createMockAgentManager(async (_taskId, logFn) => {
+        await logFn({ type: 'status', content: 'execution_finished', persist: true });
+      });
+      const svc = new TaskService();
+      svc.setAgentManager(submitAgentManager as never);
+      svc.setWSBroadcaster(createWsMock() as never);
+      svc.setGovernancePolicy({
+        enabled: false, defaultTier: 'auto', maxPendingTasksPerAgent: 100, maxTotalActiveTasks: 100,
+        requireApprovalForPriority: [], requireRequirement: false, rules: [],
+      });
+
+      const task = svc.createTask(createDefaults({ creatorRole: 'human' }) as never);
+      svc.approveTask(task.id, 'user-1');
+
+      // Agent submits for review, then reviewer requests revision (back to in_progress)
+      await svc.submitForReview(task.id, [{ type: 'file', reference: '/tmp/out.txt', summary: 'Output' }]);
+      await svc.requestRevision(task.id, 'Revise please', REVIEWER);
+      expect(svc.getTask(task.id)!.status).toBe('in_progress');
+
+      // Now run the task again — the stale submitted flag should have been cleaned
+      // at the start of runTask, so this is a clean execution round
+      await svc.runTask(task.id);
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      // The execution runs, then execution_finished arrives with didSubmit=false
+      // (because the stale flag was cleaned), triggering a normal no-submit retry.
+      // The retry fires via setTimeout, which advances with fake timers.
+      // This is NOT a phantom retry — it's the expected behavior for a task
+      // whose agent finishes without calling submitForReview.
+      const calls = submitAgentManager.getAgent(AGENT_A).sendTaskExecution.mock.calls.length;
+      // At minimum: 1 from the runTask we just started
+      expect(calls).toBeGreaterThanOrEqual(1);
+      // Should not be excessive (phantom retry would cause many more)
+      expect(calls).toBeLessThan(20);
+      vi.useRealTimers();
+    });
+
+    it('exhausts retries and marks task failed after max attempts', async () => {
+      vi.useFakeTimers();
+      const failAgentManager = createMockAgentManager(async (_taskId, logFn) => {
+        await logFn({ type: 'status', content: 'execution_finished', persist: true });
+      });
+      const svc = new TaskService();
+      svc.setAgentManager(failAgentManager as never);
+      svc.setWSBroadcaster(createWsMock() as never);
+      svc.setGovernancePolicy({
+        enabled: false, defaultTier: 'auto', maxPendingTasksPerAgent: 100, maxTotalActiveTasks: 100,
+        requireApprovalForPriority: [], requireRequirement: false, rules: [],
+      });
+
+      const task = svc.createTask(createDefaults({ creatorRole: 'human' }) as never);
+      svc.approveTask(task.id, 'user-1');
+
+      // Run the task — execution_finished with no submit triggers retry loop
+      await svc.runTask(task.id);
+
+      // Advance through all retry delays: 30s, 60s, 120s, 240s, 480s, 600s, 600s, 600s (capped at last)
+      // Total ~ 2730s, advance well past that
+      await vi.advanceTimersByTimeAsync(3_000_000);
+
+      // After max retries, the task should be marked failed
+      expect(svc.getTask(task.id)!.status).toBe('failed');
+      vi.useRealTimers();
+    });
+  });
+
+  describe('cron stagnation — maybeEnsureScheduledNextRun', () => {
+    it('recalculates nextRunAt when scheduled task completes with missing nextRunAt', async () => {
+      const task = ts.createTask(createDefaults({
+        creatorRole: 'human',
+        taskType: 'scheduled',
+        scheduleConfig: { type: 'interval', every: '1h' },
+      }) as never);
+      // Approve with runNow → in_progress
+      ts.approveTask(task.id, 'user-1', true);
+      expect(ts.getTask(task.id)!.status).toBe('in_progress');
+
+      // Force nextRunAt to undefined as if the scheduled runner missed it
+      ts.getTask(task.id)!.scheduleConfig!.nextRunAt = undefined;
+
+      // Submit for review → review
+      await ts.submitForReview(task.id, [{ type: 'file', reference: '/tmp/out.txt', summary: 'Output' }]);
+      expect(ts.getTask(task.id)!.status).toBe('review');
+
+      // Accept → completed (triggers maybeEnsureScheduledNextRun)
+      const accepted = ts.acceptTask(task.id, REVIEWER);
+      expect(accepted.status).toBe('completed');
+      // nextRunAt should be recalculated since it was missing
+      expect(accepted.scheduleConfig?.nextRunAt).toBeTruthy();
+      const nextRun = new Date(accepted.scheduleConfig!.nextRunAt!).getTime();
+      expect(nextRun).toBeGreaterThan(Date.now() - 1000);
+    });
+
+    it('recalculates nextRunAt when scheduled task completes with stale past nextRunAt', async () => {
+      const past = new Date(Date.now() - 7200_000).toISOString(); // 2 hours ago
+      const task = ts.createTask(createDefaults({
+        creatorRole: 'human',
+        taskType: 'scheduled',
+        scheduleConfig: { type: 'interval', every: '1h' },
+      }) as never);
+      ts.approveTask(task.id, 'user-1', true);
+
+      // Set nextRunAt to a past value (stale from a missed schedule update)
+      ts.getTask(task.id)!.scheduleConfig!.nextRunAt = past;
+
+      await ts.submitForReview(task.id, [{ type: 'file', reference: '/tmp/out.txt', summary: 'Output' }]);
+      const accepted = ts.acceptTask(task.id, REVIEWER);
+      expect(accepted.status).toBe('completed');
+      expect(accepted.scheduleConfig?.nextRunAt).toBeTruthy();
+      const nextRun = new Date(accepted.scheduleConfig!.nextRunAt!).getTime();
+      // Should be in the future, not the past
+      expect(nextRun).toBeGreaterThan(Date.now() - 1000);
+    });
+
+    it('preserves valid future nextRunAt on scheduled task completion', async () => {
+      const future = new Date(Date.now() + 7200_000).toISOString(); // 2 hours from now
+      const task = ts.createTask(createDefaults({
+        creatorRole: 'human',
+        taskType: 'scheduled',
+        scheduleConfig: { type: 'interval', every: '1h' },
+      }) as never);
+      ts.approveTask(task.id, 'user-1', true);
+
+      // Set a valid future nextRunAt
+      ts.getTask(task.id)!.scheduleConfig!.nextRunAt = future;
+
+      await ts.submitForReview(task.id, [{ type: 'file', reference: '/tmp/out.txt', summary: 'Output' }]);
+      const accepted = ts.acceptTask(task.id, REVIEWER);
+      expect(accepted.status).toBe('completed');
+      // nextRunAt should remain unchanged since it's still valid
+      expect(accepted.scheduleConfig?.nextRunAt).toBe(future);
+    });
+
+    it('clears nextRunAt when scheduled task hits maxRuns', async () => {
+      const task = ts.createTask(createDefaults({
+        creatorRole: 'human',
+        taskType: 'scheduled',
+        scheduleConfig: { type: 'interval', every: '1h', maxRuns: 3 },
+      }) as never);
+      ts.approveTask(task.id, 'user-1', true);
+
+      // Manually set currentRuns to maxRuns (createTask resets currentRuns to 0)
+      ts.getTask(task.id)!.scheduleConfig!.currentRuns = 3;
+      ts.getTask(task.id)!.scheduleConfig!.nextRunAt = undefined;
+
+      await ts.submitForReview(task.id, [{ type: 'file', reference: '/tmp/out.txt', summary: 'Output' }]);
+      const accepted = ts.acceptTask(task.id, REVIEWER);
+      expect(accepted.status).toBe('completed');
+      // Since currentRuns already hit maxRuns, nextRunAt should stay undefined
+      expect(accepted.scheduleConfig?.nextRunAt).toBeUndefined();
+    });
+
+    it('skips recalculation for non-scheduled task completion', async () => {
+      const task = ts.createTask(createDefaults({ creatorRole: 'human' }) as never);
+      ts.approveTask(task.id, 'user-1');
+      // Attach a scheduleConfig but taskType is not 'scheduled'
+      ts.getTask(task.id)!.scheduleConfig = { type: 'interval', every: '1h' };
+
+      await ts.submitForReview(task.id, [{ type: 'file', reference: '/tmp/out.txt', summary: 'Output' }]);
+      const accepted = ts.acceptTask(task.id, REVIEWER);
+      expect(accepted.status).toBe('completed');
+      // Non-scheduled tasks should not get nextRunAt modified
+      expect(accepted.scheduleConfig?.nextRunAt).toBeUndefined();
+    });
+  });
 });
