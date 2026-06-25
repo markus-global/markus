@@ -1228,6 +1228,32 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                       </>
                     )}
 
+                    {/* ───── Subscription Key (Markus provider) ───── */}
+                    {name === 'markus' && info.configured && (
+                      <div className="bg-surface-elevated/30 rounded-lg p-4 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] text-fg-tertiary uppercase tracking-wider">Subscription Key</label>
+                          <span className="text-[10px] text-fg-muted">{t('modelProviders.keyReadOnly')}</span>
+                        </div>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={info.apiKeyPreview ?? ''}
+                            readOnly
+                            className="flex-1 px-3 py-2 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary font-mono selection:bg-brand-500/30 cursor-text focus:border-brand-500 outline-none"
+                            onClick={e => (e.target as HTMLInputElement).select()}
+                          />
+                          <button
+                            onClick={() => { navigator.clipboard.writeText(info.apiKeyPreview ?? '').catch(() => {}); }}
+                            className="px-3 py-2 text-xs bg-surface-secondary hover:bg-surface-tertiary border border-border-default rounded-lg text-fg-secondary transition-colors"
+                            title="Copy"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" /></svg>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Available Models (read-only informational) */}
                     <div>
                       <div className="flex items-center justify-between mb-2">
