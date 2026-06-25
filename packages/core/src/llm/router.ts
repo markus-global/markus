@@ -12,6 +12,9 @@ import { OllamaProvider } from './ollama.js';
 import { AuthProfileStore } from './auth-profiles.js';
 import { OAuthManager } from './oauth-manager.js';
 import type { ModelCatalogService } from './model-catalog.js';
+import type { ProxyProviderConfig } from './proxy-provider.js';
+import { CUCache } from './cu-cache.js';
+import { ProxyProvider } from './proxy-provider.js';
 
 const log = createLogger('llm-router');
 
@@ -130,6 +133,9 @@ export class LLMRouter {
   private customModelConfigs = new Map<string, { contextWindow?: number; maxOutputTokens?: number; cost?: ModelCostConfig }>();
   private customModelCatalog = new Map<string, ModelDefinition[]>();
   private disabledProviders = new Set<string>();
+
+  /** CU (Compute Unit) usage cache for proxy-mode tracking */
+  private _cuCache = new CUCache();
 
   /** Per-provider in-flight request counter for concurrency-aware jitter */
   private inFlight = new Map<string, number>();
@@ -279,6 +285,12 @@ export class LLMRouter {
   private static isRateLimitError(error: unknown): boolean {
     const msg = error instanceof Error ? error.message : String(error);
     return /\b429\b/.test(msg) || /rate.limit/i.test(msg);
+  }
+
+  /** Detect CU-exhausted errors — return friendly error, do NOT fall back to direct mode. */
+  static isCUExceededError(error: unknown): boolean {
+    const msg = error instanceof Error ? error.message : String(error);
+    return msg.includes('CU_EXCEEDED:');
   }
 
   /**
@@ -534,6 +546,44 @@ export class LLMRouter {
 
   get autoFallback(): boolean { return this._autoFallback; }
   setAutoFallback(enabled: boolean): void { this._autoFallback = enabled; }
+
+  // ---- CU cache ----------------------------------------------------------
+
+  /** Access the CU (Compute Unit) usage cache (populated by proxy mode). */
+  getCUCache(): CUCache {
+    return this._cuCache;
+  }
+
+  /**
+   * Enable proxy mode — register a ProxyProvider that routes all LLM
+   * requests through the CF Worker proxy (platform-credit mode).
+   *
+   * After calling this, the proxy provider is registered under the name
+   * "proxy" and set as the default provider.  The ProxyProvider automatically
+   * records CU usage from proxy response headers into the built-in cache.
+   */
+  enableProxyMode(config: ProxyProviderConfig): void {
+    const provider = new ProxyProvider(config);
+    provider.setCUCache(this._cuCache);
+
+    // Re-use the existing provider lifecycle — register, then switch default
+    this.registerProvider('proxy', provider);
+    this.defaultProvider = 'proxy';
+    this.refreshTiers();
+    log.info('Proxy mode enabled', { proxyUrl: config.proxyUrl });
+  }
+
+  /** Disable proxy mode — unregister the proxy provider and restore defaults. */
+  disableProxyMode(): void {
+    if (!this.providers.has('proxy')) return;
+    this.unregisterProvider('proxy');
+    // Restore default to the first non-proxy provider
+    const remaining = this.listProviders();
+    if (remaining.length > 0) {
+      this.defaultProvider = remaining[0]!;
+    }
+    log.info('Proxy mode disabled');
+  }
 
   static assessComplexity(request: LLMRequest): ComplexityLevel {
     const totalChars = request.messages.reduce((s, m) => s + getTextContent(m.content).length, 0);
@@ -923,6 +973,11 @@ export class LLMRouter {
       lastError = error;
       log.error(`LLM request failed for ${primary}:${routedModel ?? provider.model}`, { error: String(error) });
 
+      // CU_EXCEEDED is fatal — do NOT fall back to other providers
+      if (LLMRouter.isCUExceededError(error)) {
+        throw lastError;
+      }
+
       // Try alternate models on the same provider (only when auto-fallback is enabled)
       if (this._autoFallback && !LLMRouter.isNonRetryableError(error)) {
         const altModel = this.findHealthyModel(primary);
@@ -1060,6 +1115,13 @@ export class LLMRouter {
         throw lastError;
       }
       log.error(`LLM stream request failed for ${primary}:${provider.model}`, { error: String(error) });
+
+      // CU_EXCEEDED is fatal — do NOT fall back to other providers
+      if (LLMRouter.isCUExceededError(error)) {
+        span.setError(lastError instanceof Error ? lastError : String(lastError));
+        span.end();
+        throw lastError;
+      }
 
       // Try alternate models on the same provider (only when auto-fallback is enabled)
       if (this._autoFallback && !LLMRouter.isNonRetryableError(error)) {
@@ -1358,6 +1420,16 @@ export class LLMRouter {
   }
 
   private emitLog(providerName: string, model: string, request: LLMRequest, response: LLMResponse, durationMs: number): void {
+    // Feed token usage into CU cache only when running in proxy mode
+    if (providerName === 'proxy') {
+      this._cuCache.recordUsage(
+        providerName,
+        model,
+        response.usage.inputTokens,
+        response.usage.outputTokens,
+      );
+    }
+
     if (!this.logCallback) return;
     try {
       this.logCallback({
