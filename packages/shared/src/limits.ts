@@ -150,8 +150,14 @@ export function hasCompletionMarker(reply: string): boolean {
 /** Max auto-retries when execution finishes without task_submit_review. */
 export const TASK_MAX_NO_SUBMIT_RETRIES = 8;
 
-/** Progressive retry delays in milliseconds (base values before jitter). */
-export const TASK_RETRY_DELAYS_MS: readonly number[] = [10_000, 30_000, 60_000, 120_000, 300_000];
+/**
+ * Progressive retry delays in milliseconds — exponential backoff with cap.
+ *
+ * Sequence: 30s, 1min, 2min, 4min, 8min, 10min (capped).
+ * Each entry is the base delay for the corresponding attempt index (0-based).
+ * Entries beyond the array length use the last value.
+ */
+export const TASK_RETRY_DELAYS_MS: readonly number[] = [30_000, 60_000, 120_000, 240_000, 480_000, 600_000];
 
 /** Apply ±20% random jitter to a delay to avoid thundering-herd retries. */
 export function withJitter(baseMs: number, factor = 0.2): number {
