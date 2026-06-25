@@ -103,7 +103,7 @@ describe('coding tool adapters', () => {
         '--output-format', 'stream-json',
         '--verbose',
         '--max-turns', '50',
-        '--permission-mode', 'auto',
+        '--permission-mode', 'bypassPermissions',
         '--model', 'opus',
         'Fix the bug',
       ]);
@@ -639,7 +639,7 @@ describe('coding tool adapters', () => {
       const adapter = new CursorAgentAdapter();
       const result = await adapter.listModels();
       expect(result.source).toBe('cli');
-      expect(result.hint).toContain('Cursor API Key');
+      expect(result.hint).toBeUndefined();
       expect(result.models.length).toBe(4);
       expect(result.models[0]).toEqual({ id: 'auto', name: 'Auto', isDefault: undefined });
       expect(result.models[1]).toEqual({ id: 'composer-2.5-fast', name: 'Composer 2.5 Fast', isDefault: true });
@@ -647,56 +647,31 @@ describe('coding tool adapters', () => {
       expect(result.models[3]).toEqual({ id: 'claude-opus-4-6', name: 'Claude Opus 4.6', isDefault: undefined });
     });
 
-    it('listModels() uses Cloud API when CURSOR_API_KEY is set', async () => {
+    it('listModels() always uses CLI even when CURSOR_API_KEY is set', async () => {
       vi.resetModules();
       process.env.CURSOR_API_KEY = 'cursor_test_key_123';
-
-      const mockHttpsRequest = vi.fn();
-      vi.doMock('node:https', () => ({
-        request: mockHttpsRequest,
-      }));
-
-      const apiResponse = JSON.stringify({
-        items: [
-          {
-            id: 'composer-2',
-            displayName: 'Composer 2',
-            variants: [
-              { params: [{ id: 'fast', value: 'true' }], displayName: 'Composer 2 Fast', isDefault: true },
-              { params: [{ id: 'fast', value: 'false' }], displayName: 'Composer 2' },
-            ],
-          },
-          {
-            id: 'claude-4.6-sonnet-thinking',
-            displayName: 'Claude 4.6 Sonnet (Thinking)',
-            variants: [{ params: [], displayName: 'Claude 4.6 Sonnet (Thinking)', isDefault: true }],
-          },
-        ],
-      });
-
-      mockHttpsRequest.mockImplementation((_opts: unknown, cb: Function) => {
-        const res = {
-          statusCode: 200,
-          on: vi.fn((event: string, handler: Function) => {
-            if (event === 'data') handler(Buffer.from(apiResponse));
-            if (event === 'end') handler();
-            return res;
-          }),
-        };
-        cb(res);
-        return { on: vi.fn(), end: vi.fn() };
+      mockResolveWhich.mockReturnValue('/usr/local/bin/cursor');
+      const cliOutput = [
+        'Available models',
+        '',
+        'auto - Auto',
+        'composer-2.5-fast - Composer 2.5 Fast (current, default)',
+        '',
+        'Tip: use --model <id> to switch.',
+      ].join('\n');
+      mockExecFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+        cb(null, cliOutput, '');
+        return { on: () => {} };
       });
 
       const { CursorAgentAdapter } = await import('../../src/coding-tools/adapters/cursor-agent-adapter.js');
       const adapter = new CursorAgentAdapter();
       const result = await adapter.listModels();
 
-      expect(result.source).toBe('api');
-      expect(result.hint).toBeUndefined();
-      expect(result.models.length).toBe(3);
-      expect(result.models[0]).toEqual({ id: 'composer-2[fast=true]', name: 'Composer 2 Fast', isDefault: true });
-      expect(result.models[1]).toEqual({ id: 'composer-2[fast=false]', name: 'Composer 2', isDefault: undefined });
-      expect(result.models[2]).toEqual({ id: 'claude-4.6-sonnet-thinking', name: 'Claude 4.6 Sonnet (Thinking)', isDefault: true });
+      expect(result.source).toBe('cli');
+      expect(result.models.length).toBe(2);
+      expect(result.models[0]).toEqual({ id: 'auto', name: 'Auto', isDefault: undefined });
+      expect(result.models[1]).toEqual({ id: 'composer-2.5-fast', name: 'Composer 2.5 Fast', isDefault: true });
 
       delete process.env.CURSOR_API_KEY;
     });
@@ -741,44 +716,17 @@ describe('coding tool adapters', () => {
       delete process.env.CURSOR_API_KEY;
     });
 
-    it('listModels() handles API response with single-variant models', async () => {
+    it('listModels() returns CLI models even with API key and cursor not found', async () => {
       vi.resetModules();
       process.env.CURSOR_API_KEY = 'cursor_test_key';
-
-      const mockHttpsRequest = vi.fn();
-      vi.doMock('node:https', () => ({
-        request: mockHttpsRequest,
-      }));
-
-      const apiResponse = JSON.stringify({
-        items: [
-          { id: 'gpt-5.3-codex', displayName: 'GPT 5.3 Codex', variants: [{ params: [], isDefault: true }] },
-          { id: 'kimi-k2.5', displayName: 'Kimi K2.5' },
-        ],
-      });
-
-      mockHttpsRequest.mockImplementation((_opts: unknown, cb: Function) => {
-        const res = {
-          statusCode: 200,
-          on: vi.fn((event: string, handler: Function) => {
-            if (event === 'data') handler(Buffer.from(apiResponse));
-            if (event === 'end') handler();
-            return res;
-          }),
-        };
-        cb(res);
-        return { on: vi.fn(), end: vi.fn() };
-      });
+      mockResolveWhich.mockReturnValue(null);
 
       const { CursorAgentAdapter } = await import('../../src/coding-tools/adapters/cursor-agent-adapter.js');
       const adapter = new CursorAgentAdapter();
       const result = await adapter.listModels();
 
-      expect(result.source).toBe('api');
-      expect(result.models).toEqual([
-        { id: 'gpt-5.3-codex', name: 'GPT 5.3 Codex', isDefault: true },
-        { id: 'kimi-k2.5', name: 'Kimi K2.5', isDefault: undefined },
-      ]);
+      expect(result.source).toBe('cli');
+      expect(result.models).toEqual([]);
 
       delete process.env.CURSOR_API_KEY;
     });
