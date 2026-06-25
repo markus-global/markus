@@ -71,6 +71,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [llmConfigured, setLlmConfigured] = useState<boolean | null>(null);
   const [browserConnected, setBrowserConnected] = useState<boolean | null>(null);
   const [licenseConfigured, setLicenseConfigured] = useState<boolean | null>(null);
+  const [codingToolsConfigured, setCodingToolsConfigured] = useState(false);
   const [checklistDismissed, setChecklistDismissed] = useState(() => localStorage.getItem('markus_checklist_dismissed') === 'true');
   const [secretaryHasChat, setSecretaryHasChat] = useState(false);
   const [checklistReady, setChecklistReady] = useState(false);
@@ -138,7 +139,10 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     const licenseP = api.license.get().then(d => {
       setLicenseConfigured(d.plan !== 'free');
     }).catch(() => {});
-    Promise.allSettled([agentsP, teamsP, reqsP, projsP, llmP, browserP, licenseP]).then(() => {
+    const codingP = api.settings.getCodingTools().then(d => {
+      setCodingToolsConfigured(d.enabled && Object.values(d.tools).some(t => t.enabled));
+    }).catch(() => {});
+    Promise.allSettled([agentsP, teamsP, reqsP, projsP, llmP, browserP, licenseP, codingP]).then(() => {
       setChecklistReady(true);
     });
   }, [opsPeriod]);
@@ -450,6 +454,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
           const setupSteps = [
             { id: 'llm', done: llmConfigured === true, isSetup: true, label: t('checklist.setup.llm'), desc: t('checklist.setup.llmDesc'), action: t('checklist.setup.llmAction'), onClick: () => { window.location.hash = '#settings/providers'; } },
             { id: 'browser', done: browserConnected === true, isSetup: true, optional: true, label: t('checklist.setup.browser'), desc: t('checklist.setup.browserDesc'), action: t('checklist.setup.browserAction'), onClick: () => { window.location.hash = '#settings/browser'; } },
+            { id: 'coding-tools', done: codingToolsConfigured, isSetup: true, optional: true, label: t('checklist.setup.codingTools'), desc: t('checklist.setup.codingToolsDesc'), action: t('checklist.setup.codingToolsAction'), onClick: () => { window.location.hash = '#settings/coding-tools'; } },
             { id: 'license', done: licenseConfigured === true, isSetup: true, optional: true, label: t('checklist.setup.license'), desc: t('checklist.setup.licenseDesc'), action: t('checklist.setup.licenseAction'), onClick: () => { window.location.hash = '#settings/account'; } },
           ];
 

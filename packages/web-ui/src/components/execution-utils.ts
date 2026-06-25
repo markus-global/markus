@@ -115,6 +115,8 @@ const TOOL_META: Record<string, { label: string; icon: string }> = {
   feishu_search_docs:   { label: 'Searching Feishu',       icon: '🔍' },
   spawn_subagent:       { label: 'Spawn Subagent',         icon: '◎' },
   spawn_subagents:      { label: 'Spawn Subagents',        icon: '◎' },
+  invoke_coding_tool:   { label: 'Invoke Coding Tool',     icon: '🛠' },
+  coding_tool_apply:    { label: 'Apply Coding Result',    icon: '🔀' },
 };
 
 export function getToolMeta(tool: string): { label: string; icon: string } {

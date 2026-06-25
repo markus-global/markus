@@ -54,6 +54,9 @@ async function registerCommands() {
   const { registerStartCommand } = await import('./commands/start.js');
   registerStartCommand(program);
 
+  const { registerInitCommand } = await import('./commands/init.js');
+  registerInitCommand(program);
+
   const { registerModelCommand } = await import('./commands/model.js');
   registerModelCommand(program);
 
@@ -74,6 +77,15 @@ async function registerCommands() {
 
   const { registerAgentCommands } = await import('./commands/agent.js');
   registerAgentCommands(program);
+
+  const { registerTaskCommands } = await import('./commands/task.js');
+  registerTaskCommands(program);
+
+  const { registerRequirementCommands } = await import('./commands/requirement.js');
+  registerRequirementCommands(program);
+
+  const { registerProjectCommands } = await import('./commands/project.js');
+  registerProjectCommands(program);
 
   const admin = program.command('admin').description('System administration');
   const { registerSystemCommands } = await import('./commands/system.js');

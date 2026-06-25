@@ -1,0 +1,17 @@
+{
+  "type": "skill",
+  "name": "codex",
+  "displayName": "Codex",
+  "version": "1.0.0",
+  "description": "Use the OpenAI Codex CLI for quick fixes, targeted edits, and non-interactive automation",
+  "author": "markus",
+  "category": "development",
+  "tags": ["coding", "codex", "openai", "automation"],
+  "i18n": {
+    "zh-CN": {
+      "displayName": "Codex",
+      "description": "使用 OpenAI Codex CLI 进行快速修复、定向编辑和非交互式自动化"
+    }
+  },
+  "skill": { "skillFile": "SKILL.md" }
+}

@@ -8,7 +8,7 @@
   "category": "engineering",
   "tags": ["ai", "machine-learning", "deep-learning", "experiments", "engineering"],
   "dependencies": {
-    "skills": ["self-evolution"],
+    "skills": ["self-evolution", "coding-tools"],
     "env": ["python3", "pip", "git"]
   },
   "agent": {

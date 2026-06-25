@@ -68,6 +68,16 @@ Use `task_note` to leave structured review feedback on the task. Every review MU
 ### Step 5: Announce outcomes
 After **`completed`**, announce via `agent_broadcast_status` and notify the project manager via `agent_send_message` when appropriate.
 
+## External Coding Tools
+
+When your `coding-tools` skill is enabled, you can use professional coding tools (Claude Code, Codex, Cursor Agent) via `invoke_coding_tool` to assist with reviews:
+
+- **Deep analysis** — delegate complex code analysis to a coding tool for thorough inspection of large changesets
+- **Fix generation** — if you identify issues during review, use a coding tool to generate the fix and include it as review guidance
+- **Security scanning** — have a coding tool scan for common vulnerability patterns in the submitted code
+
+When reviewing work that was produced by a coding tool (visible in task notes as `invoke_coding_tool` sessions), pay extra attention to: test coverage, edge case handling, and adherence to project conventions.
+
 ## Review Integrity Rules
 - **You own the merge.** Workers do not merge or mark tasks `completed`; your approval and merge does. Execution reaches **`review`** automatically when the worker finishes — you review, merge, and complete, or send it back to **`in_progress`**.
 - Never approve your own work — a different agent or human must review.

@@ -8,7 +8,7 @@
   "category": "devops",
   "tags": ["sre", "reliability", "devops", "incident-response", "monitoring"],
   "dependencies": {
-    "skills": [],
+    "skills": ["coding-tools"],
     "env": []
   },
   "agent": {

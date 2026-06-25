@@ -100,7 +100,7 @@ interface DoctorOptions {
   verbose?: boolean;
 }
 
-export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
+export async function runDoctor(options: DoctorOptions = {}): Promise<{ issuesFound: boolean }> {
   const { fix = false } = options;
   const issues: string[] = [];
   const manualIssues: string[] = [];
@@ -262,6 +262,28 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
     checkWarn('Skills directory not found', `${skillsDir} — skills can be installed via Web UI or the Secretary agent`);
   }
 
+  // ── Coding Tools ──────────────────────────────────────────────────────────
+  section('Coding Tools');
+  const { resolveWhich: _resolveWhich } = await import('@markus/shared');
+  const codingTools = [
+    { name: 'Claude Code', cmd: 'claude', installHint: 'npm install -g @anthropic-ai/claude-code' },
+    { name: 'Codex', cmd: 'codex', installHint: 'npm install -g @openai/codex' },
+    { name: 'Cursor', cmd: 'cursor', installHint: 'Install from https://cursor.sh' },
+  ];
+  let toolsFound = 0;
+  for (const tool of codingTools) {
+    const toolPath = _resolveWhich(tool.cmd);
+    if (toolPath) {
+      checkOk(`${tool.name}`, `found at ${toolPath}`);
+      toolsFound++;
+    } else {
+      checkWarn(`${tool.name}`, `not found — ${tool.installHint}`);
+    }
+  }
+  if (toolsFound === 0) {
+    checkInfo('No coding tools detected. Install one to enable AI-assisted coding.');
+  }
+
   // ── 7. Network connectivity ─────────────────────────────────────────────
   section('Network');
   const proxyUrl = process.env['HTTPS_PROXY'] || process.env['HTTP_PROXY']
@@ -328,6 +350,8 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
   if (fix && fixedCount > 0) {
     console.log(`  ${C.GREEN}✓${C.RESET} Fixed ${fixedCount} issue(s).\n`);
   }
+
+  return { issuesFound: totalIssues > 0 };
 }
 
 async function getDefaultConfigPath(): Promise<string> {
@@ -345,6 +369,9 @@ export function registerDoctorCommand(program: Command) {
     .option('--fix', 'Attempt to automatically fix issues')
     .option('--verbose', 'Show detailed output')
     .action(async opts => {
-      await runDoctor({ fix: opts.fix, verbose: opts.verbose });
+      const { issuesFound } = await runDoctor({ fix: opts.fix, verbose: opts.verbose });
+      if (issuesFound && !opts.fix) {
+        process.exit(1);
+      }
     });
 }

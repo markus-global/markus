@@ -122,6 +122,19 @@ export interface MarkusConfig {
     /** Set to false to disable proxy entirely (ignoring system/env detection) */
     proxyEnabled?: boolean;
   };
+  codingTools?: {
+    enabled?: boolean;
+    tools?: Record<string, {
+      enabled?: boolean;
+      binaryPath?: string;
+      defaultArgs?: string[];
+      timeoutMs?: number;
+      env?: Record<string, string>;
+      defaultModel?: string;
+      maxBudgetPerSessionUsd?: number;
+      approvalRequired?: boolean;
+    }>;
+  };
 }
 
 const DEFAULT_CONFIG: MarkusConfig = {

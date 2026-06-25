@@ -14,6 +14,8 @@ import {
   type RoleCategory,
   type CognitiveConfig,
   saveConfig,
+  type CodingToolName,
+  type CodingToolConfig,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import type { OrgContext } from './context-engine.js';
@@ -362,6 +364,8 @@ export class AgentManager {
   private delegationManager: DelegationManager;
   private _maxToolIterations = Infinity;
   private _cognitiveConfig?: CognitiveConfig;
+  private _codingToolsEnabled = false;
+  private _codingToolsConfigs?: Record<string, CodingToolConfig>;
   private templateRegistry?: TemplateRegistry;
   private builderService?: { listArtifacts: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>; installArtifact: (type: 'agent' | 'team' | 'skill', name: string) => Promise<{ type: string; installed: unknown }> };
   private hubClient?: { search: (opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>; downloadAndInstall: (itemId: string) => Promise<{ type: string; installed: unknown }> };
@@ -544,6 +548,57 @@ export class AgentManager {
 
   set cognitiveConfig(value: CognitiveConfig | undefined) {
     this._cognitiveConfig = value;
+  }
+
+  get codingToolsEnabled(): boolean {
+    return this._codingToolsEnabled;
+  }
+
+  setCodingToolsConfig(config?: {
+    enabled?: boolean;
+    tools?: Record<string, {
+      enabled?: boolean;
+      binaryPath?: string;
+      defaultArgs?: string[];
+      timeoutMs?: number;
+      env?: Record<string, string>;
+      defaultModel?: string;
+      maxBudgetPerSessionUsd?: number;
+      approvalRequired?: boolean;
+    }>;
+  }): void {
+    this._codingToolsEnabled = config?.enabled ?? false;
+    if (config?.tools) {
+      this._codingToolsConfigs = {};
+      for (const [name, cfg] of Object.entries(config.tools)) {
+        this._codingToolsConfigs[name] = {
+          tool: name as CodingToolName,
+          enabled: cfg.enabled ?? true,
+          binaryPath: cfg.binaryPath,
+          defaultArgs: cfg.defaultArgs,
+          timeoutMs: cfg.timeoutMs,
+          env: cfg.env,
+          defaultModel: cfg.defaultModel,
+          maxBudgetPerSessionUsd: cfg.maxBudgetPerSessionUsd,
+          approvalRequired: cfg.approvalRequired,
+        };
+      }
+    } else {
+      this._codingToolsConfigs = undefined;
+    }
+  }
+
+  private async registerCodingTools(agent: Agent): Promise<void> {
+    if (!this._codingToolsEnabled) return;
+
+    const { createCodingTools } = await import('./coding-tools/index.js');
+    const codingTools = createCodingTools({
+      serverUrl: this.webUiBaseUrl,
+      getConfigs: () => this._codingToolsConfigs,
+    });
+    for (const tool of codingTools) {
+      agent.registerTool(tool);
+    }
   }
 
   setBrowserBringToFront(value: boolean): void {
@@ -1157,6 +1212,8 @@ export class AgentManager {
     })) {
       agent.registerTool(tool);
     }
+
+    await this.registerCodingTools(agent);
 
     if (this.semanticSearch) {
       agent.getContextEngine().setSemanticSearch(this.semanticSearch);
@@ -1976,6 +2033,8 @@ export class AgentManager {
     })) {
       agent.registerTool(tool);
     }
+
+    await this.registerCodingTools(agent);
 
     if (this.semanticSearch) {
       agent.getContextEngine().setSemanticSearch(this.semanticSearch);

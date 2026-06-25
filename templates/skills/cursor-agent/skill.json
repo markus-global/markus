@@ -1,0 +1,17 @@
+{
+  "type": "skill",
+  "name": "cursor-agent",
+  "displayName": "Cursor Agent",
+  "version": "1.0.0",
+  "description": "Use the Cursor CLI agent mode for IDE-integrated coding, rule-driven workflows, and project-aware edits",
+  "author": "markus",
+  "category": "development",
+  "tags": ["coding", "cursor", "ide", "agent"],
+  "i18n": {
+    "zh-CN": {
+      "displayName": "Cursor Agent",
+      "description": "使用 Cursor CLI 代理模式进行 IDE 集成编程、规则驱动的工作流和项目感知编辑"
+    }
+  },
+  "skill": { "skillFile": "SKILL.md" }
+}

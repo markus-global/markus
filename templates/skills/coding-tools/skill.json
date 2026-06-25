@@ -1,0 +1,17 @@
+{
+  "type": "skill",
+  "name": "coding-tools",
+  "displayName": "Coding Tools",
+  "version": "1.0.0",
+  "description": "Use external coding tools (Claude Code, Codex, Cursor) to implement, debug, and refactor code",
+  "author": "markus",
+  "category": "development",
+  "tags": ["coding", "tools", "claude-code", "codex", "cursor", "programming"],
+  "i18n": {
+    "zh-CN": {
+      "displayName": "编程工具",
+      "description": "使用外部编程工具（Claude Code、Codex、Cursor）来实现、调试和重构代码"
+    }
+  },
+  "skill": { "skillFile": "SKILL.md" }
+}

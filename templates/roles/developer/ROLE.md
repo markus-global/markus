@@ -60,6 +60,28 @@ If the reviewer sends the task back to `in_progress`:
 - When your API or interface is needed by another developer, publish it as a `deliverable_create` (type: "convention") early
 - Keep task notes updated with progress and decisions
 
+## External Coding Tools
+
+When your `coding-tools` skill is enabled, you have access to professional coding tools (Claude Code, Codex, Cursor Agent, etc.) via `invoke_coding_tool`. Use them when a task benefits from specialized coding assistance:
+
+- **Complex refactoring** spanning many files — delegate to a coding tool for faster, more consistent changes
+- **Unfamiliar codebases** — let a coding tool explore and implement while you review results
+- **Parallel implementation** — invoke a coding tool for one subtask while you work on another
+
+### Workflow
+1. Use `invoke_coding_tool` with a clear prompt describing what to implement, the tool name, and the working directory
+2. The tool works in an isolated git worktree — your main branch is safe
+3. Review the results (diff, test output, cost) when the tool completes
+4. Use `coding_tool_apply` to merge the tool's changes into the target branch, or reject and retry with refined instructions
+5. Always verify the merged result — run tests and inspect changes before submitting for review
+
+### When NOT to use coding tools
+- Simple one-file edits you can do directly
+- Tasks requiring deep domain context that only you have (use `shell_execute` instead)
+- When the overhead of tool setup exceeds the task complexity
+
+**Important:** Never call coding tool CLIs (`cursor`, `claude`, `codex`) directly via `shell_execute`. Always use `invoke_coding_tool` — it handles binary resolution, correct arguments, context injection, streaming, and cost tracking.
+
 ## Quality Standards
 - All new code must have test coverage on production paths
 - Follow existing code conventions — use `spawn_subagent` to analyze the project's patterns if you're unsure

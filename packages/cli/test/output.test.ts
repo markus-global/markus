@@ -86,13 +86,13 @@ describe('output module', () => {
     it('outputs JSON data when json option is set', () => {
       const data = { id: 'proj_001' };
       success('Created', data, { json: true });
-      expect(consoleSpy).toHaveBeenCalledWith(JSON.stringify(data, null, 2));
+      expect(consoleSpy).toHaveBeenCalledWith(JSON.stringify({ ok: true, data }, null, 2));
     });
 
-    it('outputs ok message when no data in json mode', () => {
+    it('wraps message in data when no data in json mode', () => {
       success('Done', undefined, { json: true });
       const output = consoleSpy.mock.calls[0][0];
-      expect(JSON.parse(output)).toEqual({ ok: true, message: 'Done' });
+      expect(JSON.parse(output)).toEqual({ ok: true, data: { message: 'Done' } });
     });
   });
 

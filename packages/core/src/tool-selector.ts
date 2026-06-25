@@ -92,6 +92,16 @@ const TOOL_GROUPS: ToolGroup[] = [
       '部署', '工件', '技能包', '招聘', '安装'],
     toolNames: ['package_list', 'package_install', 'hub_search', 'hub_install'],
   },
+  {
+    name: 'coding',
+    keywords: [
+      'code', 'coding', 'program', 'develop', 'implement', 'refactor',
+      'debug', 'fix bug', 'feature', 'repository', 'repo',
+      'claude code', 'codex', 'cursor',
+      '编程', '编码', '开发', '实现', '重构', '调试',
+    ],
+    toolNames: ['invoke_coding_tool', 'coding_tool_apply'],
+  },
 ];
 
 /**
@@ -149,7 +159,7 @@ export class ToolSelector {
 
     if (opts.isTaskExecution) {
       for (const group of this.groups) {
-        if (['code', 'shell'].includes(group.name)) {
+        if (['code', 'shell', 'coding'].includes(group.name)) {
           for (const name of group.toolNames) {
             if (opts.allTools.has(name)) selected.add(name);
           }

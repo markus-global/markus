@@ -47,6 +47,7 @@ win:
   icon: build/icon.ico
 
 nsis:
+  artifactName: "Markus-Setup-${version}.${ext}"
   oneClick: false
   allowToChangeInstallationDirectory: true
   perMachine: false

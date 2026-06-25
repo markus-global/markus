@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import { createClient } from '../api-client.js';
-import { table, detail, success } from '../output.js';
+import { table, detail, success, withErrorHandling } from '../output.js';
 
 export function registerAgentCommands(program: Command) {
   const agent = program.command('agent').description('Interact with agents');
@@ -8,7 +8,7 @@ export function registerAgentCommands(program: Command) {
   agent
     .command('list')
     .description('List all agents')
-    .action(async () => {
+    .action(withErrorHandling(async () => {
       const client = createClient(program.optsWithGlobals());
       const data = await client.get<{ agents: Record<string, unknown>[] }>('/agents');
       table(data.agents, [
@@ -18,16 +18,16 @@ export function registerAgentCommands(program: Command) {
         { key: 'status', header: 'Status', width: 10 },
         { key: 'agentRole', header: 'Type', width: 10 },
       ], { title: 'Agents' });
-    });
+    }));
 
   agent
     .command('get <id>')
     .description('Get agent details')
-    .action(async (id: string) => {
+    .action(withErrorHandling(async (id: string) => {
       const client = createClient(program.optsWithGlobals());
       const data = await client.get<Record<string, unknown>>(`/agents/${id}`);
       detail(data, { title: `Agent: ${data.name ?? id}` });
-    });
+    }));
 
   agent
     .command('message <id>')
@@ -35,19 +35,19 @@ export function registerAgentCommands(program: Command) {
     .requiredOption('-t, --text <text>', 'Message text')
     .option('--sender <senderId>', 'Sender ID')
     .option('--session <sessionId>', 'Session ID')
-    .action(async (id: string, opts: Record<string, string>) => {
+    .action(withErrorHandling(async (id: string, opts: Record<string, string>) => {
       const client = createClient(program.optsWithGlobals());
       const body: Record<string, unknown> = { text: opts.text };
       if (opts.sender) body.senderId = opts.sender;
       if (opts.session) body.sessionId = opts.session;
       const data = await client.post<{ reply?: string }>(`/agents/${id}/message`, body);
       success(data.reply ?? '(no reply)', data);
-    });
+    }));
 
   agent
     .command('chat <id>')
     .description('Interactive chat with an agent')
-    .action(async (id: string) => {
+    .action(withErrorHandling(async (id: string) => {
       const client = createClient(program.optsWithGlobals());
       const info = await client.get<Record<string, unknown>>(`/agents/${id}`);
       const name = info.name ?? id;
@@ -70,5 +70,5 @@ export function registerAgentCommands(program: Command) {
         });
       };
       ask();
-    });
+    }));
 }

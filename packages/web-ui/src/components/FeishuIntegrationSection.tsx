@@ -346,40 +346,51 @@ export function FeishuIntegrationSection() {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="bg-surface-elevated border border-border-default rounded-xl p-6">
+  const [expanded, setExpanded] = useState(false);
+
+  const isConfigured = !!(config.appId && config.appSecret);
+
+  const headerContent = (
+    <button
+      type="button"
+      onClick={() => setExpanded(prev => !prev)}
+      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-white/[0.02] transition-colors text-left"
+    >
+      <svg className={`w-4 h-4 text-fg-tertiary transition-transform ${expanded ? 'rotate-90' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+        <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
+      </svg>
+      <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center shrink-0">
+        <svg className="w-5 h-5 text-blue-500" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M6.3 10.5c-.8 0-1.5-.3-2-.9-.6-.6-.9-1.3-.9-2 0-.8.3-1.5.9-2 .6-.5 1.3-.8 2-.8.8 0 1.5.3 2 .9.6.6.9 1.3.9 2 0 .8-.3 1.5-.9 2-.5.5-1.2.8-2 .8zm12.4 0c-.8 0-1.5-.3-2-.9-.6-.6-.9-1.3-.9-2 0-.8.3-1.5.9-2 .6-.5 1.3-.8 2-.8.8 0 1.5.3 2 .9.6.6.9 1.3.9 2 0 .8-.3 1.5-.9 2-.5.5-1.2.8-2 .8zm-6.2 10c-.8 0-1.5-.3-2-.9-.6-.6-.9-1.3-.9-2 0-.8.3-1.5.9-2 .6-.5 1.3-.8 2-.8.8 0 1.5.3 2 .9.6.6.9 1.3.9 2 0 .8-.3 1.5-.9 2-.5.5-1.2.8-2 .8z"/>
+        </svg>
+      </div>
+      <div className="flex-1 min-w-0">
+        <span className="text-sm font-medium text-fg-primary">飞书 (Feishu / Lark)</span>
+        <span className="text-xs text-fg-tertiary ml-2 hidden sm:inline">{t('settings:feishu.description', { defaultValue: 'Configure Feishu integration for notifications and approvals' })}</span>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        {loading && <div className="w-3 h-3 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />}
+        {saving && <div className="w-3 h-3 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />}
+        <StatusBadge connected={config.connected && config.enabled} />
+      </div>
+    </button>
+  );
+
+  return (
+    <div className="bg-surface-elevated rounded-xl overflow-hidden">
+      {headerContent}
+
+      {expanded && (
+      <div className="px-6 pb-6 pt-2 space-y-8 border-t border-border-default">
+
+      {loading && (
         <div className="flex items-center justify-center py-8">
           <div className="w-5 h-5 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
           <span className="ml-2 text-sm text-fg-tertiary">{t('common:loading', { defaultValue: 'Loading...' })}</span>
         </div>
-      </div>
-    );
-  }
+      )}
 
-  const isConfigured = !!(config.appId && config.appSecret);
-
-  return (
-    <div className="bg-surface-elevated border border-border-default rounded-xl p-6 space-y-8">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center">
-            <svg className="w-6 h-6 text-blue-500" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M6.3 10.5c-.8 0-1.5-.3-2-.9-.6-.6-.9-1.3-.9-2 0-.8.3-1.5.9-2 .6-.5 1.3-.8 2-.8.8 0 1.5.3 2 .9.6.6.9 1.3.9 2 0 .8-.3 1.5-.9 2-.5.5-1.2.8-2 .8zm12.4 0c-.8 0-1.5-.3-2-.9-.6-.6-.9-1.3-.9-2 0-.8.3-1.5.9-2 .6-.5 1.3-.8 2-.8.8 0 1.5.3 2 .9.6.6.9 1.3.9 2 0 .8-.3 1.5-.9 2-.5.5-1.2.8-2 .8zm-6.2 10c-.8 0-1.5-.3-2-.9-.6-.6-.9-1.3-.9-2 0-.8.3-1.5.9-2 .6-.5 1.3-.8 2-.8.8 0 1.5.3 2 .9.6.6.9 1.3.9 2 0 .8-.3 1.5-.9 2-.5.5-1.2.8-2 .8z"/>
-            </svg>
-          </div>
-          <div>
-            <h2 className="text-base font-semibold text-fg-primary">飞书 (Feishu / Lark)</h2>
-            <p className="text-xs text-fg-tertiary mt-0.5">{t('settings:feishu.description', { defaultValue: 'Configure Feishu integration for notifications and approvals' })}</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {saving && <div className="w-3.5 h-3.5 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />}
-          <StatusBadge connected={config.connected && config.enabled} />
-        </div>
-      </div>
-
+      {!loading && <>
       {/* Connection mode indicator */}
       <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-500/5 border border-blue-500/20">
         <svg className="w-4 h-4 text-blue-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -779,6 +790,9 @@ export function FeishuIntegrationSection() {
       )}
 
       {msg && !isConfigured && <Msg type={msg.type} text={msg.text} />}
+      </>}
+      </div>
+      )}
     </div>
   );
 }

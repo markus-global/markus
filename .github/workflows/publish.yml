@@ -286,7 +286,7 @@ jobs:
         run: |
           set -e
           uploaded=0
-          for file in artifacts/markus-setup-* artifacts/markus-v${VERSION}-* artifacts/Markus-*.dmg artifacts/Markus-*.exe artifacts/Markus-*.AppImage; do
+          for file in artifacts/markus-setup-* artifacts/markus-v${VERSION}-* artifacts/Markus-*.dmg artifacts/Markus-*.AppImage artifacts/Markus*.exe; do
             [ -f "$file" ] || continue
             filename=$(basename "$file")
             echo "Uploading $filename to R2..."
