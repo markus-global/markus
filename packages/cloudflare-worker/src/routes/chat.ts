@@ -108,14 +108,14 @@ async function handleProxyChat(
   const remainingCu = payload.monthly_quota_cu - payload.cu_used;
 
   if (remainingCu <= 0) {
-    return errorJson(403, {
+    return errorJson(429, {
       code: 'QUOTA_EXCEEDED',
       message: `Monthly CU quota (${payload.monthly_quota_cu}) exhausted. Remaining: ${remainingCu}`,
     });
   }
 
   if (estimatedCu > remainingCu) {
-    return errorJson(403, {
+    return errorJson(429, {
       code: 'INSUFFICIENT_QUOTA',
       message: `Request requires ~${estimatedCu} CU but only ${remainingCu} remaining`,
     });
@@ -222,19 +222,32 @@ async function forwardToUpstream(
   }
 
   // --- Streaming (SSE) -------------------------------------------------------
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+
   let upstreamResponse: Response;
   try {
     upstreamResponse = await fetch(upstreamUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify(upstreamBody),
+      signal: controller.signal,
     });
   } catch (err) {
+    clearTimeout(timeout);
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      return errorJson(504, {
+        code: 'UPSTREAM_TIMEOUT',
+        message: 'Upstream provider did not respond in time',
+      });
+    }
     return errorJson(502, {
       code: 'UPSTREAM_UNREACHABLE',
       message: err instanceof Error ? err.message : 'Failed to reach upstream provider',
     });
   }
+
+  clearTimeout(timeout);
 
   if (!upstreamResponse.ok) {
     const errorBody = await upstreamResponse.text();
