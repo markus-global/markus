@@ -46,6 +46,7 @@ export interface HomePreviewData {
   requirements?: RequirementInfo[];
   projects?: ProjectInfo[];
   deliverableTotal?: number;
+  recentDeliverables?: DeliverableInfo[];
   storageInfo?: StorageInfo | null;
   usageInfo?: { llmTokens: number; storageBytes: number } | null;
 }
@@ -62,7 +63,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [allRequirements, setAllRequirements] = useState<RequirementInfo[]>(previewData?.requirements ?? []);
   const [projects, setProjects] = useState<ProjectInfo[]>(previewData?.projects ?? []);
   const [deliverableTotal, setDeliverableTotal] = useState(previewData?.deliverableTotal ?? 0);
-  const [recentDeliverables, setRecentDeliverables] = useState<DeliverableInfo[]>([]);
+  const [recentDeliverables, setRecentDeliverables] = useState<DeliverableInfo[]>(previewData?.recentDeliverables ?? []);
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(previewData?.storageInfo ?? null);
   const [usageInfo, setUsageInfo] = useState<{ llmTokens: number; storageBytes: number } | null>(previewData?.usageInfo ?? null);
   const [showCreateMenu, setShowCreateMenu] = useState(false);
@@ -95,6 +96,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     setAllRequirements(previewData.requirements ?? []);
     setProjects(previewData.projects ?? []);
     setDeliverableTotal(previewData.deliverableTotal ?? 0);
+    if (previewData.recentDeliverables) setRecentDeliverables(previewData.recentDeliverables);
     if (previewData.storageInfo) setStorageInfo(previewData.storageInfo);
     if (previewData.usageInfo) setUsageInfo(previewData.usageInfo);
   }, [previewMode, previewData]);
@@ -319,16 +321,16 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
       <div className={`px-4 sm:px-6 lg:px-8 pb-8 space-y-6 ${previewMode ? '' : 'max-w-7xl mx-auto'} w-full`}>
 
         {/* ── Metric Cards ── */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className={`grid grid-cols-2 lg:grid-cols-4 gap-4 ${previewMode ? 'preview-stagger' : ''}`}>
           <MetricCard label={t('metricCards.working')} value={String(workingAgents)} sub={`/${agents.length}`}
-            icon={<MetricIcon type="working" />} pulse={workingAgents > 0} onClick={() => setShowWorkingModal(true)} />
+            icon={<MetricIcon type="working" />} pulse={workingAgents > 0} onClick={() => setShowWorkingModal(true)} animateCount={previewMode} />
           <MetricCard label={t('metricCards.tasksDone')} value={`${completed}`} sub={`/${totalRootTasks}`}
-            icon={<MetricIcon type="tasks" />} badge={urgentHighActive > 0 ? `${urgentHighActive} urgent/high` : undefined} onClick={() => navBus.navigate(PAGE.WORK)} />
+            icon={<MetricIcon type="tasks" />} badge={urgentHighActive > 0 ? `${urgentHighActive} urgent/high` : undefined} onClick={() => navBus.navigate(PAGE.WORK)} animateCount={previewMode} />
           <MetricCard label={t('metricCards.projects')} value={String(activeProjects)}
-            icon={<MetricIcon type="projects" />} onClick={() => navBus.navigate(PAGE.WORK)} />
+            icon={<MetricIcon type="projects" />} onClick={() => navBus.navigate(PAGE.WORK)} animateCount={previewMode} />
           <MetricCard label={t('metricCards.health')} value={`${llmConfigured === false ? 100 : ops?.systemHealth.overallScore ?? '—'}`} sub={llmConfigured === false || ops ? '%' : undefined}
             icon={<MetricIcon type="health" />} color={llmConfigured === false ? 'green' : !ops ? undefined : ops.systemHealth.overallScore >= 80 ? 'green' : ops.systemHealth.overallScore >= 50 ? 'amber' : 'red'}
-            onClick={() => setShowHealthModal(true)} />
+            onClick={() => setShowHealthModal(true)} animateCount={previewMode} />
         </div>
 
         {/* ── Needs Your Attention ── */}
@@ -434,7 +436,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
         )}
 
         {/* ── Onboarding Checklist ── */}
-        {!checklistDismissed && !checklistReady && (
+        {!previewMode && !checklistDismissed && !checklistReady && (
           <div className="bg-gradient-to-br from-brand-600/10 via-surface-secondary to-surface-secondary border border-brand-500/20 rounded-2xl p-5 sm:p-6">
             <div className="flex items-center justify-center py-10 gap-3 text-fg-tertiary">
               <div className="w-5 h-5 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
@@ -442,7 +444,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
             </div>
           </div>
         )}
-        {!checklistDismissed && checklistReady && (() => {
+        {!previewMode && !checklistDismissed && checklistReady && (() => {
           const navigateToSecretary = (prompt: string) => {
             const secretary = agents.find(a => a.role === 'secretary') ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));
             navBus.navigate(PAGE.TEAM, {
@@ -555,7 +557,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
 
                 {/* Tasks with donut */}
                 <div className="px-5 py-4 flex flex-col sm:flex-row items-center gap-6 border-t border-border-subtle/50">
-                  <DonutChart statusCounts={rootStatusCounts} total={totalRootTasks} completionRate={completionRate} completed={completed} />
+                  <DonutChart statusCounts={rootStatusCounts} total={totalRootTasks} completionRate={completionRate} completed={completed} animate={previewMode} />
                   <div className="flex-1 min-w-0">
                     <div className="grid grid-cols-2 gap-x-5 gap-y-2.5">
                       {sortedStatusEntries.map(({ status, count }) => (
@@ -730,16 +732,32 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
 // Sub-components
 // ═════════════════════════════════════════════════════════════════════════════
 
-function MetricCard({ label, value, sub, icon, pulse, color, badge, onClick }: {
-  label: string; value: string; sub?: string; icon: React.ReactNode; pulse?: boolean; color?: 'green' | 'amber' | 'red'; badge?: string; onClick?: () => void;
+function MetricCard({ label, value, sub, icon, pulse, color, badge, onClick, animateCount }: {
+  label: string; value: string; sub?: string; icon: React.ReactNode; pulse?: boolean; color?: 'green' | 'amber' | 'red'; badge?: string; onClick?: () => void; animateCount?: boolean;
 }) {
   const colorClass = color === 'green' ? 'text-green-500' : color === 'amber' ? 'text-amber-500' : color === 'red' ? 'text-red-500' : 'text-fg-primary';
+  const numericValue = parseInt(value, 10);
+  const [displayValue, setDisplayValue] = useState(animateCount ? '0' : value);
+  useEffect(() => {
+    if (!animateCount || isNaN(numericValue)) { setDisplayValue(value); return; }
+    let frame: number;
+    const duration = 1200;
+    const start = performance.now();
+    const tick = (now: number) => {
+      const progress = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setDisplayValue(String(Math.round(numericValue * eased)));
+      if (progress < 1) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [animateCount, numericValue, value]);
   return (
     <div onClick={onClick} className="bg-surface-elevated shadow-sm rounded-2xl p-4 sm:p-5 flex items-start justify-between cursor-pointer hover:shadow-md transition-shadow">
       <div>
         <div className="text-[11px] text-fg-tertiary mb-2">{label}</div>
         <div className="flex items-baseline gap-0.5">
-          <span className={`text-2xl sm:text-3xl font-bold ${colorClass} leading-none`}>{value}</span>
+          <span className={`text-2xl sm:text-3xl font-bold ${colorClass} leading-none`}>{displayValue}</span>
           {sub && <span className="text-sm text-fg-muted font-medium">{sub}</span>}
         </div>
         {badge && <div className="text-[10px] text-amber-500 font-medium mt-1.5">{badge}</div>}
@@ -792,8 +810,8 @@ function EntityIcon({ type }: { type: 'folder' | 'edit' | 'book' }) {
 
 // ── Donut Chart ─────────────────────────────────────────────────────────────
 
-function DonutChart({ statusCounts, total, completionRate, completed }: {
-  statusCounts: Record<string, number>; total: number; completionRate: number; completed: number;
+function DonutChart({ statusCounts, total, completionRate, completed, animate }: {
+  statusCounts: Record<string, number>; total: number; completionRate: number; completed: number; animate?: boolean;
 }) {
   const size = 120;
   const r = 42;
@@ -807,14 +825,23 @@ function DonutChart({ statusCounts, total, completionRate, completed }: {
     offset += len;
     return arc;
   });
+  const [revealed, setRevealed] = useState(!animate);
+  useEffect(() => {
+    if (!animate) return;
+    const t = setTimeout(() => setRevealed(true), 100);
+    return () => clearTimeout(t);
+  }, [animate]);
 
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>
       <svg width={size} height={size} viewBox="0 0 120 120">
         {arcs.map((arc, i) => (
           <circle key={i} cx="60" cy="60" r={r} fill="none" stroke={arc.color} strokeWidth={strokeW}
-            strokeDasharray={`${arc.len} ${c - arc.len}`} strokeDashoffset={-arc.offset}
-            transform="rotate(-90 60 60)" className="transition-all duration-500 cursor-pointer"
+            strokeDasharray={revealed ? `${arc.len} ${c - arc.len}` : `0 ${c}`}
+            strokeDashoffset={revealed ? -arc.offset : 0}
+            transform="rotate(-90 60 60)"
+            style={{ transition: `stroke-dasharray 1s cubic-bezier(0.4,0,0.2,1) ${i * 100}ms, stroke-dashoffset 1s cubic-bezier(0.4,0,0.2,1) ${i * 100}ms` }}
+            className="cursor-pointer"
             onClick={() => navBus.navigate(PAGE.WORK, { statusFilter: arc.status })} />
         ))}
       </svg>
