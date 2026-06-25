@@ -1041,6 +1041,11 @@ export class TaskService {
       return;
     }
 
+    // Clean up any stale submitted-for-review flag from a previous execution round.
+    // This is safe because a new execution is starting — any prior submission is
+    // irrelevant; the agent must call submitForReview again in this new round.
+    this.tasksSubmittedForReview.delete(taskId);
+
     const agent = this.agentManager.getAgent(task.assignedAgentId);
 
     // Cancel any currently running execution for this task before starting a new one
@@ -1416,7 +1421,7 @@ export class TaskService {
           if (entry.type === 'status') {
             if (entry.content === 'completed' || entry.content === 'execution_finished') {
               const currentTask = this.tasks.get(taskId);
-              const alreadyTerminal = currentTask && ['review', 'completed', 'failed', 'cancelled', 'archived'].includes(currentTask.status);
+              const alreadyTerminal = currentTask && ['review', 'completed', 'failed', 'cancelled', 'archived', 'blocked'].includes(currentTask.status);
               const didSubmit = this.tasksSubmittedForReview.has(taskId);
               if (didSubmit) {
                 this.tasksSubmittedForReview.delete(taskId);
@@ -1425,7 +1430,8 @@ export class TaskService {
               // If execution finished but agent didn't submit, auto-retry so the agent
               // gets another chance to call task_submit_review.
               // Skip retry if submitForReview was actually called (task may be back in
-              // in_progress due to a fast reviewer calling requestRevision).
+              // in_progress due to a fast reviewer calling requestRevision) or if the
+              // task is in a terminal/blocked state.
               if (!alreadyTerminal && !didSubmit && currentTask && currentTask.status === 'in_progress') {
                 const nextAttempt = _retryAttempt + 1;
                 if (nextAttempt < TaskService.MAX_IN_PROGRESS_RETRIES) {
@@ -2168,6 +2174,9 @@ export class TaskService {
 
     // Stage 6: External broadcast
     this.broadcastStatusChange(task, from, to);
+
+    // Stage 7: Scheduled task — ensure nextRunAt is computed on completion
+    this.maybeEnsureScheduledNextRun(task, from, to);
   }
 
   // ─── Stage 1: Cleanup on leaving a status ────────────────────────────────────
@@ -2185,9 +2194,12 @@ export class TaskService {
     if (from === 'review' && to !== 'review') {
       this.activeReviews.delete(taskId);
     }
-    if (TERMINAL_STATUSES.has(to)) {
-      this.tasksSubmittedForReview.delete(taskId);
-    }
+    // NOTE: tasksSubmittedForReview is deliberately NOT cleaned here.
+    // Cleaning it on terminal status transitions causes a race condition:
+    // a fast reviewer can approve (status→completed) before execution_finished
+    // arrives, clearing the flag. The execution_finished handler then sees
+    // !didSubmit and triggers a phantom retry. Cleanup happens ONLY in the
+    // execution_finished handler and at the start of a new runTask execution.
     if (TERMINAL_STATUSES.has(to) && this.hitlService) {
       const cancelled = this.hitlService.cancelApprovalsByDetail(
         'taskId', taskId, 'system', `Task ${to}`,
@@ -2380,6 +2392,58 @@ export class TaskService {
         metadata: { taskId: task.id, status: to, agentId: task.assignedAgentId },
       });
     }
+  }
+
+  // ─── Stage 7: Scheduled task nextRunAt safety net ──────────────────────────
+
+  /**
+   * Ensure that a scheduled task's nextRunAt is always properly computed
+   * when transitioning to `completed`. This is a safety net for edge cases
+   * where the normal `advanceScheduleConfig` call in `fireScheduledTask`
+   * was skipped (e.g., task was executed manually, or a phantom retry loop
+   * prevented the scheduled runner from managing the lifecycle).
+   *
+   * Does NOT increment currentRuns — only fills in a missing or stale nextRunAt.
+   */
+  private maybeEnsureScheduledNextRun(task: Task, from: TaskStatus, to: TaskStatus): void {
+    if (to !== 'completed') return;
+    if (task.taskType !== 'scheduled') return;
+    if (!task.scheduleConfig) return;
+
+    const config = task.scheduleConfig;
+
+    // One-shot tasks with runAt don't need a next run
+    if (config.runAt) return;
+
+    // If maxRuns is reached, don't schedule more
+    if (config.maxRuns !== undefined && (config.currentRuns ?? 0) >= config.maxRuns) return;
+
+    // Check if nextRunAt is missing or in the past
+    const nextRun = config.nextRunAt ? new Date(config.nextRunAt).getTime() : 0;
+    const now = new Date();
+    if (nextRun > now.getTime()) return; // already has a valid future nextRunAt
+
+    // Recalculate nextRunAt from now, using the original schedule config.
+    // We use (config.currentRuns ?? 0) + 1 as the next run number so it's
+    // consistent with what advanceScheduleConfig would produce.
+    const computed = computeNextRunFromConfig(config, now);
+    if (computed) {
+      config.nextRunAt = computed;
+      log.info('Scheduled task nextRunAt recalculated on completion', {
+        taskId: task.id, from, nextRunAt: computed,
+      });
+    } else {
+      // No more runs (expired cron) — clear nextRunAt so tick() won't pick it up
+      config.nextRunAt = undefined;
+      log.info('Scheduled task has no more runs — cleared nextRunAt', {
+        taskId: task.id, from,
+      });
+    }
+
+    // Persist the updated scheduleConfig
+    this.updateScheduleConfig(task.id, config).catch(err =>
+      log.error('Failed to persist recalculated scheduleConfig', { taskId: task.id, error: String(err) })
+    );
   }
 
   cancelTask(id: string, cascade: boolean, updatedBy?: string, updatedByType?: 'human' | 'agent' | 'system'): Task {
@@ -4073,14 +4137,16 @@ export class TaskService {
           }
           if (entry.type === 'status' && (entry.content === 'execution_finished' || entry.content === 'completed')) {
             const currentTask = this.tasks.get(taskId);
-            const alreadyTerminal = currentTask && ['review', 'completed', 'failed', 'cancelled', 'archived'].includes(currentTask.status);
+            const alreadyTerminal = currentTask && ['review', 'completed', 'failed', 'cancelled', 'archived', 'blocked'].includes(currentTask.status);
             const didSubmit = this.tasksSubmittedForReview.has(taskId);
             if (didSubmit) {
               this.tasksSubmittedForReview.delete(taskId);
               log.info('Fresh retry finished after submitForReview — skipping no-submit retry', { taskId });
             }
             if (!alreadyTerminal && !didSubmit && currentTask && currentTask.status === 'in_progress') {
-              const delayMs = withJitter(TaskService.RETRY_DELAYS_MS[0] ?? 10_000);
+              // _retryAttempt not available in this closure — always uses first delay
+              // since runTask is called with attempt=1 on the next line
+              const delayMs = withJitter(TaskService.RETRY_DELAYS_MS[0] ?? 60_000);
               log.warn(`Fresh retry finished without task_submit_review — auto-retrying in ${Math.round(delayMs / 1000)}s`, { taskId });
               this.addTaskNote(taskId,
                 `[System] Fresh retry finished without task_submit_review. Auto-retrying.`,
