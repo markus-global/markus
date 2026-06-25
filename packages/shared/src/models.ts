@@ -112,6 +112,13 @@ export const PROVIDERS: ProviderModel[] = [
     models: ['llama3', 'llama3.1', 'llama3.2', 'mistral', 'qwen2.5', 'codellama'],
   },
   {
+    id: 'markus',
+    label: 'Markus Platform',
+    envKey: 'MARKUS_SUBSCRIPTION_KEY',
+    defaultModel: 'markus-lite',
+    models: ['markus-lite', 'markus-pro', 'markus-max', 'markus-reason'],
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     envKey: 'DEEPSEEK_API_KEY',

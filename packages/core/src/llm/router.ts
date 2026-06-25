@@ -9,9 +9,11 @@ import { FireworksProvider } from './fireworks.js';
 import { CodexResponsesProvider } from './openai-codex.js';
 import { GoogleProvider } from './google.js';
 import { OllamaProvider } from './ollama.js';
+import { MarkusProvider } from './markus-provider.js';
 import { AuthProfileStore } from './auth-profiles.js';
 import { OAuthManager } from './oauth-manager.js';
 import type { ModelCatalogService } from './model-catalog.js';
+
 
 const log = createLogger('llm-router');
 
@@ -166,6 +168,7 @@ export class LLMRouter {
     outputTokens: number;
     durationMs: number;
     finishReason: string;
+    cuCost?: number;
   }) => void;
 
   setLogCallback(cb: typeof this.logCallback): void {
@@ -279,6 +282,12 @@ export class LLMRouter {
   private static isRateLimitError(error: unknown): boolean {
     const msg = error instanceof Error ? error.message : String(error);
     return /\b429\b/.test(msg) || /rate.limit/i.test(msg);
+  }
+
+  /** Detect CU-exhausted errors — return friendly error, do NOT fall back to direct mode. */
+  static isCUExceededError(error: unknown): boolean {
+    const msg = error instanceof Error ? error.message : String(error);
+    return msg.includes('CU_EXCEEDED:');
   }
 
   /**
@@ -482,6 +491,8 @@ export class LLMRouter {
       provider = new GoogleProvider(config);
     } else if (name === 'ollama') {
       provider = new OllamaProvider(config);
+    } else if (name === 'markus') {
+      provider = new MarkusProvider(config);
     } else {
       provider = createOpenAICompatible(name, config);
     }
@@ -519,6 +530,45 @@ export class LLMRouter {
     if (!existing) return;
     this.customModelCatalog.set(providerName, existing.filter(m => m.id !== modelId));
     log.info(`Removed custom model ${modelId} from provider ${providerName}`);
+  }
+
+  /** Get CU quota info from the Markus provider (if available). */
+  getMarkusQuotaInfo(): {
+    cuCost: number;
+    cuRemaining: number;
+    cuLimit: number;
+    totalCuUsed: number;
+    cuUsedToday: number;
+    lastCuCost: number;
+  } | null {
+    const provider = this.providers.get('markus');
+    if (provider && 'getCuUsageStats' in provider) {
+      const stats = (provider as MarkusProvider).getCuUsageStats();
+      return {
+        cuCost: stats.lastCuCost,
+        cuRemaining: stats.cuRemaining,
+        cuLimit: stats.cuLimit,
+        totalCuUsed: stats.totalCuUsed,
+        cuUsedToday: stats.cuUsedToday,
+        lastCuCost: stats.lastCuCost,
+      };
+    }
+    return null;
+  }
+
+  /** Get cumulative CU usage stats from the Markus provider. */
+  getMarkusCuUsage(): {
+    totalCuUsed: number;
+    cuUsedToday: number;
+    cuRemaining: number;
+    cuLimit: number;
+    lastCuCost: number;
+  } | null {
+    const provider = this.providers.get('markus');
+    if (provider && 'getCuUsageStats' in provider) {
+      return (provider as MarkusProvider).getCuUsageStats();
+    }
+    return null;
   }
 
   enableAutoSelect(tiers?: ProviderTier[]): void {
@@ -801,8 +851,13 @@ export class LLMRouter {
       router.registerProvider('ollama', new OllamaProvider(ollamaConfig));
     }
 
+    const markusConfig = configs?.['markus'];
+    if (markusConfig?.apiKey) {
+      router.registerProvider('markus', new MarkusProvider(markusConfig));
+    }
+
     for (const [name, cfg] of Object.entries(configs ?? {})) {
-      if (['anthropic', 'openai', 'google', 'ollama'].includes(name)) continue;
+      if (['anthropic', 'openai', 'google', 'ollama', 'markus'].includes(name)) continue;
       if (cfg?.apiKey) {
         router.registerProvider(name, createOpenAICompatible(name, cfg));
       }
@@ -873,7 +928,9 @@ export class LLMRouter {
       this.recordSuccess(providerName, activeModel);
       return { response, model: activeModel };
     } catch (error) {
-      this.recordFailure(providerName, activeModel, error);
+      if (!LLMRouter.isCUExceededError(error)) {
+        this.recordFailure(providerName, activeModel, error);
+      }
       throw LLMRouter.enrichError(error, providerName, activeModel);
     } finally {
       if (altModel && altModel !== originalModel) {
@@ -922,6 +979,11 @@ export class LLMRouter {
     } catch (error) {
       lastError = error;
       log.error(`LLM request failed for ${primary}:${routedModel ?? provider.model}`, { error: String(error) });
+
+      // CU_EXCEEDED is fatal — do NOT fall back to other providers
+      if (LLMRouter.isCUExceededError(error)) {
+        throw lastError;
+      }
 
       // Try alternate models on the same provider (only when auto-fallback is enabled)
       if (this._autoFallback && !LLMRouter.isNonRetryableError(error)) {
@@ -1008,7 +1070,9 @@ export class LLMRouter {
       this.recordSuccess(providerName, activeModel);
       return { response, model: activeModel };
     } catch (error) {
-      this.recordFailure(providerName, activeModel, error);
+      if (!LLMRouter.isCUExceededError(error)) {
+        this.recordFailure(providerName, activeModel, error);
+      }
       throw LLMRouter.enrichError(error, providerName, activeModel);
     } finally {
       if (altModel && altModel !== originalModel) {
@@ -1060,6 +1124,13 @@ export class LLMRouter {
         throw lastError;
       }
       log.error(`LLM stream request failed for ${primary}:${provider.model}`, { error: String(error) });
+
+      // CU_EXCEEDED is fatal — do NOT fall back to other providers
+      if (LLMRouter.isCUExceededError(error)) {
+        span.setError(lastError instanceof Error ? lastError : String(lastError));
+        span.end();
+        throw lastError;
+      }
 
       // Try alternate models on the same provider (only when auto-fallback is enabled)
       if (this._autoFallback && !LLMRouter.isNonRetryableError(error)) {
@@ -1147,7 +1218,7 @@ export class LLMRouter {
     for (const [name, p] of this.providers.entries()) {
       providers[name] = { model: p.model, configured: true };
     }
-    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'minimax-cn', 'siliconflow', 'siliconflow-intl', 'openrouter', 'zai', 'deepseek']) {
+    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'minimax-cn', 'siliconflow', 'siliconflow-intl', 'openrouter', 'zai', 'deepseek', 'markus']) {
       if (!providers[name]) {
         providers[name] = { model: '', configured: false };
       }
@@ -1189,7 +1260,7 @@ export class LLMRouter {
       };
     }
 
-    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'minimax-cn', 'siliconflow', 'siliconflow-intl', 'openrouter', 'zai', 'deepseek']) {
+    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'minimax-cn', 'siliconflow', 'siliconflow-intl', 'openrouter', 'zai', 'deepseek', 'markus']) {
       if (!providers[name]) {
         const oauthProfile = this._profileStore?.getDefaultProfile(name);
         const enrichedModels = this.getProviderModels(name);
@@ -1375,12 +1446,14 @@ export class LLMRouter {
         outputTokens: response.usage.outputTokens,
         durationMs,
         finishReason: response.finishReason,
+        cuCost: response.cuCost,
       });
     } catch { /* logging should never crash the app */ }
   }
 }
 
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  markus: 'Markus',
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   'openai-codex': 'OpenAI Codex (OAuth)',
@@ -1473,6 +1546,12 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'glm-5.1', name: 'GLM-5.1', provider: 'zai', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 1.4, output: 4.4, cacheRead: 0.26 }, reasoning: true, inputTypes: ['text'], tier: 'max' },
   { id: 'glm-5', name: 'GLM-5', provider: 'zai', contextWindow: 205000, maxOutputTokens: 16384, cost: { input: 1.0, output: 3.2, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro' },
   { id: 'glm-4.7-flashx', name: 'GLM-4.7 FlashX', provider: 'zai', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 0.07, output: 0.4 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
+  // Markus (token-billing gateway — routes through CF Worker Proxy)
+  // Seed models — dynamically refreshed via /v1/models from the proxy
+  { id: 'markus-lite', name: 'Markus Lite', provider: 'markus', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 0.14, output: 0.28, cacheRead: 0.0028 }, reasoning: false, inputTypes: ['text'], tier: 'base', description: 'Fast and affordable text model via Markus platform' },
+  { id: 'markus-pro', name: 'Markus Pro', provider: 'markus', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 1.74, output: 3.48, cacheRead: 0.0145 }, reasoning: false, inputTypes: ['text'], tier: 'pro', description: 'High-quality text model via Markus platform' },
+  { id: 'markus-max', name: 'Markus Max', provider: 'markus', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 3.0, output: 15.0, cacheRead: 0.3 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'max', description: 'Premium model via Markus platform (Claude Sonnet 4.6)' },
+  { id: 'markus-reason', name: 'Markus Reason', provider: 'markus', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 1.74, output: 3.48, cacheRead: 0.0145 }, reasoning: true, inputTypes: ['text'], tier: 'pro', description: 'Reasoning model via Markus platform' },
 ];
 
 // ---------------------------------------------------------------------------

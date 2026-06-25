@@ -180,10 +180,13 @@
     "providerAdded": "已添加提供商 {{name}}",
     "notConfiguredHint": "尚未配置。请使用下方「添加提供商」按钮，或在环境变量中设置 API Key。",
     "quickSetupHint": "输入 API Key 即可立即启用此提供商。",
+    "markusKeyHint": "前往以下页面获取 Markus Cloud AI API Key：",
+    "markusKeyLink": "Hub 设置",
     "quickSetupPlaceholder": "在此粘贴 API Key...",
     "quickSetupSubmit": "启用",
     "quickSetupSaving": "启用中...",
     "quickSetupSuccess": "{{name}} 已就绪！",
+    "keyReadOnly": "密钥（只读）",
     "pricingTitle": "定价（每百万 Token）",
     "input": "输入",
     "output": "输出",
@@ -611,7 +614,11 @@
     "instanceLimitReached": "该许可证的实例数量已达上限。",
     "organization": "组织",
     "seats": "席位",
-    "notOwnedHint": "此许可证由组织所有者管理。许可证详情仅对许可证所有者可见。"
+    "notOwnedHint": "此许可证由组织所有者管理。许可证详情仅对许可证所有者可见。",
+    "cloudAi": "Cloud AI",
+    "cloudAiDesc": "在 Hub 网站上管理你的 Markus Cloud AI 订阅、API Key、CU 用量和账单。",
+    "manageSubscription": "管理订阅与 API Key",
+    "apiDocs": "API 文档"
   },
   "account": {
     "title": "组织与许可证",

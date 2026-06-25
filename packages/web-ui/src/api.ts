@@ -329,6 +329,7 @@ export interface ReportInfo {
   };
   costSummary?: {
     totalTokens: number;
+    totalCu?: number;
     totalEstimatedCost: number;
     byAgent: Array<{ agentId: string; tokens: number; cost: number }>;
     trend: string;
@@ -1040,6 +1041,8 @@ export interface AgentUsageInfo {
   messages: number;
   estimatedCost: number;
   costToday: number;
+  cuUsed?: number;
+  cuUsedToday?: number;
 }
 
 export const api = {
@@ -1391,6 +1394,9 @@ export const api = {
     },
     agents: (orgId = 'default') =>
       request<{ agents: AgentUsageInfo[] }>(`/usage/agents?orgId=${orgId}`),
+  },
+  cu: {
+    status: () => request<{ available: boolean; cuCost: number; cuRemaining: number; cuLimit: number; cuUsedToday?: number; totalCuUsed?: number }>('/cu/status'),
   },
   health: () => request<{ status: string; version: string; agents: number; latestVersion?: string; updateAvailable?: boolean }>('/health'),
   system: {

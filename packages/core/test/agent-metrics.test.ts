@@ -31,8 +31,46 @@ describe('AgentMetricsCollector', () => {
       const m = collector.getMetrics('24h');
       expect(m.tokenUsage.input).toBe(2100); // 70% of 3000
       expect(m.tokenUsage.output).toBe(900); // 30% of 3000
-      expect(m.tokenUsage.cost).toBeGreaterThan(0);
+      expect(m.tokenUsage.cost).toBe(0);
       expect(m.totalInteractions).toBe(2);
+    });
+
+    it('accumulates CU from audit events', () => {
+      collector.recordAudit({
+        type: 'llm_request',
+        action: 'chat',
+        tokensUsed: 500,
+        cuCost: 12,
+        success: true,
+      });
+      collector.recordAudit({
+        type: 'llm_request',
+        action: 'chat',
+        tokensUsed: 300,
+        cuCost: 8,
+        success: true,
+      });
+
+      const stats = collector.getUsageStats();
+      expect(stats.cuUsed).toBe(20);
+      expect(stats.cuUsedToday).toBe(20);
+      expect(stats.estimatedCost).toBe(0);
+    });
+
+    it('does not estimate USD when no cost provided', () => {
+      collector.recordAudit({
+        type: 'llm_request',
+        action: 'chat',
+        tokensUsed: 5000,
+        inputTokens: 4000,
+        outputTokens: 1000,
+        success: true,
+      });
+
+      const stats = collector.getUsageStats();
+      expect(stats.estimatedCost).toBe(0);
+      expect(stats.costToday).toBe(0);
+      expect(collector.getMetrics('24h').tokenUsage.cost).toBe(0);
     });
 
     it('tracks task completion metrics', () => {

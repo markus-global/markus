@@ -1,6 +1,6 @@
 import type { ModelTier } from './model-catalog.js';
 
-export type LLMProvider = 'anthropic' | 'openai' | 'openai-codex' | 'siliconflow' | 'openrouter' | 'google' | 'ollama' | 'minimax' | 'zai' | 'deepseek' | 'custom';
+export type LLMProvider = 'anthropic' | 'openai' | 'openai-codex' | 'siliconflow' | 'openrouter' | 'google' | 'ollama' | 'minimax' | 'zai' | 'deepseek' | 'markus' | 'custom';
 
 export type LLMAuthType = 'api-key' | 'oauth' | 'setup-token';
 
@@ -95,6 +95,8 @@ export interface EnhancedLLMSettings {
 export interface LLMRequest {
   messages: LLMMessage[];
   tools?: LLMTool[];
+  /** Override the model for this specific request (provider-dependent). */
+  model?: string;
   maxTokens?: number;
   temperature?: number;
   stopSequences?: string[];
@@ -164,6 +166,8 @@ export interface LLMResponse {
   compactionContent?: string;
   /** Provider-specific reasoning/thinking content (e.g. DeepSeek reasoning_content) that must be round-tripped. */
   reasoningContent?: string;
+  /** Compute Units charged by Markus proxy (from x-cu-cost header). */
+  cuCost?: number;
 }
 
 export interface SubagentProgressEvent {

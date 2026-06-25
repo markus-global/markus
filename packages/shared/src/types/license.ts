@@ -1,4 +1,6 @@
-export type PlanTier = 'free' | 'enterprise';
+import { getPlanConfig, listPlans } from '../plan-config.js';
+
+export type PlanTier = 'free' | 'basic' | 'plus' | 'pro' | 'max' | 'team' | 'enterprise';
 
 export interface PlanLimits {
   maxAgents: number;
@@ -7,20 +9,41 @@ export interface PlanLimits {
   maxUsers: number;
 }
 
-export const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
-  free: {
-    maxAgents: 20,
-    maxTeams: 5,
-    maxToolCallsPerDay: 5000,
-    maxUsers: 1,
-  },
-  enterprise: {
-    maxAgents: -1,
-    maxTeams: -1,
-    maxToolCallsPerDay: -1,
-    maxUsers: -1,
-  },
+/**
+ * Relationship between plan-config.ts and license.ts:
+ *
+ * - plan-config.ts is the canonical source for CU quotas, pricing, and subscription
+ *   tier metadata (maxTeamMembers, maxAgents, features[]).
+ * - license.ts adds instance-level enforcement limits (maxTeams, maxToolCallsPerDay)
+ *   and enterprise feature gates (PLAN_FEATURES) used by LicenseService and the API.
+ *
+ * maxUsers and maxAgents mirror plan-config values so limits stay aligned with
+ * the Hub subscription tier. maxTeams and maxToolCallsPerDay remain license-only.
+ */
+const LICENSE_ONLY_LIMITS: Record<PlanTier, Pick<PlanLimits, 'maxTeams' | 'maxToolCallsPerDay'>> = {
+  free:       { maxTeams: 5,   maxToolCallsPerDay: 5000 },
+  basic:      { maxTeams: 2,   maxToolCallsPerDay: 10000 },
+  plus:       { maxTeams: 3,   maxToolCallsPerDay: 20000 },
+  pro:        { maxTeams: 5,   maxToolCallsPerDay: -1 },
+  max:        { maxTeams: 10,  maxToolCallsPerDay: -1 },
+  team:       { maxTeams: 25,  maxToolCallsPerDay: -1 },
+  enterprise: { maxTeams: -1,  maxToolCallsPerDay: -1 },
 };
+
+function buildPlanLimits(): Record<PlanTier, PlanLimits> {
+  const limits = {} as Record<PlanTier, PlanLimits>;
+  for (const plan of listPlans()) {
+    const cfg = getPlanConfig(plan);
+    limits[plan] = {
+      ...LICENSE_ONLY_LIMITS[plan],
+      maxAgents: cfg.maxAgents,
+      maxUsers: cfg.maxTeamMembers,
+    };
+  }
+  return limits;
+}
+
+export const PLAN_LIMITS: Record<PlanTier, PlanLimits> = buildPlanLimits();
 
 export type EnterpriseFeature =
   | 'multi_user'
@@ -38,6 +61,17 @@ export const ENTERPRISE_FEATURES: EnterpriseFeature[] = [
   'audit_enhanced',
   'multi_instance',
 ];
+
+/** Features available at each plan tier (cumulative). */
+export const PLAN_FEATURES: Record<PlanTier, EnterpriseFeature[]> = {
+  free: [],
+  basic: [],
+  plus: ['multi_user'],
+  pro: ['multi_user', 'unlimited_tools'],
+  max: ['multi_user', 'unlimited_tools', 'unlimited_teams'],
+  team: ['multi_user', 'unlimited_tools', 'unlimited_teams', 'sso', 'multi_instance'],
+  enterprise: [...ENTERPRISE_FEATURES],
+};
 
 export interface LicenseInfo {
   plan: PlanTier;

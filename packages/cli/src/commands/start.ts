@@ -243,6 +243,30 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
     }
   }
 
+  // Markus platform provider — uses subscription key from Hub registration
+  const markusSubKey =
+    config.llm.providers['markus']?.apiKey ?? process.env['MARKUS_SUBSCRIPTION_KEY'];
+  if (markusSubKey) {
+    providerConfigs['markus'] = {
+      provider: 'markus',
+      model: config.llm.providers['markus']?.model ?? 'markus-lite',
+      apiKey: markusSubKey,
+      baseUrl:
+        config.llm.providers['markus']?.baseUrl ??
+        process.env['MARKUS_PROXY_URL'] ??
+        'https://proxy.markus.global',
+      timeoutMs: llmTimeoutMs,
+    };
+    if (config.llm.defaultProvider === 'markus') {
+      defaultProvider = 'markus';
+    }
+  } else if (config.llm.defaultProvider === 'markus') {
+    log.warn(
+      'Markus Cloud AI is set as the default provider but no subscription key is configured. ' +
+      'Get your API key at https://markus.global/settings and set MARKUS_SUBSCRIPTION_KEY.',
+    );
+  }
+
   // If the configured default provider has no API key, fall back to the first available one
   if (!providerConfigs[defaultProvider]) {
     const available = Object.keys(providerConfigs);
@@ -1213,20 +1237,35 @@ async function startServerCore(
       durationMs: event.durationMs,
       success: event.success,
       detail: event.detail,
+      metadata: {
+        cost: event.cost ?? 0,
+        cuCost: event.cuCost,
+        provider: event.provider,
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens,
+      },
     });
     if (event.tokensUsed && event.type === 'llm_request') {
+      const inputTok = event.inputTokens ?? Math.floor(event.tokensUsed * 0.7);
+      const outputTok = event.outputTokens ?? Math.ceil(event.tokensUsed * 0.3);
       auditService.recordLLMUsage(
         'default',
         agentId,
-        Math.floor(event.tokensUsed * 0.7),
-        Math.ceil(event.tokensUsed * 0.3)
+        inputTok,
+        outputTok,
       );
       billingService.recordUsage({
         orgId: 'default',
         agentId,
         type: 'llm_tokens',
         amount: event.tokensUsed,
-        metadata: { action: event.action },
+        metadata: {
+          action: event.action,
+          cuCost: event.cuCost,
+          provider: event.provider,
+          inputTokens: event.inputTokens,
+          outputTokens: event.outputTokens,
+        },
       });
     }
     if (event.type === 'tool_call') {

@@ -2693,6 +2693,11 @@ export class AgentManager {
         type: string;
         action: string;
         tokensUsed?: number;
+        inputTokens?: number;
+        outputTokens?: number;
+        cost?: number;
+        cuCost?: number;
+        provider?: string;
         durationMs?: number;
         success: boolean;
         detail?: string;

@@ -6,7 +6,6 @@ import remarkBreaks from 'remark-breaks';
 import rehypeHighlight from 'rehype-highlight';
 import { api, hubApi, kebab, type AuthUser, type HubVisibility, type HubOrg } from '../api.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
-import { PAYMENTS_ENABLED } from './AgentBuilder.tsx';
 
 interface ArtifactDetailProps {
   type: string;

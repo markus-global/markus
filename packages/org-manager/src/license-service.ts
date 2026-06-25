@@ -1,4 +1,4 @@
-import { createLogger, type PlanTier, type PlanLimits, type EnterpriseFeature, type LicenseInfo, type LicenseFilePayload, PLAN_LIMITS, ENTERPRISE_FEATURES } from '@markus/shared';
+import { createLogger, type PlanTier, type PlanLimits, type EnterpriseFeature, type LicenseInfo, type LicenseFilePayload, PLAN_LIMITS, ENTERPRISE_FEATURES, PLAN_FEATURES } from '@markus/shared';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -25,9 +25,21 @@ async function hubFetch(url: string, init?: RequestInit, maxRedirects = 3): Prom
 }
 const HEARTBEAT_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
+/**
+ * Ed25519 public key for verifying offline enterprise license file signatures.
+ *
+ * PRODUCTION: Replace this placeholder PEM with the real public key issued by
+ * Markus Hub (Hub admin console → License Keys). Offline `license.json` activation
+ * and signature verification will fail until a valid key is configured here.
+ */
+const HUB_LICENSE_PUBLIC_KEY_PLACEHOLDER_MARKER = 'PlaceholderPublicKeyForOfflineLicenseVerification';
 const HUB_LICENSE_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAPlaceholderPublicKeyForOfflineLicenseVerification00=
 -----END PUBLIC KEY-----`;
+
+function isPlaceholderLicensePublicKey(): boolean {
+  return HUB_LICENSE_PUBLIC_KEY.includes(HUB_LICENSE_PUBLIC_KEY_PLACEHOLDER_MARKER);
+}
 
 export class LicenseService {
   private license: LicenseInfo;
@@ -35,6 +47,11 @@ export class LicenseService {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(hubUrl = 'https://markus.global') {
+    if (isPlaceholderLicensePublicKey()) {
+      log.warn(
+        'HUB_LICENSE_PUBLIC_KEY is still the development placeholder — offline enterprise license verification will not work in production. Replace with the Hub-issued public key before deployment.',
+      );
+    }
     this.hubUrl = hubUrl;
     this.license = this.loadLicense();
     this.startHeartbeat();
@@ -107,8 +124,8 @@ export class LicenseService {
           this.license.plan = data.plan;
           this.license.validUntil = data.validUntil;
           if (data.isTrial !== undefined) this.license.isTrial = data.isTrial;
-          this.license.limits = { ...PLAN_LIMITS[data.plan] };
-          this.license.features = data.plan === 'enterprise' ? [...ENTERPRISE_FEATURES] : [];
+          this.license.limits = { ...PLAN_LIMITS[data.plan] ?? PLAN_LIMITS.free };
+          this.license.features = [...(PLAN_FEATURES[data.plan] ?? [])];
           if (data.orgId) this.license.orgId = data.orgId;
           if (data.orgName) this.license.orgName = data.orgName;
           if (data.maxSeats !== null && data.maxSeats !== undefined) this.license.maxSeats = data.maxSeats;
@@ -177,7 +194,8 @@ export class LicenseService {
   }
 
   canUse(feature: EnterpriseFeature): boolean {
-    if (this.license.plan === 'enterprise') return true;
+    const planFeatures = PLAN_FEATURES[this.license.plan];
+    if (planFeatures?.includes(feature)) return true;
     return this.license.features.includes(feature);
   }
 
@@ -216,8 +234,8 @@ export class LicenseService {
         this.license.validUntil = data.validUntil;
         this.license.isTrial = data.isTrial;
         this.license.isOffline = false;
-        this.license.features = data.features ?? [...ENTERPRISE_FEATURES];
-        this.license.limits = { ...PLAN_LIMITS[this.license.plan] };
+        this.license.features = data.features ?? [...(PLAN_FEATURES[this.license.plan] ?? [])];
+        this.license.limits = { ...PLAN_LIMITS[this.license.plan] ?? PLAN_LIMITS.free };
         this.license.lastValidated = new Date().toISOString();
         this.license.orgId = data.orgId;
         this.license.orgName = data.orgName;
@@ -394,8 +412,8 @@ export class LicenseService {
       this.license.validUntil = data.license.validUntil;
       this.license.isTrial = data.license.isTrial;
       this.license.isOffline = false;
-      this.license.features = data.license.features ?? [...ENTERPRISE_FEATURES];
-      this.license.limits = { ...PLAN_LIMITS[data.license.plan] };
+      this.license.features = data.license.features ?? [...(PLAN_FEATURES[data.license.plan] ?? [])];
+      this.license.limits = { ...(PLAN_LIMITS[data.license.plan] ?? PLAN_LIMITS.free) };
       this.license.lastValidated = new Date().toISOString();
       if (data.license.orgId) this.license.orgId = data.license.orgId;
       if (data.license.orgName) this.license.orgName = data.license.orgName;

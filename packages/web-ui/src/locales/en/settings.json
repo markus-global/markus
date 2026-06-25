@@ -180,10 +180,13 @@
     "providerAdded": "Provider {{name}} added",
     "notConfiguredHint": "Not configured. Use the \"Add Provider\" button below, or set API keys in environment variables.",
     "quickSetupHint": "Enter your API Key to start using this provider immediately.",
+    "markusKeyHint": "Get your Markus Cloud AI API key from",
+    "markusKeyLink": "Hub Settings",
     "quickSetupPlaceholder": "Paste your API Key here...",
     "quickSetupSubmit": "Activate",
     "quickSetupSaving": "Activating...",
     "quickSetupSuccess": "{{name}} is now ready to use!",
+    "keyReadOnly": "Key (read-only)",
     "pricingTitle": "Pricing (per 1M tokens)",
     "input": "Input",
     "output": "Output",
@@ -611,7 +614,11 @@
     "instanceLimitReached": "Maximum number of instances reached for this license.",
     "organization": "Organization",
     "seats": "Seats",
-    "notOwnedHint": "This license is managed by the organization owner. License details are only visible to the license owner."
+    "notOwnedHint": "This license is managed by the organization owner. License details are only visible to the license owner.",
+    "cloudAi": "Cloud AI",
+    "cloudAiDesc": "Manage your Markus Cloud AI subscription, API keys, CU usage, and billing on the Hub website.",
+    "manageSubscription": "Manage Subscription & API Keys",
+    "apiDocs": "API Documentation"
   },
   "account": {
     "title": "Organization & License",

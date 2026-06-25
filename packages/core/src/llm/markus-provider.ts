@@ -1,0 +1,498 @@
+/**
+ * MarkusProvider — standard LLM provider that routes requests through
+ * the Cloudflare Worker proxy (token-billing gateway).
+ *
+ * Architecture:
+ *   Desktop Agent  →  MarkusProvider  →  CF Worker Proxy  →  (upstream LLM)
+ *                       (carries           (validates key,
+ *                     subscription_key)     deducts quota)
+ *
+ * The provider is registered like any other provider (OpenAI, Anthropic, etc.),
+ * making it a first-class citizen in the LLM Router.
+ *
+ * Key management (generate, revoke, rotate) is handled at the Hub/API layer;
+ * this provider simply reads the configured subscription_key and sends it
+ * as a Bearer token in the `Authorization` header.
+ */
+
+import { createLogger, type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent } from '@markus/shared';
+import type { LLMProviderInterface } from './provider.js';
+
+const log = createLogger('markus-provider');
+
+// ---------------------------------------------------------------------------
+// CU (Compute Unit) cache
+// ---------------------------------------------------------------------------
+
+interface CUEntry {
+  inputTokens: number;
+  outputTokens: number;
+  timestamp: number;
+}
+
+/**
+ * Lightweight in-memory CU usage cache.
+ * Keeps track of CU consumption within the provider — no DB, no persistence.
+ * Used for diagnostic / near-real-time feedback rather than billing.
+ */
+class CUCache {
+  private entries: CUEntry[] = [];
+  private readonly MAX_ENTRIES = 100;
+
+  add(inputTokens: number, outputTokens: number): void {
+    this.entries.push({ inputTokens, outputTokens, timestamp: Date.now() });
+    if (this.entries.length > this.MAX_ENTRIES) {
+      this.entries = this.entries.slice(-this.MAX_ENTRIES);
+    }
+  }
+
+  /** Total tokens consumed across all cached entries (diagnostic, not billing). */
+  getTotal(): { inputTokens: number; outputTokens: number } {
+    let inputTokens = 0;
+    let outputTokens = 0;
+    for (const e of this.entries) {
+      inputTokens += e.inputTokens;
+      outputTokens += e.outputTokens;
+    }
+    return { inputTokens, outputTokens };
+  }
+
+  clear(): void {
+    this.entries = [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MarkusProvider
+// ---------------------------------------------------------------------------
+
+const DEFAULT_BASE_URL = 'http://localhost:8787';
+const DEFAULT_MODEL = 'markus-lite';
+const DEFAULT_MAX_TOKENS = 4096;
+const CHAT_TIMEOUT_MS = 90_000;
+const STREAM_TIMEOUT_MS = 120_000;
+const MAX_RETRIES = 3;
+const RETRY_BASE_DELAY_MS = 500;
+
+export interface MarkusModelInfo {
+  id: string;
+  display_name: string;
+  capability: string;
+  tier: string;
+  context_window: number;
+  max_output_tokens: number;
+  supports_vision: boolean;
+  supports_reasoning: boolean;
+}
+
+let cachedModelList: MarkusModelInfo[] | null = null;
+let modelListExpiry = 0;
+const MODEL_LIST_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+export class MarkusProvider implements LLMProviderInterface {
+  readonly name = 'markus';
+  model: string;
+  private apiKey: string;
+  private baseUrl: string;
+  private maxTokens: number;
+  private chatTimeoutMs: number;
+  private streamTimeoutMs: number;
+  private cuCache = new CUCache();
+
+  constructor(config?: LLMProviderConfig) {
+    this.model = config?.model ?? DEFAULT_MODEL;
+    this.apiKey = config?.apiKey ?? process.env['MARKUS_SUBSCRIPTION_KEY'] ?? '';
+    this.baseUrl = config?.baseUrl ?? process.env['MARKUS_PROXY_URL'] ?? DEFAULT_BASE_URL;
+    this.maxTokens = config?.maxTokens ?? DEFAULT_MAX_TOKENS;
+    this.chatTimeoutMs = config?.timeoutMs ?? CHAT_TIMEOUT_MS;
+    this.streamTimeoutMs = config?.timeoutMs ?? STREAM_TIMEOUT_MS;
+  }
+
+  configure(config: LLMProviderConfig): void {
+    if (config.model) this.model = config.model;
+    if (config.apiKey) this.apiKey = config.apiKey;
+    if (config.baseUrl) this.baseUrl = config.baseUrl;
+    if (config.maxTokens) this.maxTokens = config.maxTokens;
+    if (config.timeoutMs) {
+      this.chatTimeoutMs = config.timeoutMs;
+      this.streamTimeoutMs = config.timeoutMs;
+    }
+  }
+
+  /** Latest CU quota info from the proxy response headers. */
+  private lastQuotaInfo: { cuCost: number; cuRemaining: number; cuLimit: number } | null = null;
+  private totalCuUsed = 0;
+  private cuUsedToday = 0;
+  private todayCutoffDate = new Date().toISOString().slice(0, 10);
+
+  /**
+   * Fetch available models from the proxy's /v1/models endpoint.
+   * Results are cached for 10 minutes.
+   */
+  async fetchModels(): Promise<MarkusModelInfo[]> {
+    if (cachedModelList && Date.now() < modelListExpiry) {
+      return cachedModelList;
+    }
+
+    const base = this.baseUrl.replace(/\/+$/, '');
+    const url = `${base}/v1/models`;
+    const headers: Record<string, string> = {};
+    if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
+
+    try {
+      const res = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) });
+      if (res.ok) {
+        const data = (await res.json()) as { data: MarkusModelInfo[] };
+        cachedModelList = data.data ?? [];
+        modelListExpiry = Date.now() + MODEL_LIST_TTL_MS;
+        return cachedModelList;
+      }
+      log.warn(`Failed to fetch models: ${res.status}`);
+    } catch (err) {
+      log.warn('Failed to fetch models', { error: err instanceof Error ? err.message : String(err) });
+    }
+
+    return cachedModelList ?? FALLBACK_MODELS;
+  }
+
+  /** Return token usage totals for diagnostic purposes. */
+  getCUCacheTotals(): { inputTokens: number; outputTokens: number } {
+    return this.cuCache.getTotal();
+  }
+
+  /** Return the latest quota info from the proxy. */
+  getQuotaInfo(): { cuCost: number; cuRemaining: number; cuLimit: number } | null {
+    return this.lastQuotaInfo;
+  }
+
+  /** Cumulative CU usage tracked from proxy response headers. */
+  getCuUsageStats(): {
+    totalCuUsed: number;
+    cuUsedToday: number;
+    cuRemaining: number;
+    cuLimit: number;
+    lastCuCost: number;
+  } {
+    const quota = this.lastQuotaInfo;
+    return {
+      totalCuUsed: this.totalCuUsed,
+      cuUsedToday: this.cuUsedToday,
+      cuRemaining: quota?.cuRemaining ?? -1,
+      cuLimit: quota?.cuLimit ?? 0,
+      lastCuCost: quota?.cuCost ?? 0,
+    };
+  }
+
+  /** Clear CU cache. */
+  clearCUCache(): void {
+    this.cuCache.clear();
+  }
+
+  /** Extract CU quota headers from a proxy response. */
+  private extractQuotaHeaders(response: Response): number {
+    const cuCost = parseInt(response.headers.get('x-cu-cost') ?? '0', 10);
+    const cuRemaining = parseInt(response.headers.get('x-cu-remaining') ?? '-1', 10);
+    const cuLimit = parseInt(response.headers.get('x-cu-limit') ?? '0', 10);
+    if (cuRemaining >= 0) {
+      this.lastQuotaInfo = { cuCost, cuRemaining, cuLimit };
+      log.debug('CU quota', { cuCost, cuRemaining, cuLimit });
+    }
+    if (cuCost > 0) {
+      const today = new Date().toISOString().slice(0, 10);
+      if (today !== this.todayCutoffDate) {
+        this.cuUsedToday = 0;
+        this.todayCutoffDate = today;
+      }
+      this.totalCuUsed += cuCost;
+      this.cuUsedToday += cuCost;
+    }
+    return cuCost;
+  }
+
+  // -------------------------------------------------------------------------
+  // Chat (non-streaming)
+  // -------------------------------------------------------------------------
+
+  async chat(request: LLMRequest): Promise<LLMResponse> {
+    const endpoint = this.buildEndpoint();
+    const body = this.buildBody(request, false);
+    const headers = await this.buildHeaders();
+
+    const response = await this.fetchWithRetry(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.chatTimeoutMs),
+    });
+
+    // CU/billing errors — throw recognizable error so router won't fallback
+    if (response.status === 402 || response.status === 429) {
+      const errBody = await response.json().catch(() => ({})) as Record<string, unknown>;
+      const errMsg = ((errBody.error as Record<string, unknown>)?.message as string) ?? 'CU quota exceeded';
+      throw new Error(`CU_EXCEEDED: ${errMsg}. Visit https://markus.global/settings to upgrade your plan or purchase more CU.`);
+    }
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`Markus proxy error ${response.status}: ${errText}`);
+    }
+
+    const cuCost = this.extractQuotaHeaders(response);
+    const data = await response.json() as Record<string, unknown>;
+
+    if (data.error) {
+      const err = data.error as Record<string, unknown>;
+      throw new Error(`Markus proxy error: ${String(err.message ?? err.code ?? 'unknown')}`);
+    }
+
+    const llmResponse = this.parseResponse(data);
+    if (cuCost > 0) llmResponse.cuCost = cuCost;
+    this.recordCU(llmResponse);
+
+    return llmResponse;
+  }
+
+  // -------------------------------------------------------------------------
+  // Chat (streaming)
+  // -------------------------------------------------------------------------
+
+  async chatStream(
+    request: LLMRequest,
+    onEvent: (event: LLMStreamEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<LLMResponse> {
+    const endpoint = this.buildEndpoint();
+    const body = this.buildBody(request, true);
+    const headers = await this.buildHeaders();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.streamTimeoutMs);
+    if (signal) signal.addEventListener('abort', () => controller.abort(), { once: true });
+
+    let res: Response;
+    try {
+      res = await this.fetchWithRetry(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      }, true); // skip retry for stream to avoid duplicating chunks
+    } catch (err) {
+      clearTimeout(timeout);
+      const msg = err instanceof Error ? err.message : String(err);
+      const cause = (err as NodeJS.ErrnoException).cause;
+      const detail = cause instanceof Error ? ` (${cause.message})` : '';
+      throw new Error(`${msg}${detail}`);
+    }
+
+    if (!res.ok) {
+      clearTimeout(timeout);
+      const errText = await res.text();
+      if (res.status === 402 || res.status === 429) {
+        throw new Error(`CU_EXCEEDED: ${errText}. Visit https://markus.global/settings to upgrade your plan or purchase more CU.`);
+      }
+      throw new Error(`Markus proxy error ${res.status}: ${errText}`);
+    }
+
+    // Extract CU quota headers from the initial streaming response
+    const streamCuCost = this.extractQuotaHeaders(res);
+
+    let content = '';
+    let reasoningContent = '';
+    let finishReason: LLMResponse['finishReason'] = 'end_turn';
+    let promptTokens = 0;
+    let completionTokens = 0;
+
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error('No response body reader');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed === 'data: [DONE]') continue;
+          if (!trimmed.startsWith('data: ')) continue;
+
+          try {
+            const chunk = JSON.parse(trimmed.slice(6)) as Record<string, unknown>;
+            const choice = (chunk.choices as Array<Record<string, unknown>> | undefined)?.[0];
+            const delta = choice?.delta as Record<string, unknown> | undefined;
+
+            if (delta?.reasoning_content) {
+              reasoningContent += String(delta.reasoning_content);
+              onEvent({ type: 'thinking_delta', thinking: String(delta.reasoning_content) });
+            }
+
+            if (delta?.content) {
+              content += String(delta.content);
+              onEvent({ type: 'text_delta', text: String(delta.content) });
+            }
+
+            if (choice?.finish_reason) {
+              const finishMap: Record<string, LLMResponse['finishReason']> = {
+                stop: 'end_turn',
+                tool_calls: 'tool_use',
+                length: 'max_tokens',
+              };
+              finishReason = finishMap[String(choice.finish_reason)] ?? 'end_turn';
+            }
+
+            if (chunk.usage) {
+              const u = chunk.usage as Record<string, number>;
+              promptTokens = u.prompt_tokens ?? 0;
+              completionTokens = u.completion_tokens ?? 0;
+            }
+          } catch { /* skip unparseable lines */ }
+        }
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const usage = { inputTokens: promptTokens, outputTokens: completionTokens };
+    onEvent({ type: 'message_end', usage, finishReason });
+
+    const streamResult: LLMResponse = { content, usage, finishReason };
+    if (reasoningContent) streamResult.reasoningContent = reasoningContent;
+    if (streamCuCost > 0) streamResult.cuCost = streamCuCost;
+
+    this.cuCache.add(promptTokens, completionTokens);
+    return streamResult;
+  }
+
+  // -------------------------------------------------------------------------
+  // Internal helpers
+  // -------------------------------------------------------------------------
+
+  private buildEndpoint(): string {
+    const base = this.baseUrl.replace(/\/+$/, '');
+    return `${base}/v1/chat/completions`;
+  }
+
+  private async buildHeaders(): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (this.apiKey) {
+      headers['Authorization'] = `Bearer ${this.apiKey}`;
+    }
+    return headers;
+  }
+
+  private buildBody(request: LLMRequest, stream: boolean): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      model: request.model ?? this.model,
+      messages: request.messages,
+      max_tokens: request.maxTokens ?? this.maxTokens,
+      stream,
+    };
+    if (request.temperature !== undefined) body['temperature'] = request.temperature;
+    if (request.tools?.length) body['tools'] = request.tools;
+    if (request.stopSequences?.length) body['stop'] = request.stopSequences;
+    return body;
+  }
+
+  /**
+   * Fetch with exponential backoff retry.
+   * Does NOT retry on 4xx errors (billing/auth are not transient).
+   * Only retries on 5xx / network issues.
+   */
+  private async fetchWithRetry(
+    url: string,
+    init: RequestInit,
+    skipRetry = false,
+    retries = MAX_RETRIES,
+  ): Promise<Response> {
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        const res = await fetch(url, init);
+
+        // 4xx errors are NOT transient — return immediately (no retry)
+        if (res.status >= 400 && res.status < 500) {
+          return res;
+        }
+
+        if (res.ok) return res;
+
+        // 5xx: retry
+        const errText = await res.text().catch(() => '');
+        log.warn(`Markus proxy error ${res.status} (attempt ${attempt + 1}/${retries})`, { body: errText.slice(0, 200) });
+        lastError = new Error(`Markus proxy error ${res.status}: ${errText}`);
+
+        if (skipRetry) return res;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        log.warn(`Markus proxy network error (attempt ${attempt + 1}/${retries})`, { error: lastError.message });
+      }
+
+      if (attempt < retries - 1) {
+        const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+
+    throw lastError ?? new Error('Markus proxy request failed after all retries');
+  }
+
+  /**
+   * Parse non-streaming response from the proxy.
+   * The proxy returns standard OpenAI-compatible JSON.
+   */
+  private parseResponse(data: Record<string, unknown>): LLMResponse {
+    const choices = data.choices as Array<Record<string, unknown>> | undefined;
+    if (!choices?.length) {
+      throw new Error('No response choices from Markus proxy');
+    }
+
+    const choice = choices[0];
+    const message = choice.message as Record<string, unknown> | undefined;
+    const content = typeof message?.content === 'string' ? message.content : '';
+
+    const toolCallsData = message?.tool_calls as Array<Record<string, unknown>> | undefined;
+    const toolCalls = toolCallsData?.map((tc: Record<string, unknown>) => ({
+      id: String(tc.id ?? ''),
+      name: String((tc.function as Record<string, unknown>)?.name ?? ''),
+      arguments: JSON.parse(String((tc.function as Record<string, unknown>)?.arguments ?? '{}')) as Record<string, unknown>,
+    }));
+
+    const usage = data.usage as Record<string, number> | undefined;
+    const finishMap: Record<string, LLMResponse['finishReason']> = {
+      stop: 'end_turn',
+      tool_calls: 'tool_use',
+      length: 'max_tokens',
+    };
+
+    return {
+      content,
+      toolCalls: toolCalls?.length ? toolCalls : undefined,
+      usage: {
+        inputTokens: usage?.prompt_tokens ?? 0,
+        outputTokens: usage?.completion_tokens ?? 0,
+      },
+      finishReason: finishMap[String(choice.finish_reason ?? 'stop')] ?? 'end_turn',
+    };
+  }
+
+  /** Record CU usage for diagnostic tracking within the provider. */
+  private recordCU(response: LLMResponse): void {
+    this.cuCache.add(response.usage.inputTokens, response.usage.outputTokens);
+  }
+}
+
+const FALLBACK_MODELS: MarkusModelInfo[] = [
+  { id: 'markus-lite', display_name: 'Markus Lite', capability: 'text', tier: 'flash', context_window: 65536, max_output_tokens: 8192, supports_vision: false, supports_reasoning: false },
+  { id: 'markus-pro', display_name: 'Markus Pro', capability: 'text', tier: 'pro', context_window: 65536, max_output_tokens: 8192, supports_vision: false, supports_reasoning: false },
+  { id: 'markus-max', display_name: 'Markus Max', capability: 'text', tier: 'high', context_window: 200000, max_output_tokens: 16384, supports_vision: true, supports_reasoning: false },
+  { id: 'markus-reason', display_name: 'Markus Reason', capability: 'text', tier: 'pro', context_window: 65536, max_output_tokens: 8192, supports_vision: false, supports_reasoning: true },
+];

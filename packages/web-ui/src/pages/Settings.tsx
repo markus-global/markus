@@ -1228,6 +1228,32 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                       </>
                     )}
 
+                    {/* ───── Subscription Key (Markus provider) ───── */}
+                    {name === 'markus' && info.configured && (
+                      <div className="bg-surface-elevated/30 rounded-lg p-4 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] text-fg-tertiary uppercase tracking-wider">Subscription Key</label>
+                          <span className="text-[10px] text-fg-muted">{t('modelProviders.keyReadOnly')}</span>
+                        </div>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={info.apiKeyPreview ?? ''}
+                            readOnly
+                            className="flex-1 px-3 py-2 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary font-mono selection:bg-brand-500/30 cursor-text focus:border-brand-500 outline-none"
+                            onClick={e => (e.target as HTMLInputElement).select()}
+                          />
+                          <button
+                            onClick={() => { navigator.clipboard.writeText(info.apiKeyPreview ?? '').catch(() => {}); }}
+                            className="px-3 py-2 text-xs bg-surface-secondary hover:bg-surface-tertiary border border-border-default rounded-lg text-fg-secondary transition-colors"
+                            title="Copy"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" /></svg>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Available Models (read-only informational) */}
                     <div>
                       <div className="flex items-center justify-between mb-2">
@@ -1322,6 +1348,14 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     {!info.configured && (
                       <div className="space-y-3">
                         <div className="text-xs text-fg-secondary">{t('modelProviders.quickSetupHint')}</div>
+                        {name === 'markus' && (
+                          <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-brand-600/8 border border-brand-500/15 text-xs text-fg-secondary">
+                            <svg className="w-4 h-4 shrink-0 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                            <span>{t('modelProviders.markusKeyHint')}{' '}
+                              <a href={`${hubApi.getUrl()}/settings`} target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-400 underline underline-offset-2">{t('modelProviders.markusKeyLink')}</a>
+                            </span>
+                          </div>
+                        )}
                         <div>
                           <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.apiKey')}</label>
                           <input
@@ -3935,6 +3969,27 @@ function OrgLicenseSection() {
           </div>
         </div>
       )}
+
+      {/* ═══ CLOUD AI — Subscription & API Keys ═══ */}
+      <div>
+        <div className="flex items-center mb-3">
+          <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider">{t('license.cloudAi')}</h3>
+        </div>
+        <div className="rounded-lg border border-border-default bg-gradient-to-r from-brand-600/5 to-transparent px-5 py-4 space-y-3">
+          <p className="text-xs text-fg-secondary">{t('license.cloudAiDesc')}</p>
+          <div className="flex flex-wrap gap-2">
+            <a href={`${hubApi.getUrl()}/settings`} target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium rounded-lg transition-colors">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+              {t('license.manageSubscription')}
+            </a>
+            <a href={`${hubApi.getUrl()}/docs/api`} target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-4 py-2 border border-border-default text-fg-secondary hover:bg-surface-elevated text-xs font-medium rounded-lg transition-colors">
+              {t('license.apiDocs')}
+            </a>
+          </div>
+        </div>
+      </div>
 
       <div className="flex items-center gap-4 text-[11px] text-fg-tertiary pt-1">
         <a href="https://markus.global" target="_blank" rel="noopener noreferrer" className="hover:text-fg-secondary transition-colors">{t('license.website')}</a>
