@@ -4089,8 +4089,9 @@ export class TaskService {
               log.info('Fresh retry finished after submitForReview — skipping no-submit retry', { taskId });
             }
             if (!alreadyTerminal && !didSubmit && currentTask && currentTask.status === 'in_progress') {
-              const nextAttempt = (_retryAttempt ?? 0) + 1;
-              const delayMs = withJitter(TaskService.RETRY_DELAYS_MS[Math.min(nextAttempt - 1, TaskService.RETRY_DELAYS_MS.length - 1)] ?? 60_000);
+              // _retryAttempt not available in this closure — always uses first delay
+              // since runTask is called with attempt=1 on the next line
+              const delayMs = withJitter(TaskService.RETRY_DELAYS_MS[0] ?? 60_000);
               log.warn(`Fresh retry finished without task_submit_review — auto-retrying in ${Math.round(delayMs / 1000)}s`, { taskId });
               this.addTaskNote(taskId,
                 `[System] Fresh retry finished without task_submit_review. Auto-retrying.`,
