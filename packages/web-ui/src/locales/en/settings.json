@@ -184,6 +184,7 @@
     "quickSetupSubmit": "Activate",
     "quickSetupSaving": "Activating...",
     "quickSetupSuccess": "{{name}} is now ready to use!",
+    "keyReadOnly": "Key (read-only)",
     "pricingTitle": "Pricing (per 1M tokens)",
     "input": "Input",
     "output": "Output",
