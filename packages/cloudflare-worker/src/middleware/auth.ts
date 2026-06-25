@@ -1,30 +1,41 @@
 /**
- * Auth middleware — validates the `X-Subscription-Key` header.
+ * Auth middleware — JWT verification (proxy mode) or API-key passthrough (direct mode).
  *
- * In this skeleton the key is compared against a single statically
- * configured key (via secret / env var).  A future phase will replace
- * this with a KV lookup or API call to the Hub backend.
+ * Two authentication modes:
+ *
+ * 1. **Proxy JWT** (`Authorization: Bearer <jwt>`)
+ *    - Verifies the JWT signature using `PROXY_JWT_SECRET`.
+ *    - Decodes the payload (user_id, plan_type, cu_used, monthly_quota_cu, etc.).
+ *    - The chat handler uses this info to enforce quota and deduct CU tokens.
+ *
+ * 2. **Self-provided API key** (`x-api-key: <key>`)
+ *    - The caller has their own LLM provider key.
+ *    - No quota enforcement — the proxy is a pure network gateway.
+ *    - The caller must also set `x-provider-base-url` to the upstream endpoint.
+ *
+ * PUBLIC_ROUTES (/health) skip authentication entirely.
  */
 
 import { unauthorized } from '../utils/errors.js';
 import { unauthorized as unauthorizedResponse } from '../utils/response.js';
+import { verifyProxyToken } from '../jwt-verify.js';
+import { setAuthContext } from '../auth-context.js';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
 /** Routes that do NOT require authentication. */
 const PUBLIC_ROUTES = new Set(['/health']);
 
-export interface AuthOptions {
-  /** Env var name that holds the expected subscription key. */
-  keyEnvVar?: string;
-}
+// ---------------------------------------------------------------------------
+// Auth middleware
+// ---------------------------------------------------------------------------
 
-/**
- * Auth middleware.  Returns a 401 Response if the request should be
- * authenticated but no valid key is provided; returns `null` to allow.
- */
-export function handleAuth(
+export async function handleAuth(
   request: Request,
   env: Record<string, unknown>,
-): Response | null {
+): Promise<Response | null> {
   const url = new URL(request.url);
 
   // Public routes skip auth.
@@ -32,17 +43,43 @@ export function handleAuth(
     return null;
   }
 
-  const subscriptionKey = request.headers.get('x-subscription-key');
+  // --- Try Proxy JWT mode: Authorization: Bearer <token> --------------------
+  const authHeader = request.headers.get('authorization');
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7).trim();
+    if (!token) {
+      return unauthorizedResponse(unauthorized('Empty Bearer token'));
+    }
 
-  if (!subscriptionKey) {
-    return unauthorizedResponse(unauthorized('Missing X-Subscription-Key header'));
+    const secret = env.PROXY_JWT_SECRET;
+    if (!secret) {
+      return unauthorizedResponse(unauthorized('Proxy JWT secret is not configured'));
+    }
+
+    const payload = await verifyProxyToken(token, secret as string);
+    if (!payload) {
+      return unauthorizedResponse(unauthorized('Invalid or expired proxy token'));
+    }
+
+    setAuthContext(request, { mode: 'proxy', payload });
+    return null;
   }
 
-  // TODO(Wave 2): Replace static key check with Hub API / KV lookup.
-  const expectedKey = env.SUBSCRIPTION_KEY as string | undefined;
-  if (expectedKey && subscriptionKey !== expectedKey) {
-    return unauthorizedResponse(unauthorized('Invalid subscription key'));
+  // --- Try Direct mode: x-api-key -------------------------------------------
+  const apiKey = request.headers.get('x-api-key');
+  if (apiKey) {
+    // Need a provider base URL for direct mode
+    const providerBaseUrl = request.headers.get('x-provider-base-url');
+    if (!providerBaseUrl) {
+      return unauthorizedResponse(unauthorized('x-provider-base-url header is required in direct mode'));
+    }
+
+    setAuthContext(request, { mode: 'direct', apiKey });
+    return null;
   }
 
-  return null; // authenticated
+  // --- No auth provided -----------------------------------------------------
+  return unauthorizedResponse(
+    unauthorized('Authentication required. Use Authorization: Bearer <jwt> (proxy) or x-api-key (direct)'),
+  );
 }
