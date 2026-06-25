@@ -23,9 +23,9 @@ export interface SecretaryToolsContext {
 }
 
 export interface PackageToolsContext {
-  installArtifact?: () => ((type: 'agent' | 'team' | 'skill', name: string) => Promise<{ type: string; installed: unknown }>) | undefined;
+  installArtifact?: () => ((type: 'agent' | 'team' | 'skill', name: string, teamId?: string) => Promise<{ type: string; installed: unknown }>) | undefined;
   listArtifacts?: () => ((type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>) | undefined;
-  hireFromTemplate?: () => ((templateId: string, name: string, skills?: string[]) => Promise<{ id: string; name: string; role: string }>) | undefined;
+  hireFromTemplate?: () => ((templateId: string, name: string, skills?: string[], teamId?: string) => Promise<{ id: string; name: string; role: string }>) | undefined;
   listTemplates?: () => (() => Array<{ id: string; name: string; description: string; roleId: string; category: string }>) | undefined;
   searchHub?: () => ((opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>) | undefined;
   downloadAndInstall?: () => ((itemId: string) => Promise<{ type: string; installed: unknown }>) | undefined;
@@ -83,6 +83,10 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
           },
           name: { type: 'string', description: 'Package name (from package_list)' },
           agent_name: { type: 'string', description: 'Display name for the new agent (required when installing from a built-in role, e.g. "developer")' },
+          team_id: {
+            type: 'string',
+            description: 'Optional team ID to add the agent to after installation. If omitted, the agent is created without team membership.',
+          },
           skills: {
             type: 'array',
             items: { type: 'string' },
@@ -103,7 +107,7 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
           if (ctx.requestApproval) {
             const { approved, comment } = await ctx.requestApproval({
               toolName: 'package_install',
-              toolArgs: { type, name, agent_name: args['agent_name'] },
+              toolArgs: { type, name, agent_name: args['agent_name'], team_id: args['team_id'] },
               reason: `Agent wants to install ${type} "${name}" into the organization`,
             });
             if (!approved) return JSON.stringify({ status: 'rejected', reason: comment || 'User denied package installation' });
@@ -111,23 +115,25 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
 
           if (type === 'agent') {
             try {
-              const result = await installArtifact(type, name);
+              const teamId = (args['team_id'] as string | undefined)?.trim() || undefined;
+              const result = await installArtifact(type, name, teamId);
               return JSON.stringify({
                 status: 'success',
                 ...result,
-                next_steps: 'Installed successfully. Next: onboard new agent with project context via agent_send_message, then assign tasks via task_create.',
+                next_steps: teamId ? `Installed successfully. Agent added to team ${teamId}. Next: onboard with project context via agent_send_message, then assign tasks via task_create.` : 'Installed successfully. Next: onboard new agent with project context via agent_send_message, then assign tasks via task_create.',
               });
             } catch {
               const hireFromTemplate = ctx.hireFromTemplate?.();
               if (hireFromTemplate) {
                 const agentName = (args['agent_name'] as string | undefined)?.trim();
                 if (!agentName) return JSON.stringify({ status: 'error', error: 'agent_name is required when installing from a built-in role — provide a display name for the new agent' });
-                const result = await hireFromTemplate(name, agentName, args['skills'] as string[] | undefined);
+                const teamId = (args['team_id'] as string | undefined)?.trim() || undefined;
+                const result = await hireFromTemplate(name, agentName, args['skills'] as string[] | undefined, teamId);
                 return JSON.stringify({
                   status: 'success',
                   type: 'agent',
                   agent: result,
-                  next_steps: 'Agent hired and started. Next: onboard with project context via agent_send_message, then assign tasks via task_create.',
+                  next_steps: teamId ? `Agent hired and added to team ${teamId}. Next: onboard with project context via agent_send_message, then assign tasks via task_create.` : 'Agent hired and started. Next: onboard with project context via agent_send_message, then assign tasks via task_create.',
                 });
               }
               throw new Error(`Agent package not found: ${name}. Use package_list to see available packages.`);

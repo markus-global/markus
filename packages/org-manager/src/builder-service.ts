@@ -99,7 +99,7 @@ export class BuilderService {
     return artifacts;
   }
 
-  async installArtifact(type: 'agent' | 'team' | 'skill', name: string): Promise<InstallResult> {
+  async installArtifact(type: 'agent' | 'team' | 'skill', name: string, teamId?: string): Promise<InstallResult> {
     const typeDir = type === 'agent' ? 'agents' : type === 'team' ? 'teams' : 'skills';
     let artDir = join(this.baseDir, typeDir, name);
 
@@ -130,7 +130,7 @@ export class BuilderService {
     const mfName = manifestFilename(installType);
 
     if (type === 'agent') {
-      return this.installAgent(artDir, manifest, mfName, name);
+      return this.installAgent(artDir, manifest, mfName, name, teamId);
     } else if (type === 'team') {
       return this.installTeam(artDir, manifest, mfName, name);
     } else {
@@ -143,6 +143,7 @@ export class BuilderService {
     manifest: MarkusPackageManifest,
     mfName: string,
     artifactName: string,
+    teamId?: string,
   ): Promise<InstallResult> {
     const agentManager = this.orgService.getAgentManager();
     const agentName = manifest.displayName ?? manifest.name ?? artifactName;
@@ -154,6 +155,7 @@ export class BuilderService {
       name: agentName,
       roleName: manifest.agent?.roleName || (hasCustomRole ? 'custom' : 'developer'),
       orgId: 'default',
+      teamId,
       agentRole,
       skills,
       skipAutoStart: true,
