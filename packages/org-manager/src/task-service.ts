@@ -4051,6 +4051,11 @@ export class TaskService {
       } catch { /* start from 0 */ }
     }
 
+    // Track fresh (not in-retry-loop) no-submit retry count for progressive backoff.
+    // This counter is scoped to this particular runTask invocation's sendTaskExecution
+    // callback closure, incrementing each time execution_finished fires without submit.
+    let freshRetryCount = 0;
+
     void agent
       .sendTaskExecution(
         taskId,
@@ -4089,18 +4094,18 @@ export class TaskService {
               log.info('Fresh retry finished after submitForReview — skipping no-submit retry', { taskId });
             }
             if (!alreadyTerminal && !didSubmit && currentTask && currentTask.status === 'in_progress') {
-              // _retryAttempt not available in this closure — always uses first delay
-              // since runTask is called with attempt=1 on the next line
-              const delayMs = withJitter(TaskService.RETRY_DELAYS_MS[0] ?? 60_000);
-              log.warn(`Fresh retry finished without task_submit_review — auto-retrying in ${Math.round(delayMs / 1000)}s`, { taskId });
+              freshRetryCount++;
+              const delayIndex = Math.min(freshRetryCount, TaskService.RETRY_DELAYS_MS.length - 1);
+              const delayMs = withJitter(TaskService.RETRY_DELAYS_MS[delayIndex] ?? 60_000);
+              log.warn(`Fresh retry finished without task_submit_review — auto-retrying in ${Math.round(delayMs / 1000)}s (attempt ${freshRetryCount})`, { taskId });
               this.addTaskNote(taskId,
-                `[System] Fresh retry finished without task_submit_review. Auto-retrying.`,
+                `[System] Fresh retry finished without task_submit_review. Auto-retrying (attempt ${freshRetryCount}).`,
                 'system'
               );
               setTimeout(() => {
                 const current = this.tasks.get(taskId);
                 if (!current || current.status !== 'in_progress') return;
-                this.runTask(taskId, 1, 'no_submit').catch(e =>
+                this.runTask(taskId, freshRetryCount, 'no_submit').catch(e =>
                   log.error('Fresh no-submit retry invocation failed', { taskId, error: String(e) })
                 );
               }, delayMs);
