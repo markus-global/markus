@@ -2168,6 +2168,9 @@ export class TaskService {
 
     // Stage 6: External broadcast
     this.broadcastStatusChange(task, from, to);
+
+    // Stage 7: Scheduled task — ensure nextRunAt is computed on completion
+    this.maybeEnsureScheduledNextRun(task, from, to);
   }
 
   // ─── Stage 1: Cleanup on leaving a status ────────────────────────────────────
@@ -2380,6 +2383,58 @@ export class TaskService {
         metadata: { taskId: task.id, status: to, agentId: task.assignedAgentId },
       });
     }
+  }
+
+  // ─── Stage 7: Scheduled task nextRunAt safety net ──────────────────────────
+
+  /**
+   * Ensure that a scheduled task's nextRunAt is always properly computed
+   * when transitioning to `completed`. This is a safety net for edge cases
+   * where the normal `advanceScheduleConfig` call in `fireScheduledTask`
+   * was skipped (e.g., task was executed manually, or a phantom retry loop
+   * prevented the scheduled runner from managing the lifecycle).
+   *
+   * Does NOT increment currentRuns — only fills in a missing or stale nextRunAt.
+   */
+  private maybeEnsureScheduledNextRun(task: Task, from: TaskStatus, to: TaskStatus): void {
+    if (to !== 'completed') return;
+    if (task.taskType !== 'scheduled') return;
+    if (!task.scheduleConfig) return;
+
+    const config = task.scheduleConfig;
+
+    // One-shot tasks with runAt don't need a next run
+    if (config.runAt) return;
+
+    // If maxRuns is reached, don't schedule more
+    if (config.maxRuns !== undefined && (config.currentRuns ?? 0) >= config.maxRuns) return;
+
+    // Check if nextRunAt is missing or in the past
+    const nextRun = config.nextRunAt ? new Date(config.nextRunAt).getTime() : 0;
+    const now = new Date();
+    if (nextRun > now.getTime()) return; // already has a valid future nextRunAt
+
+    // Recalculate nextRunAt from now, using the original schedule config.
+    // We use (config.currentRuns ?? 0) + 1 as the next run number so it's
+    // consistent with what advanceScheduleConfig would produce.
+    const computed = computeNextRunFromConfig(config, now);
+    if (computed) {
+      config.nextRunAt = computed;
+      log.info('Scheduled task nextRunAt recalculated on completion', {
+        taskId: task.id, from, nextRunAt: computed,
+      });
+    } else {
+      // No more runs (expired cron) — clear nextRunAt so tick() won't pick it up
+      config.nextRunAt = undefined;
+      log.info('Scheduled task has no more runs — cleared nextRunAt', {
+        taskId: task.id, from,
+      });
+    }
+
+    // Persist the updated scheduleConfig
+    this.updateScheduleConfig(task.id, config).catch(err =>
+      log.error('Failed to persist recalculated scheduleConfig', { taskId: task.id, error: String(err) })
+    );
   }
 
   cancelTask(id: string, cascade: boolean, updatedBy?: string, updatedByType?: 'human' | 'agent' | 'system'): Task {
