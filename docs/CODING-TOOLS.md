@@ -128,15 +128,16 @@ Coding tools are **opt-in**. Set `codingTools.enabled: true` in `markus.json` (o
 | Tool name | `claude-code` |
 | Binary | `claude` |
 | Install | `npm install -g @anthropic-ai/claude-code` |
-| Auth | Anthropic API key or Claude subscription (configured in the CLI) |
+| Auth | Anthropic API key (`ANTHROPIC_API_KEY`), custom endpoint (`ANTHROPIC_BASE_URL`), or Claude subscription via CLI login |
 
 Markus invokes:
 
 ```bash
-claude --print --output-format stream-json --max-turns 50 --no-input "<prompt>"
+claude --print --output-format stream-json --verbose --max-turns 50 --permission-mode bypassPermissions "<prompt>"
 ```
 
 - **stream-json** output enables structured progress parsing and cost extraction from `result` events.
+- **`--permission-mode bypassPermissions`** is required because `--print` mode has no interactive stdin for approval prompts. Markus-level approval is handled separately via the `approvalRequired` config flag.
 - **Context file:** `CLAUDE.md` in the repository root.
 - **Best for:** Complex refactors, multi-file changes, sustained codebase exploration.
 - **Cost tracking:** Yes — input/output tokens, cache stats, and `cost_usd` from result events.
@@ -148,18 +149,21 @@ claude --print --output-format stream-json --max-turns 50 --no-input "<prompt>"
 | Tool name | `codex` |
 | Binary | `codex` |
 | Install | `npm install -g @openai/codex` |
-| Auth | OpenAI API credentials (configured in the Codex CLI) |
+| Auth | `codex login`, or `CODEX_API_KEY` env var for non-interactive mode |
 
 Markus invokes:
 
 ```bash
-codex --approval-mode full-auto --quiet "<prompt>"
+codex exec --full-auto --json --skip-git-repo-check "<prompt>"
 ```
 
-- **full-auto** mode is required for non-interactive Markus sessions (no human to approve edits).
+- **`exec --full-auto`** runs in non-interactive mode with automatic approval for all edits and commands.
+- **`--json`** emits JSONL events for structured progress parsing.
+- **`--skip-git-repo-check`** allows running outside strict git repo requirements.
 - **Context file:** `.agent_context/task_context.md` (alongside any existing `AGENTS.md`).
 - **Best for:** Quick fixes, targeted patches, fast iteration.
 - **Cost tracking:** Not currently extracted from output.
+- **Note:** `OPENAI_BASE_URL` env var is deprecated. Custom endpoints require `~/.codex/config.toml` configuration.
 
 ### Cursor Agent
 
@@ -168,17 +172,21 @@ codex --approval-mode full-auto --quiet "<prompt>"
 | Tool name | `cursor-agent` |
 | Binary | `cursor` |
 | Install | [cursor.sh](https://cursor.sh) — enable "Install 'cursor' command in PATH" from the Command Palette |
-| Auth | Cursor account (IDE subscription) |
+| Auth | Cursor account via `cursor agent login`, or `CURSOR_API_KEY` env var |
 
 Markus invokes:
 
 ```bash
-cursor agent --prompt "<prompt>"
+cursor agent --print --output-format stream-json --workspace <workdir> --trust --force "<prompt>"
 ```
 
+- **`--print`** runs in non-interactive mode.
+- **`--output-format stream-json`** emits structured JSON events for progress parsing.
+- **`--trust --force`** auto-trusts the workspace without prompting.
 - **Context file:** `.cursor/rules/markus-task.mdc` (alongside permanent project rules).
 - **Best for:** Repos with `.cursor/rules`, IDE-integrated conventions.
-- **Cost tracking:** Not currently extracted from output.
+- **Cost tracking:** May include tokens in result events.
+- **Note:** The CLI's `--model` flag only accepts CLI-specific models (`auto`, `composer-2.5`, etc.). Cursor Cloud API models (Claude, GPT) are not available via the local CLI.
 
 ### Version Requirements
 
@@ -197,17 +205,18 @@ Markus detects tools via `which <binary>` and optionally reads `<binary> --versi
     "tools": {
       "claude-code": {
         "enabled": true,
-        "timeoutMs": 600000,
-        "defaultArgs": [],
-        "binaryPath": "/usr/local/bin/claude",
-        "env": {}
+        "timeoutMs": 1800000,
+        "defaultModel": "sonnet",
+        "maxBudgetPerSessionUsd": 5,
+        "approvalRequired": false
       },
       "codex": {
         "enabled": true,
-        "timeoutMs": 600000
+        "timeoutMs": 1800000
       },
       "cursor-agent": {
-        "enabled": false
+        "enabled": true,
+        "timeoutMs": 600000
       }
     }
   }
@@ -221,9 +230,11 @@ Markus detects tools via `which <binary>` and optionally reads `<binary> --versi
 | `tools.<name>.timeoutMs` | Max execution time in milliseconds | `600000` (10 min) |
 | `tools.<name>.defaultArgs` | Extra CLI arguments appended by the adapter | `[]` |
 | `tools.<name>.binaryPath` | Override binary path (detection still uses `binaryName`) | auto-detected |
-| `tools.<name>.env` | Additional environment variables injected into the tool process | `{}` |
+| `tools.<name>.defaultModel` | Default model for the tool (agent can override per invocation) | tool's own default |
+| `tools.<name>.maxBudgetPerSessionUsd` | Hard budget cap per invocation (Claude Code only, via `--max-budget-usd`) | none |
+| `tools.<name>.approvalRequired` | Agent must get user approval before each invocation | `false` |
 
-Configuration is loaded at startup (`markus start`) and can be updated live via the Settings UI (`POST /api/settings/coding-tools`).
+Configuration is loaded at startup (`markus start`) and can be updated live via the Settings UI (`POST /api/settings/coding-tools`). Changes take effect immediately without restart.
 
 ### Environment Variables
 
@@ -243,11 +254,11 @@ CLI global options (for external tools calling Markus):
 | `-k, --api-key <key>` | Authentication |
 | `--json` | Machine-readable JSON output |
 
-Tool-specific credentials are configured in each CLI's own auth flow (not in `markus.json`):
+Tool-specific credentials are configured in each CLI's own auth flow — **not** managed in the Markus Settings UI:
 
-- Claude Code: Anthropic API key via `claude` login or env
-- Codex: OpenAI credentials via `codex` configuration
-- Cursor: Cursor IDE account
+- **Claude Code:** `ANTHROPIC_API_KEY` env var, `ANTHROPIC_BASE_URL` for custom endpoints, or `claude` interactive login
+- **Codex:** `codex login`, or `CODEX_API_KEY` env var for non-interactive mode. Custom endpoints via `~/.codex/config.toml` (the `OPENAI_BASE_URL` env var is deprecated and no longer supported)
+- **Cursor:** `cursor agent login` browser auth, or `CURSOR_API_KEY` env var
 
 ---
 
@@ -389,16 +400,20 @@ markus project list
 
 1. Open **Settings → Coding Tools** (admin only).
 2. Toggle **Enable coding tools** globally.
-3. For each tool, review detection status and toggle enable/disable.
-4. Optionally set binary path, default args, and timeout.
-5. Click **Save**.
+3. For each tool, expand the card to review detection status and toggle enable/disable.
+4. Use **Test Configuration** to verify the tool actually works (runs a real test prompt).
+5. Optionally configure default model, timeout, budget cap, and CLI arguments.
 
-Changes persist to `~/.markus/markus.json` and apply immediately to the running agent manager.
+Changes auto-save and apply immediately to the running agent manager.
 
-#### Detection
+#### Detection and Testing
 
-- **Settings UI:** Click **Re-detect** to refresh availability (`GET /api/settings/coding-tools/detect`).
+- **Auto-detection:** On page load, Markus checks if CLIs are installed and authenticated. Results are cached for 24 hours with silent background refresh.
+- **Test button:** Runs the actual CLI with a minimal prompt to verify end-to-end connectivity (not just env var checks). If the test succeeds, the status badge updates to "Ready" immediately.
+- **Re-detect button:** Force-refreshes all tools' installation and auth status.
 - **CLI:** Run `markus doctor` — the "Coding Tools" section reports each binary's path or install hint.
+
+Detection checks system environment variables first (`ANTHROPIC_API_KEY`, `CODEX_API_KEY`, `CURSOR_API_KEY`), then falls back to CLI auth commands. This ensures tools authenticated via env vars are correctly detected as ready.
 
 #### CodingToolCard (Web UI)
 
@@ -607,7 +622,15 @@ Returns current configuration:
 
 **`POST /api/settings/coding-tools`** (auth required)
 
-Update configuration. Body: `{ enabled: boolean, tools: { "<name>": { enabled?, binaryPath?, defaultArgs?, timeoutMs? } } }`.
+Update configuration. Body: `{ enabled: boolean, tools: { "<name>": { enabled?, binaryPath?, defaultArgs?, timeoutMs?, defaultModel?, maxBudgetPerSessionUsd?, approvalRequired? } } }`.
+
+**`GET /api/settings/coding-tools/detect/:tool`**
+
+Detect a single tool. Returns installation, version, and authentication status.
+
+**`POST /api/settings/coding-tools/:tool/test`** (auth required)
+
+Run a real test against the tool CLI to verify end-to-end connectivity. Returns `{ success, detail?, error? }`.
 
 **`GET /api/settings/coding-tools/detect`**
 

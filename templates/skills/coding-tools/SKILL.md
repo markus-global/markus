@@ -123,7 +123,7 @@ This stages all changes and creates a git commit. If there are no changes, it re
 | Scenario | Recommended tool | Why |
 |---|---|---|
 | Large refactor across packages | `claude-code` | Strong multi-turn reasoning, `--max-turns 50`, stream-json progress |
-| One-file bug fix or typo | `codex` | Fast, `--approval-mode full-auto`, minimal overhead |
+| One-file bug fix or typo | `codex` | Fast, `exec --full-auto`, minimal overhead |
 | Repo with `.cursor/rules` | `cursor-agent` | Reads project rules natively |
 | Need cost/token visibility | `claude-code` | Reports tokens and USD in stream-json result events |
 | Long-running exploratory task | `claude-code` | Best at sustained codebase navigation |

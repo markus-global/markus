@@ -14,30 +14,33 @@ npm install -g @openai/codex
 codex --version
 ```
 
-Verify with `markus doctor`. Requires OpenAI API credentials configured for the Codex CLI.
+Verify with `markus doctor`. Requires authentication via `codex login` or `CODEX_API_KEY` env var for non-interactive mode.
 
 ## How Markus Invokes Codex
 
 Markus runs Codex in fully automated, non-interactive mode:
 
 ```bash
-codex --approval-mode full-auto --quiet "<prompt>"
+codex exec --full-auto --json --skip-git-repo-check "<prompt>"
 ```
 
 | Flag | Purpose |
 |---|---|
-| `--approval-mode full-auto` | Auto-approves all file edits and shell commands — required for non-interactive Markus sessions |
-| `--quiet` | Reduces noise in stdout for cleaner progress parsing |
+| `exec --full-auto` | Non-interactive mode — auto-approves all file edits and shell commands |
+| `--json` | Emits JSONL events for structured progress parsing |
+| `--skip-git-repo-check` | Allows running outside strict git repo requirements |
 
 Additional args can be configured via `CodingToolConfig.defaultArgs`.
 
 ## Full-Auto Approval Mode
 
-In a Markus agent session, there is no human at the terminal to approve Codex actions. The `full-auto` approval mode is essential:
+In a Markus agent session, there is no human at the terminal to approve Codex actions. The `exec --full-auto` mode is essential:
 
 - Codex can edit files and run commands without prompting
 - All actions happen within the sandbox (see below)
 - If Codex would normally ask "Allow this edit?", it proceeds automatically
+
+**Note:** `OPENAI_BASE_URL` is deprecated and no longer supported by Codex CLI. Custom endpoint configuration should use `~/.codex/config.toml`.
 
 **Implication:** Write precise prompts with clear scope boundaries. Codex will act autonomously on whatever the prompt authorizes.
 
@@ -185,7 +188,7 @@ If Codex modifies unexpected files, discard changes (`git checkout -- .` in `wor
 - Always pass `task_id` for task context injection
 - Verify changes with `git diff` before `coding_tool_apply`
 - Use `gpt-5-codex` as the default — escalate only when justified
-- `--approval-mode full-auto` is handled by Markus — do not try to run Codex interactively from an agent
+- `exec --full-auto` is handled by Markus — do not try to run Codex interactively from an agent
 
 ## Rules
 

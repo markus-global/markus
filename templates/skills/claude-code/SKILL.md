@@ -14,22 +14,23 @@ npm install -g @anthropic-ai/claude-code
 claude --version
 ```
 
-Verify with `markus doctor`. Requires a valid Anthropic API key or Claude subscription configured for the CLI.
+Verify with `markus doctor`. Requires authentication via one of: `ANTHROPIC_API_KEY` env var, `ANTHROPIC_BASE_URL` for custom endpoints, or interactive `claude` login.
 
 ## How Markus Invokes Claude Code
 
 Markus runs Claude Code in non-interactive print mode with structured streaming output:
 
 ```bash
-claude --print --output-format stream-json --max-turns 50 --no-input "<prompt>"
+claude --print --output-format stream-json --verbose --max-turns 50 --permission-mode bypassPermissions "<prompt>"
 ```
 
 | Flag | Purpose |
 |---|---|
 | `--print` | Non-interactive mode — runs to completion without user input |
 | `--output-format stream-json` | Emits structured JSON events for progress parsing |
+| `--verbose` | Detailed progress output |
 | `--max-turns 50` | Allows up to 50 agent turns for complex tasks |
-| `--no-input` | Prevents blocking on stdin prompts |
+| `--permission-mode bypassPermissions` | Auto-approves all file edits and commands — required because `--print` mode has no interactive stdin for approval prompts |
 
 Additional args can be configured per-deployment via `CodingToolConfig.defaultArgs`.
 

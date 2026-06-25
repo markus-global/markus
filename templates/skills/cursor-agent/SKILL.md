@@ -14,19 +14,24 @@ Install Cursor from [https://cursor.sh](https://cursor.sh), then enable the shel
 1. Open Cursor → Command Palette → "Install 'cursor' command in PATH"
 2. Verify: `cursor --version`
 
-Check availability with `markus doctor`.
+Check availability with `markus doctor`. Requires authentication via `cursor agent login` (browser-based) or `CURSOR_API_KEY` env var.
 
 ## How Markus Invokes Cursor Agent
 
 Markus runs Cursor in CLI agent mode:
 
 ```bash
-cursor agent --prompt "<prompt>"
+cursor agent --print --output-format stream-json --workspace <workdir> --trust --force "<prompt>"
 ```
 
-The command executes in the specified `workdir`. Additional args can be configured via `CodingToolConfig.defaultArgs`.
+| Flag | Purpose |
+|---|---|
+| `--print` | Non-interactive mode |
+| `--output-format stream-json` | Emits structured JSON events for progress parsing |
+| `--workspace <workdir>` | Specifies the repo root for project context |
+| `--trust --force` | Auto-trusts the workspace without interactive prompts |
 
-Unlike Claude Code's stream-json output, Cursor Agent emits plain-text progress lines that Markus surfaces as progress events.
+Additional args can be configured via `CodingToolConfig.defaultArgs`.
 
 ## .cursor/rules Context Files
 
@@ -150,10 +155,16 @@ Cursor Agent supports per-invocation model and mode overrides:
 invoke_coding_tool({
   tool: "cursor-agent",
   prompt: "...",
-  model: "claude-sonnet-4-6",  // optional: specify a model
-  mode: "plan",                 // optional: plan | ask
+  model: "auto",     // optional: CLI-specific model (auto, composer-2.5, etc.)
+  mode: "plan",      // optional: plan | ask
 })
 ```
+
+### Important: CLI Model Limitations
+
+The Cursor `agent` CLI only accepts a limited set of CLI-specific model identifiers: `auto`, `composer-2.5`, etc. **Cursor Cloud API models** (Claude, GPT families) **are not available via the CLI** — they only work via the REST API.
+
+The Settings UI only shows CLI-compatible models to prevent selection errors.
 
 ### Critical cost fact: Auto Mode vs Max Mode
 
