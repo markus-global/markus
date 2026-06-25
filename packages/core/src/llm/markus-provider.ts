@@ -130,6 +130,13 @@ export class MarkusProvider implements LLMProviderInterface {
       signal: AbortSignal.timeout(this.chatTimeoutMs),
     });
 
+    // CU_EXCEEDED (HTTP 402) — throw recognizable error so router won't fallback
+    if (response.status === 402) {
+      const errBody = await response.json().catch(() => ({})) as Record<string, unknown>;
+      const errMsg = ((errBody.error as Record<string, unknown>)?.message as string) ?? 'Insufficient CU balance';
+      throw new Error(`CU_EXCEEDED: ${errMsg}`);
+    }
+
     const data = await response.json() as Record<string, unknown>;
 
     // Check for proxy-level error
@@ -179,6 +186,9 @@ export class MarkusProvider implements LLMProviderInterface {
     if (!res.ok) {
       clearTimeout(timeout);
       const errText = await res.text();
+      if (res.status === 402) {
+        throw new Error(`CU_EXCEEDED: ${errText}`);
+      }
       throw new Error(`Markus proxy error ${res.status}: ${errText}`);
     }
 
