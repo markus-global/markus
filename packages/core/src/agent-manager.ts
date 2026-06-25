@@ -367,7 +367,7 @@ export class AgentManager {
   private _codingToolsEnabled = false;
   private _codingToolsConfigs?: Record<string, CodingToolConfig>;
   private templateRegistry?: TemplateRegistry;
-  private builderService?: { listArtifacts: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>; installArtifact: (type: 'agent' | 'team' | 'skill', name: string) => Promise<{ type: string; installed: unknown }> };
+  private builderService?: { listArtifacts: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>; installArtifact: (type: 'agent' | 'team' | 'skill', name: string, teamId?: string) => Promise<{ type: string; installed: unknown }> };
   private hubClient?: { search: (opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>; downloadAndInstall: (itemId: string) => Promise<{ type: string; installed: unknown }> };
   private teamUpdater?: (teamId: string, data: { name?: string; description?: string }) => Promise<{ id: string; name: string; description?: string }>;
   private agentConfigPersister?: (agentId: string, data: Record<string, unknown>) => Promise<void>;
@@ -1573,18 +1573,18 @@ export class AgentManager {
       const pkgAh = this.approvalHandler;
       const packageTools = createPackageTools({
         installArtifact: () => this.builderService
-          ? (type: 'agent' | 'team' | 'skill', name: string) => this.builderService!.installArtifact(type, name)
+          ? (type: 'agent' | 'team' | 'skill', name: string, teamId?: string) => this.builderService!.installArtifact(type, name, teamId)
           : undefined,
         listArtifacts: () => this.builderService
           ? (type?: 'agent' | 'team' | 'skill') => this.builderService!.listArtifacts(type)
           : undefined,
         hireFromTemplate: () => this.templateRegistry
-          ? async (templateId: string, name: string, skills?: string[]) => {
+          ? async (templateId: string, name: string, skills?: string[], teamId?: string) => {
               const newAgent = await this.createAgentFromTemplate({
                 templateId,
                 name,
                 orgId: config.orgId ?? 'default',
-                teamId: config.teamId,
+                teamId: teamId || config.teamId,
                 overrides: skills ? { skills } : undefined,
               });
               await this.startAgent(newAgent.id);
@@ -2356,18 +2356,18 @@ export class AgentManager {
       const pkgAh2 = this.approvalHandler;
       const packageTools = createPackageTools({
         installArtifact: () => this.builderService
-          ? (type: 'agent' | 'team' | 'skill', name: string) => this.builderService!.installArtifact(type, name)
+          ? (type: 'agent' | 'team' | 'skill', name: string, teamId?: string) => this.builderService!.installArtifact(type, name, teamId)
           : undefined,
         listArtifacts: () => this.builderService
           ? (type?: 'agent' | 'team' | 'skill') => this.builderService!.listArtifacts(type)
           : undefined,
         hireFromTemplate: () => this.templateRegistry
-          ? async (templateId: string, name: string, skills?: string[]) => {
+          ? async (templateId: string, name: string, skills?: string[], teamId?: string) => {
               const newAgent = await this.createAgentFromTemplate({
                 templateId,
                 name,
                 orgId: config.orgId ?? 'default',
-                teamId: config.teamId,
+                teamId: teamId || config.teamId,
                 overrides: skills ? { skills } : undefined,
               });
               await this.startAgent(newAgent.id);
@@ -2784,7 +2784,7 @@ export class AgentManager {
     return this.templateRegistry;
   }
 
-  setBuilderService(service: { listArtifacts: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>; installArtifact: (type: 'agent' | 'team' | 'skill', name: string) => Promise<{ type: string; installed: unknown }> }): void {
+  setBuilderService(service: { listArtifacts: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>; installArtifact: (type: 'agent' | 'team' | 'skill', name: string, teamId?: string) => Promise<{ type: string; installed: unknown }> }): void {
     this.builderService = service;
   }
 

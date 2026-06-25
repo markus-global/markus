@@ -225,6 +225,83 @@ describe('package_install', () => {
     const result = JSON.parse(await tool.execute({ type: 'agent' }));
     expect(result.status).toBe('error');
   });
+
+  it('accepts team_id in input schema as optional field', async () => {
+    const ctx = createMockPackageContext();
+    const tool = findPackageTool(ctx, 'package_install');
+    expect(tool.inputSchema.properties).toHaveProperty('team_id');
+    expect(tool.inputSchema.properties.team_id.type).toBe('string');
+    expect(tool.inputSchema.required).not.toContain('team_id');
+  });
+
+  it('passes team_id to installArtifact when team_id provided', async () => {
+    const installArtifactFn = vi.fn(async () => ({ type: 'agent', installed: { name: 'bot' } }));
+    const ctx = createMockPackageContext({ installArtifact: () => installArtifactFn });
+    const tool = findPackageTool(ctx, 'package_install');
+    const result = JSON.parse(await tool.execute({ type: 'agent', name: 'custom-dev', team_id: 'team_123' }));
+    expect(result.status).toBe('success');
+    expect(installArtifactFn).toHaveBeenCalledWith('agent', 'custom-dev', 'team_123');
+  });
+
+  it('does not pass teamId when team_id omitted (backward compat)', async () => {
+    const installArtifactFn = vi.fn(async () => ({ type: 'agent', installed: { name: 'bot' } }));
+    const ctx = createMockPackageContext({ installArtifact: () => installArtifactFn });
+    const tool = findPackageTool(ctx, 'package_install');
+    await tool.execute({ type: 'agent', name: 'custom-dev' });
+    expect(installArtifactFn).toHaveBeenCalledWith('agent', 'custom-dev', undefined);
+  });
+
+  it('trims whitespace from team_id value', async () => {
+    const installArtifactFn = vi.fn(async () => ({ type: 'agent', installed: { name: 'bot' } }));
+    const ctx = createMockPackageContext({ installArtifact: () => installArtifactFn });
+    const tool = findPackageTool(ctx, 'package_install');
+    await tool.execute({ type: 'agent', name: 'custom-dev', team_id: '  team_789  ' });
+    expect(installArtifactFn).toHaveBeenCalledWith('agent', 'custom-dev', 'team_789');
+  });
+
+  it('passes team_id to hireFromTemplate on role fallback', async () => {
+    const hireFromTemplateFn = vi.fn(async () => ({ id: 'agt_new', name: 'Helper', role: 'developer' }));
+    const ctx = createMockPackageContext({
+      installArtifact: () => vi.fn(async () => { throw new Error('not found'); }),
+      hireFromTemplate: () => hireFromTemplateFn,
+    });
+    const tool = findPackageTool(ctx, 'package_install');
+    const result = JSON.parse(await tool.execute({
+      type: 'agent', name: 'tpl_dev', agent_name: 'Helper', team_id: 'team_456',
+    }));
+    expect(result.status).toBe('success');
+    expect(hireFromTemplateFn).toHaveBeenCalledWith('tpl_dev', 'Helper', undefined, 'team_456');
+  });
+
+  it('includes team_id in approval toolArgs when provided', async () => {
+    const requestApproval = vi.fn(async () => ({ approved: true }));
+    const installArtifactFn = vi.fn(async () => ({ type: 'agent', installed: { name: 'bot' } }));
+    const ctx = createMockPackageContext({
+      installArtifact: () => installArtifactFn,
+      requestApproval,
+    });
+    const tool = findPackageTool(ctx, 'package_install');
+    await tool.execute({ type: 'agent', name: 'custom-dev', team_id: 'team_abc' });
+    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'package_install',
+      toolArgs: expect.objectContaining({ team_id: 'team_abc' }),
+    }));
+  });
+
+  it('does not include team_id in approval toolArgs when omitted', async () => {
+    const requestApproval = vi.fn(async () => ({ approved: true }));
+    const installArtifactFn = vi.fn(async () => ({ type: 'agent', installed: { name: 'bot' } }));
+    const ctx = createMockPackageContext({
+      installArtifact: () => installArtifactFn,
+      requestApproval,
+    });
+    const tool = findPackageTool(ctx, 'package_install');
+    await tool.execute({ type: 'agent', name: 'custom-dev' });
+    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'package_install',
+      toolArgs: expect.objectContaining({ team_id: undefined }),
+    }));
+  });
 });
 
 describe('hub_search', () => {
