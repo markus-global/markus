@@ -125,6 +125,74 @@ export function getFallbackStatus(userId: string): {
 }
 
 /**
+ * Credit (refund) CU back to a user's quota.
+ *
+ * This is the reverse of `deductQuota` — it subtracts from the user's usage
+ * via the same atomic Lua script but with a NEGATIVE amount (which bypasses
+ * the quota-enforcement branch).
+ *
+ * Used for post-correction after pre-reserve: if a request reserved N CU but
+ * only used M (M < N), the caller should credit back N-M CU.
+ *
+ * @param env - Worker environment bindings
+ * @param userId - User identifier for quota tracking
+ * @param amount - Number of CUs to credit back (must be positive; we negate internally)
+ * @returns QuotaDeductionResult with updated usage info
+ */
+export async function creditQuota(
+  env: Env,
+  userId: string,
+  amount: number,
+): Promise<QuotaDeductionResult> {
+  // Validate amount
+  if (!amount || amount <= 0) {
+    return { remaining: 0, usage: 0, limit: 0, error: 'invalid_amount' };
+  }
+
+  // We use the same Lua script but pass a NEGATIVE amount so it
+  // subtracts from usage (effectively a refund).
+  const negativeAmount = -amount;
+  const key = `cu:${userId}`;
+  const defaultLimit = parseInt(env.DEFAULT_CU_LIMIT || '100000', 10);
+  const resetTs = Math.floor(Date.now() / 1000) + 86400;
+
+  try {
+    return await deductViaRedis(env, key, negativeAmount, defaultLimit, resetTs);
+  } catch (err) {
+    console.error(
+      `[quota] Redis unavailable for credit to user ${userId}, using fallback:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return creditFallback(userId, amount, defaultLimit);
+  }
+}
+
+/**
+ * In-memory fallback for credit (refund).
+ */
+function creditFallback(
+  userId: string,
+  amount: number,
+  defaultLimit: number,
+): QuotaDeductionResult {
+  let entry = fallbackStore.get(userId);
+
+  if (!entry) {
+    entry = { usage: 0, limit: defaultLimit };
+    fallbackStore.set(userId, entry);
+  }
+
+  const newUsage = Math.max(0, entry.usage - amount);
+  entry.usage = newUsage;
+
+  return {
+    remaining: entry.limit - entry.usage,
+    usage: entry.usage,
+    limit: entry.limit,
+  };
+}
+
+/**
  * Reset fallback store (for testing).
  */
 export function resetFallbackStore(): void {

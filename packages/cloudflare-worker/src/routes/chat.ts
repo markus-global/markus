@@ -21,8 +21,6 @@
 import { badRequest } from '../utils/errors.js';
 import { badRequest as badRequestResponse, json, sseStream } from '../utils/response.js';
 import { getAuthContext } from '../auth-context.js';
-import type { Env } from '../index.js';
-import { deductQuota } from '../redis/quota.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -100,28 +98,14 @@ export async function handleChat(
 async function handleProxyChat(
   _request: Request,
   body: ChatRequest,
-  auth: { mode: 'proxy'; payload: { monthly_quota_cu: number; cu_used: number; sub: string } },
+  _auth: { mode: 'proxy'; payload: { monthly_quota_cu: number; cu_used: number; sub: string } },
   env: Record<string, unknown>,
 ): Promise<Response> {
-  const { payload } = auth;
+  // CU quota pre-check and deduction are handled by the charging
+  // middleware (middleware/charging.ts). The handler only reports actual
+  // usage via the x-cu-actual response header.
 
-  // --- CU quota pre-check (approximate, based on JWT metadata) ---------------
   const estimatedCu = estimateCu(body);
-  const remainingCu = payload.monthly_quota_cu - payload.cu_used;
-
-  if (remainingCu <= 0) {
-    return errorJson(429, {
-      code: 'QUOTA_EXCEEDED',
-      message: `Monthly CU quota (${payload.monthly_quota_cu}) exhausted. Remaining: ${remainingCu}`,
-    });
-  }
-
-  if (estimatedCu > remainingCu) {
-    return errorJson(429, {
-      code: 'INSUFFICIENT_QUOTA',
-      message: `Request requires ~${estimatedCu} CU but only ${remainingCu} remaining`,
-    });
-  }
 
   // --- Read upstream config from env -----------------------------------------
   const proxyBaseUrl = env.LLM_PROXY_BASE_URL as string | undefined;
@@ -176,12 +160,9 @@ async function handleProxyChat(
     });
   }
 
-  // --- Deduct CU after successful upstream response -------------------------
-  const envTyped = env as unknown as Env;
-  const userId = payload.sub;
-
+  // --- Build response with CU headers (no deduction — middleware handles it) -
   if (!isStreaming) {
-    // Non-streaming: parse body to get actual token usage, then attach CU headers
+    // Non-streaming: parse body to get actual token usage
     const data = (await upstreamResponse.json()) as Record<string, unknown>;
 
     const totalTokens =
@@ -193,19 +174,12 @@ async function handleProxyChat(
       ? Math.max(1, Math.ceil(totalTokens / 1000))
       : estimatedCu;
 
-    const quotaResult = await safeDeduct(envTyped, userId, actualCu);
-
-    // Build response with CU headers
-    const responseHeaders: Record<string, string> = {
-      'content-type': 'application/json; charset=utf-8',
-      'x-cu-cost': String(actualCu),
-      'x-cu-remaining': String(quotaResult.remaining),
-      'x-cu-limit': String(quotaResult.limit),
-    };
-
     return new Response(JSON.stringify(data), {
       status: upstreamResponse.status,
-      headers: responseHeaders,
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'x-cu-actual': String(actualCu),
+      },
     });
   }
 
@@ -218,45 +192,19 @@ async function handleProxyChat(
     });
   }
 
-  // For streaming, use estimated CU (exact token counting requires Hub-side accounting)
+  // For streaming, use estimated CU (exact token counting requires Hub-side accounting).
+  // The charging middleware already reserved max possible CU; post-correction
+  // will refund the difference between reserved and estimated.
   const actualCu = estimatedCu;
-  const quotaResult = await safeDeduct(envTyped, userId, actualCu);
-
-  const responseHeaders: Record<string, string> = {
-    'content-type': 'text/event-stream',
-    'transfer-encoding': 'chunked',
-    'x-cu-cost': String(actualCu),
-    'x-cu-remaining': String(quotaResult.remaining),
-    'x-cu-limit': String(quotaResult.limit),
-  };
 
   return new Response(streamBody, {
     status: upstreamResponse.status,
-    headers: responseHeaders,
+    headers: {
+      'content-type': 'text/event-stream',
+      'transfer-encoding': 'chunked',
+      'x-cu-actual': String(actualCu),
+    },
   });
-}
-
-/**
- * Safely deduct CU, returning a default success if Redis isn't configured
- * or the deduction fails.
- */
-async function safeDeduct(
-  env: Env,
-  userId: string,
-  amount: number,
-): Promise<{ remaining: number; limit: number }> {
-  if (!env.UPSTASH_REDIS_URL || !env.UPSTASH_REDIS_TOKEN) {
-    console.warn('[quota] UPSTASH_REDIS_URL/TOKEN not configured — skipping deduction');
-    return { remaining: 999999, limit: 999999 };
-  }
-
-  try {
-    const result = await deductQuota(env, userId, amount);
-    return { remaining: result.remaining, limit: result.limit };
-  } catch (err) {
-    console.error('[quota] Deduction failed (non-fatal):', err instanceof Error ? err.message : String(err));
-    return { remaining: -2, limit: 0 };
-  }
 }
 
 // ---------------------------------------------------------------------------
