@@ -1,12 +1,73 @@
+# =============================================================================
+# wrangler.toml — Markus Proxy Cloudflare Worker Configuration
+# =============================================================================
+#
+# How to deploy:
+#   1. Ensure you're authenticated: wrangler login
+#   2. Set production secrets (see below)
+#   3. Run: wrangler deploy --env production
+#
+# Production secrets (set via `wrangler secret put --env production`):
+#   - PROXY_JWT_SECRET       — JWT signing secret for proxy tokens
+#   - LLM_PROXY_BASE_URL     — Upstream LLM provider base URL
+#   - LLM_PROXY_API_KEY      — Upstream LLM provider API key
+# =============================================================================
+
 name = "markus-proxy"
 main = "src/index.ts"
 compatibility_date = "2025-04-01"
+compatibility_flags = ["nodejs_compat"]
 
-# Workers Logs
+# ---------------------------------------------------------------------------
+# Cloudflare Account (REQUIRED — replace with your Account ID)
+#   Find at: Cloudflare Dashboard → Workers & Pages → Your Account ID
+# ---------------------------------------------------------------------------
+# account_id = "your-account-id-here"
+
+# ---------------------------------------------------------------------------
+# Observability — Workers Logs
+# ---------------------------------------------------------------------------
 [observability]
 enabled = true
-head_sampling_rate = 1.0
+head_sampling_rate = 0.1  # 10% sampling for production (reduce log volume/cost)
 
-# Development environment
+# ---------------------------------------------------------------------------
+# Routes — Production domain binding
+#   Example: proxy.markus.ai/*
+#   Uncomment and customize after domain is configured in Cloudflare dashboard
+# ---------------------------------------------------------------------------
+# routes = [
+#   { pattern = "proxy.markus.ai", zone_name = "markus.ai" },
+#   { pattern = "proxy.markus.ai/*", zone_name = "markus.ai" },
+# ]
+
+# =============================================================================
+# Environment: production
+# =============================================================================
+
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+# Worker resources (adjust based on expected load)
+[env.production.limits]
+cpu_ms = 30000          # 30s CPU time per request
+# Note: For Workers Paid plan, additional resources are available
+
+# =============================================================================
+# Environment: staging (optional — for pre-production testing)
+# =============================================================================
+
+[env.staging]
+vars = { ENVIRONMENT = "staging" }
+
+# Routes for staging
+# routes = [
+#   { pattern = "staging-proxy.markus.ai/*", zone_name = "markus.ai" },
+# ]
+
+# =============================================================================
+# Environment: development (local dev)
+# =============================================================================
+
 [env.dev]
 vars = { ENVIRONMENT = "development" }
