@@ -24,6 +24,30 @@
  *   - Token deduction & quota checks via Hub API
  */
 
+// ---------------------------------------------------------------------------
+// Environment bindings
+// ---------------------------------------------------------------------------
+
+export interface Env {
+  /** Environment identifier ("development", "staging", "production") */
+  ENVIRONMENT: string;
+
+  /** Upstream LLM provider base URL (proxy JWT mode) */
+  LLM_PROXY_BASE_URL?: string;
+
+  /** Upstream LLM provider API key (proxy JWT mode) */
+  LLM_PROXY_API_KEY?: string;
+
+  /** Upstash Redis REST API URL */
+  UPSTASH_REDIS_URL: string;
+
+  /** Upstash Redis REST API token */
+  UPSTASH_REDIS_TOKEN: string;
+
+  /** Default CU quota limit per user (parsed as number) */
+  DEFAULT_CU_LIMIT?: string;
+}
+
 import { handleCors, transformResponse } from './middleware/cors.js';
 import { startLog } from './middleware/logging.js';
 import { createRateLimiter } from './middleware/rate-limit.js';
