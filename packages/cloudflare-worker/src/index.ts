@@ -13,15 +13,13 @@
  *     ├─ CORS (handles OPTIONS preflight)
  *     ├─ Logging (captures start time)
  *     ├─ Rate Limit (in-memory sliding window)
- *     ├─ Auth (validates X-Subscription-Key)
+ *     ├─ Auth (validates JWT or x-api-key)
+ *     ├─ Charging (pre-reserve CU, may return 429)
  *     │
  *     └─ Router ─┬─ GET  /health                → health.ts
  *                 └─ POST /v1/chat/completions   → chat.ts
- *
- * Future phases will add:
- *   - /v1/models          → model list
- *   - /v1/usage           → usage stats
- *   - Token deduction & quota checks via Hub API
+ *                      │
+ *                      └─ Post-correct (refund unused CU)
  */
 
 // ---------------------------------------------------------------------------
@@ -52,6 +50,7 @@ import { handleCors, transformResponse } from './middleware/cors.js';
 import { startLog } from './middleware/logging.js';
 import { createRateLimiter } from './middleware/rate-limit.js';
 import { handleAuth } from './middleware/auth.js';
+import { handleCharging, postCorrectCu } from './middleware/charging.js';
 import { withTimeout } from './middleware/timeout.js';
 import { handleHealth } from './routes/health.js';
 import { handleChat } from './routes/chat.js';
@@ -95,13 +94,22 @@ export default {
       return transformResponse(authResponse);
     }
 
-    // ----- 5. Route + handler (with timeout) --------------------------------
+    // ----- 5. Charging (pre-reserve CU, may return 429) ---------------------
+    const chargingResponse = await handleCharging(request, env);
+    if (chargingResponse) {
+      finishLog(chargingResponse);
+      return transformResponse(chargingResponse);
+    }
+
+    // ----- 6. Route + handler (with timeout) --------------------------------
     const handler = withTimeout(routeRequest);
 
     try {
       const response = await handler(request, env, ctx);
-      finishLog(response);
-      return transformResponse(response);
+      // Post-correct: refund unused CU after handler completes
+      const correctedResponse = await postCorrectCu(env, request, response);
+      finishLog(correctedResponse);
+      return transformResponse(correctedResponse);
     } catch (err) {
       const errorResponse = handleFatalError(err);
       finishLog(errorResponse);
