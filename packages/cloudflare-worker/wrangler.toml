@@ -11,6 +11,11 @@
 #   - PROXY_JWT_SECRET       — JWT signing secret for proxy tokens
 #   - LLM_PROXY_BASE_URL     — Upstream LLM provider base URL
 #   - LLM_PROXY_API_KEY      — Upstream LLM provider API key
+#
+# Token billing secrets (if using CU quota system):
+#   - UPSTASH_REDIS_URL      — Upstash Redis REST URL (for quota tracking)
+#   - UPSTASH_REDIS_TOKEN    — Upstash Redis REST token
+#   - DEFAULT_CU_LIMIT       — Default CU limit per user (optional, default: 10000)
 # =============================================================================
 
 name = "markus-proxy"
@@ -47,6 +52,10 @@ head_sampling_rate = 0.1  # 10% sampling for production (reduce log volume/cost)
 
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+# Token billing — defaults (override via secrets if needed)
+[env.production.vars]
+DEFAULT_CU_LIMIT = "10000"
 
 # Worker resources (adjust based on expected load)
 [env.production.limits]
