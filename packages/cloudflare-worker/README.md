@@ -54,11 +54,20 @@ npx wrangler secret put LLM_PROXY_BASE_URL --env production
 npx wrangler secret put LLM_PROXY_API_KEY --env production
 ```
 
+If using token billing (CU quota system), also set:
+
+```bash
+npx wrangler secret put UPSTASH_REDIS_URL --env production
+npx wrangler secret put UPSTASH_REDIS_TOKEN --env production
+```
+
 | Secret | Description | Example |
 |--------|-------------|---------|
 | `PROXY_JWT_SECRET` | JWT signing secret (generate via `openssl rand -hex 32`) | `a1b2c3...` |
 | `LLM_PROXY_BASE_URL` | Upstream LLM provider base URL | `https://api.openai.com/v1` |
 | `LLM_PROXY_API_KEY` | API key for upstream LLM provider | `sk-...` |
+| `UPSTASH_REDIS_URL` | Upstash Redis REST URL (for CU quota billing) | `https://xxxx.upstash.io` |
+| `UPSTASH_REDIS_TOKEN` | Upstash Redis REST token | `AXXXX...` |
 
 ### 5. (Optional) Configure domain / routes
 
@@ -120,6 +129,9 @@ Expected response:
 | `PROXY_JWT_SECRET` | secret | `wrangler secret put` | Yes (proxy mode) |
 | `LLM_PROXY_BASE_URL` | secret | `wrangler secret put` | Yes (proxy mode) |
 | `LLM_PROXY_API_KEY` | secret | `wrangler secret put` | Yes (proxy mode) |
+| `UPSTASH_REDIS_URL` | secret | `wrangler secret put` | Only if using CU quota |
+| `UPSTASH_REDIS_TOKEN` | secret | `wrangler secret put` | Only if using CU quota |
+| `DEFAULT_CU_LIMIT` | per-environment | `wrangler.toml` `[env.*.vars]` | No (default: `10000`) |
 
 ## Testing
 
