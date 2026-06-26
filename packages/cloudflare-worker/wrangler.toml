@@ -79,4 +79,10 @@ vars = { ENVIRONMENT = "staging" }
 # =============================================================================
 
 [env.dev]
-vars = { ENVIRONMENT = "development" }
+vars = { ENVIRONMENT = "development", DEFAULT_CU_LIMIT = "100000" }
+
+# Production secrets (DO NOT commit actual values):
+#   wrangler secret put UPSTASH_REDIS_URL
+#   wrangler secret put UPSTASH_REDIS_TOKEN
+#   wrangler secret put LLM_PROXY_BASE_URL
+#   wrangler secret put LLM_PROXY_API_KEY
