@@ -8,7 +8,7 @@
  * **Proxy JWT mode** (platform billing)
  *   - Validates CU quota from the JWT payload.
  *   - Forwards to the upstream LLM provider configured in env vars.
- *   - Deducts CU on success.
+ *   - Deducts CU on success via Upstash Redis (atomic Lua script).
  *
  * **Direct API-key mode** (self-provided key)
  *   - Forwards to the user-specified provider base URL (x-provider-base-url).
@@ -92,34 +92,20 @@ export async function handleChat(
 }
 
 // ---------------------------------------------------------------------------
-// Proxy JWT mode
+// Proxy JWT mode (with CU quota deduction)
 // ---------------------------------------------------------------------------
 
 async function handleProxyChat(
   _request: Request,
   body: ChatRequest,
-  auth: { mode: 'proxy'; payload: { monthly_quota_cu: number; cu_used: number; sub: string } },
+  _auth: { mode: 'proxy'; payload: { monthly_quota_cu: number; cu_used: number; sub: string } },
   env: Record<string, unknown>,
 ): Promise<Response> {
-  const { payload } = auth;
+  // CU quota pre-check and deduction are handled by the charging
+  // middleware (middleware/charging.ts). The handler only reports actual
+  // usage via the x-cu-actual response header.
 
-  // --- CU quota check --------------------------------------------------------
   const estimatedCu = estimateCu(body);
-  const remainingCu = payload.monthly_quota_cu - payload.cu_used;
-
-  if (remainingCu <= 0) {
-    return errorJson(429, {
-      code: 'QUOTA_EXCEEDED',
-      message: `Monthly CU quota (${payload.monthly_quota_cu}) exhausted. Remaining: ${remainingCu}`,
-    });
-  }
-
-  if (estimatedCu > remainingCu) {
-    return errorJson(429, {
-      code: 'INSUFFICIENT_QUOTA',
-      message: `Request requires ~${estimatedCu} CU but only ${remainingCu} remaining`,
-    });
-  }
 
   // --- Read upstream config from env -----------------------------------------
   const proxyBaseUrl = env.LLM_PROXY_BASE_URL as string | undefined;
@@ -132,9 +118,93 @@ async function handleProxyChat(
     });
   }
 
-  // Delegate to the shared forwarder
   const upstreamUrl = buildUpstreamUrl(proxyBaseUrl);
-  return forwardToUpstream(body, upstreamUrl, proxyApiKey);
+  const isStreaming = body.stream === true;
+
+  // Build the upstream request body
+  const upstreamBody: Record<string, unknown> = {
+    model: body.model,
+    messages: body.messages,
+    stream: isStreaming,
+  };
+  if (body.max_tokens !== undefined) upstreamBody.max_tokens = body.max_tokens;
+  if (body.temperature !== undefined) upstreamBody.temperature = body.temperature;
+
+  const requestHeaders: Record<string, string> = {
+    'content-type': 'application/json',
+    authorization: `Bearer ${proxyApiKey}`,
+  };
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+
+  let upstreamResponse: Response;
+  try {
+    upstreamResponse = await fetch(upstreamUrl, {
+      method: 'POST',
+      headers: requestHeaders,
+      body: JSON.stringify(upstreamBody),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!upstreamResponse.ok) {
+    const errorBody = await upstreamResponse.text();
+    return errorJson(502, {
+      code: 'UPSTREAM_ERROR',
+      message: `Upstream returned ${upstreamResponse.status}`,
+      upstream_status: upstreamResponse.status,
+      upstream_body: errorBody,
+    });
+  }
+
+  // --- Build response with CU headers (no deduction — middleware handles it) -
+  if (!isStreaming) {
+    // Non-streaming: parse body to get actual token usage
+    const data = (await upstreamResponse.json()) as Record<string, unknown>;
+
+    const totalTokens =
+      typeof (data.usage as Record<string, unknown> | undefined)?.total_tokens === 'number'
+        ? (data.usage as Record<string, unknown>).total_tokens as number
+        : 0;
+
+    const actualCu = totalTokens > 0
+      ? Math.max(1, Math.ceil(totalTokens / 1000))
+      : estimatedCu;
+
+    return new Response(JSON.stringify(data), {
+      status: upstreamResponse.status,
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'x-cu-actual': String(actualCu),
+      },
+    });
+  }
+
+  // --- Streaming: pipe the upstream body as SSE with CU headers -------------
+  const streamBody = upstreamResponse.body;
+  if (!streamBody) {
+    return errorJson(502, {
+      code: 'UPSTREAM_NO_BODY',
+      message: 'Upstream returned no body',
+    });
+  }
+
+  // For streaming, use estimated CU (exact token counting requires Hub-side accounting).
+  // The charging middleware already reserved max possible CU; post-correction
+  // will refund the difference between reserved and estimated.
+  const actualCu = estimatedCu;
+
+  return new Response(streamBody, {
+    status: upstreamResponse.status,
+    headers: {
+      'content-type': 'text/event-stream',
+      'transfer-encoding': 'chunked',
+      'x-cu-actual': String(actualCu),
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +228,7 @@ async function handleDirectChat(
 }
 
 // ---------------------------------------------------------------------------
-// Upstream forwarding (shared by both modes)
+// Upstream forwarding (shared by both modes — direct mode only)
 // ---------------------------------------------------------------------------
 
 async function forwardToUpstream(
