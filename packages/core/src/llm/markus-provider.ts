@@ -67,12 +67,27 @@ class CUCache {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_BASE_URL = 'http://localhost:8787';
-const DEFAULT_MODEL = 'deepseek-v4-flash';
+const DEFAULT_MODEL = 'markus-lite';
 const DEFAULT_MAX_TOKENS = 4096;
 const CHAT_TIMEOUT_MS = 90_000;
 const STREAM_TIMEOUT_MS = 120_000;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 500;
+
+export interface MarkusModelInfo {
+  id: string;
+  display_name: string;
+  capability: string;
+  tier: string;
+  context_window: number;
+  max_output_tokens: number;
+  supports_vision: boolean;
+  supports_reasoning: boolean;
+}
+
+let cachedModelList: MarkusModelInfo[] | null = null;
+let modelListExpiry = 0;
+const MODEL_LIST_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 export class MarkusProvider implements LLMProviderInterface {
   readonly name = 'markus';
@@ -106,6 +121,36 @@ export class MarkusProvider implements LLMProviderInterface {
 
   /** Latest CU quota info from the proxy response headers. */
   private lastQuotaInfo: { cuCost: number; cuRemaining: number; cuLimit: number } | null = null;
+
+  /**
+   * Fetch available models from the proxy's /v1/models endpoint.
+   * Results are cached for 10 minutes.
+   */
+  async fetchModels(): Promise<MarkusModelInfo[]> {
+    if (cachedModelList && Date.now() < modelListExpiry) {
+      return cachedModelList;
+    }
+
+    const base = this.baseUrl.replace(/\/+$/, '');
+    const url = `${base}/v1/models`;
+    const headers: Record<string, string> = {};
+    if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
+
+    try {
+      const res = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) });
+      if (res.ok) {
+        const data = (await res.json()) as { data: MarkusModelInfo[] };
+        cachedModelList = data.data ?? [];
+        modelListExpiry = Date.now() + MODEL_LIST_TTL_MS;
+        return cachedModelList;
+      }
+      log.warn(`Failed to fetch models: ${res.status}`);
+    } catch (err) {
+      log.warn('Failed to fetch models', { error: err instanceof Error ? err.message : String(err) });
+    }
+
+    return cachedModelList ?? FALLBACK_MODELS;
+  }
 
   /** Return CU usage totals for diagnostic purposes. */
   getCUCacheTotals(): { inputCUs: number; outputCUs: number } {
@@ -312,7 +357,7 @@ export class MarkusProvider implements LLMProviderInterface {
 
   private buildBody(request: LLMRequest, stream: boolean): Record<string, unknown> {
     const body: Record<string, unknown> = {
-      model: this.model,
+      model: request.model ?? this.model,
       messages: request.messages,
       max_tokens: request.maxTokens ?? this.maxTokens,
       stream,
@@ -416,3 +461,10 @@ export class MarkusProvider implements LLMProviderInterface {
     this.cuCache.add(response.usage.inputTokens, response.usage.outputTokens);
   }
 }
+
+const FALLBACK_MODELS: MarkusModelInfo[] = [
+  { id: 'markus-lite', display_name: 'Markus Lite', capability: 'text', tier: 'flash', context_window: 65536, max_output_tokens: 8192, supports_vision: false, supports_reasoning: false },
+  { id: 'markus-pro', display_name: 'Markus Pro', capability: 'text', tier: 'pro', context_window: 65536, max_output_tokens: 8192, supports_vision: false, supports_reasoning: false },
+  { id: 'markus-max', display_name: 'Markus Max', capability: 'text', tier: 'high', context_window: 200000, max_output_tokens: 16384, supports_vision: true, supports_reasoning: false },
+  { id: 'markus-reason', display_name: 'Markus Reason', capability: 'text', tier: 'pro', context_window: 65536, max_output_tokens: 8192, supports_vision: false, supports_reasoning: true },
+];
