@@ -1,6 +1,6 @@
 import type { ModelTier } from './model-catalog.js';
 
-export type LLMProvider = 'anthropic' | 'openai' | 'openai-codex' | 'siliconflow' | 'openrouter' | 'google' | 'ollama' | 'minimax' | 'zai' | 'deepseek' | 'custom';
+export type LLMProvider = 'anthropic' | 'openai' | 'openai-codex' | 'siliconflow' | 'openrouter' | 'google' | 'ollama' | 'minimax' | 'zai' | 'deepseek' | 'markus' | 'custom';
 
 export type LLMAuthType = 'api-key' | 'oauth' | 'setup-token';
 

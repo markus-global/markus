@@ -48,20 +48,13 @@ export interface OrgPlan {
 }
 
 const DEFAULT_PLANS: Record<PlanTier, OrgPlan['limits']> = {
-  free: {
-    maxAgents: -1,
-    maxTokensPerMonth: -1,
-    maxToolCallsPerDay: 5000,
-    maxMessagesPerDay: -1,
-    maxStorageBytes: -1,
-  },
-  enterprise: {
-    maxAgents: -1,
-    maxTokensPerMonth: -1,
-    maxToolCallsPerDay: -1,
-    maxMessagesPerDay: -1,
-    maxStorageBytes: -1,
-  },
+  free:       { maxAgents: 1,   maxTokensPerMonth: -1, maxToolCallsPerDay: 5000,  maxMessagesPerDay: -1, maxStorageBytes: -1 },
+  basic:      { maxAgents: 3,   maxTokensPerMonth: -1, maxToolCallsPerDay: 10000, maxMessagesPerDay: -1, maxStorageBytes: -1 },
+  plus:       { maxAgents: 5,   maxTokensPerMonth: -1, maxToolCallsPerDay: 20000, maxMessagesPerDay: -1, maxStorageBytes: -1 },
+  pro:        { maxAgents: 10,  maxTokensPerMonth: -1, maxToolCallsPerDay: -1,    maxMessagesPerDay: -1, maxStorageBytes: -1 },
+  max:        { maxAgents: 25,  maxTokensPerMonth: -1, maxToolCallsPerDay: -1,    maxMessagesPerDay: -1, maxStorageBytes: -1 },
+  team:       { maxAgents: 50,  maxTokensPerMonth: -1, maxToolCallsPerDay: -1,    maxMessagesPerDay: -1, maxStorageBytes: -1 },
+  enterprise: { maxAgents: -1,  maxTokensPerMonth: -1, maxToolCallsPerDay: -1,    maxMessagesPerDay: -1, maxStorageBytes: -1 },
 };
 
 let keyCounter = 0;
@@ -153,7 +146,7 @@ export class BillingService {
     additionalAmount = 1
   ): { allowed: boolean; reason?: string } {
     const plan = this.getOrgPlan(orgId);
-    if (plan.tier === 'enterprise') return { allowed: true };
+    if (['max', 'team', 'enterprise'].includes(plan.tier)) return { allowed: true };
 
     const today = new Date().toISOString().slice(0, 10);
     const month = new Date().toISOString().slice(0, 7);

@@ -490,6 +490,8 @@ export class LLMRouter {
       provider = new GoogleProvider(config);
     } else if (name === 'ollama') {
       provider = new OllamaProvider(config);
+    } else if (name === 'markus') {
+      provider = new MarkusProvider(config);
     } else {
       provider = createOpenAICompatible(name, config);
     }
@@ -1500,7 +1502,8 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'glm-5', name: 'GLM-5', provider: 'zai', contextWindow: 205000, maxOutputTokens: 16384, cost: { input: 1.0, output: 3.2, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro' },
   { id: 'glm-4.7-flashx', name: 'GLM-4.7 FlashX', provider: 'zai', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 0.07, output: 0.4 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
   // Markus (token-billing gateway — routes through CF Worker Proxy)
-  { id: 'markus-default', name: 'Markus Default', provider: 'markus', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 0, output: 0 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'base', description: 'Routes via token-billing gateway (subscription key required)' },
+  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash (Markus)', provider: 'markus', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 0.10, output: 0.40, cacheRead: 0.01 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'base', description: 'Via Markus billing gateway (1x CU)' },
+  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro (Markus)', provider: 'markus', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 0.30, output: 1.20, cacheRead: 0.03 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro', description: 'Via Markus billing gateway (3x CU)' },
 ];
 
 // ---------------------------------------------------------------------------

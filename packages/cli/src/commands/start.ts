@@ -245,6 +245,25 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
     }
   }
 
+  // Markus platform provider — uses subscription key from Hub registration
+  const markusSubKey =
+    config.llm.providers['markus']?.apiKey ?? process.env['MARKUS_SUBSCRIPTION_KEY'];
+  if (markusSubKey) {
+    providerConfigs['markus'] = {
+      provider: 'markus',
+      model: config.llm.providers['markus']?.model ?? 'deepseek-v4-flash',
+      apiKey: markusSubKey,
+      baseUrl:
+        config.llm.providers['markus']?.baseUrl ??
+        process.env['MARKUS_PROXY_URL'] ??
+        'https://proxy.markus.global',
+      timeoutMs: llmTimeoutMs,
+    };
+    if (config.llm.defaultProvider === 'markus') {
+      defaultProvider = 'markus';
+    }
+  }
+
   // If the configured default provider has no API key, fall back to the first available one
   if (!providerConfigs[defaultProvider]) {
     const available = Object.keys(providerConfigs);

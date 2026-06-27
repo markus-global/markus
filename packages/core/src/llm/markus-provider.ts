@@ -67,7 +67,7 @@ class CUCache {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_BASE_URL = 'http://localhost:8787';
-const DEFAULT_MODEL = 'markus-default';
+const DEFAULT_MODEL = 'deepseek-v4-flash';
 const DEFAULT_MAX_TOKENS = 4096;
 const CHAT_TIMEOUT_MS = 90_000;
 const STREAM_TIMEOUT_MS = 120_000;
@@ -104,14 +104,33 @@ export class MarkusProvider implements LLMProviderInterface {
     }
   }
 
+  /** Latest CU quota info from the proxy response headers. */
+  private lastQuotaInfo: { cuCost: number; cuRemaining: number; cuLimit: number } | null = null;
+
   /** Return CU usage totals for diagnostic purposes. */
   getCUCacheTotals(): { inputCUs: number; outputCUs: number } {
     return this.cuCache.getTotal();
   }
 
+  /** Return the latest quota info from the proxy. */
+  getQuotaInfo(): { cuCost: number; cuRemaining: number; cuLimit: number } | null {
+    return this.lastQuotaInfo;
+  }
+
   /** Clear CU cache. */
   clearCUCache(): void {
     this.cuCache.clear();
+  }
+
+  /** Extract CU quota headers from a proxy response. */
+  private extractQuotaHeaders(response: Response): void {
+    const cuCost = parseInt(response.headers.get('x-cu-cost') ?? '0', 10);
+    const cuRemaining = parseInt(response.headers.get('x-cu-remaining') ?? '-1', 10);
+    const cuLimit = parseInt(response.headers.get('x-cu-limit') ?? '0', 10);
+    if (cuRemaining >= 0) {
+      this.lastQuotaInfo = { cuCost, cuRemaining, cuLimit };
+      log.debug('CU quota', { cuCost, cuRemaining, cuLimit });
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -137,9 +156,17 @@ export class MarkusProvider implements LLMProviderInterface {
       throw new Error(`CU_EXCEEDED: ${errMsg}`);
     }
 
+    // Window quota exceeded (429 with Retry-After)
+    if (response.status === 429) {
+      const retryAfter = response.headers.get('retry-after') ?? '300';
+      const errBody = await response.json().catch(() => ({})) as Record<string, unknown>;
+      const errMsg = ((errBody.error as Record<string, unknown>)?.message as string) ?? '5h window quota exceeded';
+      throw new Error(`CU_EXCEEDED: ${errMsg} (retry after ${retryAfter}s)`);
+    }
+
+    this.extractQuotaHeaders(response);
     const data = await response.json() as Record<string, unknown>;
 
-    // Check for proxy-level error
     if (data.error) {
       const err = data.error as Record<string, unknown>;
       throw new Error(`Markus proxy error: ${String(err.message ?? err.code ?? 'unknown')}`);
@@ -186,7 +213,7 @@ export class MarkusProvider implements LLMProviderInterface {
     if (!res.ok) {
       clearTimeout(timeout);
       const errText = await res.text();
-      if (res.status === 402) {
+      if (res.status === 402 || res.status === 429) {
         throw new Error(`CU_EXCEEDED: ${errText}`);
       }
       throw new Error(`Markus proxy error ${res.status}: ${errText}`);
