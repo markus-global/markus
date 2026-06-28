@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   getPlanConfig,
   getDefaultPlan,
@@ -8,6 +11,7 @@ import {
   parseSubscriptionKey,
   detectPlan,
   inspectSubscriptionKey,
+  getAllPlanConfigs,
 } from './plan-config.js';
 import type { PlanName } from './types/plan.js';
 
@@ -211,5 +215,34 @@ describe('inspectSubscriptionKey', () => {
   it('should return valid=false for incorrect key', () => {
     const info = inspectSubscriptionKey('bad');
     expect(info.valid).toBe(false);
+  });
+});
+
+// ── plan-data.json sync ─────────────────────────────────────────────────────
+
+describe('plan-data.json sync', () => {
+  const jsonPath = join(dirname(fileURLToPath(import.meta.url)), 'plan-data.json');
+  const jsonData = JSON.parse(readFileSync(jsonPath, 'utf-8')) as Record<string, ReturnType<typeof getPlanConfig>>;
+
+  it('includes every plan from listPlans()', () => {
+    const jsonPlanNames = Object.keys(jsonData).sort();
+    expect(jsonPlanNames).toEqual([...listPlans()].sort());
+  });
+
+  it('matches PLANS constant for quotas, pricing, and windowQuotas', () => {
+    const tsPlans = getAllPlanConfigs();
+    for (const name of listPlans()) {
+      const ts = tsPlans[name];
+      const json = jsonData[name];
+      expect(ts.monthlyQuotaCu).toBe(json.monthlyQuotaCu);
+      expect(ts.priceUsd).toBe(json.priceUsd);
+      expect(ts.priceUsdYearly).toBe(json.priceUsdYearly);
+      expect(ts.windowQuotas).toEqual(json.windowQuotas);
+      expect(ts.maxTeamMembers).toBe(json.maxTeamMembers);
+      expect(ts.maxAgents).toBe(json.maxAgents);
+      expect(ts.name).toBe(json.name);
+      expect(ts.displayName).toBe(json.displayName);
+      expect(ts.features).toEqual(json.features);
+    }
   });
 });

@@ -45,10 +45,10 @@ describe('PLAN_LIMITS', () => {
     expect(PLAN_LIMITS.free.maxUsers).toBe(1);
   });
 
-  it('defines enterprise tier as unlimited', () => {
+  it('defines enterprise tier limits', () => {
     expect(PLAN_LIMITS.enterprise.maxTeams).toBe(-1);
     expect(PLAN_LIMITS.enterprise.maxToolCallsPerDay).toBe(-1);
-    expect(PLAN_LIMITS.enterprise.maxUsers).toBe(-1);
+    expect(PLAN_LIMITS.enterprise.maxUsers).toBe(999);
   });
 });
 

@@ -184,4 +184,32 @@ describe('MarkusProvider CU tracking', () => {
     expect(stats.cuLimit).toBe(0);
     expect(stats.lastCuCost).toBe(0);
   });
+
+  it('fetchModels calls /v1/models endpoint', async () => {
+    const models = [
+      {
+        id: 'markus-lite',
+        display_name: 'Markus Lite',
+        capability: 'text',
+        tier: 'flash',
+        context_window: 65536,
+        max_output_tokens: 8192,
+        supports_vision: false,
+        supports_reasoning: false,
+      },
+    ];
+
+    vi.mocked(fetch).mockResolvedValueOnce(
+      mockResponse({ data: models }, 200),
+    );
+
+    const result = await provider.fetchModels();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://localhost:8787/v1/models',
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer test-key' },
+      }),
+    );
+    expect(result).toEqual(models);
+  });
 });

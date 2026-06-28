@@ -251,7 +251,7 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   if (markusSubKey) {
     providerConfigs['markus'] = {
       provider: 'markus',
-      model: config.llm.providers['markus']?.model ?? 'deepseek-v4-flash',
+      model: config.llm.providers['markus']?.model ?? 'markus-lite',
       apiKey: markusSubKey,
       baseUrl:
         config.llm.providers['markus']?.baseUrl ??

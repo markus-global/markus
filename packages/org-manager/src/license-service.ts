@@ -25,9 +25,21 @@ async function hubFetch(url: string, init?: RequestInit, maxRedirects = 3): Prom
 }
 const HEARTBEAT_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
+/**
+ * Ed25519 public key for verifying offline enterprise license file signatures.
+ *
+ * PRODUCTION: Replace this placeholder PEM with the real public key issued by
+ * Markus Hub (Hub admin console → License Keys). Offline `license.json` activation
+ * and signature verification will fail until a valid key is configured here.
+ */
+const HUB_LICENSE_PUBLIC_KEY_PLACEHOLDER_MARKER = 'PlaceholderPublicKeyForOfflineLicenseVerification';
 const HUB_LICENSE_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAPlaceholderPublicKeyForOfflineLicenseVerification00=
 -----END PUBLIC KEY-----`;
+
+function isPlaceholderLicensePublicKey(): boolean {
+  return HUB_LICENSE_PUBLIC_KEY.includes(HUB_LICENSE_PUBLIC_KEY_PLACEHOLDER_MARKER);
+}
 
 export class LicenseService {
   private license: LicenseInfo;
@@ -35,6 +47,11 @@ export class LicenseService {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(hubUrl = 'https://markus.global') {
+    if (isPlaceholderLicensePublicKey()) {
+      log.warn(
+        'HUB_LICENSE_PUBLIC_KEY is still the development placeholder — offline enterprise license verification will not work in production. Replace with the Hub-issued public key before deployment.',
+      );
+    }
     this.hubUrl = hubUrl;
     this.license = this.loadLicense();
     this.startHeartbeat();
