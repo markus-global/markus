@@ -393,7 +393,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
               <StatBox label={t('agent:profilePage.overview.labels.toolCalls')} value={String(usageInfo.toolCalls)} />
               <StatBox label={t('agent:profilePage.overview.labels.promptTokens')} value={fmtNum(usageInfo.promptTokens)} />
               <StatBox label={t('agent:profilePage.overview.labels.completionTokens')} value={fmtNum(usageInfo.completionTokens)} />
-              <StatBox label={t('agent:profilePage.overview.labels.estCost')} value={`$${usageInfo.estimatedCost < 0.01 ? usageInfo.estimatedCost.toFixed(4) : usageInfo.estimatedCost.toFixed(2)}`} />
+              <StatBox label="CU Used" value={fmtNum(usageInfo.cuUsed ?? 0)} />
             </div>
           </>
         )}

@@ -121,6 +121,9 @@ export class MarkusProvider implements LLMProviderInterface {
 
   /** Latest CU quota info from the proxy response headers. */
   private lastQuotaInfo: { cuCost: number; cuRemaining: number; cuLimit: number } | null = null;
+  private totalCuUsed = 0;
+  private cuUsedToday = 0;
+  private todayCutoffDate = new Date().toISOString().slice(0, 10);
 
   /**
    * Fetch available models from the proxy's /v1/models endpoint.
@@ -162,13 +165,31 @@ export class MarkusProvider implements LLMProviderInterface {
     return this.lastQuotaInfo;
   }
 
+  /** Cumulative CU usage tracked from proxy response headers. */
+  getCuUsageStats(): {
+    totalCuUsed: number;
+    cuUsedToday: number;
+    cuRemaining: number;
+    cuLimit: number;
+    lastCuCost: number;
+  } {
+    const quota = this.lastQuotaInfo;
+    return {
+      totalCuUsed: this.totalCuUsed,
+      cuUsedToday: this.cuUsedToday,
+      cuRemaining: quota?.cuRemaining ?? -1,
+      cuLimit: quota?.cuLimit ?? 0,
+      lastCuCost: quota?.cuCost ?? 0,
+    };
+  }
+
   /** Clear CU cache. */
   clearCUCache(): void {
     this.cuCache.clear();
   }
 
   /** Extract CU quota headers from a proxy response. */
-  private extractQuotaHeaders(response: Response): void {
+  private extractQuotaHeaders(response: Response): number {
     const cuCost = parseInt(response.headers.get('x-cu-cost') ?? '0', 10);
     const cuRemaining = parseInt(response.headers.get('x-cu-remaining') ?? '-1', 10);
     const cuLimit = parseInt(response.headers.get('x-cu-limit') ?? '0', 10);
@@ -176,6 +197,16 @@ export class MarkusProvider implements LLMProviderInterface {
       this.lastQuotaInfo = { cuCost, cuRemaining, cuLimit };
       log.debug('CU quota', { cuCost, cuRemaining, cuLimit });
     }
+    if (cuCost > 0) {
+      const today = new Date().toISOString().slice(0, 10);
+      if (today !== this.todayCutoffDate) {
+        this.cuUsedToday = 0;
+        this.todayCutoffDate = today;
+      }
+      this.totalCuUsed += cuCost;
+      this.cuUsedToday += cuCost;
+    }
+    return cuCost;
   }
 
   // -------------------------------------------------------------------------
@@ -206,7 +237,7 @@ export class MarkusProvider implements LLMProviderInterface {
       throw new Error(`Markus proxy error ${response.status}: ${errText}`);
     }
 
-    this.extractQuotaHeaders(response);
+    const cuCost = this.extractQuotaHeaders(response);
     const data = await response.json() as Record<string, unknown>;
 
     if (data.error) {
@@ -215,6 +246,7 @@ export class MarkusProvider implements LLMProviderInterface {
     }
 
     const llmResponse = this.parseResponse(data);
+    if (cuCost > 0) llmResponse.cuCost = cuCost;
     this.recordCU(llmResponse);
 
     return llmResponse;
@@ -262,7 +294,7 @@ export class MarkusProvider implements LLMProviderInterface {
     }
 
     // Extract CU quota headers from the initial streaming response
-    this.extractQuotaHeaders(res);
+    const streamCuCost = this.extractQuotaHeaders(res);
 
     let content = '';
     let reasoningContent = '';
@@ -331,6 +363,7 @@ export class MarkusProvider implements LLMProviderInterface {
 
     const streamResult: LLMResponse = { content, usage, finishReason };
     if (reasoningContent) streamResult.reasoningContent = reasoningContent;
+    if (streamCuCost > 0) streamResult.cuCost = streamCuCost;
 
     this.cuCache.add(promptTokens, completionTokens);
     return streamResult;

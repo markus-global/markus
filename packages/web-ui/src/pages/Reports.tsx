@@ -23,9 +23,8 @@ function formatNumber(n: number): string {
   return n.toLocaleString();
 }
 
-function formatCost(n: number): string {
-  if (n < 0.01) return `$${n.toFixed(4)}`;
-  return `$${n.toFixed(2)}`;
+function formatCu(n: number): string {
+  return n.toLocaleString(undefined, { maximumFractionDigits: 0 });
 }
 
 function formatBytes(b: number): string {
@@ -46,7 +45,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
 
   const [usageSummary, setUsageSummary] = useState<UsageSummary | null>(null);
   const [agents, setAgents] = useState<AgentUsageInfo[]>([]);
-  const [sortBy, setSortBy] = useState<'totalTokens' | 'tokensUsedToday' | 'requestCount' | 'toolCalls' | 'estimatedCost'>('totalTokens');
+  const [sortBy, setSortBy] = useState<'totalTokens' | 'tokensUsedToday' | 'requestCount' | 'toolCalls' | 'cuUsed'>('totalTokens');
   const [sortDesc, setSortDesc] = useState(true);
 
   const [tab, setTab] = useState<'generate' | 'history'>('generate');
@@ -95,16 +94,20 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
   useEffect(() => { if (tab === 'history') fetchHistory(); }, [tab, fetchHistory]);
 
   const sortedAgents = useMemo(() => {
+    const getVal = (a: AgentUsageInfo, col: typeof sortBy): number => {
+      if (col === 'cuUsed') return a.cuUsed ?? 0;
+      return a[col] as number;
+    };
     return [...agents].sort((a, b) => {
-      const aVal = a[sortBy] as number;
-      const bVal = b[sortBy] as number;
+      const aVal = getVal(a, sortBy);
+      const bVal = getVal(b, sortBy);
       return sortDesc ? bVal - aVal : aVal - bVal;
     });
   }, [agents, sortBy, sortDesc]);
 
-  const totalCost = agents.reduce((s, a) => s + a.estimatedCost, 0);
+  const totalCu = agents.reduce((s, a) => s + (a.cuUsed ?? 0), 0);
   const totalTokensToday = agents.reduce((s, a) => s + a.tokensUsedToday, 0);
-  const totalCostToday = agents.reduce((s, a) => s + (a.costToday ?? 0), 0);
+  const totalCuToday = agents.reduce((s, a) => s + (a.cuUsedToday ?? 0), 0);
   const maxAgentTokens = Math.max(1, ...agents.map(a => a.totalTokens));
 
   const handleSort = (col: typeof sortBy) => {
@@ -210,8 +213,8 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
                     <div className="text-xs text-fg-tertiary">{t('costOverview.totalTokens')}</div>
                   </div>
                   <div>
-                    <div className="text-2xl font-bold text-fg-primary">{formatCost(selectedReport.costSummary.totalEstimatedCost)}</div>
-                    <div className="text-xs text-fg-tertiary">{t('costOverview.estimatedCost')}</div>
+                    <div className="text-2xl font-bold text-fg-primary">{formatCu(selectedReport.costSummary.totalCu ?? 0)}</div>
+                    <div className="text-xs text-fg-tertiary">CU Used</div>
                   </div>
                   <div>
                     <div className={`text-2xl font-bold ${selectedReport.costSummary.trend === 'decreasing' ? 'text-green-600' : selectedReport.costSummary.trend === 'increasing' ? 'text-red-500' : 'text-fg-primary'}`}>
@@ -225,7 +228,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
                     {selectedReport.costSummary.byAgent.map((a, i) => (
                       <div key={i} className="flex items-center justify-between text-xs">
                         <span className="text-fg-secondary">{a.agentId}</span>
-                        <span className="text-fg-tertiary tabular-nums">{t('costOverview.byAgentRow', { tokens: formatNumber(a.tokens), cost: formatCost(a.cost) })}</span>
+                        <span className="text-fg-tertiary tabular-nums">{formatNumber(a.tokens)} CU · {formatCu(a.cost)}</span>
                       </div>
                     ))}
                   </div>
@@ -428,16 +431,16 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
               <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('costOverview.title')}</h3>
               <div className="grid grid-cols-3 gap-4">
                 <div>
-                  <div className="text-2xl font-bold text-fg-primary">{formatCost(totalCost)}</div>
-                  <div className="text-xs text-fg-tertiary">{t('costOverview.estCostAllTime')}</div>
+                  <div className="text-2xl font-bold text-fg-primary">{formatCu(totalCu)}</div>
+                  <div className="text-xs text-fg-tertiary">CU Used (all time)</div>
                 </div>
                 <div>
                   <div className="text-2xl font-bold text-fg-primary">{formatNumber(totalTokensToday)}</div>
                   <div className="text-xs text-fg-tertiary">{t('costOverview.tokensToday')}</div>
                 </div>
                 <div>
-                  <div className="text-2xl font-bold text-fg-primary">{formatCost(totalCostToday)}</div>
-                  <div className="text-xs text-fg-tertiary">{t('costOverview.costToday')}</div>
+                  <div className="text-2xl font-bold text-fg-primary">{formatCu(totalCuToday)}</div>
+                  <div className="text-xs text-fg-tertiary">CU Used Today</div>
                 </div>
               </div>
             </section>
@@ -483,7 +486,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
                     <SortHeader label={t('perAgentUsage.today')} col="tokensUsedToday" current={sortBy} desc={sortDesc} onSort={handleSort} />
                     <SortHeader label={t('perAgentUsage.requests')} col="requestCount" current={sortBy} desc={sortDesc} onSort={handleSort} />
                     <SortHeader label={t('perAgentUsage.toolCalls')} col="toolCalls" current={sortBy} desc={sortDesc} onSort={handleSort} />
-                    <SortHeader label={t('perAgentUsage.estCost')} col="estimatedCost" current={sortBy} desc={sortDesc} onSort={handleSort} align="right" />
+                    <SortHeader label="CU Used" col="cuUsed" current={sortBy} desc={sortDesc} onSort={handleSort} align="right" />
                   </tr>
                 </thead>
                 <tbody>
@@ -498,7 +501,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
                     <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">{formatNumber(totalTokensToday)}</td>
                     <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">{agents.reduce((s, a) => s + a.requestCount, 0)}</td>
                     <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">{agents.reduce((s, a) => s + a.toolCalls, 0)}</td>
-                    <td className="px-4 py-3 text-sm font-medium text-right text-fg-secondary tabular-nums">{formatCost(totalCost)}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-right text-fg-secondary tabular-nums">{formatCu(totalCu)}</td>
                   </tr>
                 </tfoot>
               </table>
@@ -557,7 +560,7 @@ function UsageCard({ label, value, color }: { label: string; value: string; colo
   );
 }
 
-type SortCol = 'totalTokens' | 'tokensUsedToday' | 'requestCount' | 'toolCalls' | 'estimatedCost';
+type SortCol = 'totalTokens' | 'tokensUsedToday' | 'requestCount' | 'toolCalls' | 'cuUsed';
 
 function SortHeader({ label, col, current, desc, onSort, align }: {
   label: string; col: SortCol; current: SortCol; desc: boolean; onSort: (c: SortCol) => void; align?: string;
@@ -603,7 +606,7 @@ function AgentRow({ agent, maxTokens }: { agent: AgentUsageInfo; maxTokens: numb
       <td className="px-4 py-3 text-sm text-fg-secondary tabular-nums">{formatNumber(agent.tokensUsedToday)}</td>
       <td className="px-4 py-3 text-sm text-fg-secondary tabular-nums">{agent.requestCount}</td>
       <td className="px-4 py-3 text-sm text-fg-secondary tabular-nums">{agent.toolCalls}</td>
-      <td className="px-4 py-3 text-sm text-right text-fg-secondary tabular-nums">{formatCost(agent.estimatedCost)}</td>
+      <td className="px-4 py-3 text-sm text-right text-fg-secondary tabular-nums">{formatCu(agent.cuUsed ?? 0)}</td>
     </tr>
   );
 }

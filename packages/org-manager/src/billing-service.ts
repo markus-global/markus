@@ -267,27 +267,34 @@ export class BillingService {
     period: string;
     totalTokens: number;
     totalToolCalls: number;
+    totalCu: number;
     estimatedCost: number;
-    byAgent: Array<{ agentId: string; tokens: number; toolCalls: number; cost: number }>;
+    byAgent: Array<{ agentId: string; tokens: number; toolCalls: number; cost: number; cu: number }>;
   } {
     const period = periodPrefix ?? new Date().toISOString().slice(0, 7);
     const filtered = this.records.filter(
       r => r.projectId === projectId && r.timestamp.startsWith(period)
     );
 
-    const agentMap = new Map<string, { tokens: number; toolCalls: number }>();
+    const agentMap = new Map<string, { tokens: number; toolCalls: number; cu: number }>();
     let totalTokens = 0;
     let totalToolCalls = 0;
+    let totalCu = 0;
 
     for (const r of filtered) {
       let entry = agentMap.get(r.agentId);
       if (!entry) {
-        entry = { tokens: 0, toolCalls: 0 };
+        entry = { tokens: 0, toolCalls: 0, cu: 0 };
         agentMap.set(r.agentId, entry);
       }
       if (r.type === 'llm_tokens') {
         entry.tokens += r.amount;
         totalTokens += r.amount;
+        const cuCost = typeof r.metadata?.cuCost === 'number' ? r.metadata.cuCost : 0;
+        if (cuCost > 0) {
+          entry.cu += cuCost;
+          totalCu += cuCost;
+        }
       }
       if (r.type === 'tool_call') {
         entry.toolCalls += r.amount;
@@ -295,28 +302,62 @@ export class BillingService {
       }
     }
 
-    const costPerToken = 0.000003;
     return {
       projectId,
       period,
       totalTokens,
       totalToolCalls,
-      estimatedCost: totalTokens * costPerToken,
+      totalCu,
+      estimatedCost: totalCu,
       byAgent: [...agentMap.entries()].map(([agentId, data]) => ({
         agentId,
-        ...data,
-        cost: data.tokens * costPerToken,
+        tokens: data.tokens,
+        toolCalls: data.toolCalls,
+        cost: data.cu,
+        cu: data.cu,
       })),
     };
   }
 
-  getTaskCost(taskId: string): { tokens: number; toolCalls: number; estimatedCost: number } {
+  getTaskCost(taskId: string): { tokens: number; toolCalls: number; totalCu: number; estimatedCost: number } {
     const filtered = this.records.filter(r => r.taskId === taskId);
     const tokens = filtered.filter(r => r.type === 'llm_tokens').reduce((s, r) => s + r.amount, 0);
     const toolCalls = filtered
       .filter(r => r.type === 'tool_call')
       .reduce((s, r) => s + r.amount, 0);
-    return { tokens, toolCalls, estimatedCost: tokens * 0.000003 };
+    const totalCu = filtered
+      .filter(r => r.type === 'llm_tokens')
+      .reduce((s, r) => s + (typeof r.metadata?.cuCost === 'number' ? r.metadata.cuCost : 0), 0);
+    return { tokens, toolCalls, totalCu, estimatedCost: totalCu };
+  }
+
+  getCuUsageSummary(orgId: string, periodPrefix?: string): { totalCu: number } {
+    const period = periodPrefix ?? new Date().toISOString().slice(0, 7);
+    const filtered = this.records.filter(
+      r => r.orgId === orgId && r.timestamp.startsWith(period) && r.type === 'llm_tokens',
+    );
+    const totalCu = filtered.reduce(
+      (s, r) => s + (typeof r.metadata?.cuCost === 'number' ? r.metadata.cuCost : 0),
+      0,
+    );
+    return { totalCu };
+  }
+
+  getCuUsageSummaryForPeriod(scopeId: string, periodStart: Date, periodEnd: Date): { totalCu: number } {
+    const startStr = periodStart.toISOString();
+    const endStr = periodEnd.toISOString();
+    const filtered = this.records.filter(
+      r =>
+        (r.orgId === scopeId || r.projectId === scopeId) &&
+        r.type === 'llm_tokens' &&
+        r.timestamp >= startStr &&
+        r.timestamp <= endStr,
+    );
+    const totalCu = filtered.reduce(
+      (s, r) => s + (typeof r.metadata?.cuCost === 'number' ? r.metadata.cuCost : 0),
+      0,
+    );
+    return { totalCu };
   }
 
   getUsageSummaryForPeriod(scopeId: string, periodStart: Date, periodEnd: Date): UsageSummary {

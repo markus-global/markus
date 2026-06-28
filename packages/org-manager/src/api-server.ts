@@ -7356,6 +7356,8 @@ EXPLANATION_END`;
             messages: stats.requestsToday,
             estimatedCost: stats.estimatedCost,
             costToday: stats.costToday,
+            cuUsed: stats.cuUsed,
+            cuUsedToday: stats.cuUsedToday,
           };
         } catch {
           return {
@@ -7372,6 +7374,8 @@ EXPLANATION_END`;
             messages: 0,
             estimatedCost: 0,
             costToday: 0,
+            cuUsed: 0,
+            cuUsedToday: 0,
           };
         }
       });
@@ -7769,9 +7773,12 @@ EXPLANATION_END`;
     // ── CU Quota Status ────────────────────────────────────────────────────
     if (path === '/api/cu/status' && req.method === 'GET') {
       const quotaInfo = this.llmRouter?.getMarkusQuotaInfo();
+      const cuUsage = this.llmRouter?.getMarkusCuUsage();
       this.json(res, 200, {
         available: !!quotaInfo,
         ...(quotaInfo ?? { cuCost: 0, cuRemaining: -1, cuLimit: 0 }),
+        cuUsedToday: cuUsage?.cuUsedToday ?? 0,
+        totalCuUsed: cuUsage?.totalCuUsed ?? 0,
       });
       return;
     }

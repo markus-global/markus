@@ -29,10 +29,11 @@ describe('BillingService', () => {
       expect(breakdown.find(b => b.agentId === 'agent-1')?.llmTokens).toBe(500);
     });
 
-    it('computes project and task costs', () => {
+    it('computes project and task costs from CU metadata', () => {
       service.recordUsage({
         orgId: 'org-1', agentId: 'agent-1', type: 'llm_tokens', amount: 1000,
         projectId: 'proj-1', taskId: 'task-1',
+        metadata: { cuCost: 50, provider: 'markus' },
       });
       service.recordUsage({
         orgId: 'org-1', agentId: 'agent-1', type: 'tool_call', amount: 3,
@@ -42,11 +43,27 @@ describe('BillingService', () => {
       const projectCost = service.getProjectCostBreakdown('proj-1');
       expect(projectCost.totalTokens).toBe(1000);
       expect(projectCost.totalToolCalls).toBe(3);
-      expect(projectCost.estimatedCost).toBeCloseTo(0.003);
+      expect(projectCost.totalCu).toBe(50);
+      expect(projectCost.estimatedCost).toBe(50);
+      expect(projectCost.byAgent[0]?.cu).toBe(50);
 
       const taskCost = service.getTaskCost('task-1');
       expect(taskCost.tokens).toBe(1000);
       expect(taskCost.toolCalls).toBe(3);
+      expect(taskCost.totalCu).toBe(50);
+      expect(taskCost.estimatedCost).toBe(50);
+    });
+
+    it('aggregates CU in usage summary', () => {
+      service.recordUsage({
+        orgId: 'org-1', agentId: 'agent-1', type: 'llm_tokens', amount: 500,
+        metadata: { cuCost: 10, provider: 'markus' },
+      });
+      service.recordUsage({
+        orgId: 'org-1', agentId: 'agent-2', type: 'llm_tokens', amount: 200,
+        metadata: { cuCost: 5, provider: 'markus' },
+      });
+      expect(service.getCuUsageSummary('org-1').totalCu).toBe(15);
     });
 
     it('summarizes usage for custom period', () => {

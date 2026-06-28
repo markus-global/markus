@@ -65,7 +65,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [recentDeliverables, setRecentDeliverables] = useState<DeliverableInfo[]>([]);
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(previewData?.storageInfo ?? null);
   const [usageInfo, setUsageInfo] = useState<{ llmTokens: number; storageBytes: number } | null>(previewData?.usageInfo ?? null);
-  const [cuQuota, setCuQuota] = useState<{ available: boolean; cuRemaining: number; cuLimit: number } | null>(null);
+  const [cuQuota, setCuQuota] = useState<{ available: boolean; cuRemaining: number; cuLimit: number; cuUsedToday?: number } | null>(null);
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [showWorkingModal, setShowWorkingModal] = useState(false);
   const [showHealthModal, setShowHealthModal] = useState(false);
@@ -1033,7 +1033,7 @@ function HealthModal({ ops, completed, totalRootTasks, workingAgents, totalAgent
   workingAgents: number; totalAgents: number;
   usageInfo: { llmTokens: number; storageBytes: number } | null;
   storageInfo: StorageInfo | null;
-  cuQuota: { available: boolean; cuRemaining: number; cuLimit: number } | null;
+  cuQuota: { available: boolean; cuRemaining: number; cuLimit: number; cuUsedToday?: number } | null;
   onClose: () => void; t: TFunction;
 }) {
   return (
@@ -1090,6 +1090,12 @@ function HealthModal({ ops, completed, totalRootTasks, workingAgents, totalAgent
                   <div className={`h-full rounded-full ${barColor} transition-all duration-500`}
                     style={{ width: `${pct}%` }} />
                 </div>
+                {cuQuota.cuUsedToday != null && cuQuota.cuUsedToday > 0 && (
+                  <div className="flex items-center justify-between mt-1.5">
+                    <span className="text-xs text-fg-tertiary">Today&apos;s CU Used</span>
+                    <span className="text-xs font-semibold text-fg-secondary">{formatTokenCount(cuQuota.cuUsedToday)}</span>
+                  </div>
+                )}
               </div>
             );
           })()}

@@ -166,6 +166,8 @@ export interface LLMResponse {
   compactionContent?: string;
   /** Provider-specific reasoning/thinking content (e.g. DeepSeek reasoning_content) that must be round-tripped. */
   reasoningContent?: string;
+  /** Compute Units charged by Markus proxy (from x-cu-cost header). */
+  cuCost?: number;
 }
 
 export interface SubagentProgressEvent {

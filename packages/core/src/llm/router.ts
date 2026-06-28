@@ -168,6 +168,7 @@ export class LLMRouter {
     outputTokens: number;
     durationMs: number;
     finishReason: string;
+    cuCost?: number;
   }) => void;
 
   setLogCallback(cb: typeof this.logCallback): void {
@@ -532,10 +533,40 @@ export class LLMRouter {
   }
 
   /** Get CU quota info from the Markus provider (if available). */
-  getMarkusQuotaInfo(): { cuCost: number; cuRemaining: number; cuLimit: number } | null {
+  getMarkusQuotaInfo(): {
+    cuCost: number;
+    cuRemaining: number;
+    cuLimit: number;
+    totalCuUsed: number;
+    cuUsedToday: number;
+    lastCuCost: number;
+  } | null {
     const provider = this.providers.get('markus');
-    if (provider && 'getQuotaInfo' in provider) {
-      return (provider as MarkusProvider).getQuotaInfo();
+    if (provider && 'getCuUsageStats' in provider) {
+      const stats = (provider as MarkusProvider).getCuUsageStats();
+      return {
+        cuCost: stats.lastCuCost,
+        cuRemaining: stats.cuRemaining,
+        cuLimit: stats.cuLimit,
+        totalCuUsed: stats.totalCuUsed,
+        cuUsedToday: stats.cuUsedToday,
+        lastCuCost: stats.lastCuCost,
+      };
+    }
+    return null;
+  }
+
+  /** Get cumulative CU usage stats from the Markus provider. */
+  getMarkusCuUsage(): {
+    totalCuUsed: number;
+    cuUsedToday: number;
+    cuRemaining: number;
+    cuLimit: number;
+    lastCuCost: number;
+  } | null {
+    const provider = this.providers.get('markus');
+    if (provider && 'getCuUsageStats' in provider) {
+      return (provider as MarkusProvider).getCuUsageStats();
     }
     return null;
   }
@@ -1415,6 +1446,7 @@ export class LLMRouter {
         outputTokens: response.usage.outputTokens,
         durationMs,
         finishReason: response.finishReason,
+        cuCost: response.cuCost,
       });
     } catch { /* logging should never crash the app */ }
   }

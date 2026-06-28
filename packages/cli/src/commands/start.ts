@@ -1198,6 +1198,13 @@ async function startServerCore(
       durationMs: event.durationMs,
       success: event.success,
       detail: event.detail,
+      metadata: {
+        cost: event.cost ?? 0,
+        cuCost: event.cuCost,
+        provider: event.provider,
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens,
+      },
     });
     if (event.tokensUsed && event.type === 'llm_request') {
       const inputTok = event.inputTokens ?? Math.floor(event.tokensUsed * 0.7);
@@ -1213,7 +1220,13 @@ async function startServerCore(
         agentId,
         type: 'llm_tokens',
         amount: event.tokensUsed,
-        metadata: { action: event.action },
+        metadata: {
+          action: event.action,
+          cuCost: event.cuCost,
+          provider: event.provider,
+          inputTokens: event.inputTokens,
+          outputTokens: event.outputTokens,
+        },
       });
     }
     if (event.type === 'tool_call') {

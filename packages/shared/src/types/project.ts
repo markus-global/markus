@@ -85,6 +85,7 @@ export interface ReportTaskSummary {
 
 export interface ReportCostSummary {
   totalTokens: number;
+  totalCu?: number;
   totalEstimatedCost: number;
   byAgent: Array<{ agentId: string; agentName: string; tokens: number; cost: number }>;
   byCategory: Array<{ category: string; tokens: number; cost: number }>;
