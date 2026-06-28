@@ -7,9 +7,6 @@ import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { ArtifactDetail } from './ArtifactDetail.tsx';
 
-// Feature flag: set to true once LemonSqueezy payment account is approved
-export const PAYMENTS_ENABLED = false;
-
 function shortenPath(p: string): string {
   const home = '~/.markus/builder-artifacts/';
   const idx = p.indexOf('.markus/builder-artifacts/');
