@@ -7766,6 +7766,16 @@ EXPLANATION_END`;
 
     // ── Model Catalog API ──────────────────────────────────────────────────
 
+    // ── CU Quota Status ────────────────────────────────────────────────────
+    if (path === '/api/cu/status' && req.method === 'GET') {
+      const quotaInfo = this.llmRouter?.getMarkusQuotaInfo();
+      this.json(res, 200, {
+        available: !!quotaInfo,
+        ...(quotaInfo ?? { cuCost: 0, cuRemaining: -1, cuLimit: 0 }),
+      });
+      return;
+    }
+
     if (path === '/api/models/catalog' && req.method === 'GET') {
       if (!this.modelCatalog) {
         this.json(res, 503, { error: 'Model catalog not available' });
@@ -9478,6 +9488,7 @@ EXPLANATION_END`;
         { provider: 'openrouter', displayName: 'OpenRouter', keyEnv: 'OPENROUTER_API_KEY', modelEnv: 'OPENROUTER_MODEL', baseUrlEnv: 'OPENROUTER_BASE_URL', defaultModel: 'xiaomi/mimo-v2-pro', defaultBaseUrl: 'https://openrouter.ai/api/v1' },
         { provider: 'zai', displayName: 'ZAI', keyEnv: 'ZAI_API_KEY', modelEnv: 'ZAI_MODEL', baseUrlEnv: 'ZAI_BASE_URL', defaultModel: 'glm-5.1', defaultBaseUrl: 'https://api.z.ai/api/paas/v4' },
         { provider: 'deepseek', displayName: 'DeepSeek', keyEnv: 'DEEPSEEK_API_KEY', modelEnv: 'DEEPSEEK_MODEL', baseUrlEnv: 'DEEPSEEK_BASE_URL', defaultModel: 'deepseek-v4-flash', defaultBaseUrl: 'https://api.deepseek.com' },
+        { provider: 'markus', displayName: 'Markus', keyEnv: 'MARKUS_SUBSCRIPTION_KEY', defaultModel: 'markus-lite' },
       ];
 
       const detected: Array<{

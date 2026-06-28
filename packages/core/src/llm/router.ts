@@ -531,6 +531,15 @@ export class LLMRouter {
     log.info(`Removed custom model ${modelId} from provider ${providerName}`);
   }
 
+  /** Get CU quota info from the Markus provider (if available). */
+  getMarkusQuotaInfo(): { cuCost: number; cuRemaining: number; cuLimit: number } | null {
+    const provider = this.providers.get('markus');
+    if (provider && 'getQuotaInfo' in provider) {
+      return (provider as MarkusProvider).getQuotaInfo();
+    }
+    return null;
+  }
+
   enableAutoSelect(tiers?: ProviderTier[]): void {
     this.autoSelect = true;
     if (tiers) {

@@ -1376,6 +1376,9 @@ export const api = {
     agents: (orgId = 'default') =>
       request<{ agents: AgentUsageInfo[] }>(`/usage/agents?orgId=${orgId}`),
   },
+  cu: {
+    status: () => request<{ available: boolean; cuCost: number; cuRemaining: number; cuLimit: number }>('/cu/status'),
+  },
   health: () => request<{ status: string; version: string; agents: number; latestVersion?: string; updateAvailable?: boolean }>('/health'),
   system: {
     openPath: (path: string) =>

@@ -65,6 +65,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [recentDeliverables, setRecentDeliverables] = useState<DeliverableInfo[]>([]);
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(previewData?.storageInfo ?? null);
   const [usageInfo, setUsageInfo] = useState<{ llmTokens: number; storageBytes: number } | null>(previewData?.usageInfo ?? null);
+  const [cuQuota, setCuQuota] = useState<{ available: boolean; cuRemaining: number; cuLimit: number } | null>(null);
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [showWorkingModal, setShowWorkingModal] = useState(false);
   const [showHealthModal, setShowHealthModal] = useState(false);
@@ -130,6 +131,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     }).catch(() => {});
     api.system.storage().then(setStorageInfo).catch(() => {});
     api.usage.summary().then(d => setUsageInfo(d.usage)).catch(() => {});
+    api.cu.status().then(setCuQuota).catch(() => {});
     const llmP = api.settings.getLlm().then(d => {
       setLlmConfigured(Object.values(d.providers).some(p => p.configured));
     }).catch(() => {});
@@ -719,7 +721,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
       {showHealthModal && (
         <HealthModal ops={ops} completed={completed} totalRootTasks={totalRootTasks}
           workingAgents={workingAgents} totalAgents={agents.length}
-          usageInfo={usageInfo} storageInfo={storageInfo}
+          usageInfo={usageInfo} storageInfo={storageInfo} cuQuota={cuQuota}
           onClose={() => setShowHealthModal(false)} t={t} />
       )}
     </div>
@@ -1026,11 +1028,12 @@ function WorkingModal({ workingAgents, rankedAgents, onClose, t }: {
 
 // ── Health Modal ────────────────────────────────────────────────────────────
 
-function HealthModal({ ops, completed, totalRootTasks, workingAgents, totalAgents, usageInfo, storageInfo, onClose, t }: {
+function HealthModal({ ops, completed, totalRootTasks, workingAgents, totalAgents, usageInfo, storageInfo, cuQuota, onClose, t }: {
   ops: OpsDashboard | null; completed: number; totalRootTasks: number;
   workingAgents: number; totalAgents: number;
   usageInfo: { llmTokens: number; storageBytes: number } | null;
   storageInfo: StorageInfo | null;
+  cuQuota: { available: boolean; cuRemaining: number; cuLimit: number } | null;
   onClose: () => void; t: TFunction;
 }) {
   return (
@@ -1070,6 +1073,25 @@ function HealthModal({ ops, completed, totalRootTasks, workingAgents, totalAgent
               <span className="text-xs font-semibold text-fg-primary">{formatTokenCount(usageInfo.llmTokens)}</span>
             </div>
           )}
+          {cuQuota?.available && cuQuota.cuLimit > 0 && (() => {
+            const used = cuQuota.cuLimit - cuQuota.cuRemaining;
+            const pct = Math.min(100, Math.round((used / cuQuota.cuLimit) * 100));
+            const color = pct >= 95 ? 'red' : pct >= 80 ? 'amber' : 'green';
+            return (
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs text-fg-secondary">CU Quota</span>
+                  <span className={`text-xs font-semibold text-${color}-500`}>
+                    {formatTokenCount(used)} / {formatTokenCount(cuQuota.cuLimit)} ({pct}%)
+                  </span>
+                </div>
+                <div className="h-2 rounded-full bg-surface-overlay/60 overflow-hidden">
+                  <div className={`h-full rounded-full bg-${color}-500 transition-all duration-500`}
+                    style={{ width: `${pct}%` }} />
+                </div>
+              </div>
+            );
+          })()}
           {workingAgents > 0 && (
             <div className="flex items-center justify-between">
               <span className="text-xs text-fg-secondary">{t('systemHealth.currentWorking')}</span>

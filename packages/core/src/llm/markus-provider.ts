@@ -264,6 +264,9 @@ export class MarkusProvider implements LLMProviderInterface {
       throw new Error(`Markus proxy error ${res.status}: ${errText}`);
     }
 
+    // Extract CU quota headers from the initial streaming response
+    this.extractQuotaHeaders(res);
+
     let content = '';
     let reasoningContent = '';
     let finishReason: LLMResponse['finishReason'] = 'end_turn';
@@ -393,9 +396,10 @@ export class MarkusProvider implements LLMProviderInterface {
         // Success
         if (res.ok) return res;
 
-        // Rate limit (429) or server error (5xx) — retry
         if (res.status === 429) {
-          log.warn(`Markus proxy rate-limited (attempt ${attempt + 1}/${retries})`);
+          const errText = await res.text().catch(() => '');
+          log.warn(`Markus proxy rate-limited (attempt ${attempt + 1}/${retries})`, { body: errText.slice(0, 200) });
+          lastError = new Error(`CU_EXCEEDED: ${errText || 'Rate limited'}`);
         } else {
           const errText = await res.text();
           log.warn(`Markus proxy error ${res.status} (attempt ${attempt + 1}/${retries})`, { body: errText.slice(0, 200) });
