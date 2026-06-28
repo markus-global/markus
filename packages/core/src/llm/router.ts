@@ -1516,10 +1516,10 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'glm-4.7-flashx', name: 'GLM-4.7 FlashX', provider: 'zai', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 0.07, output: 0.4 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
   // Markus (token-billing gateway — routes through CF Worker Proxy)
   // Seed models — dynamically refreshed via /v1/models from the proxy
-  { id: 'markus-lite', name: 'Markus Lite', provider: 'markus', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 0.14, output: 0.28, cacheRead: 0.014 }, reasoning: false, inputTypes: ['text'], tier: 'base', description: 'Fast and affordable text model via Markus platform' },
-  { id: 'markus-pro', name: 'Markus Pro', provider: 'markus', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 0.55, output: 2.19, cacheRead: 0.055 }, reasoning: false, inputTypes: ['text'], tier: 'pro', description: 'High-quality text model via Markus platform' },
+  { id: 'markus-lite', name: 'Markus Lite', provider: 'markus', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 0.14, output: 0.28, cacheRead: 0.0028 }, reasoning: false, inputTypes: ['text'], tier: 'base', description: 'Fast and affordable text model via Markus platform' },
+  { id: 'markus-pro', name: 'Markus Pro', provider: 'markus', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 1.74, output: 3.48, cacheRead: 0.0145 }, reasoning: false, inputTypes: ['text'], tier: 'pro', description: 'High-quality text model via Markus platform' },
   { id: 'markus-max', name: 'Markus Max', provider: 'markus', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 3.0, output: 15.0, cacheRead: 0.3 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'max', description: 'Premium model via Markus platform (Claude Sonnet 4.6)' },
-  { id: 'markus-reason', name: 'Markus Reason', provider: 'markus', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 0.55, output: 2.19, cacheRead: 0.055 }, reasoning: true, inputTypes: ['text'], tier: 'pro', description: 'Reasoning model via Markus platform' },
+  { id: 'markus-reason', name: 'Markus Reason', provider: 'markus', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 1.74, output: 3.48, cacheRead: 0.0145 }, reasoning: true, inputTypes: ['text'], tier: 'pro', description: 'Reasoning model via Markus platform' },
 ];
 
 // ---------------------------------------------------------------------------

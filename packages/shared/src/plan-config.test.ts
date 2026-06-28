@@ -39,7 +39,7 @@ describe('getPlanConfig', () => {
     const cfg = getPlanConfig('enterprise');
     expect(cfg.name).toBe('enterprise');
     expect(cfg.monthlyQuotaCu).toBeGreaterThan(0);
-    expect(cfg.priceUsd).toBeGreaterThan(0);
+    expect(cfg.priceUsd).toBe(-1); // custom contract
   });
 
   it('should include windowQuotas for each plan', () => {
@@ -59,11 +59,14 @@ describe('getPlanConfig', () => {
     }
   });
 
-  it('should have increasing prices', () => {
-    const prices = listPlans().map(p => getPlanConfig(p).priceUsd);
+  it('should have increasing prices (excluding enterprise custom)', () => {
+    const paidPlans = listPlans().filter(p => p !== 'enterprise');
+    const prices = paidPlans.map(p => getPlanConfig(p).priceUsd);
     for (let i = 1; i < prices.length; i++) {
       expect(prices[i]).toBeGreaterThanOrEqual(prices[i - 1]);
     }
+    // Enterprise uses -1 (custom contract)
+    expect(getPlanConfig('enterprise').priceUsd).toBe(-1);
   });
 
   it('should throw for unknown plan', () => {
@@ -175,7 +178,7 @@ describe('detectPlan', () => {
     const result = await detectPlan(VALID_KEY, strategy);
     expect(result.plan.name).toBe('pro');
     expect(result.planName).toBe('pro');
-    expect(result.plan.monthlyQuotaCu).toBe(500000);
+    expect(result.plan.monthlyQuotaCu).toBe(100000);
   });
 
   it('should fall back to free if strategy returns unknown plan', async () => {

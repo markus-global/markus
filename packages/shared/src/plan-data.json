@@ -2,9 +2,9 @@
   "free": {
     "name": "free",
     "displayName": "Free",
-    "monthlyQuotaCu": 10000,
+    "monthlyQuotaCu": 5000,
     "windowQuotas": [
-      { "hours": 5, "maxCu": 1000 }
+      { "hours": 5, "maxCu": 500 }
     ],
     "priceUsd": 0,
     "priceUsdYearly": 0,
@@ -15,12 +15,12 @@
   "basic": {
     "name": "basic",
     "displayName": "Basic",
-    "monthlyQuotaCu": 50000,
+    "monthlyQuotaCu": 10000,
     "windowQuotas": [
-      { "hours": 5, "maxCu": 5000 }
+      { "hours": 5, "maxCu": 1000 }
     ],
-    "priceUsd": 9,
-    "priceUsdYearly": 90,
+    "priceUsd": 20,
+    "priceUsdYearly": 16,
     "maxAgents": 3,
     "maxTeamMembers": 3,
     "features": ["core-agent", "web-ui", "community-skills", "custom-tools", "basic-support"]
@@ -28,12 +28,12 @@
   "plus": {
     "name": "plus",
     "displayName": "Plus",
-    "monthlyQuotaCu": 200000,
+    "monthlyQuotaCu": 50000,
     "windowQuotas": [
-      { "hours": 5, "maxCu": 20000 }
+      { "hours": 5, "maxCu": 5000 }
     ],
-    "priceUsd": 29,
-    "priceUsdYearly": 290,
+    "priceUsd": 100,
+    "priceUsdYearly": 80,
     "maxAgents": 5,
     "maxTeamMembers": 5,
     "features": ["core-agent", "web-ui", "community-skills", "custom-tools", "priority-support", "a2a"]
@@ -41,12 +41,12 @@
   "pro": {
     "name": "pro",
     "displayName": "Pro",
-    "monthlyQuotaCu": 500000,
+    "monthlyQuotaCu": 100000,
     "windowQuotas": [
-      { "hours": 5, "maxCu": 50000 }
+      { "hours": 5, "maxCu": 10000 }
     ],
-    "priceUsd": 79,
-    "priceUsdYearly": 790,
+    "priceUsd": 200,
+    "priceUsdYearly": 160,
     "maxAgents": 10,
     "maxTeamMembers": 10,
     "features": ["core-agent", "web-ui", "community-skills", "custom-tools", "priority-support", "a2a", "custom-llm", "analytics"]
@@ -54,12 +54,12 @@
   "max": {
     "name": "max",
     "displayName": "Max",
-    "monthlyQuotaCu": 2000000,
+    "monthlyQuotaCu": 500000,
     "windowQuotas": [
-      { "hours": 5, "maxCu": 200000 }
+      { "hours": 5, "maxCu": 50000 }
     ],
-    "priceUsd": 199,
-    "priceUsdYearly": 1990,
+    "priceUsd": 1000,
+    "priceUsdYearly": 800,
     "maxAgents": 25,
     "maxTeamMembers": 25,
     "features": ["core-agent", "web-ui", "community-skills", "custom-tools", "priority-support", "a2a", "custom-llm", "analytics", "premium-models", "advanced-workflows"]
@@ -67,12 +67,12 @@
   "team": {
     "name": "team",
     "displayName": "Team",
-    "monthlyQuotaCu": 5000000,
+    "monthlyQuotaCu": 1000000,
     "windowQuotas": [
-      { "hours": 5, "maxCu": 500000 }
+      { "hours": 5, "maxCu": 100000 }
     ],
-    "priceUsd": 499,
-    "priceUsdYearly": 4990,
+    "priceUsd": 2000,
+    "priceUsdYearly": 1600,
     "maxAgents": 50,
     "maxTeamMembers": 50,
     "features": ["core-agent", "web-ui", "community-skills", "custom-tools", "dedicated-support", "a2a", "custom-llm", "analytics", "premium-models", "advanced-workflows", "sso", "audit-logs"]
@@ -80,12 +80,12 @@
   "enterprise": {
     "name": "enterprise",
     "displayName": "Enterprise",
-    "monthlyQuotaCu": 20000000,
+    "monthlyQuotaCu": 5000000,
     "windowQuotas": [
-      { "hours": 5, "maxCu": 2000000 }
+      { "hours": 5, "maxCu": 500000 }
     ],
-    "priceUsd": 1499,
-    "priceUsdYearly": 14990,
+    "priceUsd": -1,
+    "priceUsdYearly": -1,
     "maxAgents": 999,
     "maxTeamMembers": 999,
     "features": ["core-agent", "web-ui", "community-skills", "custom-tools", "dedicated-support", "a2a", "custom-llm", "analytics", "premium-models", "advanced-workflows", "sso", "audit-logs", "on-premise", "white-label", "custom-contract"]

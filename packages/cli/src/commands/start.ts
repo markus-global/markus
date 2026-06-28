@@ -1200,11 +1200,13 @@ async function startServerCore(
       detail: event.detail,
     });
     if (event.tokensUsed && event.type === 'llm_request') {
+      const inputTok = event.inputTokens ?? Math.floor(event.tokensUsed * 0.7);
+      const outputTok = event.outputTokens ?? Math.ceil(event.tokensUsed * 0.3);
       auditService.recordLLMUsage(
         'default',
         agentId,
-        Math.floor(event.tokensUsed * 0.7),
-        Math.ceil(event.tokensUsed * 0.3)
+        inputTok,
+        outputTok,
       );
       billingService.recordUsage({
         orgId: 'default',

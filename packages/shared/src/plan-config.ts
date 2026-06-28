@@ -20,8 +20,8 @@ const PLANS: Record<PlanName, PlanConfig> = {
   free: {
     name: 'free',
     displayName: 'Free',
-    monthlyQuotaCu: 10000,
-    windowQuotas: [{ hours: 5, maxCu: 1000 }],
+    monthlyQuotaCu: 5000,
+    windowQuotas: [{ hours: 5, maxCu: 500 }],
     priceUsd: 0,
     priceUsdYearly: 0,
     maxAgents: 1,
@@ -31,10 +31,10 @@ const PLANS: Record<PlanName, PlanConfig> = {
   basic: {
     name: 'basic',
     displayName: 'Basic',
-    monthlyQuotaCu: 50000,
-    windowQuotas: [{ hours: 5, maxCu: 5000 }],
-    priceUsd: 9,
-    priceUsdYearly: 90,
+    monthlyQuotaCu: 10000,
+    windowQuotas: [{ hours: 5, maxCu: 1000 }],
+    priceUsd: 20,
+    priceUsdYearly: 16,
     maxAgents: 3,
     maxTeamMembers: 3,
     features: ['core-agent', 'web-ui', 'community-skills', 'custom-tools', 'basic-support'],
@@ -42,10 +42,10 @@ const PLANS: Record<PlanName, PlanConfig> = {
   plus: {
     name: 'plus',
     displayName: 'Plus',
-    monthlyQuotaCu: 200000,
-    windowQuotas: [{ hours: 5, maxCu: 20000 }],
-    priceUsd: 29,
-    priceUsdYearly: 290,
+    monthlyQuotaCu: 50000,
+    windowQuotas: [{ hours: 5, maxCu: 5000 }],
+    priceUsd: 100,
+    priceUsdYearly: 80,
     maxAgents: 5,
     maxTeamMembers: 5,
     features: ['core-agent', 'web-ui', 'community-skills', 'custom-tools', 'priority-support', 'a2a'],
@@ -53,10 +53,10 @@ const PLANS: Record<PlanName, PlanConfig> = {
   pro: {
     name: 'pro',
     displayName: 'Pro',
-    monthlyQuotaCu: 500000,
-    windowQuotas: [{ hours: 5, maxCu: 50000 }],
-    priceUsd: 79,
-    priceUsdYearly: 790,
+    monthlyQuotaCu: 100000,
+    windowQuotas: [{ hours: 5, maxCu: 10000 }],
+    priceUsd: 200,
+    priceUsdYearly: 160,
     maxAgents: 10,
     maxTeamMembers: 10,
     features: ['core-agent', 'web-ui', 'community-skills', 'custom-tools', 'priority-support', 'a2a', 'custom-llm', 'analytics'],
@@ -64,10 +64,10 @@ const PLANS: Record<PlanName, PlanConfig> = {
   max: {
     name: 'max',
     displayName: 'Max',
-    monthlyQuotaCu: 2_000_000,
-    windowQuotas: [{ hours: 5, maxCu: 200_000 }],
-    priceUsd: 199,
-    priceUsdYearly: 1990,
+    monthlyQuotaCu: 500_000,
+    windowQuotas: [{ hours: 5, maxCu: 50_000 }],
+    priceUsd: 1000,
+    priceUsdYearly: 800,
     maxAgents: 25,
     maxTeamMembers: 25,
     features: ['core-agent', 'web-ui', 'community-skills', 'custom-tools', 'priority-support', 'a2a', 'custom-llm', 'analytics', 'premium-models', 'advanced-workflows'],
@@ -75,10 +75,10 @@ const PLANS: Record<PlanName, PlanConfig> = {
   team: {
     name: 'team',
     displayName: 'Team',
-    monthlyQuotaCu: 5_000_000,
-    windowQuotas: [{ hours: 5, maxCu: 500_000 }],
-    priceUsd: 499,
-    priceUsdYearly: 4990,
+    monthlyQuotaCu: 1_000_000,
+    windowQuotas: [{ hours: 5, maxCu: 100_000 }],
+    priceUsd: 2000,
+    priceUsdYearly: 1600,
     maxAgents: 50,
     maxTeamMembers: 50,
     features: ['core-agent', 'web-ui', 'community-skills', 'custom-tools', 'dedicated-support', 'a2a', 'custom-llm', 'analytics', 'premium-models', 'advanced-workflows', 'sso', 'audit-logs'],
@@ -86,10 +86,10 @@ const PLANS: Record<PlanName, PlanConfig> = {
   enterprise: {
     name: 'enterprise',
     displayName: 'Enterprise',
-    monthlyQuotaCu: 20_000_000,
-    windowQuotas: [{ hours: 5, maxCu: 2_000_000 }],
-    priceUsd: 1499,
-    priceUsdYearly: 14990,
+    monthlyQuotaCu: 5_000_000,
+    windowQuotas: [{ hours: 5, maxCu: 500_000 }],
+    priceUsd: -1, // custom contract — aligned with Hub's PLAN_PRICES
+    priceUsdYearly: -1,
     maxAgents: 999,
     maxTeamMembers: 999,
     features: ['core-agent', 'web-ui', 'community-skills', 'custom-tools', 'dedicated-support', 'a2a', 'custom-llm', 'analytics', 'premium-models', 'advanced-workflows', 'sso', 'audit-logs', 'on-premise', 'white-label', 'custom-contract'],
@@ -240,8 +240,8 @@ export function validatePlanConfig(config: PlanConfig): string[] {
     if (wq.hours <= 0) errors.push(`windowQuotas.hours must be > 0, got ${wq.hours}`);
     if (wq.maxCu <= 0) errors.push(`windowQuotas.maxCu must be > 0, got ${wq.maxCu}`);
   }
-  if (config.priceUsd < 0) errors.push(`priceUsd must be >= 0, got ${config.priceUsd}`);
-  if (config.priceUsdYearly < 0) errors.push(`priceUsdYearly must be >= 0, got ${config.priceUsdYearly}`);
+  if (config.priceUsd < -1) errors.push(`priceUsd must be >= 0 (or -1 for custom), got ${config.priceUsd}`);
+  if (config.priceUsdYearly < -1) errors.push(`priceUsdYearly must be >= 0 (or -1 for custom), got ${config.priceUsdYearly}`);
   if (config.maxAgents <= 0) errors.push(`maxAgents must be > 0, got ${config.maxAgents}`);
   if (config.maxTeamMembers <= 0) errors.push(`maxTeamMembers must be > 0, got ${config.maxTeamMembers}`);
   return errors;

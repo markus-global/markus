@@ -25,8 +25,8 @@ const log = createLogger('markus-provider');
 // ---------------------------------------------------------------------------
 
 interface CUEntry {
-  inputCUs: number;
-  outputCUs: number;
+  inputTokens: number;
+  outputTokens: number;
   timestamp: number;
 }
 
@@ -39,22 +39,22 @@ class CUCache {
   private entries: CUEntry[] = [];
   private readonly MAX_ENTRIES = 100;
 
-  add(inputCUs: number, outputCUs: number): void {
-    this.entries.push({ inputCUs, outputCUs, timestamp: Date.now() });
+  add(inputTokens: number, outputTokens: number): void {
+    this.entries.push({ inputTokens, outputTokens, timestamp: Date.now() });
     if (this.entries.length > this.MAX_ENTRIES) {
       this.entries = this.entries.slice(-this.MAX_ENTRIES);
     }
   }
 
-  /** Total CU consumed across all cached entries. */
-  getTotal(): { inputCUs: number; outputCUs: number } {
-    let inputCUs = 0;
-    let outputCUs = 0;
+  /** Total tokens consumed across all cached entries (diagnostic, not billing). */
+  getTotal(): { inputTokens: number; outputTokens: number } {
+    let inputTokens = 0;
+    let outputTokens = 0;
     for (const e of this.entries) {
-      inputCUs += e.inputCUs;
-      outputCUs += e.outputCUs;
+      inputTokens += e.inputTokens;
+      outputTokens += e.outputTokens;
     }
-    return { inputCUs, outputCUs };
+    return { inputTokens, outputTokens };
   }
 
   clear(): void {
@@ -152,8 +152,8 @@ export class MarkusProvider implements LLMProviderInterface {
     return cachedModelList ?? FALLBACK_MODELS;
   }
 
-  /** Return CU usage totals for diagnostic purposes. */
-  getCUCacheTotals(): { inputCUs: number; outputCUs: number } {
+  /** Return token usage totals for diagnostic purposes. */
+  getCUCacheTotals(): { inputTokens: number; outputTokens: number } {
     return this.cuCache.getTotal();
   }
 
