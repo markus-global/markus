@@ -1076,17 +1076,18 @@ function HealthModal({ ops, completed, totalRootTasks, workingAgents, totalAgent
           {cuQuota?.available && cuQuota.cuLimit > 0 && (() => {
             const used = cuQuota.cuLimit - cuQuota.cuRemaining;
             const pct = Math.min(100, Math.round((used / cuQuota.cuLimit) * 100));
-            const color = pct >= 95 ? 'red' : pct >= 80 ? 'amber' : 'green';
+            const textColor = pct >= 95 ? 'text-red-500' : pct >= 80 ? 'text-amber-500' : 'text-green-500';
+            const barColor = pct >= 95 ? 'bg-red-500' : pct >= 80 ? 'bg-amber-500' : 'bg-green-500';
             return (
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <span className="text-xs text-fg-secondary">CU Quota</span>
-                  <span className={`text-xs font-semibold text-${color}-500`}>
+                  <span className={`text-xs font-semibold ${textColor}`}>
                     {formatTokenCount(used)} / {formatTokenCount(cuQuota.cuLimit)} ({pct}%)
                   </span>
                 </div>
                 <div className="h-2 rounded-full bg-surface-overlay/60 overflow-hidden">
-                  <div className={`h-full rounded-full bg-${color}-500 transition-all duration-500`}
+                  <div className={`h-full rounded-full ${barColor} transition-all duration-500`}
                     style={{ width: `${pct}%` }} />
                 </div>
               </div>

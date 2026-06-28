@@ -897,7 +897,9 @@ export class LLMRouter {
       this.recordSuccess(providerName, activeModel);
       return { response, model: activeModel };
     } catch (error) {
-      this.recordFailure(providerName, activeModel, error);
+      if (!LLMRouter.isCUExceededError(error)) {
+        this.recordFailure(providerName, activeModel, error);
+      }
       throw LLMRouter.enrichError(error, providerName, activeModel);
     } finally {
       if (altModel && altModel !== originalModel) {
@@ -1037,7 +1039,9 @@ export class LLMRouter {
       this.recordSuccess(providerName, activeModel);
       return { response, model: activeModel };
     } catch (error) {
-      this.recordFailure(providerName, activeModel, error);
+      if (!LLMRouter.isCUExceededError(error)) {
+        this.recordFailure(providerName, activeModel, error);
+      }
       throw LLMRouter.enrichError(error, providerName, activeModel);
     } finally {
       if (altModel && altModel !== originalModel) {

@@ -194,19 +194,16 @@ export class MarkusProvider implements LLMProviderInterface {
       signal: AbortSignal.timeout(this.chatTimeoutMs),
     });
 
-    // CU_EXCEEDED (HTTP 402) — throw recognizable error so router won't fallback
-    if (response.status === 402) {
+    // CU/billing errors — throw recognizable error so router won't fallback
+    if (response.status === 402 || response.status === 429) {
       const errBody = await response.json().catch(() => ({})) as Record<string, unknown>;
-      const errMsg = ((errBody.error as Record<string, unknown>)?.message as string) ?? 'Insufficient CU balance';
+      const errMsg = ((errBody.error as Record<string, unknown>)?.message as string) ?? 'CU quota exceeded';
       throw new Error(`CU_EXCEEDED: ${errMsg}`);
     }
 
-    // Window quota exceeded (429 with Retry-After)
-    if (response.status === 429) {
-      const retryAfter = response.headers.get('retry-after') ?? '300';
-      const errBody = await response.json().catch(() => ({})) as Record<string, unknown>;
-      const errMsg = ((errBody.error as Record<string, unknown>)?.message as string) ?? '5h window quota exceeded';
-      throw new Error(`CU_EXCEEDED: ${errMsg} (retry after ${retryAfter}s)`);
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`Markus proxy error ${response.status}: ${errText}`);
     }
 
     this.extractQuotaHeaders(response);
@@ -373,8 +370,8 @@ export class MarkusProvider implements LLMProviderInterface {
 
   /**
    * Fetch with exponential backoff retry.
-   * Does NOT retry on 4xx errors (client errors) — only on 5xx / network issues.
-   * For streaming requests, skipRetry avoids duplicating chunks.
+   * Does NOT retry on 4xx errors (billing/auth are not transient).
+   * Only retries on 5xx / network issues.
    */
   private async fetchWithRetry(
     url: string,
@@ -388,25 +385,19 @@ export class MarkusProvider implements LLMProviderInterface {
       try {
         const res = await fetch(url, init);
 
-        // Client errors (4xx) — don't retry
-        if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+        // 4xx errors are NOT transient — return immediately (no retry)
+        if (res.status >= 400 && res.status < 500) {
           return res;
         }
 
-        // Success
         if (res.ok) return res;
 
-        if (res.status === 429) {
-          const errText = await res.text().catch(() => '');
-          log.warn(`Markus proxy rate-limited (attempt ${attempt + 1}/${retries})`, { body: errText.slice(0, 200) });
-          lastError = new Error(`CU_EXCEEDED: ${errText || 'Rate limited'}`);
-        } else {
-          const errText = await res.text();
-          log.warn(`Markus proxy error ${res.status} (attempt ${attempt + 1}/${retries})`, { body: errText.slice(0, 200) });
-          lastError = new Error(`Markus proxy error ${res.status}: ${errText}`);
-        }
+        // 5xx: retry
+        const errText = await res.text().catch(() => '');
+        log.warn(`Markus proxy error ${res.status} (attempt ${attempt + 1}/${retries})`, { body: errText.slice(0, 200) });
+        lastError = new Error(`Markus proxy error ${res.status}: ${errText}`);
 
-        if (skipRetry) return res; // stream: return to caller for handling
+        if (skipRetry) return res;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         log.warn(`Markus proxy network error (attempt ${attempt + 1}/${retries})`, { error: lastError.message });
