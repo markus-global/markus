@@ -6,8 +6,17 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import remarkBreaks from 'remark-breaks';
 import rehypeKatex from 'rehype-katex';
+import rehypeHighlight from 'rehype-highlight';
 import 'katex/dist/katex.min.css';
 import { FilePathLink, looksLikeFilePath } from './FilePathLink.tsx';
+import { CodeBlock } from './CodeBlock.tsx';
+import { MermaidBlock } from './MermaidBlock.tsx';
+import { PlantUMLBlock } from './PlantUMLBlock.tsx';
+import {
+  transformOutsideCode, normalizeMathDelimiters,
+  preprocessMentions, preprocessEntityLinksInCode, preprocessEntityIds,
+  looksLikePlantUML, looksLikeMermaid,
+} from './markdown-utils.ts';
 import { copyPlainText, copyAsHtml } from './markdown-copy.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
@@ -15,7 +24,7 @@ import { PAGE } from '../routes.ts';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const REMARK_PLUGINS: any[] = [remarkGfm, remarkMath, remarkBreaks];
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const REHYPE_PLUGINS: any[] = [[rehypeKatex, { strict: 'ignore' }]];
+const REHYPE_PLUGINS: any[] = [[rehypeKatex, { strict: 'ignore' }], [rehypeHighlight, { detect: true, ignoreMissing: true }]];
 
 interface Props {
   content: string;
@@ -43,82 +52,11 @@ function extractThinkBlocks(text: string): { thinking: string[]; rest: string } 
   return { thinking, rest: rest.trim() };
 }
 
-/** Normalise LaTeX delimiters from LLM output to remark-math's expected syntax.
- *  \(...\) → $...$  and  \[...\] → $$...$$ */
-function normalizeMathDelimiters(text: string): string {
-  // Block math: \[...\] → $$...$$  (may span multiple lines)
-  let out = text.replace(/\\\[([\s\S]*?)\\\]/g, (_m, inner: string) => `$$${inner}$$`);
-  // Inline math: \(...\) → $...$  (single line only to avoid false positives)
-  out = out.replace(/\\\((.+?)\\\)/g, (_m, inner: string) => `$${inner}$`);
-  return out;
-}
-
 const MENTION_PREFIX = '#mention:';
-
-/** Convert @mentions in raw text to markdown links before ReactMarkdown processes it.
- *  Uses `#mention:` (hash prefix) so ReactMarkdown's URL sanitiser doesn't strip them.
- *  When knownNames is provided, also matches multi-word names (e.g. "@Markus Platform Dev Manager"). */
-function preprocessMentions(text: string, knownNames?: string[]): string {
-  if (!knownNames || knownNames.length === 0) {
-    return text.replace(/@\[([^\]]+)\]|@([\w\p{L}\p{N}]+)/gu, (_full, bracketName: string | undefined, wordName: string | undefined) => {
-      const name = bracketName ?? wordName!;
-      return `[@${name}](${MENTION_PREFIX}${encodeURIComponent(name)})`;
-    });
-  }
-
-  const sorted = [...knownNames].sort((a, b) => b.length - a.length);
-  let result = '';
-  let idx = 0;
-  while (idx < text.length) {
-    const atPos = text.indexOf('@', idx);
-    if (atPos < 0) {
-      result += text.slice(idx);
-      break;
-    }
-    result += text.slice(idx, atPos);
-
-    // Bracketed: @[Name With Spaces]
-    if (text[atPos + 1] === '[') {
-      const close = text.indexOf(']', atPos + 2);
-      if (close > atPos + 2) {
-        const name = text.slice(atPos + 2, close);
-        result += `[@${name}](${MENTION_PREFIX}${encodeURIComponent(name)})`;
-        idx = close + 1;
-        continue;
-      }
-    }
-
-    // Full name prefix match
-    const after = text.slice(atPos + 1);
-    const afterLower = after.toLowerCase();
-    const fullMatch = sorted.find(n => afterLower.startsWith(n.toLowerCase()));
-    if (fullMatch) {
-      const actual = after.slice(0, fullMatch.length);
-      result += `[@${actual}](${MENTION_PREFIX}${encodeURIComponent(actual)})`;
-      idx = atPos + 1 + fullMatch.length;
-      continue;
-    }
-
-    // Single-word fallback
-    const tokenMatch = after.match(/^([\w\p{L}\p{N}]+)/u);
-    if (tokenMatch) {
-      const name = tokenMatch[1]!;
-      result += `[@${name}](${MENTION_PREFIX}${encodeURIComponent(name)})`;
-      idx = atPos + 1 + name.length;
-      continue;
-    }
-
-    result += '@';
-    idx = atPos + 1;
-  }
-  return result;
-}
 
 // ─── Entity ID linking ───────────────────────────────────────────────────────
 
 const ENTITY_PREFIX = '#entity:';
-const ENTITY_ID_RE = /(?<!\[)(?<!#entity:)\b(tsk|req|proj|dlv|agt)_[a-f0-9]{6,}\b(?!\]\(#entity:)/gi;
-const ENTITY_LINK_IN_CODE_RE = /`\[([^\]]+)\]\(#entity:((?:tsk|req|proj|dlv|agt)_[a-f0-9]{6,})\)`/gi;
 const ENTITY_LINK_CONTENT_RE = /^\[([^\]]+)\]\(#entity:((tsk|req|proj|dlv|agt)_[a-f0-9]{6,})\)$/i;
 
 const ENTITY_META: Record<string, { icon: string; label: string }> = {
@@ -141,16 +79,6 @@ function looksLikeEntityId(text: string): boolean {
   return /^(tsk|req|proj|dlv|agt)_[a-f0-9]{6,}$/i.test(text);
 }
 
-/** Unwrap entity links wrapped in backticks: `[id](#entity:id)` → [id](#entity:id) */
-function preprocessEntityLinksInCode(text: string): string {
-  return text.replace(ENTITY_LINK_IN_CODE_RE, (_m, label, id) => `[${label}](${ENTITY_PREFIX}${id})`);
-}
-
-/** Convert bare entity IDs (tsk_xxx, dlv_xxx, etc.) to markdown links with #entity: href. */
-function preprocessEntityIds(text: string): string {
-  return text.replace(ENTITY_ID_RE, (id) => `[${id}](${ENTITY_PREFIX}${id})`);
-}
-
 const mdComponents = {
   p: ({ children }: { children?: React.ReactNode }) => <p className="mb-2 last:mb-0 leading-relaxed text-fg-secondary">{children}</p>,
   h1: ({ children }: { children?: React.ReactNode }) => <h1 className="text-base font-bold mb-2 mt-3 first:mt-0 text-fg-primary">{children}</h1>,
@@ -163,10 +91,17 @@ const mdComponents = {
   ol: ({ children }: { children?: React.ReactNode }) => <ol className="list-decimal pl-4 mb-2 space-y-0.5">{children}</ol>,
   li: ({ children }: { children?: React.ReactNode }) => <li className="leading-relaxed text-fg-secondary marker:text-fg-secondary">{children}</li>,
   code: ({ children, className: cls }: { children?: React.ReactNode; className?: string }) => {
-    if (cls?.includes('language-')) {
-      return <code className="text-fg-secondary font-mono">{children}</code>;
-    }
     const text = typeof children === 'string' ? children : String(children ?? '');
+    const trimmed = text.trim();
+    if (cls?.includes('language-plantuml') || looksLikePlantUML(trimmed)) {
+      return <PlantUMLBlock code={trimmed} />;
+    }
+    if (cls?.includes('language-mermaid') || (!cls && looksLikeMermaid(trimmed))) {
+      return <MermaidBlock code={trimmed} />;
+    }
+    if (cls?.includes('language-')) {
+      return <code className={`${cls} text-fg-secondary font-mono text-xs`}>{children}</code>;
+    }
     if (looksLikeEntityId(text)) {
       const prefix = text.split('_')[0]!;
       const meta = ENTITY_META[prefix];
@@ -205,9 +140,7 @@ const mdComponents = {
     return <code className="bg-surface-secondary px-1.5 py-0.5 rounded text-xs font-mono text-brand-500 break-all">{children}</code>;
   },
   pre: ({ children }: { children?: React.ReactNode }) => (
-    <pre className="bg-surface-secondary rounded-lg p-3 overflow-x-auto my-2 text-xs [&>code]:bg-transparent [&>code]:p-0 [&>code]:rounded-none [&>code]:text-fg-secondary">
-      {children}
-    </pre>
+    <CodeBlock>{children}</CodeBlock>
   ),
   strong: ({ children }: { children?: React.ReactNode }) => <strong className="font-bold text-fg-primary">{children}</strong>,
   em: ({ children }: { children?: React.ReactNode }) => <em className="italic text-fg-secondary">{children}</em>,
@@ -456,10 +389,10 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
 
   const processedRest = useMemo(() => {
-    let t = normalizeMathDelimiters(rest);
-    t = preprocessEntityLinksInCode(t);
-    t = preprocessEntityIds(t);
-    t = preprocessMentions(t, knownNames);
+    let t = transformOutsideCode(rest, normalizeMathDelimiters);
+    t = transformOutsideCode(t, preprocessEntityLinksInCode);
+    t = transformOutsideCode(t, preprocessEntityIds);
+    t = transformOutsideCode(t, s => preprocessMentions(s, knownNames));
     return t;
   }, [rest, knownNames]);
 
