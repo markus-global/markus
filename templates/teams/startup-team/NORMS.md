@@ -57,3 +57,20 @@ Adjust quality based on what you're building:
 - Save every experiment result via `memory_save` with `tags: ["experiment", "hypothesis"]`.
 - Document architecture decisions that constrain future work via `deliverable_create`.
 - Share customer insights with the whole team — everyone should know what users want.
+
+## Quality Calibration by Risk
+
+| Category | Quality Level | Testing | Review |
+|----------|--------------|---------|--------|
+| Core product (revenue path) | High | Unit + integration tests required | Full review |
+| Growth experiments | Medium | Happy path test, manual verification | Quick review |
+| Internal tools | Medium | Basic tests, error handling | Self-review acceptable |
+| One-off analysis | Low | Verify results make sense | No formal review |
+
+Adjust quality investment based on what you're building. Over-engineering an experiment wastes time. Under-testing core product creates debt.
+
+## Error Recovery
+
+- **Experiment fails**: Document what was tested and what was learned. Move on — don't fix failed experiments, learn from them.
+- **Core product bug**: Fix immediately. Write regression test. Do post-mortem if user-facing.
+- **Deployment issue**: Rollback first, investigate second. Never debug in production.

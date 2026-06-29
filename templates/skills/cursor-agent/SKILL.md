@@ -233,6 +233,22 @@ If output quality is poor after 2 attempts, switch to `claude-code` with equival
 - **Default to Auto mode (no model override) for cost-effectiveness**
 - Only specify models when Auto mode is insufficient
 
+## Mode Chaining for Quality
+
+Use Cursor Agent modes strategically:
+1. **Plan mode**: `invoke_coding_tool({ tool: "cursor-agent", mode: "plan", prompt: "..." })` — analyze before implementing
+2. **Agent mode** (default): Full implementation
+3. **Ask mode**: `invoke_coding_tool({ tool: "cursor-agent", mode: "ask", prompt: "..." })` — targeted questions about the codebase
+
+For complex tasks, always plan first. Review the plan before proceeding to implementation.
+
+## Project Rules Integration
+
+Cursor Agent reads `.cursor/rules/` automatically. When `task_id` is provided, Markus injects task context into `.cursor/rules/markus-task.mdc`. This means Cursor Agent automatically understands:
+- Task requirements and acceptance criteria
+- Project conventions and constraints
+- Upstream/downstream dependencies
+
 ## Rules
 
 - **DO** use when the project has Cursor rules configured

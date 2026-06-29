@@ -233,6 +233,7 @@ export interface TaskServiceBridge {
   rejectTask(id: string, userId?: string): { id: string; title: string; status: string };
   addSubtask(taskId: string, title: string): { id: string; title: string; status: string };
   completeSubtask(taskId: string, subtaskId: string): { id: string; title: string; status: string };
+  cancelSubtask(taskId: string, subtaskId: string): { id: string; title: string; status: string };
   getSubtasks?(taskId: string): Array<{ id: string; title: string; status: string }>;
   submitForReview(taskId: string, deliverables: Array<{ type: string; reference: string; summary: string; diffStats?: unknown; testResults?: unknown }>, reviewerId?: string, completionSummary?: string): Promise<{ id: string; status: string }>;
   requestRevision(taskId: string, reason: string, author?: string): Promise<{ id: string; title: string; status: string }>;
@@ -1294,6 +1295,9 @@ export class AgentManager {
         completeSubtask: async (taskId, subtaskId) => {
           return ts.completeSubtask(taskId, subtaskId);
         },
+        cancelSubtask: async (taskId, subtaskId) => {
+          return ts.cancelSubtask(taskId, subtaskId);
+        },
         getSubtasks: async (taskId) => {
           const task = ts.getTask(taskId);
           return task?.subtasks ?? [];
@@ -2087,6 +2091,9 @@ export class AgentManager {
         },
         completeSubtask: async (taskId, subtaskId) => {
           return ts.completeSubtask(taskId, subtaskId);
+        },
+        cancelSubtask: async (taskId, subtaskId) => {
+          return ts.cancelSubtask(taskId, subtaskId);
         },
         getSubtasks: async (taskId) => {
           const task = ts.getTask(taskId);

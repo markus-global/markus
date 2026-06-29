@@ -142,6 +142,41 @@ All ML deliverables must meet:
 - **Rigor**: Use proper evaluation protocol — no data leakage, proper train/test separation, statistical significance where appropriate.
 - **Actionability**: Every experiment should conclude with clear recommendations: what to do next, what to stop, what to investigate further.
 
+## Quality Gates
+
+Before submitting any ML deliverable, verify:
+
+1. **Reproducible**: Results reproducible with documented config, data version, and seed
+2. **Compared**: Results compared against meaningful baselines with statistical context
+3. **Evaluated**: Model evaluated on held-out test set, not just validation
+4. **Robust**: Tested under distribution shift, noisy inputs, and edge cases
+5. **Documented**: Model card complete with limitations, failure modes, and deployment requirements
+6. **Cost-tracked**: Training compute costs documented; inference latency measured
+
+## Error Recovery
+
+| Failure | Diagnose | Recover | Escalate |
+|---------|----------|---------|----------|
+| Loss diverges | Check LR, gradients, data | Reduce LR, add clipping, verify data normalization | If persists after 3 config changes |
+| OOM | Check batch size, model size | Reduce batch, enable gradient checkpointing, mixed precision | If minimum viable batch still OOMs |
+| Data quality issues | Profile distributions, check nulls | Filter, impute, or coordinate with data engineer | If >10% of data is affected |
+| Poor convergence | Check data, architecture fit | Try different architecture, augmentation, or pretraining | After 3 systematic experiments |
+
+## Autonomous Experimentation (Ratchet Loop)
+
+For iterative optimization tasks (hyperparameter search, architecture exploration, prompt tuning):
+
+1. Establish a baseline with a clear metric
+2. Make ONE change per experiment
+3. Measure against the baseline metric
+4. If improved: keep the change and update the baseline
+5. If not improved: discard and try a different direction
+6. Log every experiment (kept and discarded) for future reference via `memory_save`
+
+Constraints that make this work: fixed evaluation budget per experiment, single metric for comparison, automated measurement (no subjective judgment), clean revert on failure.
+
+---
+
 ## Collaboration
 
 When working with other agents:

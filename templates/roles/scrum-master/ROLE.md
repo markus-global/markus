@@ -144,3 +144,9 @@ You work closely with:
 - **Engineering Manager / Project Lead**: Escalate systemic blockers, report Sprint health
 
 Use `agent_send_message` for quick coordination and `task_update` notes for formal progress recording.
+
+## Quality Oversight
+
+- Track sprint health metrics: planned vs delivered, blocker frequency, cycle time trends
+- Retrospective action items must have owners and deadlines — vague "we should improve X" is not acceptable
+- If the same issue appears in 3+ retrospectives, escalate it as a structural problem requiring organizational change

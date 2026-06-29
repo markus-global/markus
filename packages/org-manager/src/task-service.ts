@@ -3075,6 +3075,16 @@ export class TaskService {
       throw new Error(`Task ${taskId} is in ${task.status} status, cannot submit for review`);
     }
 
+    const pendingSubtasks = task.subtasks.filter(s => s.status === 'pending');
+    if (pendingSubtasks.length > 0) {
+      const list = pendingSubtasks.map(s => `"${s.title}" (${s.id})`).join(', ');
+      throw new Error(
+        `Cannot submit for review: ${pendingSubtasks.length} subtask(s) still pending. ` +
+        `Complete them with subtask_complete, or cancel inapplicable ones with subtask_cancel. ` +
+        `Pending: ${list}`
+      );
+    }
+
     // Run automated review checks if ReviewService is available
     let reviewReport: ReviewReport | undefined;
     if (this.reviewService) {

@@ -189,6 +189,17 @@ When `result.testResult` shows failures, **do not apply**. Re-invoke with:
 The following tests failed: <output>. Fix the failures without changing unrelated code.
 ```
 
+## Pre-Apply Quality Protocol
+
+Before calling `coding_tool_apply`, verify ALL of the following:
+
+1. **Tests pass**: `result.testResult.success` is true, or you have explicitly accepted known failures with justification
+2. **Diff is clean**: Review `result.modifiedFiles` — no unexpected files were changed
+3. **Scope compliance**: Changes are within the task scope — flag any out-of-scope modifications
+4. **No regressions**: If a broader test suite exists, run it via `shell_execute` before applying
+
+If any check fails, re-invoke with a targeted prompt referencing the specific issue rather than applying and fixing later.
+
 ## Workflow Summary
 
 ```

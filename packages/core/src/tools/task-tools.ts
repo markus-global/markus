@@ -84,6 +84,8 @@ export interface AgentTaskContext {
   addSubtask?: (taskId: string, title: string) => Promise<{ id: string; title: string; status: string }>;
   /** Complete a subtask */
   completeSubtask?: (taskId: string, subtaskId: string) => Promise<{ id: string; title: string; status: string }>;
+  /** Cancel a subtask (marks as no longer applicable) */
+  cancelSubtask?: (taskId: string, subtaskId: string) => Promise<{ id: string; title: string; status: string }>;
   /** Get subtasks of a task */
   getSubtasks?: (taskId: string) => Promise<Array<{ id: string; title: string; status: string }>>;
   /** Propose a requirement for user review */
@@ -861,9 +863,60 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
               }
             },
           } as AgentToolHandler,
+          ...(ctx.cancelSubtask
+            ? [
+                {
+                  name: 'subtask_cancel',
+                  description: [
+                    'Cancel a subtask that is no longer applicable. Use this when a subtask was created during planning but is no longer needed',
+                    '(e.g., scope changed, approach changed, subtask merged with another).',
+                    'Requires task_id, subtask_id, and a reason explaining why it is being cancelled.',
+                    'IMPORTANT: task_submit_review will reject submission if any subtask is still pending — you must complete or cancel every subtask before submitting.',
+                  ].join(' '),
+                  inputSchema: {
+                    type: 'object',
+                    properties: {
+                      task_id: { type: 'string', description: 'The parent task ID (tsk_-prefixed).' },
+                      subtask_id: { type: 'string', description: 'The subtask ID to cancel (sub_-prefixed). Get this from subtask_list.' },
+                      reason: { type: 'string', description: 'Why this subtask is no longer applicable.' },
+                    },
+                    required: ['task_id', 'subtask_id', 'reason'],
+                  },
+                  async execute(args: Record<string, unknown>): Promise<string> {
+                    try {
+                      const taskId = args['task_id'] as string | undefined;
+                      const subtaskId = args['subtask_id'] as string | undefined;
+                      const reason = args['reason'] as string | undefined;
+                      if (!taskId?.trim()) {
+                        return JSON.stringify({
+                          status: 'error',
+                          error: 'task_id is required — provide the parent task ID (tsk_-prefixed).',
+                        });
+                      }
+                      if (!subtaskId?.trim()) {
+                        return JSON.stringify({
+                          status: 'error',
+                          error: 'subtask_id is required — provide the subtask ID (sub_-prefixed). Call subtask_list to get IDs.',
+                        });
+                      }
+                      if (!reason?.trim()) {
+                        return JSON.stringify({
+                          status: 'error',
+                          error: 'reason is required — explain why this subtask is no longer applicable.',
+                        });
+                      }
+                      const result = await ctx.cancelSubtask!(taskId, subtaskId);
+                      return JSON.stringify({ status: 'success', subtask: result, reason: reason.trim() });
+                    } catch (error) {
+                      return JSON.stringify({ status: 'error', error: String(error) });
+                    }
+                  },
+                } as AgentToolHandler,
+              ]
+            : []),
           {
             name: 'subtask_list',
-            description: 'List all subtasks of a task with their IDs and statuses. Call this to get subtask IDs before using subtask_complete. Also useful to check progress on a decomposed task.',
+            description: 'List all subtasks of a task with their IDs and statuses. Call this to get subtask IDs before using subtask_complete or subtask_cancel. Also useful to check progress on a decomposed task.',
             inputSchema: {
               type: 'object',
               properties: {

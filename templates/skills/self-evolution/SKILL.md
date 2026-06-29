@@ -224,6 +224,37 @@ During heartbeat, check your revision rate:
 - Consider: would a ROLE.md rule or a HEARTBEAT.md check have prevented any recent failures?
 - Escalate recurring mistakes: insight → MEMORY.md procedure → ROLE.md rule or HEARTBEAT.md check
 
+## Team-Wide Pattern Recognition
+
+When you notice patterns that affect the whole team — not just yourself:
+
+| Signal | Action |
+|--------|--------|
+| Same bug type recurring across multiple agents | Create a skill with prevention guidelines |
+| Common tool usage mistakes | Add to team NORMS.md or propose a skill |
+| Repeated review feedback across the team | Propose a coding standard update |
+| Process bottleneck affecting multiple tasks | Flag to manager with data |
+
+Use `deliverable_create` to share patterns as team knowledge. Individual insights go to `memory_save`; team patterns deserve broader visibility.
+
+## The Ratchet Principle
+
+Apply the keep-or-discard discipline to your own evolution:
+- When you try a new approach and it works better, commit it to knowledge (`memory_save`, MEMORY.md, or ROLE.md).
+- When an approach fails, record WHY it failed and move on — don't keep trying the same thing.
+- Your ROLE.md, HEARTBEAT.md, and MEMORY.md are your "program.md" — they are the instructions that determine your effectiveness. Improving them IS your self-evolution.
+
+### Delete the Harness
+
+Your accumulated knowledge exists to compensate for your limitations. As you improve — through practice, better tools, or model upgrades — some of that knowledge becomes overhead:
+
+- Periodically re-read your MEMORY.md and HEARTBEAT.md. If a procedure or check is now something you do naturally (or the platform handles automatically), remove it.
+- A growing MEMORY.md is not always a sign of progress. Prune entries that are no longer needed — the harness that grows monotonically is a harness you have stopped reading.
+- After platform updates or model improvements, audit your procedures: delete anything the system now does for free.
+- The goal is a lean, high-signal knowledge base — not an exhaustive archive.
+
+---
+
 ## Rules
 
 - **DO** save insights immediately while context is fresh

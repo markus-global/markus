@@ -190,6 +190,21 @@ If Codex modifies unexpected files, discard changes (`git checkout -- .` in `wor
 - Use `gpt-5-codex` as the default — escalate only when justified
 - `exec --full-auto` is handled by Markus — do not try to run Codex interactively from an agent
 
+## Full-Auto Mode Best Practices
+
+Codex runs in `--full-auto` mode by default, which means it will make changes without asking for confirmation. This makes quality verification especially important:
+
+1. **Scope tightly**: Write precise prompts that describe exactly what to change and what NOT to change
+2. **Verify before applying**: Always check `result.diffStats` and `result.modifiedFiles` before `coding_tool_apply`
+3. **Run tests**: If Codex doesn't run tests automatically, run them yourself via `shell_execute` before applying
+
+## When to Choose Codex
+
+- Quick, targeted fixes (one file, clear problem)
+- Scripted automation (generate boilerplate, rename across files)
+- CI-friendly operations (no interactive prompts needed)
+- When speed matters more than deep reasoning
+
 ## Rules
 
 - **DO** use for quick fixes and well-scoped edits

@@ -68,6 +68,45 @@ Use `task_note` to leave structured review feedback on the task. Every review MU
 ### Step 5: Announce outcomes
 After **`completed`**, announce via `agent_broadcast_status` and notify the project manager via `agent_send_message` when appropriate.
 
+## Review Dimensions
+
+Evaluate every submission across these dimensions, weighted by change type:
+
+| Dimension | What to check | Priority for |
+|-----------|---------------|-------------|
+| Correctness | Logic errors, off-by-one, null handling, race conditions | All changes |
+| Security | Input validation, auth checks, credential exposure, injection vectors | Auth, API, user input changes |
+| Performance | Algorithm complexity, N+1 queries, unnecessary allocations, missing pagination | Data-heavy, API, loop changes |
+| Maintainability | Naming clarity, code organization, DRY violations, test quality | Large refactors, new modules |
+| Scope compliance | Changes confined to task scope, no uncoordinated modifications | All changes |
+| Convention adherence | Follows project patterns, consistent style, appropriate error handling | All changes |
+
+### Scoring Subjective Quality
+
+When a deliverable has subjective dimensions (design, clarity, usability, documentation quality), make your evaluation explicit and gradable instead of relying on gut feeling:
+
+1. Define 2-4 evaluation axes relevant to the deliverable (e.g., correctness, readability, completeness, convention adherence)
+2. For each axis, score from 0 to 1 with a brief justification
+3. Include specific examples — quote the code or text that earned or lost points
+4. Distinguish between "this is wrong" (blocking) and "this could be better" (suggestion)
+
+This makes reviews reproducible and gives the developer actionable feedback rather than vague impressions.
+
+### Review Prioritization
+
+Not all changes need the same depth of review:
+- **High-risk** (auth, payments, data access, infra): Deep review on every dimension
+- **Medium-risk** (business logic, APIs, UI state): Focus on correctness and security
+- **Low-risk** (docs, config, style): Quick check for accuracy and scope
+
+### Structured Feedback
+
+When leaving review feedback, classify each item:
+- **[BLOCKING]** — Must be fixed before approval. Clear explanation of what and why.
+- **[SUGGESTION]** — Recommended improvement, not required for approval.
+- **[QUESTION]** — Needs clarification before you can evaluate.
+- **[PRAISE]** — Highlight good patterns worth reinforcing.
+
 ## External Coding Tools
 
 When your `coding-tools` skill is enabled, you can use professional coding tools (Claude Code, Codex, Cursor Agent) via `invoke_coding_tool` to assist with reviews:
