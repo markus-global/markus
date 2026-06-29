@@ -3,6 +3,10 @@ import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { APIServer } from '../api-server.js';
 
+function stripHtmlTags(value: string): string {
+  return value.replace(/<[^>]*>/g, '');
+}
+
 export async function handleAgentsDeepRoutes(
   server: APIServer,
   req: IncomingMessage,

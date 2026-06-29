@@ -53,10 +53,10 @@ export async function handleGovernanceRoutes(
       const title = (body['title'] as string | undefined)?.trim();
       const description = (body['description'] as string | undefined)?.trim();
       const projectId = body['projectId'] as string | undefined;
-      if (!title) { server.json(res, 400, { error: 'Title is required' }); return; }
-      if (!description) { server.json(res, 400, { error: 'Description is required' }); return; }
-      if (!projectId) { server.json(res, 400, { error: 'Project is required' }); return; }
-      if (!authUser?.userId) { server.json(res, 400, { error: 'Creator identity is required' }); return; }
+      if (!title) { server.json(res, 400, { error: 'Title is required' }); return true; }
+      if (!description) { server.json(res, 400, { error: 'Description is required' }); return true; }
+      if (!projectId) { server.json(res, 400, { error: 'Project is required' }); return true; }
+      if (!authUser?.userId) { server.json(res, 400, { error: 'Creator identity is required' }); return true; }
       try {
         const requirement = server.requirementService.createRequirement({
           orgId: (body['orgId'] as string) ?? 'default',
@@ -394,9 +394,9 @@ export async function handleGovernanceRoutes(
       const taskId = path.split('/')[3]!;
       try {
         const task = server.taskService.getTask(taskId);
-        if (!task) { server.json(res, 404, { error: 'Task not found' }); return; }
+        if (!task) { server.json(res, 404, { error: 'Task not found' }); return true; }
         if (task.taskType !== 'scheduled' || !task.scheduleConfig) {
-          server.json(res, 400, { error: 'Task is not a scheduled task' }); return;
+          server.json(res, 400, { error: 'Task is not a scheduled task' }); return true;
         }
         await server.taskService.updateScheduleConfig(taskId, { ...task.scheduleConfig, paused: true });
         server.json(res, 200, { task: { ...task, scheduleConfig: { ...task.scheduleConfig, paused: true } } });
@@ -410,12 +410,12 @@ export async function handleGovernanceRoutes(
       const taskId = path.split('/')[3]!;
       try {
         const task = server.taskService.getTask(taskId);
-        if (!task) { server.json(res, 404, { error: 'Task not found' }); return; }
+        if (!task) { server.json(res, 404, { error: 'Task not found' }); return true; }
         if (task.taskType !== 'scheduled' || !task.scheduleConfig) {
-          server.json(res, 400, { error: 'Task is not a scheduled task' }); return;
+          server.json(res, 400, { error: 'Task is not a scheduled task' }); return true;
         }
         if (['archived', 'rejected'].includes(task.status)) {
-          server.json(res, 400, { error: `Cannot resume schedule for ${task.status} task` }); return;
+          server.json(res, 400, { error: `Cannot resume schedule for ${task.status} task` }); return true;
         }
         const updated = { ...task.scheduleConfig, paused: false };
         await server.taskService.updateScheduleConfig(taskId, updated);
@@ -430,24 +430,24 @@ export async function handleGovernanceRoutes(
       const taskId = path.split('/')[3]!;
       try {
         const task = server.taskService.getTask(taskId);
-        if (!task) { server.json(res, 404, { error: 'Task not found' }); return; }
+        if (!task) { server.json(res, 404, { error: 'Task not found' }); return true; }
         if (task.taskType !== 'scheduled' || !task.scheduleConfig) {
-          server.json(res, 400, { error: 'Task is not a scheduled task' }); return;
+          server.json(res, 400, { error: 'Task is not a scheduled task' }); return true;
         }
         if (task.status === 'in_progress') {
-          server.json(res, 400, { error: 'Task is already running' }); return;
+          server.json(res, 400, { error: 'Task is already running' }); return true;
         }
         if (task.status === 'review') {
-          server.json(res, 400, { error: 'Task is awaiting review. Accept or reject before running again.' }); return;
+          server.json(res, 400, { error: 'Task is awaiting review. Accept or reject before running again.' }); return true;
         }
         if (task.status === 'blocked') {
-          server.json(res, 400, { error: 'Task is blocked by dependencies' }); return;
+          server.json(res, 400, { error: 'Task is blocked by dependencies' }); return true;
         }
         if (task.status === 'pending') {
-          server.json(res, 400, { error: 'Task is awaiting approval' }); return;
+          server.json(res, 400, { error: 'Task is awaiting approval' }); return true;
         }
         if (['rejected', 'archived'].includes(task.status)) {
-          server.json(res, 400, { error: `Cannot run task in ${task.status} status` }); return;
+          server.json(res, 400, { error: `Cannot run task in ${task.status} status` }); return true;
         }
         await server.taskService.advanceScheduleConfig(taskId);
         const resettable = ['completed', 'cancelled', 'failed'];

@@ -6,7 +6,7 @@ describe('ReportService', () => {
     listTasks: ReturnType<typeof vi.fn>;
     createTask: ReturnType<typeof vi.fn>;
   };
-  let billingService: { getUsageSummaryForPeriod: ReturnType<typeof vi.fn> };
+  let billingService: { getUsageSummaryForPeriod: ReturnType<typeof vi.fn>; getCuUsageSummaryForPeriod: ReturnType<typeof vi.fn> };
   let auditService: { record: ReturnType<typeof vi.fn> };
   let knowledgeService: {
     contribute: ReturnType<typeof vi.fn>;
@@ -45,6 +45,7 @@ describe('ReportService', () => {
     };
     billingService = {
       getUsageSummaryForPeriod: vi.fn(() => ({ llmTokens: 1000, toolCalls: 5, messages: 2 })),
+      getCuUsageSummaryForPeriod: vi.fn(() => ({ totalCu: 42 })),
     };
     auditService = { record: vi.fn() };
     knowledgeService = {

@@ -414,7 +414,7 @@ export async function handleTasksRoutes(
     if (path.match(/^\/api\/tasks\/[^/]+\/subtasks$/) && req.method === 'GET') {
       const taskId = path.split('/')[3]!;
       const task = server.taskService.getTask(taskId);
-      if (!task) { server.json(res, 404, { error: 'Task not found' }); return; }
+      if (!task) { server.json(res, 404, { error: 'Task not found' }); return true; }
       server.json(res, 200, { subtasks: task.subtasks });
       return true;
     }
@@ -480,7 +480,7 @@ export async function handleTasksRoutes(
       const taskId = path.split('/')[3]!;
       try {
         const task = server.taskService.getTask(taskId);
-        if (!task) { server.json(res, 404, { error: 'Task not found' }); return; }
+        if (!task) { server.json(res, 404, { error: 'Task not found' }); return true; }
         if (task.status !== 'in_progress') {
           server.json(res, 400, { error: `Cannot run task in ${task.status} status — must be in_progress` });
           return true;

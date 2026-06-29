@@ -1,4 +1,4 @@
-import { GatewayError } from '@markus/core';
+import { GatewayError, generateHandbook, type HandbookColleague, type HandbookProject } from '@markus/core';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { APIServer } from '../api-server.js';
 
@@ -192,9 +192,9 @@ export async function handleGatewayRoutes(
 
     // ── Gateway: Team Context ────────────────────────────────────────────────
     if (path === '/api/gateway/team' && req.method === 'GET') {
-      if (!server.gateway) { server.json(res, 503, { error: 'Gateway not configured' }); return; }
+      if (!server.gateway) { server.json(res, 503, { error: 'Gateway not configured' }); return true; }
       const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) { server.json(res, 401, { error: 'Missing Bearer token' }); return; }
+      if (!authHeader?.startsWith('Bearer ')) { server.json(res, 401, { error: 'Missing Bearer token' }); return true; }
       try {
         const token = server.gateway.verifyToken(authHeader.slice(7));
         const agents = server.orgService.getAgentManager().listAgents();
@@ -207,7 +207,7 @@ export async function handleGatewayRoutes(
           manager: manager ? { id: manager.id, name: manager.name } : null,
         });
       } catch (err) {
-        if (err instanceof GatewayError) { server.json(res, err.statusCode, { error: err.message }); return; }
+        if (err instanceof GatewayError) { server.json(res, err.statusCode, { error: err.message }); return true; }
         server.json(res, 500, { error: String(err) });
       }
       return true;
@@ -215,19 +215,19 @@ export async function handleGatewayRoutes(
 
     // ── Gateway: Projects ────────────────────────────────────────────────────
     if (path === '/api/gateway/projects' && req.method === 'GET') {
-      if (!server.gateway) { server.json(res, 503, { error: 'Gateway not configured' }); return; }
+      if (!server.gateway) { server.json(res, 503, { error: 'Gateway not configured' }); return true; }
       const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) { server.json(res, 401, { error: 'Missing Bearer token' }); return; }
+      if (!authHeader?.startsWith('Bearer ')) { server.json(res, 401, { error: 'Missing Bearer token' }); return true; }
       try {
         const token = server.gateway.verifyToken(authHeader.slice(7));
-        if (!server.projectService) { server.json(res, 200, { projects: [] }); return; }
+        if (!server.projectService) { server.json(res, 200, { projects: [] }); return true; }
         const projects = server.projectService.listProjects(token.orgId).map(p => ({
           id: p.id, name: p.name, description: p.description, status: p.status,
           teamIds: p.teamIds,
         }));
         server.json(res, 200, { projects });
       } catch (err) {
-        if (err instanceof GatewayError) { server.json(res, err.statusCode, { error: err.message }); return; }
+        if (err instanceof GatewayError) { server.json(res, err.statusCode, { error: err.message }); return true; }
         server.json(res, 500, { error: String(err) });
       }
       return true;
@@ -235,12 +235,12 @@ export async function handleGatewayRoutes(
 
     // ── Gateway: Requirements ────────────────────────────────────────────────
     if (path === '/api/gateway/requirements' && req.method === 'GET') {
-      if (!server.gateway) { server.json(res, 503, { error: 'Gateway not configured' }); return; }
+      if (!server.gateway) { server.json(res, 503, { error: 'Gateway not configured' }); return true; }
       const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) { server.json(res, 401, { error: 'Missing Bearer token' }); return; }
+      if (!authHeader?.startsWith('Bearer ')) { server.json(res, 401, { error: 'Missing Bearer token' }); return true; }
       try {
         const token = server.gateway.verifyToken(authHeader.slice(7));
-        if (!server.requirementService) { server.json(res, 200, { requirements: [] }); return; }
+        if (!server.requirementService) { server.json(res, 200, { requirements: [] }); return true; }
         const url = new URL(req.url!, `http://localhost`);
         const projectId = url.searchParams.get('project_id') ?? undefined;
         const status = url.searchParams.get('status') ?? undefined;
@@ -256,7 +256,7 @@ export async function handleGatewayRoutes(
         }));
         server.json(res, 200, { requirements: reqs });
       } catch (err) {
-        if (err instanceof GatewayError) { server.json(res, err.statusCode, { error: err.message }); return; }
+        if (err instanceof GatewayError) { server.json(res, err.statusCode, { error: err.message }); return true; }
         server.json(res, 500, { error: String(err) });
       }
       return true;
@@ -264,31 +264,31 @@ export async function handleGatewayRoutes(
 
     // ── Gateway: Deliverables ──────────────────────────────────────────────
     if (path === '/api/gateway/deliverables' && req.method === 'GET') {
-      if (!server.gateway) { server.json(res, 503, { error: 'Gateway not configured' }); return; }
+      if (!server.gateway) { server.json(res, 503, { error: 'Gateway not configured' }); return true; }
       const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) { server.json(res, 401, { error: 'Missing Bearer token' }); return; }
+      if (!authHeader?.startsWith('Bearer ')) { server.json(res, 401, { error: 'Missing Bearer token' }); return true; }
       try {
         server.gateway.verifyToken(authHeader.slice(7));
-        if (!server.deliverableService) { server.json(res, 503, { error: 'Deliverable service not available' }); return; }
+        if (!server.deliverableService) { server.json(res, 503, { error: 'Deliverable service not available' }); return true; }
         const q = url.searchParams.get('q') ?? undefined;
         const projectId = url.searchParams.get('projectId') ?? undefined;
         const type = url.searchParams.get('type') as any ?? undefined;
         const { results } = server.deliverableService.search({ query: q, projectId, type });
         server.json(res, 200, { results });
       } catch (err) {
-        if (err instanceof GatewayError) { server.json(res, err.statusCode, { error: err.message }); return; }
+        if (err instanceof GatewayError) { server.json(res, err.statusCode, { error: err.message }); return true; }
         server.json(res, 500, { error: String(err) });
       }
       return true;
     }
 
     if (path === '/api/gateway/deliverables' && req.method === 'POST') {
-      if (!server.gateway) { server.json(res, 503, { error: 'Gateway not configured' }); return; }
+      if (!server.gateway) { server.json(res, 503, { error: 'Gateway not configured' }); return true; }
       const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) { server.json(res, 401, { error: 'Missing Bearer token' }); return; }
+      if (!authHeader?.startsWith('Bearer ')) { server.json(res, 401, { error: 'Missing Bearer token' }); return true; }
       try {
         const token = server.gateway.verifyToken(authHeader.slice(7));
-        if (!server.deliverableService) { server.json(res, 503, { error: 'Deliverable service not available' }); return; }
+        if (!server.deliverableService) { server.json(res, 503, { error: 'Deliverable service not available' }); return true; }
         const body = await server.readBody(req);
         const d = await server.deliverableService.create({
           type: body['type'] as any ?? 'text',
@@ -302,19 +302,19 @@ export async function handleGatewayRoutes(
         });
         server.json(res, 201, { deliverable: d });
       } catch (err) {
-        if (err instanceof GatewayError) { server.json(res, err.statusCode, { error: err.message }); return; }
+        if (err instanceof GatewayError) { server.json(res, err.statusCode, { error: err.message }); return true; }
         server.json(res, 500, { error: String(err) });
       }
       return true;
     }
 
     if (path.match(/^\/api\/gateway\/deliverables\/[^/]+$/) && req.method === 'PUT') {
-      if (!server.gateway) { server.json(res, 503, { error: 'Gateway not configured' }); return; }
+      if (!server.gateway) { server.json(res, 503, { error: 'Gateway not configured' }); return true; }
       const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) { server.json(res, 401, { error: 'Missing Bearer token' }); return; }
+      if (!authHeader?.startsWith('Bearer ')) { server.json(res, 401, { error: 'Missing Bearer token' }); return true; }
       try {
         server.gateway.verifyToken(authHeader.slice(7));
-        if (!server.deliverableService) { server.json(res, 503, { error: 'Deliverable service not available' }); return; }
+        if (!server.deliverableService) { server.json(res, 503, { error: 'Deliverable service not available' }); return true; }
         const delivId = path.split('/')[4]!;
         const body = await server.readBody(req);
         const d = await server.deliverableService.update(delivId, {
@@ -325,10 +325,10 @@ export async function handleGatewayRoutes(
           type: body['type'] as any,
           tags: body['tags'] as string[] | undefined,
         });
-        if (!d) { server.json(res, 404, { error: 'Deliverable not found' }); return; }
+        if (!d) { server.json(res, 404, { error: 'Deliverable not found' }); return true; }
         server.json(res, 200, { deliverable: d });
       } catch (err) {
-        if (err instanceof GatewayError) { server.json(res, err.statusCode, { error: err.message }); return; }
+        if (err instanceof GatewayError) { server.json(res, err.statusCode, { error: err.message }); return true; }
         server.json(res, 500, { error: String(err) });
       }
       return true;

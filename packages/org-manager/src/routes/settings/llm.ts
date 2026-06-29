@@ -623,7 +623,7 @@ export async function handleLlmSettingsRoutes(
             if (ex(built)) zipPath = built;
           }
         }
-        if (!zipPath) { server.json(res, 404, { error: 'Extension zip not found.' }); return; }
+        if (!zipPath) { server.json(res, 404, { error: 'Extension zip not found.' }); return true; }
 
         const data = readFileSync(zipPath);
         res.writeHead(200, {

@@ -1,5 +1,9 @@
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, readdirSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { execSync } from 'node:child_process';
 import { discoverSkillsInDir, WELL_KNOWN_SKILL_DIRS } from '@markus/core';
+import { buildManifest, manifestFilename } from '@markus/shared';
 import { installSkill } from '../skill-service.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { APIServer } from '../api-server.js';
@@ -689,7 +693,7 @@ export async function handleSkillsRoutes(
         const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
         const type = typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill' as const;
         const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, name);
-        if (!existsSync(artDir)) { server.json(res, 404, { error: 'Artifact not found' }); return; }
+        if (!existsSync(artDir)) { server.json(res, 404, { error: 'Artifact not found' }); return true; }
 
         try {
           const imagesDir = join(artDir, 'images');
@@ -702,7 +706,7 @@ export async function handleSkillsRoutes(
           const contentType = req.headers['content-type'] ?? '';
           if (contentType.includes('multipart/form-data')) {
             const boundary = contentType.split('boundary=')[1]?.split(';')[0];
-            if (!boundary) { server.json(res, 400, { error: 'Missing boundary' }); return; }
+            if (!boundary) { server.json(res, 400, { error: 'Missing boundary' }); return true; }
 
             const bodyStr = body.toString('latin1');
             const parts = bodyStr.split('--' + boundary).filter(p => p.includes('Content-Disposition'));
@@ -754,7 +758,7 @@ export async function handleSkillsRoutes(
         const filename = decodeURIComponent(imgGetMatch[3]!);
         const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
         const filePath = join(homedir(), '.markus', 'builder-artifacts', typeDir, name, 'images', filename);
-        if (!existsSync(filePath)) { server.json(res, 404, { error: 'Image not found' }); return; }
+        if (!existsSync(filePath)) { server.json(res, 404, { error: 'Image not found' }); return true; }
 
         const ext = filename.split('.').pop()?.toLowerCase() ?? '';
         const mimeTypes: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' };
@@ -775,7 +779,7 @@ export async function handleSkillsRoutes(
         const type = typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill' as const;
         const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, name);
         const filePath = join(artDir, 'images', filename);
-        if (!existsSync(filePath)) { server.json(res, 404, { error: 'Image not found' }); return; }
+        if (!existsSync(filePath)) { server.json(res, 404, { error: 'Image not found' }); return true; }
 
         try {
           rmSync(filePath);
