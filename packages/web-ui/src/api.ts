@@ -1099,10 +1099,6 @@ export const api = {
     },
     getDecisions: (id: string, limit = 50) =>
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
-    message: (id: string, text: string, images?: string[], sessionId?: string | null, fileNames?: string[]) =>
-      request<{ reply: string; sessionId?: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, fileNames, sessionId: sessionId ?? undefined }) }),
-    injectMessage: (id: string, text: string, images?: string[], sessionId?: string | null) =>
-      request<{ injected: boolean }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, sessionId: sessionId ?? undefined, inject: true }) }),
     messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[]): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean }> => {
       return new Promise(async (resolve, reject) => {
         let fullContent = '';

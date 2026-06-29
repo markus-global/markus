@@ -1,3 +1,15 @@
+/**
+ * SSEHandler — the single canonical handler for Server-Sent Events streaming
+ * from agent message processing to the web UI.
+ *
+ * Responsibilities:
+ * - Manages the SSE connection lifecycle (open → stream → close)
+ * - Buffers text/tool events via SSEBuffer for reliable delivery
+ * - Persists user/assistant messages and execution stream entries
+ * - Handles WS fallback broadcast on disconnect
+ * - Coordinates with AgentMailbox via deferred session restore
+ * - Safety timeout to force-stop agents if SSE disconnects mid-processing
+ */
 import type { ServerResponse } from 'node:http';
 import type { Agent } from '@markus/core';
 import { createLogger, COMPLETION_MARKER, type LLMStreamEvent } from '@markus/shared';

@@ -518,9 +518,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const userAtBottomRef = useRef(true);
   /** Stable ref to loadMore for use in IntersectionObserver callback */
   const loadMoreRef = useRef<() => Promise<void>>(undefined);
-  /** Tracks which sessionId each agent's active stream belongs to (convKey → sessionId).
-   *  Allows multiple agents to stream concurrently without interfering. */
-  const streamingForSessionRef = useRef<Map<string, string>>(new Map());
+  /** Tracks which sessionIds have active streams per agent (convKey → Set of sessionIds).
+   *  Allows multiple sessions of the same agent to stream concurrently. */
+  const streamingForSessionRef = useRef<Map<string, Set<string>>>(new Map());
 
   // Close history panel on click outside
   useEffect(() => {
@@ -625,12 +625,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, []);
 
   /** Append an activity step to a conversation's activity buffer.
+   *  Activities are keyed by sessionId (not convKey) to prevent cross-session pollution.
    *  Only updates visible UI if the stream's session matches the currently viewed session. */
   const appendConvActivity = (key: string, step: ActivityStep, sessionId?: string | null) => {
-    const next = [...(actBuffers.current.get(key) ?? []), step];
-    actBuffers.current.set(key, next);
+    const bufKey = sessionId ?? key;
+    const next = [...(actBuffers.current.get(bufKey) ?? []), step];
+    actBuffers.current.set(bufKey, next);
     if (currentConvKeyRef.current === key) {
-      // Only show activities if the stream belongs to the session being viewed
       const viewedSession = activeSessionBuffer.current.get(key);
       if (!sessionId || !viewedSession || viewedSession === sessionId) {
         setActivities(next);
@@ -968,21 +969,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const chatVirtualizer = useVirtualizer({
     count: visibleMessages.length,
     getScrollElement: () => chatScrollRef.current,
-    estimateSize: () => 72,
+    estimateSize: (index) => {
+      const msg = visibleMessages[index];
+      if (!msg) return 120;
+      if (msg.segments && msg.segments.length > 0) return 300;
+      if (msg.text.length > 500) return 200;
+      return 120;
+    },
     overscan: 8,
   });
 
-  // Force virtualizer to re-measure item heights when message content changes
-  // (streaming text, tool segments, expand/collapse). Without this, absolutely-
-  // positioned items overlap because the virtualizer's cached sizes become stale.
-  const remeasureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (remeasureTimerRef.current) clearTimeout(remeasureTimerRef.current);
-    remeasureTimerRef.current = setTimeout(() => {
-      chatVirtualizer.measure();
-    }, 100);
-  }, [messages, chatVirtualizer]);
-  useEffect(() => () => { if (remeasureTimerRef.current) clearTimeout(remeasureTimerRef.current); }, []);
+  // NOTE: Do NOT call chatVirtualizer.measure() on message changes.
+  // measureElement uses ResizeObserver internally (v3+) which automatically
+  // detects height changes in rendered items. Calling measure() resets ALL
+  // cached sizes back to estimateSize(72px), causing severe overlap artifacts.
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = 'instant') => {
     isProgrammaticScrollRef.current = true;
@@ -1186,18 +1186,21 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
     // Restore displayed state from this conv's buffer
     const bufferedMsgs = msgBuffers.current.get(newKey);
-    const bufferedActs = actBuffers.current.get(newKey) ?? [];
     // Restore or reset session tabs for the new agent
     const savedTabs = sessionTabsBuffer.current.get(newKey);
     const savedActiveSession = activeSessionBuffer.current.get(newKey);
     // For direct mode, sending state is only relevant if the stream belongs
     // to the session we're switching TO. Otherwise a stream in session A
     // would incorrectly cause session B to appear as "streaming".
-    const streamSessionForKey = streamingForSessionRef.current.get(newKey);
+    const streamingSessions = streamingForSessionRef.current.get(newKey);
+    const targetSession = savedActiveSession ?? activeSessionId;
     const isSending = (sendingConvs.current.get(newKey) ?? 0) > 0 &&
-      (chatMode !== 'direct' || !streamSessionForKey ||
-       streamSessionForKey === (savedActiveSession ?? activeSessionId));
+      (chatMode !== 'direct' || !streamingSessions || !targetSession ||
+       streamingSessions.has(targetSession));
 
+    // Activities are keyed by session, not convKey
+    const actBufKey = targetSession ?? newKey;
+    const bufferedActs = actBuffers.current.get(actBufKey) ?? [];
     setActivities(isSending ? bufferedActs : []);
     setSending(isSending);
 
@@ -1478,7 +1481,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // Immediately unblock the UI — don't wait for the async send() to catch the abort
     const sendKey = currentConvKeyRef.current;
     sendingConvs.current.set(sendKey, 0);
-    actBuffers.current.delete(sendKey);
+    actBuffers.current.delete(activeSessionId ?? sendKey);
+    // Remove current session from streaming set
+    if (activeSessionId) {
+      const sessions = streamingForSessionRef.current.get(sendKey);
+      if (sessions) {
+        sessions.delete(activeSessionId);
+        if (sessions.size === 0) streamingForSessionRef.current.delete(sendKey);
+      }
+    }
     setSending(false);
     setActivities([]);
     // Tell the backend to stop the agent's active stream so it doesn't keep
@@ -1506,7 +1517,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         void api.agents.cancelProcessing(selectedAgent!).catch(() => {});
         const prevKey = currentConvKeyRef.current;
         sendingConvs.current.set(prevKey, 0);
-        actBuffers.current.delete(prevKey);
+        actBuffers.current.delete(activeSessionId ?? prevKey);
         updateConvMsgs(prevKey, prev => {
           const u = [...prev];
           for (let i = u.length - 1; i >= 0; i--) {
@@ -1583,7 +1594,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // Mark this conv as sending (skip for DM — instant DB write, no LLM wait)
     const isDm = chatMode === 'dm';
     sendingConvs.current.set(sendKey, (sendingConvs.current.get(sendKey) ?? 0) + 1);
-    actBuffers.current.set(sendKey, []);
+    // Initialize activity buffer keyed by session (not convKey) to prevent cross-session pollution
+    const actBufKey = activeSessionId ?? sendKey;
+    actBuffers.current.set(actBufKey, []);
     if (currentConvKeyRef.current === sendKey && !isDm) {
       setSending(true);
       setActivities([]);
@@ -1757,9 +1770,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         // Capture sessionId early so subsequent messages continue in the same session
         // even if the stream is aborted before the final 'done' event.
         if (event.type === 'session_start' && event.sessionId) {
-          // Resolve the stream's session ID
+          // Resolve the stream's session ID — replace placeholder with real ID
+          const prevStreamSessionId = streamSessionId;
           streamSessionId = event.sessionId;
-          streamingForSessionRef.current.set(sendKey, event.sessionId);
+          const sessions = streamingForSessionRef.current.get(sendKey) ?? new Set();
+          if (prevStreamSessionId && prevStreamSessionId !== event.sessionId) {
+            sessions.delete(prevStreamSessionId);
+          }
+          sessions.add(event.sessionId);
+          streamingForSessionRef.current.set(sendKey, sessions);
           // Seed the session cache with current buffer so streaming reads don't start empty
           const currentBuf = msgBuffers.current.get(sendKey);
           if (currentBuf && currentBuf.length > 0) {
@@ -1901,11 +1920,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const abortCtrl = new AbortController();
       abortControllerRef.current = abortCtrl;
       const streamSessionAtStart = activeSessionId;
-      // Only set streamingForSessionRef if no other stream is already active for this agent.
-      // If another session is streaming, the new message will queue on the backend.
-      // The ref will be updated when/if the new stream actually starts producing (session_start).
-      if (streamSessionAtStart && !streamingForSessionRef.current.has(sendKey)) {
-        streamingForSessionRef.current.set(sendKey, streamSessionAtStart);
+      // Add this session to the set of actively streaming sessions for this agent.
+      if (streamSessionAtStart) {
+        const sessions = streamingForSessionRef.current.get(sendKey) ?? new Set();
+        sessions.add(streamSessionAtStart);
+        streamingForSessionRef.current.set(sendKey, sessions);
       }
 
       try {
@@ -2147,25 +2166,21 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       // the new stream's state.
       const newCount = Math.max(0, (sendingConvs.current.get(sendKey) ?? 1) - 1);
       sendingConvs.current.set(sendKey, newCount);
+      // Remove this session from the streaming set
+      const sessions = streamingForSessionRef.current.get(sendKey);
+      if (sessions && streamSessionId) {
+        sessions.delete(streamSessionId);
+        if (sessions.size === 0) streamingForSessionRef.current.delete(sendKey);
+      }
       if (abortControllerRef.current === abortCtrl || abortControllerRef.current === null) {
         abortControllerRef.current = null;
-        actBuffers.current.delete(sendKey);
-        // Only delete streamingForSessionRef if this stream owns it
-        const refSession = streamingForSessionRef.current.get(sendKey);
-        if (!refSession || refSession === streamSessionId) {
-          streamingForSessionRef.current.delete(sendKey);
-        }
+        actBuffers.current.delete(streamSessionId ?? sendKey);
         if (currentConvKeyRef.current === sendKey) {
           setSending(newCount > 0);
           if (newCount === 0) setActivities([]);
         }
       } else {
-        actBuffers.current.delete(sendKey);
-        // Only delete streamingForSessionRef if this stream owns it
-        const refSession = streamingForSessionRef.current.get(sendKey);
-        if (!refSession || refSession === streamSessionId) {
-          streamingForSessionRef.current.delete(sendKey);
-        }
+        actBuffers.current.delete(streamSessionId ?? sendKey);
       }
     }
   };
@@ -2278,12 +2293,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // - If stream belongs to THIS session → show spinner
     // - If stream belongs to a DIFFERENT session → suppress spinner
     const key = currentConvKeyRef.current;
-    const streamSessionForAgent = streamingForSessionRef.current.get(key);
-    const streamForThis = streamSessionForAgent === s.id ||
-      streamSessionForAgent === NEW_CHAT_PLACEHOLDER_ID;
+    const streamingSessions = streamingForSessionRef.current.get(key);
+    const streamForThis = !!streamingSessions && (streamingSessions.has(s.id) || streamingSessions.has(NEW_CHAT_PLACEHOLDER_ID));
     const isStreaming = (sendingConvs.current.get(key) ?? 0) > 0 && streamForThis;
     setSending(isStreaming);
-    if (!isStreaming) setActivities([]);
+    // Restore activities from session-keyed buffer
+    if (isStreaming) {
+      setActivities(actBuffers.current.get(s.id) ?? []);
+    } else {
+      setActivities([]);
+    }
     // Update activeSessionBuffer so streaming callbacks can detect session mismatch
     activeSessionBuffer.current.set(key, s.id);
     // Save current messages to per-session cache before clearing

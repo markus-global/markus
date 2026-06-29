@@ -879,6 +879,22 @@ export class AttentionController {
     'a2a_message',
   ]);
 
+  /**
+   * Fast heuristic decision table — evaluated top-to-bottom, first match wins.
+   *
+   * | Rule | Condition                                      | Decision  |
+   * |------|------------------------------------------------|-----------|
+   * | R0   | Same user, same session, both human_chat       | merge     |
+   * | R1   | New is human_chat, current is not              | preempt   |
+   * | R1.5 | New is a2a_message, current is background      | preempt   |
+   * | R2   | task_comment on same taskId as current          | merge     |
+   * | R3   | requirement update/comment on same requirement  | merge     |
+   * | R4   | New priority is critical, current is not        | preempt   |
+   * | R6   | New has strictly higher priority (lower number) | preempt   |
+   * | R8   | Same priority, current is background/system     | preempt   |
+   * | R9   | New is mention, current priority >= normal      | preempt   |
+   * | --   | Otherwise                                       | continue  |
+   */
   heuristicDecision(currentItem: MailboxItem, newItem: MailboxItem): DecisionType {
     const isNewUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(newItem.sourceType);
     const isCurrentUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(currentItem.sourceType);
@@ -953,18 +969,11 @@ export class AttentionController {
       return 'preempt';
     }
 
-    // R7: Human chat always preempts background work (system category from registry)
+    // R8: Same priority but current is background/system work → preempt
+    // (R7 was removed — it was redundant with R1 which already handles human_chat preempting all non-human work)
     const bgTypes = (Object.entries(MAILBOX_TYPE_REGISTRY) as [MailboxItemType, typeof MAILBOX_TYPE_REGISTRY[MailboxItemType]][])
       .filter(([, d]) => d.category === 'system')
       .map(([k]) => k);
-    if (
-      newItem.sourceType === 'human_chat' &&
-      bgTypes.includes(currentItem.sourceType)
-    ) {
-      return 'preempt';
-    }
-
-    // R8: Same priority but current is background work → preempt
     if (
       newItem.priority === currentItem.priority &&
       bgTypes.includes(currentItem.sourceType)
