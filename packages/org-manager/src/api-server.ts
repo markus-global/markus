@@ -2850,25 +2850,39 @@ export class APIServer {
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'working');
 
+        // Prepare session restoration data but DON'T apply it eagerly.
+        // Session context is applied when the mailbox item is actually processed,
+        // preventing corruption of an in-progress stream's session state.
+        let sessionRestoreData: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null = null;
         if (!sessionId) {
-          agent.startNewSession();
+          // New session — will be created at processing time
+          sessionRestoreData = null;
         } else if (this.storage) {
-          // Restore agent memory context from DB session history so the agent
-          // has full conversation context when replying to an existing chat.
           try {
             if (isRetry) {
               this.storage.chatSessionRepo.deleteLastExchange(sessionId);
             }
-            // Resume: keep the existing assistant message in DB and memory so
-            // the LLM can see its previous partial response and continue.
             const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, 200);
-            agent.restoreSessionFromHistory(
-              sessionId,
-              histResult.messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })),
-              { isRetry: !!isRetry },
-            );
+            sessionRestoreData = {
+              dbSessionId: sessionId,
+              messages: histResult.messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })),
+              isRetry: !!isRetry,
+            };
           } catch (err) {
-            log.warn('Failed to restore session history, starting fresh', { sessionId, error: String(err) });
+            log.warn('Failed to load session history, will start fresh', { sessionId, error: String(err) });
+            sessionRestoreData = null;
+          }
+        }
+        // Only apply session context immediately if the agent is idle (no active stream).
+        // This preserves the original fast-path for the common case.
+        if (!agent.isProcessing()) {
+          if (sessionRestoreData) {
+            agent.restoreSessionFromHistory(
+              sessionRestoreData.dbSessionId,
+              sessionRestoreData.messages,
+              { isRetry: !!sessionRestoreData.isRetry },
+            );
+          } else if (!sessionId) {
             agent.startNewSession();
           }
         }
@@ -2897,6 +2911,9 @@ export class APIServer {
         };
 
         if (stream) {
+          // Pass deferred session restore when agent is busy — it will be applied
+          // at mailbox processing time to avoid corrupting an in-progress session.
+          const deferredRestore = agent.isProcessing() ? sessionRestoreData : undefined;
           const sseHandler = new SSEHandler({
             agentId: agentId!,
             agent,
@@ -2911,6 +2928,7 @@ export class APIServer {
             persistAssistantMessage: this.persistAssistantMessage.bind(this),
             executionStreamRepo: this.storage?.executionStreamRepo,
             isResume,
+            sessionRestore: deferredRestore,
           });
 
           await sseHandler.handle(res);
@@ -2918,8 +2936,12 @@ export class APIServer {
           const userMsgPersisted = await bindingPersist(agentId!, userText, senderId, images, sessionId);
           const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
           let reply: string;
+          const deferredRestoreNonStream = agent.isProcessing() ? sessionRestoreData : undefined;
           try {
-            reply = await agent.sendMessage(userText, senderId, senderInfo, { images, fileNames, toolEventCollector: toolEvents });
+            reply = await agent.sendMessage(userText, senderId, senderInfo, {
+              images, fileNames, toolEventCollector: toolEvents,
+              ...(deferredRestoreNonStream !== undefined ? { sessionRestore: deferredRestoreNonStream } : {}),
+            });
           } catch (err) {
             const errText = `⚠ AI service error: ${String(err).slice(0, 500)}`;
             void this.persistAssistantMessage(

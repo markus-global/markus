@@ -885,6 +885,8 @@ export class AttentionController {
 
     // R0: Same-user follow-up during active chat → merge (inject into session)
     // This lets the user send multiple messages without each one preempting the previous.
+    // Only merge if in the SAME session — different sessions should queue independently
+    // so the agent processes them sequentially with correct context.
     // Skip merge when the current stream is being cancelled (user aborted) —
     // the new message should be processed as a fresh turn after cancellation.
     if (
@@ -894,7 +896,14 @@ export class AttentionController {
       newItem.metadata.senderId === currentItem.metadata?.senderId &&
       !(currentItem.payload.extra?.cancelToken as { cancelled?: boolean } | undefined)?.cancelled
     ) {
-      return 'merge';
+      // Only merge if both items belong to the same session (or session is unknown)
+      const newSession = newItem.metadata?.dbSessionId as string | undefined;
+      const currentSession = currentItem.metadata?.dbSessionId as string | undefined;
+      if (!newSession || !currentSession || newSession === currentSession) {
+        return 'merge';
+      }
+      // Different sessions: don't merge — queue behind current item
+      return 'continue';
     }
 
     // R1: User chat/comments ALWAYS preempt non-user work — users are top priority

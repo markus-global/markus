@@ -30,6 +30,8 @@ export interface SSEMessageHandlerOptions {
   executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown }): unknown };
   messageId?: string;
   isResume?: boolean;
+  /** Deferred session restore data — applied when the mailbox item is processed, not at HTTP request time */
+  sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null;
 }
 
 /**
@@ -80,6 +82,17 @@ export class SSEHandler {
           // Persist partial content immediately so it survives a page refresh.
           // The final persistence after agent completion will overwrite this.
           void this.persistPartialOnDisconnect();
+
+          // Safety timeout: if the agent hasn't completed within 120s after
+          // disconnect, force-stop it to avoid indefinite resource usage.
+          setTimeout(() => {
+            if (!this.isComplete) {
+              log.warn('Force-stopping agent after SSE disconnect timeout', {
+                agentId: this.options.agentId,
+              });
+              this.cancelToken.userStopped = true;
+            }
+          }, 120_000);
         }
       });
 
@@ -109,7 +122,10 @@ export class SSEHandler {
         this.cancelToken,
         this.options.images,
         this.options.fileNames,
-        this.options.isResume ? { isResume: true } : undefined,
+        {
+          ...(this.options.isResume ? { isResume: true } : {}),
+          ...(this.options.sessionRestore !== undefined ? { sessionRestore: this.options.sessionRestore } : {}),
+        },
       );
 
       if (reply === '[merged]') {
@@ -176,7 +192,7 @@ export class SSEHandler {
               this.options.wsBroadcaster.broadcastProactiveMessage(
                 this.options.agentId, agentName, this.sessionId,
                 `ws_fallback_${Date.now()}`, persistReply,
-                { isMainSession: true },
+                { isMainSession: true, isWsFallback: true, sessionId: this.sessionId },
                 this.options.senderId,
               );
             } else {

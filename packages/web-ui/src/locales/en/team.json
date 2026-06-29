@@ -311,7 +311,8 @@
         "Ready when you are…",
         "Tell me what you need…"
       ],
-      "noAgent": "Select an agent to start chatting"
+      "noAgent": "Select an agent to start chatting",
+      "agentOffline": "Agent is offline. Start the agent to send messages."
     },
     "newTaskTitle": "New Conversation Task",
     "taskFromChat": "Created from chat with {{name}}",

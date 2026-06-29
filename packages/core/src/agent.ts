@@ -650,6 +650,7 @@ export class Agent {
       priority?: MailboxPriority;
       taskId?: string;
       requirementId?: string;
+      sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null;
     },
   ): Promise<string> {
     const sourceType = options?.sourceType
@@ -673,6 +674,7 @@ export class Agent {
         toolEventCollector: options?.toolEventCollector,
         waitForReply: options?.waitForReply,
         directMention: options?.directMention,
+        sessionRestore: options?.sessionRestore,
       },
     };
 
@@ -684,6 +686,7 @@ export class Agent {
           senderName: senderInfo?.name,
           senderRole: senderInfo?.role,
           isFirstConversation: senderInfo?.isFirstConversation,
+          dbSessionId: options?.sessionRestore?.dbSessionId ?? options?.sessionId,
           responsePromise: { resolve, reject },
         },
       });
@@ -730,7 +733,7 @@ export class Agent {
     cancelToken?: { cancelled: boolean; userStopped?: boolean },
     images?: string[],
     fileNames?: string[],
-    options?: { isResume?: boolean },
+    options?: { isResume?: boolean; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null },
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: userMessage.slice(0, 100),
@@ -741,6 +744,7 @@ export class Agent {
         stream: true,
         onEvent,
         cancelToken,
+        sessionRestore: options?.sessionRestore,
       },
     };
 
@@ -753,6 +757,7 @@ export class Agent {
           senderRole: senderInfo?.role,
           isFirstConversation: senderInfo?.isFirstConversation,
           isResume: options?.isResume,
+          dbSessionId: options?.sessionRestore?.dbSessionId ?? (this.getDbSessionId() || undefined),
           responsePromise: { resolve, reject },
         },
       });
@@ -1078,6 +1083,14 @@ export class Agent {
       switch (item.sourceType) {
         case 'human_chat':
         case 'a2a_message': {
+          // Apply deferred session restore at processing time (not at HTTP request time)
+          // to prevent corrupting an in-progress stream's session context.
+          const sessionRestore = extra.sessionRestore as { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null | undefined;
+          if (sessionRestore) {
+            this.restoreSessionFromHistory(sessionRestore.dbSessionId, sessionRestore.messages, { isRetry: !!sessionRestore.isRetry });
+          } else if (extra.sessionRestore === null) {
+            this.startNewSession();
+          }
           const ct = extra.cancelToken as { cancelled: boolean; userStopped?: boolean } | undefined;
           if (extra.stream && typeof extra.onEvent === 'function') {
             if (ct?.cancelled && !ct.userStopped) {
@@ -1503,6 +1516,20 @@ export class Agent {
 
   getStopReason(): string | undefined {
     return this.stopReason;
+  }
+
+  /** Returns true if the agent is currently processing a mailbox item (streaming or otherwise). */
+  isProcessing(): boolean {
+    return this.state.status === 'working' || !!this.processingMailboxItemId;
+  }
+
+  /** Returns the DB session ID currently bound to the active memory session, if any. */
+  getDbSessionId(): string | null {
+    if (!this.currentSessionId) return null;
+    for (const [dbId, memId] of this.dbSessionMap) {
+      if (memId === this.currentSessionId) return dbId;
+    }
+    return null;
   }
 
   /**
