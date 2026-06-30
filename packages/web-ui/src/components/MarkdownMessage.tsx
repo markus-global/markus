@@ -12,12 +12,14 @@ import { FilePathLink, looksLikeFilePath } from './FilePathLink.tsx';
 import { CodeBlock } from './CodeBlock.tsx';
 import { MermaidBlock } from './MermaidBlock.tsx';
 import { PlantUMLBlock } from './PlantUMLBlock.tsx';
+import { DiagramToggleBlock } from './DiagramToggleBlock.tsx';
 import {
   transformOutsideCode, normalizeMathDelimiters,
   preprocessMentions, preprocessEntityLinksInCode, preprocessEntityIds,
   looksLikePlantUML, looksLikeMermaid,
 } from './markdown-utils.ts';
 import { copyPlainText, copyAsHtml } from './markdown-copy.ts';
+import { TypographySettings, loadTypographyConfig, resolveTypographyCSS } from './TypographySettings.tsx';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 
@@ -94,10 +96,10 @@ const mdComponents = {
     const text = typeof children === 'string' ? children : String(children ?? '');
     const trimmed = text.trim();
     if (cls?.includes('language-plantuml') || looksLikePlantUML(trimmed)) {
-      return <PlantUMLBlock code={trimmed} />;
+      return <DiagramToggleBlock code={trimmed} language="plantuml"><PlantUMLBlock code={trimmed} /></DiagramToggleBlock>;
     }
     if (cls?.includes('language-mermaid') || (!cls && looksLikeMermaid(trimmed))) {
-      return <MermaidBlock code={trimmed} />;
+      return <DiagramToggleBlock code={trimmed} language="mermaid"><MermaidBlock code={trimmed} /></DiagramToggleBlock>;
     }
     if (cls?.includes('language-')) {
       return <code className={`${cls} text-fg-secondary font-mono text-xs`}>{children}</code>;
@@ -303,15 +305,35 @@ function ImagePreviewModal({ src, onClose }: { src: string; onClose: () => void 
 
 // ─── Copy menu ───────────────────────────────────────────────────────────────
 
+function useIsNarrow(breakpoint = 640) {
+  const [narrow, setNarrow] = useState(() => window.innerWidth < breakpoint);
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${breakpoint - 1}px)`);
+    const handler = (e: MediaQueryListEvent) => setNarrow(e.matches);
+    mq.addEventListener('change', handler);
+    setNarrow(mq.matches);
+    return () => mq.removeEventListener('change', handler);
+  }, [breakpoint]);
+  return narrow;
+}
+
 function CopyMenu({ content, contentRef }: { content: string; contentRef: React.RefObject<HTMLDivElement | null> }) {
+  const { t } = useTranslation('common');
   const [open, setOpen] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
+  const [showTypography, setShowTypography] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const isNarrow = useIsNarrow();
 
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setOpen(false);
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setShowInfo(false);
+        setShowTypography(false);
+      }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -324,15 +346,22 @@ function CopyMenu({ content, contentRef }: { content: string; contentRef: React.
 
   const handleCopyMd = async () => {
     const ok = await copyPlainText(content);
-    showFlash(ok ? 'Copied!' : 'Failed');
+    showFlash(ok ? t('markdown.copied') : t('markdown.failed'));
     setOpen(false);
   };
 
   const handleCopyHtml = async (theme: 'light' | 'dark') => {
     const el = contentRef.current?.firstElementChild as HTMLElement | null;
     if (!el) return;
-    const result = await copyAsHtml(el, theme, content);
-    showFlash(result.ok ? (result.method === 'html' ? `HTML (${theme}) copied` : 'Text copied') : 'Failed');
+    const typoConfig = loadTypographyConfig();
+    const resolved = resolveTypographyCSS(typoConfig);
+    const result = await copyAsHtml(el, theme, content, {
+      fontFamily: resolved.fontFamily,
+      fontSize: resolved.fontSize,
+      headingScales: resolved.headingScales,
+    });
+    const themeLabel = theme === 'light' ? t('markdown.themeLight') : t('markdown.themeDark');
+    showFlash(result.ok ? (result.method === 'html' ? t('markdown.htmlCopied', { theme: themeLabel }) : t('markdown.textCopied')) : t('markdown.failed'));
     setOpen(false);
   };
 
@@ -346,7 +375,7 @@ function CopyMenu({ content, contentRef }: { content: string; contentRef: React.
       <button
         onClick={() => setOpen(o => !o)}
         className="p-1.5 rounded-lg bg-surface-elevated/80 hover:bg-surface-overlay text-fg-secondary hover:text-fg-primary backdrop-blur-sm border border-border-default/50 transition-all"
-        title="Copy content"
+        title={t('markdown.copyContent')}
       >
         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
@@ -354,27 +383,69 @@ function CopyMenu({ content, contentRef }: { content: string; contentRef: React.
       </button>
       {open && (
         <div className="absolute right-0 top-full mt-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 min-w-[180px]">
-          <button
-            onClick={handleCopyMd}
-            className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
-          >
-            <span className="w-4 text-center text-fg-tertiary shrink-0 font-mono text-[10px]">Md</span>
-            Copy Markdown Source
-          </button>
-          <button
-            onClick={() => handleCopyHtml('light')}
-            className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
-          >
-            <span className="w-4 text-center shrink-0 text-[10px]">☀️</span>
-            Copy HTML (Light)
-          </button>
-          <button
-            onClick={() => handleCopyHtml('dark')}
-            className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
-          >
-            <span className="w-4 text-center shrink-0 text-[10px]">🌙</span>
-            Copy HTML (Dark)
-          </button>
+          {showTypography ? (
+            <TypographySettings onClose={() => setShowTypography(false)} />
+          ) : showInfo ? (
+            <div className="px-3 py-2 text-[11px] text-fg-secondary space-y-2 max-w-[260px]">
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-medium text-fg-primary text-xs">{t('markdown.infoTitle')}</span>
+                <button onClick={() => setShowInfo(false)} className="text-fg-tertiary hover:text-fg-primary p-0.5">
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+              </div>
+              <div><span className="font-medium text-fg-primary">{t('markdown.mdAbbrev')}</span> — {t('markdown.infoMdDesc')}</div>
+              <div><span className="font-medium text-fg-primary">☀️</span> — {t('markdown.infoHtmlLightDesc')}</div>
+              <div><span className="font-medium text-fg-primary">🌙</span> — {t('markdown.infoHtmlDarkDesc')}</div>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between px-3 py-1 border-b border-border-subtle mb-1">
+                <span className="text-[10px] text-fg-tertiary font-medium">{t('markdown.copyContent')}</span>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setShowTypography(true)}
+                    className="p-0.5 rounded text-fg-tertiary hover:text-fg-primary transition-colors"
+                    title={t('markdown.typographySettings')}
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => setShowInfo(true)}
+                    className="p-0.5 rounded text-fg-tertiary hover:text-fg-primary transition-colors"
+                    title={t('markdown.infoTitle')}
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <circle cx="12" cy="12" r="10" /><path strokeLinecap="round" d="M12 16v-4m0-4h.01" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <button
+                onClick={handleCopyMd}
+                className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
+              >
+                <span className="w-4 text-center text-fg-tertiary shrink-0 font-mono text-[10px]">{t('markdown.mdAbbrev')}</span>
+                {isNarrow ? t('markdown.copyMdSourceShort') : t('markdown.copyMdSource')}
+              </button>
+              <button
+                onClick={() => handleCopyHtml('light')}
+                className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
+              >
+                <span className="w-4 text-center shrink-0 text-[10px]">☀️</span>
+                {isNarrow ? t('markdown.copyHtmlLightShort') : t('markdown.copyHtmlLight')}
+              </button>
+              <button
+                onClick={() => handleCopyHtml('dark')}
+                className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
+              >
+                <span className="w-4 text-center shrink-0 text-[10px]">🌙</span>
+                {isNarrow ? t('markdown.copyHtmlDarkShort') : t('markdown.copyHtmlDark')}
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 // Vite resolves the bare specifier and returns a URL to the asset
 // @ts-expect-error Vite ?url import
 import vizGlobalUrl from '@plantuml/core/viz-global.js?url';
@@ -73,23 +73,37 @@ function isDarkMode(): boolean {
   return !window.matchMedia('(prefers-color-scheme: light)').matches;
 }
 
+function subscribeToTheme(cb: () => void): () => void {
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  mq.addEventListener('change', cb);
+  const observer = new MutationObserver(cb);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+  return () => { mq.removeEventListener('change', cb); observer.disconnect(); };
+}
+
+function useIsDarkMode(): boolean {
+  return useSyncExternalStore(subscribeToTheme, () => isDarkMode());
+}
+
 export function PlantUMLBlock({ code }: { code: string }) {
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const renderedRef = useRef('');
+  const renderedRef = useRef<{ code: string; dark: boolean } | null>(null);
+  const dark = useIsDarkMode();
 
   useEffect(() => {
-    if (!code.trim() || renderedRef.current === code) return;
+    if (!code.trim()) return;
+    if (renderedRef.current && renderedRef.current.code === code && renderedRef.current.dark === dark) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
 
-    enqueueRender(code.trim(), isDarkMode())
+    enqueueRender(code.trim(), dark)
       .then(result => {
         if (!cancelled) {
           setSvg(result);
-          renderedRef.current = code;
+          renderedRef.current = { code, dark };
         }
       })
       .catch(e => {
@@ -100,7 +114,7 @@ export function PlantUMLBlock({ code }: { code: string }) {
       });
 
     return () => { cancelled = true; };
-  }, [code]);
+  }, [code, dark]);
 
   if (error) {
     return (

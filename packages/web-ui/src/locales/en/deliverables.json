@@ -53,7 +53,17 @@
     "fileMissing": "Referenced file no longer exists on disk",
     "confirmRemoveTitle": "Remove deliverable",
     "confirmRemoveMessage": "\"{{name}}\" will be removed. This action cannot be undone.",
-    "openUrl": "Open in New Tab"
+    "openUrl": "Open in New Tab",
+    "edit": "Edit",
+    "preview": "Preview",
+    "save": "Save",
+    "saving": "Saving...",
+    "saved": "Saved",
+    "saveFailed": "Save failed",
+    "unsavedTitle": "Unsaved Changes",
+    "unsavedMessage": "You have unsaved changes. Do you want to save before leaving?",
+    "discard": "Discard",
+    "saveAndLeave": "Save"
   },
   "diffStats": {
     "title": "Diff Stats",

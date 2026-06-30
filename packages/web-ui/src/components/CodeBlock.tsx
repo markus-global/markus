@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, isValidElement, Children, type ReactNode, type ReactElement, type ComponentType } from 'react';
+import { useTranslation } from 'react-i18next';
 import { MermaidBlock } from './MermaidBlock.tsx';
 import { PlantUMLBlock } from './PlantUMLBlock.tsx';
+import { DiagramToggleBlock } from './DiagramToggleBlock.tsx';
 import { languageDisplayName, extractLanguageFromClass } from './markdown-utils.ts';
 
 const DIAGRAM_COMPONENTS: ComponentType<{ code: string }>[] = [MermaidBlock, PlantUMLBlock];
@@ -15,24 +17,49 @@ function extractLanguage(children: ReactNode): string | null {
   return null;
 }
 
+function extractCodeText(children: ReactNode): string {
+  for (const child of Children.toArray(children)) {
+    if (isValidElement(child)) {
+      const props = child.props as { children?: ReactNode };
+      if (typeof props.children === 'string') return props.children;
+      if (Array.isArray(props.children)) {
+        return props.children.map((c: unknown) => (typeof c === 'string' ? c : '')).join('');
+      }
+    }
+  }
+  return '';
+}
+
 export function CodeBlock({ children }: { children?: ReactNode }) {
+  const { t } = useTranslation('common');
   const lang = extractLanguage(children);
   const preRef = useRef<HTMLPreElement>(null);
   const [copied, setCopied] = useState(false);
+  const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
 
   const handleCopy = useCallback(async () => {
-    const text = preRef.current?.querySelector('code')?.textContent ?? '';
+    let text: string;
+    if (mode === 'source') {
+      text = extractCodeText(children);
+    } else {
+      text = preRef.current?.querySelector('code')?.textContent ?? '';
+    }
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     } catch { /* clipboard access denied */ }
-  }, []);
+  }, [mode, children]);
 
   const hasDiagramChild = Children.toArray(children).some(
     child => isValidElement(child) && DIAGRAM_COMPONENTS.includes(child.type as ComponentType<{ code: string }>),
   );
-  if (lang === 'mermaid' || lang === 'plantuml' || hasDiagramChild) {
+  if (hasDiagramChild) {
+    const code = extractCodeText(children);
+    const diagLang = lang === 'mermaid' || lang === 'plantuml' ? lang : 'diagram';
+    return <DiagramToggleBlock code={code} language={diagLang}>{children}</DiagramToggleBlock>;
+  }
+  if (lang === 'mermaid' || lang === 'plantuml') {
     return <>{children}</>;
   }
 
@@ -43,19 +70,43 @@ export function CodeBlock({ children }: { children?: ReactNode }) {
           <span className="text-[10px] font-medium text-fg-tertiary uppercase tracking-wider select-none">
             {languageDisplayName(lang)}
           </span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setMode('rendered')}
+              className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                mode === 'rendered' ? 'bg-brand-600/20 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'
+              }`}
+            >
+              {t('markdown.viewRendered')}
+            </button>
+            <button
+              onClick={() => setMode('source')}
+              className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                mode === 'source' ? 'bg-brand-600/20 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'
+              }`}
+            >
+              {t('markdown.viewSource')}
+            </button>
+          </div>
         </div>
       )}
       <div className="relative">
-        <pre
-          ref={preRef}
-          className="p-3 overflow-x-auto text-xs [&>code]:bg-transparent [&>code]:p-0 [&>code]:rounded-none [&>code]:text-fg-secondary"
-        >
-          {children}
-        </pre>
+        {mode === 'rendered' ? (
+          <pre
+            ref={preRef}
+            className="p-3 overflow-x-auto text-xs [&>code]:bg-transparent [&>code]:p-0 [&>code]:rounded-none [&>code]:text-fg-secondary"
+          >
+            {children}
+          </pre>
+        ) : (
+          <pre className="p-3 overflow-x-auto text-xs font-mono text-fg-secondary whitespace-pre-wrap break-words">
+            {extractCodeText(children)}
+          </pre>
+        )}
         <button
           onClick={handleCopy}
           className="absolute top-2 right-2 p-1.5 rounded-md bg-surface-elevated/80 hover:bg-surface-overlay text-fg-tertiary hover:text-fg-primary backdrop-blur-sm border border-border-default/50 transition-all opacity-0 group-hover/code:opacity-100"
-          title="Copy code"
+          title={t('markdown.copyContent')}
         >
           {copied ? (
             <svg className="w-3.5 h-3.5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

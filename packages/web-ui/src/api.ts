@@ -1306,6 +1306,8 @@ export const api = {
       request<{ ok: boolean; path: string }>('/files/reveal', { method: 'POST', body: JSON.stringify({ path: filePath }) }),
     check: (paths: string[]) =>
       request<{ results: Record<string, { exists: boolean; isFile: boolean; type: string }> }>('/files/check', { method: 'POST', body: JSON.stringify({ paths }) }),
+    write: (filePath: string, content: string) =>
+      request<{ ok: boolean; path: string }>('/files/write', { method: 'POST', body: JSON.stringify({ path: filePath, content }) }),
   },
   requirements: {
     list: (filters?: { orgId?: string; status?: string; source?: string; projectId?: string }) => {

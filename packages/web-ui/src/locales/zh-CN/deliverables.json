@@ -43,7 +43,17 @@
     "fileMissing": "引用的文件在磁盘上已不存在",
     "confirmRemoveTitle": "移除交付物",
     "confirmRemoveMessage": "\"{{name}}\" 将被移除，此操作不可撤销。",
-    "openUrl": "在新标签页中打开"
+    "openUrl": "在新标签页中打开",
+    "edit": "编辑",
+    "preview": "预览",
+    "save": "保存",
+    "saving": "保存中...",
+    "saved": "已保存",
+    "saveFailed": "保存失败",
+    "unsavedTitle": "未保存的更改",
+    "unsavedMessage": "你有未保存的更改。离开前是否需要保存？",
+    "discard": "放弃",
+    "saveAndLeave": "保存"
   },
   "diffStats": {
     "title": "差异统计",

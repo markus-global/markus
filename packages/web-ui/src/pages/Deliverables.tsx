@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, wsClient, type DeliverableInfo, type ProjectInfo, type AgentInfo, type AuthUser } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
-import { ContentRenderer, resolveFormat } from '../components/ContentRenderer.tsx';
+import { ContentRenderer, resolveFormat, type HtmlSelectionData } from '../components/ContentRenderer.tsx';
 import { copyPlainText } from '../components/markdown-copy.ts';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
 import { ChatPanel } from '../components/ChatPanel.tsx';
@@ -113,7 +113,14 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [contextChips, setContextChips] = useState<ContextChip[]>([]);
 
   // Selection toolbar (Phase 4)
-  const [selectionToolbar, setSelectionToolbar] = useState<{ x: number; y: number; text: string } | null>(null);
+  const [selectionToolbar, setSelectionToolbar] = useState<{ x: number; y: number; text: string; htmlMeta?: { xpath: string; cssSelector: string } } | null>(null);
+
+  // In-place editing (Phase 5)
+  const [editMode, setEditMode] = useState(false);
+  const [editContent, setEditContent] = useState('');
+  const [editDirty, setEditDirty] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [unsavedDialog, setUnsavedDialog] = useState<{ action: () => void } | null>(null);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -405,14 +412,77 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   }, [collapsedGroups.size, grouped]);
 
   const handleSelectItem = (item: DeliverableInfo) => {
-    setSelected(item);
-    setContextChips([]);
-    if (isMobile) {
-      setChatPanelOpen(false);
-      setMobileShowDetail(true);
-      history.pushState({ mobileDetail: PAGE.DELIVERABLES }, '', window.location.hash);
+    const doSwitch = () => {
+      setSelected(item);
+      setContextChips([]);
+      setEditMode(false);
+      setEditDirty(false);
+      if (isMobile) {
+        setChatPanelOpen(false);
+        setMobileShowDetail(true);
+        history.pushState({ mobileDetail: PAGE.DELIVERABLES }, '', window.location.hash);
+      }
+    };
+    if (editDirty) {
+      setUnsavedDialog({ action: doSwitch });
+    } else {
+      doSwitch();
     }
   };
+
+  const handleStartEdit = () => {
+    const content = previewContent ?? selected?.summary ?? '';
+    setEditContent(content);
+    setEditMode(true);
+    setEditDirty(false);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!selected?.reference || editSaving) return;
+    setEditSaving(true);
+    try {
+      await api.files.write(selected.reference, editContent);
+      setPreviewContent(editContent);
+      setEditDirty(false);
+      setEditMode(false);
+      flashMsg('success', t('detail.saved'));
+    } catch (e) {
+      flashMsg('error', t('detail.saveFailed') + ': ' + String(e));
+    }
+    setEditSaving(false);
+  };
+
+  const handleDiscardEdit = () => {
+    setEditMode(false);
+    setEditDirty(false);
+    setUnsavedDialog(null);
+  };
+
+  // Unsaved changes guard for navigation
+  useEffect(() => {
+    if (!editDirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [editDirty]);
+
+  useEffect(() => {
+    if (!editDirty) return;
+    const handler = (e: CustomEvent) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setUnsavedDialog({ action: () => {
+        setEditMode(false);
+        setEditDirty(false);
+        const { page, params } = e.detail || {};
+        if (page) navBus.navigate(page, params);
+      }});
+    };
+    window.addEventListener('markus:navigate', handler as EventListener);
+    return () => window.removeEventListener('markus:navigate', handler as EventListener);
+  }, [editDirty]);
 
   // Auto-collapse sidebar when chat panel opens on narrow screens
   useEffect(() => {
@@ -424,20 +494,42 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   // Selection toolbar handler (Phase 4)
   const detailContentRef = useRef<HTMLDivElement>(null);
 
-  const addToConversation = useCallback((text: string) => {
+  const addToConversation = useCallback((text: string, htmlMeta?: { xpath: string; cssSelector: string }) => {
     const label = text.length > 30 ? `${text.slice(0, 15)}…${text.slice(-12)}` : text;
     const chipId = `sel_${Date.now()}`;
+    let content: string;
+    if (htmlMeta) {
+      const filePath = selected?.reference ?? '';
+      content = [
+        `[html-selection]`,
+        `Text: "${text}"`,
+        `CSS Selector: ${htmlMeta.cssSelector}`,
+        `XPath: ${htmlMeta.xpath}`,
+        filePath ? `File: ${filePath}` : '',
+      ].filter(Boolean).join('\n');
+    } else {
+      content = text;
+    }
     setContextChips(prev => [...prev, {
       id: chipId,
-      label,
+      label: htmlMeta ? `🌐 ${label}` : label,
       type: 'selection',
-      content: text,
+      content,
       onRemove: () => setContextChips(p => p.filter(c => c.id !== chipId)),
     }]);
     if (!chatPanelOpen) setChatPanelOpen(true);
     setSelectionToolbar(null);
     window.getSelection()?.removeAllRanges();
-  }, [chatPanelOpen]);
+  }, [chatPanelOpen, selected?.reference]);
+
+  const handleHtmlSelection = useCallback((data: HtmlSelectionData) => {
+    if (!data.text.trim()) return;
+    const iframeEl = detailContentRef.current?.querySelector('iframe');
+    const iframeRect = iframeEl?.getBoundingClientRect();
+    const x = (iframeRect?.left ?? 0) + data.rect.x + data.rect.width / 2;
+    const y = (iframeRect?.top ?? 0) + data.rect.y;
+    setSelectionToolbar({ x, y, text: data.text, htmlMeta: { xpath: data.xpath, cssSelector: data.cssSelector } });
+  }, []);
 
   useEffect(() => {
     const el = detailContentRef.current;
@@ -858,36 +950,83 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 </div>
               </div>
             ) : (
-              <div className="bg-surface-elevated rounded-xl p-5">
-                {previewLoading ? (
-                  <div className="flex items-center gap-2 text-fg-tertiary text-sm"><Spinner /> {t('detail.loadingPreview')}</div>
-                ) : previewImage ? (
-                  <div className="flex flex-col items-center gap-2">
-                    <img src={previewImage.src} alt={previewImage.name} className="max-w-full max-h-[60vh] rounded-lg object-contain" />
-                    <span className="text-xs text-fg-tertiary">{previewImage.name}</span>
-                  </div>
-                ) : previewContent ? (
-                  <ContentRenderer content={previewContent} format={previewFormat} className="text-fg-secondary text-sm" />
-                ) : showCopyPath ? (
-                  <div className="space-y-3">
-                    <p className="text-sm text-fg-secondary">{t('detail.cannotPreview', { type: selected.type })}</p>
-                    <div className="flex items-center gap-2">
+              <div className="bg-surface-elevated rounded-xl overflow-hidden">
+                {/* Edit/Preview toolbar — shown when there is editable text content */}
+                {(previewContent || selected.summary) && !previewLoading && !previewImage && !showCopyPath && selected.reference && selected.type === 'file' && (previewFormat === 'markdown' || previewFormat === 'text' || previewFormat === 'html') && (
+                  <div className="flex items-center gap-2 px-4 py-2 border-b border-border-subtle bg-surface-secondary/50">
+                    <button
+                      onClick={() => { if (editMode) { setEditMode(false); } }}
+                      className={`px-3 py-1 rounded text-xs font-medium transition-colors ${!editMode ? 'bg-brand-600/20 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'}`}
+                    >
+                      {t('detail.preview')}
+                    </button>
+                    <button
+                      onClick={handleStartEdit}
+                      className={`px-3 py-1 rounded text-xs font-medium transition-colors ${editMode ? 'bg-brand-600/20 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'}`}
+                    >
+                      {t('detail.edit')}
+                    </button>
+                    <div className="flex-1" />
+                    {editMode && (
                       <button
-                        onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
-                        className="text-xs bg-surface-elevated px-3 py-2 rounded text-brand-500 hover:text-brand-500 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
-                        title={t('detail.openInFileBrowser')}
-                      >{selected.reference}</button>
-                      <button onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
-                        className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0">{t('common:open')}</button>
-                      <button onClick={() => copyPath(selected!.reference)}
-                        className={`px-3 py-2 text-xs rounded-lg transition-colors shrink-0 ${copiedPath ? 'bg-green-500/20 text-green-600' : 'bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay'}`}>{copiedPath ? t('common:copied') : t('common:copy')}</button>
-                    </div>
+                        onClick={handleSaveEdit}
+                        disabled={!editDirty || editSaving}
+                        className="px-3 py-1 rounded text-xs font-medium bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {editSaving ? t('detail.saving') : t('detail.save')}
+                      </button>
+                    )}
                   </div>
-                ) : selected.summary ? (
-                  <MarkdownMessage content={selected.summary} className="text-fg-secondary text-sm" />
-                ) : (
-                  <p className="text-sm text-fg-tertiary italic">{t('detail.noContent')}</p>
                 )}
+                <div className="p-5">
+                  {previewLoading ? (
+                    <div className="flex items-center gap-2 text-fg-tertiary text-sm"><Spinner /> {t('detail.loadingPreview')}</div>
+                  ) : previewImage ? (
+                    <div className="flex flex-col items-center gap-2">
+                      <img src={previewImage.src} alt={previewImage.name} className="max-w-full max-h-[60vh] rounded-lg object-contain" />
+                      <span className="text-xs text-fg-tertiary">{previewImage.name}</span>
+                    </div>
+                  ) : previewContent ? (
+                    editMode ? (
+                      <textarea
+                        value={editContent}
+                        onChange={(e) => { setEditContent(e.target.value); setEditDirty(true); }}
+                        className="w-full h-[50vh] min-h-[300px] p-3 text-sm font-mono bg-surface-primary border border-border-subtle rounded-lg text-fg-secondary resize-y focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                        spellCheck={false}
+                      />
+                    ) : (
+                      <ContentRenderer content={previewContent} format={previewFormat} className="text-fg-secondary text-sm" onHtmlSelection={handleHtmlSelection} />
+                    )
+                  ) : showCopyPath ? (
+                    <div className="space-y-3">
+                      <p className="text-sm text-fg-secondary">{t('detail.cannotPreview', { type: selected.type })}</p>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
+                          className="text-xs bg-surface-elevated px-3 py-2 rounded text-brand-500 hover:text-brand-500 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
+                          title={t('detail.openInFileBrowser')}
+                        >{selected.reference}</button>
+                        <button onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
+                          className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0">{t('common:open')}</button>
+                        <button onClick={() => copyPath(selected!.reference)}
+                          className={`px-3 py-2 text-xs rounded-lg transition-colors shrink-0 ${copiedPath ? 'bg-green-500/20 text-green-600' : 'bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay'}`}>{copiedPath ? t('common:copied') : t('common:copy')}</button>
+                      </div>
+                    </div>
+                  ) : selected.summary ? (
+                    editMode ? (
+                      <textarea
+                        value={editContent}
+                        onChange={(e) => { setEditContent(e.target.value); setEditDirty(true); }}
+                        className="w-full h-[50vh] min-h-[300px] p-3 text-sm font-mono bg-surface-primary border border-border-subtle rounded-lg text-fg-secondary resize-y focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                        spellCheck={false}
+                      />
+                    ) : (
+                      <MarkdownMessage content={selected.summary} className="text-fg-secondary text-sm" />
+                    )
+                  ) : (
+                    <p className="text-sm text-fg-tertiary italic">{t('detail.noContent')}</p>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -938,7 +1077,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
           style={{ left: selectionToolbar.x, top: selectionToolbar.y - 8 }}
         >
           <button
-            onMouseDown={e => { e.preventDefault(); e.stopPropagation(); addToConversation(selectionToolbar.text); }}
+            onMouseDown={e => { e.preventDefault(); e.stopPropagation(); addToConversation(selectionToolbar.text, selectionToolbar.htmlMeta); }}
             className="px-3 py-1.5 text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-1.5 whitespace-nowrap"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -970,6 +1109,33 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
               <button onClick={() => { const d = confirmRemove; setConfirmRemove(null); handleRemove(d); }}
                 disabled={!!actionLoading}
                 className="px-4 py-1.5 text-xs bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors disabled:opacity-50">{t('common:remove')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Unsaved Changes Dialog */}
+      {unsavedDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setUnsavedDialog(null)}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 max-w-sm mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-amber-500/15 flex items-center justify-center shrink-0">
+                <svg className="w-5 h-5 text-amber-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+              </div>
+              <div>
+                <div className="text-sm font-medium text-fg-primary">{t('detail.unsavedTitle')}</div>
+                <div className="text-xs text-fg-secondary mt-0.5">{t('detail.unsavedMessage')}</div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setUnsavedDialog(null)}
+                className="px-4 py-1.5 text-xs text-fg-secondary hover:text-fg-primary border border-border-default hover:border-gray-600 rounded-lg transition-colors">{t('common:cancel')}</button>
+              <button onClick={() => { handleDiscardEdit(); unsavedDialog.action(); }}
+                className="px-4 py-1.5 text-xs text-fg-secondary hover:text-fg-primary border border-border-default hover:border-gray-600 rounded-lg transition-colors">{t('detail.discard')}</button>
+              <button onClick={async () => { await handleSaveEdit(); unsavedDialog.action(); setUnsavedDialog(null); }}
+                className="px-4 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors">{t('detail.saveAndLeave')}</button>
             </div>
           </div>
         </div>

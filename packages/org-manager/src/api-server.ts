@@ -11365,6 +11365,37 @@ EXPLANATION_END`;
       return;
     }
 
+    // POST /api/files/write — write content to a local file (for in-place editing)
+    if (path === '/api/files/write' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const filePath = body?.path as string | undefined;
+      const content = body?.content as string | undefined;
+      if (!filePath || content === undefined) {
+        this.json(res, 400, { error: 'Missing "path" or "content" in request body' });
+        return;
+      }
+
+      try {
+        const { resolve } = await import('node:path');
+        const { existsSync } = await import('node:fs');
+        const { homedir } = await import('node:os');
+        const home = homedir();
+        const expanded = filePath.startsWith('~/') ? resolve(home, filePath.slice(2)) : filePath === '~' ? home : filePath;
+        const resolved = resolve(expanded);
+
+        if (!existsSync(resolved)) {
+          this.json(res, 404, { error: 'File not found' });
+          return;
+        }
+
+        writeFileSync(resolved, content, 'utf-8');
+        this.json(res, 200, { ok: true, path: resolved });
+      } catch (err) {
+        this.json(res, 500, { error: `Failed to write file: ${String(err)}` });
+      }
+      return;
+    }
+
     // ── Requirements ─────────────────────────────────────────────────────
 
     if (path === '/api/requirements' && req.method === 'GET') {
@@ -12408,6 +12439,7 @@ EXPLANATION_END`;
       exact('/api/files/preview', 'GET'),
       exact('/api/files/image', 'GET'),
       exact('/api/files/reveal', 'POST'),
+      exact('/api/files/write', 'POST'),
 
       // ── External Agents ──────────────────────────────────────────────────
       exact('/api/external-agents', 'GET'),

@@ -4,12 +4,21 @@ const LazyMarkdownMessage = lazy(() =>
   import('./MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage }))
 );
 
+export interface HtmlSelectionData {
+  text: string;
+  xpath: string;
+  cssSelector: string;
+  rect: { x: number; y: number; width: number; height: number };
+}
+
 interface ContentRendererProps {
   content: string;
   format?: string;
   className?: string;
   /** Base directory for resolving relative image paths in markdown */
   basePath?: string;
+  /** Called when user selects text inside an HTML preview iframe */
+  onHtmlSelection?: (data: HtmlSelectionData) => void;
 }
 
 /**
@@ -77,7 +86,7 @@ export function resolveFormat(opts: {
   return 'markdown';
 }
 
-function HtmlPreview({ content, className }: { content: string; className?: string }) {
+function HtmlPreview({ content, className, onSelection }: { content: string; className?: string; onSelection?: (data: HtmlSelectionData) => void }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState<number | null>(null);
 
@@ -86,10 +95,61 @@ function HtmlPreview({ content, className }: { content: string; className?: stri
       if (e.data?.type === '__htmlpreview_height' && typeof e.data.height === 'number') {
         setHeight(e.data.height);
       }
+      if (e.data?.type === '__htmlpreview_selection' && onSelection) {
+        onSelection(e.data as HtmlSelectionData);
+      }
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, []);
+  }, [onSelection]);
+
+  const selectionScript = `<script>
+(function(){
+  function getXPath(el){
+    if(!el||el.nodeType!==1)return'';
+    var parts=[];var node=el;
+    while(node&&node.nodeType===1){
+      var idx=1;var sib=node.previousElementSibling;
+      while(sib){idx++;sib=sib.previousElementSibling;}
+      var tag=node.tagName.toLowerCase();
+      parts.unshift(tag+'['+idx+']');
+      node=node.parentElement;
+    }
+    return'/'+parts.join('/');
+  }
+  function getCssSelector(el){
+    if(!el||el.nodeType!==1)return'';
+    var parts=[];var node=el;
+    while(node&&node.nodeType===1&&node!==document.body){
+      var sel=node.tagName.toLowerCase();
+      if(node.id){sel+='#'+node.id;parts.unshift(sel);break;}
+      var nth=1;var sib=node.previousElementSibling;
+      while(sib){if(sib.tagName===node.tagName)nth++;sib=sib.previousElementSibling;}
+      var total=1;sib=node.nextElementSibling;
+      while(sib){if(sib.tagName===node.tagName)total++;sib=sib.nextElementSibling;}
+      if(total>0||nth>1)sel+=':nth-of-type('+nth+')';
+      parts.unshift(sel);node=node.parentElement;
+    }
+    return parts.join(' > ');
+  }
+  document.addEventListener('mouseup',function(){
+    var sel=window.getSelection();
+    if(!sel||sel.isCollapsed||!sel.toString().trim())return;
+    var text=sel.toString().trim();
+    var range=sel.getRangeAt(0);
+    var container=range.startContainer;
+    var el=container.nodeType===1?container:container.parentElement;
+    var rect=range.getBoundingClientRect();
+    parent.postMessage({
+      type:'__htmlpreview_selection',
+      text:text,
+      xpath:getXPath(el),
+      cssSelector:getCssSelector(el),
+      rect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height}
+    },'*');
+  });
+})();
+</script>`;
 
   const heightScript = `<script>
 (function(){
@@ -105,7 +165,7 @@ function HtmlPreview({ content, className }: { content: string; className?: stri
   const sizeFixStyle = '<style>html,body{overflow:hidden!important;height:auto!important;}</style>';
 
   const themedContent = useMemo(() => {
-    const inject = sizeFixStyle + heightScript;
+    const inject = sizeFixStyle + heightScript + selectionScript;
     if (/<html[\s>]/i.test(content)) {
       let result = content;
       if (/<\/body>/i.test(result))
@@ -146,7 +206,7 @@ function HtmlPreview({ content, className }: { content: string; className?: stri
   h1, h2, h3, h4, h5, h6 { color: ${colors.heading}; }
 </style>
 </head>
-<body>${content}${heightScript}</body>
+<body>${content}${heightScript}${selectionScript}</body>
 </html>`;
   }, [content]);
 
@@ -185,10 +245,10 @@ function JsonPreview({ content, className }: { content: string; className?: stri
   );
 }
 
-export function ContentRenderer({ content, format, className, basePath }: ContentRendererProps) {
+export function ContentRenderer({ content, format, className, basePath, onHtmlSelection }: ContentRendererProps) {
   switch (format) {
     case 'html':
-      return <HtmlPreview content={content} className={className} />;
+      return <HtmlPreview content={content} className={className} onSelection={onHtmlSelection} />;
 
     case 'json':
       return <JsonPreview content={content} className={className} />;

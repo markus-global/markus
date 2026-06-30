@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useId } from 'react';
+import { useEffect, useRef, useState, useId, useSyncExternalStore } from 'react';
 
 let mermaidPromise: Promise<typeof import('mermaid')> | null = null;
 
@@ -24,15 +24,33 @@ function isDarkMode(): boolean {
   return !window.matchMedia('(prefers-color-scheme: light)').matches;
 }
 
+function subscribeToTheme(cb: () => void): () => void {
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  mq.addEventListener('change', cb);
+  const observer = new MutationObserver(cb);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+  return () => { mq.removeEventListener('change', cb); observer.disconnect(); };
+}
+
+function getThemeSnapshot(): boolean {
+  return isDarkMode();
+}
+
+function useIsDarkMode(): boolean {
+  return useSyncExternalStore(subscribeToTheme, getThemeSnapshot);
+}
+
 export function MermaidBlock({ code }: { code: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const renderIdBase = useId();
-  const renderedRef = useRef('');
+  const renderedRef = useRef<{ code: string; dark: boolean } | null>(null);
+  const dark = useIsDarkMode();
 
   useEffect(() => {
-    if (!code.trim() || renderedRef.current === code) return;
+    if (!code.trim()) return;
+    if (renderedRef.current && renderedRef.current.code === code && renderedRef.current.dark === dark) return;
 
     let cancelled = false;
     setLoading(true);
@@ -43,7 +61,6 @@ export function MermaidBlock({ code }: { code: string }) {
         const mermaid = await loadMermaid();
         if (cancelled) return;
 
-        const dark = isDarkMode();
         mermaid.default.initialize({
           startOnLoad: false,
           theme: dark ? 'dark' : 'default',
@@ -57,7 +74,7 @@ export function MermaidBlock({ code }: { code: string }) {
 
         if (containerRef.current) {
           containerRef.current.innerHTML = svg;
-          renderedRef.current = code;
+          renderedRef.current = { code, dark };
         }
       } catch (e) {
         if (!cancelled) {
@@ -69,7 +86,7 @@ export function MermaidBlock({ code }: { code: string }) {
     })();
 
     return () => { cancelled = true; };
-  }, [code, renderIdBase]);
+  }, [code, renderIdBase, dark]);
 
   if (error) {
     return (
