@@ -1901,6 +1901,33 @@ export class AgentManager {
       void Promise.all(mcpConnections);
     }
 
+    // Connect global MCP servers (e.g. feishu-lark) for booted agents — same as createAgentFromRequest
+    if (this.globalMcpServers) {
+      for (const [serverName, rawServerConfig] of Object.entries(this.globalMcpServers)) {
+        if (agent.hasToolPrefix(serverName)) continue; // already connected via skill
+        void (async () => {
+          try {
+            const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
+            await this.mcpManager.connectServer(serverName, serverConfig);
+            const mcpTools = this.mcpManager.getToolHandlers(serverName);
+            const toolNames: string[] = [];
+            for (const tool of mcpTools) {
+              agent.registerTool(tool);
+              toolNames.push(tool.name);
+            }
+            agent.activateTools(toolNames);
+            log.info(`Global MCP server ${serverName} connected for booted agent ${id}`, {
+              toolCount: mcpTools.length,
+            });
+          } catch (error) {
+            log.warn(`Failed to connect global MCP server ${serverName} for booted agent ${id}`, {
+              error: String(error),
+            });
+          }
+        })();
+      }
+    }
+
     // Set skill MCP activator callback for runtime activation via discover_tools
     agent.setSkillMcpActivator(async (skillName, mcpServers) => {
       let tools: AgentToolHandler[] = [];

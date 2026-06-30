@@ -533,8 +533,8 @@ export class Agent {
       log.warn('Environment detection failed', { error: String(e) });
     }
 
-    // Resume latest conversation session if available
-    const latestSession = this.memory.getLatestSession(this.id);
+    // Resume latest main session (exclude A2A and channel sessions)
+    const latestSession = this.memory.getLatestMainSession(this.id);
     if (latestSession && latestSession.messages.length > 0) {
       this.currentSessionId = latestSession.id;
       log.info(
@@ -3603,6 +3603,7 @@ export class Agent {
       const session = this.memory.createSession(this.id);
       this.currentSessionId = session.id;
     }
+    this.memory.getOrCreateSession(this.id, this.currentSessionId);
 
     const userContent = await this.buildUserContent(userMessage, images, fileNames);
     this.memory.appendMessage(this.currentSessionId, { role: 'user', content: userContent });
@@ -5062,6 +5063,15 @@ export class Agent {
     this.tools.set(handler.name, handler);
   }
 
+  /** Check if any registered tool name starts with the given prefix (e.g. "feishu-lark__"). */
+  hasToolPrefix(prefix: string): boolean {
+    const p = `${prefix}__`;
+    for (const name of this.tools.keys()) {
+      if (name.startsWith(p)) return true;
+    }
+    return false;
+  }
+
   registerBackgroundSession(bgSessionId: string, originSessionId: string): void {
     this.bgSessionOrigin.set(bgSessionId, originSessionId);
   }
@@ -5265,6 +5275,7 @@ export class Agent {
     const requested = resolvedNames;
     const activated: string[] = [];
     const unknown: string[] = [];
+    const skillToolNames: string[] = [];
 
     for (const name of requested) {
       // 1. Check if it's an existing tool name on this agent
@@ -5283,15 +5294,15 @@ export class Agent {
           }
 
           let mcpToolCount = 0;
+          const mcpToolNames: string[] = [];
           if (skill.manifest.mcpServers && this.skillMcpActivator) {
             try {
               const mcpTools = await this.skillMcpActivator(name, skill.manifest.mcpServers);
-              const toolNames: string[] = [];
               for (const tool of mcpTools) {
                 this.registerTool(tool);
-                toolNames.push(tool.name);
+                mcpToolNames.push(tool.name);
               }
-              this.activateTools(toolNames);
+              this.activateTools(mcpToolNames);
               mcpToolCount = mcpTools.length;
             } catch (err) {
               log.warn('Failed to activate skill MCP servers via discover_tools', {
@@ -5305,6 +5316,9 @@ export class Agent {
           if (mcpToolCount > 0) parts.push(`${mcpToolCount} MCP tools loaded`);
           if (!skill.manifest.instructions && mcpToolCount === 0) parts.push('skill found but has no instructions or MCP tools');
           activated.push(parts.length > 1 ? `${parts[0]} (${parts.slice(1).join(', ')})` : parts[0]);
+          if (mcpToolNames.length > 0) {
+            skillToolNames.push(...mcpToolNames);
+          }
 
           log.info('Skill activated via discover_tools', {
             agentId: this.id, skill: name, mcpToolCount,
@@ -5325,6 +5339,10 @@ export class Agent {
         ? `${activated.length} items activated. Skill instructions are now part of your context.`
         : 'Nothing was activated.',
     };
+    if (skillToolNames.length > 0) {
+      result.available_tools = skillToolNames;
+      result.tool_usage_hint = 'Call these tools directly by their exact name listed above.';
+    }
     if (unknown.length > 0) {
       result.unknown = unknown;
       result.hint = 'These names were not found as tools or skills. '

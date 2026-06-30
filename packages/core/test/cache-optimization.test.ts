@@ -321,6 +321,7 @@ function makeMockMemory() {
     getSession: () => undefined,
     listSessions: () => [],
     getLatestSession: () => undefined,
+    getLatestMainSession: () => undefined,
     createSession: () => ({ id: 'test-session', agentId: 'test', createdAt: new Date().toISOString() }),
     getOrCreateSession: () => ({ id: 'test-session', agentId: 'test', createdAt: new Date().toISOString() }),
     appendMessage: vi.fn(),

@@ -141,6 +141,16 @@ export class MemoryStore implements IMemoryStore {
     )[0];
   }
 
+  /** Get latest main session, excluding temporary A2A and channel sessions. */
+  getLatestMainSession(agentId: string): ConversationSession | undefined {
+    const agentSessions = this.listSessions(agentId)
+      .filter(s => !s.id.startsWith('a2a_') && !s.id.startsWith('channel_'));
+    if (agentSessions.length === 0) return undefined;
+    return agentSessions.sort((a, b) =>
+      new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime()
+    )[0];
+  }
+
   createSession(agentId: string): ConversationSession {
     const session: ConversationSession = {
       id: `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,

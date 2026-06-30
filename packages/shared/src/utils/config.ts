@@ -82,7 +82,14 @@ export interface MarkusConfig {
     extensionBridgePort?: number;
   };
   integrations?: {
-    feishu?: { appId?: string; appSecret?: string };
+    feishu?: {
+      appId?: string;
+      appSecret?: string;
+      mcp?: {
+        enabled?: boolean;
+        presets?: string[];
+      };
+    };
     search?: {
       serperApiKey?: string;
       tavilyApiKey?: string;

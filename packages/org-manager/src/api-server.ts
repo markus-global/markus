@@ -37,7 +37,7 @@ import type { OrganizationService } from './org-service.js';
 import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
-import { FeishuNotifier, type FeishuNotifierConfig } from './feishu-notifier.js';
+import { FeishuNotifier, buildAgentResponseCard, type AgentCardPhase, type FeishuNotifierConfig } from './feishu-notifier.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
 import type { LicenseService } from './license-service.js';
@@ -1593,10 +1593,16 @@ export class APIServer {
     }
   }
 
-  /** Handle an incoming Feishu user message by routing it to the Secretary agent. */
+  /**
+   * Handle an incoming Feishu user message by routing it to the Secretary agent.
+   * Uses streaming (sendMessageStream) for real-time card updates showing
+   * thinking → tool calls → final response progressively.
+   * Uses the Secretary's main session for context continuity (same as Web UI DM).
+   */
   private async handleFeishuUserMessage(payload: Record<string, unknown>): Promise<void> {
     const chatId = payload['chatId'] as string | undefined;
     const senderId = payload['senderId'] as string | undefined;
+    const messageId = payload['messageId'] as string | undefined;
     const rawContent = payload['content'] as string | undefined;
     const messageType = payload['messageType'] as string | undefined;
     if (!chatId || !rawContent) return;
@@ -1613,32 +1619,175 @@ export class APIServer {
     }
     if (!text) return;
 
+    const startTime = Date.now();
+
+    // Add "processing" reaction to the user's message
+    let processingReactionId: string | undefined;
+    if (messageId && this.feishuNotifier) {
+      processingReactionId = await this.feishuNotifier.addReaction(messageId, 'OnIt');
+    }
+
     const agentManager = this.orgService.getAgentManager();
     const agentList = agentManager.listAgents();
+
+    // Always route to Secretary — it can internally delegate to other agents via A2A
     const secretaryInfo = agentList.find(a =>
       a.agentRole === 'secretary' || a.role?.toLowerCase() === 'secretary'
     );
     if (!secretaryInfo) {
       log.warn('No Secretary agent found to handle Feishu message');
+      if (messageId && processingReactionId && this.feishuNotifier) {
+        await this.feishuNotifier.deleteReaction(messageId, processingReactionId);
+      }
       await this.feishuNotifier?.sendTextToChat(chatId, '暂无可用的秘书 Agent 处理此消息');
       return;
     }
 
+    const agentName = secretaryInfo.name ?? 'Secretary';
+
+    // Send a "thinking" status card to give immediate visual feedback
+    let statusCardId: string | undefined;
+    if (this.feishuNotifier) {
+      const thinkingCard = buildAgentResponseCard({ agentName, phase: 'thinking' });
+      statusCardId = await this.feishuNotifier.sendCardToChat(chatId, thinkingCard);
+    }
+
     const secretary = agentManager.getAgent(secretaryInfo.id);
     const senderName = payload['senderName'] as string ?? senderId ?? 'feishu_user';
+
+    // Streaming state for real-time card updates
+    const toolCalls: Array<{ name: string; status: 'running' | 'done' | 'error'; durationMs?: number }> = [];
+    let lastCardUpdatePhase: AgentCardPhase = 'thinking';
+    let cardUpdatePending = false;
+    let cardUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+
+    // Throttled card update — avoid excessive API calls (max once per 2s)
+    const CARD_UPDATE_INTERVAL_MS = 2000;
+    const scheduleCardUpdate = () => {
+      if (!statusCardId || !this.feishuNotifier || cardUpdatePending) return;
+      cardUpdatePending = true;
+      cardUpdateTimer = setTimeout(async () => {
+        cardUpdatePending = false;
+        cardUpdateTimer = null;
+        try {
+          const card = buildAgentResponseCard({
+            agentName,
+            phase: lastCardUpdatePhase,
+            toolCalls: toolCalls.length > 0 ? [...toolCalls] : undefined,
+          });
+          await this.feishuNotifier!.updateCard(statusCardId!, card);
+        } catch (e) {
+          log.warn('Failed to update Feishu card mid-stream', { error: String(e) });
+        }
+      }, CARD_UPDATE_INTERVAL_MS);
+    };
+
+    // Stream event handler — updates card state in real-time
+    const handleStreamEvent = (event: { type: string; tool?: string; phase?: string; success?: boolean; durationMs?: number; agentEvent?: string }) => {
+      if (event.type === 'agent_tool') {
+        if (event.phase === 'start' && event.tool) {
+          toolCalls.push({ name: event.tool, status: 'running' });
+          lastCardUpdatePhase = 'tool_calling';
+          scheduleCardUpdate();
+        } else if (event.phase === 'end' && event.tool) {
+          const tc = toolCalls.find(t => t.name === event.tool && t.status === 'running');
+          if (tc) {
+            tc.status = event.success === false ? 'error' : 'done';
+            tc.durationMs = event.durationMs;
+          }
+          scheduleCardUpdate();
+        }
+      }
+    };
+
     try {
-      const reply = await secretary.sendMessage(
+      // Use streaming for real-time progress — Secretary's main session (no channelKey)
+      const reply = await secretary.sendMessageStream(
         text,
+        handleStreamEvent,
         senderId ?? 'feishu_user',
         { name: senderName, role: 'user' },
-        { sourceType: 'human_chat' },
       );
-      if (reply && this.feishuNotifier) {
-        await this.feishuNotifier.sendTextToChat(chatId, reply);
+
+      // Clear any pending throttled update
+      if (cardUpdateTimer) { clearTimeout(cardUpdateTimer); cardUpdateTimer = null; }
+
+      const elapsedMs = Date.now() - startTime;
+
+      // Strip thinking/reasoning blocks — only show the clean response to user
+      const { clean: cleanReply } = extractThinkBlocks(reply ?? '');
+      const displayContent = stripInternalBlocks(cleanReply);
+
+      // Remove "processing" reaction and add "done" reaction
+      if (messageId && this.feishuNotifier) {
+        if (processingReactionId) {
+          await this.feishuNotifier.deleteReaction(messageId, processingReactionId);
+        }
+        await this.feishuNotifier.addReaction(messageId, 'DONE');
       }
+
+      // Final card update with full response + tool call summary
+      const toolCallEntries = toolCalls.length > 0 ? toolCalls : undefined;
+
+      if (statusCardId && this.feishuNotifier && displayContent) {
+        const doneCard = buildAgentResponseCard({
+          agentName,
+          phase: 'done',
+          content: displayContent,
+          toolCalls: toolCallEntries,
+          elapsedMs,
+        });
+        try {
+          await this.feishuNotifier.updateCard(statusCardId, doneCard);
+        } catch (cardErr) {
+          log.warn('Failed to update Feishu card, falling back to text', { error: String(cardErr) });
+          await this.feishuNotifier.sendTextToChat(chatId, displayContent);
+        }
+      } else if (displayContent && this.feishuNotifier) {
+        await this.feishuNotifier.sendTextToChat(chatId, displayContent);
+      }
+
+      // Persist to DB main session (no senderId filter → finds the is_main session)
+      void this.persistChatTurn(
+        secretaryInfo.id,
+        text,
+        reply ?? '',
+        undefined,
+        secretary.getState().tokensUsedToday,
+      );
     } catch (err) {
+      // Clear any pending throttled update
+      if (cardUpdateTimer) { clearTimeout(cardUpdateTimer); cardUpdateTimer = null; }
+
       log.error('Secretary agent failed to respond to Feishu message', { error: String(err) });
-      await this.feishuNotifier?.sendTextToChat(chatId, `处理消息时出错: ${String(err).slice(0, 200)}`);
+      const elapsedMs = Date.now() - startTime;
+
+      // Remove "processing" reaction and add "error" reaction
+      if (messageId && this.feishuNotifier) {
+        if (processingReactionId) {
+          await this.feishuNotifier.deleteReaction(messageId, processingReactionId);
+        }
+        await this.feishuNotifier.addReaction(messageId, 'Frown');
+      }
+
+      // Update the status card with error state
+      const errMsg = String(err).slice(0, 200);
+      if (statusCardId && this.feishuNotifier) {
+        const errorCard = buildAgentResponseCard({
+          agentName,
+          phase: 'error',
+          errorMessage: errMsg,
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+          elapsedMs,
+        });
+        try {
+          await this.feishuNotifier.updateCard(statusCardId, errorCard);
+        } catch {
+          await this.feishuNotifier.sendTextToChat(chatId, `处理消息时出错: ${errMsg}`);
+        }
+      } else {
+        await this.feishuNotifier?.sendTextToChat(chatId, `处理消息时出错: ${errMsg}`);
+      }
     }
   }
 
@@ -9932,6 +10081,7 @@ EXPLANATION_END`;
         const row = findFeishuConfig(auth.orgId);
         const cfg = (row?.['config'] as Record<string, unknown>) ?? {};
         const connected = !!(this.feishuNotifier?.connected);
+        const mcpConfig = markusCfg.integrations?.feishu?.mcp;
         this.json(res, 200, {
           appId,
           appSecret,
@@ -9941,6 +10091,10 @@ EXPLANATION_END`;
           notifyOnApproval: cfg['notifyOnApproval'] ?? true,
           notifyOnNotification: cfg['notifyOnNotification'] ?? false,
           notifyPriority: cfg['notifyPriority'] ?? ['high', 'urgent'],
+          mcp: {
+            enabled: mcpConfig?.enabled ?? false,
+            presets: mcpConfig?.presets ?? [],
+          },
         });
       } catch (e) {
         log.error('Failed to read feishu integration config', { error: String(e) });
@@ -9991,8 +10145,16 @@ EXPLANATION_END`;
         } else {
           await repo.create(payload);
         }
-        // Credentials go to markus.json (single source of truth, consistent with other API keys)
-        saveConfig({ integrations: { feishu: { appId, appSecret } } }, this.markusConfigPath);
+        // Credentials + MCP config go to markus.json (single source of truth)
+        const feishuCfgToSave: Record<string, unknown> = { appId, appSecret };
+        if (body['mcp'] && typeof body['mcp'] === 'object') {
+          const mcpBody = body['mcp'] as Record<string, unknown>;
+          feishuCfgToSave['mcp'] = {
+            enabled: mcpBody['enabled'] ?? false,
+            presets: Array.isArray(mcpBody['presets']) ? mcpBody['presets'] : undefined,
+          };
+        }
+        saveConfig({ integrations: { feishu: feishuCfgToSave } }, this.markusConfigPath);
         log.info('Feishu integration config saved', { orgId: auth.orgId });
         this.auditService?.record({
           orgId: auth.orgId,
