@@ -23,8 +23,8 @@ export const PROVIDERS: ProviderModel[] = [
     id: 'openai',
     label: 'OpenAI',
     envKey: 'OPENAI_API_KEY',
-    defaultModel: 'gpt-5.4',
-    models: ['gpt-5.4', 'gpt-4.1', 'gpt-4o', 'gpt-4o-mini', 'o3', 'o3-mini', 'o4-mini'],
+    defaultModel: 'gpt-5.6-terra',
+    models: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.4', 'gpt-4.1', 'gpt-4o', 'gpt-4o-mini', 'o3', 'o3-mini', 'o4-mini'],
   },
   {
     id: 'google',
@@ -84,6 +84,9 @@ export const PROVIDERS: ProviderModel[] = [
     baseUrl: 'https://openrouter.ai/api/v1',
     defaultModel: 'xiaomi/mimo-v2-pro:free',
     models: [
+      'openai/gpt-5.6-sol',
+      'openai/gpt-5.6-terra',
+      'openai/gpt-5.6-luna',
       'anthropic/claude-opus-4.6',
       'anthropic/claude-sonnet-4.6',
       'qwen/qwen3.6-plus',
@@ -203,7 +206,7 @@ export const PROVIDERS: ProviderModel[] = [
     envKey: 'ATLASCLOUD_API_KEY',
     baseUrl: 'https://api.atlascloud.ai/v1',
     defaultModel: 'claude-sonnet-4-6',
-    models: ['claude-sonnet-4-6', 'gpt-4.1', 'gemini-2.5-pro', 'deepseek-v3', 'flux-1-schnell'],
+    models: ['claude-sonnet-4-6', 'gpt-5.6-terra', 'gpt-4.1', 'gemini-2.5-pro', 'deepseek-v3', 'flux-1-schnell'],
   },
   {
     id: 'strongly',
@@ -211,7 +214,7 @@ export const PROVIDERS: ProviderModel[] = [
     envKey: 'STRONGLY_API_KEY',
     baseUrl: 'https://api.strongly.ai/v1',
     defaultModel: 'claude-sonnet-4-6',
-    models: ['claude-sonnet-4-6', 'gpt-4.1', 'gemini-2.5-pro'],
+    models: ['claude-sonnet-4-6', 'gpt-5.6-terra', 'gpt-4.1', 'gemini-2.5-pro'],
   },
 ];
 
