@@ -1,6 +1,15 @@
 /// <reference types="vite/client" />
 declare const __APP_VERSION__: string;
 
+declare module '@plantuml/core' {
+  export function renderToString(
+    lines: string[],
+    onSuccess: (svg: string) => void,
+    onError: (msg: string) => void,
+    options?: { dark?: boolean },
+  ): void;
+}
+
 interface MarkusDesktopAPI {
   platform: string;
   isMAS: boolean;

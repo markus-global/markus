@@ -163,7 +163,7 @@ export function buildAgentResponseCard(opts: {
     const toolLines = toolCalls.map(tc => {
       if (tc.status === 'running') return `⏳ 正在调用 \`${tc.name}\`...`;
       if (tc.status === 'error') return `❌ \`${tc.name}\` 失败`;
-      const dur = tc.durationMs != null ? ` (${tc.durationMs}ms)` : '';
+      const dur = tc.durationMs !== null && tc.durationMs !== undefined ? ` (${tc.durationMs}ms)` : '';
       return `✅ \`${tc.name}\` 完成${dur}`;
     }).join('\n');
     elements.push({ tag: 'div', text: { tag: 'lark_md', content: toolLines } });
@@ -184,7 +184,7 @@ export function buildAgentResponseCard(opts: {
     elements.push({ tag: 'div', text: { tag: 'lark_md', content: `**错误:** ${errorMessage}` } });
   }
 
-  if (phase === 'done' && elapsedMs != null) {
+  if (phase === 'done' && elapsedMs !== null && elapsedMs !== undefined) {
     const seconds = (elapsedMs / 1000).toFixed(1);
     elements.push({
       tag: 'note',

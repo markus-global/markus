@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 // Vite resolves the bare specifier and returns a URL to the asset
-// @ts-expect-error Vite ?url import
 import vizGlobalUrl from '@plantuml/core/viz-global.js?url';
 
 type RenderToString = (

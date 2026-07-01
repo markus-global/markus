@@ -84,8 +84,13 @@ export class FeishuAdapter implements CommAdapter {
     } else {
       const port = this.config.webhookPort ?? 9000;
       this.server = createServer((req, res) => this.handleWebhook(req, res));
-      this.server.listen(port, () => {
-        log.info(`Feishu webhook server listening on port ${port}`);
+      await new Promise<void>((resolve, reject) => {
+        this.server!.once('error', reject);
+        this.server!.listen(port, () => {
+          this.server!.removeListener('error', reject);
+          log.info(`Feishu webhook server listening on port ${port}`);
+          resolve();
+        });
       });
     }
 

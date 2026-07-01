@@ -1241,7 +1241,7 @@ describe('APIServer extended route coverage', () => {
   describe('Deep coverage batch', () => {
     it('handleFeishuUserMessage routes to secretary agent', async () => {
       const secretary = ctx.agentManager.getAgent('secretary');
-      vi.mocked(secretary.sendMessage).mockResolvedValueOnce('Secretary reply');
+      vi.mocked(secretary.sendMessageStream).mockResolvedValueOnce('Secretary reply');
       await ctx.server['handleFeishuUserMessage']({
         chatId: 'chat-feishu-1',
         senderId: 'ou_sender',
@@ -1249,7 +1249,7 @@ describe('APIServer extended route coverage', () => {
         messageType: 'text',
         content: JSON.stringify({ text: 'Need help' }),
       });
-      expect(secretary.sendMessage).toHaveBeenCalled();
+      expect(secretary.sendMessageStream).toHaveBeenCalled();
     });
 
     it('handleFeishuUserMessage handles non-text message type', async () => {

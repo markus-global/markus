@@ -247,7 +247,7 @@ export function buildAgentResponseCard(opts: {
     const toolLines = toolCalls.map(tc => {
       if (tc.status === 'running') return `⏳ \`${tc.name}\`...`;
       if (tc.status === 'error') return `❌ \`${tc.name}\``;
-      const dur = tc.durationMs != null ? ` (${(tc.durationMs / 1000).toFixed(1)}s)` : '';
+      const dur = tc.durationMs !== null && tc.durationMs !== undefined ? ` (${(tc.durationMs / 1000).toFixed(1)}s)` : '';
       return `✅ \`${tc.name}\`${dur}`;
     }).join('\n');
     elements.push({ tag: 'markdown', content: toolLines });
@@ -273,7 +273,7 @@ export function buildAgentResponseCard(opts: {
     elements.push({ tag: 'markdown', content: `**${locale === 'zh' ? '错误' : 'Error'}:** ${errorMessage}` });
   }
 
-  if (phase === 'done' && elapsedMs != null) {
+  if (phase === 'done' && elapsedMs !== null && elapsedMs !== undefined) {
     const seconds = (elapsedMs / 1000).toFixed(1);
     elements.push({
       tag: 'markdown',
