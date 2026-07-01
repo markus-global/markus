@@ -1,5 +1,35 @@
 # Release Log
 
+## v0.8.5
+
+飞书流式消息与审批路由全面升级；Coding Tools 集成（Claude Code / Codex / Cursor）；交付物页面 UX 大改版；Prompt 工程全面重构；代码块语法高亮与 Mermaid/PlantUML 图表渲染；GPT-5.6 模型目录；多项调度与流式稳定性修复。
+
+### New Features
+
+- **飞书流式卡片与审批路由** — 飞书适配器支持流式文本卡片、消息合并处理、审批路由分发、完整预设配置；MCP 启动优化与凭据自动注入
+- **Coding Tools 集成** — 新增 Claude Code / Codex / Cursor 外部 AI 工具连接，Settings UI 简化，权限模式与检测可靠性修复
+- **交付物页面 UX 大改版** — 过滤器、分组折叠、移动端适配全面优化
+- **代码块增强** — 语法高亮、Mermaid/PlantUML 图表渲染、代码块折叠/展开、编辑 textarea 自动伸缩
+- **Markdown 前端优化** — i18n 模式切换、排版改进、HTML 选区支持
+- **GPT-5.6 系列模型** — OpenAI Provider 目录新增 GPT-5.6 系列模型
+- **Prompt 工程全面重构** — 子任务契约强制执行、提示策略优化
+- **package_install 支持 team_id** — 安装包时可指定目标团队
+
+### Bug Fixes
+
+- **修复飞书 MCP 凭据传递** — 使用 reuseGlobal 传递真实凭据，存在飞书凭据时自动注入 feishu-lark server
+- **修复流式状态丢失** — 解决流式输出跨会话活动污染与状态丢失问题
+- **修复定时任务调度停滞** — 任务完成时重新计算 nextRunAt，修复 cron 调度停滞
+- **修复幽灵重试循环** — 指数退避、tasksSubmittedForReview 清理、blocked 状态守卫
+- **修复任务取消后调度未暂停** — 取消任务时正确暂停调度，修复 FSM 违规与 stagger 竞态
+- **修复 MCP 连接竞态** — MCP 连接竞态条件、记忆上限、逐项取消按钮、权限错误提示
+
+### Stats
+
+- 62 files changed, +8,500 / −2,100 lines
+
+---
+
 ## v0.8.4
 
 Electron 桌面应用全平台发布（macOS ARM/Intel、Windows、Linux）；分发策略重构（macOS/Windows 以桌面端为主、npm 为辅，Linux 保留服务器二进制）；模型路由 UI 优化；Agent 完成标记修复；CI 流水线精简。
