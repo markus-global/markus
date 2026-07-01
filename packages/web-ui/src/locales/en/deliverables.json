@@ -8,13 +8,16 @@
     "active": "Active",
     "verified": "Verified",
     "outdated": "Outdated",
-    "group": "Group:"
+    "group": "Group:",
+    "clearAll": "Clear all",
+    "filtersLabel": "Filters",
+    "refreshing": "Refreshing..."
   },
   "groupBy": {
     "date": "Date",
     "project": "Project",
-    "agent": "Agent",
-    "type": "Type"
+    "team": "Team",
+    "agent": "Agent"
   },
   "expandAll": "▶ Expand",
   "collapseAll": "▼ Collapse",
@@ -30,10 +33,13 @@
   "empty": {
     "title": "No deliverables yet",
     "subtitle": "Deliverables are automatically created when agents complete tasks",
-    "goToWork": "Go to Workbench"
+    "goToWork": "Go to Workbench",
+    "noResults": "No matching deliverables",
+    "noResultsHint": "Try adjusting your search or filters"
   },
   "detail": {
     "selectToView": "Select a deliverable to view details",
+    "keyboardHint": "Use \u2191\u2193 arrow keys to navigate, \u2318F to search",
     "details": "Details",
     "verify": "Verify",
     "flagOutdated": "Flag Outdated",
@@ -88,6 +94,7 @@
     "id": "ID: {{id}}"
   },
   "noProject": "No Project",
+  "noTeam": "No Team",
   "createModal": {
     "title": "Create Deliverable",
     "type": "Type",
@@ -123,5 +130,14 @@
   },
   "contextMenu": {
     "addToConversation": "Add to conversation"
+  },
+  "time": {
+    "justNow": "just now",
+    "minutesAgo": "{{count}}m ago",
+    "hoursAgo": "{{count}}h ago",
+    "yesterday": "yesterday",
+    "daysAgo": "{{count}}d ago",
+    "monthsAgo": "{{count}}mo ago",
+    "yearsAgo": "{{count}}y ago"
   }
 }
