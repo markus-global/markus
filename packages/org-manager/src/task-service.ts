@@ -2448,6 +2448,11 @@ export class TaskService {
 
   cancelTask(id: string, cascade: boolean, updatedBy?: string, updatedByType?: 'human' | 'agent' | 'system'): Task {
     const task = this.updateTaskStatus(id, 'cancelled', updatedBy, false, false, updatedByType);
+    if (task.taskType === 'scheduled' && task.scheduleConfig && !task.scheduleConfig.paused) {
+      task.scheduleConfig.paused = true;
+      this.updateScheduleConfig(id, task.scheduleConfig)
+        .catch(err => log.warn('Failed to pause schedule on cancel', { taskId: id, error: String(err) }));
+    }
     if (cascade) {
       this.cascadeCancelDependents(task);
     }
@@ -3856,6 +3861,7 @@ export class TaskService {
     if (this.taskRepo) {
       await this.taskRepo.update(taskIdStr, { scheduleConfig: config as unknown as Record<string, unknown> });
     }
+    this.ws?.broadcastTaskUpdate(taskIdStr, task.status, { title: task.title });
   }
 
   /**

@@ -146,6 +146,7 @@
     "archiveConfirmMessage": "确定归档此任务？它将被移至历史记录。",
     "archiveScheduledConfirmMessage": "确定归档此定时任务？定时计划将被永久停止。",
     "cancelConfirmMessage": "确定取消此任务？所有进行中的工作将被终止且无法撤销。",
+    "cancelScheduledConfirmMessage": "确定取消此定时任务？定时计划将被暂停，所有进行中的工作将被终止。",
     "continueTask": "继续",
     "editSchedule": "编辑",
     "scheduleEveryMode": "定时间隔",

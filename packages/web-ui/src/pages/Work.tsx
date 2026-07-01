@@ -2475,7 +2475,7 @@ function TaskDetailPanel({
               </>
             )}
             {/* ── Scheduled task: Run Now / Schedule controls ── */}
-            {isScheduled && (isCompleted || isFailed) && !isArchived && (
+            {isScheduled && (isCompleted || isFailed || isCancelled) && !isArchived && (
               <button onClick={() => void runScheduledNow()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
                 {actionInFlight ? <>{t('work:task.running')}</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>{t('work:task.runNow')}</>}
               </button>
@@ -2527,6 +2527,7 @@ function TaskDetailPanel({
           <div className="bg-surface-default border border-border-default rounded-xl p-6 max-w-md w-full shadow-2xl" onClick={e => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-fg-primary mb-2">{t('work:task.cancelTaskModalTitle')}</h3>
             <p className="text-sm text-fg-secondary mb-4">
+              {isScheduled && <><span className="block mb-1 text-amber-600">{t('work:task.cancelScheduledConfirmMessage')}</span></>}
               {t('work:task.cancelTaskDependent', { count: cancelConfirm.dependentCount })}
             </p>
             <div className="flex flex-col gap-2">
@@ -2549,7 +2550,7 @@ function TaskDetailPanel({
       ) : cancelConfirm && (
         <ConfirmModal
           title={t('work:task.cancelTaskModalTitle')}
-          message={t('work:task.cancelConfirmMessage')}
+          message={isScheduled ? t('work:task.cancelScheduledConfirmMessage') : t('work:task.cancelConfirmMessage')}
           confirmLabel={t('work:task.cancelTask')}
           onConfirm={() => { setCancelConfirm(null); void doUpdate(() => api.tasks.cancel(task.id)); }}
           onCancel={() => setCancelConfirm(null)}

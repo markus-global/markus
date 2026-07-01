@@ -71,6 +71,7 @@ Tasks and requirements share a **single status enum** (`ItemStatus`). Not every 
 | `failed` | `in_progress` | User clicks Retry (fresh start, new round) | `retryTaskFresh()` |
 | `failed` | `archived` | Manual archival | `archiveTask()` |
 | `completed` | `archived` | Manual archival | `archiveTask()` |
+| `cancelled` | `in_progress` | Run Now (scheduled tasks) | `resetTaskForRerun()` |
 | `cancelled` | `archived` | Manual archival | `archiveTask()` |
 | `rejected` | `archived` | Manual archival | `archiveTask()` |
 
@@ -98,7 +99,7 @@ The legal transition set is defined as a declarative matrix `TASK_TRANSITIONS` i
 6. **Rejected ≠ Cancelled**: `rejectTask()` sets `rejected` (proposal denied before work). `cancelTask()` sets `cancelled` (work stopped after starting). `rejected` is a terminal state — the proposal was not approved.
 7. **Preemption ≠ blocked**: When the attention controller **preempts** (pauses) a task for a higher-priority item, the task stays `in_progress` (not `blocked`). The mailbox item is deferred and automatically resurfaced when the agent is idle. The same execution round and session context are preserved. **Cancellation** is different: when the controller **cancels** a task (because the incoming message explicitly revokes the work), the mailbox item is permanently dropped and will NOT be resumed.
 8. **Irreversible actions require confirmation**: The UI requires explicit user confirmation (via modal dialogs) for Reject, Cancel (always, regardless of dependents), and Archive operations. This prevents accidental data loss.
-9. **Scheduled task button restrictions**: Completed scheduled tasks do not show "Reopen" (the schedule handles re-runs). Failed scheduled tasks show only "Run Now" (no "Retry"/"Continue" since the scheduler manages retries).
+9. **Scheduled task button restrictions**: Completed scheduled tasks do not show "Reopen" (the schedule handles re-runs). Failed scheduled tasks show only "Run Now" (no "Retry"/"Continue" since the scheduler manages retries). Cancelled scheduled tasks show "Run Now" and "Resume Schedule" to allow re-activation.
 10. **Human-created tasks**: Created as `pending` with no HITL approval request and no `task_created` notification (no self-notification). The UI shows "Start Execution" instead of "Approve" for human-created pending tasks. Agent-created tasks show "Approve" and trigger HITL approval flow.
 
 ---
@@ -148,9 +149,10 @@ After `completed`, the `ScheduledTaskRunner` checks `nextRunAt`. When it's time,
 1. **`ScheduledTaskRunner`** polls every 60 seconds.
 2. Checks `nextRunAt` against current time.
 3. Fires only when task is in a "fireable" state (`completed`, `failed`) and not paused.
-4. Tasks in `in_progress`, `review`, `blocked`, `pending` are **skipped** (a run is active).
+4. Tasks in `in_progress`, `review`, `blocked`, `pending`, `cancelled`, `archived`, `rejected` are **skipped**.
 5. `config.paused = true` skips the task.
 6. `maxRuns` limit stops scheduling when `currentRuns >= maxRuns`.
+7. **Cancelling** a scheduled task automatically pauses its schedule (`config.paused = true`). The user can later resume the schedule or use "Run Now" to manually trigger execution.
 
 ### Schedule Configuration Editing
 
@@ -268,9 +270,12 @@ Both paths apply identical notification logic (dedup, self-skip, stakeholder aut
 When a task is cancelled:
 1. Running execution is stopped (cancel token)
 2. Status → `cancelled`
-3. Dependent tasks are checked:
+3. If the task is a scheduled task, the schedule is automatically paused (`scheduleConfig.paused = true`)
+4. Dependent tasks are checked:
    - If the cancelled task was a dependent's **only** remaining blocker, the dependent unblocks
    - If the dependent has other incomplete blockers, it stays `blocked`
+
+A cancelled scheduled task can be re-activated via "Run Now" (`cancelled → in_progress`) or by resuming the schedule after un-cancelling.
 
 ### Cascade Cancellation
 
