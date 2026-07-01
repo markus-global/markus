@@ -94,7 +94,6 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [filterType, setFilterType] = useState('');
-  const [filterProject, setFilterProject] = useState('');
   const [filterArtifact, setFilterArtifact] = useState('');
   const [groupBy, setGroupBy] = useState<'project' | 'agent' | 'date' | 'team'>('date');
   const [selected, setSelected] = useState<DeliverableInfo | null>(() => {
@@ -201,10 +200,9 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
   const searchParams = useMemo(() => ({
     q: debouncedQuery || undefined,
-    projectId: filterProject || undefined,
     type: filterType || undefined,
     artifactType: filterArtifact || undefined,
-  }), [debouncedQuery, filterProject, filterType, filterArtifact]);
+  }), [debouncedQuery, filterType, filterArtifact]);
 
   const fetchLimit = groupBy === 'date' ? DATE_PAGE_SIZE : ALL_ITEMS_LIMIT;
 
@@ -470,12 +468,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     setGroupOverrides(new Set());
   }, []);
 
-  const hasActiveFilters = !!(filterType || filterArtifact || filterProject || debouncedQuery);
+  const hasActiveFilters = !!(filterType || filterArtifact || debouncedQuery);
 
   const clearAllFilters = useCallback(() => {
     setFilterType('');
     setFilterArtifact('');
-    setFilterProject('');
     setSearchQuery('');
     setDebouncedQuery('');
   }, []);
@@ -776,13 +773,6 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
               <FilterPill key={a} label={`${ARTIFACT_META[a].icon} ${t(`artifactTypes.${a}`)}`} value={a} current={filterArtifact} onClick={v => { setFilterArtifact(v); setFilterType(''); }} />
             ))}
           </div>
-          {/* Project filter */}
-          {projects.length > 0 && (
-            <div className="flex gap-1 overflow-x-auto scrollbar-hide filter-pills-fade">
-              <FilterPill label={t('filters.allProjects')} value="" current={filterProject} onClick={setFilterProject} />
-              {projects.map(p => <FilterPill key={p.id} label={p.name} value={p.id} current={filterProject} onClick={setFilterProject} />)}
-            </div>
-          )}
           {/* Group by */}
           <div className="flex gap-1.5 items-center">
             <span className="text-[10px] text-fg-tertiary">{t('filters.group')}</span>
@@ -826,14 +816,6 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-brand-500/10 text-brand-500 text-[10px]">
                   {ARTIFACT_META[filterArtifact]?.icon} {t(`artifactTypes.${filterArtifact}`)}
                   <button onClick={() => setFilterArtifact('')} className="hover:text-brand-400">
-                    <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                  </button>
-                </span>
-              )}
-              {filterProject && (
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-brand-500/10 text-brand-500 text-[10px]">
-                  {projectMap.get(filterProject)?.name ?? filterProject.slice(0, 8)}
-                  <button onClick={() => setFilterProject('')} className="hover:text-brand-400">
                     <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                   </button>
                 </span>
