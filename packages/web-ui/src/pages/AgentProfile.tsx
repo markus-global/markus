@@ -11,6 +11,7 @@ import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
+import { ConfirmModal } from '../components/ConfirmModal.tsx';
 
 const LazyMarkdownMessage = lazy(() => import('../components/MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage })));
 
@@ -1952,6 +1953,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
   const [highlightedId, setHighlightedId] = useState<string | null>(highlightId ?? null);
   const [queueExpanded, setQueueExpanded] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
   const PAGE = 50;
   const QUEUE_COLLAPSE_THRESHOLD = 3;
 
@@ -2072,11 +2074,21 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
               queuedAt: mind.currentFocus.startedAt,
             } as import('../api.ts').EnrichedMailboxItem, t);
             return (
-              <span className="text-sm text-fg-secondary">
-                {MAILBOX_TYPE_ICONS[mind.currentFocus.type] ?? '●'}{' '}
-                <span className="text-fg-primary font-medium">{focusDisplay.title}</span>
-                {focusDisplay.subtitle && <span className="text-fg-tertiary ml-1.5 text-xs">{focusDisplay.subtitle}</span>}
-                <span className="text-fg-tertiary ml-2 text-xs">{t('agent:profilePage.mind.since', { time: new Date(mind.currentFocus.startedAt).toLocaleTimeString() })}</span>
+              <span className="text-sm text-fg-secondary inline-flex items-center gap-2">
+                <span>
+                  {MAILBOX_TYPE_ICONS[mind.currentFocus.type] ?? '●'}{' '}
+                  <span className="text-fg-primary font-medium">{focusDisplay.title}</span>
+                  {focusDisplay.subtitle && <span className="text-fg-tertiary ml-1.5 text-xs">{focusDisplay.subtitle}</span>}
+                  <span className="text-fg-tertiary ml-2 text-xs">{t('agent:profilePage.mind.since', { time: new Date(mind.currentFocus.startedAt).toLocaleTimeString() })}</span>
+                </span>
+                {canManageAgents && (
+                  <button
+                    onClick={() => setCancelConfirmId(mind.currentFocus!.mailboxItemId)}
+                    className="px-2 py-0.5 text-[10px] font-medium rounded-md bg-red-500/15 text-red-500 hover:bg-red-500/25 transition-colors shrink-0"
+                  >
+                    ✕ {t('agent:profilePage.mind.cancelCurrentBtn')}
+                  </button>
+                )}
               </span>
             );
           })() : effectiveAttentionState === 'deciding' ? (
@@ -2089,12 +2101,6 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
               <button onClick={() => { api.agents.start(agentId).then(() => { onAgentStateChange?.(); load(); }); }}
                 className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-green-500/15 text-green-500 hover:bg-green-500/25 transition-colors">
                 ▶ {t('agent:profilePage.mind.continueBtn')}
-              </button>
-            )}
-            {canManageAgents && (agentStatus === 'working' || agentStatus === 'idle') && mind?.currentFocus && (
-              <button onClick={() => { api.agents.cancelProcessing(agentId).then(() => load()); }}
-                className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-red-500/15 text-red-500 hover:bg-red-500/25 transition-colors">
-                ✕ {t('agent:profilePage.mind.cancelCurrentBtn')}
               </button>
             )}
             {canManageAgents && (agentStatus === 'working' || agentStatus === 'idle') && (
@@ -2294,6 +2300,14 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
                     </div>
                   </div>
                   <span className="text-[10px] text-fg-tertiary bg-surface-3 px-1.5 py-0.5 rounded shrink-0">{item.sourceType}</span>
+                  {canManageAgents && item.status === 'processing' && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setCancelConfirmId(item.id); }}
+                      className="px-2 py-0.5 text-[10px] font-medium rounded-md bg-red-500/15 text-red-500 hover:bg-red-500/25 transition-colors shrink-0"
+                    >
+                      ✕ {t('agent:profilePage.mind.cancelCurrentBtn')}
+                    </button>
+                  )}
                 </button>
 
                 {isExpanded && (
@@ -2362,6 +2376,19 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
           </div>
         )}
       </section>
+
+      {cancelConfirmId && (
+        <ConfirmModal
+          title={t('agent:profilePage.mind.cancelConfirmTitle')}
+          message={t('agent:profilePage.mind.cancelConfirmMessage')}
+          confirmLabel={t('agent:profilePage.mind.cancelCurrentBtn')}
+          onConfirm={() => {
+            api.agents.cancelProcessing(agentId).then(() => load());
+            setCancelConfirmId(null);
+          }}
+          onCancel={() => setCancelConfirmId(null)}
+        />
+      )}
     </div>
   );
 }

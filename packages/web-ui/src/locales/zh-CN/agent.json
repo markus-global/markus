@@ -350,6 +350,8 @@
       "pauseBtn": "暂停",
       "continueBtn": "继续",
       "cancelCurrentBtn": "取消",
+      "cancelConfirmTitle": "取消执行",
+      "cancelConfirmMessage": "确定要取消此任务的执行吗？Agent 将立即停止处理。",
       "queue": "队列（{{count}}）",
       "expandQueue": "展开剩余 {{count}} 项…",
       "collapseQueue": "收起",

@@ -350,6 +350,8 @@
       "pauseBtn": "Pause",
       "continueBtn": "Continue",
       "cancelCurrentBtn": "Cancel",
+      "cancelConfirmTitle": "Cancel Processing",
+      "cancelConfirmMessage": "Are you sure you want to cancel this task? The agent will stop processing immediately.",
       "queue": "Queue ({{count}})",
       "expandQueue": "Show {{count}} more…",
       "collapseQueue": "Collapse",

@@ -165,10 +165,13 @@ export class MCPClientManager {
       proc.stdin.on('error', () => { /* suppress EPIPE when server exits before write */ });
     }
 
+    const MAX_STDERR_CHUNKS = 20;
     const stderrChunks: string[] = [];
     proc.stderr?.on('data', (data: Buffer) => {
       const text = data.toString();
-      stderrChunks.push(text);
+      if (stderrChunks.length < MAX_STDERR_CHUNKS) {
+        stderrChunks.push(text);
+      }
       if (stderrChunks.length <= 5) {
         log.warn(`MCP server ${displayName} stderr`, { text: text.trimEnd() });
       }
@@ -223,7 +226,11 @@ export class MCPClientManager {
   }
 
   async connectServer(name: string, config: MCPServerConfig): Promise<MCPToolDescriptor[]> {
-    return this.connectByKey(name, name, config);
+    let tools: MCPToolDescriptor[] = [];
+    await this.withStartupLock(name, async () => {
+      tools = await this.connectByKey(name, name, config);
+    });
+    return tools;
   }
 
   /**

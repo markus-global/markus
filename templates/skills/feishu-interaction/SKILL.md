@@ -81,3 +81,23 @@ manage tasks, create calendar events, operate Bitable databases, and send messag
 - File upload/download is NOT supported via MCP
 - Always handle API errors gracefully and report them to the user
 - Respect rate limits: 1000 requests/minute per API endpoint
+
+## Permission Error Handling
+
+When a tool call returns an error containing `code: 99991672` or "Access denied...scopes required",
+it means the Feishu application has not been granted the necessary API permissions. In this case:
+
+1. **Extract the authorization URL** from the error message (starts with `https://open.feishu.cn/app/`)
+2. **Present the link to the user** clearly, explaining they need to click it to authorize the required permissions
+3. **Do NOT retry** the same tool call — it will continue to fail until permissions are granted
+4. **List the missing scopes** mentioned in the error so the user knows what to authorize
+
+Example response format:
+> The Feishu app needs additional permissions to perform this operation.
+> Please open the following link to authorize, then try again:
+>
+> [https://open.feishu.cn/app/cli_xxx/auth?q=docs:doc,drive:drive,...](https://open.feishu.cn/app/cli_xxx/auth?q=docs:doc,drive:drive,...)
+>
+> Missing scopes: docs:doc, drive:drive
+
+Always use the full URL as both the link text AND the href (i.e. `[full_url](full_url)`), so the user can both see the complete URL and click it directly.
