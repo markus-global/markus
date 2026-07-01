@@ -326,11 +326,13 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
     taskService.startTimeoutChecker();
   }
 
-  // Inject Feishu MCP server if configured
+  // Inject Feishu MCP server whenever credentials are available
   const mcpServers = { ...config.mcpServers };
   const feishuIntegration = config.integrations?.feishu;
-  if (feishuIntegration?.appId && feishuIntegration?.appSecret && feishuIntegration?.mcp?.enabled) {
-    const presets = feishuIntegration.mcp.presets ?? ['preset.default'];
+  const feishuAppId = feishuIntegration?.appId ?? process.env['FEISHU_APP_ID'];
+  const feishuAppSecret = feishuIntegration?.appSecret ?? process.env['FEISHU_APP_SECRET'];
+  if (feishuAppId && feishuAppSecret) {
+    const presets = feishuIntegration?.mcp?.presets ?? ['preset.default'];
     let larkMcpBin: string;
     try {
       const esmRequire = createRequire(import.meta.url);
@@ -341,8 +343,8 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
     }
     const baseArgs = [
       'mcp',
-      '-a', feishuIntegration.appId,
-      '-s', feishuIntegration.appSecret,
+      '-a', feishuAppId,
+      '-s', feishuAppSecret,
       '-t', presets.join(','),
       '--token-mode', 'tenant_access_token',
     ];
