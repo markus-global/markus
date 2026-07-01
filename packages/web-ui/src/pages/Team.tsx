@@ -545,9 +545,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     return `dm:${a}:${b}`;
   };
 
-  const makeConvKey = (mode: ChatMode, agent: string, channel: string, dmUserId?: string) =>
+  /** Build a unique conversation key for a chat context.
+   *  When sessionId is provided (direct mode), it is appended to the key so that
+   *  different sessions of the same agent are treated as separate conversations.
+   *  This prevents concurrent stream data from one session from polluting another. */
+  const makeConvKey = (mode: ChatMode, agent: string, channel: string, dmUserId?: string, sessionId?: string | null) =>
     mode === 'channel' ? `ch:${channel}` :
     mode === 'dm'      ? `dm:${dmUserId ?? ''}` :
+    sessionId           ? `${agent || '_direct'}:${sessionId}` :
     (agent || '_direct');
 
   const MAX_MESSAGES_PER_CONV = 500;
@@ -1167,7 +1172,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // Otherwise load from DB.
   useEffect(() => {
     if (previewMode) return;
-    const newKey = makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId);
+    const newKey = makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId, activeSessionId);
     const prevKey = currentConvKeyRef.current;
     currentConvKeyRef.current = newKey;
 
@@ -1395,7 +1400,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
       // Session-aware routing: only display proactive messages in the correct
       // session context to prevent messages from appearing in unrelated sessions.
-      const key = makeConvKey('direct', agentId, '', '');
+      const key = makeConvKey('direct', agentId, '', '', sessionId || null);
       if (sessionId && currentConvKeyRef.current === key) {
         // We're viewing this agent — check if the message belongs to the active session
         const currentActive = activeSessionId;
@@ -1581,7 +1586,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
     const imagesToSend = pendingImages.length > 0 ? pendingImages.map(img => img.dataUrl) : undefined;
     const fileNamesToSend = pendingImages.length > 0 ? pendingImages.map(img => img.name) : undefined;
-    const sendKey = makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId);
+    const sendKey = makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId, activeSessionId);
     const replyCtx = chatReplyTo;
 
     if (!retryText) {
