@@ -26,7 +26,7 @@ function defaultLicenseJson() {
     plan: 'free',
     features: [],
     limits: {
-      maxAgents: -1,
+      maxAgents: 20,
       maxTokensPerMonth: -1,
       maxToolCallsPerDay: 5000,
       maxMessagesPerDay: -1,

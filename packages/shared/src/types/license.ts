@@ -1,6 +1,7 @@
 export type PlanTier = 'free' | 'enterprise';
 
 export interface PlanLimits {
+  maxAgents: number;
   maxTeams: number;
   maxToolCallsPerDay: number;
   maxUsers: number;
@@ -8,11 +9,13 @@ export interface PlanLimits {
 
 export const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
   free: {
+    maxAgents: 20,
     maxTeams: 5,
     maxToolCallsPerDay: 5000,
     maxUsers: 1,
   },
   enterprise: {
+    maxAgents: -1,
     maxTeams: -1,
     maxToolCallsPerDay: -1,
     maxUsers: -1,

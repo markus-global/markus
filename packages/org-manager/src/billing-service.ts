@@ -49,7 +49,7 @@ export interface OrgPlan {
 
 const DEFAULT_PLANS: Record<PlanTier, OrgPlan['limits']> = {
   free: {
-    maxAgents: -1,
+    maxAgents: 20,
     maxTokensPerMonth: -1,
     maxToolCallsPerDay: 5000,
     maxMessagesPerDay: -1,

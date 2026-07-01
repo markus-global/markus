@@ -3395,8 +3395,8 @@ function OrgLicenseSection() {
   // ── License state ──
   const [licenseInfo, setLicenseInfo] = useState<{
     plan: string; licenseKey?: string; validUntil?: string; isTrial?: boolean; isOffline?: boolean;
-    features: string[]; limits: { maxTeams: number; maxToolCallsPerDay: number; maxUsers: number };
-    usage?: { teams: number; toolCallsToday: number; users: number };
+    features: string[]; limits: { maxAgents: number; maxTeams: number; maxToolCallsPerDay: number; maxUsers: number };
+    usage?: { agents: number; teams: number; toolCallsToday: number; users: number };
     instanceId: string; hubUserId?: string; username?: string;
     orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number;
   } | null>(null);
@@ -3973,7 +3973,8 @@ function LicensePlanCard({ isEnterprise, licenseInfo, daysRemaining, effectiveVa
               </div>
             )}
           </div>
-          <div className="mt-4 grid grid-cols-3 gap-px rounded-lg overflow-hidden border border-border-default/50">
+          <div className="mt-4 grid grid-cols-4 gap-px rounded-lg overflow-hidden border border-border-default/50">
+            <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-sm font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.agents ?? 0} <span className="text-fg-tertiary font-normal">/ ∞</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitAgents')}</div></div>
             <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-sm font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.teams ?? 0} <span className="text-fg-tertiary font-normal">/ ∞</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitTeams')}</div></div>
             <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-sm font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.toolCallsToday ?? 0} <span className="text-fg-tertiary font-normal">/ ∞</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitToolCalls')}{t('license.perDay')}</div></div>
             <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-sm font-semibold text-fg-primary tabular-nums">{displayUsers} <span className="text-fg-tertiary font-normal">/ {effectiveMaxSeats ?? '∞'}</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitUsers')}</div></div>
@@ -4001,7 +4002,8 @@ function LicensePlanCard({ isEnterprise, licenseInfo, daysRemaining, effectiveVa
     <div className="rounded-lg border border-border-default">
       <div className="px-5 py-4">
         <div className="flex items-center gap-2.5"><span className="text-base font-semibold text-fg-primary">{t('license.planFree')}</span><span className="text-[11px] text-fg-tertiary">{t('license.freeFeaturesDesc')}</span></div>
-        <div className="mt-3 grid grid-cols-3 gap-px rounded-lg overflow-hidden border border-border-default/50">
+        <div className="mt-3 grid grid-cols-4 gap-px rounded-lg overflow-hidden border border-border-default/50">
+          <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-lg font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.agents ?? 0} <span className="text-fg-tertiary font-normal text-xs">/ {licenseInfo?.limits?.maxAgents ?? 20}</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitAgents')}</div></div>
           <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-lg font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.teams ?? 0} <span className="text-fg-tertiary font-normal text-xs">/ {licenseInfo?.limits?.maxTeams ?? 5}</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitTeams')}</div></div>
           <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-lg font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.toolCallsToday ?? 0} <span className="text-fg-tertiary font-normal text-xs">/ {(licenseInfo?.limits?.maxToolCallsPerDay ?? 5000).toLocaleString()}</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitToolCalls')}{t('license.perDay')}</div></div>
           <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-lg font-semibold text-fg-primary tabular-nums">{displayUsers} <span className="text-fg-tertiary font-normal text-xs">/ {licenseInfo?.limits?.maxUsers ?? 1}</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitUsers')}</div></div>
