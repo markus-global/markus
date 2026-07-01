@@ -8,23 +8,29 @@
     "active": "活跃",
     "verified": "已验证",
     "outdated": "已过时",
-    "group": "分组："
+    "group": "分组：",
+    "clearAll": "清除全部",
+    "filtersLabel": "筛选",
+    "refreshing": "刷新中..."
   },
   "groupBy": {
     "date": "日期",
     "project": "项目",
-    "agent": "智能体",
-    "type": "类型"
+    "team": "团队",
+    "agent": "智能体"
   },
   "expandAll": "▶ 展开",
   "collapseAll": "▼ 折叠",
   "empty": {
     "title": "暂无交付物",
     "subtitle": "交付物由智能体在完成任务后自动创建，无需手动添加",
-    "goToWork": "前往工作台创建任务"
+    "goToWork": "前往工作台创建任务",
+    "noResults": "没有匹配的交付物",
+    "noResultsHint": "试试调整搜索词或筛选条件"
   },
   "detail": {
     "selectToView": "请选择交付物以查看详情",
+    "keyboardHint": "使用 \u2191\u2193 方向键导航，\u2318F 搜索",
     "details": "详情",
     "verify": "验证",
     "flagOutdated": "标记为已过时",
@@ -43,7 +49,17 @@
     "fileMissing": "引用的文件在磁盘上已不存在",
     "confirmRemoveTitle": "移除交付物",
     "confirmRemoveMessage": "\"{{name}}\" 将被移除，此操作不可撤销。",
-    "openUrl": "在新标签页中打开"
+    "openUrl": "在新标签页中打开",
+    "edit": "编辑",
+    "preview": "预览",
+    "save": "保存",
+    "saving": "保存中...",
+    "saved": "已保存",
+    "saveFailed": "保存失败",
+    "unsavedTitle": "未保存的更改",
+    "unsavedMessage": "你有未保存的更改。离开前是否需要保存？",
+    "discard": "放弃",
+    "saveAndLeave": "保存"
   },
   "diffStats": {
     "title": "差异统计",
@@ -68,6 +84,7 @@
     "id": "ID：{{id}}"
   },
   "noProject": "无项目",
+  "noTeam": "无团队",
   "createModal": {
     "title": "创建交付物",
     "type": "类型",
@@ -103,5 +120,14 @@
   },
   "contextMenu": {
     "addToConversation": "添加到对话"
+  },
+  "time": {
+    "justNow": "刚刚",
+    "minutesAgo": "{{count}}分钟前",
+    "hoursAgo": "{{count}}小时前",
+    "yesterday": "昨天",
+    "daysAgo": "{{count}}天前",
+    "monthsAgo": "{{count}}个月前",
+    "yearsAgo": "{{count}}年前"
   }
 }

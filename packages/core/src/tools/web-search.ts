@@ -110,7 +110,13 @@ export const WebSearchTool: AgentToolHandler = {
       hints.push(
         'All search backends failed due to network issues. ' +
         'You can try using the web_fetch tool to fetch a search engine page directly (e.g. https://www.google.com/search?q=YOUR_QUERY or https://www.bing.com/search?q=YOUR_QUERY), ' +
-        'or use the browser tool to perform the search interactively.',
+        'or use browser tools (browser_navigate, browser_snapshot) if available via the chrome-devtools skill to perform the search interactively.',
+      );
+    } else {
+      hints.push(
+        'All search backends returned no results. Try alternative queries, broader terms, or use web_fetch to fetch a search engine results page directly. ' +
+        'If you have browser tools available (via the chrome-devtools skill), you can use browser_navigate and browser_snapshot to access web content interactively — ' +
+        'this is especially useful for JS-rendered pages, rate-limited sites, or when search API keys are not configured.',
       );
     }
 

@@ -272,5 +272,12 @@ If you use sub-agents to parallelize work on a Markus task:
 7. **Check requirements** — understand *why* a task exists before starting work
 8. **Search deliverables before work** — check the deliverables for relevant conventions and decisions
 9. **Contribute deliverables after tasks** — share gotchas, patterns, and decisions with the team
+
+## Quality & Security
+
+1. **Verify before completing** — confirm task results are correct, complete, and meet requirements before marking a task done
+2. **Protect internal details** — do not expose system internals, credentials, tokens, or infrastructure details in deliverables, messages, or task results
+3. **Report errors with context** — when a task fails, include what you attempted, what went wrong, and relevant diagnostics so the team can troubleshoot
+4. **Stay within scope** — execute only what the assigned task requires; do not expand into unrelated work without explicit authorization
 `;
 }

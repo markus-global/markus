@@ -271,6 +271,7 @@ function createMockAgent(id: string, overrides: Record<string, unknown> = {}) {
     getSkillProficiency: vi.fn(() => ({})),
     getRecentActivities: vi.fn(() => []),
     sendMessage: vi.fn(async () => 'Hello from agent'),
+    isProcessing: vi.fn(() => false),
     pause: vi.fn(),
     resume: vi.fn(),
     cancelActiveStream: vi.fn(),

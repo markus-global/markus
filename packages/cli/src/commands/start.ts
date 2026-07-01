@@ -3,6 +3,7 @@ import type { BackendInstance } from '../backend.js';
 import { resolve, join, dirname, delimiter } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { createRequire } from 'node:module';
 import { allTemplateDirs, resolveTemplatesDir, resolveWebUiDir } from '../paths.js';
 import {
   loadConfig,
@@ -325,6 +326,42 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
     taskService.startTimeoutChecker();
   }
 
+  // Inject Feishu MCP server whenever credentials are available
+  const mcpServers = { ...config.mcpServers };
+  const feishuIntegration = config.integrations?.feishu;
+  const feishuAppId = feishuIntegration?.appId ?? process.env['FEISHU_APP_ID'];
+  const feishuAppSecret = feishuIntegration?.appSecret ?? process.env['FEISHU_APP_SECRET'];
+  if (feishuAppId && feishuAppSecret) {
+    const presets = feishuIntegration?.mcp?.presets ?? ['preset.default'];
+    let larkMcpBin: string;
+    try {
+      const esmRequire = createRequire(import.meta.url);
+      const pkgPath = esmRequire.resolve('@larksuiteoapi/lark-mcp/package.json');
+      larkMcpBin = join(dirname(pkgPath), 'dist', 'cli.js');
+    } catch {
+      larkMcpBin = '';
+    }
+    const baseArgs = [
+      'mcp',
+      '-a', feishuAppId,
+      '-s', feishuAppSecret,
+      '-t', presets.join(','),
+      '--token-mode', 'tenant_access_token',
+    ];
+    if (larkMcpBin && existsSync(larkMcpBin)) {
+      mcpServers['feishu-lark'] = {
+        command: 'node',
+        args: [larkMcpBin, ...baseArgs],
+      };
+    } else {
+      mcpServers['feishu-lark'] = {
+        command: 'npx',
+        args: ['-y', '@larksuiteoapi/lark-mcp', ...baseArgs],
+      };
+    }
+    log.info('Feishu MCP server configured', { presets, localBin: !!larkMcpBin });
+  }
+
   const agentManager = new AgentManager({
     llmRouter,
     roleLoader,
@@ -332,7 +369,7 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
     sharedDataDir,
     skillRegistry,
     taskService,
-    mcpServers: config.mcpServers,
+    mcpServers,
   });
 
   if (config.agent?.maxToolIterations) {

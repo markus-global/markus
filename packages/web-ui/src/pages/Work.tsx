@@ -2475,7 +2475,7 @@ function TaskDetailPanel({
               </>
             )}
             {/* ── Scheduled task: Run Now / Schedule controls ── */}
-            {isScheduled && (isCompleted || isFailed) && !isArchived && (
+            {isScheduled && (isCompleted || isFailed || isCancelled) && !isArchived && (
               <button onClick={() => void runScheduledNow()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
                 {actionInFlight ? <>{t('work:task.running')}</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>{t('work:task.runNow')}</>}
               </button>
@@ -2527,6 +2527,7 @@ function TaskDetailPanel({
           <div className="bg-surface-default border border-border-default rounded-xl p-6 max-w-md w-full shadow-2xl" onClick={e => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-fg-primary mb-2">{t('work:task.cancelTaskModalTitle')}</h3>
             <p className="text-sm text-fg-secondary mb-4">
+              {isScheduled && <><span className="block mb-1 text-amber-600">{t('work:task.cancelScheduledConfirmMessage')}</span></>}
               {t('work:task.cancelTaskDependent', { count: cancelConfirm.dependentCount })}
             </p>
             <div className="flex flex-col gap-2">
@@ -2549,7 +2550,7 @@ function TaskDetailPanel({
       ) : cancelConfirm && (
         <ConfirmModal
           title={t('work:task.cancelTaskModalTitle')}
-          message={t('work:task.cancelConfirmMessage')}
+          message={isScheduled ? t('work:task.cancelScheduledConfirmMessage') : t('work:task.cancelConfirmMessage')}
           confirmLabel={t('work:task.cancelTask')}
           onConfirm={() => { setCancelConfirm(null); void doUpdate(() => api.tasks.cancel(task.id)); }}
           onCancel={() => setCancelConfirm(null)}
@@ -4444,6 +4445,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       reqDebounce = setTimeout(() => { reqDebounce = null; refreshRequirements(); }, 800);
     };
     const unsub = wsClient.on('task:update', (event) => {
+      invalidateApiCache('/taskboard');
       debouncedRefreshBoard();
       const p = event?.payload as Record<string, unknown> | undefined;
       if (p?.taskId) {
@@ -4456,6 +4458,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           if (p.result !== undefined) patch.result = p.result as TaskInfo['result'];
           return { ...prev, ...patch };
         });
+        if (selectedTaskRef.current?.id === p.taskId) {
+          invalidateApiCache('/tasks/' + (p.taskId as string));
+          api.tasks.get(p.taskId as string).then(r => {
+            if (r.task) setSelectedTask(prev => prev?.id === r.task.id ? r.task : prev);
+          }).catch(() => {});
+        }
       }
     });
     const unsubTaskCreate = wsClient.on('task:create', () => {
@@ -4467,9 +4475,36 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       'requirement:resubmitted',
     ];
     const reqUnsubs = reqEvents.map(evt =>
-      wsClient.on(evt, () => { debouncedRefreshReqs(); })
+      wsClient.on(evt, (event) => {
+        invalidateApiCache('/requirements');
+        debouncedRefreshReqs();
+        const p = event?.payload as Record<string, unknown> | undefined;
+        const reqId = (p?.id ?? p?.requirementId) as string | undefined;
+        if (reqId && selectedReqRef.current?.id === reqId) {
+          invalidateApiCache('/requirements/' + reqId);
+          api.requirements.get(reqId).then(r => {
+            if (r.requirement) setSelectedReq(prev => prev?.id === r.requirement.id ? r.requirement : prev);
+          }).catch(() => {});
+        }
+      })
     );
-    const onDataChanged = () => { invalidateApiCache('/taskboard'); refreshBoard(); refreshRequirements(); };
+    const onDataChanged = () => {
+      invalidateApiCache('/taskboard');
+      invalidateApiCache('/tasks');
+      invalidateApiCache('/requirements');
+      refreshBoard();
+      refreshRequirements();
+      if (selectedTaskRef.current) {
+        api.tasks.get(selectedTaskRef.current.id).then(r => {
+          if (r.task) setSelectedTask(prev => prev?.id === r.task.id ? r.task : prev);
+        }).catch(() => {});
+      }
+      if (selectedReqRef.current) {
+        api.requirements.get(selectedReqRef.current.id).then(r => {
+          if (r.requirement) setSelectedReq(prev => prev?.id === r.requirement.id ? r.requirement : prev);
+        }).catch(() => {});
+      }
+    };
     window.addEventListener('markus:data-changed', onDataChanged);
     return () => { clearInterval(i); unsub(); unsubTaskCreate(); reqUnsubs.forEach(u => u()); window.removeEventListener('markus:data-changed', onDataChanged); if (boardDebounce) clearTimeout(boardDebounce); if (reqDebounce) clearTimeout(reqDebounce); };
   }, [previewMode, isActive, refreshBoard, refreshAgents, refreshRequirements]);
@@ -4479,6 +4514,27 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   boardRef.current = board;
   const allRequirementsRef = useRef(allRequirements);
   allRequirementsRef.current = allRequirements;
+
+  // Auto-sync selectedTask when board data refreshes (from WS events, polling, or data-changed)
+  useEffect(() => {
+    const sel = selectedTaskRef.current;
+    if (!sel) return;
+    const allTasks = Object.values(board).flat();
+    const updated = allTasks.find(t => t.id === sel.id);
+    if (updated && updated.updatedAt !== sel.updatedAt) {
+      setSelectedTask(updated);
+    }
+  }, [board]);
+
+  // Auto-sync selectedReq when requirements data refreshes
+  useEffect(() => {
+    const sel = selectedReqRef.current;
+    if (!sel) return;
+    const updated = allRequirements.find(r => r.id === sel.id);
+    if (updated && updated.updatedAt !== sel.updatedAt) {
+      setSelectedReq(updated);
+    }
+  }, [allRequirements]);
 
   // Ensure a navigated-to item's project is visible in the current filters
   const ensureProjectVisible = useCallback((projectId: string | undefined) => {
@@ -4711,30 +4767,25 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   };
 
   const handleTaskRefresh = () => {
+    invalidateApiCache('/taskboard');
     refreshBoard();
     if (selectedTask) {
       markNotifRead({ taskId: selectedTask.id });
-      setTimeout(() => {
-        const filters: { projectId?: string } = {};
-        if (viewMode === 'project' && selectedProjectId) filters.projectId = selectedProjectId;
-        api.tasks.board(filters).then(d => {
-          const all = Object.values(d.board).flat();
-          const updated = all.find(t => t.id === selectedTask.id);
-          if (updated) setSelectedTask(updated); else setSelectedTask(null);
-        }).catch(() => {});
-      }, 150);
+      invalidateApiCache('/tasks/' + selectedTask.id);
+      api.tasks.get(selectedTask.id).then(r => {
+        if (r.task) setSelectedTask(prev => prev?.id === r.task.id ? r.task : prev);
+      }).catch(() => {});
     }
   };
 
   const handleReqRefresh = () => {
+    invalidateApiCache('/requirements');
     refreshRequirements();
     if (selectedReq) {
-      setTimeout(() => {
-        api.requirements.list({}).then(({ requirements: r }) => {
-          const updated = r.find(rq => rq.id === selectedReq.id);
-          if (updated) setSelectedReq(updated); else setSelectedReq(null);
-        }).catch(() => {});
-      }, 150);
+      invalidateApiCache('/requirements/' + selectedReq.id);
+      api.requirements.get(selectedReq.id).then(r => {
+        if (r.requirement) setSelectedReq(prev => prev?.id === r.requirement.id ? r.requirement : prev);
+      }).catch(() => {});
     }
   };
 

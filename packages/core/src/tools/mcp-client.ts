@@ -1,8 +1,57 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { createLogger, APP_VERSION } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 
 const log = createLogger('mcp-client');
+
+/**
+ * Optimize npx-based MCP configs by resolving the package locally.
+ * If the package is already installed, replaces `npx -y <pkg> ...args`
+ * with `node <local-cli-path> ...args` to avoid 30-60s cold-start downloads.
+ */
+function optimizeNpxConfig(config: MCPServerConfig): MCPServerConfig {
+  if (config.command !== 'npx') return config;
+  const args = config.args ?? [];
+
+  // Parse: npx [-y] <package>[@version] [...rest]
+  let idx = 0;
+  while (idx < args.length && args[idx].startsWith('-')) idx++; // skip flags like -y
+  if (idx >= args.length) return config;
+
+  const pkgSpec = args[idx]; // e.g. "@larksuiteoapi/lark-mcp" or "chrome-devtools-mcp@latest"
+  const rest = args.slice(idx + 1); // remaining args after package name
+
+  // Strip version specifier to get package name for require.resolve
+  const pkgName = pkgSpec.replace(/@(latest|next|\d+\..*)$/, '');
+  if (!pkgName) return config;
+
+  try {
+    const esmRequire = createRequire(import.meta.url);
+    const pkgJsonPath = esmRequire.resolve(`${pkgName}/package.json`);
+    const pkgJson = JSON.parse(esmRequire('fs').readFileSync(pkgJsonPath, 'utf8'));
+    const pkgDir = dirname(pkgJsonPath);
+
+    // Resolve bin entry
+    let binPath: string | undefined;
+    if (typeof pkgJson.bin === 'string') {
+      binPath = join(pkgDir, pkgJson.bin);
+    } else if (typeof pkgJson.bin === 'object') {
+      const entries = Object.values(pkgJson.bin) as string[];
+      binPath = entries[0] ? join(pkgDir, entries[0]) : undefined;
+    }
+
+    if (binPath && existsSync(binPath)) {
+      log.info(`Optimized npx → node for MCP package ${pkgName}`, { binPath });
+      return { ...config, command: 'node', args: [binPath, ...rest] };
+    }
+  } catch {
+    // Package not locally installed — fall back to npx
+  }
+  return config;
+}
 
 interface MCPServerConfig {
   command: string;
@@ -99,11 +148,13 @@ export class MCPClientManager {
     }
 
     this.serverConfigs.set(key, { displayName, config });
-    log.info(`Connecting to MCP server: ${displayName}`, { command: config.command, key });
 
-    const proc = spawn(config.command, config.args ?? [], {
+    const resolvedConfig = optimizeNpxConfig(config);
+    log.info(`Connecting to MCP server: ${displayName}`, { command: resolvedConfig.command, key });
+
+    const proc = spawn(resolvedConfig.command, resolvedConfig.args ?? [], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, ...config.env },
+      env: { ...process.env, ...resolvedConfig.env },
       shell: process.platform === 'win32',
     });
 
@@ -114,10 +165,13 @@ export class MCPClientManager {
       proc.stdin.on('error', () => { /* suppress EPIPE when server exits before write */ });
     }
 
+    const MAX_STDERR_CHUNKS = 20;
     const stderrChunks: string[] = [];
     proc.stderr?.on('data', (data: Buffer) => {
       const text = data.toString();
-      stderrChunks.push(text);
+      if (stderrChunks.length < MAX_STDERR_CHUNKS) {
+        stderrChunks.push(text);
+      }
       if (stderrChunks.length <= 5) {
         log.warn(`MCP server ${displayName} stderr`, { text: text.trimEnd() });
       }
@@ -172,7 +226,11 @@ export class MCPClientManager {
   }
 
   async connectServer(name: string, config: MCPServerConfig): Promise<MCPToolDescriptor[]> {
-    return this.connectByKey(name, name, config);
+    let tools: MCPToolDescriptor[] = [];
+    await this.withStartupLock(name, async () => {
+      tools = await this.connectByKey(name, name, config);
+    });
+    return tools;
   }
 
   /**

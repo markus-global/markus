@@ -439,6 +439,7 @@ describe('working memory helpers', () => {
       getSession: vi.fn(),
       listSessions: vi.fn(() => []),
       getLatestSession: vi.fn(),
+      getLatestMainSession: vi.fn(),
       writeDailyLog: vi.fn(),
       getDailyLog: vi.fn(() => ''),
       getRecentDailyLogs: vi.fn(() => ''),

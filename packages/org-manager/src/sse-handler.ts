@@ -1,3 +1,15 @@
+/**
+ * SSEHandler — the single canonical handler for Server-Sent Events streaming
+ * from agent message processing to the web UI.
+ *
+ * Responsibilities:
+ * - Manages the SSE connection lifecycle (open → stream → close)
+ * - Buffers text/tool events via SSEBuffer for reliable delivery
+ * - Persists user/assistant messages and execution stream entries
+ * - Handles WS fallback broadcast on disconnect
+ * - Coordinates with AgentMailbox via deferred session restore
+ * - Safety timeout to force-stop agents if SSE disconnects mid-processing
+ */
 import type { ServerResponse } from 'node:http';
 import type { Agent } from '@markus/core';
 import { createLogger, COMPLETION_MARKER, type LLMStreamEvent } from '@markus/shared';
@@ -30,6 +42,8 @@ export interface SSEMessageHandlerOptions {
   executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown }): unknown };
   messageId?: string;
   isResume?: boolean;
+  /** Deferred session restore data — applied when the mailbox item is processed, not at HTTP request time */
+  sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null;
 }
 
 /**
@@ -80,6 +94,17 @@ export class SSEHandler {
           // Persist partial content immediately so it survives a page refresh.
           // The final persistence after agent completion will overwrite this.
           void this.persistPartialOnDisconnect();
+
+          // Safety timeout: if the agent hasn't completed within 120s after
+          // disconnect, force-stop it to avoid indefinite resource usage.
+          setTimeout(() => {
+            if (!this.isComplete) {
+              log.warn('Force-stopping agent after SSE disconnect timeout', {
+                agentId: this.options.agentId,
+              });
+              this.cancelToken.userStopped = true;
+            }
+          }, 120_000);
         }
       });
 
@@ -109,7 +134,10 @@ export class SSEHandler {
         this.cancelToken,
         this.options.images,
         this.options.fileNames,
-        this.options.isResume ? { isResume: true } : undefined,
+        {
+          ...(this.options.isResume ? { isResume: true } : {}),
+          ...(this.options.sessionRestore !== undefined ? { sessionRestore: this.options.sessionRestore } : {}),
+        },
       );
 
       if (reply === '[merged]') {
@@ -176,7 +204,7 @@ export class SSEHandler {
               this.options.wsBroadcaster.broadcastProactiveMessage(
                 this.options.agentId, agentName, this.sessionId,
                 `ws_fallback_${Date.now()}`, persistReply,
-                { isMainSession: true },
+                { isMainSession: true, isWsFallback: true, sessionId: this.sessionId },
                 this.options.senderId,
               );
             } else {

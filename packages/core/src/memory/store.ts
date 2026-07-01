@@ -141,6 +141,16 @@ export class MemoryStore implements IMemoryStore {
     )[0];
   }
 
+  /** Get latest main session, excluding temporary A2A and channel sessions. */
+  getLatestMainSession(agentId: string): ConversationSession | undefined {
+    const agentSessions = this.listSessions(agentId)
+      .filter(s => !s.id.startsWith('a2a_') && !s.id.startsWith('channel_'));
+    if (agentSessions.length === 0) return undefined;
+    return agentSessions.sort((a, b) =>
+      new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime()
+    )[0];
+  }
+
   createSession(agentId: string): ConversationSession {
     const session: ConversationSession = {
       id: `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -416,16 +426,23 @@ export class MemoryStore implements IMemoryStore {
     this.compactSession(session.id, 30);
   }
 
+  private static readonly MAX_MEMORY_ENTRIES = 500;
+
   private loadFromDisk(): void {
     const memFile = join(this.dataDir, 'memories.json');
     if (existsSync(memFile)) {
       try {
         const raw = JSON.parse(readFileSync(memFile, 'utf-8')) as unknown[];
         const before = raw.length;
-        this.entries = raw.filter(isValidEntry).map(sanitizeEntry);
-        if (this.entries.length < before) {
-          log.warn(`Dropped ${before - this.entries.length} malformed memory entries on load`);
+        let entries = raw.filter(isValidEntry).map(sanitizeEntry);
+        if (entries.length < before) {
+          log.warn(`Dropped ${before - entries.length} malformed memory entries on load`);
         }
+        if (entries.length > MemoryStore.MAX_MEMORY_ENTRIES) {
+          log.warn(`Memory entries exceed cap (${entries.length}/${MemoryStore.MAX_MEMORY_ENTRIES}), keeping most recent`);
+          entries = entries.slice(-MemoryStore.MAX_MEMORY_ENTRIES);
+        }
+        this.entries = entries;
         log.info(`Loaded ${this.entries.length} memory entries`);
       } catch {
         log.warn('Failed to load memories from disk, starting fresh');

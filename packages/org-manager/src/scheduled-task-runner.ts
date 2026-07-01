@@ -81,7 +81,7 @@ export class ScheduledTaskRunner {
       const nextRun = config.nextRunAt ? new Date(config.nextRunAt).getTime() : 0;
       if (nextRun > now) continue;
 
-      if (['in_progress', 'review', 'blocked', 'pending', 'archived', 'rejected'].includes(task.status)) {
+      if (['in_progress', 'review', 'blocked', 'pending', 'archived', 'rejected', 'cancelled'].includes(task.status)) {
         continue;
       }
 
@@ -99,7 +99,11 @@ export class ScheduledTaskRunner {
         });
         const timer = setTimeout(() => {
           if (!this.running) return;
-          this.fireScheduledTask(task).catch(e =>
+          const current = this.taskService.getTask(task.id);
+          if (!current || !current.scheduleConfig) return;
+          if (current.scheduleConfig.paused) return;
+          if (['in_progress', 'review', 'blocked', 'pending', 'archived', 'rejected', 'cancelled'].includes(current.status)) return;
+          this.fireScheduledTask(current).catch(e =>
             log.error('Failed to fire staggered scheduled task', { taskId: task.id, error: String(e) }),
           );
         }, delay);
@@ -120,10 +124,10 @@ export class ScheduledTaskRunner {
 
     await this.taskService.advanceScheduleConfig(task.id);
 
-    const resettableStatuses = ['completed', 'cancelled', 'failed'];
+    const resettableStatuses = ['completed', 'failed'];
     if (resettableStatuses.includes(task.status)) {
       await this.taskService.resetTaskForRerun(task.id);
-    } else if (!['in_progress', 'review', 'blocked', 'pending'].includes(task.status)) {
+    } else if (!['in_progress', 'review', 'blocked', 'pending', 'cancelled'].includes(task.status)) {
       log.warn('Scheduled task has unexpected status, resetting for rerun', { taskId: task.id, status: task.status });
       await this.taskService.resetTaskForRerun(task.id);
     }

@@ -193,7 +193,7 @@ export async function runSubagentLoop(
   }));
 
   const systemContent = opts?.systemPrompt
-    ?? 'You are a focused subagent spawned to handle a specific subtask. Complete the task thoroughly and return a clear, concise result. Do not ask follow-up questions — work with what you have.';
+    ?? 'You are a focused subagent spawned to handle a specific subtask. Your goal is to complete the assigned work thoroughly and return a clear, concise result.\n\nGuidelines:\n- Work with the information provided — do not ask follow-up questions\n- Stay within the scope of the assigned subtask — do not expand beyond what was asked\n- If you encounter an error, try an alternative approach before reporting failure\n- Verify your results before returning — check for correctness, completeness, and edge cases\n- Return structured output: what you did, what you found, and any caveats or limitations\n- Never include secrets, credentials, or system internals in your output';
 
   let messages: LLMMessage[] = [
     { role: 'system', content: systemContent },

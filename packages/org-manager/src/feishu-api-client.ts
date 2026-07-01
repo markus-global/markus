@@ -176,6 +176,59 @@ export class FeishuApiClient {
     return results;
   }
 
+  /** Add an emoji reaction to a message. Returns the reaction_id for later removal. */
+  async addReaction(messageId: string, emojiType: string): Promise<string | undefined> {
+    try {
+      const resp = await this.client.im.v1.messageReaction.create({
+        path: { message_id: messageId },
+        data: { reaction_type: { emoji_type: emojiType } },
+      });
+      const reactionId = (resp?.data as { reaction_id?: string })?.reaction_id;
+      log.info('Feishu reaction added', { messageId, emojiType, reactionId });
+      return reactionId;
+    } catch (err) {
+      log.error('Feishu addReaction failed', { messageId, emojiType, error: String(err) });
+      return undefined;
+    }
+  }
+
+  /** Remove a specific reaction from a message by reaction_id. */
+  async deleteReaction(messageId: string, reactionId: string): Promise<void> {
+    try {
+      await this.client.im.v1.messageReaction.delete({
+        path: { message_id: messageId, reaction_id: reactionId },
+      });
+      log.info('Feishu reaction deleted', { messageId, reactionId });
+    } catch (err) {
+      log.error('Feishu deleteReaction failed', { messageId, reactionId, error: String(err) });
+    }
+  }
+
+  /** Update an interactive card message in place. */
+  async updateCard(messageId: string, card: Record<string, unknown>): Promise<void> {
+    try {
+      await this.client.im.v1.message.patch({
+        path: { message_id: messageId },
+        data: {
+          content: JSON.stringify(card),
+        },
+      });
+      log.info('Feishu card updated', { messageId });
+    } catch (err: unknown) {
+      const respData = (err as { response?: { data?: unknown } })?.response?.data;
+      const errCode = (respData as Record<string, unknown>)?.code;
+      const errMsg = (respData as Record<string, unknown>)?.msg;
+      log.error('Feishu updateCard failed', {
+        messageId,
+        error: String(err),
+        code: errCode,
+        msg: errMsg,
+        cardContentLength: JSON.stringify(card).length,
+      });
+      throw err;
+    }
+  }
+
   /** Verify credentials by fetching a tenant access token. */
   async verifyCredentials(): Promise<boolean> {
     try {

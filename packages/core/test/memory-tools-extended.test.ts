@@ -37,6 +37,7 @@ function createMockMemory(entries: MemoryEntry[] = []): IMemoryStore {
     getRecentMessages: vi.fn(),
     listSessions: vi.fn(),
     getLatestSession: vi.fn(),
+    getLatestMainSession: vi.fn(),
     getOrCreateSession: vi.fn(),
     compactSession: vi.fn(),
     writeDailyLog: vi.fn(),

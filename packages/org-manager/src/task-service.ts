@@ -2448,6 +2448,11 @@ export class TaskService {
 
   cancelTask(id: string, cascade: boolean, updatedBy?: string, updatedByType?: 'human' | 'agent' | 'system'): Task {
     const task = this.updateTaskStatus(id, 'cancelled', updatedBy, false, false, updatedByType);
+    if (task.taskType === 'scheduled' && task.scheduleConfig && !task.scheduleConfig.paused) {
+      task.scheduleConfig.paused = true;
+      this.updateScheduleConfig(id, task.scheduleConfig)
+        .catch(err => log.warn('Failed to pause schedule on cancel', { taskId: id, error: String(err) }));
+    }
     if (cascade) {
       this.cascadeCancelDependents(task);
     }
@@ -3073,6 +3078,16 @@ export class TaskService {
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (task.status !== 'in_progress') {
       throw new Error(`Task ${taskId} is in ${task.status} status, cannot submit for review`);
+    }
+
+    const pendingSubtasks = task.subtasks.filter(s => s.status === 'pending');
+    if (pendingSubtasks.length > 0) {
+      const list = pendingSubtasks.map(s => `"${s.title}" (${s.id})`).join(', ');
+      throw new Error(
+        `Cannot submit for review: ${pendingSubtasks.length} subtask(s) still pending. ` +
+        `Complete them with subtask_complete, or cancel inapplicable ones with subtask_cancel. ` +
+        `Pending: ${list}`
+      );
     }
 
     // Run automated review checks if ReviewService is available
@@ -3846,6 +3861,7 @@ export class TaskService {
     if (this.taskRepo) {
       await this.taskRepo.update(taskIdStr, { scheduleConfig: config as unknown as Record<string, unknown> });
     }
+    this.ws?.broadcastTaskUpdate(taskIdStr, task.status, { title: task.title });
   }
 
   /**

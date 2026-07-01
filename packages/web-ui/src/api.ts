@@ -1099,10 +1099,6 @@ export const api = {
     },
     getDecisions: (id: string, limit = 50) =>
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
-    message: (id: string, text: string, images?: string[], sessionId?: string | null, fileNames?: string[]) =>
-      request<{ reply: string; sessionId?: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, fileNames, sessionId: sessionId ?? undefined }) }),
-    injectMessage: (id: string, text: string, images?: string[], sessionId?: string | null) =>
-      request<{ injected: boolean }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, sessionId: sessionId ?? undefined, inject: true }) }),
     messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[]): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean }> => {
       return new Promise(async (resolve, reject) => {
         let fullContent = '';
@@ -1310,6 +1306,8 @@ export const api = {
       request<{ ok: boolean; path: string }>('/files/reveal', { method: 'POST', body: JSON.stringify({ path: filePath }) }),
     check: (paths: string[]) =>
       request<{ results: Record<string, { exists: boolean; isFile: boolean; type: string }> }>('/files/check', { method: 'POST', body: JSON.stringify({ paths }) }),
+    write: (filePath: string, content: string) =>
+      request<{ ok: boolean; path: string }>('/files/write', { method: 'POST', body: JSON.stringify({ path: filePath, content }) }),
   },
   requirements: {
     list: (filters?: { orgId?: string; status?: string; source?: string; projectId?: string }) => {

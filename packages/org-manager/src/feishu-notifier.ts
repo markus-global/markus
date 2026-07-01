@@ -212,6 +212,90 @@ function buildSimpleCard(title: string, body: string, priority: string, eventTyp
   return buildNotificationCard(title, body, priority, eventType, locale, undefined);
 }
 
+// ── Agent Response Card ─────────────────────────────────────────────
+
+export type AgentCardPhase = 'thinking' | 'tool_calling' | 'done' | 'error';
+
+export interface ToolCallEntry {
+  name: string;
+  status: 'running' | 'done' | 'error';
+  durationMs?: number;
+}
+
+export function buildAgentResponseCard(opts: {
+  agentName: string;
+  phase: AgentCardPhase;
+  toolCalls?: ToolCallEntry[];
+  content?: string;
+  errorMessage?: string;
+  elapsedMs?: number;
+  locale?: FeishuLocale;
+}): Record<string, unknown> {
+  const { agentName, phase, toolCalls, content, errorMessage, elapsedMs, locale = 'zh' } = opts;
+
+  const headerMap: Record<AgentCardPhase, { title: string; template: string }> = {
+    thinking:     { title: locale === 'zh' ? `💭 ${agentName} 正在思考...` : `💭 ${agentName} thinking...`, template: 'blue' },
+    tool_calling: { title: locale === 'zh' ? `🔧 ${agentName} 正在执行...` : `🔧 ${agentName} executing...`, template: 'blue' },
+    done:         { title: `✅ ${agentName}`, template: 'green' },
+    error:        { title: locale === 'zh' ? `❌ ${agentName} 处理失败` : `❌ ${agentName} failed`, template: 'red' },
+  };
+
+  const header = headerMap[phase];
+  const elements: Record<string, unknown>[] = [];
+
+  if (toolCalls?.length) {
+    const toolLines = toolCalls.map(tc => {
+      if (tc.status === 'running') return `⏳ \`${tc.name}\`...`;
+      if (tc.status === 'error') return `❌ \`${tc.name}\``;
+      const dur = tc.durationMs !== null && tc.durationMs !== undefined ? ` (${(tc.durationMs / 1000).toFixed(1)}s)` : '';
+      return `✅ \`${tc.name}\`${dur}`;
+    }).join('\n');
+    elements.push({ tag: 'markdown', content: toolLines });
+  }
+
+  if (phase === 'thinking' && !toolCalls?.length && !content) {
+    elements.push({ tag: 'markdown', content: locale === 'zh' ? '正在分析您的消息...' : 'Analyzing your message...' });
+  }
+
+  if (content) {
+    if (toolCalls?.length) {
+      elements.push({ tag: 'hr' });
+    }
+    // Truncate to stay within 30KB API limit (card JSON overhead ~2KB)
+    const maxLen = 25000;
+    const truncated = content.length > maxLen
+      ? content.slice(0, maxLen) + '\n\n...(内容过长已截断)'
+      : content;
+    elements.push({ tag: 'markdown', content: truncated });
+  }
+
+  if (errorMessage) {
+    elements.push({ tag: 'markdown', content: `**${locale === 'zh' ? '错误' : 'Error'}:** ${errorMessage}` });
+  }
+
+  if (phase === 'done' && elapsedMs !== null && elapsedMs !== undefined) {
+    const seconds = (elapsedMs / 1000).toFixed(1);
+    elements.push({
+      tag: 'markdown',
+      content: locale === 'zh' ? `\n---\n*耗时 ${seconds}s*` : `\n---\n*${seconds}s elapsed*`,
+      text_size: 'notation',
+    });
+  }
+
+  if (elements.length === 0) {
+    elements.push({ tag: 'markdown', content: '...' });
+  }
+
+  // Use JSON 2.0 schema for full CommonMark markdown support
+  // (headings, tables, code blocks, blockquotes, etc.)
+  return {
+    schema: '2.0',
+    config: { update_multi: true },
+    header: { title: { tag: 'plain_text', content: header.title }, template: header.template },
+    body: { elements },
+  };
+}
+
 // ── FeishuNotifier ──────────────────────────────────────────────────
 
 export class FeishuNotifier {
@@ -869,5 +953,29 @@ export class FeishuNotifier {
   async sendTextToChat(chatId: string, text: string): Promise<void> {
     if (!this.apiClient) return;
     await this.apiClient.sendText(chatId, text);
+  }
+
+  /** Add an emoji reaction to a message to indicate processing status. */
+  async addReaction(messageId: string, emojiType: string): Promise<string | undefined> {
+    if (!this.apiClient) return undefined;
+    return this.apiClient.addReaction(messageId, emojiType);
+  }
+
+  /** Remove a reaction from a message. */
+  async deleteReaction(messageId: string, reactionId: string): Promise<void> {
+    if (!this.apiClient) return;
+    await this.apiClient.deleteReaction(messageId, reactionId);
+  }
+
+  /** Send an interactive card to a chat. Returns message_id for later updates. */
+  async sendCardToChat(chatId: string, card: Record<string, unknown>): Promise<string | undefined> {
+    if (!this.apiClient) return undefined;
+    return this.apiClient.sendCard(chatId, card);
+  }
+
+  /** Update an existing card message in place. */
+  async updateCard(messageId: string, card: Record<string, unknown>): Promise<void> {
+    if (!this.apiClient) return;
+    await this.apiClient.updateCard(messageId, card);
   }
 }

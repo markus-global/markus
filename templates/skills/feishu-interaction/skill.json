@@ -1,0 +1,26 @@
+{
+  "type": "skill",
+  "name": "feishu-interaction",
+  "displayName": "Feishu Interaction",
+  "version": "1.0.1",
+  "description": "Interact with Feishu/Lark platform - search documents, manage tasks, create calendar events, operate Bitable, and send messages",
+  "author": "markus",
+  "category": "integration",
+  "tags": ["feishu", "lark", "integration", "document", "calendar", "task", "mcp"],
+  "i18n": {
+    "zh-CN": {
+      "displayName": "飞书交互",
+      "description": "与飞书平台交互 - 搜索文档、管理任务、创建日历事件、操作多维表格、发送消息"
+    }
+  },
+  "skill": {
+    "skillFile": "SKILL.md",
+    "requiredPermissions": ["network"],
+    "isolation": "shared",
+    "mcpServers": {
+      "feishu-lark": {
+        "reuseGlobal": true
+      }
+    }
+  }
+}

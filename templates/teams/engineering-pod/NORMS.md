@@ -76,3 +76,36 @@ Edit anything in the "Shared" column only after notifying the team via `agent_se
 - Frontend components must handle loading, error, and empty states.
 - Infra changes must be idempotent and rollback-safe.
 - Security-critical code (auth, permissions, data access) requires explicit review notes.
+
+## State Machine: Phase Transitions
+
+```
+DESIGN ──[design brief approved]──> CONTRACT
+CONTRACT ──[all contracts published]──> IMPLEMENT
+IMPLEMENT ──[all subtasks done, tests pass]──> INTEGRATE
+INTEGRATE ──[contracts verified]──> REVIEW
+REVIEW ──[approved + merged]──> DEPLOY
+DEPLOY ──[smoke tests pass]──> DONE
+
+On failure at any phase:
+  IMPLEMENT ──[build fails]──> IMPLEMENT (fix and retry)
+  REVIEW ──[rejected]──> IMPLEMENT (address feedback)
+  DEPLOY ──[smoke fails]──> ROLLBACK ──> IMPLEMENT
+```
+
+## Integration Quality Gates
+
+Before moving from IMPLEMENT to INTEGRATE:
+- Each layer passes its own test suite independently
+- API responses match published contract schemas
+- No breaking changes to shared interfaces without team-wide notification
+- Cross-layer error handling verified (what happens when Backend returns 500 to Frontend?)
+
+## Error Recovery Coordination
+
+| Failure | Owner | Action |
+|---------|-------|--------|
+| Build failure in one layer | That layer's engineer | Fix and re-run; notify team if shared dependency |
+| Contract violation | Architect | Mediate between layers; update contract if needed |
+| Integration test failure | Architect + affected engineers | Identify which layer deviated; coordinate fix |
+| Deployment failure | Infra Engineer | Rollback; create post-mortem task |

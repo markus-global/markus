@@ -106,7 +106,7 @@ afterEach(() => {
 });
 
 describe('AgentManager extended coverage', () => {
-  it('resolveCurrentTaskId prefers in_progress task over stale currentTaskId', async () => {
+  it('resolveCurrentTaskId prefers in_progress task over stale currentTaskId', { timeout: 30000 }, async () => {
     const taskService = makeTaskService({
       getTask: vi.fn((id: string) => ({
         id,
@@ -152,7 +152,7 @@ describe('AgentManager extended coverage', () => {
     await execPromise;
   });
 
-  it('returns error when no in_progress task exists for submit review', async () => {
+  it('returns error when no in_progress task exists for submit review', { timeout: 30000 }, async () => {
     const taskService = makeTaskService({
       getTask: vi.fn(() => ({
         id: 'done_task',

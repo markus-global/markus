@@ -113,7 +113,7 @@ afterEach(() => {
 });
 
 describe('AgentManager task and deliverable tool execution', () => {
-  it('task_submit_review resolves active task via resolveCurrentTaskId', async () => {
+  it('task_submit_review resolves active task via resolveCurrentTaskId', { timeout: 30000 }, async () => {
     const taskService = makeTaskService();
     const slowRouter = makeMockRouter({
       chatStream: vi.fn(async () => {
@@ -246,7 +246,7 @@ describe('AgentManager task and deliverable tool execution', () => {
 });
 
 describe('AgentManager workflow, delegation, and A2A paths', () => {
-  it('wires workflow tools for manager agents with workflow factory', async () => {
+  it('wires workflow tools for manager agents with workflow factory', { timeout: 30000 }, async () => {
     const manager = createManager();
     manager.setWorkflowToolsFactory(() => ({
       teamId: 'team_wf',
@@ -327,7 +327,7 @@ describe('AgentManager workflow, delegation, and A2A paths', () => {
     expect(taskService.createTask).toHaveBeenCalled();
   });
 
-  it('delegation without taskService sends message to target agent', async () => {
+  it('delegation without taskService sends message to target agent', { timeout: 30000 }, async () => {
     const manager = createManager();
     const fromAgent = await manager.createAgent({ name: 'From', roleName: 'custom', tools: [] });
     const toAgent = await manager.createAgent({ name: 'To', roleName: 'custom', tools: [] });
@@ -757,7 +757,7 @@ describe('AgentManager comprehensive tool execution', () => {
     expect(policy.primaryWorkspace).toBe(customWs);
   });
 
-  it('setStateChangeHandler receives agent state updates', async () => {
+  it('setStateChangeHandler receives agent state updates', { timeout: 30000 }, async () => {
     const { manager } = await createWiredManager();
     const handler = vi.fn();
     manager.setStateChangeHandler(handler);

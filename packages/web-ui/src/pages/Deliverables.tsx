@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient, type DeliverableInfo, type ProjectInfo, type AgentInfo, type AuthUser } from '../api.ts';
+import { api, wsClient, type DeliverableInfo, type ProjectInfo, type AgentInfo, type TeamInfo, type AuthUser } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
-import { ContentRenderer, resolveFormat } from '../components/ContentRenderer.tsx';
+import { ContentRenderer, resolveFormat, type HtmlSelectionData } from '../components/ContentRenderer.tsx';
 import { copyPlainText } from '../components/markdown-copy.ts';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
 import { ChatPanel } from '../components/ChatPanel.tsx';
@@ -30,6 +30,23 @@ const ALL_TYPES = ['file', 'directory'] as const;
 
 function isUrl(s: string): boolean {
   return /^https?:\/\//i.test(s);
+}
+
+function relativeTime(dateStr: string, t: (key: string, opts?: Record<string, unknown>) => string): string {
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  const diff = now - then;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return t('time.justNow');
+  if (mins < 60) return t('time.minutesAgo', { count: mins });
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return t('time.hoursAgo', { count: hrs });
+  const days = Math.floor(hrs / 24);
+  if (days === 1) return t('time.yesterday');
+  if (days < 30) return t('time.daysAgo', { count: days });
+  const months = Math.floor(days / 30);
+  if (months < 12) return t('time.monthsAgo', { count: months });
+  return t('time.yearsAgo', { count: Math.floor(months / 12) });
 }
 
 const ARTIFACT_META: Record<string, { icon: string; color: string }> = {
@@ -65,21 +82,20 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     return () => window.removeEventListener('popstate', handler);
   }, [isMobile]);
 
-  const PAGE_SIZE = 100;
+  const DATE_PAGE_SIZE = 100;
+  const ALL_ITEMS_LIMIT = 5000;
   const [items, setItems] = useState<DeliverableInfo[]>(previewData?.items ?? []);
   const [totalCount, setTotalCount] = useState(previewData?.items?.length ?? 0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [projects, setProjects] = useState<ProjectInfo[]>(previewData?.projects ?? []);
   const [agents, setAgents] = useState<AgentInfo[]>(previewData?.agents ?? []);
+  const [teams, setTeams] = useState<TeamInfo[]>([]);
   const [loading, setLoading] = useState(previewData ? false : true);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [filterType, setFilterType] = useState('');
-  const [filterProject, setFilterProject] = useState('');
-  const [filterAgent, setFilterAgent] = useState('');
-  const [filterStatus, setFilterStatus] = useState('');
   const [filterArtifact, setFilterArtifact] = useState('');
-  const [groupBy, setGroupBy] = useState<'project' | 'agent' | 'date' | 'type'>('date');
+  const [groupBy, setGroupBy] = useState<'project' | 'agent' | 'date' | 'team'>('date');
   const [selected, setSelected] = useState<DeliverableInfo | null>(() => {
     if (previewData?.initialSelectedId && previewData.items) {
       return previewData.items.find(d => d.id === previewData.initialSelectedId) ?? previewData.items[0] ?? null;
@@ -88,9 +104,16 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   });
   const [flash, setFlash] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [actionLoading, setActionLoading] = useState('');
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const groupTabs = useMemo(() => [{ id: 'date' as const }, { id: 'project' as const }, { id: 'agent' as const }, { id: 'type' as const }], []);
-  const handleGroupSwipe = useCallback((g: 'project' | 'agent' | 'date' | 'type') => { setGroupBy(g); setCollapsedGroups(new Set()); }, []);
+  const [defaultCollapsed, setDefaultCollapsed] = useState(true);
+  const [groupOverrides, setGroupOverrides] = useState<Set<string>>(() => {
+    const now = new Date();
+    const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    return new Set([todayKey]);
+  });
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const [pullRefreshing, setPullRefreshing] = useState(false);
+  const groupTabs = useMemo(() => [{ id: 'date' as const }, { id: 'project' as const }, { id: 'team' as const }, { id: 'agent' as const }], []);
+  const handleGroupSwipe = useCallback((g: 'project' | 'agent' | 'date' | 'team') => { setGroupBy(g); }, []);
   const groupSwipe = useSwipeTabs(groupTabs, groupBy, handleGroupSwipe);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -113,9 +136,27 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [contextChips, setContextChips] = useState<ContextChip[]>([]);
 
   // Selection toolbar (Phase 4)
-  const [selectionToolbar, setSelectionToolbar] = useState<{ x: number; y: number; text: string } | null>(null);
+  const [selectionToolbar, setSelectionToolbar] = useState<{ x: number; y: number; text: string; htmlMeta?: { xpath: string; cssSelector: string } } | null>(null);
+
+  // In-place editing (Phase 5)
+  const [editMode, setEditMode] = useState(false);
+  const [editContent, setEditContent] = useState('');
+  const [editDirty, setEditDirty] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [unsavedDialog, setUnsavedDialog] = useState<{ action: () => void } | null>(null);
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const autoResizeTextarea = useCallback((el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+  }, []);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    autoResizeTextarea(editTextareaRef.current);
+  }, [editContent, editMode, autoResizeTextarea]);
 
   const flashMsg = (type: 'success' | 'error', text: string) => {
     setFlash({ type, text });
@@ -134,6 +175,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
   const agentMap = useMemo(() => new Map(agents.map(a => [a.id, a])), [agents]);
   const projectMap = useMemo(() => new Map(projects.map(p => [p.id, p])), [projects]);
+  const teamMap = useMemo(() => new Map(teams.map(tm => [tm.id, tm])), [teams]);
 
   const resolveProjectName = useCallback((projectId: string | undefined): string | null => {
     if (!projectId || projectId === 'default') return null;
@@ -146,6 +188,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     if (previewMode) return;
     api.projects.list().then(r => setProjects(r.projects)).catch(() => {});
     api.agents.list().then(r => setAgents(r.agents ?? [])).catch(() => {});
+    api.teams.list().then(r => setTeams(r.teams ?? [])).catch(() => {});
     api.system.storage().then(info => setSharedDir(info.dataDir + '/shared')).catch(() => {});
     api.deliverables.checkHealth().then(r => setMissingFileIds(new Set(r.missingFiles))).catch(() => {});
   }, [previewMode]);
@@ -157,33 +200,38 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
   const searchParams = useMemo(() => ({
     q: debouncedQuery || undefined,
-    projectId: filterProject || undefined,
-    agentId: filterAgent || undefined,
     type: filterType || undefined,
-    status: filterStatus || undefined,
     artifactType: filterArtifact || undefined,
-  }), [debouncedQuery, filterProject, filterAgent, filterType, filterStatus, filterArtifact]);
+  }), [debouncedQuery, filterType, filterArtifact]);
+
+  const fetchLimit = groupBy === 'date' ? DATE_PAGE_SIZE : ALL_ITEMS_LIMIT;
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    listRef.current?.scrollTo({ top: 0, behavior: 'instant' });
     try {
-      const { results, total } = await api.deliverables.search({ ...searchParams, offset: 0, limit: PAGE_SIZE });
+      const { results, total } = await api.deliverables.search({ ...searchParams, offset: 0, limit: fetchLimit });
       setItems(results);
       setTotalCount(total);
-    } catch { setItems([]); setTotalCount(0); }
+      setSelected(prev => {
+        if (!prev) return null;
+        if (results.some(r => r.id === prev.id)) return prev;
+        return null;
+      });
+    } catch { setItems([]); setTotalCount(0); setSelected(null); }
     setLoading(false);
-  }, [searchParams]);
+  }, [searchParams, fetchLimit]);
 
   const loadMore = useCallback(async () => {
     if (loadingMore || items.length >= totalCount) return;
     setLoadingMore(true);
     try {
-      const { results, total } = await api.deliverables.search({ ...searchParams, offset: items.length, limit: PAGE_SIZE });
+      const { results, total } = await api.deliverables.search({ ...searchParams, offset: items.length, limit: fetchLimit });
       setItems(prev => [...prev, ...results]);
       setTotalCount(total);
     } catch { /* keep existing items */ }
     setLoadingMore(false);
-  }, [searchParams, items.length, totalCount, loadingMore]);
+  }, [searchParams, fetchLimit, items.length, totalCount, loadingMore]);
 
   useEffect(() => { if (previewMode) return; refresh(); }, [refresh, previewMode]);
 
@@ -288,7 +336,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     return () => el.removeEventListener('scroll', handleScroll);
   }, [loadMore]);
 
-  useEffect(() => { checkNeedMore(); }, [checkNeedMore, collapsedGroups]);
+  useEffect(() => { checkNeedMore(); }, [checkNeedMore, defaultCollapsed, groupOverrides]);
 
   const grouped = useMemo(() => {
     const groups = new Map<string, { label: string; items: DeliverableInfo[] }>();
@@ -299,12 +347,14 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         const pName = resolveProjectName(item.projectId);
         key = pName ? (item.projectId ?? '_none') : '_none';
         label = pName ?? t('noProject');
+      } else if (groupBy === 'team') {
+        const agent = item.agentId ? agentMap.get(item.agentId) : undefined;
+        const tId = agent?.teamId ?? '_none';
+        key = tId;
+        label = tId !== '_none' ? (teamMap.get(tId)?.name ?? tId) : t('noTeam');
       } else if (groupBy === 'agent') {
         key = item.agentId ?? '_none';
         label = item.agentId ? (agentMap.get(item.agentId)?.name ?? item.agentId) : t('common:unknown');
-      } else if (groupBy === 'type') {
-        key = item.type;
-        label = item.type.charAt(0).toUpperCase() + item.type.slice(1);
       } else {
         const d = new Date(item.updatedAt);
         key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -317,7 +367,18 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     if (groupBy === 'date') sorted.sort((a, b) => b[0].localeCompare(a[0]));
     else sorted.sort((a, b) => a[1].label.localeCompare(b[1].label));
     return sorted;
-  }, [items, groupBy, projectMap, agentMap, t]);
+  }, [items, groupBy, projectMap, agentMap, teamMap, t]);
+
+  useEffect(() => {
+    if (groupBy === 'date' && defaultCollapsed) {
+      const now = new Date();
+      const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      setGroupOverrides(new Set([todayKey]));
+    } else {
+      setGroupOverrides(new Set());
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupBy]);
 
   const handleVerify = async (d: DeliverableInfo) => {
     setActionLoading('verify');
@@ -387,8 +448,14 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id, previewMode]);
 
+  const isGroupCollapsed = useCallback((key: string) => {
+    return defaultCollapsed !== groupOverrides.has(key);
+  }, [defaultCollapsed, groupOverrides]);
+
+  const allGroupsCollapsed = grouped.length > 0 && grouped.every(([key]) => isGroupCollapsed(key));
+
   const toggleGroup = useCallback((key: string) => {
-    setCollapsedGroups(prev => {
+    setGroupOverrides(prev => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
@@ -397,47 +464,208 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   }, []);
 
   const toggleAllGroups = useCallback(() => {
-    if (collapsedGroups.size === grouped.length) {
-      setCollapsedGroups(new Set());
-    } else {
-      setCollapsedGroups(new Set(grouped.map(([key]) => key)));
+    setDefaultCollapsed(prev => !prev);
+    setGroupOverrides(new Set());
+  }, []);
+
+  const hasActiveFilters = !!(filterType || filterArtifact || debouncedQuery);
+
+  const clearAllFilters = useCallback(() => {
+    setFilterType('');
+    setFilterArtifact('');
+    setSearchQuery('');
+    setDebouncedQuery('');
+  }, []);
+
+  const flatItems = useMemo(() => grouped.flatMap(([, g]) => g.items), [grouped]);
+
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        if (e.key === 'Escape') {
+          (e.target as HTMLElement).blur();
+          e.preventDefault();
+        }
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const list = flatItems;
+        if (list.length === 0) return;
+        const curIdx = selected ? list.findIndex(i => i.id === selected.id) : -1;
+        const nextIdx = e.key === 'ArrowDown'
+          ? Math.min(curIdx + 1, list.length - 1)
+          : Math.max(curIdx - 1, 0);
+        handleSelectItem(list[nextIdx]);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flatItems, selected]);
+
+  const pullStartRef = useRef<{ y: number; scrollTop: number } | null>(null);
+  const handlePullStart = useCallback((e: React.TouchEvent) => {
+    if (!isMobile) return;
+    const el = listRef.current;
+    if (!el || el.scrollTop > 0) return;
+    pullStartRef.current = { y: e.touches[0].clientY, scrollTop: el.scrollTop };
+  }, [isMobile]);
+  const handlePullEnd = useCallback((e: React.TouchEvent) => {
+    if (!isMobile || !pullStartRef.current || pullRefreshing) return;
+    const dy = e.changedTouches[0].clientY - pullStartRef.current.y;
+    pullStartRef.current = null;
+    if (dy > 80 && listRef.current && listRef.current.scrollTop <= 0) {
+      setPullRefreshing(true);
+      refresh().finally(() => setPullRefreshing(false));
     }
-  }, [collapsedGroups.size, grouped]);
+  }, [isMobile, pullRefreshing, refresh]);
 
   const handleSelectItem = (item: DeliverableInfo) => {
-    setSelected(item);
-    setContextChips([]);
-    if (isMobile) {
-      setChatPanelOpen(false);
-      setMobileShowDetail(true);
-      history.pushState({ mobileDetail: PAGE.DELIVERABLES }, '', window.location.hash);
+    const doSwitch = () => {
+      setSelected(item);
+      setContextChips([]);
+      setEditMode(false);
+      setEditDirty(false);
+      if (isMobile) {
+        setChatPanelOpen(false);
+        setMobileShowDetail(true);
+        history.pushState({ mobileDetail: PAGE.DELIVERABLES }, '', window.location.hash);
+      }
+    };
+    if (editDirty) {
+      setUnsavedDialog({ action: doSwitch });
+    } else {
+      doSwitch();
     }
   };
 
-  // Auto-collapse sidebar when chat panel opens on narrow screens
+  const handleStartEdit = () => {
+    if (!editDirty) {
+      const content = previewContent ?? selected?.summary ?? '';
+      setEditContent(content);
+    }
+    setEditMode(true);
+  };
+
+  const handleSwitchToPreview = () => {
+    if (editDirty) {
+      setUnsavedDialog({ action: () => { setEditMode(false); setEditDirty(false); } });
+    } else {
+      setEditMode(false);
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    if (!selected?.reference || editSaving) return;
+    setEditSaving(true);
+    try {
+      await api.files.write(selected.reference, editContent);
+      setPreviewContent(editContent);
+      setEditDirty(false);
+      setEditMode(false);
+      flashMsg('success', t('detail.saved'));
+    } catch (e) {
+      flashMsg('error', t('detail.saveFailed') + ': ' + String(e));
+    }
+    setEditSaving(false);
+  };
+
+  const handleDiscardEdit = () => {
+    setEditMode(false);
+    setEditDirty(false);
+    setUnsavedDialog(null);
+  };
+
+  // Unsaved changes guard for navigation
   useEffect(() => {
-    if (chatPanelOpen && !isMobile && window.innerWidth < 1280) {
+    if (!editDirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [editDirty]);
+
+  useEffect(() => {
+    if (!editDirty) return;
+    const handler = (e: CustomEvent) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setUnsavedDialog({ action: () => {
+        setEditMode(false);
+        setEditDirty(false);
+        const { page, params } = e.detail || {};
+        if (page) navBus.navigate(page, params);
+      }});
+    };
+    window.addEventListener('markus:navigate', handler as EventListener);
+    return () => window.removeEventListener('markus:navigate', handler as EventListener);
+  }, [editDirty]);
+
+  // Auto-collapse sidebar when chat panel opens and content area is too narrow
+  const sidebarManualRef = useRef(false);
+  useEffect(() => {
+    if (!chatPanelOpen) {
+      sidebarManualRef.current = false;
+      return;
+    }
+    if (isMobile || sidebarManualRef.current) return;
+    const chatWidth = 400;
+    const sidebarWidth = sidebarCollapsed ? 0 : (listPanel.width ?? 384);
+    const appSidebarWidth = 160;
+    const availableForContent = window.innerWidth - appSidebarWidth - sidebarWidth - chatWidth;
+    if (availableForContent < 480 && !sidebarCollapsed) {
       setSidebarCollapsed(true);
     }
-  }, [chatPanelOpen, isMobile]);
+  }, [chatPanelOpen, isMobile, sidebarCollapsed, listPanel.width]);
 
   // Selection toolbar handler (Phase 4)
   const detailContentRef = useRef<HTMLDivElement>(null);
 
-  const addToConversation = useCallback((text: string) => {
+  const addToConversation = useCallback((text: string, htmlMeta?: { xpath: string; cssSelector: string }) => {
     const label = text.length > 30 ? `${text.slice(0, 15)}…${text.slice(-12)}` : text;
     const chipId = `sel_${Date.now()}`;
+    let content: string;
+    if (htmlMeta) {
+      const filePath = selected?.reference ?? '';
+      content = [
+        `[html-selection]`,
+        `Text: "${text}"`,
+        `CSS Selector: ${htmlMeta.cssSelector}`,
+        `XPath: ${htmlMeta.xpath}`,
+        filePath ? `File: ${filePath}` : '',
+      ].filter(Boolean).join('\n');
+    } else {
+      content = text;
+    }
     setContextChips(prev => [...prev, {
       id: chipId,
-      label,
+      label: htmlMeta ? `🌐 ${label}` : label,
       type: 'selection',
-      content: text,
+      content,
       onRemove: () => setContextChips(p => p.filter(c => c.id !== chipId)),
     }]);
     if (!chatPanelOpen) setChatPanelOpen(true);
     setSelectionToolbar(null);
     window.getSelection()?.removeAllRanges();
-  }, [chatPanelOpen]);
+  }, [chatPanelOpen, selected?.reference]);
+
+  const handleHtmlSelection = useCallback((data: HtmlSelectionData) => {
+    if (!data.text.trim()) return;
+    const iframeEl = detailContentRef.current?.querySelector('iframe');
+    const iframeRect = iframeEl?.getBoundingClientRect();
+    const x = (iframeRect?.left ?? 0) + data.rect.x + data.rect.width / 2;
+    const y = (iframeRect?.top ?? 0) + data.rect.y;
+    setSelectionToolbar({ x, y, text: data.text, htmlMeta: { xpath: data.xpath, cssSelector: data.cssSelector } });
+  }, []);
 
   useEffect(() => {
     const el = detailContentRef.current;
@@ -492,21 +720,51 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
               </h2>
             </div>
           </div>
-          <input
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            placeholder={t('searchPlaceholder')}
-            className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary focus:border-brand-500 focus:outline-none transition-colors"
-          />
-          {sharedDir && (
+          <div className="relative">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-muted pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <input
+              ref={searchInputRef}
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder={t('searchPlaceholder')}
+              className="w-full bg-surface-elevated border border-border-default rounded-lg pl-8 pr-8 py-2 text-sm text-fg-primary focus:border-brand-500 focus:outline-none transition-colors"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => { setSearchQuery(''); setDebouncedQuery(''); }}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 flex items-center justify-center rounded-full bg-surface-overlay text-fg-tertiary hover:text-fg-secondary transition-colors"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+              </button>
+            )}
+          </div>
+          {sharedDir && !isMobile && (
             <div className="flex items-center gap-2 px-2.5 py-1.5 bg-surface-elevated rounded-lg text-[10px] text-fg-tertiary">
               <span className="truncate font-mono">{sharedDir}</span>
               <button onClick={() => void api.system.openPath(sharedDir)}
                 className="shrink-0 underline hover:text-fg-secondary transition-colors">{t('common:open')}</button>
             </div>
           )}
+          {/* Mobile: compact filter toggle */}
+          {isMobile && (
+            <button
+              onClick={() => setMobileFiltersOpen(v => !v)}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-colors ${mobileFiltersOpen || hasActiveFilters ? 'bg-brand-500/15 text-brand-500' : 'bg-surface-elevated text-fg-secondary'}`}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="4" y1="6" x2="20" y2="6" /><line x1="8" y1="12" x2="20" y2="12" /><line x1="12" y1="18" x2="20" y2="18" />
+              </svg>
+              {t('filters.filtersLabel')}
+              {hasActiveFilters && <span className="w-1.5 h-1.5 rounded-full bg-brand-500" />}
+              <svg className={`w-3 h-3 ml-auto transition-transform ${mobileFiltersOpen ? 'rotate-180' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="6 9 12 15 18 9" /></svg>
+            </button>
+          )}
+          {/* Filter rows — always visible on desktop, collapsible on mobile */}
+          <div className={isMobile && !mobileFiltersOpen ? 'hidden' : 'space-y-3'}>
           {/* Type filter (includes artifact types) */}
-          <div className="flex gap-1 overflow-x-auto scrollbar-hide">
+          <div className="flex gap-1 overflow-x-auto scrollbar-hide filter-pills-fade">
             <FilterPill label={t('filters.allTypes')} value="" current={filterType || filterArtifact || ''} onClick={() => { setFilterType(''); setFilterArtifact(''); }} />
             {ALL_TYPES.map(ty => (
               <FilterPill key={ty} label={`${TYPE_META[ty]?.icon ?? ''} ${ty}`} value={ty} current={filterType} onClick={v => { setFilterType(v); setFilterArtifact(''); }} />
@@ -515,19 +773,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
               <FilterPill key={a} label={`${ARTIFACT_META[a].icon} ${t(`artifactTypes.${a}`)}`} value={a} current={filterArtifact} onClick={v => { setFilterArtifact(v); setFilterType(''); }} />
             ))}
           </div>
-          {/* Project filter */}
-          {projects.length > 0 && (
-            <div className="flex gap-1 overflow-x-auto scrollbar-hide">
-              <FilterPill label={t('filters.allProjects')} value="" current={filterProject} onClick={setFilterProject} />
-              {projects.map(p => <FilterPill key={p.id} label={p.name} value={p.id} current={filterProject} onClick={setFilterProject} />)}
-            </div>
-          )}
-          {/* Status filter (active/verified/outdated only relevant for legacy data) */}
           {/* Group by */}
           <div className="flex gap-1.5 items-center">
             <span className="text-[10px] text-fg-tertiary">{t('filters.group')}</span>
-            {(['date', 'project', 'agent', 'type'] as const).map(g => (
-              <button key={g} onClick={() => { setGroupBy(g); setCollapsedGroups(new Set()); }}
+            {(['date', 'project', 'team', 'agent'] as const).map(g => (
+              <button key={g} onClick={() => { setGroupBy(g); }}
                 className={`px-2 py-1 rounded text-xs transition-colors ${groupBy === g ? 'bg-brand-600 text-white' : 'bg-surface-elevated text-fg-secondary hover:bg-surface-overlay'}`}>
                 {t(`groupBy.${g}`)}
               </button>
@@ -536,19 +786,59 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
               <button
                 onClick={toggleAllGroups}
                 className="ml-auto px-1.5 py-1 rounded text-[10px] text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated transition-colors"
-                title={collapsedGroups.size === grouped.length ? t('expandAllTooltip') : t('collapseAllTooltip')}
+                title={allGroupsCollapsed ? t('expandAllTooltip') : t('collapseAllTooltip')}
               >
-                {collapsedGroups.size === grouped.length ? t('expandAll') : t('collapseAll')}
+                {allGroupsCollapsed ? t('expandAll') : t('collapseAll')}
               </button>
             )}
           </div>
+          </div>
+          {/* Active filter chips */}
+          {hasActiveFilters && (
+            <div className="flex items-center gap-1 flex-wrap">
+              {debouncedQuery && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-brand-500/10 text-brand-500 text-[10px]">
+                  &ldquo;{debouncedQuery}&rdquo;
+                  <button onClick={() => { setSearchQuery(''); setDebouncedQuery(''); }} className="hover:text-brand-400">
+                    <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                  </button>
+                </span>
+              )}
+              {filterType && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-brand-500/10 text-brand-500 text-[10px]">
+                  {TYPE_META[filterType]?.icon} {filterType}
+                  <button onClick={() => setFilterType('')} className="hover:text-brand-400">
+                    <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                  </button>
+                </span>
+              )}
+              {filterArtifact && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-brand-500/10 text-brand-500 text-[10px]">
+                  {ARTIFACT_META[filterArtifact]?.icon} {t(`artifactTypes.${filterArtifact}`)}
+                  <button onClick={() => setFilterArtifact('')} className="hover:text-brand-400">
+                    <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                  </button>
+                </span>
+              )}
+              <button onClick={clearAllFilters} className="text-[10px] text-fg-tertiary hover:text-brand-500 ml-auto transition-colors">
+                {t('filters.clearAll')}
+              </button>
+            </div>
+          )}
         </div>
 
         {flash && (
           <div className={`mx-4 mt-2 px-3 py-1.5 text-xs rounded-lg ${flash.type === 'success' ? 'bg-green-500/15 text-green-600' : 'bg-red-500/15 text-red-500'}`}>{flash.text}</div>
         )}
 
-        <div ref={listRef} className="flex-1 overflow-y-auto p-2 space-y-1" onTouchStart={isMobile ? groupSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? groupSwipe.onTouchEnd : undefined}>
+        <div ref={listRef} className="flex-1 overflow-y-auto p-2 space-y-1 transition-opacity duration-150" style={{ opacity: loading ? 0.5 : 1 }}
+          onTouchStart={isMobile ? (e) => { groupSwipe.onTouchStart(e); handlePullStart(e); } : undefined}
+          onTouchEnd={isMobile ? (e) => { groupSwipe.onTouchEnd(e); handlePullEnd(e); } : undefined}>
+          {pullRefreshing && (
+            <div className="flex items-center justify-center gap-2 py-2 text-brand-500">
+              <Spinner /> <span className="text-[10px]">{t('filters.refreshing')}</span>
+            </div>
+          )}
           {loading ? (
             <div className="p-4 space-y-3">
               {[1, 2, 3].map(i => (
@@ -563,17 +853,27 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
               <svg className="w-12 h-12 text-fg-muted mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
               </svg>
-              <p className="text-sm text-fg-secondary">{t('empty.title')}</p>
-              <p className="text-xs text-fg-tertiary mt-1 mb-3">{t('empty.subtitle')}</p>
-              <button onClick={() => navBus.navigate(PAGE.WORK)} className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">{t('empty.goToWork')}</button>
+              {hasActiveFilters ? (
+                <>
+                  <p className="text-sm text-fg-secondary">{t('empty.noResults')}</p>
+                  <p className="text-xs text-fg-tertiary mt-1 mb-3">{t('empty.noResultsHint')}</p>
+                  <button onClick={clearAllFilters} className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">{t('filters.clearAll')}</button>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-fg-secondary">{t('empty.title')}</p>
+                  <p className="text-xs text-fg-tertiary mt-1 mb-3">{t('empty.subtitle')}</p>
+                  <button onClick={() => navBus.navigate(PAGE.WORK)} className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">{t('empty.goToWork')}</button>
+                </>
+              )}
             </div>
           ) : grouped.map(([key, group]) => {
-            const isCollapsed = collapsedGroups.has(key);
+            const isCollapsed = isGroupCollapsed(key);
             return (
-              <div key={key}>
+              <div key={key} className="mb-1">
                 <button
                   onClick={() => toggleGroup(key)}
-                  className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-surface-elevated/50 transition-colors group/header"
+                  className="w-full flex items-center gap-1.5 px-2 py-2 rounded-md hover:bg-surface-elevated/50 transition-colors group/header border-b border-border-subtle/50"
                 >
                   <svg
                     className={`w-3 h-3 text-fg-tertiary transition-transform duration-200 shrink-0 ${isCollapsed ? '' : 'rotate-90'}`}
@@ -581,12 +881,13 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                   >
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                   </svg>
-                  <span className="text-[10px] font-medium text-fg-tertiary uppercase tracking-wider truncate">{group.label}</span>
-                  <span className="text-[10px] text-fg-tertiary shrink-0">({group.items.length})</span>
+                  <span className="text-[11px] font-semibold text-fg-tertiary uppercase tracking-wider truncate">{group.label}</span>
+                  <span className="text-[10px] text-fg-muted bg-surface-elevated px-1.5 py-0.5 rounded-full shrink-0">{group.items.length}{items.length < totalCount ? '+' : ''}</span>
                 </button>
-                {!isCollapsed && group.items.map(item => (
+                <div className={`overflow-hidden transition-all duration-200 ${isCollapsed ? 'max-h-0 opacity-0' : 'max-h-[5000px] opacity-100'}`}>
+                  {group.items.map(item => (
                   <button key={item.id} onClick={() => handleSelectItem(item)}
-                    className={`w-full text-left px-3 py-2 rounded-lg transition-colors ${selected?.id === item.id ? 'bg-brand-600/20 border border-brand-500/30' : 'hover:bg-surface-elevated/60 border border-transparent'}`}>
+                    className={`w-full text-left px-3 py-2 rounded-lg transition-all duration-150 ${selected?.id === item.id ? 'bg-brand-600/15 border-l-2 border-l-brand-500 border-y border-r border-y-brand-500/20 border-r-brand-500/20' : 'hover:bg-surface-elevated/60 border-l-2 border-l-transparent border-y border-r border-transparent'}`}>
                     <div className="flex items-center gap-1.5 min-w-0">
                       {item.artifactType && ARTIFACT_META[item.artifactType] ? (
                         <span className={`text-[10px] px-1 py-0.5 rounded font-medium shrink-0 ${ARTIFACT_META[item.artifactType].color}`}>
@@ -595,7 +896,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                       ) : (
                         <span className={`text-[10px] px-1 py-0.5 rounded font-medium uppercase shrink-0 ${TYPE_META[item.type]?.color ?? 'bg-surface-overlay text-fg-secondary'}`}>{TYPE_META[item.type]?.icon ?? item.type.charAt(0)}</span>
                       )}
-                      <span className="text-sm font-medium text-fg-primary truncate">{item.title}</span>
+                      <span className="text-sm font-medium text-fg-primary truncate flex-1">{item.title}</span>
                       {missingFileIds.has(item.id) && (
                         <span className="shrink-0 text-amber-500" title={t('detail.fileMissing')}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -604,10 +905,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                           </svg>
                         </span>
                       )}
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${STATUS_META[item.status]?.color ?? 'bg-surface-elevated text-fg-tertiary'}`}>{t(`common:status.${item.status}`, { defaultValue: item.status })}</span>
+                      <span className="text-[10px] text-fg-muted shrink-0">{relativeTime(item.updatedAt, t)}</span>
                     </div>
                   </button>
-                ))}
+                  ))}
+                </div>
               </div>
             );
           })}
@@ -628,8 +930,12 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
       {/* Resize handle */}
       {!isMobile && (
-        <div className="w-1.5 shrink-0 cursor-col-resize group relative flex items-center justify-center" onMouseDown={listPanel.onResizeStart}>
-          <div className="w-px h-2/3 border-l border-dashed border-transparent group-hover:border-border-default group-active:border-fg-tertiary transition-colors" />
+        <div className="w-2 shrink-0 cursor-col-resize group relative flex items-center justify-center hover:bg-brand-500/5 transition-colors" onMouseDown={listPanel.onResizeStart}>
+          <div className="flex flex-col gap-1 items-center opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="w-1 h-1 rounded-full bg-fg-muted" />
+            <div className="w-1 h-1 rounded-full bg-fg-muted" />
+            <div className="w-1 h-1 rounded-full bg-fg-muted" />
+          </div>
         </div>
       )}
 
@@ -641,7 +947,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         {sidebarCollapsed && !isMobile && (
           <div className="sticky top-0 z-10 bg-surface-primary/80 backdrop-blur-sm px-4 py-2 flex items-center gap-2">
             <button
-              onClick={() => setSidebarCollapsed(false)}
+              onClick={() => { sidebarManualRef.current = true; setSidebarCollapsed(false); }}
               className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
               title={t('sidebar.expand')}
             >
@@ -666,11 +972,16 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         )}
         {!selected ? (
           <div className="flex-1 flex items-center justify-center h-full">
-            <div className="text-center text-fg-tertiary space-y-2">
-              <svg className="w-12 h-12 mx-auto text-fg-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-              </svg>
-              <p className="text-sm">{t('detail.selectToView')}</p>
+            <div className="text-center text-fg-tertiary space-y-3 max-w-xs">
+              <div className="w-16 h-16 mx-auto rounded-2xl bg-surface-elevated/60 flex items-center justify-center">
+                <svg className="w-8 h-8 text-fg-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                </svg>
+              </div>
+              <p className="text-sm text-fg-secondary">{t('detail.selectToView')}</p>
+              {!isMobile && (
+                <p className="text-[10px] text-fg-muted">{t('detail.keyboardHint')}</p>
+              )}
             </div>
           </div>
         ) : (
@@ -858,36 +1169,98 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 </div>
               </div>
             ) : (
-              <div className="bg-surface-elevated rounded-xl p-5">
-                {previewLoading ? (
-                  <div className="flex items-center gap-2 text-fg-tertiary text-sm"><Spinner /> {t('detail.loadingPreview')}</div>
-                ) : previewImage ? (
-                  <div className="flex flex-col items-center gap-2">
-                    <img src={previewImage.src} alt={previewImage.name} className="max-w-full max-h-[60vh] rounded-lg object-contain" />
-                    <span className="text-xs text-fg-tertiary">{previewImage.name}</span>
-                  </div>
-                ) : previewContent ? (
-                  <ContentRenderer content={previewContent} format={previewFormat} className="text-fg-secondary text-sm" />
-                ) : showCopyPath ? (
-                  <div className="space-y-3">
-                    <p className="text-sm text-fg-secondary">{t('detail.cannotPreview', { type: selected.type })}</p>
-                    <div className="flex items-center gap-2">
+              <div className="bg-surface-elevated rounded-xl overflow-hidden">
+                {/* Edit/Preview toolbar — shown when there is editable text content */}
+                {(previewContent || selected.summary) && !previewLoading && !previewImage && !showCopyPath && selected.reference && selected.type === 'file' && (previewFormat === 'markdown' || previewFormat === 'text' || previewFormat === 'html') && (
+                  <div className="flex items-center gap-2 px-4 py-2 border-b border-border-subtle bg-surface-secondary/50">
+                    <button
+                      onClick={handleSwitchToPreview}
+                      className={`px-3 py-1 rounded text-xs font-medium transition-colors ${!editMode ? 'bg-brand-600/20 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'}`}
+                    >
+                      {t('detail.preview')}
+                    </button>
+                    <button
+                      onClick={handleStartEdit}
+                      className={`px-3 py-1 rounded text-xs font-medium transition-colors ${editMode ? 'bg-brand-600/20 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'}`}
+                    >
+                      {t('detail.edit')}
+                    </button>
+                    <div className="flex-1" />
+                    {editMode && (
                       <button
-                        onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
-                        className="text-xs bg-surface-elevated px-3 py-2 rounded text-brand-500 hover:text-brand-500 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
-                        title={t('detail.openInFileBrowser')}
-                      >{selected.reference}</button>
-                      <button onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
-                        className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0">{t('common:open')}</button>
-                      <button onClick={() => copyPath(selected!.reference)}
-                        className={`px-3 py-2 text-xs rounded-lg transition-colors shrink-0 ${copiedPath ? 'bg-green-500/20 text-green-600' : 'bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay'}`}>{copiedPath ? t('common:copied') : t('common:copy')}</button>
-                    </div>
+                        onClick={handleSaveEdit}
+                        disabled={!editDirty || editSaving}
+                        className="px-3 py-1 rounded text-xs font-medium bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {editSaving ? t('detail.saving') : t('detail.save')}
+                      </button>
+                    )}
                   </div>
-                ) : selected.summary ? (
-                  <MarkdownMessage content={selected.summary} className="text-fg-secondary text-sm" />
-                ) : (
-                  <p className="text-sm text-fg-tertiary italic">{t('detail.noContent')}</p>
                 )}
+                <div className="p-5">
+                  {previewLoading ? (
+                    <div className="animate-pulse space-y-4">
+                      <div className="h-4 bg-surface-overlay/60 rounded w-full" />
+                      <div className="h-4 bg-surface-overlay/60 rounded w-5/6" />
+                      <div className="h-4 bg-surface-overlay/60 rounded w-4/6" />
+                      <div className="h-32 bg-surface-overlay/40 rounded-lg w-full mt-2" />
+                      <div className="h-4 bg-surface-overlay/60 rounded w-3/4" />
+                      <div className="h-4 bg-surface-overlay/60 rounded w-2/3" />
+                    </div>
+                  ) : previewImage ? (
+                    <div className="flex flex-col items-center gap-2">
+                      <img src={previewImage.src} alt={previewImage.name} className="max-w-full max-h-[60vh] rounded-lg object-contain" />
+                      <span className="text-xs text-fg-tertiary">{previewImage.name}</span>
+                    </div>
+                  ) : previewContent ? (
+                    editMode ? (
+                      <div key="edit" className="animate-fadeIn">
+                      <textarea
+                        ref={editTextareaRef}
+                        value={editContent}
+                        onChange={(e) => { setEditContent(e.target.value); setEditDirty(true); }}
+                        className="w-full min-h-[120px] p-3 text-sm font-mono bg-surface-primary border border-border-subtle rounded-lg text-fg-secondary focus:outline-none focus:ring-1 focus:ring-brand-500/50 overflow-hidden"
+                        style={{ resize: 'none' }}
+                        spellCheck={false}
+                      />
+                      </div>
+                    ) : (
+                      <div key="preview" className="animate-fadeIn">
+                      <ContentRenderer content={previewContent} format={previewFormat} className="text-fg-secondary text-sm" onHtmlSelection={handleHtmlSelection} />
+                      </div>
+                    )
+                  ) : showCopyPath ? (
+                    <div className="space-y-3">
+                      <p className="text-sm text-fg-secondary">{t('detail.cannotPreview', { type: selected.type })}</p>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
+                          className="text-xs bg-surface-elevated px-3 py-2 rounded text-brand-500 hover:text-brand-500 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
+                          title={t('detail.openInFileBrowser')}
+                        >{selected.reference}</button>
+                        <button onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', t('detail.failedToOpen'))); }}
+                          className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0">{t('common:open')}</button>
+                        <button onClick={() => copyPath(selected!.reference)}
+                          className={`px-3 py-2 text-xs rounded-lg transition-colors shrink-0 ${copiedPath ? 'bg-green-500/20 text-green-600' : 'bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay'}`}>{copiedPath ? t('common:copied') : t('common:copy')}</button>
+                      </div>
+                    </div>
+                  ) : selected.summary ? (
+                    editMode ? (
+                      <textarea
+                        ref={editTextareaRef}
+                        value={editContent}
+                        onChange={(e) => { setEditContent(e.target.value); setEditDirty(true); }}
+                        className="w-full min-h-[120px] p-3 text-sm font-mono bg-surface-primary border border-border-subtle rounded-lg text-fg-secondary focus:outline-none focus:ring-1 focus:ring-brand-500/50 overflow-hidden"
+                        style={{ resize: 'none' }}
+                        spellCheck={false}
+                      />
+                    ) : (
+                      <MarkdownMessage content={selected.summary} className="text-fg-secondary text-sm" />
+                    )
+                  ) : (
+                    <p className="text-sm text-fg-tertiary italic">{t('detail.noContent')}</p>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -899,7 +1272,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         {selected?.agentId && !chatPanelOpen && !isMobile && (
           <button
             onClick={() => setChatPanelOpen(true)}
-            className="absolute bottom-6 right-6 w-12 h-12 rounded-full bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-black/20 flex items-center justify-center transition-all hover:scale-105 z-20"
+            className="absolute bottom-6 right-6 w-12 h-12 rounded-full bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-black/20 flex items-center justify-center transition-all hover:scale-105 z-20 animate-fab-in"
             title={t('chat.openChat')}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -938,7 +1311,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
           style={{ left: selectionToolbar.x, top: selectionToolbar.y - 8 }}
         >
           <button
-            onMouseDown={e => { e.preventDefault(); e.stopPropagation(); addToConversation(selectionToolbar.text); }}
+            onMouseDown={e => { e.preventDefault(); e.stopPropagation(); addToConversation(selectionToolbar.text, selectionToolbar.htmlMeta); }}
             className="px-3 py-1.5 text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-1.5 whitespace-nowrap"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -970,6 +1343,33 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
               <button onClick={() => { const d = confirmRemove; setConfirmRemove(null); handleRemove(d); }}
                 disabled={!!actionLoading}
                 className="px-4 py-1.5 text-xs bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors disabled:opacity-50">{t('common:remove')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Unsaved Changes Dialog */}
+      {unsavedDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setUnsavedDialog(null)}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 max-w-sm mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-amber-500/15 flex items-center justify-center shrink-0">
+                <svg className="w-5 h-5 text-amber-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+              </div>
+              <div>
+                <div className="text-sm font-medium text-fg-primary">{t('detail.unsavedTitle')}</div>
+                <div className="text-xs text-fg-secondary mt-0.5">{t('detail.unsavedMessage')}</div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setUnsavedDialog(null)}
+                className="px-4 py-1.5 text-xs text-fg-secondary hover:text-fg-primary border border-border-default hover:border-gray-600 rounded-lg transition-colors">{t('common:cancel')}</button>
+              <button onClick={() => { handleDiscardEdit(); unsavedDialog.action(); }}
+                className="px-4 py-1.5 text-xs text-fg-secondary hover:text-fg-primary border border-border-default hover:border-gray-600 rounded-lg transition-colors">{t('detail.discard')}</button>
+              <button onClick={async () => { await handleSaveEdit(); unsavedDialog.action(); setUnsavedDialog(null); }}
+                className="px-4 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors">{t('detail.saveAndLeave')}</button>
             </div>
           </div>
         </div>

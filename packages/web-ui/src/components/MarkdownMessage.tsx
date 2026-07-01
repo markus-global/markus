@@ -6,16 +6,27 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import remarkBreaks from 'remark-breaks';
 import rehypeKatex from 'rehype-katex';
+import rehypeHighlight from 'rehype-highlight';
 import 'katex/dist/katex.min.css';
 import { FilePathLink, looksLikeFilePath } from './FilePathLink.tsx';
+import { CodeBlock } from './CodeBlock.tsx';
+import { MermaidBlock } from './MermaidBlock.tsx';
+import { PlantUMLBlock } from './PlantUMLBlock.tsx';
+import { DiagramToggleBlock } from './DiagramToggleBlock.tsx';
+import {
+  transformOutsideCode, normalizeMathDelimiters,
+  preprocessMentions, preprocessEntityLinksInCode, preprocessEntityIds,
+  looksLikePlantUML, looksLikeMermaid,
+} from './markdown-utils.ts';
 import { copyPlainText, copyAsHtml } from './markdown-copy.ts';
+import { TypographySettings, loadTypographyConfig, resolveTypographyCSS } from './TypographySettings.tsx';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const REMARK_PLUGINS: any[] = [remarkGfm, remarkMath, remarkBreaks];
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const REHYPE_PLUGINS: any[] = [[rehypeKatex, { strict: 'ignore' }]];
+const REHYPE_PLUGINS: any[] = [[rehypeKatex, { strict: 'ignore' }], [rehypeHighlight, { detect: true, ignoreMissing: true }]];
 
 interface Props {
   content: string;
@@ -43,82 +54,11 @@ function extractThinkBlocks(text: string): { thinking: string[]; rest: string } 
   return { thinking, rest: rest.trim() };
 }
 
-/** Normalise LaTeX delimiters from LLM output to remark-math's expected syntax.
- *  \(...\) → $...$  and  \[...\] → $$...$$ */
-function normalizeMathDelimiters(text: string): string {
-  // Block math: \[...\] → $$...$$  (may span multiple lines)
-  let out = text.replace(/\\\[([\s\S]*?)\\\]/g, (_m, inner: string) => `$$${inner}$$`);
-  // Inline math: \(...\) → $...$  (single line only to avoid false positives)
-  out = out.replace(/\\\((.+?)\\\)/g, (_m, inner: string) => `$${inner}$`);
-  return out;
-}
-
 const MENTION_PREFIX = '#mention:';
-
-/** Convert @mentions in raw text to markdown links before ReactMarkdown processes it.
- *  Uses `#mention:` (hash prefix) so ReactMarkdown's URL sanitiser doesn't strip them.
- *  When knownNames is provided, also matches multi-word names (e.g. "@Markus Platform Dev Manager"). */
-function preprocessMentions(text: string, knownNames?: string[]): string {
-  if (!knownNames || knownNames.length === 0) {
-    return text.replace(/@\[([^\]]+)\]|@([\w\p{L}\p{N}]+)/gu, (_full, bracketName: string | undefined, wordName: string | undefined) => {
-      const name = bracketName ?? wordName!;
-      return `[@${name}](${MENTION_PREFIX}${encodeURIComponent(name)})`;
-    });
-  }
-
-  const sorted = [...knownNames].sort((a, b) => b.length - a.length);
-  let result = '';
-  let idx = 0;
-  while (idx < text.length) {
-    const atPos = text.indexOf('@', idx);
-    if (atPos < 0) {
-      result += text.slice(idx);
-      break;
-    }
-    result += text.slice(idx, atPos);
-
-    // Bracketed: @[Name With Spaces]
-    if (text[atPos + 1] === '[') {
-      const close = text.indexOf(']', atPos + 2);
-      if (close > atPos + 2) {
-        const name = text.slice(atPos + 2, close);
-        result += `[@${name}](${MENTION_PREFIX}${encodeURIComponent(name)})`;
-        idx = close + 1;
-        continue;
-      }
-    }
-
-    // Full name prefix match
-    const after = text.slice(atPos + 1);
-    const afterLower = after.toLowerCase();
-    const fullMatch = sorted.find(n => afterLower.startsWith(n.toLowerCase()));
-    if (fullMatch) {
-      const actual = after.slice(0, fullMatch.length);
-      result += `[@${actual}](${MENTION_PREFIX}${encodeURIComponent(actual)})`;
-      idx = atPos + 1 + fullMatch.length;
-      continue;
-    }
-
-    // Single-word fallback
-    const tokenMatch = after.match(/^([\w\p{L}\p{N}]+)/u);
-    if (tokenMatch) {
-      const name = tokenMatch[1]!;
-      result += `[@${name}](${MENTION_PREFIX}${encodeURIComponent(name)})`;
-      idx = atPos + 1 + name.length;
-      continue;
-    }
-
-    result += '@';
-    idx = atPos + 1;
-  }
-  return result;
-}
 
 // ─── Entity ID linking ───────────────────────────────────────────────────────
 
 const ENTITY_PREFIX = '#entity:';
-const ENTITY_ID_RE = /(?<!\[)(?<!#entity:)\b(tsk|req|proj|dlv|agt)_[a-f0-9]{6,}\b(?!\]\(#entity:)/gi;
-const ENTITY_LINK_IN_CODE_RE = /`\[([^\]]+)\]\(#entity:((?:tsk|req|proj|dlv|agt)_[a-f0-9]{6,})\)`/gi;
 const ENTITY_LINK_CONTENT_RE = /^\[([^\]]+)\]\(#entity:((tsk|req|proj|dlv|agt)_[a-f0-9]{6,})\)$/i;
 
 const ENTITY_META: Record<string, { icon: string; label: string }> = {
@@ -141,16 +81,6 @@ function looksLikeEntityId(text: string): boolean {
   return /^(tsk|req|proj|dlv|agt)_[a-f0-9]{6,}$/i.test(text);
 }
 
-/** Unwrap entity links wrapped in backticks: `[id](#entity:id)` → [id](#entity:id) */
-function preprocessEntityLinksInCode(text: string): string {
-  return text.replace(ENTITY_LINK_IN_CODE_RE, (_m, label, id) => `[${label}](${ENTITY_PREFIX}${id})`);
-}
-
-/** Convert bare entity IDs (tsk_xxx, dlv_xxx, etc.) to markdown links with #entity: href. */
-function preprocessEntityIds(text: string): string {
-  return text.replace(ENTITY_ID_RE, (id) => `[${id}](${ENTITY_PREFIX}${id})`);
-}
-
 const mdComponents = {
   p: ({ children }: { children?: React.ReactNode }) => <p className="mb-2 last:mb-0 leading-relaxed text-fg-secondary">{children}</p>,
   h1: ({ children }: { children?: React.ReactNode }) => <h1 className="text-base font-bold mb-2 mt-3 first:mt-0 text-fg-primary">{children}</h1>,
@@ -163,10 +93,17 @@ const mdComponents = {
   ol: ({ children }: { children?: React.ReactNode }) => <ol className="list-decimal pl-4 mb-2 space-y-0.5">{children}</ol>,
   li: ({ children }: { children?: React.ReactNode }) => <li className="leading-relaxed text-fg-secondary marker:text-fg-secondary">{children}</li>,
   code: ({ children, className: cls }: { children?: React.ReactNode; className?: string }) => {
-    if (cls?.includes('language-')) {
-      return <code className="text-fg-secondary font-mono">{children}</code>;
-    }
     const text = typeof children === 'string' ? children : String(children ?? '');
+    const trimmed = text.trim();
+    if (cls?.includes('language-plantuml') || looksLikePlantUML(trimmed)) {
+      return <DiagramToggleBlock code={trimmed} language="plantuml"><PlantUMLBlock code={trimmed} /></DiagramToggleBlock>;
+    }
+    if (cls?.includes('language-mermaid') || (!cls && looksLikeMermaid(trimmed))) {
+      return <DiagramToggleBlock code={trimmed} language="mermaid"><MermaidBlock code={trimmed} /></DiagramToggleBlock>;
+    }
+    if (cls?.includes('language-')) {
+      return <code className={`${cls} text-fg-secondary font-mono text-xs`}>{children}</code>;
+    }
     if (looksLikeEntityId(text)) {
       const prefix = text.split('_')[0]!;
       const meta = ENTITY_META[prefix];
@@ -205,9 +142,7 @@ const mdComponents = {
     return <code className="bg-surface-secondary px-1.5 py-0.5 rounded text-xs font-mono text-brand-500 break-all">{children}</code>;
   },
   pre: ({ children }: { children?: React.ReactNode }) => (
-    <pre className="bg-surface-secondary rounded-lg p-3 overflow-x-auto my-2 text-xs [&>code]:bg-transparent [&>code]:p-0 [&>code]:rounded-none [&>code]:text-fg-secondary">
-      {children}
-    </pre>
+    <CodeBlock>{children}</CodeBlock>
   ),
   strong: ({ children }: { children?: React.ReactNode }) => <strong className="font-bold text-fg-primary">{children}</strong>,
   em: ({ children }: { children?: React.ReactNode }) => <em className="italic text-fg-secondary">{children}</em>,
@@ -370,15 +305,35 @@ function ImagePreviewModal({ src, onClose }: { src: string; onClose: () => void 
 
 // ─── Copy menu ───────────────────────────────────────────────────────────────
 
+function useIsNarrow(breakpoint = 640) {
+  const [narrow, setNarrow] = useState(() => window.innerWidth < breakpoint);
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${breakpoint - 1}px)`);
+    const handler = (e: MediaQueryListEvent) => setNarrow(e.matches);
+    mq.addEventListener('change', handler);
+    setNarrow(mq.matches);
+    return () => mq.removeEventListener('change', handler);
+  }, [breakpoint]);
+  return narrow;
+}
+
 function CopyMenu({ content, contentRef }: { content: string; contentRef: React.RefObject<HTMLDivElement | null> }) {
+  const { t } = useTranslation('common');
   const [open, setOpen] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
+  const [showTypography, setShowTypography] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const isNarrow = useIsNarrow();
 
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setOpen(false);
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setShowInfo(false);
+        setShowTypography(false);
+      }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -391,15 +346,22 @@ function CopyMenu({ content, contentRef }: { content: string; contentRef: React.
 
   const handleCopyMd = async () => {
     const ok = await copyPlainText(content);
-    showFlash(ok ? 'Copied!' : 'Failed');
+    showFlash(ok ? t('markdown.copied') : t('markdown.failed'));
     setOpen(false);
   };
 
   const handleCopyHtml = async (theme: 'light' | 'dark') => {
     const el = contentRef.current?.firstElementChild as HTMLElement | null;
     if (!el) return;
-    const result = await copyAsHtml(el, theme, content);
-    showFlash(result.ok ? (result.method === 'html' ? `HTML (${theme}) copied` : 'Text copied') : 'Failed');
+    const typoConfig = loadTypographyConfig();
+    const resolved = resolveTypographyCSS(typoConfig);
+    const result = await copyAsHtml(el, theme, content, {
+      fontFamily: resolved.fontFamily,
+      fontSize: resolved.fontSize,
+      headingScales: resolved.headingScales,
+    });
+    const themeLabel = theme === 'light' ? t('markdown.themeLight') : t('markdown.themeDark');
+    showFlash(result.ok ? (result.method === 'html' ? t('markdown.htmlCopied', { theme: themeLabel }) : t('markdown.textCopied')) : t('markdown.failed'));
     setOpen(false);
   };
 
@@ -413,7 +375,7 @@ function CopyMenu({ content, contentRef }: { content: string; contentRef: React.
       <button
         onClick={() => setOpen(o => !o)}
         className="p-1.5 rounded-lg bg-surface-elevated/80 hover:bg-surface-overlay text-fg-secondary hover:text-fg-primary backdrop-blur-sm border border-border-default/50 transition-all"
-        title="Copy content"
+        title={t('markdown.copyContent')}
       >
         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
@@ -421,27 +383,69 @@ function CopyMenu({ content, contentRef }: { content: string; contentRef: React.
       </button>
       {open && (
         <div className="absolute right-0 top-full mt-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 min-w-[180px]">
-          <button
-            onClick={handleCopyMd}
-            className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
-          >
-            <span className="w-4 text-center text-fg-tertiary shrink-0 font-mono text-[10px]">Md</span>
-            Copy Markdown Source
-          </button>
-          <button
-            onClick={() => handleCopyHtml('light')}
-            className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
-          >
-            <span className="w-4 text-center shrink-0 text-[10px]">☀️</span>
-            Copy HTML (Light)
-          </button>
-          <button
-            onClick={() => handleCopyHtml('dark')}
-            className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
-          >
-            <span className="w-4 text-center shrink-0 text-[10px]">🌙</span>
-            Copy HTML (Dark)
-          </button>
+          {showTypography ? (
+            <TypographySettings onClose={() => setShowTypography(false)} />
+          ) : showInfo ? (
+            <div className="px-3 py-2 text-[11px] text-fg-secondary space-y-2 max-w-[260px]">
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-medium text-fg-primary text-xs">{t('markdown.infoTitle')}</span>
+                <button onClick={() => setShowInfo(false)} className="text-fg-tertiary hover:text-fg-primary p-0.5">
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+              </div>
+              <div><span className="font-medium text-fg-primary">{t('markdown.mdAbbrev')}</span> — {t('markdown.infoMdDesc')}</div>
+              <div><span className="font-medium text-fg-primary">☀️</span> — {t('markdown.infoHtmlLightDesc')}</div>
+              <div><span className="font-medium text-fg-primary">🌙</span> — {t('markdown.infoHtmlDarkDesc')}</div>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between px-3 py-1 border-b border-border-subtle mb-1">
+                <span className="text-[10px] text-fg-tertiary font-medium">{t('markdown.copyContent')}</span>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setShowTypography(true)}
+                    className="p-0.5 rounded text-fg-tertiary hover:text-fg-primary transition-colors"
+                    title={t('markdown.typographySettings')}
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => setShowInfo(true)}
+                    className="p-0.5 rounded text-fg-tertiary hover:text-fg-primary transition-colors"
+                    title={t('markdown.infoTitle')}
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <circle cx="12" cy="12" r="10" /><path strokeLinecap="round" d="M12 16v-4m0-4h.01" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <button
+                onClick={handleCopyMd}
+                className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
+              >
+                <span className="w-4 text-center text-fg-tertiary shrink-0 font-mono text-[10px]">{t('markdown.mdAbbrev')}</span>
+                {isNarrow ? t('markdown.copyMdSourceShort') : t('markdown.copyMdSource')}
+              </button>
+              <button
+                onClick={() => handleCopyHtml('light')}
+                className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
+              >
+                <span className="w-4 text-center shrink-0 text-[10px]">☀️</span>
+                {isNarrow ? t('markdown.copyHtmlLightShort') : t('markdown.copyHtmlLight')}
+              </button>
+              <button
+                onClick={() => handleCopyHtml('dark')}
+                className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
+              >
+                <span className="w-4 text-center shrink-0 text-[10px]">🌙</span>
+                {isNarrow ? t('markdown.copyHtmlDarkShort') : t('markdown.copyHtmlDark')}
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -456,10 +460,10 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
 
   const processedRest = useMemo(() => {
-    let t = normalizeMathDelimiters(rest);
-    t = preprocessEntityLinksInCode(t);
-    t = preprocessEntityIds(t);
-    t = preprocessMentions(t, knownNames);
+    let t = transformOutsideCode(rest, normalizeMathDelimiters);
+    t = transformOutsideCode(t, preprocessEntityLinksInCode);
+    t = transformOutsideCode(t, preprocessEntityIds);
+    t = transformOutsideCode(t, s => preprocessMentions(s, knownNames));
     return t;
   }, [rest, knownNames]);
 

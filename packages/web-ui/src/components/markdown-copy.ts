@@ -1,5 +1,15 @@
-export function buildStyledHtml(sourceEl: HTMLElement, theme: 'light' | 'dark'): string {
+export interface CopyTypographyConfig {
+  fontFamily?: string;
+  fontSize?: string;
+  headingScales?: { h1: number; h2: number; h3: number; h4: number };
+}
+
+export function buildStyledHtml(sourceEl: HTMLElement, theme: 'light' | 'dark', typography?: CopyTypographyConfig): string {
   const clone = sourceEl.cloneNode(true) as HTMLElement;
+  const fontFamily = typography?.fontFamily ?? "-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif";
+  const fontSize = typography?.fontSize ?? '15px';
+  const hs = typography?.headingScales ?? { h1: 1.6, h2: 1.35, h3: 1.15, h4: 1.0 };
+
   const t = theme === 'light'
     ? {
         bg: '#ffffff', text: '#24292f', heading: '#1f2328', strong: '#1f2328',
@@ -20,10 +30,10 @@ export function buildStyledHtml(sourceEl: HTMLElement, theme: 'light' | 'dark'):
 
   const styleMap: Record<string, string> = {
     'p': `margin:0 0 10px;color:${t.text};line-height:1.7;`,
-    'h1': `font-size:1.6em;font-weight:700;color:${t.heading};margin:20px 0 10px;line-height:1.3;border-bottom:1px solid ${t.border};padding-bottom:6px;`,
-    'h2': `font-size:1.35em;font-weight:700;color:${t.heading};margin:18px 0 8px;line-height:1.3;`,
-    'h3': `font-size:1.15em;font-weight:600;color:${t.heading};margin:14px 0 6px;line-height:1.3;`,
-    'h4': `font-size:1em;font-weight:600;color:${t.heading};margin:12px 0 4px;`,
+    'h1': `font-size:${hs.h1}em;font-weight:700;color:${t.heading};margin:20px 0 10px;line-height:1.3;border-bottom:1px solid ${t.border};padding-bottom:6px;`,
+    'h2': `font-size:${hs.h2}em;font-weight:700;color:${t.heading};margin:18px 0 8px;line-height:1.3;`,
+    'h3': `font-size:${hs.h3}em;font-weight:600;color:${t.heading};margin:14px 0 6px;line-height:1.3;`,
+    'h4': `font-size:${hs.h4}em;font-weight:600;color:${t.heading};margin:12px 0 4px;`,
     'strong': `font-weight:600;color:${t.strong};`,
     'em': `font-style:italic;`,
     'a': `color:${t.link};text-decoration:underline;`,
@@ -65,7 +75,7 @@ export function buildStyledHtml(sourceEl: HTMLElement, theme: 'light' | 'dark'):
   clone.removeAttribute('class');
   Array.from(clone.children).forEach(child => processNode(child as Element));
 
-  return `<div style="background:${t.bg};color:${t.text};padding:20px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.7;max-width:800px;">${clone.innerHTML}</div>`;
+  return `<div style="background:${t.bg};color:${t.text};padding:20px 24px;font-family:${fontFamily};font-size:${fontSize};line-height:1.7;max-width:800px;">${clone.innerHTML}</div>`;
 }
 
 export async function copyPlainText(text: string): Promise<boolean> {
@@ -86,8 +96,8 @@ export async function copyPlainText(text: string): Promise<boolean> {
   }
 }
 
-export async function copyAsHtml(sourceEl: HTMLElement, theme: 'light' | 'dark', sourceText: string): Promise<{ ok: boolean; method: 'html' | 'text' }> {
-  const html = buildStyledHtml(sourceEl, theme);
+export async function copyAsHtml(sourceEl: HTMLElement, theme: 'light' | 'dark', sourceText: string, typography?: CopyTypographyConfig): Promise<{ ok: boolean; method: 'html' | 'text' }> {
+  const html = buildStyledHtml(sourceEl, theme, typography);
   try {
     await navigator.clipboard.write([
       new ClipboardItem({

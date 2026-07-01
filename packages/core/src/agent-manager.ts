@@ -233,6 +233,7 @@ export interface TaskServiceBridge {
   rejectTask(id: string, userId?: string): { id: string; title: string; status: string };
   addSubtask(taskId: string, title: string): { id: string; title: string; status: string };
   completeSubtask(taskId: string, subtaskId: string): { id: string; title: string; status: string };
+  cancelSubtask(taskId: string, subtaskId: string): { id: string; title: string; status: string };
   getSubtasks?(taskId: string): Array<{ id: string; title: string; status: string }>;
   submitForReview(taskId: string, deliverables: Array<{ type: string; reference: string; summary: string; diffStats?: unknown; testResults?: unknown }>, reviewerId?: string, completionSummary?: string): Promise<{ id: string; status: string }>;
   requestRevision(taskId: string, reason: string, author?: string): Promise<{ id: string; title: string; status: string }>;
@@ -1075,6 +1076,17 @@ export class AgentManager {
       const skill = this.skillRegistry?.get(skillName);
       const isolation = skill?.manifest.isolation ?? 'shared';
       for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
+        // reuseGlobal: reuse the globally-configured MCP server (with real credentials from config)
+        if ((rawSrvConfig as Record<string, unknown>).reuseGlobal === true) {
+          const globalConfig = this.globalMcpServers?.[serverName];
+          if (globalConfig) {
+            const gc = this.enrichChromeDevtoolsConfig(serverName, globalConfig);
+            await this.mcpManager.connectServer(serverName, gc);
+          }
+          const handlers = this.mcpManager.getToolHandlers(serverName);
+          if (handlers.length > 0) tools.push(...handlers);
+          continue;
+        }
         const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
         if (serverName === 'chrome-devtools') {
           const chromeTools = await this.registerChromeDevtoolsLazy(id, serverName, srvConfig);
@@ -1293,6 +1305,9 @@ export class AgentManager {
         },
         completeSubtask: async (taskId, subtaskId) => {
           return ts.completeSubtask(taskId, subtaskId);
+        },
+        cancelSubtask: async (taskId, subtaskId) => {
+          return ts.cancelSubtask(taskId, subtaskId);
         },
         getSubtasks: async (taskId) => {
           const task = ts.getTask(taskId);
@@ -1897,12 +1912,50 @@ export class AgentManager {
       void Promise.all(mcpConnections);
     }
 
+    // Connect global MCP servers (e.g. feishu-lark) for booted agents — same as createAgentFromRequest
+    if (this.globalMcpServers) {
+      for (const [serverName, rawServerConfig] of Object.entries(this.globalMcpServers)) {
+        if (agent.hasToolPrefix(serverName)) continue; // already connected via skill
+        void (async () => {
+          try {
+            const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
+            await this.mcpManager.connectServer(serverName, serverConfig);
+            const mcpTools = this.mcpManager.getToolHandlers(serverName);
+            const toolNames: string[] = [];
+            for (const tool of mcpTools) {
+              agent.registerTool(tool);
+              toolNames.push(tool.name);
+            }
+            agent.activateTools(toolNames);
+            log.info(`Global MCP server ${serverName} connected for booted agent ${id}`, {
+              toolCount: mcpTools.length,
+            });
+          } catch (error) {
+            log.warn(`Failed to connect global MCP server ${serverName} for booted agent ${id}`, {
+              error: String(error),
+            });
+          }
+        })();
+      }
+    }
+
     // Set skill MCP activator callback for runtime activation via discover_tools
     agent.setSkillMcpActivator(async (skillName, mcpServers) => {
       let tools: AgentToolHandler[] = [];
       const skill = this.skillRegistry?.get(skillName);
       const isolation = skill?.manifest.isolation ?? 'shared';
       for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
+        // reuseGlobal: reuse the globally-configured MCP server (with real credentials from config)
+        if ((rawSrvConfig as Record<string, unknown>).reuseGlobal === true) {
+          const globalConfig = this.globalMcpServers?.[serverName];
+          if (globalConfig) {
+            const gc = this.enrichChromeDevtoolsConfig(serverName, globalConfig);
+            await this.mcpManager.connectServer(serverName, gc);
+          }
+          const handlers = this.mcpManager.getToolHandlers(serverName);
+          if (handlers.length > 0) tools.push(...handlers);
+          continue;
+        }
         const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
         if (serverName === 'chrome-devtools') {
           const chromeTools = await this.registerChromeDevtoolsLazy(id, serverName, srvConfig);
@@ -2087,6 +2140,9 @@ export class AgentManager {
         },
         completeSubtask: async (taskId, subtaskId) => {
           return ts.completeSubtask(taskId, subtaskId);
+        },
+        cancelSubtask: async (taskId, subtaskId) => {
+          return ts.cancelSubtask(taskId, subtaskId);
         },
         getSubtasks: async (taskId) => {
           const task = ts.getTask(taskId);

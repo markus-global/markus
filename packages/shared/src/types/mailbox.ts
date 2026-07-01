@@ -127,6 +127,8 @@ export interface MailboxItemMetadata {
   senderRole?: string;
   isFirstConversation?: boolean;
   sessionId?: string;
+  /** DB-level session ID (ses_*) for cross-session merge prevention in attention heuristics */
+  dbSessionId?: string;
   taskId?: string;
   channelContext?: string;
   /** When true, this item is a continuation of a previous conversation — not a new request. */

@@ -146,6 +146,7 @@
     "archiveConfirmMessage": "Archive this task? It will be moved to historical records.",
     "archiveScheduledConfirmMessage": "Archive this scheduled task? The recurring schedule will be permanently stopped.",
     "cancelConfirmMessage": "Cancel this task? This will stop all work and cannot be undone.",
+    "cancelScheduledConfirmMessage": "Cancel this scheduled task? The recurring schedule will be paused and all work will be stopped.",
     "continueTask": "Continue",
     "editSchedule": "Edit",
     "scheduleEveryMode": "Interval",

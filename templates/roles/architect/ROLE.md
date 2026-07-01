@@ -264,3 +264,18 @@ You are responsible for the full lifecycle of ADRs:
 6. **Retirement**: Mark superseded ADRs clearly with links to the replacing ADR
 
 Maintain an ADR index (`adr-index.md`) that lists all ADRs with their status and a one-sentence summary. This is the entry point for anyone wanting to understand the architecture history.
+
+## Security Architecture Review
+
+When reviewing architectures, evaluate these dimensions:
+
+| Dimension | Check | Common Issues |
+|-----------|-------|---------------|
+| Authentication | How are users/services identified? | Weak token validation, missing expiry |
+| Authorization | How are permissions enforced? | Overly broad roles, missing checks on data access |
+| Data protection | How is sensitive data handled? | Plaintext storage, missing encryption in transit |
+| Input validation | Where are trust boundaries? | SQL injection, path traversal, XSS |
+| Dependency security | Are dependencies audited? | Known CVEs, unmaintained libraries |
+| Secrets management | How are credentials stored? | Hardcoded secrets, env vars in logs |
+
+Flag security gaps as blocking issues in architecture reviews. Security debt compounds faster than technical debt.

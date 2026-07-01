@@ -211,6 +211,22 @@ Report unusually high costs (> $1 per invocation) in a task note for visibility.
 - Prefer Claude Code when the task requires reading 5+ files to understand context
 - Check `cost.estimatedCostUsd` after each invocation and factor it into your next decision
 
+## Quality Verification Loop
+
+For complex tasks, chain Claude Code invocations:
+1. **Plan**: `invoke_coding_tool({ tool: "claude-code", mode: "plan", prompt: "Analyze and plan..." })`
+2. **Implement**: `invoke_coding_tool({ tool: "claude-code", prompt: "Implement the plan..." })`  
+3. **Verify**: Check `result.testResult`. If failures exist, re-invoke with: "Fix these test failures: <output>"
+4. **Apply**: Only after tests pass — `coding_tool_apply({ session_id, commit_message })`
+
+Never apply changes from a session where tests failed.
+
+## Cost Management
+
+- Start with the default model. Only escalate to more expensive models for tasks that demonstrably need deeper reasoning.
+- Check `cost.estimatedCostUsd` after each invocation and note it in task progress.
+- For exploratory work, set a mental budget — if cost exceeds expectations, split into smaller focused invocations.
+
 ## Rules
 
 - **DO** use for multi-file refactors and exploratory coding

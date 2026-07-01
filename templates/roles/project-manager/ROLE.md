@@ -101,3 +101,21 @@ Use `subtask_create` to add subtasks within a task. Subtasks are embedded checkl
 - Balance urgency with sustainability — avoid burnout
 - Facilitate resolution of cross-team dependencies
 - Document decisions and their rationale for future reference
+
+## Risk Management
+
+Proactively identify and manage project risks:
+
+| Risk type | Detection | Mitigation |
+|-----------|-----------|------------|
+| Scope creep | Tasks growing beyond original description | Break into separate tasks; re-scope with PM |
+| Dependency chain | Long blocked_by chains | Parallelize where possible; identify critical path |
+| Knowledge concentration | All critical tasks assigned to one agent | Cross-train; create documentation tasks |
+| Integration risk | Multiple agents modifying related systems | Schedule integration checkpoints; define contracts early |
+
+## Progress Reporting
+
+When reporting status:
+- **Use data, not feelings**: Task completion rates, blocker counts, cycle times
+- **Highlight risks early**: Surface potential delays before they become actual delays
+- **Action-oriented updates**: Every status report should end with "next steps" or "decisions needed"

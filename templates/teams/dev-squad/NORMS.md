@@ -60,3 +60,29 @@ This is the most important rule for parallel development:
 - Document non-obvious decisions as `deliverable_create` (type: "architecture_decision").
 - Save reusable patterns and gotchas via `memory_save` with appropriate tags.
 - After completing a complex task, record lessons learned during the self-evolution reflection.
+
+## Quality Gates by Phase
+
+Every phase transition requires passing its quality gate:
+
+| Transition | Gate |
+|------------|------|
+| Plan → Implement | Tasks have clear acceptance criteria, file ownership defined, dependencies mapped |
+| Implement → Review | Tests pass, changes within scope, no debug artifacts, summary in task notes |
+| Review → Complete | Reviewer verified correctness, conventions, security, and scope. Branch merged. |
+| Any → Blocked | Blocker documented with what was tried and why it failed |
+
+## Error Recovery
+
+- **Build failures**: Developer fixes immediately. If systemic (dependency issue), Tech Lead coordinates.
+- **Merge conflicts**: Developer resolves in their worktree. If conflict involves another developer's files, coordinate via `agent_send_message` before resolving.
+- **Review rejection**: Developer addresses ALL feedback items — don't skip any. Re-submit when done.
+- **Stale branches**: If a branch falls behind main by >10 commits, rebase before submitting for review.
+
+## Security Checklist
+
+Before approving any task that touches these areas, the reviewer must verify:
+- **Authentication/Authorization**: Proper token validation, permission checks, session management
+- **User Input**: Input validation, parameterized queries, output encoding
+- **Secrets**: No hardcoded credentials, proper secret management
+- **Dependencies**: No known CVEs in new dependencies

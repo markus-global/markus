@@ -1,4 +1,6 @@
+@layer hljs;
 @import "tailwindcss";
+@import "highlight.js/styles/github-dark.css" layer(hljs);
 @plugin "@tailwindcss/typography";
 
 @theme {
@@ -273,9 +275,128 @@ body {
   from { transform: translateX(-100%); }
   to { transform: translateX(0); }
 }
+@keyframes fabIn {
+  from { opacity: 0; transform: scale(0.6) translateY(8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
 .animate-fadeIn {
-  animation: fadeIn 0.2s ease-out;
+  animation: fadeIn 0.15s ease-out;
 }
 .animate-slideInLeft {
   animation: slideInLeft 0.25s ease-out;
+}
+.animate-fab-in {
+  animation: fabIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.filter-pills-fade {
+  mask-image: linear-gradient(to right, black calc(100% - 20px), transparent);
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 20px), transparent);
+}
+.filter-pills-fade:not(:hover) {
+  mask-image: linear-gradient(to right, black calc(100% - 20px), transparent);
+}
+.filter-pills-fade:hover {
+  mask-image: none;
+  -webkit-mask-image: none;
+}
+
+/* highlight.js: transparent background, let CodeBlock handle container bg */
+pre code.hljs,
+code.hljs {
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+/* Light mode: swap to light syntax colors */
+html.light pre code.hljs,
+html.light code.hljs {
+  color: #24292e !important;
+}
+html.light .hljs-doctag,
+html.light .hljs-keyword,
+html.light .hljs-meta .hljs-keyword,
+html.light .hljs-template-tag,
+html.light .hljs-template-variable,
+html.light .hljs-type,
+html.light .hljs-variable.language_ { color: #d73a49; }
+html.light .hljs-title,
+html.light .hljs-title.class_,
+html.light .hljs-title.class_.inherited__,
+html.light .hljs-title.function_ { color: #6f42c1; }
+html.light .hljs-attr,
+html.light .hljs-attribute,
+html.light .hljs-literal,
+html.light .hljs-meta,
+html.light .hljs-number,
+html.light .hljs-operator,
+html.light .hljs-selector-attr,
+html.light .hljs-selector-class,
+html.light .hljs-selector-id,
+html.light .hljs-variable { color: #005cc5; }
+html.light .hljs-string,
+html.light .hljs-meta .hljs-string,
+html.light .hljs-regexp { color: #032f62; }
+html.light .hljs-built_in,
+html.light .hljs-symbol { color: #e36209; }
+html.light .hljs-comment,
+html.light .hljs-code,
+html.light .hljs-formula { color: #6a737d; }
+html.light .hljs-name,
+html.light .hljs-quote,
+html.light .hljs-selector-pseudo,
+html.light .hljs-selector-tag { color: #22863a; }
+html.light .hljs-subst { color: #24292e; }
+html.light .hljs-section { color: #005cc5; font-weight: bold; }
+html.light .hljs-bullet { color: #735c0f; }
+html.light .hljs-emphasis { color: #24292e; font-style: italic; }
+html.light .hljs-strong { color: #24292e; font-weight: bold; }
+html.light .hljs-addition { color: #22863a; background-color: #f0fff4; }
+html.light .hljs-deletion { color: #b31d28; background-color: #ffeef0; }
+
+@media (prefers-color-scheme: light) {
+  html:not(.dark):not(.cyberpunk):not(.mono) pre code.hljs,
+  html:not(.dark):not(.cyberpunk):not(.mono) code.hljs {
+    color: #24292e !important;
+  }
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-doctag,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-keyword,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-meta .hljs-keyword,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-template-tag,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-template-variable,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-type,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-variable.language_ { color: #d73a49; }
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-title,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-title.class_,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-title.class_.inherited__,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-title.function_ { color: #6f42c1; }
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-attr,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-attribute,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-literal,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-meta,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-number,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-operator,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-selector-attr,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-selector-class,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-selector-id,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-variable { color: #005cc5; }
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-string,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-meta .hljs-string,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-regexp { color: #032f62; }
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-built_in,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-symbol { color: #e36209; }
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-comment,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-code,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-formula { color: #6a737d; }
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-name,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-quote,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-selector-pseudo,
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-selector-tag { color: #22863a; }
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-subst { color: #24292e; }
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-section { color: #005cc5; font-weight: bold; }
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-bullet { color: #735c0f; }
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-emphasis { color: #24292e; font-style: italic; }
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-strong { color: #24292e; font-weight: bold; }
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-addition { color: #22863a; background-color: #f0fff4; }
+  html:not(.dark):not(.cyberpunk):not(.mono) .hljs-deletion { color: #b31d28; background-color: #ffeef0; }
 }

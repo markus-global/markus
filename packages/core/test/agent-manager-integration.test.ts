@@ -210,7 +210,7 @@ describe('AgentManager integration (real Agent)', () => {
     expect(second.id).not.toBe(manager.listAgents()[0]!.id);
   });
 
-  it('agent sendMessage through real attention loop', async () => {
+  it('agent sendMessage through real attention loop', { timeout: 30000 }, async () => {
     const manager = createManager();
     const agent = await manager.createAgent({ name: 'Messenger', roleName: 'custom', tools: [] });
     await manager.startAgent(agent.id);

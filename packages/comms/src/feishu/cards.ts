@@ -123,3 +123,85 @@ export function buildProgressCard(opts: {
     elements,
   };
 }
+
+// ── Agent Response Cards (Phase 2: Streaming Status) ───────────────────
+
+export type AgentCardPhase = 'thinking' | 'tool_calling' | 'responding' | 'done' | 'error';
+
+export interface ToolCallEntry {
+  name: string;
+  status: 'running' | 'done' | 'error';
+  durationMs?: number;
+}
+
+/**
+ * Build an interactive card showing agent processing status.
+ * This card is sent once and then updated in-place as the agent progresses.
+ */
+export function buildAgentResponseCard(opts: {
+  agentName: string;
+  phase: AgentCardPhase;
+  toolCalls?: ToolCallEntry[];
+  content?: string;
+  errorMessage?: string;
+  elapsedMs?: number;
+}) {
+  const { agentName, phase, toolCalls, content, errorMessage, elapsedMs } = opts;
+
+  const headerMap: Record<AgentCardPhase, { title: string; template: string }> = {
+    thinking:     { title: `💭 ${agentName} 正在思考...`, template: 'blue' },
+    tool_calling: { title: `🔧 ${agentName} 正在执行...`, template: 'blue' },
+    responding:   { title: `✍️ ${agentName} 正在回复...`, template: 'blue' },
+    done:         { title: `✅ ${agentName}`, template: 'green' },
+    error:        { title: `❌ ${agentName} 处理失败`, template: 'red' },
+  };
+
+  const header = headerMap[phase];
+  const elements: unknown[] = [];
+
+  if (toolCalls?.length) {
+    const toolLines = toolCalls.map(tc => {
+      if (tc.status === 'running') return `⏳ 正在调用 \`${tc.name}\`...`;
+      if (tc.status === 'error') return `❌ \`${tc.name}\` 失败`;
+      const dur = tc.durationMs !== null && tc.durationMs !== undefined ? ` (${tc.durationMs}ms)` : '';
+      return `✅ \`${tc.name}\` 完成${dur}`;
+    }).join('\n');
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: toolLines } });
+  }
+
+  if (phase === 'thinking' && !toolCalls?.length && !content) {
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: '正在分析您的消息...' } });
+  }
+
+  if (content) {
+    if (toolCalls?.length) {
+      elements.push({ tag: 'hr' });
+    }
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content } });
+  }
+
+  if (errorMessage) {
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: `**错误:** ${errorMessage}` } });
+  }
+
+  if (phase === 'done' && elapsedMs !== null && elapsedMs !== undefined) {
+    const seconds = (elapsedMs / 1000).toFixed(1);
+    elements.push({
+      tag: 'note',
+      elements: [{ tag: 'plain_text', content: `耗时 ${seconds}s` }],
+    });
+  }
+
+  if (elements.length === 0) {
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: '...' } });
+  }
+
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: {
+      title: { tag: 'plain_text', content: header.title },
+      template: header.template,
+    },
+    elements,
+  };
+}
