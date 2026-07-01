@@ -199,7 +199,7 @@ export class OrganizationService {
       name,
       ownerId,
       plan: 'free',
-      maxAgents: -1,
+      maxAgents: 20,
       createdAt: new Date().toISOString(),
     };
 

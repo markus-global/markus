@@ -284,7 +284,8 @@ export class APIServer {
       const teams = this.orgService.listTeams(orgId);
       const humans = this.orgService.listHumanUsers(orgId);
       const todayToolCalls = this.getToolCallsTodayFromAgents();
-      info.usage = { teams: teams.length, toolCallsToday: todayToolCalls, users: humans.length };
+      const agentCount = this.orgService.getAgentManager().listAgents().length;
+      info.usage = { agents: agentCount, teams: teams.length, toolCallsToday: todayToolCalls, users: humans.length };
     } catch { /* non-critical */ }
     return info;
   }
@@ -1655,11 +1656,15 @@ export class APIServer {
     const secretary = agentManager.getAgent(secretaryInfo.id);
     const senderName = payload['senderName'] as string ?? senderId ?? 'feishu_user';
 
+    // Track active conversation so approvals are routed to this chat
+    this.feishuNotifier?.setActiveConversationChat(chatId);
+
     // Streaming state for real-time card updates
     const toolCalls: Array<{ name: string; status: 'running' | 'done' | 'error'; durationMs?: number }> = [];
     let lastCardUpdatePhase: AgentCardPhase = 'thinking';
     let cardUpdatePending = false;
     let cardUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+    let streamingText = '';
 
     // Throttled card update — avoid excessive API calls (max once per 2s)
     const CARD_UPDATE_INTERVAL_MS = 2000;
@@ -1674,6 +1679,7 @@ export class APIServer {
             agentName,
             phase: lastCardUpdatePhase,
             toolCalls: toolCalls.length > 0 ? [...toolCalls] : undefined,
+            content: streamingText || undefined,
           });
           await this.feishuNotifier!.updateCard(statusCardId!, card);
         } catch (e) {
@@ -1683,7 +1689,7 @@ export class APIServer {
     };
 
     // Stream event handler — updates card state in real-time
-    const handleStreamEvent = (event: { type: string; tool?: string; phase?: string; success?: boolean; durationMs?: number; agentEvent?: string }) => {
+    const handleStreamEvent = (event: { type: string; tool?: string; phase?: string; success?: boolean; durationMs?: number; agentEvent?: string; text?: string }) => {
       if (event.type === 'agent_tool') {
         if (event.phase === 'start' && event.tool) {
           toolCalls.push({ name: event.tool, status: 'running' });
@@ -1697,6 +1703,10 @@ export class APIServer {
           }
           scheduleCardUpdate();
         }
+      } else if (event.type === 'text_delta' && event.text) {
+        streamingText += event.text;
+        lastCardUpdatePhase = 'tool_calling';
+        scheduleCardUpdate();
       }
     };
 
@@ -1713,6 +1723,27 @@ export class APIServer {
       if (cardUpdateTimer) { clearTimeout(cardUpdateTimer); cardUpdateTimer = null; }
 
       const elapsedMs = Date.now() - startTime;
+
+      // Handle merged messages — user sent while agent was already processing
+      if (reply === '[merged]' || reply === '[Stream cancelled]') {
+        log.info('Feishu message was merged into active processing', { chatId });
+        if (messageId && this.feishuNotifier) {
+          if (processingReactionId) {
+            await this.feishuNotifier.deleteReaction(messageId, processingReactionId);
+          }
+          await this.feishuNotifier.addReaction(messageId, 'OnIt');
+        }
+        if (statusCardId && this.feishuNotifier) {
+          const mergedCard = buildAgentResponseCard({
+            agentName,
+            phase: 'done',
+            content: '已收到，已合并到当前正在处理的对话中。',
+            elapsedMs,
+          });
+          await this.feishuNotifier.updateCard(statusCardId, mergedCard).catch(() => {});
+        }
+        return;
+      }
 
       // Strip thinking/reasoning blocks — only show the clean response to user
       const { clean: cleanReply } = extractThinkBlocks(reply ?? '');
@@ -1788,6 +1819,8 @@ export class APIServer {
       } else {
         await this.feishuNotifier?.sendTextToChat(chatId, `处理消息时出错: ${errMsg}`);
       }
+    } finally {
+      this.feishuNotifier?.setActiveConversationChat(null);
     }
   }
 
@@ -7678,7 +7711,7 @@ EXPLANATION_END`;
     if (path === '/api/license' && req.method === 'GET') {
       const raw = this.licenseService
         ? this.licenseService.getInfo()
-        : { plan: 'free', features: [], limits: { maxTeams: 5, maxToolCallsPerDay: 5000, maxUsers: 1 } };
+        : { plan: 'free', features: [], limits: { maxAgents: 20, maxTeams: 5, maxToolCallsPerDay: 5000, maxUsers: 1 } };
       this.json(res, 200, await this.buildLicenseResponse(raw, req));
       return;
     }

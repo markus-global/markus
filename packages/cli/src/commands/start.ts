@@ -332,7 +332,7 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   const feishuAppId = feishuIntegration?.appId ?? process.env['FEISHU_APP_ID'];
   const feishuAppSecret = feishuIntegration?.appSecret ?? process.env['FEISHU_APP_SECRET'];
   if (feishuAppId && feishuAppSecret) {
-    const presets = feishuIntegration?.mcp?.presets ?? ['preset.default'];
+    const presets = feishuIntegration?.mcp?.presets ?? ['preset.default', 'preset.calendar.default', 'preset.task.default', 'preset.im.default', 'preset.base.batch'];
     let larkMcpBin: string;
     try {
       const esmRequire = createRequire(import.meta.url);

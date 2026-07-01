@@ -311,6 +311,8 @@ export class FeishuNotifier {
   private wsConnected = false;
   /** Map messageId → approvalId for tracking replies as comments */
   private approvalMessageMap = new Map<string, string>();
+  /** Active Feishu chat being served — approvals are sent here too */
+  private activeConversationChatId: string | null = null;
 
   constructor(opts: {
     eventBus: EventBus;
@@ -883,9 +885,14 @@ export class FeishuNotifier {
       matchedTargets.push(...rule.targets);
     }
 
+    // For approvals during active conversation, send to the user's chat directly
+    const isApprovalType = ['approval_requested', 'approval_approved', 'approval_rejected'].includes(eventType);
+    if (isApprovalType && this.activeConversationChatId) {
+      matchedTargets.push({ type: 'chat', channelId: this.activeConversationChatId });
+    }
+
     // Fallback: use notifyChatId or notifyOpenId from simplified config
     if (matchedTargets.length === 0 && (this.config.notifyChatId || this.config.notifyOpenId)) {
-      const isApprovalType = ['approval_requested', 'approval_approved', 'approval_rejected'].includes(eventType);
       const shouldForward = isApprovalType
         ? this.config.notifyOnApproval !== false
         : this.config.notifyOnNotification === true;
@@ -947,6 +954,11 @@ export class FeishuNotifier {
         });
       }
     }
+  }
+
+  /** Set the active Feishu conversation chatId (approvals will also be sent here). */
+  setActiveConversationChat(chatId: string | null): void {
+    this.activeConversationChatId = chatId;
   }
 
   /** Send a text message to a specific Feishu chat. */

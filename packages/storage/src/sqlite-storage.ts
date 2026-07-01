@@ -793,7 +793,7 @@ export class SqliteOrgRepo {
         `INSERT OR IGNORE INTO organizations (id, name, owner_id, plan, max_agents, settings, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, '{}', ?, ?)`
       )
-      .run(data.id, data.name, data.ownerId, data.plan ?? 'free', data.maxAgents ?? 5, ts, ts);
+      .run(data.id, data.name, data.ownerId, data.plan ?? 'free', data.maxAgents ?? 20, ts, ts);
     return this.findOrgById(data.id)!;
   }
 
