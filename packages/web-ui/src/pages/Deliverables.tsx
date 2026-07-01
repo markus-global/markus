@@ -431,10 +431,19 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   };
 
   const handleStartEdit = () => {
-    const content = previewContent ?? selected?.summary ?? '';
-    setEditContent(content);
+    if (!editDirty) {
+      const content = previewContent ?? selected?.summary ?? '';
+      setEditContent(content);
+    }
     setEditMode(true);
-    setEditDirty(false);
+  };
+
+  const handleSwitchToPreview = () => {
+    if (editDirty) {
+      setUnsavedDialog({ action: () => { setEditMode(false); setEditDirty(false); } });
+    } else {
+      setEditMode(false);
+    }
   };
 
   const handleSaveEdit = async () => {
@@ -484,12 +493,22 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     return () => window.removeEventListener('markus:navigate', handler as EventListener);
   }, [editDirty]);
 
-  // Auto-collapse sidebar when chat panel opens on narrow screens
+  // Auto-collapse sidebar when chat panel opens and content area is too narrow
+  const sidebarManualRef = useRef(false);
   useEffect(() => {
-    if (chatPanelOpen && !isMobile && window.innerWidth < 1280) {
+    if (!chatPanelOpen) {
+      sidebarManualRef.current = false;
+      return;
+    }
+    if (isMobile || sidebarManualRef.current) return;
+    const chatWidth = 400;
+    const sidebarWidth = sidebarCollapsed ? 0 : (listPanel.width ?? 384);
+    const appSidebarWidth = 160;
+    const availableForContent = window.innerWidth - appSidebarWidth - sidebarWidth - chatWidth;
+    if (availableForContent < 480 && !sidebarCollapsed) {
       setSidebarCollapsed(true);
     }
-  }, [chatPanelOpen, isMobile]);
+  }, [chatPanelOpen, isMobile, sidebarCollapsed, listPanel.width]);
 
   // Selection toolbar handler (Phase 4)
   const detailContentRef = useRef<HTMLDivElement>(null);
@@ -733,7 +752,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         {sidebarCollapsed && !isMobile && (
           <div className="sticky top-0 z-10 bg-surface-primary/80 backdrop-blur-sm px-4 py-2 flex items-center gap-2">
             <button
-              onClick={() => setSidebarCollapsed(false)}
+              onClick={() => { sidebarManualRef.current = true; setSidebarCollapsed(false); }}
               className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
               title={t('sidebar.expand')}
             >
@@ -955,7 +974,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 {(previewContent || selected.summary) && !previewLoading && !previewImage && !showCopyPath && selected.reference && selected.type === 'file' && (previewFormat === 'markdown' || previewFormat === 'text' || previewFormat === 'html') && (
                   <div className="flex items-center gap-2 px-4 py-2 border-b border-border-subtle bg-surface-secondary/50">
                     <button
-                      onClick={() => { if (editMode) { setEditMode(false); } }}
+                      onClick={handleSwitchToPreview}
                       className={`px-3 py-1 rounded text-xs font-medium transition-colors ${!editMode ? 'bg-brand-600/20 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'}`}
                     >
                       {t('detail.preview')}

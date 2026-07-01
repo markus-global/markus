@@ -2,7 +2,7 @@
   "type": "skill",
   "name": "feishu-interaction",
   "displayName": "Feishu Interaction",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Interact with Feishu/Lark platform - search documents, manage tasks, create calendar events, operate Bitable, and send messages",
   "author": "markus",
   "category": "integration",
@@ -19,8 +19,7 @@
     "isolation": "shared",
     "mcpServers": {
       "feishu-lark": {
-        "command": "npx",
-        "args": ["-y", "@larksuiteoapi/lark-mcp", "mcp", "-a", "${FEISHU_APP_ID}", "-s", "${FEISHU_APP_SECRET}", "-t", "preset.default"]
+        "reuseGlobal": true
       }
     }
   }

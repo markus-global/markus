@@ -1076,6 +1076,17 @@ export class AgentManager {
       const skill = this.skillRegistry?.get(skillName);
       const isolation = skill?.manifest.isolation ?? 'shared';
       for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
+        // reuseGlobal: reuse the globally-configured MCP server (with real credentials from config)
+        if ((rawSrvConfig as Record<string, unknown>).reuseGlobal === true) {
+          const globalConfig = this.globalMcpServers?.[serverName];
+          if (globalConfig) {
+            const gc = this.enrichChromeDevtoolsConfig(serverName, globalConfig);
+            await this.mcpManager.connectServer(serverName, gc);
+          }
+          const handlers = this.mcpManager.getToolHandlers(serverName);
+          if (handlers.length > 0) tools.push(...handlers);
+          continue;
+        }
         const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
         if (serverName === 'chrome-devtools') {
           const chromeTools = await this.registerChromeDevtoolsLazy(id, serverName, srvConfig);
@@ -1934,6 +1945,17 @@ export class AgentManager {
       const skill = this.skillRegistry?.get(skillName);
       const isolation = skill?.manifest.isolation ?? 'shared';
       for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
+        // reuseGlobal: reuse the globally-configured MCP server (with real credentials from config)
+        if ((rawSrvConfig as Record<string, unknown>).reuseGlobal === true) {
+          const globalConfig = this.globalMcpServers?.[serverName];
+          if (globalConfig) {
+            const gc = this.enrichChromeDevtoolsConfig(serverName, globalConfig);
+            await this.mcpManager.connectServer(serverName, gc);
+          }
+          const handlers = this.mcpManager.getToolHandlers(serverName);
+          if (handlers.length > 0) tools.push(...handlers);
+          continue;
+        }
         const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
         if (serverName === 'chrome-devtools') {
           const chromeTools = await this.registerChromeDevtoolsLazy(id, serverName, srvConfig);

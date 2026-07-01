@@ -7,7 +7,6 @@ function loadMermaid() {
     mermaidPromise = import('mermaid').then(m => {
       m.default.initialize({
         startOnLoad: false,
-        theme: 'dark',
         securityLevel: 'loose',
         fontFamily: 'inherit',
       });
@@ -45,6 +44,7 @@ export function MermaidBlock({ code }: { code: string }) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const renderIdBase = useId();
+  const renderCountRef = useRef(0);
   const renderedRef = useRef<{ code: string; dark: boolean } | null>(null);
   const dark = useIsDarkMode();
 
@@ -55,6 +55,7 @@ export function MermaidBlock({ code }: { code: string }) {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    renderCountRef.current += 1;
 
     (async () => {
       try {
@@ -68,7 +69,7 @@ export function MermaidBlock({ code }: { code: string }) {
           fontFamily: 'inherit',
         });
 
-        const id = `mermaid-${renderIdBase.replace(/:/g, '')}`;
+        const id = `mermaid-${renderIdBase.replace(/:/g, '')}-${renderCountRef.current}`;
         const { svg } = await mermaid.default.render(id, code.trim());
         if (cancelled) return;
 
