@@ -22,7 +22,7 @@ export function DiagramToggleBlock({ code, language, children }: DiagramToggleBl
   }, [code]);
 
   return (
-    <div className="my-2 rounded-lg overflow-hidden border border-border-subtle">
+    <div className="not-prose my-2 rounded-lg overflow-hidden border border-border-subtle">
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-border-subtle bg-surface-secondary">
         <span className="text-[10px] font-medium text-fg-tertiary uppercase tracking-wider select-none">
           {language}

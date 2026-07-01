@@ -1,3 +1,4 @@
+@layer hljs;
 @import "tailwindcss";
 @import "highlight.js/styles/github-dark.css" layer(hljs);
 @plugin "@tailwindcss/typography";
@@ -284,14 +285,14 @@ body {
 /* highlight.js: transparent background, let CodeBlock handle container bg */
 pre code.hljs,
 code.hljs {
-  background: transparent;
-  padding: 0;
+  background: transparent !important;
+  padding: 0 !important;
 }
 
 /* Light mode: swap to light syntax colors */
 html.light pre code.hljs,
 html.light code.hljs {
-  color: #24292e;
+  color: #24292e !important;
 }
 html.light .hljs-doctag,
 html.light .hljs-keyword,
@@ -337,7 +338,7 @@ html.light .hljs-deletion { color: #b31d28; background-color: #ffeef0; }
 @media (prefers-color-scheme: light) {
   html:not(.dark):not(.cyberpunk):not(.mono) pre code.hljs,
   html:not(.dark):not(.cyberpunk):not(.mono) code.hljs {
-    color: #24292e;
+    color: #24292e !important;
   }
   html:not(.dark):not(.cyberpunk):not(.mono) .hljs-doctag,
   html:not(.dark):not(.cyberpunk):not(.mono) .hljs-keyword,

@@ -131,7 +131,7 @@ export function PlantUMLBlock({ code }: { code: string }) {
   }
 
   return (
-    <div className="my-2 rounded-lg bg-surface-secondary border border-border-subtle p-4 overflow-x-auto">
+    <div className="not-prose my-2 rounded-lg bg-surface-secondary border border-border-subtle p-4 overflow-x-auto">
       {loading && (
         <div className="flex items-center gap-2 text-xs text-fg-tertiary">
           <div className="w-4 h-4 border-2 border-fg-tertiary/30 border-t-fg-tertiary rounded-full animate-spin" />

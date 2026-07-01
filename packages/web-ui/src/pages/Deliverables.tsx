@@ -121,8 +121,19 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [editDirty, setEditDirty] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   const [unsavedDialog, setUnsavedDialog] = useState<{ action: () => void } | null>(null);
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const autoResizeTextarea = useCallback((el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+  }, []);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    autoResizeTextarea(editTextareaRef.current);
+  }, [editContent, editMode, autoResizeTextarea]);
 
   const flashMsg = (type: 'success' | 'error', text: string) => {
     setFlash({ type, text });
@@ -1008,9 +1019,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                   ) : previewContent ? (
                     editMode ? (
                       <textarea
+                        ref={editTextareaRef}
                         value={editContent}
                         onChange={(e) => { setEditContent(e.target.value); setEditDirty(true); }}
-                        className="w-full h-[50vh] min-h-[300px] p-3 text-sm font-mono bg-surface-primary border border-border-subtle rounded-lg text-fg-secondary resize-y focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                        className="w-full min-h-[120px] p-3 text-sm font-mono bg-surface-primary border border-border-subtle rounded-lg text-fg-secondary focus:outline-none focus:ring-1 focus:ring-brand-500/50 overflow-hidden"
+                        style={{ resize: 'none' }}
                         spellCheck={false}
                       />
                     ) : (
@@ -1034,9 +1047,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                   ) : selected.summary ? (
                     editMode ? (
                       <textarea
+                        ref={editTextareaRef}
                         value={editContent}
                         onChange={(e) => { setEditContent(e.target.value); setEditDirty(true); }}
-                        className="w-full h-[50vh] min-h-[300px] p-3 text-sm font-mono bg-surface-primary border border-border-subtle rounded-lg text-fg-secondary resize-y focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                        className="w-full min-h-[120px] p-3 text-sm font-mono bg-surface-primary border border-border-subtle rounded-lg text-fg-secondary focus:outline-none focus:ring-1 focus:ring-brand-500/50 overflow-hidden"
+                        style={{ resize: 'none' }}
                         spellCheck={false}
                       />
                     ) : (

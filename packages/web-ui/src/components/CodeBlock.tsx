@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, isValidElement, Children, type ReactNode, type ReactElement, type ComponentType } from 'react';
+import { useState, useRef, useCallback, isValidElement, cloneElement, Children, type ReactNode, type ReactElement, type ComponentType } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MermaidBlock } from './MermaidBlock.tsx';
 import { PlantUMLBlock } from './PlantUMLBlock.tsx';
@@ -17,15 +17,14 @@ function extractLanguage(children: ReactNode): string | null {
   return null;
 }
 
-function extractCodeText(children: ReactNode): string {
-  for (const child of Children.toArray(children)) {
-    if (isValidElement(child)) {
-      const props = child.props as { children?: ReactNode };
-      if (typeof props.children === 'string') return props.children;
-      if (Array.isArray(props.children)) {
-        return props.children.map((c: unknown) => (typeof c === 'string' ? c : '')).join('');
-      }
-    }
+function extractCodeText(node: ReactNode): string {
+  if (typeof node === 'string') return node;
+  if (typeof node === 'number') return String(node);
+  if (!node) return '';
+  if (Array.isArray(node)) return node.map(extractCodeText).join('');
+  if (isValidElement(node)) {
+    const props = node.props as { children?: ReactNode };
+    return extractCodeText(props.children);
   }
   return '';
 }
@@ -64,7 +63,7 @@ export function CodeBlock({ children }: { children?: ReactNode }) {
   }
 
   return (
-    <div className="relative group/code my-2 rounded-lg overflow-hidden bg-surface-secondary border border-border-subtle">
+    <div className="not-prose relative group/code my-2 rounded-lg overflow-hidden bg-surface-secondary border border-border-subtle">
       {lang && (
         <div className="flex items-center justify-between px-3 py-1.5 border-b border-border-subtle">
           <span className="text-[10px] font-medium text-fg-tertiary uppercase tracking-wider select-none">
@@ -94,9 +93,13 @@ export function CodeBlock({ children }: { children?: ReactNode }) {
         {mode === 'rendered' ? (
           <pre
             ref={preRef}
-            className="p-3 overflow-x-auto text-xs [&>code]:bg-transparent [&>code]:p-0 [&>code]:rounded-none [&>code]:text-fg-secondary"
+            className="p-3 overflow-x-auto text-xs [&>code]:p-0 [&>code]:rounded-none [&>code]:text-fg-secondary"
           >
-            {children}
+            {Children.map(children, child =>
+              isValidElement(child)
+                ? cloneElement(child as ReactElement<{ style?: React.CSSProperties }>, { style: { background: 'transparent', padding: 0 } })
+                : child
+            )}
           </pre>
         ) : (
           <pre className="p-3 overflow-x-auto text-xs font-mono text-fg-secondary whitespace-pre-wrap break-words">
