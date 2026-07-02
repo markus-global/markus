@@ -141,6 +141,7 @@ export {
   drainCompletedNotifications,
   MCPClientManager,
   createBuiltinTools,
+  registerBuiltinTools,
   createManagerTools,
   type ManagerToolsContext,
   createPackageTools,

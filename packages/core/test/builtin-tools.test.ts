@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createBuiltinTools, registerBuiltinTools } from '../src/tools/builtin.js';
+import { ToolRegistry } from '../src/tools/registry.js';
 
 vi.mock('../src/tools/shell.js', () => ({
   createShellTool: vi.fn(() => ({ name: 'shell_execute', execute: vi.fn() })),
@@ -29,29 +30,6 @@ vi.mock('../src/tools/web-extract.js', () => ({
 vi.mock('../src/tools/process-manager.js', () => ({
   createBackgroundExecTool: vi.fn(() => ({ name: 'background_exec', execute: vi.fn() })),
   createProcessTool: vi.fn(() => ({ name: 'process_manage', execute: vi.fn() })),
-}));
-
-// Create mock factory via vi.hoisted() — runs before vi.mock factories, available in test body
-const { createMockRegistry } = vi.hoisted(() => {
-  function createMockRegistry() {
-    const registrations: Array<{ name: string; category?: unknown; tags?: string[] }> = [];
-    return {
-      register: vi.fn((entry: { handler: { name: string }; category?: unknown; tags?: string[] }) => {
-        registrations.push({ name: entry.handler.name, category: entry.category, tags: entry.tags });
-      }),
-      getAll: vi.fn(() => registrations.map(r => ({ name: r.name }))),
-      getAllRegistrations: vi.fn(() => registrations),
-      get: vi.fn(() => undefined as never),
-      findByCategory: vi.fn(() => []),
-      search: vi.fn(() => []),
-      unregister: vi.fn(),
-    };
-  }
-  return { createMockRegistry };
-});
-
-vi.mock('../src/tools/registry.js', () => ({
-  globalToolRegistry: createMockRegistry(),
 }));
 
 describe('createBuiltinTools', () => {
@@ -86,7 +64,7 @@ describe('createBuiltinTools', () => {
 
   it('passes workspace and policy options to file tools', async () => {
     const { createFileReadTool } = await import('../src/tools/file.js');
-    const policy = { primaryWorkspace: '/workspace/a', denyWritePaths: ['/workspace/b'] };
+    const policy = { primaryWorkspace: '/workspace/a', denyWritePaths: ['/workspace/b'] } as any;
     createBuiltinTools({ pathPolicy: policy });
     expect(createFileReadTool).toHaveBeenCalledWith(undefined, '/workspace/a', policy);
   });
@@ -102,12 +80,12 @@ describe('createBuiltinTools', () => {
 
 describe('registerBuiltinTools', () => {
   it('registers all built-in tools with metadata in an injected registry', () => {
-    const registry = createMockRegistry();
-    registerBuiltinTools(undefined, registry );
-    const registered = registry.getAllRegistrations!();
+    const registry = new ToolRegistry();
+    registerBuiltinTools(undefined, registry);
+    const registered = registry.getAllRegistrations();
 
     // Should include shell, file, web tools plus background exec
-    const names = registered.map((r: { name: string }) => r.name);
+    const names = registered.map((r) => r.handler.name);
     expect(names).toContain('shell_execute');
     expect(names).toContain('file_read');
     expect(names).toContain('file_write');
@@ -127,30 +105,254 @@ describe('registerBuiltinTools', () => {
     for (const entry of registered) {
       expect(entry.category).toBeDefined();
       expect(entry.tags).toBeDefined();
-      expect(entry.tags!.length).toBeGreaterThanOrEqual(2);
+      expect(entry.tags.length).toBeGreaterThanOrEqual(2);
     }
   });
 
   it('registers correct number of tools (13 with background exec)', () => {
-    const registry = createMockRegistry();
-    registerBuiltinTools(undefined, registry );
-    expect(registry.register).toHaveBeenCalledTimes(13);
+    const registry = new ToolRegistry();
+    registerBuiltinTools(undefined, registry);
+    expect(registry.getAllRegistrations()).toHaveLength(13);
   });
 
   it('registers tools grouped by category', () => {
-    const registry = createMockRegistry();
-    registerBuiltinTools(undefined, registry );
-    const registered = registry.getAllRegistrations!();
+    const registry = new ToolRegistry();
+    registerBuiltinTools(undefined, registry);
+    const registered = registry.getAllRegistrations();
 
     // Shell tools
-    const shellTools = registered.filter((r: { tags?: string[] }) => r.tags?.includes('shell'));
+    const shellTools = registered.filter((r) => r.tags.includes('shell'));
     expect(shellTools.length).toBeGreaterThanOrEqual(1);
-    expect(shellTools.map((r: { name: string }) => r.name)).toContain('shell_execute');
+    expect(shellTools.map((r) => r.handler.name)).toContain('shell_execute');
 
     // File tools
-    const fileTools = registered.filter((r: { tags?: string[] }) => r.tags?.some(t => ['file_read', 'file_write'].includes(t) || t === 'file'));
-    const allNames = registered.map((r: { name: string }) => r.name);
+    const allNames = registered.map((r) => r.handler.name);
     expect(allNames).toContain('file_read');
     expect(allNames).toContain('file_write');
+  });
+});
+
+describe('ToolRegistry (real instance)', () => {
+  it('registers and retrieves tools', () => {
+    const registry = new ToolRegistry();
+    const handler = { name: 'test_tool', execute: vi.fn() };
+
+    registry.register({
+      handler,
+      category: { name: 'test', description: 'Test category' },
+      priority: 50,
+      tags: ['test', 'demo'],
+    });
+
+    expect(registry.get('test_tool')).toBe(handler);
+    expect(registry.getAll()).toHaveLength(1);
+    expect(registry.getAll()).toContain(handler);
+  });
+
+  it('overwrites existing tool with same name on re-register', () => {
+    const registry = new ToolRegistry();
+    const handler1 = { name: 'dup_tool', execute: vi.fn() };
+    const handler2 = { name: 'dup_tool', execute: vi.fn() };
+
+    registry.register({
+      handler: handler1,
+      category: { name: 'cat', description: '' },
+      priority: 10,
+      tags: [],
+    });
+    registry.register({
+      handler: handler2,
+      category: { name: 'cat', description: '' },
+      priority: 20,
+      tags: [],
+    });
+
+    expect(registry.get('dup_tool')).toBe(handler2);
+    expect(registry.getAll()).toHaveLength(1);
+  });
+
+  it('finds tools by category', () => {
+    const registry = new ToolRegistry();
+
+    registry.register({
+      handler: { name: 'shell_exec', execute: vi.fn() },
+      category: { name: 'shell', description: 'Shell commands' },
+      priority: 100,
+      tags: ['shell'],
+    });
+    registry.register({
+      handler: { name: 'file_read', execute: vi.fn() },
+      category: { name: 'file', description: 'File ops' },
+      priority: 90,
+      tags: ['file'],
+    });
+    registry.register({
+      handler: { name: 'web_fetch', execute: vi.fn() },
+      category: { name: 'web', description: 'Web ops' },
+      priority: 70,
+      tags: ['web'],
+    });
+
+    const shellTools = registry.findByCategory('shell');
+    expect(shellTools).toHaveLength(1);
+    expect(shellTools[0].handler.name).toBe('shell_exec');
+
+    const fileTools = registry.findByCategory('file');
+    expect(fileTools).toHaveLength(1);
+    expect(fileTools[0].handler.name).toBe('file_read');
+
+    const fileRegs = registry.findByCategory('file');
+    expect(fileRegs[0].category.name).toBe('file');
+    expect(fileRegs[0].priority).toBe(90);
+  });
+
+  it('returns empty array for unknown category', () => {
+    const registry = new ToolRegistry();
+    expect(registry.findByCategory('nonexistent')).toEqual([]);
+  });
+
+  it('searches tools by name', () => {
+    const registry = new ToolRegistry();
+
+    registry.register({
+      handler: { name: 'shell_execute', execute: vi.fn() },
+      category: { name: 'shell', description: '' },
+      priority: 100,
+      tags: ['shell', 'bash'],
+    });
+    registry.register({
+      handler: { name: 'file_read', execute: vi.fn() },
+      category: { name: 'file', description: '' },
+      priority: 90,
+      tags: ['file', 'read'],
+    });
+    registry.register({
+      handler: { name: 'file_write', execute: vi.fn() },
+      category: { name: 'file', description: '' },
+      priority: 90,
+      tags: ['file', 'write'],
+    });
+
+    const results = registry.search('file_');
+    expect(results).toHaveLength(2);
+    expect(results.map(r => r.handler.name).sort()).toEqual(['file_read', 'file_write']);
+  });
+
+  it('searches tools by tag', () => {
+    const registry = new ToolRegistry();
+
+    registry.register({
+      handler: { name: 'shell_exec', execute: vi.fn() },
+      category: { name: 'shell', description: '' },
+      priority: 100,
+      tags: ['shell', 'bash', 'command'],
+    });
+    registry.register({
+      handler: { name: 'background_run', execute: vi.fn() },
+      category: { name: 'shell', description: '' },
+      priority: 60,
+      tags: ['shell', 'background', 'async'],
+    });
+
+    // Search by tag 'async'
+    const results = registry.search('async');
+    expect(results).toHaveLength(1);
+    expect(results[0].handler.name).toBe('background_run');
+
+    // Search by tag 'bash'
+    const bashResults = registry.search('bash');
+    expect(bashResults).toHaveLength(1);
+    expect(bashResults[0].handler.name).toBe('shell_exec');
+  });
+
+  it('returns empty array when search matches nothing', () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      handler: { name: 'some_tool', execute: vi.fn() },
+      category: { name: 'cat', description: '' },
+      priority: 50,
+      tags: ['tag1'],
+    });
+
+    expect(registry.search('nonexistent')).toEqual([]);
+  });
+
+  it('unregisters a tool by name', () => {
+    const registry = new ToolRegistry();
+    const handler = { name: 'temp_tool', execute: vi.fn() };
+
+    registry.register({
+      handler,
+      category: { name: 'temp', description: 'Temp' },
+      priority: 50,
+      tags: ['temp'],
+    });
+    expect(registry.getAll()).toHaveLength(1);
+
+    const result = registry.unregister('temp_tool');
+    expect(result).toBe(true);
+    expect(registry.get('temp_tool')).toBeUndefined();
+    expect(registry.getAll()).toHaveLength(0);
+  });
+
+  it('unregister removes from category and tag indices', () => {
+    const registry = new ToolRegistry();
+
+    registry.register({
+      handler: { name: 'tool_a', execute: vi.fn() },
+      category: { name: 'cat_a', description: '' },
+      priority: 50,
+      tags: ['tag_a'],
+    });
+
+    // Verify it's findable before unregister
+    expect(registry.findByCategory('cat_a')).toHaveLength(1);
+    expect(registry.search('tag_a')).toHaveLength(1);
+
+    registry.unregister('tool_a');
+
+    // Should no longer appear in indices
+    expect(registry.findByCategory('cat_a')).toHaveLength(0);
+    expect(registry.search('tag_a')).toHaveLength(0);
+  });
+
+  it('returns false when unregistering non-existent tool', () => {
+    const registry = new ToolRegistry();
+    expect(registry.unregister('nonexistent')).toBe(false);
+  });
+
+  it('returns all registrations with metadata', () => {
+    const registry = new ToolRegistry();
+
+    registry.register({
+      handler: { name: 'tool_1', execute: vi.fn() },
+      category: { name: 'cat1', description: 'Category 1' },
+      priority: 100,
+      tags: ['tag1'],
+    });
+    registry.register({
+      handler: { name: 'tool_2', execute: vi.fn() },
+      category: { name: 'cat2', description: 'Category 2' },
+      priority: 50,
+      tags: ['tag2'],
+    });
+
+    const allRegs = registry.getAllRegistrations();
+    expect(allRegs).toHaveLength(2);
+    expect(allRegs.find(r => r.handler.name === 'tool_1')?.priority).toBe(100);
+    expect(allRegs.find(r => r.handler.name === 'tool_2')?.category.name).toBe('cat2');
+  });
+
+  it('createBuiltinTools uses a fresh local registry (no cross-test pollution)', () => {
+    // First call with background exec enabled
+    const tools1 = createBuiltinTools();
+    expect(tools1).toHaveLength(13);
+
+    // Second call with background exec disabled — should NOT include bg tools
+    const tools2 = createBuiltinTools({ enableBackgroundExec: false });
+    const names = tools2.map(t => t.name);
+    expect(names).not.toContain('background_exec');
+    expect(names).not.toContain('process_manage');
+    expect(tools2).toHaveLength(11);
   });
 });
