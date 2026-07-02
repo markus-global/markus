@@ -2575,6 +2575,16 @@ export class APIServer {
         return;
       }
       const sessionId = path.split('/')[3]!;
+      if (this.storage) {
+        const session = this.storage.chatSessionRepo.getSession(sessionId);
+        if (session && session.userId && session.userId !== authUser.userId) {
+          const isAdminOrOwner = authUser.role === 'owner' || authUser.role === 'admin';
+          if (!isAdminOrOwner) {
+            this.json(res, 403, { error: 'Access denied: this session belongs to another user' });
+            return;
+          }
+        }
+      }
       const override = this.llmRouter.getSessionModel(sessionId);
       this.json(res, 200, {
         provider: override?.provider ?? null,
@@ -2592,6 +2602,16 @@ export class APIServer {
         return;
       }
       const sessionId = path.split('/')[3]!;
+      if (this.storage) {
+        const session = this.storage.chatSessionRepo.getSession(sessionId);
+        if (session && session.userId && session.userId !== authUser.userId) {
+          const isAdminOrOwner = authUser.role === 'owner' || authUser.role === 'admin';
+          if (!isAdminOrOwner) {
+            this.json(res, 403, { error: 'Access denied: this session belongs to another user' });
+            return;
+          }
+        }
+      }
       const body = await this.readBody(req);
       const { provider, model } = body as { provider?: string; model?: string };
       if (!provider || typeof provider !== 'string') {
@@ -2624,10 +2644,20 @@ export class APIServer {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
       if (!this.llmRouter) {
-        this.json(res, 204, {});
+        this.json(res, 503, { error: 'LLM router not available' });
         return;
       }
       const sessionId = path.split('/')[3]!;
+      if (this.storage) {
+        const session = this.storage.chatSessionRepo.getSession(sessionId);
+        if (session && session.userId && session.userId !== authUser.userId) {
+          const isAdminOrOwner = authUser.role === 'owner' || authUser.role === 'admin';
+          if (!isAdminOrOwner) {
+            this.json(res, 403, { error: 'Access denied: this session belongs to another user' });
+            return;
+          }
+        }
+      }
       this.llmRouter.clearSessionModel(sessionId);
       this.auditService?.record({
         orgId: 'system',
