@@ -9,6 +9,7 @@ export type {
   DeliverableRow, TeamRow, User,
   GroupChat, GroupChatMember,
   KnowledgeRow,
+  MemoryRecord,
   ExternalAgentRow, GatewayMessageRow,
   MarketplaceTemplateRow, MarketplaceSkillRow, MarketplaceRatingRow,
 } from './types.js';
@@ -38,6 +39,7 @@ export {
   SqliteExternalAgentRepo,
   SqliteDeliverableRepo,
   SqliteActivityRepo,
+  SqliteMemoryRepo,
   SqliteExecutionStreamRepo,
   SqliteMailboxRepo,
   SqliteDecisionRepo,
@@ -64,4 +66,14 @@ export {
   type ReadCursorRow,
   type WorkflowRunRow,
   type WorkflowScheduleRow,
+  ensureFtsIndex,
+  escapeFtsQuery,
+  isFtsAvailable,
 } from './sqlite-storage.js';
+
+// FTS5 search result types (re-exported from shared)
+export type {
+  FtsSearchResult,
+  FtsSearchResponse,
+  FtsResultSource,
+} from '@markus/shared';

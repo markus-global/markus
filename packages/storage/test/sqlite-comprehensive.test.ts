@@ -38,6 +38,9 @@ import {
   SqliteReadCursorRepo,
   SqliteWorkflowRunRepo,
   SqliteWorkflowScheduleRepo,
+  ensureFtsIndex,
+  escapeFtsQuery,
+  isFtsAvailable,
 } from '../src/sqlite-storage.js';
 
 let tempDir: string;
@@ -556,6 +559,44 @@ describe('SqliteChatSessionRepo', () => {
 
     repo.deleteSession('legacy-session');
     expect(repo.getSession('legacy-session')).toBeNull();
+  });
+
+  it('FTS5: searchMessages returns results via FTS5 virtual table', async () => {
+    const db = openSqlite(dbPath);
+    seedBase(db);
+    const repo = new SqliteChatSessionRepo(db);
+
+    // insert enough data so FTS5 auto-populates via triggers
+    const session = repo.createSession('agent-1', 'user-1');
+    repo.appendMessage(session.id, 'agent-1', 'user', 'FTS5 full-text search test');
+    repo.appendMessage(session.id, 'agent-1', 'assistant', 'This is a response about indexing');
+
+    // FTS5 should find partial word matches
+    const results = repo.searchMessages('full-text');
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    expect(results.some((r: any) => String(r.content).includes('FTS5'))).toBe(true);
+  });
+
+  it('FTS5: ensureFtsIndex is idempotent', async () => {
+    const db = openSqlite(':memory:');
+    // Call twice — second call must not throw
+    ensureFtsIndex(db);
+    expect(() => ensureFtsIndex(db)).not.toThrow();
+    closeSqlite(db);
+  });
+
+  it('FTS5: escapeFtsQuery handles special FTS5 characters', () => {
+    expect(escapeFtsQuery('hello world')).toBe('"hello world"');
+    expect(escapeFtsQuery('simple')).toBe('simple');
+    expect(escapeFtsQuery('')).toBe('');
+    expect(escapeFtsQuery('  ')).toBe('');
+      expect(escapeFtsQuery(`it's "quoted" term`)).toBe(`"it's ""quoted"" term"`);
+  });
+
+  it('FTS5: isFtsAvailable returns true for node:sqlite', () => {
+    const db = openSqlite(':memory:');
+    expect(isFtsAvailable(db)).toBe(true);
+    closeSqlite(db);
   });
 });
 
