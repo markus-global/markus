@@ -1,142 +1,143 @@
-/**
- * Tool Registry — Self-registration and runtime discovery of tools.
- *
- * L0: Core registry that allows tools to register themselves with metadata
- * (category, priority, tags) for runtime discovery by the agent.
- *
- * @module @markus/core/tools/registry
- */
+import type { AgentToolHandler } from '../agent.js';
 
 /**
- * Category metadata for tool grouping and discovery.
+ * Tool category descriptor used for organizing tools in the discovery catalog.
  */
 export interface ToolCategory {
+  /** Unique category name (e.g. "shell", "file", "web") */
   name: string;
+  /** Human-readable description of the category */
   description: string;
 }
 
 /**
- * Registration entry for a tool in the registry.
- *
- * The `name` is extracted from the `handler` at registration time so that
- * consumers (Agent, discovery tools) can reference tools by `entry.name`
- * without unwrapping a nested handler object.
+ * Full registration metadata for a tool in the ToolRegistry.
  */
 export interface ToolRegistration {
-  /** Tool name (mirrored from handler.name at registration) */
-  name: string;
-  /** The tool handler instance (must have a unique `.name` property) */
-  handler: { name: string };
-  /** Optional category for grouping/filtering */
-  category?: ToolCategory;
-  /** Priority for sorting (higher = more important, default: 0) */
-  priority?: number;
-  /** Search tags for runtime discovery */
-  tags?: string[];
+  /** The tool handler instance */
+  handler: AgentToolHandler;
+  /** Category this tool belongs to */
+  category: ToolCategory;
+  /** Priority within the category (higher = more important, appears first) */
+  priority: number;
+  /** Search keywords for runtime discovery */
+  tags: string[];
 }
 
 /**
- * Internal storage shape — each entry has a name key plus metadata.
- */
-interface InternalEntry {
-  registration: ToolRegistration;
-}
-
-/**
- * ToolRegistry — in-memory registry for tools.
+ * In-memory registry for tool handlers that supports registration,
+ * discovery, and search.
  *
- * Provides register/discover/list capability so new tools can be
- * self-registered without hardcoding them in the agent or router.
+ * Tools can be registered with metadata (category, priority, tags)
+ * so the agent can discover them at runtime based on task requirements.
  */
 export class ToolRegistry {
-  private entries = new Map<string, InternalEntry>();
+  private handlers = new Map<string, AgentToolHandler>();
+  private registrations = new Map<string, ToolRegistration>();
+  private indexedByCategory = new Map<string, ToolRegistration[]>();
+  private indexedByTag = new Map<string, ToolRegistration[]>();
 
   /**
-   * Register a tool with metadata.
-   * If a tool with the same name already exists, it will be overwritten.
+   * Register a tool with full metadata.
+   * If a tool with the same name already exists, it is overwritten.
    */
-  register(entry: { handler: { name: string }; category?: ToolCategory; priority?: number; tags?: string[] }): void {
+  register(entry: ToolRegistration): void {
     const name = entry.handler.name;
-    if (!name) {
-      throw new Error('ToolRegistration requires a handler with a `.name` property');
+    this.handlers.set(name, entry.handler);
+    this.registrations.set(name, entry);
+
+    // Index by category
+    const catName = entry.category.name;
+    if (!this.indexedByCategory.has(catName)) {
+      this.indexedByCategory.set(catName, []);
     }
-    this.entries.set(name, {
-      registration: {
-        name,
-        handler: entry.handler,
-        category: entry.category,
-        priority: entry.priority,
-        tags: entry.tags,
-      },
-    });
+    this.indexedByCategory.get(catName)!.push(entry);
+
+    // Index by tags
+    for (const tag of entry.tags) {
+      if (!this.indexedByTag.has(tag)) {
+        this.indexedByTag.set(tag, []);
+      }
+      this.indexedByTag.get(tag)!.push(entry);
+    }
   }
 
   /**
-   * Get a registered tool by name.
+   * Get a tool handler by name.
    */
-  get(name: string): ToolRegistration | undefined {
-    return this.entries.get(name)?.registration;
+  get(name: string): AgentToolHandler | undefined {
+    return this.handlers.get(name);
   }
 
   /**
-   * Get all registered tool handlers (raw handler objects with `.name`).
-   *
-   * This is used by the Agent's core tool loop which iterates handlers
-   * directly. For metadata-enriched entries, use `getAllRegistrations()`.
+   * Get all registered tool handlers.
    */
-  getAll(): { name: string }[] {
-    return Array.from(this.entries.values()).map(e => e.registration.handler);
+  getAll(): AgentToolHandler[] {
+    return Array.from(this.handlers.values());
   }
 
   /**
-   * Get all registered tools with full metadata (category, tags, priority).
-   * Each entry has a `.name` at the top level plus `.handler`, `.category`,
-   * `.tags`, and `.priority`.
+   * Get all full registrations (handler + metadata).
    */
   getAllRegistrations(): ToolRegistration[] {
-    return Array.from(this.entries.values()).map(e => e.registration);
+    return Array.from(this.registrations.values());
   }
 
   /**
-   * Find tools by category name.
+   * Find all registrations in a given category.
    */
   findByCategory(categoryName: string): ToolRegistration[] {
-    return this.getAllRegistrations().filter(e => e.category?.name === categoryName);
+    return this.indexedByCategory.get(categoryName) ?? [];
   }
 
   /**
-   * Search tools by query string (matches name, tags, category, description).
+   * Search registrations by name or tags.
+   * Matches if the query string appears in the tool name or any of its tags.
    */
   search(query: string): ToolRegistration[] {
     const q = query.toLowerCase();
-    return this.getAllRegistrations().filter(e => {
-      const name = e.name.toLowerCase();
-      const tags = e.tags?.join(' ') ?? '';
-      const cat = e.category?.name.toLowerCase() ?? '';
-      const desc = e.category?.description.toLowerCase() ?? '';
-      return name.includes(q) || tags.includes(q) || cat.includes(q) || desc.includes(q);
-    });
+    const results: ToolRegistration[] = [];
+    for (const reg of this.registrations.values()) {
+      if (reg.handler.name.toLowerCase().includes(q) ||
+          reg.tags.some(t => t.toLowerCase().includes(q))) {
+        results.push(reg);
+      }
+    }
+    return results;
   }
 
   /**
    * Unregister a tool by name.
+   * Returns true if the tool existed and was removed.
    */
-  unregister(name: string): void {
-    this.entries.delete(name);
-  }
+  unregister(name: string): boolean {
+    const existed = this.handlers.delete(name);
+    const reg = this.registrations.get(name);
+    this.registrations.delete(name);
 
-  /**
-   * Get the count of registered tools.
-   */
-  get size(): number {
-    return this.entries.size;
+    if (reg) {
+      // Remove from category index
+      const catList = this.indexedByCategory.get(reg.category.name);
+      if (catList) {
+        const idx = catList.findIndex(r => r.handler.name === name);
+        if (idx !== -1) catList.splice(idx, 1);
+      }
+
+      // Remove from tag indexes
+      for (const tag of reg.tags) {
+        const tagList = this.indexedByTag.get(tag);
+        if (tagList) {
+          const idx = tagList.findIndex(r => r.handler.name === name);
+          if (idx !== -1) tagList.splice(idx, 1);
+        }
+      }
+    }
+
+    return existed;
   }
 }
 
 /**
- * Global singleton instance of ToolRegistry.
- *
- * Used by built-in tool registration (registerBuiltinTools) and the Agent
- * constructor when no explicit registry is provided.
+ * Global singleton ToolRegistry used by default across all agents.
  */
 export const globalToolRegistry = new ToolRegistry();
