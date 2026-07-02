@@ -1348,6 +1348,27 @@ async function startServerCore(
         return actRepo.searchActivities(agentId, query, opts);
       },
     });
+
+    // Wire FTS5 full-text search to memory_search tool for long-tail recall
+    if (storage?.chatSessionRepo) {
+      agentManager.setFtsSearchCallback((agentId, query, opts) => {
+        try {
+          const limit = opts?.limit ?? 30;
+          const results = storage.chatSessionRepo!.searchMessages(query, limit) as Array<Record<string, unknown>>;
+          return results
+            .filter(r => r.sessionAgentId === agentId)
+            .map(r => ({
+              id: String(r.id),
+              agentId: String(r.agentId ?? ''),
+              type: String(r.role ?? ''),
+              content: String(r.content ?? ''),
+              createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt ?? ''),
+            }));
+        } catch {
+          return [];
+        }
+      });
+    }
   }
 
   // Wire mailbox + decision persistence to SQLite

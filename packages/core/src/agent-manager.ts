@@ -31,7 +31,7 @@ import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
 import { createProjectTools, type ProjectServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext } from './tools/project-tools.js';
-import { createMemoryTools } from './tools/memory.js';
+import { createMemoryTools, type FtsSearchCallback } from './tools/memory.js';
 import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
 import { createSettingsTools } from './tools/settings.js';
 import { createMultiModalTools } from './tools/multimodal.js';
@@ -362,6 +362,7 @@ export class AgentManager {
     onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
   };
   private recallCallbacks?: RecallCallbacks;
+  private ftsSearchCallback?: FtsSearchCallback;
   private delegationManager: DelegationManager;
   private _maxToolIterations = Infinity;
   private _cognitiveConfig?: CognitiveConfig;
@@ -1187,6 +1188,7 @@ export class AgentManager {
       agentName: config.name,
       memory: agent.getMemory(),
       semanticSearch: this.semanticSearch,
+      ftsSearch: this.ftsSearchCallback,
     })) {
       agent.registerTool(tool);
     }
@@ -2052,6 +2054,7 @@ export class AgentManager {
       agentName: config.name,
       memory: agent.getMemory(),
       semanticSearch: this.semanticSearch,
+      ftsSearch: this.ftsSearchCallback,
     })) {
       agent.registerTool(tool);
     }
@@ -2768,6 +2771,22 @@ export class AgentManager {
     this.recallCallbacks = cbs;
     for (const [id, agent] of this.agents) {
       agent.registerTool(createRecallTool({ agentId: id, ...cbs }));
+    }
+  }
+
+  setFtsSearchCallback(cb: FtsSearchCallback): void {
+    this.ftsSearchCallback = cb;
+    for (const [, agent] of this.agents) {
+      // Re-register memory tools to pick up the new FTS callback
+      for (const tool of createMemoryTools({
+        agentId: agent.id,
+        agentName: agent.config.name,
+        memory: agent.getMemory(),
+        semanticSearch: this.semanticSearch,
+        ftsSearch: cb,
+      })) {
+        agent.registerTool(tool);
+      }
     }
   }
 

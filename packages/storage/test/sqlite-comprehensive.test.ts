@@ -586,11 +586,17 @@ describe('SqliteChatSessionRepo', () => {
   });
 
   it('FTS5: escapeFtsQuery handles special FTS5 characters', () => {
-    expect(escapeFtsQuery('hello world')).toBe('"hello world"');
-    expect(escapeFtsQuery('simple')).toBe('simple');
+    // ASCII terms get prefix-match suffix
+    expect(escapeFtsQuery('hello world')).toBe('hello* world*');
+    expect(escapeFtsQuery('simple')).toBe('simple*');
     expect(escapeFtsQuery('')).toBe('');
     expect(escapeFtsQuery('  ')).toBe('');
-      expect(escapeFtsQuery(`it's "quoted" term`)).toBe(`"it's ""quoted"" term"`);
+    // CJK terms get quoted for phrase matching
+    expect(escapeFtsQuery('搜索测试')).toBe('"搜索测试"');
+    // Mixed CJK and ASCII
+    const mixed = escapeFtsQuery('hello 测试');
+    expect(mixed).toContain('hello*');
+    expect(mixed).toContain('"测试"');
   });
 
   it('FTS5: isFtsAvailable returns true for node:sqlite', () => {

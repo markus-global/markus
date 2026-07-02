@@ -671,13 +671,17 @@ export function openSqlite(dbPath: string): DatabaseSync {
       session_id UNINDEXED,
       agent_id UNINDEXED,
       role UNINDEXED,
+      content=chat_messages,
+      content_rowid=rowid,
       tokenize='unicode61'
     )`);
     _db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS channel_messages_fts USING fts5(
-      content,
+      text,
       channel UNINDEXED,
       sender_id UNINDEXED,
       sender_name UNINDEXED,
+      content=channel_messages,
+      content_rowid=rowid,
       tokenize='unicode61'
     )`);
 
@@ -687,29 +691,29 @@ export function openSqlite(dbPath: string): DatabaseSync {
       VALUES (new.rowid, new.content, new.session_id, new.agent_id, new.role);
     END`);
     _db.exec(`CREATE TRIGGER IF NOT EXISTS chat_messages_fts_ad AFTER DELETE ON chat_messages BEGIN
-      INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content, session_id, agent_id, role)
-      VALUES ('delete', old.rowid, old.content, old.session_id, old.agent_id, old.role);
+      INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content)
+      VALUES ('delete', old.rowid, old.content);
     END`);
     _db.exec(`CREATE TRIGGER IF NOT EXISTS chat_messages_fts_au AFTER UPDATE ON chat_messages BEGIN
-      INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content, session_id, agent_id, role)
-      VALUES ('delete', old.rowid, old.content, old.session_id, old.agent_id, old.role);
+      INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content)
+      VALUES ('delete', old.rowid, old.content);
       INSERT INTO chat_messages_fts(rowid, content, session_id, agent_id, role)
       VALUES (new.rowid, new.content, new.session_id, new.agent_id, new.role);
     END`);
 
     // Auto-sync triggers: channel_messages → channel_messages_fts
     _db.exec(`CREATE TRIGGER IF NOT EXISTS channel_messages_fts_ai AFTER INSERT ON channel_messages BEGIN
-      INSERT INTO channel_messages_fts(rowid, content, channel, sender_id, sender_name)
+      INSERT INTO channel_messages_fts(rowid, text, channel, sender_id, sender_name)
       VALUES (new.rowid, new.text, new.channel, new.sender_id, new.sender_name);
     END`);
     _db.exec(`CREATE TRIGGER IF NOT EXISTS channel_messages_fts_ad AFTER DELETE ON channel_messages BEGIN
-      INSERT INTO channel_messages_fts(channel_messages_fts, rowid, content, channel, sender_id, sender_name)
-      VALUES ('delete', old.rowid, old.text, old.channel, old.sender_id, old.sender_name);
+      INSERT INTO channel_messages_fts(channel_messages_fts, rowid, text)
+      VALUES ('delete', old.rowid, old.text);
     END`);
     _db.exec(`CREATE TRIGGER IF NOT EXISTS channel_messages_fts_au AFTER UPDATE ON channel_messages BEGIN
-      INSERT INTO channel_messages_fts(channel_messages_fts, rowid, content, channel, sender_id, sender_name)
-      VALUES ('delete', old.rowid, old.text, old.channel, old.sender_id, old.sender_name);
-      INSERT INTO channel_messages_fts(rowid, content, channel, sender_id, sender_name)
+      INSERT INTO channel_messages_fts(channel_messages_fts, rowid, text)
+      VALUES ('delete', old.rowid, old.text);
+      INSERT INTO channel_messages_fts(rowid, text, channel, sender_id, sender_name)
       VALUES (new.rowid, new.text, new.channel, new.sender_id, new.sender_name);
     END`);
 
@@ -721,12 +725,16 @@ export function openSqlite(dbPath: string): DatabaseSync {
       agent_id UNINDEXED,
       type UNINDEXED,
       task_id UNINDEXED,
+      content=agent_activities,
+      content_rowid=rowid,
       tokenize='unicode61'
     )`);
     _db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       content,
       type UNINDEXED,
       agent_id UNINDEXED,
+      content=memories,
+      content_rowid=rowid,
       tokenize='unicode61'
     )`);
 
@@ -736,12 +744,12 @@ export function openSqlite(dbPath: string): DatabaseSync {
       VALUES (new.rowid, new.summary, new.keywords, new.label, new.agent_id, new.type, new.task_id);
     END`);
     _db.exec(`CREATE TRIGGER IF NOT EXISTS agent_activities_fts_ad AFTER DELETE ON agent_activities BEGIN
-      INSERT INTO agent_activities_fts(agent_activities_fts, rowid, summary, keywords, label, agent_id, type, task_id)
-      VALUES ('delete', old.rowid, old.summary, old.keywords, old.label, old.agent_id, old.type, old.task_id);
+      INSERT INTO agent_activities_fts(agent_activities_fts, rowid, summary, keywords, label)
+      VALUES ('delete', old.rowid, old.summary, old.keywords, old.label);
     END`);
     _db.exec(`CREATE TRIGGER IF NOT EXISTS agent_activities_fts_au AFTER UPDATE ON agent_activities BEGIN
-      INSERT INTO agent_activities_fts(agent_activities_fts, rowid, summary, keywords, label, agent_id, type, task_id)
-      VALUES ('delete', old.rowid, old.summary, old.keywords, old.label, old.agent_id, old.type, old.task_id);
+      INSERT INTO agent_activities_fts(agent_activities_fts, rowid, summary, keywords, label)
+      VALUES ('delete', old.rowid, old.summary, old.keywords, old.label);
       INSERT INTO agent_activities_fts(rowid, summary, keywords, label, agent_id, type, task_id)
       VALUES (new.rowid, new.summary, new.keywords, new.label, new.agent_id, new.type, new.task_id);
     END`);
@@ -752,12 +760,12 @@ export function openSqlite(dbPath: string): DatabaseSync {
       VALUES (new.rowid, new.content, new.type, new.agent_id);
     END`);
     _db.exec(`CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
-      INSERT INTO memories_fts(memories_fts, rowid, content, type, agent_id)
-      VALUES ('delete', old.rowid, old.content, old.type, old.agent_id);
+      INSERT INTO memories_fts(memories_fts, rowid, content)
+      VALUES ('delete', old.rowid, old.content);
     END`);
     _db.exec(`CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
-      INSERT INTO memories_fts(memories_fts, rowid, content, type, agent_id)
-      VALUES ('delete', old.rowid, old.content, old.type, old.agent_id);
+      INSERT INTO memories_fts(memories_fts, rowid, content)
+      VALUES ('delete', old.rowid, old.content);
       INSERT INTO memories_fts(rowid, content, type, agent_id)
       VALUES (new.rowid, new.content, new.type, new.agent_id);
     END`);
@@ -862,8 +870,8 @@ export function ensureFtsIndex(db: DatabaseSync): void {
     }
     const chCount = db.prepare('SELECT COUNT(*) as cnt FROM channel_messages_fts').get() as { cnt: number } | undefined;
     if (chCount && chCount.cnt === 0) {
-      db.exec(`INSERT INTO channel_messages_fts(rowid, content, channel, sender_id, sender_name)
-               SELECT rowid, content, channel, sender_id, sender_name FROM channel_messages`);
+      db.exec(`INSERT INTO channel_messages_fts(rowid, text, channel, sender_id, sender_name)
+               SELECT rowid, text, channel, sender_id, sender_name FROM channel_messages`);
       log.info(`FTS5 index built: ${(db.prepare('SELECT COUNT(*) as cnt FROM channel_messages_fts').get() as { cnt: number }).cnt} channel messages indexed`);
     }
     const actCount = db.prepare('SELECT COUNT(*) as cnt FROM agent_activities_fts').get() as { cnt: number } | undefined;
@@ -2583,7 +2591,7 @@ export class SqliteChannelMessageRepo {
       let q = `SELECT cm.*, fts.rank
                FROM channel_messages_fts fts
                JOIN channel_messages cm ON cm.rowid = fts.rowid
-               WHERE fts.content MATCH ?`;
+               WHERE fts.text MATCH ?`;
       const vals: SqlParams = [ftsQ];
       if (channel) {
         q += ' AND fts.channel = ?';
@@ -4067,14 +4075,14 @@ export class SqliteMemoryRepo {
     `);
     this.db.exec(`
       CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-        INSERT INTO memories_fts(memories_fts, rowid, agent_id, type, content, metadata)
-        VALUES ('delete', old.rowid, old.agent_id, old.type, old.content, old.metadata);
+        INSERT INTO memories_fts(memories_fts, rowid, content)
+        VALUES ('delete', old.rowid, old.content);
       END;
     `);
     this.db.exec(`
       CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-        INSERT INTO memories_fts(memories_fts, rowid, agent_id, type, content, metadata)
-        VALUES ('delete', old.rowid, old.agent_id, old.type, old.content, old.metadata);
+        INSERT INTO memories_fts(memories_fts, rowid, content)
+        VALUES ('delete', old.rowid, old.content);
         INSERT INTO memories_fts(rowid, agent_id, type, content, metadata)
         VALUES (new.rowid, new.agent_id, new.type, new.content, new.metadata);
       END;
