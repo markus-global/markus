@@ -39,7 +39,6 @@ export {
   SqliteExternalAgentRepo,
   SqliteDeliverableRepo,
   SqliteActivityRepo,
-  SqliteMemoryRepo,
   SqliteExecutionStreamRepo,
   SqliteMailboxRepo,
   SqliteDecisionRepo,

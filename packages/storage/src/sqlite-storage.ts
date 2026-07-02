@@ -3982,8 +3982,9 @@ export class SqliteActivityRepo {
 
     // Try FTS5 first, fall back to LIKE if FTS5 table does not exist or errors
     try {
-      const ftsLimit = limit;
-      const ftsQuery = terms.join(' AND ');
+      const ftsQ = escapeFtsQuery(query);
+      if (!ftsQ) return [];
+      const ftsQuery = ftsQ;
       const ftsRows = this.db
         .prepare(
           `SELECT a.* FROM agent_activities a
@@ -3991,7 +3992,7 @@ export class SqliteActivityRepo {
            WHERE a.agent_id = ? AND agent_activities_fts MATCH ?
            ORDER BY rank LIMIT ?`
         )
-        .all(agentId, ftsQuery, ftsLimit) as Record<string, unknown>[];
+        .all(agentId, ftsQuery, limit) as Record<string, unknown>[];
       return ftsRows.map(r => this.mapActivity(r));
     } catch {
       // FTS5 table not available — fall back to LIKE search
@@ -4029,148 +4030,6 @@ export class SqliteActivityRepo {
       success: (r['success'] as number) !== 0,
       summary: (r['summary'] as string) ?? '',
       keywords: (r['keywords'] as string) ?? '',
-      createdAt: r['created_at'] as string,
-    };
-  }
-}
-
-// ─── Memory Record Type ──────────────────────────────────────────────────────
-
-export interface MemoryRecord {
-  id: string;
-  agentId: string;
-  type: string;
-  content: string;
-  metadata: Record<string, unknown>;
-  createdAt: string;
-}
-
-// ─── Memory Repo (memories table) ─────────────────────────────────────────────
-
-export class SqliteMemoryRepo {
-  constructor(private db: DatabaseSync) {}
-
-  /** Internal: ensure the FTS5 virtual table and triggers exist for the memories table. */
-  ensureFtsTable(): void {
-    const exists = this.db
-      .prepare("SELECT name FROM sqlite_master WHERE type='virtual_table' AND name='memories_fts'")
-      .get();
-    if (exists) return;
-
-    this.db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-        agent_id UNINDEXED,
-        type UNINDEXED,
-        content,
-        metadata UNINDEXED,
-        content=memories,
-        content_rowid=rowid
-      );
-    `);
-    this.db.exec(`
-      CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-        INSERT INTO memories_fts(rowid, agent_id, type, content, metadata)
-        VALUES (new.rowid, new.agent_id, new.type, new.content, new.metadata);
-      END;
-    `);
-    this.db.exec(`
-      CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-        INSERT INTO memories_fts(memories_fts, rowid, content)
-        VALUES ('delete', old.rowid, old.content);
-      END;
-    `);
-    this.db.exec(`
-      CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-        INSERT INTO memories_fts(memories_fts, rowid, content)
-        VALUES ('delete', old.rowid, old.content);
-        INSERT INTO memories_fts(rowid, agent_id, type, content, metadata)
-        VALUES (new.rowid, new.agent_id, new.type, new.content, new.metadata);
-      END;
-    `);
-  }
-
-  create(data: {
-    id: string;
-    agentId: string;
-    type: string;
-    content: string;
-    metadata?: Record<string, unknown>;
-  }): MemoryRecord {
-    const ts = now();
-    const metadata = toJson(data.metadata ?? {});
-    this.db
-      .prepare(
-        'INSERT INTO memories (id, agent_id, type, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-      )
-      .run(data.id, data.agentId, data.type, data.content, metadata, ts);
-    return this.findById(data.id)!;
-  }
-
-  findById(id: string): MemoryRecord | null {
-    const r = this.db
-      .prepare('SELECT rowid, * FROM memories WHERE id = ?')
-      .get(id) as Record<string, unknown> | undefined;
-    return r ? this.mapRow(r) : null;
-  }
-
-  list(agentId: string, opts?: { limit?: number; offset?: number }): MemoryRecord[] {
-    const limit = opts?.limit ?? 20;
-    const offset = opts?.offset ?? 0;
-    const rows = this.db
-      .prepare('SELECT rowid, * FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?')
-      .all(agentId, limit, offset) as Record<string, unknown>[];
-    return rows.map(r => this.mapRow(r));
-  }
-
-  delete(id: string): boolean {
-    const info = this.db.prepare('DELETE FROM memories WHERE id = ?').run(id);
-    return (info as { changes: number }).changes > 0;
-  }
-
-  /** FTS5-powered full-text search on memory content, with LIKE fallback. */
-  searchFts(agentId: string, query: string, opts?: { limit?: number }): MemoryRecord[] {
-    const limit = opts?.limit ?? 10;
-    const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 1);
-    if (terms.length === 0) return [];
-
-    // Try FTS5 first
-    try {
-      const ftsQuery = terms.join(' AND ');
-      const rows = this.db
-        .prepare(
-          `SELECT m.rowid, m.* FROM memories m
-           INNER JOIN memories_fts fts ON m.rowid = fts.rowid
-           WHERE m.agent_id = ? AND memories_fts MATCH ?
-           ORDER BY rank LIMIT ?`
-        )
-        .all(agentId, ftsQuery, limit) as Record<string, unknown>[];
-      return rows.map(r => this.mapRow(r));
-    } catch {
-      // FTS5 not available — LIKE fallback
-    }
-
-    const conditions = ['agent_id = ?'];
-    const params: SqlParams = [agentId];
-    const searchClauses = terms.map(() =>
-      "LOWER(content) LIKE '%' || ? || '%'"
-    );
-    conditions.push(`(${searchClauses.join(' AND ')})`);
-    for (const t of terms) {
-      params.push(t);
-    }
-    params.push(limit);
-    const sql = `SELECT rowid, * FROM memories WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC LIMIT ?`;
-    const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
-    return rows.map(r => this.mapRow(r));
-  }
-
-  private mapRow(r: Record<string, unknown>): MemoryRecord {
-    return {
-      id: r['id'] as string,
-      agentId: r['agent_id'] as string,
-      type: r['type'] as string,
-      content: r['content'] as string,
-      metadata: fromJson<Record<string, unknown>>(r['metadata'] as string) ?? {},
       createdAt: r['created_at'] as string,
     };
   }

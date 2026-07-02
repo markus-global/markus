@@ -1352,21 +1352,44 @@ async function startServerCore(
     // Wire FTS5 full-text search to memory_search tool for long-tail recall
     if (storage?.chatSessionRepo) {
       agentManager.setFtsSearchCallback((agentId, query, opts) => {
+        const limit = opts?.limit ?? 30;
+        const results: Array<{ id: string; agentId: string; type: string; content: string; createdAt: string }> = [];
+
+        // 1. Search chat session messages
         try {
-          const limit = opts?.limit ?? 30;
-          const results = storage.chatSessionRepo!.searchMessages(query, limit) as Array<Record<string, unknown>>;
-          return results
-            .filter(r => r.sessionAgentId === agentId)
-            .map(r => ({
-              id: String(r.id),
-              agentId: String(r.agentId ?? ''),
-              type: String(r.role ?? ''),
-              content: String(r.content ?? ''),
-              createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt ?? ''),
-            }));
-        } catch {
-          return [];
+          const msgs = storage.chatSessionRepo!.searchMessages(query, limit) as Array<Record<string, unknown>>;
+          for (const r of msgs) {
+            if (String(r.sessionAgentId ?? '') === agentId) {
+              results.push({
+                id: String(r.id),
+                agentId: String(r.agentId ?? ''),
+                type: String(r.role ?? ''),
+                content: String(r.content ?? ''),
+                createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt ?? ''),
+              });
+            }
+          }
+        } catch { /* chat session FTS search failed */ }
+
+        // 2. Search agent activities (task summaries, tool calls, decision logs)
+        if (storage?.activityRepo) {
+          try {
+            const activities = storage.activityRepo.searchActivities(agentId, query, { limit });
+            for (const a of activities) {
+              results.push({
+                id: a.id,
+                agentId: a.agentId,
+                type: a.type,
+                content: a.summary,
+                createdAt: a.createdAt instanceof Date ? a.createdAt.toISOString() : String(a.createdAt ?? ''),
+              });
+            }
+          } catch { /* activity FTS search failed */ }
         }
+
+        // Sort by createdAt descending, then take top `limit` results
+        results.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        return results.slice(0, limit);
       });
     }
   }
