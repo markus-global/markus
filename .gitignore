@@ -29,3 +29,10 @@ markus.json.lock
 # Auto-generated API docs (regenerate via typedoc)
 docs/api/
 docs/api-test/
+
+# Docusaurus website build output
+website/build/
+website/.docusaurus/
+website/.cache/
+website/node_modules/
+package-lock.json
