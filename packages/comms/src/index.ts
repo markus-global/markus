@@ -9,5 +9,7 @@ export { SlackAdapter } from './slack/adapter.js';
 export { SlackClient } from './slack/client.js';
 export { TelegramAdapter } from './telegram/adapter.js';
 export { TelegramClient } from './telegram/client.js';
+export { WeComAdapter } from './wecom/adapter.js';
+export { WeComClient } from './wecom/client.js';
 export { MessageRouter } from './router.js';
 export type { CommAdapter, CommAdapterConfig } from './adapter.js';

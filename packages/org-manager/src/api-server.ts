@@ -10245,6 +10245,132 @@ EXPLANATION_END`;
       return;
     }
 
+    // ── Settings — Integration Config (WeCom) ──────────────────────────
+
+    /** Find wecom integration config for a given org */
+    const findWeComConfig = (orgId: string): Record<string, unknown> | undefined => {
+      const repo = this.storage?.integrationRepo;
+      if (!repo) return undefined;
+      const rows = repo.listByPlatform(orgId, 'wecom') as Array<Record<string, unknown>>;
+      return rows[0];
+    };
+
+    if (path === '/api/settings/integrations/wecom' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      try {
+        // Credentials from markus.json (single source of truth)
+        const { loadConfig: loadCfg } = await import('@markus/shared');
+        const markusCfg = loadCfg(this.markusConfigPath);
+        const corpid = markusCfg.integrations?.wecom?.corpid ?? '';
+        const corpsecret = markusCfg.integrations?.wecom?.corpsecret ?? '';
+        const agentid = markusCfg.integrations?.wecom?.agentid ?? 0;
+
+        // Runtime prefs from SQLite
+        const row = findWeComConfig(auth.orgId);
+        const cfg = (row?.['config'] as Record<string, unknown>) ?? {};
+        this.json(res, 200, {
+          corpid,
+          corpsecret,
+          agentid,
+          enabled: !!(row?.['enabled']),
+          webhookPort: cfg['webhookPort'] ?? 8059,
+          webhookPath: cfg['webhookPath'] ?? '/webhook/wecom',
+        });
+      } catch (e) {
+        log.error('Failed to read wecom integration config', { error: String(e) });
+        this.json(res, 500, { error: 'Failed to read integration config' });
+      }
+      return;
+    }
+
+    if (path === '/api/settings/integrations/wecom' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const corpid = body['corpid'] as string;
+      const corpsecret = body['corpsecret'] as string;
+      const agentid = body['agentid'] as number;
+      if (!corpid || !corpsecret || !agentid) {
+        this.json(res, 400, { error: 'corpid, corpsecret, and agentid are required' });
+        return;
+      }
+      const now = new Date().toISOString();
+      const enabled = body['enabled'] !== false;
+      const payload: Record<string, unknown> = {
+        id: 'wecom_default',
+        orgId: auth.orgId,
+        platform: 'wecom',
+        displayName: body['displayName'] ?? '企业微信',
+        enabled,
+        config: {
+          webhookPort: body['webhookPort'] ?? 8059,
+          webhookPath: body['webhookPath'] ?? '/webhook/wecom',
+        },
+        forwardRules: [],
+        lastVerifiedAt: null,
+        lastError: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      try {
+        const repo = this.storage?.integrationRepo;
+        if (!repo) {
+          this.json(res, 503, { error: 'Storage not available' });
+          return;
+        }
+        const existing = findWeComConfig(auth.orgId);
+        if (existing) {
+          await repo.update(existing['id'] as string, payload);
+        } else {
+          await repo.create(payload);
+        }
+        // Credentials go to markus.json (single source of truth)
+        saveConfig({ integrations: { wecom: { corpid, corpsecret, agentid } } }, this.markusConfigPath);
+        log.info('WeCom integration config saved', { orgId: auth.orgId });
+        this.auditService?.record({
+          orgId: auth.orgId,
+          type: 'settings_changed',
+          action: 'integration_wecom',
+          detail: 'WeCom integration config saved',
+          userId: auth.userId,
+          success: true,
+        });
+        this.json(res, 200, { corpid, agentid, enabled });
+      } catch (e) {
+        log.error('Failed to save wecom integration config', { error: String(e) });
+        this.json(res, 500, { error: 'Failed to save integration config' });
+      }
+      return;
+    }
+
+    if (path === '/api/settings/integrations/wecom' && req.method === 'DELETE') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      try {
+        const row = findWeComConfig(auth.orgId);
+        if (row) {
+          await this.storage?.integrationRepo?.delete(row['id'] as string);
+        }
+        // Clear credentials from markus.json
+        saveConfig({ integrations: { wecom: {} } }, this.markusConfigPath);
+        log.info('WeCom integration config deleted', { orgId: auth.orgId });
+        this.auditService?.record({
+          orgId: auth.orgId,
+          type: 'settings_changed',
+          action: 'integration_wecom_delete',
+          detail: 'WeCom integration config deleted',
+          userId: auth.userId,
+          success: true,
+        });
+        this.json(res, 200, { success: true });
+      } catch (e) {
+        log.error('Failed to delete wecom integration config', { error: String(e) });
+        this.json(res, 500, { error: 'Failed to delete integration config' });
+      }
+      return;
+    }
+
     if (path === '/api/settings/integrations/feishu/test' && req.method === 'POST') {
       const auth = await this.requireAuth(req, res);
       if (!auth) return;
