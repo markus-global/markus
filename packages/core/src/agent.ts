@@ -58,7 +58,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { globalToolRegistry, type ToolRegistry } from './tools/registry.js';
-import { createBuiltinTools } from './tools/builtin.js';
+import { createBuiltinTools, registerBuiltinTools } from './tools/builtin.js';
 import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback } from './tools/subagent.js';
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
 import { AgentMailbox, type EnqueueOptions } from './mailbox.js';
@@ -410,6 +410,19 @@ export class Agent {
       for (const tool of options.tools) {
         this.tools.set(tool.name, tool);
       }
+    }
+
+    // 1.5 Auto-populate the builtin tool registry if empty.
+    // When agent-manager creates the Agent it calls registerBuiltinTools with
+    // richer options (security, agentMeta) *before* constructing the Agent,
+    // so checking isEmpty avoids overwriting those with the limited options
+    // available in the Agent constructor.
+    if (this.toolRegistry.getAll().length === 0) {
+      registerBuiltinTools({
+        agentId: this.id,
+        workspacePath: this.pathPolicy?.primaryWorkspace ?? this.dataDir,
+        pathPolicy: this.pathPolicy,
+      });
     }
 
     // 2. Load tools from the registry (supplements or overwrites with same name)

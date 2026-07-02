@@ -22,7 +22,7 @@ import type { OrgContext } from './context-engine.js';
 import type { LLMRouter } from './llm/router.js';
 import { RoleLoader } from './role-loader.js';
 import { EventBus } from './events.js';
-import { createBuiltinTools } from './tools/builtin.js';
+import { registerBuiltinTools } from './tools/builtin.js';
 import { MCPClientManager } from './tools/mcp-client.js';
 import { BrowserSessionManager } from './tools/browser-session.js';
 import { createManagerTools, createPackageTools, createSecretaryTools } from './tools/manager.js';
@@ -981,14 +981,15 @@ export class AgentManager {
       teamName: request.teamId,
       orgId: request.orgId ?? 'default',
     };
-    const tools = request.tools ?? createBuiltinTools({ agentId: id, agentMeta, security, workspacePath, pathPolicy });
+    // Register built-in tools in the global registry for runtime discovery
+    registerBuiltinTools({ agentId: id, agentMeta, security, workspacePath, pathPolicy });
 
     const agentOpts: AgentOptions = {
       config,
       role,
       llmRouter: this.llmRouter,
       dataDir: agentDataDir,
-      tools,
+      ...(request.tools ? { tools: request.tools } : {}),
       orgContext: request.orgContext,
       pathPolicy,
       skillRegistry: this.skillRegistry,
@@ -1806,14 +1807,14 @@ export class AgentManager {
       teamName: row.teamId as string | undefined,
       orgId: (row.orgId as string) ?? 'default',
     };
-    const tools = createBuiltinTools({ agentId: id, agentMeta, security, workspacePath, pathPolicy });
+    // Register built-in tools in the global registry for runtime discovery
+    registerBuiltinTools({ agentId: id, agentMeta, security, workspacePath, pathPolicy });
 
     const agent = new Agent({
       config,
       role,
       llmRouter: this.llmRouter,
       dataDir: agentDataDir,
-      tools,
       pathPolicy,
       restoredState: { tokensUsedToday: row.tokensUsedToday ?? 0 },
       skillRegistry: this.skillRegistry,
