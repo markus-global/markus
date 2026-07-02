@@ -869,3 +869,47 @@ describe('LLMRouter OAuth integration', () => {
     })).toThrow('OAuth not initialized');
   });
 });
+
+describe('LLMRouter session model override', () => {
+  it('setSessionModel and getSessionModel store/retrieve override', () => {
+    const router = new LLMRouter('anthropic');
+    router.setSessionModel('sess-1', { provider: 'anthropic', model: 'claude-sonnet-4-20250514' });
+    const result = router.getSessionModel('sess-1');
+    expect(result).toBeDefined();
+    expect(result!.provider).toBe('anthropic');
+    expect(result!.model).toBe('claude-sonnet-4-20250514');
+    expect(result!.setAt).toBeDefined();
+  });
+
+  it('getSessionModel returns undefined for unknown session', () => {
+    const router = new LLMRouter('anthropic');
+    expect(router.getSessionModel('nonexistent')).toBeUndefined();
+  });
+
+  it('clearSessionModel removes only the specified override', () => {
+    const router = new LLMRouter('anthropic');
+    router.setSessionModel('sess-1', { provider: 'anthropic', model: 'claude-sonnet-4' });
+    router.setSessionModel('sess-2', { provider: 'openai', model: 'gpt-4' });
+    router.clearSessionModel('sess-1');
+    expect(router.getSessionModel('sess-1')).toBeUndefined();
+    expect(router.getSessionModel('sess-2')).toBeDefined();
+  });
+
+  it('clearAllSessionModels removes all overrides', () => {
+    const router = new LLMRouter('anthropic');
+    router.setSessionModel('sess-1', { provider: 'anthropic' });
+    router.setSessionModel('sess-2', { provider: 'openai' });
+    router.clearAllSessionModels();
+    expect(router.getSessionModel('sess-1')).toBeUndefined();
+    expect(router.getSessionModel('sess-2')).toBeUndefined();
+  });
+
+  it('setAt is set to a valid ISO timestamp', () => {
+    const router = new LLMRouter('anthropic');
+    router.setSessionModel('sess-1', { provider: 'anthropic', model: 'claude-sonnet-4' });
+    const result = router.getSessionModel('sess-1')!;
+    expect(result.setAt).toBeDefined();
+    // Should not throw - valid ISO string
+    expect(() => new Date(result.setAt!).toISOString()).not.toThrow();
+  });
+});
