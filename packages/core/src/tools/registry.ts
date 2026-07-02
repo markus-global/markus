@@ -125,7 +125,7 @@ export class ToolRegistry {
       if (reg.hidden) continue;
       catalog.push({
         name,
-        description: reg.handler.description,
+        description: reg.handler.description ?? '',
         category: reg.category?.name,
         categoryDescription: reg.category?.description,
         tags: reg.tags,
