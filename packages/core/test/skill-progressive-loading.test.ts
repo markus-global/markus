@@ -119,12 +119,15 @@ describe('findSkillsProvidingTool', () => {
     expect(result).not.toContain('skill-c');
   });
 
-  it('is case-sensitive (follows exact match)', () => {
+  it('is case-insensitive (tool names are compared in lowercase)', () => {
     const manifests: SkillManifest[] = [
       makeSkillManifest({ name: 'skill', providesTools: ['Browser_Navigate'] }),
     ];
-    expect(findSkillsProvidingTool(manifests, 'browser_navigate')).toEqual([]);
+    // Both lowercase and mixed-case variants match because findSkillsProvidingTool
+    // normalizes both sides to lowercase
+    expect(findSkillsProvidingTool(manifests, 'browser_navigate')).toEqual(['skill']);
     expect(findSkillsProvidingTool(manifests, 'Browser_Navigate')).toEqual(['skill']);
+    expect(findSkillsProvidingTool(manifests, 'BROWSER_NAVIGATE')).toEqual(['skill']);
   });
 });
 
