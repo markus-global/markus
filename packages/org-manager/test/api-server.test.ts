@@ -662,6 +662,10 @@ function createTestServer(): TestContext {
     setRoutingDefaultModel: vi.fn(),
     capabilityRouting: { assignments: {} },
     getModelCatalog: vi.fn(() => [{ id: 'gpt-4', provider: 'openai' }]),
+    setSessionModel: vi.fn(),
+    getSessionModel: vi.fn(() => undefined),
+    clearSessionModel: vi.fn(),
+    clearAllSessionModels: vi.fn(),
   } as never);
   server.setModelCatalog({
     getModelsByProvider: vi.fn(() => [{ id: 'gpt-4', name: 'GPT-4' }]),
@@ -2452,6 +2456,180 @@ describe('APIServer route handlers', () => {
     it('GET /api/auth/login with auth enabled still needs POST', async () => {
       const res = await request(ctx.server, 'GET', '/api/auth/login');
       expect(res.status).toBe(405);
+    });
+  });
+
+  // ── Session model override ────────────────────────────────────────────────
+
+  describe('Session model override', () => {
+    it('GET /api/sessions/:id/model returns null when no override set', async () => {
+      const res = await request(ctx.server, 'GET', '/api/sessions/sess-1/model');
+      expect(res.status).toBe(200);
+      expect(res.json).toMatchObject({ provider: null, model: null });
+    });
+
+    it('GET /api/sessions/:id/model returns override when one is set', async () => {
+      vi.mocked(ctx.server['llmRouter']!.getSessionModel).mockReturnValueOnce({
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-20250514',
+        setAt: Date.now(),
+      });
+      const res = await request(ctx.server, 'GET', '/api/sessions/sess-1/model');
+      expect(res.status).toBe(200);
+      expect(res.json).toMatchObject({ provider: 'anthropic', model: 'claude-sonnet-4-20250514' });
+    });
+
+    it('POST /api/sessions/:id/model sets a model override', async () => {
+      const res = await request(ctx.server, 'POST', '/api/sessions/sess-1/model', {
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-20250514',
+      });
+      expect(res.status).toBe(200);
+      expect(res.json).toMatchObject({ success: true, provider: 'anthropic', model: 'claude-sonnet-4-20250514' });
+    });
+
+    it('POST /api/sessions/:id/model returns 400 when provider is missing', async () => {
+      const res = await request(ctx.server, 'POST', '/api/sessions/sess-1/model', {
+        model: 'gpt-4',
+      });
+      expect(res.status).toBe(400);
+      expect(res.json).toMatchObject({ error: expect.stringContaining('provider') });
+    });
+
+    it('POST /api/sessions/:id/model returns 400 when model is missing', async () => {
+      const res = await request(ctx.server, 'POST', '/api/sessions/sess-1/model', {
+        provider: 'openai',
+      });
+      expect(res.status).toBe(400);
+      expect(res.json).toMatchObject({ error: expect.stringContaining('model') });
+    });
+
+    it('DELETE /api/sessions/:id/model clears a model override', async () => {
+      const res = await request(ctx.server, 'DELETE', '/api/sessions/sess-1/model');
+      expect(res.status).toBe(204);
+    });
+
+    it('GET /api/sessions/:id/model returns 200 with empty body when llmRouter is unavailable', async () => {
+      const saved = ctx.server['llmRouter'];
+      ctx.server['llmRouter'] = undefined as never;
+      const res = await request(ctx.server, 'GET', '/api/sessions/sess-1/model');
+      expect(res.status).toBe(200);
+      expect(res.raw).toBe('{}');
+      ctx.server['llmRouter'] = saved;
+    });
+
+    it('POST /api/sessions/:id/model returns 503 when llmRouter is unavailable', async () => {
+      const saved = ctx.server['llmRouter'];
+      ctx.server['llmRouter'] = undefined as never;
+      const res = await request(ctx.server, 'POST', '/api/sessions/sess-1/model', {
+        provider: 'anthropic', model: 'claude-sonnet-4',
+      });
+      expect(res.status).toBe(503);
+      expect(res.json).toMatchObject({ error: 'LLM router not available' });
+      ctx.server['llmRouter'] = saved;
+    });
+
+    it('DELETE /api/sessions/:id/model returns 503 when llmRouter is unavailable', async () => {
+      const saved = ctx.server['llmRouter'];
+      ctx.server['llmRouter'] = undefined as never;
+      const res = await request(ctx.server, 'DELETE', '/api/sessions/sess-1/model');
+      expect(res.status).toBe(503);
+      expect(res.json).toMatchObject({ error: 'LLM router not available' });
+      ctx.server['llmRouter'] = saved;
+    });
+
+    it('GET /api/sessions/:id/model returns 403 when session belongs to another user', async () => {
+      vi.mocked(ctx.storage.chatSessionRepo.getSession).mockImplementationOnce((sessionId: string) => ({
+        id: sessionId, userId: 'other-user', title: 'Private',
+      }));
+      const spy = vi.spyOn(ctx.server as never as { requireAuth: Function }, 'requireAuth')
+        .mockResolvedValueOnce({ userId: 'alice', orgId: 'default', role: 'member' });
+      const res = await request(ctx.server, 'GET', '/api/sessions/sess-1/model');
+      expect(res.status).toBe(403);
+      spy.mockRestore();
+    });
+
+    it('POST /api/sessions/:id/model returns 403 when session belongs to another user', async () => {
+      vi.mocked(ctx.storage.chatSessionRepo.getSession).mockImplementationOnce((sessionId: string) => ({
+        id: sessionId, userId: 'other-user', title: 'Private',
+      }));
+      const spy = vi.spyOn(ctx.server as never as { requireAuth: Function }, 'requireAuth')
+        .mockResolvedValueOnce({ userId: 'alice', orgId: 'default', role: 'member' });
+      const res = await request(ctx.server, 'POST', '/api/sessions/sess-1/model', {
+        provider: 'anthropic', model: 'claude-sonnet-4',
+      });
+      expect(res.status).toBe(403);
+      spy.mockRestore();
+    });
+
+    it('DELETE /api/sessions/:id/model returns 403 when session belongs to another user', async () => {
+      vi.mocked(ctx.storage.chatSessionRepo.getSession).mockImplementationOnce((sessionId: string) => ({
+        id: sessionId, userId: 'other-user', title: 'Private',
+      }));
+      const spy = vi.spyOn(ctx.server as never as { requireAuth: Function }, 'requireAuth')
+        .mockResolvedValueOnce({ userId: 'alice', orgId: 'default', role: 'member' });
+      const res = await request(ctx.server, 'DELETE', '/api/sessions/sess-1/model');
+      expect(res.status).toBe(403);
+      spy.mockRestore();
+    });
+
+    // ── Admin bypass ──────────────────────────────────────────────────────
+
+    it('GET bypasses ownership check when user is admin', async () => {
+      vi.mocked(ctx.storage.chatSessionRepo.getSession).mockImplementationOnce((sessionId: string) => ({
+        id: sessionId, userId: 'other-user', title: 'Private',
+      }));
+      const spy = vi.spyOn(ctx.server as never as { requireAuth: Function }, 'requireAuth')
+        .mockResolvedValueOnce({ userId: 'admin-user', orgId: 'default', role: 'admin' });
+      const res = await request(ctx.server, 'GET', '/api/sessions/sess-1/model');
+      expect(res.status).toBe(200);
+      spy.mockRestore();
+    });
+
+    it('POST bypasses ownership check when user is owner', async () => {
+      vi.mocked(ctx.storage.chatSessionRepo.getSession).mockImplementationOnce((sessionId: string) => ({
+        id: sessionId, userId: 'other-user', title: 'Private',
+      }));
+      const spy = vi.spyOn(ctx.server as never as { requireAuth: Function }, 'requireAuth')
+        .mockResolvedValueOnce({ userId: 'owner-user', orgId: 'default', role: 'owner' });
+      const res = await request(ctx.server, 'POST', '/api/sessions/sess-1/model', {
+        provider: 'anthropic', model: 'claude-sonnet-4',
+      });
+      expect(res.status).toBe(200);
+      spy.mockRestore();
+    });
+
+    it('DELETE bypasses ownership check when user is admin', async () => {
+      vi.mocked(ctx.storage.chatSessionRepo.getSession).mockImplementationOnce((sessionId: string) => ({
+        id: sessionId, userId: 'other-user', title: 'Private',
+      }));
+      const spy = vi.spyOn(ctx.server as never as { requireAuth: Function }, 'requireAuth')
+        .mockResolvedValueOnce({ userId: 'admin-user', orgId: 'default', role: 'admin' });
+      const res = await request(ctx.server, 'DELETE', '/api/sessions/sess-1/model');
+      expect(res.status).toBe(204);
+      spy.mockRestore();
+    });
+
+    // ── Session not found edge case ────────────────────────────────────────
+
+    it('GET returns 200 when session does not exist in storage', async () => {
+      vi.mocked(ctx.storage.chatSessionRepo.getSession).mockReturnValueOnce(undefined);
+      const spy = vi.spyOn(ctx.server as never as { requireAuth: Function }, 'requireAuth')
+        .mockResolvedValueOnce({ userId: 'alice', orgId: 'default', role: 'member' });
+      const res = await request(ctx.server, 'GET', '/api/sessions/sess-nonexist/model');
+      expect(res.status).toBe(200);
+      spy.mockRestore();
+    });
+
+    it('POST returns 200 when session does not exist in storage (treats as own session)', async () => {
+      vi.mocked(ctx.storage.chatSessionRepo.getSession).mockReturnValueOnce(undefined);
+      const spy = vi.spyOn(ctx.server as never as { requireAuth: Function }, 'requireAuth')
+        .mockResolvedValueOnce({ userId: 'alice', orgId: 'default', role: 'member' });
+      const res = await request(ctx.server, 'POST', '/api/sessions/sess-nonexist/model', {
+        provider: 'anthropic', model: 'claude-sonnet-4',
+      });
+      expect(res.status).toBe(200);
+      spy.mockRestore();
     });
   });
 });

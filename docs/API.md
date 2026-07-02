@@ -40,8 +40,45 @@ All requests require authentication via one of:
 | POST | `/api/agents/:id/message` | Send message to agent (SSE streaming) |
 | GET | `/api/sessions` | List conversation sessions |
 | GET | `/api/sessions/:id/messages` | Get session message history |
+| GET | `/api/sessions/:id/model` | Get session-level model override |
+| POST | `/api/sessions/:id/model` | Set session-level model override `{ provider, model }` |
+| DELETE | `/api/sessions/:id/model` | Clear session-level model override |
 | GET | `/api/channels/:channel/messages` | Get channel history |
 | POST | `/api/channels/:channel/messages` | Send channel message (supports SSE streaming) |
+
+### Session Model Override
+
+Allows switching the LLM model/provider for a specific conversation session without affecting other sessions or global routing. See [design document](design/model-switching.md) for full details.
+
+**GET /api/sessions/:id/model** — Get current override:
+```json
+// 200 Response (override exists)
+{ "provider": "anthropic", "model": "claude-sonnet-4-20250514", "setAt": "2026-07-02T10:30:00.000Z" }
+
+// 200 Response (no override)
+{ "provider": null, "model": null, "setAt": null }
+```
+
+**POST /api/sessions/:id/model** — Set override:
+```json
+// Request body
+{ "provider": "anthropic", "model": "claude-sonnet-4-20250514" }
+
+// 200 Response
+{ "success": true, "provider": "anthropic", "model": "claude-sonnet-4-20250514" }
+```
+
+**DELETE /api/sessions/:id/model** — Clear override:
+```json
+// 204 Response (no body)
+```
+
+**Error responses:**
+| Status | Description |
+|--------|-------------|
+| 400 | Missing `provider` or `model` (POST only) |
+| 403 | Session belongs to another user (non-admin) |
+| 503 | LLM router not available |
 
 ---
 

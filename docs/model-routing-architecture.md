@@ -184,6 +184,22 @@ sequenceDiagram
 
 `resolveModalityCandidates()` returns a list of `{ provider, model, name }` tuples. The caller passes `model` into the provider method's `options` parameter. This prevents a critical bug where mutating `provider.model` (via `configure()`) for a modality call would corrupt subsequent chat requests on the same provider instance.
 
+### Session-Level Override
+
+Markus supports session-level model switching — temporarily overriding the model/provider for a specific conversation session without affecting global routing.
+
+**Priority**: Session overrides sit below per-request metadata overrides but above capability routing assignments:
+
+1. **Per-request** — `LLMRequest.metadata.modelOverride` / `providerOverride` (highest)
+2. **Session-level** — `sessionOverrides` Map (set via API)
+3. **Global routing** — capability assignments → tier-based complexity routing (lowest)
+
+**Storage**: In-memory `Map<string, SessionModelOverride>`, not persisted across restarts.
+
+**TTL**: No automatic TTL in v1 — planned for Wave 2. Override lives until explicitly cleared via API.
+
+See [design document](design/model-switching.md) for full details.
+
 ### Agent-Level Overrides
 
 Each multimodal tool accepts optional `provider` and `model` parameters from the agent. When provided, `resolveEffectiveCandidates()` filters the candidate list: an explicit `provider` restricts to that single provider, and an explicit `model` overrides the routing-assigned model on all candidates. This lets agents dynamically select providers without changing the global routing configuration.
@@ -341,12 +357,15 @@ type ModelCapabilityType = 'text' | 'image_recognition' | 'image_generation' | '
 ## API Endpoints
 
 
-| Endpoint                            | Method | Description                                                          | Caching               |
-| ----------------------------------- | ------ | -------------------------------------------------------------------- | --------------------- |
-| `/api/settings/llm/routing`         | GET    | Current routing config                                               | None                  |
-| `/api/settings/llm`                 | POST   | Update routing config (capabilityRouting, routingDefaultModel, etc.) | None                  |
-| `/api/models/routing-candidates`    | GET    | All available models per provider                                    | 5-min server-side TTL |
-| `/api/models/suggested-assignments` | GET    | Auto-suggested best model per capability                             | None                  |
+| Endpoint                                 | Method | Description                                                          | Caching               |
+| ---------------------------------------- | ------ | -------------------------------------------------------------------- | --------------------- |
+| `/api/settings/llm/routing`              | GET    | Current routing config                                               | None                  |
+| `/api/settings/llm`                      | POST   | Update routing config (capabilityRouting, routingDefaultModel, etc.) | None                  |
+| `/api/models/routing-candidates`         | GET    | All available models per provider                                    | 5-min server-side TTL |
+| `/api/models/suggested-assignments`      | GET    | Auto-suggested best model per capability                             | None                  |
+| `/api/sessions/:sessionId/model`         | GET    | Get session-level model override                                     | None                  |
+| `/api/sessions/:sessionId/model`         | POST   | Set session-level model override                                     | None                  |
+| `/api/sessions/:sessionId/model`         | DELETE | Clear session-level model override                                   | None                  |
 
 
 ---

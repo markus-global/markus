@@ -2566,6 +2566,112 @@ export class APIServer {
       return;
     }
 
+    // ── Session model override ────────────────────────────────────────────
+    if (path.match(/^\/api\/sessions\/[^/]+\/model$/) && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.llmRouter) {
+        this.json(res, 200, { provider: undefined, model: undefined });
+        return;
+      }
+      const sessionId = path.split('/')[3]!;
+      if (this.storage) {
+        const session = this.storage.chatSessionRepo.getSession(sessionId);
+        if (session && session.userId && session.userId !== authUser.userId) {
+          const isAdminOrOwner = authUser.role === 'owner' || authUser.role === 'admin';
+          if (!isAdminOrOwner) {
+            this.json(res, 403, { error: 'Access denied: this session belongs to another user' });
+            return;
+          }
+        }
+      }
+      const override = this.llmRouter.getSessionModel(sessionId);
+      this.json(res, 200, {
+        provider: override?.provider ?? null,
+        model: override?.model ?? null,
+        setAt: override?.setAt ?? null,
+      });
+      return;
+    }
+
+    if (path.match(/^\/api\/sessions\/[^/]+\/model$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.llmRouter) {
+        this.json(res, 503, { error: 'LLM router not available' });
+        return;
+      }
+      const sessionId = path.split('/')[3]!;
+      if (this.storage) {
+        const session = this.storage.chatSessionRepo.getSession(sessionId);
+        if (session && session.userId && session.userId !== authUser.userId) {
+          const isAdminOrOwner = authUser.role === 'owner' || authUser.role === 'admin';
+          if (!isAdminOrOwner) {
+            this.json(res, 403, { error: 'Access denied: this session belongs to another user' });
+            return;
+          }
+        }
+      }
+      const body = await this.readBody(req);
+      const { provider, model } = body as { provider?: string; model?: string };
+      if (!provider || typeof provider !== 'string') {
+        this.json(res, 400, { error: 'provider (string) is required' });
+        return;
+      }
+      if (!model || typeof model !== 'string') {
+        this.json(res, 400, { error: 'model (string) is required' });
+        return;
+      }
+      try {
+        this.llmRouter.setSessionModel(sessionId, { provider, model });
+        this.auditService?.record({
+          orgId: 'system',
+          type: 'settings_changed',
+          action: 'session_model_override',
+          detail: `Session ${sessionId} model → ${provider}/${model}`,
+          userId: authUser.userId,
+          success: true,
+          metadata: { sessionId, provider, model },
+        });
+        this.json(res, 200, { success: true, provider, model });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/sessions\/[^/]+\/model$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.llmRouter) {
+        this.json(res, 503, { error: 'LLM router not available' });
+        return;
+      }
+      const sessionId = path.split('/')[3]!;
+      if (this.storage) {
+        const session = this.storage.chatSessionRepo.getSession(sessionId);
+        if (session && session.userId && session.userId !== authUser.userId) {
+          const isAdminOrOwner = authUser.role === 'owner' || authUser.role === 'admin';
+          if (!isAdminOrOwner) {
+            this.json(res, 403, { error: 'Access denied: this session belongs to another user' });
+            return;
+          }
+        }
+      }
+      this.llmRouter.clearSessionModel(sessionId);
+      this.auditService?.record({
+        orgId: 'system',
+        type: 'settings_changed',
+        action: 'session_model_override_clear',
+        detail: `Session ${sessionId} model override cleared`,
+        userId: authUser.userId,
+        success: true,
+        metadata: { sessionId },
+      });
+      this.json(res, 204, {});
+      return;
+    }
+
     // ── Channel messages ───────────────────────────────────────────────────
     if (path.match(/^\/api\/channels\/[^/]+\/messages$/) && req.method === 'GET') {
       const channel = decodeURIComponent(path.split('/')[3]!);
