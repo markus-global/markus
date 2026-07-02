@@ -1,4 +1,4 @@
-import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type ModelCapabilityType, type CostTier, type CapabilityRoutingConfig, type CapabilityModelAssignment, type ProviderCapabilities } from '@markus/shared';
+import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type ModelCapabilityType, type CostTier, type CapabilityRoutingConfig, type CapabilityModelAssignment, type ProviderCapabilities, type SessionModelOverride } from '@markus/shared';
 import { startSpan } from '../tracing.js';
 import type { LLMProviderInterface, MultiModalProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
@@ -130,6 +130,7 @@ export class LLMRouter {
   private customModelConfigs = new Map<string, { contextWindow?: number; maxOutputTokens?: number; cost?: ModelCostConfig }>();
   private customModelCatalog = new Map<string, ModelDefinition[]>();
   private disabledProviders = new Set<string>();
+  private sessionOverrides = new Map<string, SessionModelOverride>();
 
   /** Per-provider in-flight request counter for concurrency-aware jitter */
   private inFlight = new Map<string, number>();
@@ -607,7 +608,15 @@ export class LLMRouter {
    * Select a provider+model for a given capability type.
    * Pure lookup: explicit assignment -> default model -> any available provider.
    */
-  selectForCapability(capabilityType: ModelCapabilityType, request: LLMRequest, _sessionId?: string): { provider: string; model?: string } {
+  selectForCapability(capabilityType: ModelCapabilityType, request: LLMRequest, sessionId?: string): { provider: string; model?: string } {
+    // 0. Check session-level override first (highest priority for capability routing)
+    if (sessionId) {
+      const sessionOverride = this.sessionOverrides.get(sessionId);
+      if (sessionOverride?.provider && this.isAvailable(sessionOverride.provider)) {
+        return { provider: sessionOverride.provider, model: sessionOverride.model };
+      }
+    }
+
     // 1. Check explicit assignment
     const assignment = this._capabilityRouting.assignments[capabilityType];
     if (assignment) {
@@ -886,6 +895,30 @@ export class LLMRouter {
   async chat(request: LLMRequest, providerName?: string, options?: ChatOptions): Promise<LLMResponse> {
     let primary: string;
     let routedModel: string | undefined;
+    const sessionId = request?.metadata?.sessionId || options?.sessionId;
+
+    // Check per-request modelOverride from metadata (highest priority)
+    if (!providerName && request?.metadata?.providerOverride) {
+      if (this.providers.has(request.metadata.providerOverride)) {
+        providerName = request.metadata.providerOverride;
+      }
+    }
+    if (request?.metadata?.modelOverride) {
+      routedModel = request.metadata.modelOverride;
+    }
+
+    // Check per-session override (lower than per-request, higher than default)
+    if (sessionId) {
+      const sessionOverride = this.sessionOverrides.get(sessionId);
+      if (sessionOverride && !providerName) {
+        if (sessionOverride.provider && this.providers.has(sessionOverride.provider)) {
+          providerName = sessionOverride.provider;
+        }
+        if (sessionOverride.model && !routedModel) {
+          routedModel = sessionOverride.model;
+        }
+      }
+    }
 
     if (providerName) {
       primary = this.selectProvider(request, providerName);
@@ -894,7 +927,7 @@ export class LLMRouter {
       if (capabilityType === 'text' && !this._capabilityRouting.assignments.text) {
         primary = this.selectProvider(request);
       } else {
-        const routeResult = this.selectForCapability(capabilityType, request, options?.sessionId);
+        const routeResult = this.selectForCapability(capabilityType, request, sessionId);
         primary = routeResult.provider;
         routedModel = routeResult.model;
       }
@@ -1021,6 +1054,30 @@ export class LLMRouter {
   async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void, providerName?: string, signal?: AbortSignal, options?: ChatOptions): Promise<LLMResponse> {
     let primary: string;
     let routedModel: string | undefined;
+    const sessionId = request?.metadata?.sessionId || options?.sessionId;
+
+    // Check per-request modelOverride from metadata (highest priority)
+    if (!providerName && request?.metadata?.providerOverride) {
+      if (this.providers.has(request.metadata.providerOverride)) {
+        providerName = request.metadata.providerOverride;
+      }
+    }
+    if (request?.metadata?.modelOverride) {
+      routedModel = request.metadata.modelOverride;
+    }
+
+    // Check per-session override (lower than per-request, higher than default)
+    if (sessionId) {
+      const sessionOverride = this.sessionOverrides.get(sessionId);
+      if (sessionOverride && !providerName) {
+        if (sessionOverride.provider && this.providers.has(sessionOverride.provider)) {
+          providerName = sessionOverride.provider;
+        }
+        if (sessionOverride.model && !routedModel) {
+          routedModel = sessionOverride.model;
+        }
+      }
+    }
 
     if (providerName) {
       primary = this.selectProvider(request, providerName);
@@ -1029,7 +1086,7 @@ export class LLMRouter {
       if (capabilityType === 'text' && !this._capabilityRouting.assignments.text) {
         primary = this.selectProvider(request);
       } else {
-        const routeResult = this.selectForCapability(capabilityType, request, options?.sessionId);
+        const routeResult = this.selectForCapability(capabilityType, request, sessionId);
         primary = routeResult.provider;
         routedModel = routeResult.model;
       }
@@ -1216,6 +1273,32 @@ export class LLMRouter {
       ...config,
     });
     log.info(`Updated model config for ${providerName}`, config);
+  }
+
+  // ── Session model override API ──────────────────────────────────────
+
+  /** Set a per-session model override. Subsequent requests with this sessionId
+   *  will use the specified provider/model instead of the default routing. */
+  setSessionModel(sessionId: string, override: SessionModelOverride): void {
+    this.sessionOverrides.set(sessionId, {
+      ...override,
+      setAt: new Date().toISOString(),
+    });
+  }
+
+  /** Get the current per-session model override, if any. */
+  getSessionModel(sessionId: string): SessionModelOverride | undefined {
+    return this.sessionOverrides.get(sessionId);
+  }
+
+  /** Clear a per-session model override (revert to default routing). */
+  clearSessionModel(sessionId: string): void {
+    this.sessionOverrides.delete(sessionId);
+  }
+
+  /** Clear ALL session overrides (e.g. system reset / maintenance). */
+  clearAllSessionModels(): void {
+    this.sessionOverrides.clear();
   }
 
   /**

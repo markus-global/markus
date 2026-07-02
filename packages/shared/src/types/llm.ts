@@ -103,6 +103,10 @@ export interface LLMRequest {
     taskId?: string;
     sessionId?: string;
     purpose?: string;
+    /** Per-request model override — switch model for this request only */
+    modelOverride?: string;
+    /** Per-request provider override — switch provider for this request only */
+    providerOverride?: string;
   };
   /** Enable Anthropic server-side context compaction (beta) */
   compaction?: boolean;
@@ -110,6 +114,19 @@ export interface LLMRequest {
    *  segment with `cacheBreakpoint: true` hints the provider to insert a
    *  cache checkpoint at the end of that segment (e.g. Anthropic cache_control). */
   systemCacheSegments?: Array<{ content: string; cacheBreakpoint?: boolean }>;
+}
+
+/**
+ * Per-session model override — persists across multiple requests in a session.
+ * Set via API (e.g. POST /api/sessions/:sessionId/model) or via message metadata.
+ */
+export interface SessionModelOverride {
+  /** Provider name to use for this session (e.g. "anthropic", "openai") */
+  provider?: string;
+  /** Model ID to use for this session (e.g. "claude-sonnet-4-20250514") */
+  model?: string;
+  /** ISO timestamp when this override was set */
+  setAt?: string;
 }
 
 export type LLMContentPart =
