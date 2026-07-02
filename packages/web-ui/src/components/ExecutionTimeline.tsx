@@ -714,12 +714,13 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
   return (
     <>
       <div
-        className={`relative flex items-start gap-2 py-0.5 min-w-0 ${!isLast ? 'border-b border-border-default/30 pb-1.5 mb-0.5' : ''} ${clickable ? 'cursor-pointer rounded hover:bg-surface-elevated/30 transition-colors' : ''}`}
+        className={`relative py-0.5 min-w-0 ${!isLast ? 'border-b border-border-default/30 pb-1.5 mb-0.5' : ''} ${clickable ? 'cursor-pointer rounded hover:bg-surface-elevated/30 transition-colors' : ''}`}
         onClick={() => setExpanded(true)}
       >
         {showTime && time && (
-          <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-0.5 hidden md:inline">{time}</span>
+          <span className="text-[10px] text-fg-tertiary tabular-nums hidden md:block mb-0.5">{time}</span>
         )}
+        <div className="flex items-start gap-2">
         <div className="flex flex-col items-center shrink-0 mt-0.5" style={{ width: 14 }}>
           <div className={`w-3 h-3 rounded-full border flex items-center justify-center text-[8px] shrink-0 ${
             info.status === 'running' ? 'border-brand-500 bg-brand-500/15 animate-pulse'
@@ -765,6 +766,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
             </pre>
           )}
         </div>
+        </div>
       </div>
       {expanded && createPortal(<ToolDetailModal info={info} onClose={() => setExpanded(false)} />, document.body)}
       {isDone && (() => {
@@ -785,11 +787,11 @@ function ThinkingRow({ content, time, showTime }: { content: string; time?: stri
   const [expanded, setExpanded] = useState(false);
   const preview = content.split('\n')[0] ?? '';
   return (
-    <div className="flex items-start gap-2">
+    <div>
       {showTime && time && (
-        <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-2.5 hidden md:inline">{time}</span>
+        <span className="text-[10px] text-fg-tertiary tabular-nums hidden md:block mb-0.5">{time}</span>
       )}
-      <div className="flex-1 min-w-0 my-1 overflow-hidden bg-purple-500/[0.06] border border-purple-500/15 rounded-lg px-3 py-2 transition-colors hover:bg-purple-500/[0.1]">
+      <div className="min-w-0 my-1 overflow-hidden bg-purple-500/[0.06] border border-purple-500/15 rounded-lg px-3 py-2 transition-colors hover:bg-purple-500/[0.1]">
         <button
           onClick={() => setExpanded(!expanded)}
           className="flex items-center gap-1.5 text-xs text-purple-400 w-full"
@@ -826,11 +828,11 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
   }
   if (entry.type === 'text') {
     return (
-      <div className={`flex items-start gap-2 ${showTime ? '' : ''}`}>
+      <div>
         {showTime && entry.time && (
-          <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-2.5 hidden md:inline">{entry.time}</span>
+          <span className="text-[10px] text-fg-tertiary tabular-nums hidden md:block mb-0.5">{entry.time}</span>
         )}
-        <div className="flex-1 min-w-0 bg-surface-elevated/50 rounded-lg px-3 py-2.5 my-1 overflow-hidden">
+        <div className="min-w-0 bg-surface-elevated/50 rounded-lg px-3 py-2.5 my-1 overflow-hidden">
           <MarkdownMessage content={entry.content} className="text-sm text-fg-secondary break-words" />
         </div>
       </div>
@@ -843,22 +845,24 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
     const color = isCompleted ? 'text-green-600' : isStarted ? 'text-blue-600' : isResumed ? 'text-amber-600' : 'text-fg-tertiary';
     const dot = isCompleted ? 'bg-green-400' : isStarted ? 'bg-blue-400' : isResumed ? 'bg-amber-400' : 'bg-gray-500';
     return (
-      <div className="flex items-center gap-2 py-0.5 px-1">
+      <div className="py-0.5 px-1">
         {showTime && entry.time && (
-          <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums hidden md:inline">{entry.time}</span>
+          <span className="text-[10px] text-fg-tertiary tabular-nums hidden md:block mb-0.5">{entry.time}</span>
         )}
-        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
-        <span className={`text-xs capitalize ${color}`}>{t(`execution.statusKnown.${entry.content}`, { defaultValue: entry.content })}</span>
+        <div className="flex items-center gap-2">
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
+          <span className={`text-xs capitalize ${color}`}>{t(`execution.statusKnown.${entry.content}`, { defaultValue: entry.content })}</span>
+        </div>
       </div>
     );
   }
   if (entry.type === 'error') {
     return (
-      <div className={`flex items-start gap-2 ${showTime ? '' : ''}`}>
+      <div>
         {showTime && entry.time && (
-          <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-2 hidden md:inline">{entry.time}</span>
+          <span className="text-[10px] text-fg-tertiary tabular-nums hidden md:block mb-0.5">{entry.time}</span>
         )}
-        <div className="flex-1 min-w-0 text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded px-2.5 py-2 my-1 leading-relaxed break-words overflow-hidden">
+        <div className="min-w-0 text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded px-2.5 py-2 my-1 leading-relaxed break-words overflow-hidden">
           <span className="font-medium">{t('execution.errorPrefix')}</span> {entry.content}
         </div>
       </div>
