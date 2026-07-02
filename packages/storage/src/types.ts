@@ -189,6 +189,15 @@ export interface KnowledgeRow {
   updatedAt: Date;
 }
 
+export interface MemoryRecord {
+  id: string;
+  agentId: string;
+  type: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface ExternalAgentRow {
   id: string;
   externalAgentId: string;
