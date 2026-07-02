@@ -169,7 +169,7 @@ export class ToolRegistry {
       if (name.toLowerCase().includes(q)) {
         score += 10;
       }
-      if (reg.handler.description.toLowerCase().includes(q)) {
+      if ((reg.handler.description ?? '').toLowerCase().includes(q)) {
         score += 5;
       }
       if (reg.tags?.some(t => t.toLowerCase().includes(q))) {
@@ -179,7 +179,7 @@ export class ToolRegistry {
       if (score > 0) {
         results.push({
           name,
-          description: reg.handler.description,
+          description: reg.handler.description ?? '',
           category: reg.category?.name,
           tags: reg.tags,
           score,

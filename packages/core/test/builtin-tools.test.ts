@@ -193,22 +193,23 @@ describe('ToolRegistry (real instance)', () => {
       tags: ['web'],
     });
 
-    const shellTools = registry.findByCategory('shell');
+    const shellTools = registry.getToolsByCategory('shell');
     expect(shellTools).toHaveLength(1);
-    expect(shellTools[0].handler.name).toBe('shell_exec');
+    expect(shellTools[0].name).toBe('shell_exec');
 
-    const fileTools = registry.findByCategory('file');
+    const fileTools = registry.getToolsByCategory('file');
     expect(fileTools).toHaveLength(1);
-    expect(fileTools[0].handler.name).toBe('file_read');
+    expect(fileTools[0].name).toBe('file_read');
 
-    const fileRegs = registry.findByCategory('file');
-    expect(fileRegs[0].category.name).toBe('file');
-    expect(fileRegs[0].priority).toBe(90);
+    const allRegs = registry.getAllRegistrations();
+    const fileReg = allRegs.find(r => r.handler.name === 'file_read')!;
+    expect(fileReg.category.name).toBe('file');
+    expect(fileReg.priority).toBe(90);
   });
 
   it('returns empty array for unknown category', () => {
     const registry = new ToolRegistry();
-    expect(registry.findByCategory('nonexistent')).toEqual([]);
+    expect(registry.getToolsByCategory('nonexistent')).toEqual([]);
   });
 
   it('searches tools by name', () => {
@@ -235,7 +236,7 @@ describe('ToolRegistry (real instance)', () => {
 
     const results = registry.search('file_');
     expect(results).toHaveLength(2);
-    expect(results.map(r => r.handler.name).sort()).toEqual(['file_read', 'file_write']);
+    expect(results.map(r => r.name).sort()).toEqual(['file_read', 'file_write']);
   });
 
   it('searches tools by tag', () => {
@@ -257,12 +258,12 @@ describe('ToolRegistry (real instance)', () => {
     // Search by tag 'async'
     const results = registry.search('async');
     expect(results).toHaveLength(1);
-    expect(results[0].handler.name).toBe('background_run');
+    expect(results[0].name).toBe('background_run');
 
     // Search by tag 'bash'
     const bashResults = registry.search('bash');
     expect(bashResults).toHaveLength(1);
-    expect(bashResults[0].handler.name).toBe('shell_exec');
+    expect(bashResults[0].name).toBe('shell_exec');
   });
 
   it('returns empty array when search matches nothing', () => {
@@ -306,13 +307,13 @@ describe('ToolRegistry (real instance)', () => {
     });
 
     // Verify it's findable before unregister
-    expect(registry.findByCategory('cat_a')).toHaveLength(1);
+    expect(registry.getToolsByCategory('cat_a')).toHaveLength(1);
     expect(registry.search('tag_a')).toHaveLength(1);
 
     registry.unregister('tool_a');
 
     // Should no longer appear in indices
-    expect(registry.findByCategory('cat_a')).toHaveLength(0);
+    expect(registry.getToolsByCategory('cat_a')).toHaveLength(0);
     expect(registry.search('tag_a')).toHaveLength(0);
   });
 
