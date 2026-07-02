@@ -34,12 +34,13 @@ vi.mock('../src/tools/process-manager.js', () => ({
 // Create mock factory via vi.hoisted() — runs before vi.mock factories, available in test body
 const { createMockRegistry } = vi.hoisted(() => {
   function createMockRegistry() {
-    const registered: Array<{ name: string; category?: unknown; tags?: string[] }> = [];
+    const registrations: Array<{ name: string; category?: unknown; tags?: string[] }> = [];
     return {
       register: vi.fn((entry: { handler: { name: string }; category?: unknown; tags?: string[] }) => {
-        registered.push({ name: entry.handler.name, category: entry.category, tags: entry.tags });
+        registrations.push({ name: entry.handler.name, category: entry.category, tags: entry.tags });
       }),
-      getAll: vi.fn(() => registered),
+      getAll: vi.fn(() => registrations.map(r => ({ name: r.name }))),
+      getAllRegistrations: vi.fn(() => registrations),
       get: vi.fn(() => undefined as never),
       findByCategory: vi.fn(() => []),
       search: vi.fn(() => []),
@@ -103,7 +104,7 @@ describe('registerBuiltinTools', () => {
   it('registers all built-in tools with metadata in an injected registry', () => {
     const registry = createMockRegistry();
     registerBuiltinTools(undefined, registry );
-    const registered = registry.getAll();
+    const registered = registry.getAllRegistrations!();
 
     // Should include shell, file, web tools plus background exec
     const names = registered.map((r: { name: string }) => r.name);
@@ -139,7 +140,7 @@ describe('registerBuiltinTools', () => {
   it('registers tools grouped by category', () => {
     const registry = createMockRegistry();
     registerBuiltinTools(undefined, registry );
-    const registered = registry.getAll();
+    const registered = registry.getAllRegistrations!();
 
     // Shell tools
     const shellTools = registered.filter((r: { tags?: string[] }) => r.tags?.includes('shell'));
