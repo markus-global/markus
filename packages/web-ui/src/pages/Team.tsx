@@ -1261,7 +1261,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             const validId = restoreId && initialTabs.some(t => t.id === restoreId) ? restoreId : initialTabs[0]!.id;
             setActiveSessionId(validId);
             setOpenSessionTabs(initialTabs);
-            loadSessionMessages(validId!, newKey);
+            // Compute the per-session key that will be current after state update
+            const sessionKey = makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId, validId);
+            currentConvKeyRef.current = sessionKey;
+            loadSessionMessages(validId!, sessionKey);
           } else {
             setActiveSessionId(null);
             if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
@@ -1400,7 +1403,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
       // Session-aware routing: only display proactive messages in the correct
       // session context to prevent messages from appearing in unrelated sessions.
-      const key = makeConvKey('direct', agentId, '', '', sessionId || null);
+      const proactiveSessionId = sessionId || activeSessionId;
+      const key = makeConvKey('direct', agentId, '', '', proactiveSessionId || null);
       if (sessionId && currentConvKeyRef.current === key) {
         // We're viewing this agent — check if the message belongs to the active session
         const currentActive = activeSessionId;
@@ -1436,7 +1440,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
       // WS fallback messages (from SSE disconnect recovery) should replace the
       // last partial/stopped agent message rather than duplicating it.
-      const proactiveSession = sessionId || activeSessionId;
       if (isWsFallback) {
         updateConvMsgs(key, prev => {
           for (let i = prev.length - 1; i >= 0; i--) {
@@ -1448,9 +1451,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             }
           }
           return [...prev, newMsg];
-        }, proactiveSession || undefined);
+        }, proactiveSessionId || undefined);
       } else {
-        updateConvMsgs(key, prev => [...prev, newMsg], proactiveSession || undefined);
+        updateConvMsgs(key, prev => [...prev, newMsg], proactiveSessionId || undefined);
       }
     });
     return unsub;
@@ -2294,45 +2297,51 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     setShowScrollBtn(false);
     newMsgCountRef.current = 0;
     setNewMsgCount(0);
-    // Sync sending visual with the target session:
-    // - If stream belongs to THIS session → show spinner
-    // - If stream belongs to a DIFFERENT session → suppress spinner
-    const key = currentConvKeyRef.current;
-    const streamingSessions = streamingForSessionRef.current.get(key);
+
+    // Compute old and new conv keys — with per-session key format, they differ
+    const prevKey = currentConvKeyRef.current;
+    const newKey = makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId, s.id);
+    currentConvKeyRef.current = newKey;
+
+    // Sync sending visual with the target session's key
+    const streamingSessions = streamingForSessionRef.current.get(newKey);
     const streamForThis = !!streamingSessions && (streamingSessions.has(s.id) || streamingSessions.has(NEW_CHAT_PLACEHOLDER_ID));
-    const isStreaming = (sendingConvs.current.get(key) ?? 0) > 0 && streamForThis;
+    const isStreaming = (sendingConvs.current.get(newKey) ?? 0) > 0 && streamForThis;
     setSending(isStreaming);
-    // Restore activities from session-keyed buffer
     if (isStreaming) {
       setActivities(actBuffers.current.get(s.id) ?? []);
     } else {
       setActivities([]);
     }
-    // Update activeSessionBuffer so streaming callbacks can detect session mismatch
-    activeSessionBuffer.current.set(key, s.id);
-    // Save current messages to per-session cache before clearing
+    // Update activeSessionBuffer for both old and new keys
+    activeSessionBuffer.current.set(newKey, s.id);
+    if (prevKey !== newKey) activeSessionBuffer.current.set(prevKey, prevSessionId ?? '');
+
+    // Save current messages from the OLD key to per-session cache
     if (prevSessionId && prevSessionId !== NEW_CHAT_PLACEHOLDER_ID) {
-      const currentMsgs = msgBuffers.current.get(key);
+      const currentMsgs = msgBuffers.current.get(prevKey);
       if (currentMsgs && currentMsgs.length > 0) {
         sessionMsgCache.current.set(prevSessionId, currentMsgs);
       }
     }
-    // Try restoring from cache (preserves in-progress streaming data)
+    // Restore from cache into the NEW key's buffer
     const cached = sessionMsgCache.current.get(s.id);
     if (cached && cached.length > 0) {
-      msgBuffers.current.set(key, cached);
+      msgBuffers.current.set(newKey, cached);
       setMessages(cached);
     } else {
-      msgBuffers.current.delete(key);
-      setMessages([]);
+      // Check if there's already data in the new key's buffer (from active streaming)
+      const existingBuf = msgBuffers.current.get(newKey);
+      if (existingBuf && existingBuf.length > 0) {
+        setMessages(existingBuf);
+      } else {
+        msgBuffers.current.delete(newKey);
+        setMessages([]);
+      }
     }
     setOpenSessionTabs(prev => prev.some(t => t.id === s.id) ? prev : [...prev, s]);
-    // Remove from closed-tabs list since user explicitly opened it
     if (selectedAgent) removeClosedTab(selectedAgent, s.id);
-    // Always attempt DB load to sync with server. The loadSessionMessages function
-    // has a cacheIsFresher guard that prevents overwriting in-memory streaming data
-    // with stale DB content.
-    await loadSessionMessages(s.id, key);
+    await loadSessionMessages(s.id, newKey);
   };
 
   const closeSessionTab = (sessionId: string) => {
@@ -2392,8 +2401,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const newConversation = () => {
     setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
-    const key = currentConvKeyRef.current;
-    msgBuffers.current.delete(key);
+    // Save old session's messages before switching
+    const oldKey = currentConvKeyRef.current;
+    const newKey = makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId, NEW_CHAT_PLACEHOLDER_ID);
+    if (activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID) {
+      const currentMsgs = msgBuffers.current.get(oldKey);
+      if (currentMsgs && currentMsgs.length > 0) {
+        sessionMsgCache.current.set(activeSessionId, currentMsgs);
+      }
+    }
+    currentConvKeyRef.current = newKey;
+    msgBuffers.current.delete(newKey);
     setMessages([]);
     setHasMore(false);
     oldestMsgId.current = null;
