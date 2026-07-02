@@ -54,9 +54,11 @@ import { CognitivePreparation, selectCognitiveDepth } from './cognitive.js';
 import { detectEnvironment, type EnvironmentProfile } from './environment-profile.js';
 import { ToolSelector } from './tool-selector.js';
 import type { SkillRegistry } from './skills/types.js';
+import { findSkillsProvidingTool } from './skills/index.js';
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { globalToolRegistry, type ToolRegistry } from './tools/registry.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback } from './tools/subagent.js';
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
@@ -192,6 +194,8 @@ export interface AgentOptions {
   maxToolIterations?: number;
   /** Skill registry for runtime skill discovery and activation */
   skillRegistry?: SkillRegistry;
+  /** Tool registry for tool discovery and registration (defaults to globalToolRegistry) */
+  toolRegistry?: ToolRegistry;
   /** Cognitive Preparation Pipeline config (default: disabled) */
   cognitive?: CognitiveConfig;
 }
@@ -235,6 +239,7 @@ export class Agent {
   private currentTaskId?: string;
   private pathPolicy?: PathAccessPolicy;
   private skillRegistry?: SkillRegistry;
+  private toolRegistry: ToolRegistry;
   private toolSelector: ToolSelector;
   private guardrails: GuardrailPipeline;
   private toolHooks: ToolHookRegistry;
@@ -378,6 +383,7 @@ export class Agent {
     this.dataDir = options.dataDir;
     this.pathPolicy = options.pathPolicy;
     this.skillRegistry = options.skillRegistry;
+    this.toolRegistry = options.toolRegistry ?? globalToolRegistry;
     this._maxToolIterations = options.maxToolIterations ?? Agent.DEFAULT_MAX_TOOL_ITERATIONS;
     this.eventBus = new EventBus();
     this.mailbox = new AgentMailbox(this.id, this.eventBus);
@@ -399,10 +405,17 @@ export class Agent {
 
     this.tools = new Map();
     this.toolSelector = new ToolSelector();
+
+    // 1. Load explicitly provided tools (backward compat)
     if (options.tools) {
       for (const tool of options.tools) {
         this.tools.set(tool.name, tool);
       }
+    }
+
+    // 2. Load tools from the registry (supplements or overwrites with same name)
+    for (const handler of this.toolRegistry.getAll()) {
+      this.tools.set(handler.name, handler);
     }
 
     // Register the lightweight subagent spawning tool
@@ -5205,6 +5218,7 @@ export class Agent {
         category: s.category,
         hasInstructions: !!s.instructions,
         hasMcpTools: !!s.mcpServers && Object.keys(s.mcpServers).length > 0,
+        providesTools: s.providesTools,
       }));
       return JSON.stringify({
         status: 'ok',
@@ -5328,7 +5342,52 @@ export class Agent {
         }
       }
 
-      // 3. Not found as tool or skill
+      // 3. Check if a skill's providesTools includes this name (L2 progressive loading)
+      if (this.skillRegistry) {
+        const allManifests = this.skillRegistry.list();
+        const matchingSkills = findSkillsProvidingTool(allManifests, name);
+        if (matchingSkills.length > 0) {
+          // Try to auto-activate the first matching skill
+          const skillName = matchingSkills[0];
+          const skill = this.skillRegistry.get(skillName);
+          if (skill) {
+            let autoActivated = false;
+            if (skill.manifest.instructions) {
+              this.activatedSkillInstructions.set(skillName, skill.manifest.instructions);
+              autoActivated = true;
+            }
+            if (skill.manifest.mcpServers && this.skillMcpActivator) {
+              try {
+                const mcpTools = await this.skillMcpActivator(skillName, skill.manifest.mcpServers);
+                for (const tool of mcpTools) {
+                  this.registerTool(tool);
+                  this.activateTools([tool.name]);
+                }
+                if (mcpTools.length > 0) {
+                  autoActivated = true;
+                  skillToolNames.push(...mcpTools.map(t => t.name));
+                }
+              } catch (err) {
+                log.warn('Failed to auto-activate skill MCP servers for tool request', {
+                  agentId: this.id, skill: skillName, toolName: name, error: String(err),
+                });
+              }
+            }
+            if (autoActivated) {
+              activated.push(`${name} (auto-activated skill "${skillName}")`);
+              log.info('Tool auto-activated via skill providesTools', {
+                agentId: this.id, toolName: name, skillName,
+              });
+              continue;
+            }
+          }
+          // Skill found but couldn't auto-activate — add hint
+          unknown.push(name);
+          continue;
+        }
+      }
+
+      // 4. Not found as tool or skill
       unknown.push(name);
     }
 
@@ -5345,8 +5404,9 @@ export class Agent {
     }
     if (unknown.length > 0) {
       result.unknown = unknown;
-      result.hint = 'These names were not found as tools or skills. '
-        + 'Use discover_tools({ mode: "list_skills" }) to see all available skills.';
+      result.hint = 'These names were not found as activated tools or skills. '
+        + 'Use discover_tools({ mode: "list_skills" }) to see all available skills '
+        + 'and their provided tools.';
     }
     return JSON.stringify(result);
   }

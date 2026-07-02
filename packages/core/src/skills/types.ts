@@ -34,6 +34,13 @@ export interface SkillManifest {
   builtIn?: boolean;
   /** If true, full instructions are auto-injected into every agent (not just listed as available) */
   alwaysOn?: boolean;
+  /** Tool names this skill provides for L2 progressive loading.
+   *  When an agent requests a tool not found in the active tool set, the system
+   *  checks if any skill's providesTools includes that tool name. If so, it can
+   *  auto-activate the skill to make the tool available.
+   *  This avoids loading all skill MCP servers eagerly (L0) or loading all
+   *  skill instructions into context (L1). */
+  providesTools?: string[];
 }
 
 export type SkillCategory =
