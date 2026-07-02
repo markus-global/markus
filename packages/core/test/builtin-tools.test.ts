@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createBuiltinTools } from '../src/tools/builtin.js';
+import { createBuiltinTools, registerBuiltinTools } from '../src/tools/builtin.js';
 
 vi.mock('../src/tools/shell.js', () => ({
   createShellTool: vi.fn(() => ({ name: 'shell_execute', execute: vi.fn() })),
@@ -29,6 +29,29 @@ vi.mock('../src/tools/web-extract.js', () => ({
 vi.mock('../src/tools/process-manager.js', () => ({
   createBackgroundExecTool: vi.fn(() => ({ name: 'background_exec', execute: vi.fn() })),
   createProcessTool: vi.fn(() => ({ name: 'process_manage', execute: vi.fn() })),
+}));
+
+// Create mock factory via vi.hoisted() — runs before vi.mock factories, available in test body
+const { createMockRegistry } = vi.hoisted(() => {
+  function createMockRegistry() {
+    const registrations: Array<{ name: string; category?: unknown; tags?: string[] }> = [];
+    return {
+      register: vi.fn((entry: { handler: { name: string }; category?: unknown; tags?: string[] }) => {
+        registrations.push({ name: entry.handler.name, category: entry.category, tags: entry.tags });
+      }),
+      getAll: vi.fn(() => registrations.map(r => ({ name: r.name }))),
+      getAllRegistrations: vi.fn(() => registrations),
+      get: vi.fn(() => undefined as never),
+      findByCategory: vi.fn(() => []),
+      search: vi.fn(() => []),
+      unregister: vi.fn(),
+    };
+  }
+  return { createMockRegistry };
+});
+
+vi.mock('../src/tools/registry.js', () => ({
+  globalToolRegistry: createMockRegistry(),
 }));
 
 describe('createBuiltinTools', () => {
@@ -74,5 +97,60 @@ describe('createBuiltinTools', () => {
     const agentMeta = { agentId: 'agt_1', agentName: 'Alice' };
     createBuiltinTools({ agentMeta, onCommandApproval: onApproval, workspacePath: '/ws' });
     expect(createShellTool).toHaveBeenCalledWith(undefined, '/ws', agentMeta, undefined, onApproval);
+  });
+});
+
+describe('registerBuiltinTools', () => {
+  it('registers all built-in tools with metadata in an injected registry', () => {
+    const registry = createMockRegistry();
+    registerBuiltinTools(undefined, registry );
+    const registered = registry.getAllRegistrations!();
+
+    // Should include shell, file, web tools plus background exec
+    const names = registered.map((r: { name: string }) => r.name);
+    expect(names).toContain('shell_execute');
+    expect(names).toContain('file_read');
+    expect(names).toContain('file_write');
+    expect(names).toContain('file_edit');
+    expect(names).toContain('file_patch');
+    expect(names).toContain('grep_search');
+    expect(names).toContain('glob_find');
+    expect(names).toContain('list_directory');
+    expect(names).toContain('web_fetch');
+    expect(names).toContain('web_search');
+    expect(names).toContain('web_extract');
+    expect(names).toContain('background_exec');
+    expect(names).toContain('process_manage');
+    expect(registered).toHaveLength(13);
+
+    // Verify each tool has category and tags metadata
+    for (const entry of registered) {
+      expect(entry.category).toBeDefined();
+      expect(entry.tags).toBeDefined();
+      expect(entry.tags!.length).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('registers correct number of tools (13 with background exec)', () => {
+    const registry = createMockRegistry();
+    registerBuiltinTools(undefined, registry );
+    expect(registry.register).toHaveBeenCalledTimes(13);
+  });
+
+  it('registers tools grouped by category', () => {
+    const registry = createMockRegistry();
+    registerBuiltinTools(undefined, registry );
+    const registered = registry.getAllRegistrations!();
+
+    // Shell tools
+    const shellTools = registered.filter((r: { tags?: string[] }) => r.tags?.includes('shell'));
+    expect(shellTools.length).toBeGreaterThanOrEqual(1);
+    expect(shellTools.map((r: { name: string }) => r.name)).toContain('shell_execute');
+
+    // File tools
+    const fileTools = registered.filter((r: { tags?: string[] }) => r.tags?.some(t => ['file_read', 'file_write'].includes(t) || t === 'file'));
+    const allNames = registered.map((r: { name: string }) => r.name);
+    expect(allNames).toContain('file_read');
+    expect(allNames).toContain('file_write');
   });
 });

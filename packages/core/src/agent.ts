@@ -57,6 +57,7 @@ import type { SkillRegistry } from './skills/types.js';
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { globalToolRegistry, type ToolRegistry } from './tools/registry.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback } from './tools/subagent.js';
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
@@ -192,6 +193,8 @@ export interface AgentOptions {
   maxToolIterations?: number;
   /** Skill registry for runtime skill discovery and activation */
   skillRegistry?: SkillRegistry;
+  /** Tool registry for tool discovery and registration (defaults to globalToolRegistry) */
+  toolRegistry?: ToolRegistry;
   /** Cognitive Preparation Pipeline config (default: disabled) */
   cognitive?: CognitiveConfig;
 }
@@ -235,6 +238,7 @@ export class Agent {
   private currentTaskId?: string;
   private pathPolicy?: PathAccessPolicy;
   private skillRegistry?: SkillRegistry;
+  private toolRegistry: ToolRegistry;
   private toolSelector: ToolSelector;
   private guardrails: GuardrailPipeline;
   private toolHooks: ToolHookRegistry;
@@ -378,6 +382,7 @@ export class Agent {
     this.dataDir = options.dataDir;
     this.pathPolicy = options.pathPolicy;
     this.skillRegistry = options.skillRegistry;
+    this.toolRegistry = options.toolRegistry ?? globalToolRegistry;
     this._maxToolIterations = options.maxToolIterations ?? Agent.DEFAULT_MAX_TOOL_ITERATIONS;
     this.eventBus = new EventBus();
     this.mailbox = new AgentMailbox(this.id, this.eventBus);
@@ -399,10 +404,17 @@ export class Agent {
 
     this.tools = new Map();
     this.toolSelector = new ToolSelector();
+
+    // 1. Load explicitly provided tools (backward compat)
     if (options.tools) {
       for (const tool of options.tools) {
         this.tools.set(tool.name, tool);
       }
+    }
+
+    // 2. Load tools from the registry (supplements or overwrites with same name)
+    for (const handler of this.toolRegistry.getAll()) {
+      this.tools.set(handler.name, handler);
     }
 
     // Register the lightweight subagent spawning tool
