@@ -912,4 +912,65 @@ describe('LLMRouter session model override', () => {
     // Should not throw - valid ISO string
     expect(() => new Date(result.setAt!).toISOString()).not.toThrow();
   });
+
+  it('duplicate overwrite updates provider, model, and setAt', () => {
+    const router = new LLMRouter('anthropic');
+    router.setSessionModel('sess-1', { provider: 'anthropic', model: 'claude-sonnet-4' });
+    const first = router.getSessionModel('sess-1')!;
+    const firstSetAt = first.setAt!;
+
+    // Small delay so second setAt is strictly later
+    const later = new Date(Date.now() + 100);
+    vi.useFakeTimers();
+    vi.setSystemTime(later);
+    router.setSessionModel('sess-1', { provider: 'openai', model: 'gpt-4o' });
+    vi.useRealTimers();
+
+    const second = router.getSessionModel('sess-1')!;
+    expect(second.provider).toBe('openai');
+    expect(second.model).toBe('gpt-4o');
+    expect(new Date(second.setAt!).getTime()).toBeGreaterThan(new Date(firstSetAt).getTime());
+  });
+
+  it('stores session model for unregistered provider (validation deferred to routing)', () => {
+    const router = new LLMRouter('anthropic');
+    // Provider 'nonexistent' is not registered — setSessionModel still stores it
+    router.setSessionModel('sess-1', { provider: 'nonexistent', model: 'v1' });
+    const stored = router.getSessionModel('sess-1');
+    expect(stored).toBeDefined();
+    expect(stored!.provider).toBe('nonexistent');
+    expect(stored!.model).toBe('v1');
+    // selectForCapability should skip it because isAvailable returns false
+    const result = router.selectForCapability('text', { messages: [] }, 'sess-1');
+    // Should fall through to default routing since 'nonexistent' isn't registered
+    expect(result.provider).toBe('anthropic');
+  });
+
+  it('selectForCapability returns session override when sessionId is provided', () => {
+    const router = new LLMRouter('anthropic');
+    router.registerProvider('anthropic', mockProvider('anthropic', 'claude-sonnet-4-20250514'));
+    router.setSessionModel('sess-1', { provider: 'anthropic', model: 'claude-sonnet-4' });
+
+    // Without sessionId — falls through to default routing
+    const withoutSession = router.selectForCapability('text', { messages: [] });
+    expect(withoutSession.provider).toBe('anthropic');
+
+    // With sessionId — returns session override
+    const withSession = router.selectForCapability('text', { messages: [] }, 'sess-1');
+    expect(withSession.provider).toBe('anthropic');
+    expect(withSession.model).toBe('claude-sonnet-4');
+  });
+
+  it('selectForCapability ignores session override when provider is disabled', () => {
+    const router = new LLMRouter('anthropic');
+    router.registerProvider('anthropic', mockProvider('anthropic', 'claude-sonnet-4-20250514'));
+    router.registerProvider('openai', mockProvider('openai', 'gpt-4o'));
+    router.setSessionModel('sess-1', { provider: 'openai', model: 'gpt-4o' });
+    router.setProviderEnabled('openai', false);
+
+    // Session override points to disabled provider → selectForCapability skips it
+    const result = router.selectForCapability('text', { messages: [] }, 'sess-1');
+    // Falls through to default
+    expect(result.provider).toBe('anthropic');
+  });
 });

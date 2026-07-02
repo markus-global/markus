@@ -2572,5 +2572,64 @@ describe('APIServer route handlers', () => {
       expect(res.status).toBe(403);
       spy.mockRestore();
     });
+
+    // ── Admin bypass ──────────────────────────────────────────────────────
+
+    it('GET bypasses ownership check when user is admin', async () => {
+      vi.mocked(ctx.storage.chatSessionRepo.getSession).mockImplementationOnce((sessionId: string) => ({
+        id: sessionId, userId: 'other-user', title: 'Private',
+      }));
+      const spy = vi.spyOn(ctx.server as never as { requireAuth: Function }, 'requireAuth')
+        .mockResolvedValueOnce({ userId: 'admin-user', orgId: 'default', role: 'admin' });
+      const res = await request(ctx.server, 'GET', '/api/sessions/sess-1/model');
+      expect(res.status).toBe(200);
+      spy.mockRestore();
+    });
+
+    it('POST bypasses ownership check when user is owner', async () => {
+      vi.mocked(ctx.storage.chatSessionRepo.getSession).mockImplementationOnce((sessionId: string) => ({
+        id: sessionId, userId: 'other-user', title: 'Private',
+      }));
+      const spy = vi.spyOn(ctx.server as never as { requireAuth: Function }, 'requireAuth')
+        .mockResolvedValueOnce({ userId: 'owner-user', orgId: 'default', role: 'owner' });
+      const res = await request(ctx.server, 'POST', '/api/sessions/sess-1/model', {
+        provider: 'anthropic', model: 'claude-sonnet-4',
+      });
+      expect(res.status).toBe(200);
+      spy.mockRestore();
+    });
+
+    it('DELETE bypasses ownership check when user is admin', async () => {
+      vi.mocked(ctx.storage.chatSessionRepo.getSession).mockImplementationOnce((sessionId: string) => ({
+        id: sessionId, userId: 'other-user', title: 'Private',
+      }));
+      const spy = vi.spyOn(ctx.server as never as { requireAuth: Function }, 'requireAuth')
+        .mockResolvedValueOnce({ userId: 'admin-user', orgId: 'default', role: 'admin' });
+      const res = await request(ctx.server, 'DELETE', '/api/sessions/sess-1/model');
+      expect(res.status).toBe(204);
+      spy.mockRestore();
+    });
+
+    // ── Session not found edge case ────────────────────────────────────────
+
+    it('GET returns 200 when session does not exist in storage', async () => {
+      vi.mocked(ctx.storage.chatSessionRepo.getSession).mockReturnValueOnce(undefined);
+      const spy = vi.spyOn(ctx.server as never as { requireAuth: Function }, 'requireAuth')
+        .mockResolvedValueOnce({ userId: 'alice', orgId: 'default', role: 'member' });
+      const res = await request(ctx.server, 'GET', '/api/sessions/sess-nonexist/model');
+      expect(res.status).toBe(200);
+      spy.mockRestore();
+    });
+
+    it('POST returns 200 when session does not exist in storage (treats as own session)', async () => {
+      vi.mocked(ctx.storage.chatSessionRepo.getSession).mockReturnValueOnce(undefined);
+      const spy = vi.spyOn(ctx.server as never as { requireAuth: Function }, 'requireAuth')
+        .mockResolvedValueOnce({ userId: 'alice', orgId: 'default', role: 'member' });
+      const res = await request(ctx.server, 'POST', '/api/sessions/sess-nonexist/model', {
+        provider: 'anthropic', model: 'claude-sonnet-4',
+      });
+      expect(res.status).toBe(200);
+      spy.mockRestore();
+    });
   });
 });
