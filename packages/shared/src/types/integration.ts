@@ -8,7 +8,7 @@
 // ─── Platform union ──────────────────────────────────────────────────────────
 
 /** Supported external IM platforms */
-export type IntegrationPlatform = 'feishu' | 'slack' | 'telegram' | 'whatsapp';
+export type IntegrationPlatform = 'feishu' | 'slack' | 'telegram' | 'whatsapp' | 'wecom';
 
 /** Integration operational status */
 export type IntegrationStatus = 'active' | 'inactive' | 'error' | 'pending_verify';

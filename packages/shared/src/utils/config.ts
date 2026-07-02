@@ -90,6 +90,11 @@ export interface MarkusConfig {
         presets?: string[];
       };
     };
+    wecom?: {
+      corpid?: string;
+      corpsecret?: string;
+      agentid?: number;
+    };
     search?: {
       serperApiKey?: string;
       tavilyApiKey?: string;
