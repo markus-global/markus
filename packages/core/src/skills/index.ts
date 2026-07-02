@@ -1,5 +1,17 @@
+/** Re-export types */
 export type { SkillManifest, SkillMcpServerConfig, SkillInstance, SkillRegistry, SkillCategory, SkillToolDef } from './types.js';
 export { InMemorySkillRegistry } from './registry.js';
+
+/**
+ * Search an array of SkillManifests for ones whose providesTools includes the given toolName.
+ * Returns the names of matching skills.
+ */
+export function findSkillsProvidingTool(manifests: SkillManifest[], toolName: string): string[] {
+  const lowerTool = toolName.toLowerCase();
+  return manifests
+    .filter(m => m.providesTools?.some(t => t.toLowerCase() === lowerTool))
+    .map(m => m.name);
+}
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -101,6 +113,7 @@ export function discoverSkillsInDir(dir: string): Array<{ manifest: SkillManifes
         mcpServers: resolveMcpServerPaths(pkg.skill?.mcpServers, skillDir),
         isolation: pkg.skill?.isolation,
         alwaysOn: pkg.skill?.alwaysOn ?? undefined,
+        providesTools: pkg.skill?.providesTools,
         sourcePath: skillDir,
       };
       results.push({ manifest, path: skillDir, source: dir });

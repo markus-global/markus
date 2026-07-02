@@ -67,6 +67,11 @@ export interface SkillSection {
   isolation?: 'shared' | 'per-agent';
   /** If true, instructions are auto-injected into every agent (not just available for discovery) */
   alwaysOn?: boolean;
+  /** Tool names this skill provides for L2 progressive loading.
+   *  When an agent requests a tool not found in the active set, the system
+   *  checks if any skill's providesTools includes that tool name, and can
+   *  auto-activate the skill to fulfill the request. */
+  providesTools?: string[];
 }
 
 // ─── Top-level manifest ─────────────────────────────────────────────────────
@@ -195,6 +200,8 @@ export function buildManifest(
       requiredPermissions: (skillSection?.requiredPermissions ?? raw.requiredPermissions) as SkillSection['requiredPermissions'],
       mcpServers: (skillSection?.mcpServers ?? raw.mcpServers) as SkillSection['mcpServers'],
       isolation: (skillSection?.isolation ?? raw.isolation) as SkillSection['isolation'],
+      alwaysOn: (skillSection?.alwaysOn ?? raw.alwaysOn) as boolean | undefined,
+      providesTools: (skillSection?.providesTools ?? raw.providesTools) as string[] | undefined,
     };
     // Pull version/author from raw if present
     if (!base.version || base.version === '1.0.0') {
