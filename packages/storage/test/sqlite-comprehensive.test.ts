@@ -38,6 +38,9 @@ import {
   SqliteReadCursorRepo,
   SqliteWorkflowRunRepo,
   SqliteWorkflowScheduleRepo,
+  ensureFtsIndex,
+  escapeFtsQuery,
+  isFtsAvailable,
 } from '../src/sqlite-storage.js';
 
 let tempDir: string;
@@ -556,6 +559,103 @@ describe('SqliteChatSessionRepo', () => {
 
     repo.deleteSession('legacy-session');
     expect(repo.getSession('legacy-session')).toBeNull();
+  });
+
+  it('FTS5: searchMessages returns results via FTS5 virtual table', async () => {
+    const db = openSqlite(dbPath);
+    seedBase(db);
+    const repo = new SqliteChatSessionRepo(db);
+
+    // insert enough data so FTS5 auto-populates via triggers
+    const session = repo.createSession('agent-1', 'user-1');
+    repo.appendMessage(session.id, 'agent-1', 'user', 'FTS5 full-text search test');
+    repo.appendMessage(session.id, 'agent-1', 'assistant', 'This is a response about indexing');
+
+    // FTS5 should find partial word matches
+    const results = repo.searchMessages('full-text');
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    expect(results.some((r: any) => String(r.content).includes('FTS5'))).toBe(true);
+  });
+
+  it('FTS5: ensureFtsIndex is idempotent', async () => {
+    const db = openSqlite(':memory:');
+    // Seed with agents so foreign keys are satisfied
+    seedBase(db);
+    // Insert a chat session + messages that triggers auto-indexing
+    db.prepare(
+      `INSERT INTO chat_sessions (id, agent_id, user_id, title) VALUES ('ses-fts-idem', 'agent-1', 'user-1', 'Idempotent Test')`
+    ).run();
+    db.prepare(
+      `INSERT INTO chat_messages (id, session_id, agent_id, role, content) VALUES ('msg-1', 'ses-fts-idem', 'agent-1', 'user', 'idempotent test message one')`
+    ).run();
+    db.prepare(
+      `INSERT INTO chat_messages (id, session_id, agent_id, role, content) VALUES ('msg-2', 'ses-fts-idem', 'agent-1', 'assistant', 'idempotent test message two')`
+    ).run();
+
+    // First call: should index any rows the trigger may have missed
+    const countBefore = (db.prepare('SELECT COUNT(*) as cnt FROM chat_messages_fts').get() as { cnt: number }).cnt;
+    ensureFtsIndex(db);
+    const countAfter = (db.prepare('SELECT COUNT(*) as cnt FROM chat_messages_fts').get() as { cnt: number }).cnt;
+    // Since auto-triggers already indexed the data on INSERT,
+    // ensureFtsIndex should not double-count.
+    expect(countAfter).toBeGreaterThanOrEqual(1);
+    expect(countAfter).toBe(countBefore);
+
+    // Second call: must not throw and must not change the count
+    expect(() => ensureFtsIndex(db)).not.toThrow();
+    const countAfterSecond = (db.prepare('SELECT COUNT(*) as cnt FROM chat_messages_fts').get() as { cnt: number }).cnt;
+    expect(countAfterSecond).toBe(countAfter);
+
+    closeSqlite(db);
+  });
+
+  it('FTS5: escapeFtsQuery handles special FTS5 characters', () => {
+    // ASCII terms get prefix-match suffix
+    expect(escapeFtsQuery('hello world')).toBe('hello* world*');
+    expect(escapeFtsQuery('simple')).toBe('simple*');
+    expect(escapeFtsQuery('')).toBe('');
+    expect(escapeFtsQuery('  ')).toBe('');
+    // CJK terms get quoted for phrase matching
+    expect(escapeFtsQuery('搜索测试')).toBe('"搜索测试"');
+    // Mixed CJK and ASCII
+    const mixed = escapeFtsQuery('hello 测试');
+    expect(mixed).toContain('hello*');
+    expect(mixed).toContain('"测试"');
+  });
+
+  it('FTS5: ensureFtsIndex covers agent_activities with real data', async () => {
+    const db = openSqlite(':memory:');
+    seedBase(db);
+    // Insert an activity that triggers FTS5 auto-indexing
+    db.prepare(
+      `INSERT INTO agent_activities (id, agent_id, type, label, summary, keywords, success, started_at)
+       VALUES ('act-fts-1', 'agent-1', 'tool_call', 'FTS5 Test Activity',
+               'This is a test activity about full-text indexing and search',
+               'test,ftsearch,indexing', 1, datetime('now'))`
+    ).run();
+
+    // Verify auto-triggers populated the FTS table via insert (agent_activities_fts has rowid from agent_activities)
+    const ftsCount = (db.prepare('SELECT COUNT(*) as cnt FROM agent_activities_fts').get() as { cnt: number }).cnt;
+    expect(ftsCount).toBe(1);
+
+    // ensureFtsIndex should not double-count
+    ensureFtsIndex(db);
+    const afterCount = (db.prepare('SELECT COUNT(*) as cnt FROM agent_activities_fts').get() as { cnt: number }).cnt;
+    expect(afterCount).toBe(1);
+
+    // Verify FTS5 can search the activity data
+    const repo = new SqliteActivityRepo(db);
+    const results = repo.searchActivities('agent-1', 'indexing');
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    expect(results.some(r => r.summary.includes('indexing'))).toBe(true);
+
+    closeSqlite(db);
+  });
+
+  it('FTS5: isFtsAvailable returns true for node:sqlite', () => {
+    const db = openSqlite(':memory:');
+    expect(isFtsAvailable(db)).toBe(true);
+    closeSqlite(db);
   });
 });
 

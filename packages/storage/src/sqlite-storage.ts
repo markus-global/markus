@@ -662,6 +662,120 @@ export function openSqlite(dbPath: string): DatabaseSync {
     _db.exec(stmt);
   }
 
+  // FTS5 virtual tables for full-text search across chat and channel messages.
+  // These use the built-in FTS5 extension (available in Node 22+ via SQLite).
+  // Triggers keep the FTS index automatically in sync with the source tables.
+  try {
+    _db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_fts USING fts5(
+      content,
+      session_id UNINDEXED,
+      agent_id UNINDEXED,
+      role UNINDEXED,
+      content=chat_messages,
+      content_rowid=rowid,
+      tokenize='unicode61'
+    )`);
+    _db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS channel_messages_fts USING fts5(
+      text,
+      channel UNINDEXED,
+      sender_id UNINDEXED,
+      sender_name UNINDEXED,
+      content=channel_messages,
+      content_rowid=rowid,
+      tokenize='unicode61'
+    )`);
+
+    // Auto-sync triggers: chat_messages → chat_messages_fts
+    _db.exec(`CREATE TRIGGER IF NOT EXISTS chat_messages_fts_ai AFTER INSERT ON chat_messages BEGIN
+      INSERT INTO chat_messages_fts(rowid, content, session_id, agent_id, role)
+      VALUES (new.rowid, new.content, new.session_id, new.agent_id, new.role);
+    END`);
+    _db.exec(`CREATE TRIGGER IF NOT EXISTS chat_messages_fts_ad AFTER DELETE ON chat_messages BEGIN
+      INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content)
+      VALUES ('delete', old.rowid, old.content);
+    END`);
+    _db.exec(`CREATE TRIGGER IF NOT EXISTS chat_messages_fts_au AFTER UPDATE ON chat_messages BEGIN
+      INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content)
+      VALUES ('delete', old.rowid, old.content);
+      INSERT INTO chat_messages_fts(rowid, content, session_id, agent_id, role)
+      VALUES (new.rowid, new.content, new.session_id, new.agent_id, new.role);
+    END`);
+
+    // Auto-sync triggers: channel_messages → channel_messages_fts
+    _db.exec(`CREATE TRIGGER IF NOT EXISTS channel_messages_fts_ai AFTER INSERT ON channel_messages BEGIN
+      INSERT INTO channel_messages_fts(rowid, text, channel, sender_id, sender_name)
+      VALUES (new.rowid, new.text, new.channel, new.sender_id, new.sender_name);
+    END`);
+    _db.exec(`CREATE TRIGGER IF NOT EXISTS channel_messages_fts_ad AFTER DELETE ON channel_messages BEGIN
+      INSERT INTO channel_messages_fts(channel_messages_fts, rowid, text)
+      VALUES ('delete', old.rowid, old.text);
+    END`);
+    _db.exec(`CREATE TRIGGER IF NOT EXISTS channel_messages_fts_au AFTER UPDATE ON channel_messages BEGIN
+      INSERT INTO channel_messages_fts(channel_messages_fts, rowid, text)
+      VALUES ('delete', old.rowid, old.text);
+      INSERT INTO channel_messages_fts(rowid, text, channel, sender_id, sender_name)
+      VALUES (new.rowid, new.text, new.channel, new.sender_id, new.sender_name);
+    END`);
+
+    // FTS5 virtual table for agent_activities (episodic memory — searchable by summary, keywords, label)
+    _db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS agent_activities_fts USING fts5(
+      summary,
+      keywords,
+      label,
+      agent_id UNINDEXED,
+      type UNINDEXED,
+      task_id UNINDEXED,
+      content=agent_activities,
+      content_rowid=rowid,
+      tokenize='unicode61'
+    )`);
+    _db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+      content,
+      type UNINDEXED,
+      agent_id UNINDEXED,
+      content=memories,
+      content_rowid=rowid,
+      tokenize='unicode61'
+    )`);
+
+    // Auto-sync triggers: agent_activities → agent_activities_fts
+    _db.exec(`CREATE TRIGGER IF NOT EXISTS agent_activities_fts_ai AFTER INSERT ON agent_activities BEGIN
+      INSERT INTO agent_activities_fts(rowid, summary, keywords, label, agent_id, type, task_id)
+      VALUES (new.rowid, new.summary, new.keywords, new.label, new.agent_id, new.type, new.task_id);
+    END`);
+    _db.exec(`CREATE TRIGGER IF NOT EXISTS agent_activities_fts_ad AFTER DELETE ON agent_activities BEGIN
+      INSERT INTO agent_activities_fts(agent_activities_fts, rowid, summary, keywords, label)
+      VALUES ('delete', old.rowid, old.summary, old.keywords, old.label);
+    END`);
+    _db.exec(`CREATE TRIGGER IF NOT EXISTS agent_activities_fts_au AFTER UPDATE ON agent_activities BEGIN
+      INSERT INTO agent_activities_fts(agent_activities_fts, rowid, summary, keywords, label)
+      VALUES ('delete', old.rowid, old.summary, old.keywords, old.label);
+      INSERT INTO agent_activities_fts(rowid, summary, keywords, label, agent_id, type, task_id)
+      VALUES (new.rowid, new.summary, new.keywords, new.label, new.agent_id, new.type, new.task_id);
+    END`);
+
+    // Auto-sync triggers: memories → memories_fts
+    _db.exec(`CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
+      INSERT INTO memories_fts(rowid, content, type, agent_id)
+      VALUES (new.rowid, new.content, new.type, new.agent_id);
+    END`);
+    _db.exec(`CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+      INSERT INTO memories_fts(memories_fts, rowid, content)
+      VALUES ('delete', old.rowid, old.content);
+    END`);
+    _db.exec(`CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
+      INSERT INTO memories_fts(memories_fts, rowid, content)
+      VALUES ('delete', old.rowid, old.content);
+      INSERT INTO memories_fts(rowid, content, type, agent_id)
+      VALUES (new.rowid, new.content, new.type, new.agent_id);
+    END`);
+
+    log.info('FTS5 virtual tables and triggers created');
+  } catch (e) {
+    // FTS5 may not be available in all SQLite builds — graceful fallback
+    log.warn('FTS5 virtual tables not available, falling back to LIKE search', { error: String(e) });
+  }
+
   // Migrations for existing databases: add columns that were introduced after initial schema
   const migrations: Array<{ table: string; column: string; sql: string }> = [
     { table: 'tasks', column: 'blocked_by', sql: "ALTER TABLE tasks ADD COLUMN blocked_by TEXT DEFAULT '[]'" },
@@ -737,6 +851,80 @@ export function openSqlite(dbPath: string): DatabaseSync {
 
   log.info('SQLite database opened', { path: dbPath });
   return _db;
+}
+
+/**
+ * Ensure the FTS5 indexes are fully populated from existing data.
+ * Call this once after opening a database that may already contain messages
+ * (e.g., when attaching to an existing data.db).
+ *
+ * Safe to call multiple times — checks if FTS tables are already populated.
+ */
+export function ensureFtsIndex(db: DatabaseSync): void {
+  try {
+    const chatCount = db.prepare('SELECT COUNT(*) as cnt FROM chat_messages_fts').get() as { cnt: number } | undefined;
+    if (chatCount && chatCount.cnt === 0) {
+      db.exec(`INSERT INTO chat_messages_fts(rowid, content, session_id, agent_id, role)
+               SELECT rowid, content, session_id, agent_id, role FROM chat_messages`);
+      log.info(`FTS5 index built: ${(db.prepare('SELECT COUNT(*) as cnt FROM chat_messages_fts').get() as { cnt: number }).cnt} chat messages indexed`);
+    }
+    const chCount = db.prepare('SELECT COUNT(*) as cnt FROM channel_messages_fts').get() as { cnt: number } | undefined;
+    if (chCount && chCount.cnt === 0) {
+      db.exec(`INSERT INTO channel_messages_fts(rowid, text, channel, sender_id, sender_name)
+               SELECT rowid, text, channel, sender_id, sender_name FROM channel_messages`);
+      log.info(`FTS5 index built: ${(db.prepare('SELECT COUNT(*) as cnt FROM channel_messages_fts').get() as { cnt: number }).cnt} channel messages indexed`);
+    }
+    const actCount = db.prepare('SELECT COUNT(*) as cnt FROM agent_activities_fts').get() as { cnt: number } | undefined;
+    if (actCount && actCount.cnt === 0) {
+      db.exec(`INSERT INTO agent_activities_fts(rowid, summary, keywords, label, agent_id, type, task_id)
+               SELECT rowid, summary, keywords, label, agent_id, type, task_id FROM agent_activities`);
+      log.info(`FTS5 index built: ${(db.prepare('SELECT COUNT(*) as cnt FROM agent_activities_fts').get() as { cnt: number }).cnt} agent activities indexed`);
+    }
+    const memCount = db.prepare('SELECT COUNT(*) as cnt FROM memories_fts').get() as { cnt: number } | undefined;
+    if (memCount && memCount.cnt === 0) {
+      db.exec(`INSERT INTO memories_fts(rowid, content, type, agent_id)
+               SELECT rowid, content, type, agent_id FROM memories`);
+      log.info(`FTS5 index built: ${(db.prepare('SELECT COUNT(*) as cnt FROM memories_fts').get() as { cnt: number }).cnt} memories indexed`);
+    }
+  } catch (e) {
+    // FTS5 may not be available — non-fatal
+    log.warn('ensureFtsIndex skipped — FTS5 may not be available', { error: String(e) });
+  }
+}
+
+/**
+ * Escape a user-provided search query for safe use with FTS5 MATCH syntax.
+ * FTS5 special characters: ^ * " ( ) ~ + - [ ]
+ * We strip or replace them, then join words with implicit AND (default FTS5 behavior).
+ */
+export function escapeFtsQuery(query: string): string {
+  // Remove FTS5 special characters, keep alphanumeric, CJK, whitespace
+  const cleaned = query
+    .replace(/[^\w\s\u4e00-\u9fff]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return '';
+  // Split into terms, wrap each in double quotes to treat as literals
+  // For Chinese characters, each character is its own token with unicode61
+  return cleaned.split(/\s+/).map(t => {
+    // For CJK-heavy queries, treat the whole term as a phrase
+    if (/[\u4e00-\u9fff]/.test(t)) return `"${t}"`;
+    // For ASCII terms, add prefix-match suffix for fuzziness
+    return `${t}*`;
+  }).join(' ');
+}
+
+/**
+ * Check whether FTS5 is available in the current SQLite build by probing
+ * the FTS virtual table.
+ */
+export function isFtsAvailable(db: DatabaseSync): boolean {
+  try {
+    db.prepare('SELECT count(*) FROM chat_messages_fts').get();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function closeSqlite(): void {
@@ -2251,6 +2439,32 @@ export class SqliteChatSessionRepo {
   }
 
   searchMessages(query: string, limit = 30) {
+    // Try FTS5 first; fall back to LIKE-based search if FTS5 fails
+    try {
+      const ftsQ = escapeFtsQuery(query);
+      if (!ftsQ) return [];
+      const rows = this.db.prepare(
+        `SELECT cm.*, cs.agent_id as session_agent_id, fts.rank
+         FROM chat_messages_fts fts
+         JOIN chat_messages cm ON cm.rowid = fts.rowid
+         JOIN chat_sessions cs ON cm.session_id = cs.id
+         WHERE fts.content MATCH ?
+         ORDER BY fts.rank
+         LIMIT ?`
+      ).all(ftsQ, limit) as Record<string, unknown>[];
+      return rows.map(r => ({
+        ...this._mapMsg(r),
+        sessionAgentId: r['session_agent_id'] as string,
+      }));
+    } catch {
+      // FTS5 unavailable or query incompatible — fall back to LIKE
+      return this._searchMessagesLike(query, limit);
+    }
+  }
+
+  /** LIKE-based fallback for FTS5 search when FTS5 is unavailable or the
+   *  query contains characters incompatible with FTS5 MATCH syntax. */
+  private _searchMessagesLike(query: string, limit = 30) {
     const pattern = `%${query}%`;
     const rows = this.db.prepare(
       `SELECT cm.*, cs.agent_id as session_agent_id
@@ -2370,6 +2584,38 @@ export class SqliteChannelMessageRepo {
   }
 
   searchMessages(query: string, channel?: string, limit = 30) {
+    // Try FTS5 first; fall back to LIKE-based search
+    try {
+      const ftsQ = escapeFtsQuery(query);
+      if (!ftsQ) return [];
+      let q = `SELECT cm.*, fts.rank
+               FROM channel_messages_fts fts
+               JOIN channel_messages cm ON cm.rowid = fts.rowid
+               WHERE fts.text MATCH ?`;
+      const vals: SqlParams = [ftsQ];
+      if (channel) {
+        q += ' AND fts.channel = ?';
+        vals.push(channel);
+      }
+      q += ' ORDER BY fts.rank LIMIT ?';
+      vals.push(limit);
+      const rows = (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => ({
+        id: r['id'] as string,
+        channel: r['channel'] as string,
+        senderId: r['sender_id'] as string,
+        senderType: r['sender_type'] as string,
+        senderName: r['sender_name'] as string,
+        text: r['text'] as string,
+        createdAt: toDate(r['created_at'] as string)!,
+      }));
+      return rows;
+    } catch {
+      // Fall back to LIKE
+      return this._searchMessagesLike(query, channel, limit);
+    }
+  }
+
+  private _searchMessagesLike(query: string, channel?: string, limit = 30) {
     const pattern = `%${query}%`;
     let q = 'SELECT * FROM channel_messages WHERE text LIKE ?';
     const vals: SqlParams = [pattern];
@@ -3733,6 +3979,24 @@ export class SqliteActivityRepo {
     const limit = opts?.limit ?? 10;
     const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 1);
     if (terms.length === 0) return [];
+
+    // Try FTS5 first, fall back to LIKE if FTS5 table does not exist or errors
+    try {
+      const ftsQ = escapeFtsQuery(query);
+      if (!ftsQ) return [];
+      const ftsQuery = ftsQ;
+      const ftsRows = this.db
+        .prepare(
+          `SELECT a.* FROM agent_activities a
+           INNER JOIN agent_activities_fts fts ON a.rowid = fts.rowid
+           WHERE a.agent_id = ? AND agent_activities_fts MATCH ?
+           ORDER BY rank LIMIT ?`
+        )
+        .all(agentId, ftsQuery, limit) as Record<string, unknown>[];
+      return ftsRows.map(r => this.mapActivity(r));
+    } catch {
+      // FTS5 table not available — fall back to LIKE search
+    }
 
     const conditions = ['agent_id = ?'];
     const params: SqlParams = [agentId];

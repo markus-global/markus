@@ -16,6 +16,7 @@ export * from './types/cognitive.js';
 export * from './types/model-catalog.js';
 export * from './types/license.js';
 export * from './types/coding-tool.js';
+export * from './types/fts.js';
 export * from './utils/config.js';
 export * from './utils/logger.js';
 export * from './utils/id.js';

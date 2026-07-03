@@ -5,11 +5,22 @@ import { createLogger } from '@markus/shared';
 
 const log = createLogger('memory-tools');
 
+export interface FtsSearchCallback {
+  (agentId: string, query: string, opts?: { limit?: number }): Array<{
+    id: string;
+    agentId: string;
+    type: string;
+    content: string;
+    createdAt: string;
+  }>;
+}
+
 export interface AgentMemoryContext {
   agentId: string;
   agentName: string;
   memory: IMemoryStore;
   semanticSearch?: SemanticMemorySearch;
+  ftsSearch?: FtsSearchCallback;
 }
 
 export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
@@ -102,6 +113,7 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
         const type = args['type'] as MemoryEntry['type'] | undefined;
         const limit = (args['limit'] as number) ?? 10;
 
+        // Tier 1: Semantic search (best quality, but may be unavailable)
         if (ctx.semanticSearch?.isEnabled()) {
           try {
             const semResults = await ctx.semanticSearch.search(query, {
@@ -125,14 +137,40 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
                 searchMethod: 'semantic',
               });
             }
-            log.info('Semantic search returned 0 results, falling back to substring', {
+            log.info('Semantic search returned 0 results, trying FTS5', {
               agentId: ctx.agentId, query,
             });
           } catch (err) {
-            log.warn('Semantic search failed, falling back to substring', { error: String(err) });
+            log.warn('Semantic search failed, trying FTS5', { error: String(err) });
           }
         }
 
+        // Tier 2: FTS5 full-text search (keyword-aware, indexed, faster than substring)
+        if (ctx.ftsSearch) {
+          try {
+            const ftsResults = ctx.ftsSearch(ctx.agentId, query, { limit });
+            if (ftsResults.length > 0) {
+              log.debug('FTS5 memory search', { agentId: ctx.agentId, query, results: ftsResults.length });
+              return JSON.stringify({
+                results: ftsResults.map(e => ({
+                  id: e.id,
+                  type: e.type,
+                  content: e.content,
+                  timestamp: e.createdAt,
+                })),
+                count: ftsResults.length,
+                searchMethod: 'fts5',
+              });
+            }
+            log.info('FTS5 search returned 0 results, falling back to substring', {
+              agentId: ctx.agentId, query,
+            });
+          } catch (err) {
+            log.warn('FTS5 search failed, falling back to substring', { error: String(err) });
+          }
+        }
+
+        // Tier 3: In-memory substring search (always available, but O(n))
         let results = ctx.memory.search(query);
         if (type) results = results.filter(e => e.type === type);
         results = results.slice(0, limit);
