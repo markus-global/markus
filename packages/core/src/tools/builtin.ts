@@ -9,7 +9,7 @@ import { createGrepTool, createGlobTool, createListDirectoryTool } from './searc
 import { createPatchTool } from './patch.js';
 import { createBackgroundExecTool, createProcessTool } from './process-manager.js';
 import type { SecurityGuard } from '../security.js';
-import { globalToolRegistry, type ToolRegistry } from './registry.js';
+import { ToolRegistry, globalToolRegistry } from './registry.js';
 
 export interface BuiltinToolsOptions {
   agentId?: string;
@@ -25,35 +25,15 @@ export interface BuiltinToolsOptions {
 /**
  * Create the array of built-in tool handlers.
  *
- * This function remains for backward compatibility with call sites that
- * construct the tool array directly (Agent constructor, tests, etc.).
- * New code should prefer `registerBuiltinTools()` which also registers
- * tools in the global ToolRegistry for runtime discovery.
+ * Delegates to `registerBuiltinTools()` with a local registry so tools are
+ * always constructed through the single `registerBuiltinTools()` code path
+ * (eliminating duplicate handler construction). Uses a local registry to
+ * avoid accumulating stale entries in the globalToolRegistry across calls.
  */
 export function createBuiltinTools(opts?: BuiltinToolsOptions): AgentToolHandler[] {
-  const policy = opts?.pathPolicy;
-  const wp = policy?.primaryWorkspace ?? opts?.workspacePath;
-
-  const tools: AgentToolHandler[] = [
-    createShellTool(opts?.security, wp, opts?.agentMeta, policy, opts?.onCommandApproval),
-    createFileReadTool(opts?.security, wp, policy),
-    createFileWriteTool(opts?.security, wp, policy),
-    createFileEditTool(opts?.security, wp, policy),
-    createPatchTool(opts?.security, wp, policy),
-    createGrepTool(wp, policy),
-    createGlobTool(wp, policy),
-    createListDirectoryTool(wp, policy),
-    WebFetchTool,
-    WebSearchTool,
-    WebExtractTool,
-  ];
-
-  if (opts?.enableBackgroundExec !== false) {
-    tools.push(createBackgroundExecTool(wp));
-    tools.push(createProcessTool());
-  }
-
-  return tools;
+  const localReg = new ToolRegistry();
+  registerBuiltinTools(opts, localReg);
+  return Array.from(localReg.getAll());
 }
 
 /**
@@ -68,7 +48,10 @@ const BUILTIN_TOOL_CATEGORIES = {
 /**
  * Register all built-in tools in the global ToolRegistry for runtime discovery.
  *
- * Call this once at server/agent startup after `createBuiltinTools()`.
+ * This is the single source of truth for constructing built-in tool handler
+ * instances. Both `registerBuiltinTools()` and `createBuiltinTools()` share
+ * the same handler instances via the registry.
+ *
  * Tools are tagged with categories and search keywords so the agent can
  * discover them at runtime via `discover_tools()`.
  */

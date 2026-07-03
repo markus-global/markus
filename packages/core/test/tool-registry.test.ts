@@ -118,15 +118,15 @@ describe('ToolRegistry', () => {
         tags: ['file'],
       });
 
-      const fileTools = registry.findByCategory('file');
+      const fileTools = registry.getToolsByCategory('file');
       expect(fileTools).toHaveLength(2);
-      expect(fileTools.map(r => r.handler.name).sort()).toEqual(['read', 'write']);
+      expect(fileTools.map(r => r.name).sort()).toEqual(['read', 'write']);
 
-      const shellTools = registry.findByCategory('shell');
+      const shellTools = registry.getToolsByCategory('shell');
       expect(shellTools).toHaveLength(1);
-      expect(shellTools[0].handler.name).toBe('shell_exec');
+      expect(shellTools[0].name).toBe('shell_exec');
 
-      const webTools = registry.findByCategory('web');
+      const webTools = registry.getToolsByCategory('web');
       expect(webTools).toHaveLength(0);
     });
   });
@@ -156,19 +156,19 @@ describe('ToolRegistry', () => {
     it('should find by name substring (case-insensitive)', () => {
       const results = registry.search('read');
       expect(results).toHaveLength(1);
-      expect(results[0].handler.name).toBe('file_read');
+      expect(results[0].name).toBe('file_read');
     });
 
     it('should find by tag match', () => {
       const results = registry.search('http');
       expect(results).toHaveLength(1);
-      expect(results[0].handler.name).toBe('web_fetch');
+      expect(results[0].name).toBe('web_fetch');
     });
 
     it('should find multiple tools matching the same query', () => {
       const results = registry.search('shell');
       expect(results).toHaveLength(1);
-      expect(results[0].handler.name).toBe('shell_exec');
+      expect(results[0].name).toBe('shell_exec');
     });
 
     it('should return empty array for no match', () => {
@@ -184,7 +184,7 @@ describe('ToolRegistry', () => {
     it('should be case-insensitive', () => {
       const results = registry.search('SHELL');
       expect(results).toHaveLength(1);
-      expect(results[0].handler.name).toBe('shell_exec');
+      expect(results[0].name).toBe('shell_exec');
     });
   });
 
@@ -208,13 +208,13 @@ describe('ToolRegistry', () => {
       const result = registry.unregister('shell_exec');
       expect(result).toBe(true);
       expect(registry.get('shell_exec')).toBeUndefined();
-      expect(registry.findByCategory('shell')).toHaveLength(0);
+      expect(registry.getToolsByCategory('shell')).toHaveLength(0);
     });
 
     it('should not affect other tools when unregistering', () => {
       registry.unregister('shell_exec');
       expect(registry.get('file_read')).toBeDefined();
-      expect(registry.findByCategory('file')).toHaveLength(1);
+      expect(registry.getToolsByCategory('file')).toHaveLength(1);
     });
 
     it('should return false for non-existent tool', () => {
@@ -253,13 +253,11 @@ describe('ToolRegistry', () => {
       // Now unregister — should clean up from 'custom' category, not 'shell'
       registry.unregister('shell_exec');
       expect(registry.get('shell_exec')).toBeUndefined();
-      expect(registry.findByCategory('custom')).toHaveLength(0);
-      // NOTE: register() currently does not clean up stale indexes on overwrite,
-      // so the original 'shell' category still contains the stale entry.
-      // This is a known limitation — unregister() only cleans up the most recent
-      // registration's indexes.
-      const shellTools = registry.findByCategory('shell');
-      expect(shellTools).toHaveLength(1);
+      expect(registry.getToolsByCategory('custom')).toHaveLength(0);
+      // After overwrite+unregister, no tool remains with the 'shell' category
+      // because Map.set() replaces the entire entry.
+      const shellTools = registry.getToolsByCategory('shell');
+      expect(shellTools).toHaveLength(0);
     });
   });
 
@@ -276,7 +274,7 @@ describe('ToolRegistry', () => {
       }
       expect(registry.getAll()).toHaveLength(count);
       // Verify category index
-      expect(registry.findByCategory('cat_0')).toHaveLength(20); // 100 / 5
+      expect(registry.getToolsByCategory('cat_0')).toHaveLength(20); // 100 / 5
       // Verify tag index — tag_0 unique, group_0 appears ~33 times
       expect(registry.search('tag_0')).toHaveLength(1);
     });
@@ -301,7 +299,7 @@ describe('ToolRegistry', () => {
       });
       const results = registry.search('filesystem');
       expect(results).toHaveLength(1);
-      expect(results[0].handler.name).toBe('ls');
+      expect(results[0].name).toBe('ls');
     });
   });
 });

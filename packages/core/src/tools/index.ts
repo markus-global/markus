@@ -7,7 +7,7 @@ export { WebFetchTool } from './web-fetch.js';
 export { WebSearchTool } from './web-search.js';
 export { WebExtractTool } from './web-extract.js';
 export { MCPClientManager } from './mcp-client.js';
-export { createBuiltinTools } from './builtin.js';
+export { createBuiltinTools, registerBuiltinTools } from './builtin.js';
 export { createManagerTools, type ManagerToolsContext, createPackageTools, type PackageToolsContext, createSecretaryTools, type SecretaryToolsContext } from './manager.js';
 export { createA2ATools, type A2AContext } from './a2a.js';
 export { createStructuredA2ATools, type StructuredA2AContext } from './a2a-structured.js';
