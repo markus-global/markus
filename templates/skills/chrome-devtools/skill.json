@@ -17,6 +17,7 @@
     "skillFile": "SKILL.md",
     "requiredPermissions": ["browser", "network"],
     "isolation": "pooled",
+    "providesTools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_evaluate"],
     "mcpServers": {
       "chrome-devtools": {
         "command": "npx",
