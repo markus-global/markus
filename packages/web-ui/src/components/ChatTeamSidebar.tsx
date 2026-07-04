@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback, memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
@@ -193,7 +193,7 @@ function CreateGroupChatModal({ agents, humans, authUser, onClose, onCreate }: {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export function ChatTeamSidebar({
+export const ChatTeamSidebar = memo(function ChatTeamSidebar({
   authUser, agents, teams, humans, tasks, externalAgents, groupChats,
   chatMode, selectedAgent, activeChannel, activeDmUserId,
   onSelectAgent, onSelectChannel, onSelectDm, onSelectTeam, selectedTeamId,
@@ -342,10 +342,13 @@ export function ChatTeamSidebar({
   useEffect(() => {
     if (!agents.length || !isActive) return;
     let cancelled = false;
-    const fetchAll = async () => {
+
+    // One-shot initial load: batch all agents, no periodic polling
+    const fetchInitial = async () => {
       const entries: [string, string][] = [];
       await Promise.allSettled(
         agents.map(async (a) => {
+          if (_lastMsgCache.has(a.id)) return; // already have from WS
           try {
             const { sessions: ss } = await api.sessions.listByAgent(a.id, 1);
             if (!ss.length) return;
@@ -367,24 +370,24 @@ export function ChatTeamSidebar({
           } catch { /* ignore */ }
         }),
       );
-      if (!cancelled) {
-        const m = new Map(entries);
-        _lastMsgCache = m;
-        setAgentLastMsg(m);
+      if (!cancelled && entries.length) {
+        setAgentLastMsg(prev => {
+          const next = new Map(prev);
+          for (const [id, txt] of entries) next.set(id, txt);
+          _lastMsgCache = next;
+          return next;
+        });
       }
     };
-    fetchAll();
-    const timer = setInterval(fetchAll, 120_000);
+    fetchInitial();
 
+    // WS-driven updates: listen for real-time message events
     const agentIdSet = new Set(agents.map(a => a.id));
     const stripMarkup = (raw: string) => raw
       .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
       .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
       .replace(/\n+/g, ' ').trim().slice(0, 80);
-    const unsubMsg = wsClient.on('chat:proactive_message', (event) => {
-      const p = event.payload;
-      const agentId = (p['agentId'] as string) ?? '';
-      const message = (p['message'] as string) ?? '';
+    const updateLastMsg = (agentId: string, message: string) => {
       if (!agentId || !message || !agentIdSet.has(agentId)) return;
       const txt = stripMarkup(message);
       if (!txt) return;
@@ -394,8 +397,18 @@ export function ChatTeamSidebar({
         _lastMsgCache = next;
         return next;
       });
+    };
+    const unsubProactive = wsClient.on('chat:proactive_message', (event) => {
+      const p = event.payload;
+      updateLastMsg((p['agentId'] as string) ?? '', (p['message'] as string) ?? '');
     });
-    return () => { cancelled = true; clearInterval(timer); unsubMsg(); };
+    const unsubMsg = wsClient.on('chat:message', (event) => {
+      const p = event.payload;
+      const senderId = (p['senderId'] as string) ?? (p['agentId'] as string) ?? '';
+      const text = (p['text'] as string) ?? (p['message'] as string) ?? '';
+      updateLastMsg(senderId, text);
+    });
+    return () => { cancelled = true; unsubProactive(); unsubMsg(); };
   }, [agentIdsKey, isActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Data loading ──────────────────────────────────────────────────────────
@@ -1603,5 +1616,5 @@ export function ChatTeamSidebar({
       )}
     </>
   );
-}
+});
 

@@ -150,7 +150,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   useEffect(() => {
     if (previewMode || !isActive) return;
     refresh();
-    const i = setInterval(refresh, 30000);
+    const i = setInterval(refresh, 60_000);
     const onDataChanged = () => refresh();
     window.addEventListener('markus:data-changed', onDataChanged);
     return () => { clearInterval(i); window.removeEventListener('markus:data-changed', onDataChanged); };

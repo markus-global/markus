@@ -472,9 +472,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   type EntityMentionItem = { id: string; name: string; entityType: 'workflow' | 'project' | 'requirement' | 'task' | 'deliverable'; role?: string };
   const [entityMentionItems, setEntityMentionItems] = useState<EntityMentionItem[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
+  const entityMentionLoadedRef = useRef(false);
+  const loadEntityMentions = useCallback(() => {
+    if (entityMentionLoadedRef.current) return;
+    entityMentionLoadedRef.current = true;
+    (async () => {
       const items: EntityMentionItem[] = [];
       try {
         const [projRes, reqRes, taskRes, delRes, teamsRes] = await Promise.all([
@@ -495,10 +497,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           } catch { /* skip */ }
         }
       } catch { /* ignore */ }
-      if (!cancelled) setEntityMentionItems(items);
-    };
-    void load();
-    return () => { cancelled = true; };
+      setEntityMentionItems(items);
+    })();
   }, []);
 
   const activeTeamId = chatMode === 'channel'
@@ -2279,6 +2279,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (isValidPosition) {
         const fragment = textBeforeCursor.slice(atIdx + 1);
         if (!fragment.includes(' ') && !fragment.includes('\n')) {
+          loadEntityMentions();
           setMentionDropdown(true);
           setMentionFilter(fragment.toLowerCase());
           setMentionSelectedIndex(0);

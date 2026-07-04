@@ -30,7 +30,9 @@ export function BottomNav({ currentPage, onNavigate, userId }: Props) {
 
   useEffect(() => {
     fetchUnread();
-    const timer = setInterval(fetchUnread, 15000);
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') fetchUnread();
+    }, 30_000);
     const onChanged = () => fetchUnread();
     window.addEventListener('markus:notifications-changed', onChanged);
     return () => {

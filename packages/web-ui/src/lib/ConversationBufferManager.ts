@@ -42,9 +42,11 @@ export class ConversationBufferManager {
   private phase = new Map<string, ConvPhase>();
   private sendCount = new Map<string, number>();
   private streamingSessions = new Map<string, Set<string>>();
+  private sessionCacheOrder: string[] = [];
 
   static readonly MAX_MESSAGES = 500;
   static readonly MAX_CONVERSATIONS = 20;
+  static readonly MAX_SESSION_CACHE = 30;
   static readonly NEW_CHAT_ID = '__new_chat__';
 
   // ── Phase transitions ──
@@ -109,6 +111,7 @@ export class ConversationBufferManager {
     }
     if (sessionId && sessionId !== ConversationBufferManager.NEW_CHAT_ID) {
       this.sessionMsgCache.set(sessionId, next);
+      this.touchSessionCache(sessionId);
     }
 
     return { displayChanged, newMessages: displayChanged ? next : undefined };
@@ -127,6 +130,7 @@ export class ConversationBufferManager {
     const cacheIsFresher = this.isCacheFresher(sessionId, msgs);
     if (!cacheIsFresher) {
       this.sessionMsgCache.set(sessionId, msgs);
+      this.touchSessionCache(sessionId);
     }
 
     const phase = this.getPhase(convKey);
@@ -179,6 +183,7 @@ export class ConversationBufferManager {
     const msgs = this.msgBuffers.get(key);
     if (msgs && msgs.length > 0) {
       this.sessionMsgCache.set(sessionId, msgs);
+      this.touchSessionCache(sessionId);
     }
   }
 
@@ -273,6 +278,23 @@ export class ConversationBufferManager {
       this.actBuffers.delete(k);
       this.sessionTabs.delete(k);
       this.activeSession.delete(k);
+    }
+  }
+
+  /** Track a sessionMsgCache write and evict oldest entries beyond MAX_SESSION_CACHE. */
+  touchSessionCache(sessionId: string): void {
+    const idx = this.sessionCacheOrder.indexOf(sessionId);
+    if (idx !== -1) this.sessionCacheOrder.splice(idx, 1);
+    this.sessionCacheOrder.push(sessionId);
+
+    while (this.sessionCacheOrder.length > ConversationBufferManager.MAX_SESSION_CACHE) {
+      const oldest = this.sessionCacheOrder.shift()!;
+      const activeSessionIds = new Set(this.activeSession.values());
+      if (activeSessionIds.has(oldest)) {
+        this.sessionCacheOrder.push(oldest);
+        break;
+      }
+      this.sessionMsgCache.delete(oldest);
     }
   }
 }

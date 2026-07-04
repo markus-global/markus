@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, type MouseEvent as ReactMouseEvent } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, memo, type MouseEvent as ReactMouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import type { AgentInfo } from '../api.ts';
@@ -377,7 +377,7 @@ export function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?:
 
 // ─── AgentMessageBody ─────────────────────────────────────────────────────────
 
-export function AgentMessageBody({
+export const AgentMessageBody = memo(function AgentMessageBody({
   msg, isStreaming, liveActivities, onViewModeChange,
   onMentionClick,
   knownNames,
@@ -395,9 +395,24 @@ export function AgentMessageBody({
   const [viewMode, setViewModeState] = useState<'compact' | 'full'>('compact');
   const setViewMode = useCallback((m: 'compact' | 'full') => { setViewModeState(m); onViewModeChange?.(m); }, [onViewModeChange]);
 
+  const segLen = (s: MsgSegment) => s.type === 'text' ? s.content.length : (s.result?.length ?? 0);
+  const segKey = segments ? segments.length + ':' + (segments.length > 0 ? segLen(segments[segments.length - 1]!) : 0) : '';
+  const streamEntries = useMemo(
+    () => segments && segments.length > 0 ? segmentsToStreamEntries(segments, msg.agentId, msg.rawCreatedAt) : [],
+    [segKey, msg.agentId, msg.rawCreatedAt], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
+  const committed = msg.committedSegments;
+  const commitKey = committed ? committed.length + ':' + (committed.length > 0 ? segLen(committed[committed.length - 1]!) : 0) : '';
+  const fullLogEntries = useMemo(
+    () => committed && committed.length > 0
+      ? segmentsToStreamEntries(committed, msg.agentId, msg.rawCreatedAt)
+      : streamEntries,
+    [commitKey, msg.agentId, msg.rawCreatedAt, streamEntries], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
   if (segments !== undefined && segments.length > 0) {
     const hasTools = segments.some(s => s.type === 'tool');
-    const streamEntries = segmentsToStreamEntries(segments, msg.agentId, msg.rawCreatedAt);
     const streamingText = isStreaming
       ? (() => {
           const raw = segments.filter(s => s.type === 'text').map(s => s.content).join('');
@@ -418,11 +433,6 @@ export function AgentMessageBody({
     const segmentText = allText ? stripMarkup(allText) : null;
     const displayText = segmentText
       || (!isStreaming && msg.text ? stripMarkup(msg.text) : null);
-
-    const committed = msg.committedSegments;
-    const fullLogEntries = committed && committed.length > 0
-      ? segmentsToStreamEntries(committed, msg.agentId, msg.rawCreatedAt)
-      : streamEntries;
 
     const inlineCards: Array<{ key: string } & ({ kind: 'task'; info: TaskApprovalInfo } | { kind: 'req'; info: RequirementApprovalInfo })> = [];
     if (viewMode === 'compact') {
@@ -501,4 +511,4 @@ export function AgentMessageBody({
       )}
     </>
   );
-}
+});

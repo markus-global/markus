@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api, wsClient } from '../api.ts';
 
 const POLL_INTERVAL_MS = 60_000;
@@ -9,31 +9,54 @@ const _listeners = new Set<() => void>();
 const _activeKeys = new Set<string>();
 let _graceUntil = 0;
 
+// Singleton polling: one interval regardless of how many hook instances
+let _pollTimer: ReturnType<typeof setInterval> | null = null;
+let _subscriberCount = 0;
+let _wsUnsub: (() => void) | null = null;
+
 function notify() {
   for (const fn of _listeners) fn();
+}
+
+async function _fetchCounts() {
+  try {
+    const resp = await api.unread.getCounts();
+    _globalCounts = resp.counts ?? {};
+    _globalSessionAgentMap = resp.sessionAgentMap ?? {};
+    notify();
+  } catch { /* silent */ }
+}
+
+function _startPolling() {
+  if (_pollTimer) return;
+  _fetchCounts();
+  _pollTimer = setInterval(_fetchCounts, POLL_INTERVAL_MS);
+  _wsUnsub = wsClient.on('chat:unread_update', (event) => {
+    const key = (event.payload as { conversationKey?: string })?.conversationKey;
+    if (key && !_activeKeys.has(key) && Date.now() > _graceUntil) {
+      _globalCounts[key] = (_globalCounts[key] ?? 0) + 1;
+      notify();
+    }
+  });
+}
+
+function _stopPolling() {
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+  if (_wsUnsub) { _wsUnsub(); _wsUnsub = null; }
 }
 
 export function useUnreadCounts(opts?: { enabled?: boolean }) {
   const enabled = opts?.enabled ?? true;
   const [counts, setCounts] = useState<Record<string, number>>(_globalCounts);
   const [sessionAgentMap, setSessionAgentMap] = useState<Record<string, string>>(_globalSessionAgentMap);
-  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   const refresh = useCallback(async () => {
-    try {
-      const resp = await api.unread.getCounts();
-      _globalCounts = resp.counts ?? {};
-      _globalSessionAgentMap = resp.sessionAgentMap ?? {};
-      setCounts(_globalCounts);
-      setSessionAgentMap(_globalSessionAgentMap);
-      notify();
-    } catch { /* silent */ }
+    await _fetchCounts();
   }, []);
 
   const markRead = useCallback(async (conversationKey: string) => {
     const ts = new Date().toISOString();
     delete _globalCounts[conversationKey];
-    setCounts({ ..._globalCounts });
     notify();
     try {
       await api.unread.markRead(conversationKey, ts);
@@ -42,7 +65,6 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
 
   const markAllRead = useCallback(async () => {
     _globalCounts = {};
-    setCounts({});
     notify();
     try {
       await api.unread.markAllRead();
@@ -57,34 +79,33 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
 
   useEffect(() => {
     if (!enabled) return;
-    refresh();
-    pollRef.current = setInterval(refresh, POLL_INTERVAL_MS);
 
-    const unsub = wsClient.on('chat:unread_update', (event) => {
-      const key = (event.payload as { conversationKey?: string })?.conversationKey;
-      if (key && !_activeKeys.has(key) && Date.now() > _graceUntil) {
-        _globalCounts[key] = (_globalCounts[key] ?? 0) + 1;
-        setCounts({ ..._globalCounts });
-        notify();
-      }
-    });
+    _subscriberCount++;
+    _startPolling();
 
-    let _prevSessionAgentMapRef = _globalSessionAgentMap;
+    let _prevSessionAgentMap = _globalSessionAgentMap;
     const listener = () => {
       setCounts({ ..._globalCounts });
-      if (_prevSessionAgentMapRef !== _globalSessionAgentMap) {
-        _prevSessionAgentMapRef = _globalSessionAgentMap;
+      if (_prevSessionAgentMap !== _globalSessionAgentMap) {
+        _prevSessionAgentMap = _globalSessionAgentMap;
         setSessionAgentMap({ ..._globalSessionAgentMap });
       }
     };
     _listeners.add(listener);
 
+    // Sync initial state
+    setCounts({ ..._globalCounts });
+    setSessionAgentMap({ ..._globalSessionAgentMap });
+
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-      unsub();
       _listeners.delete(listener);
+      _subscriberCount--;
+      if (_subscriberCount <= 0) {
+        _subscriberCount = 0;
+        _stopPolling();
+      }
     };
-  }, [enabled, refresh]);
+  }, [enabled]);
 
   const totalUnread = useMemo(() => {
     return Object.values(counts).reduce((sum, n) => sum + n, 0);
@@ -103,7 +124,7 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
 
 /**
  * Derive per-agent unread counts from session-level read cursors.
- * Uses the sessionAgentMap (sessionId → agentId) returned by the server
+ * Uses the sessionAgentMap (sessionId -> agentId) returned by the server
  * to aggregate session:* counts into agent-level totals.
  */
 export function useAgentUnread(
