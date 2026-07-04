@@ -5499,21 +5499,27 @@ export class Agent {
           ? `\n\n<!-- notify_context: ${contextParts.join(', ')} -->`
           : '';
         const formattedMsg = `**${title}**\n\n${body}${contextSuffix}`;
+        // Best-effort append to current in-memory session for context continuity.
+        // This may fail if the session was evicted (e.g., heartbeat sessions) —
+        // that's fine because start.ts persists to the main DB session independently.
         if (this.currentSessionId) {
-          this.memory.appendMessage(this.currentSessionId, {
-            role: 'assistant',
-            content: formattedMsg,
-          });
+          try {
+            this.memory.appendMessage(this.currentSessionId, {
+              role: 'assistant',
+              content: formattedMsg,
+            });
+          } catch { /* session may have been evicted — non-fatal */ }
         }
         this.recentActivityRing.push(`[notify_user] ${title}`);
         if (this.recentActivityRing.length > Agent.ACTIVITY_RING_SIZE) {
           this.recentActivityRing.shift();
         }
 
-        // Emit event — start.ts handler does DB persist + WS broadcast + notification
+        // Emit event — start.ts handler does DB persist + WS broadcast + notification.
+        // Always use undefined for sessionId so start.ts resolves the correct main session.
         this.eventBus.emit('agent:notify-user', {
           agentId: this.id,
-          sessionId: this.currentSessionId,
+          sessionId: undefined,
           targetUserId: explicitTargetUser ?? this.currentInteractingUserId,
           title,
           body,

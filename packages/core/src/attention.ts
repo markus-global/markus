@@ -1120,6 +1120,8 @@ export class AttentionController {
       const prompt = this.buildTriagePrompt(headItem, ctx ?? undefined);
 
       let raw: string | undefined;
+      // Hoist messages so the retry path can append to the conversation
+      let messages: Array<{ role: string; content: string; toolCalls?: any[]; toolCallId?: string; reasoningContent?: string }> | undefined;
 
       // Mini tool loop: if triageChatFn and tools are available, allow limited
       // read-only tool calls before the final JSON decision
@@ -1131,7 +1133,7 @@ export class AttentionController {
         }));
         const triageAgentName = ctx?.agentName ?? 'Agent';
         const triageRoleHint = ctx?.agentRole ? ` Your role: ${ctx.agentRole}.` : '';
-        const messages: Array<{ role: string; content: string; toolCalls?: any[]; toolCallId?: string; reasoningContent?: string }> = [
+        messages = [
           { role: 'system', content: `You are ${triageAgentName}, deliberating over your mailbox.${triageRoleHint} You may call tools to gather context before making your decision. When ready, output ONLY a single JSON object — no explanation, no markdown fences, no <think> tags. Start your response with {` },
           { role: 'user', content: prompt },
         ];
@@ -1170,39 +1172,94 @@ export class AttentionController {
         raw = await this.triageJudge(prompt);
       }
 
-      // Strip <think>...</think> blocks that some models (e.g. Qwen, DeepSeek) emit.
-      const cleaned = raw
-        .replace(/<think>[\s\S]*?<\/think>/gi, '')
-        .replace(/<think>[\s\S]*/gi, '')
-        .trim();
-      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
+      const allCandidateIds = new Set([headItem.id, ...this.mailbox.getQueuedItems().map(i => i.id)]);
+
+      const parseTriageResponse = (text: string): Partial<TriageResult> | null => {
+        const cleaned = text
+          .replace(/<think>[\s\S]*?<\/think>/gi, '')
+          .replace(/<think>[\s\S]*/gi, '')
+          .trim();
+        const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) return null;
+        try { return JSON.parse(jsonMatch[0]) as Partial<TriageResult>; }
+        catch { return null; }
+      };
+
+      const validateResult = (parsed: Partial<TriageResult>): TriageResult | null => {
+        if (!parsed.processItemId || !parsed.reasoning) return null;
+        if (!allCandidateIds.has(parsed.processItemId)) return null;
+        return {
+          processItemId: parsed.processItemId,
+          deferItemIds: (parsed.deferItemIds ?? []).filter(id => allCandidateIds.has(id)),
+          dropItemIds: (parsed.dropItemIds ?? []).filter(id => allCandidateIds.has(id)),
+          reasoning: parsed.reasoning,
+        };
+      };
+
+      const findOrphans = (result: TriageResult): string[] => {
+        const accountedFor = new Set([result.processItemId, ...result.deferItemIds, ...result.dropItemIds]);
+        return [...allCandidateIds].filter(id => !accountedFor.has(id));
+      };
+
+      // ── First attempt ──
+      const parsed = parseTriageResponse(raw);
+      if (!parsed) {
         log.warn('Triage judge returned non-JSON response', { agentId: this.agentId, raw: raw.slice(0, 300) });
         return null;
       }
-
-      const parsed = JSON.parse(jsonMatch[0]) as Partial<TriageResult>;
-      if (!parsed.processItemId || !parsed.reasoning) {
-        log.warn('Triage judge returned incomplete result', { agentId: this.agentId, parsed });
+      let result = validateResult(parsed);
+      if (!result) {
+        log.warn('Triage judge returned incomplete/invalid result', { agentId: this.agentId, parsed });
         return null;
       }
 
-      const allCandidateIds = new Set([headItem.id, ...this.mailbox.getQueuedItems().map(i => i.id)]);
-      if (!allCandidateIds.has(parsed.processItemId)) {
-        log.warn('Triage judge chose unknown item ID', {
+      // ── Check for orphaned items and retry once if needed ──
+      const orphaned = findOrphans(result);
+      if (orphaned.length > 0) {
+        log.info('Triage has orphaned items — issuing correction call', {
           agentId: this.agentId,
-          chosen: parsed.processItemId,
-          candidates: [...allCandidateIds],
+          orphanedCount: orphaned.length,
+          orphanedIds: orphaned,
         });
-        return null;
+
+        const correctionMsg = [
+          `Your response only accounted for ${allCandidateIds.size - orphaned.length} of ${allCandidateIds.size} items.`,
+          `The following ${orphaned.length} item(s) were not in processItemId, deferItemIds, or dropItemIds:`,
+          ...orphaned.map(id => `  - "${id}"`),
+          '',
+          'Each item MUST appear in exactly one of: processItemId, deferItemIds, or dropItemIds.',
+          'Please output a corrected JSON object with ALL items accounted for.',
+        ].join('\n');
+
+        let retryRaw: string | undefined;
+        if (this.triageChatFn && messages) {
+          messages.push({ role: 'assistant', content: raw });
+          messages.push({ role: 'user', content: correctionMsg });
+          const retryResp = await this.triageChatFn(messages, undefined);
+          retryRaw = retryResp.content;
+        } else if (this.triageJudge) {
+          retryRaw = await this.triageJudge(prompt + '\n\n' + correctionMsg);
+        }
+
+        if (retryRaw) {
+          const retryParsed = parseTriageResponse(retryRaw);
+          if (retryParsed) {
+            const retryResult = validateResult(retryParsed);
+            if (retryResult) {
+              const stillOrphaned = findOrphans(retryResult);
+              if (stillOrphaned.length < orphaned.length) {
+                result = retryResult;
+                log.info('Triage correction accepted', {
+                  agentId: this.agentId,
+                  remainingOrphans: stillOrphaned.length,
+                });
+              }
+            }
+          }
+        }
       }
 
-      return {
-        processItemId: parsed.processItemId,
-        deferItemIds: (parsed.deferItemIds ?? []).filter(id => allCandidateIds.has(id)),
-        dropItemIds: (parsed.dropItemIds ?? []).filter(id => allCandidateIds.has(id)),
-        reasoning: parsed.reasoning,
-      };
+      return result;
     } catch (err) {
       log.warn('Triage deliberation failed, falling back to priority order', {
         agentId: this.agentId,
@@ -1462,10 +1519,14 @@ export class AttentionController {
       'Respond with ONLY a JSON object, nothing else:',
       '{',
       '  "processItemId": "<id of the item to process NOW>",',
-      '  "deferItemIds": ["<ids to defer>"],',
-      '  "dropItemIds": ["<ids to drop>"],',
+      '  "deferItemIds": ["<ids to defer — MUST list each id explicitly>"],',
+      '  "dropItemIds": ["<ids to drop — MUST list each id explicitly>"],',
       '  "reasoning": "<1-2 sentence explanation>"',
       '}',
+      '',
+      'CRITICAL: Every item in the mailbox must appear in EXACTLY ONE of: processItemId, deferItemIds, or dropItemIds.',
+      'Do NOT say "dropping all" in reasoning but leave dropItemIds empty — that wastes LLM calls re-triaging the same items.',
+      'If items are stale/redundant, you MUST list their IDs in dropItemIds.',
     ].join('\n');
   }
 
