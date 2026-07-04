@@ -12,6 +12,7 @@ import {
   createDefaultTemplateRegistry,
   generateHandbook,
   GatewaySyncHandler,
+  pendingCallbackRegistry,
   type TeamTemplateRegistry,
   type AgentToolHandler,
   type ExternalAgentGateway,
@@ -343,7 +344,7 @@ export class APIServer {
         }
 
         // Reject raw tool commands and slash commands — agent should use the actual tool.
-        const TOOL_CMD_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|update_working_memory|clear_working_memory|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
+        const TOOL_CMD_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|memory_update|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|update_working_memory|clear_working_memory|update_notebook|clear_notebook|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
         const SLASH_CMD_RE = /^\s*\/(?:history|help|status|list|search|get|set|info|ping|who|whois|me|join|leave|invite|kick|ban|mute|unmute|clear|purge|poll|remind|note|todo|roll|flip|ask)\b/i;
         const blockedLines = cleanText.split('\n').filter(line => TOOL_CMD_RE.test(line) || SLASH_CMD_RE.test(line));
         if (blockedLines.length > 0) {
@@ -402,9 +403,9 @@ export class APIServer {
           else this.ws.broadcast(channelEvent);
         }
 
-        // Resolve all agent members in this group channel
+        // Resolve all agent members in this channel
         let allAgentIds: string[] = [];
-        if (channelKey.startsWith('group:custom:') && this.storage?.groupChatRepo) {
+        if ((channelKey.startsWith('group:custom:') || channelKey.startsWith('dm:a2a:')) && this.storage?.groupChatRepo) {
           allAgentIds = this.storage.groupChatRepo.getAgentMemberIds(channelKey);
         } else if (channelKey.startsWith('group:')) {
           const teamId = channelKey.replace(/^group:/, '');
@@ -412,48 +413,79 @@ export class APIServer {
           allAgentIds = team?.memberAgentIds ?? [];
         }
 
-        // Notify peer agents in the group
+        // Notify peer agents in the channel
         const peerAgentIds = allAgentIds.filter(id => id !== senderId);
         if (peerAgentIds.length > 0) {
           const agentManager = this.orgService.getAgentManager();
-          const nameMap = this.buildAgentNameMap(allAgentIds, agentManager);
-          const mentionedNames = this.parseAgentMentions(cleanText, [...nameMap.keys()]);
-          const filteredMentions = mentionedNames.filter(n => {
-            const id = nameMap.get(n);
-            return id && id !== senderId;
-          });
+          const isDmChannel = channelKey.startsWith('dm:a2a:');
 
-          if (filteredMentions.length > 0) {
-            // Targeted: trigger A2A chain for @mentioned agents
-            let channelContext: Array<{ role: string; content: string }> = [];
-            if (this.storage) {
-              try {
-                const recent = await this.storage.channelMessageRepo.getMessages(channelKey, CHANNEL_CONTEXT_MESSAGES);
-                channelContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
-                  role: m.senderType === 'agent' ? 'assistant' : 'user',
-                  content: m.senderType === 'agent' ? stripInternalBlocks(m.text) : `[${m.senderName}]: ${m.text}`,
-                }));
-              } catch { /* best-effort */ }
-            }
-            const roundId = `round_${Date.now()}`;
-            const respondedAgents = new Set<string>([senderId]);
-            void this.triggerAgentToAgentChain(
-              filteredMentions, nameMap, senderName, senderId, cleanText, persistedMsgId,
-              channelKey, orgId, agentManager, allAgentIds.length,
-              { roundId, depth: 1, respondedAgents, allAgentIds },
-            );
-          } else {
-            // No @mentions: deliver as mailbox notification so peers are aware
+          if (isDmChannel) {
+            // DM channels: auto-trigger peer agent via processGroupChatReply
+            // (same IM-style auto-reply as group chat — agent's response is
+            //  persisted to channel and the other party is auto-triggered).
             for (const peerId of peerAgentIds) {
               try {
-                agentManager.getAgent(peerId).enqueueToMailbox('a2a_message', {
-                  summary: `Group chat message from ${senderName}`,
-                  content: `[Group chat message from ${senderName}]:\n${cleanText}`,
-                  extra: { senderId, senderName, channelKey, waitForReply: false },
-                }, {
-                  metadata: { senderId, senderName, senderRole: 'agent' },
-                });
+                let dmChannelContext: Array<{ role: string; content: string }> = [];
+                if (this.storage) {
+                  try {
+                    const recent = await this.storage.channelMessageRepo.getMessages(channelKey, CHANNEL_CONTEXT_MESSAGES);
+                    dmChannelContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
+                      role: m.senderType === 'agent' ? 'assistant' : 'user',
+                      content: m.senderType === 'agent' ? stripInternalBlocks(m.text) : `[${m.senderName}]: ${m.text}`,
+                    }));
+                  } catch { /* best-effort */ }
+                }
+
+                void this.processGroupChatReply(
+                  peerId, cleanText, senderId,
+                  { name: senderName, role: 'agent' },
+                  channelKey, orgId, dmChannelContext, agentManager,
+                  2,
+                  { replyToAgentName: senderName, replyToText: cleanText.slice(0, 200), replyToMsgId: persistedMsgId },
+                  { roundId: `dm_${Date.now()}`, depth: 1, respondedAgents: new Set<string>([senderId]), allAgentIds: [senderId, peerId] },
+                );
               } catch { /* agent may not exist */ }
+            }
+          } else {
+            const nameMap = this.buildAgentNameMap(allAgentIds, agentManager);
+            const mentionedNames = this.parseAgentMentions(cleanText, [...nameMap.keys()]);
+            const filteredMentions = mentionedNames.filter(n => {
+              const id = nameMap.get(n);
+              return id && id !== senderId;
+            });
+
+            if (filteredMentions.length > 0) {
+              // Targeted: trigger A2A chain for @mentioned agents
+              let channelContext: Array<{ role: string; content: string }> = [];
+              if (this.storage) {
+                try {
+                  const recent = await this.storage.channelMessageRepo.getMessages(channelKey, CHANNEL_CONTEXT_MESSAGES);
+                  channelContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
+                    role: m.senderType === 'agent' ? 'assistant' : 'user',
+                    content: m.senderType === 'agent' ? stripInternalBlocks(m.text) : `[${m.senderName}]: ${m.text}`,
+                  }));
+                } catch { /* best-effort */ }
+              }
+              const roundId = `round_${Date.now()}`;
+              const respondedAgents = new Set<string>([senderId]);
+              void this.triggerAgentToAgentChain(
+                filteredMentions, nameMap, senderName, senderId, cleanText, persistedMsgId,
+                channelKey, orgId, agentManager, allAgentIds.length,
+                { roundId, depth: 1, respondedAgents, allAgentIds },
+              );
+            } else {
+              // No @mentions: deliver as mailbox notification so peers are aware
+              for (const peerId of peerAgentIds) {
+                try {
+                  agentManager.getAgent(peerId).enqueueToMailbox('a2a_message', {
+                    summary: `Group chat message from ${senderName}`,
+                    content: `[Group chat message from ${senderName}]:\n${cleanText}`,
+                    extra: { senderId, senderName, channelKey, waitForReply: false },
+                  }, {
+                    metadata: { senderId, senderName, senderRole: 'agent' },
+                  });
+                } catch { /* agent may not exist */ }
+              }
             }
           }
         }
@@ -522,6 +554,27 @@ export class APIServer {
           })),
           hasMore: result.hasMore,
         };
+      },
+      ensureDmChannel: async (
+        channelKey: string,
+        member1: { id: string; name: string },
+        member2: { id: string; name: string },
+      ) => {
+        if (!this.storage?.groupChatRepo) return { channelKey };
+        const existing = this.storage.groupChatRepo.getByChannelKey(channelKey);
+        if (existing) return { channelKey: existing.channelKey };
+        const gc = this.storage.groupChatRepo.create({
+          orgId: 'default',
+          name: `DM: ${member1.name} ↔ ${member2.name}`,
+          creatorId: member1.id,
+          creatorName: member1.name,
+          members: [
+            { id: member1.id, type: 'agent', name: member1.name },
+            { id: member2.id, type: 'agent', name: member2.name },
+          ],
+          channelKey,
+        });
+        return { channelKey: gc.channelKey };
       },
     });
 
@@ -651,6 +704,9 @@ export class APIServer {
   setStorage(storage: StorageBridge): void {
     this.storage = storage;
     this.tryInitFeishuNotifier();
+    if (storage.pendingCallbackRepo) {
+      pendingCallbackRegistry.setPersistence(storage.pendingCallbackRepo);
+    }
   }
 
   setRemoteAgent(agent: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void }): void {
@@ -932,7 +988,9 @@ export class APIServer {
   }
 
   // ── Agent-to-agent reply storm prevention ───────────────────────────────────
-  private static readonly A2A_MAX_DEPTH = 3;
+  // Depth limit is a safety net — agents should terminate via [NO_RESPONSE]
+  // guided by prompt instructions, not by hitting this ceiling.
+  private static readonly A2A_MAX_DEPTH = 20;
   private static readonly A2A_COOLDOWN_MS = 30_000;
   /** Per-channel cooldown tracker: channel → agentId → last reply timestamp */
   private a2aCooldowns = new Map<string, Map<string, number>>();
@@ -1076,6 +1134,7 @@ export class APIServer {
       const agent = agentManager.getAgent(agentId);
       const agentName = agent.config.name;
 
+      const isDmReply = channel.startsWith('dm:a2a:');
       const isA2A = !!chainCtx && chainCtx.depth > 0;
       const hasReplyTarget = !!opts?.replyToAgentName;
       const hasMentions = !!opts?.mentionedNames?.length;
@@ -1086,74 +1145,85 @@ export class APIServer {
       if (opts?.mentionedNames) opts.mentionedNames.forEach(n => targetNames.add(n));
       const thisAgentIsTarget = targetNames.has(agentName);
 
-      const prefixLines = [
-        `[GROUP CHAT — ${teamSize} team members | You are: ${agentName}]`,
-        `[CHANNEL] channel_key="${channel}" — You already have the most recent ~${CHANNEL_CONTEXT_MESSAGES} messages in your context.`,
-        '',
-      ];
+      let messagePrefix: string;
 
-      if (isA2A) {
-        prefixLines.push(`[AGENT COLLABORATION] This message is from a fellow agent (${opts?.replyToAgentName ?? 'teammate'}), not from the user.`);
-        prefixLines.push('You were @mentioned because your expertise is needed. Respond concisely to the specific request.');
-        prefixLines.push('You may @mention another agent if (and ONLY if) you genuinely need their specific expertise to answer.');
-        prefixLines.push('Do NOT @mention agents just to be polite or to pass the conversation along.');
-        prefixLines.push('');
+      if (isDmReply) {
+        // DM channel: minimal prefix — the scenario prompt handles the rest
+        const prefixLines = [
+          `[DM CONVERSATION with ${opts?.replyToAgentName ?? 'a colleague'} | You are: ${agentName}]`,
+          `[CHANNEL] channel_key="${channel}"`,
+          '---',
+          '',
+        ];
+        messagePrefix = prefixLines.join('\n');
+      } else {
+        const prefixLines = [
+          `[GROUP CHAT — ${teamSize} team members | You are: ${agentName}]`,
+          `[CHANNEL] channel_key="${channel}" — You already have the most recent ~${CHANNEL_CONTEXT_MESSAGES} messages in your context.`,
+          '',
+        ];
+
+        if (isA2A) {
+          prefixLines.push(`[AGENT COLLABORATION] This message is from a fellow agent (${opts?.replyToAgentName ?? 'teammate'}), not from the user.`);
+          prefixLines.push('You were @mentioned because your expertise is needed. Respond concisely to the specific request.');
+          prefixLines.push('You may @mention another agent if (and ONLY if) you genuinely need their specific expertise to answer.');
+          prefixLines.push('Do NOT @mention agents just to be polite or to pass the conversation along.');
+          prefixLines.push('');
+        }
+
+        if (isTargeted && !isA2A) {
+          if (hasReplyTarget) {
+            prefixLines.push(`[REPLY] The user is replying to ${opts!.replyToAgentName}'s message: "${(opts!.replyToText ?? '').slice(0, 200)}"`);
+          }
+          if (hasMentions) {
+            prefixLines.push(`[MENTIONED] The user @mentioned: ${opts!.mentionedNames!.join(', ')}`);
+          }
+          prefixLines.push('');
+          if (thisAgentIsTarget) {
+            prefixLines.push('>>> You are the target of this message. You SHOULD respond. <<<');
+          } else {
+            prefixLines.push('>>> STOP. This message is NOT for you. The user is talking to ' + [...targetNames].join(', ') + ', not you.');
+            prefixLines.push('You MUST respond with exactly: [NO_RESPONSE]');
+            prefixLines.push('The ONLY exception: you are directly contradicted by a factual error. Offering opinions, agreement, "me too", or generic help does NOT count. <<<');
+          }
+        } else if (!isA2A) {
+          prefixLines.push('This is an open group message (no specific @mention or reply target).');
+        }
+
+        if (chainCtx?.allAgentIds) {
+          prefixLines.push('');
+          const rosterLines = ['TEAM MEMBERS (use exact format for @mentions):'];
+          for (const aid of chainCtx.allAgentIds) {
+            try {
+              const a = agentManager.getAgent(aid);
+              const name = a.config.name;
+              const fmt = name.includes(' ') ? `@[${name}]` : `@${name}`;
+              rosterLines.push(`  ${fmt}${aid === agentId ? ' (you)' : ''}`);
+            } catch { /* skip */ }
+          }
+          prefixLines.push(rosterLines.join('\n'));
+        }
+        if (isTargeted && !thisAgentIsTarget && !isA2A) {
+          prefixLines.push('');
+          prefixLines.push('REMINDER: This message is directed at ' + [...targetNames].join(', ') + '. You are ' + agentName + '. Respond ONLY with [NO_RESPONSE].');
+        }
+
+        prefixLines.push('---', '');
+        messagePrefix = prefixLines.join('\n');
       }
 
-      if (isTargeted && !isA2A) {
-        if (hasReplyTarget) {
-          prefixLines.push(`[REPLY] The user is replying to ${opts!.replyToAgentName}'s message: "${(opts!.replyToText ?? '').slice(0, 200)}"`);
-        }
-        if (hasMentions) {
-          prefixLines.push(`[MENTIONED] The user @mentioned: ${opts!.mentionedNames!.join(', ')}`);
-        }
-        prefixLines.push('');
-        if (thisAgentIsTarget) {
-          prefixLines.push('>>> You are the target of this message. You SHOULD respond. <<<');
-        } else {
-          prefixLines.push('>>> STOP. This message is NOT for you. The user is talking to ' + [...targetNames].join(', ') + ', not you.');
-          prefixLines.push('You MUST respond with exactly: [NO_RESPONSE]');
-          prefixLines.push('The ONLY exception: you are directly contradicted by a factual error. Offering opinions, agreement, "me too", or generic help does NOT count. <<<');
-        }
-      } else if (!isA2A) {
-        prefixLines.push('This is an open group message (no specific @mention or reply target).');
-      }
-
-      // Static group chat rules (silence-by-default, @mention routing, processing
-      // checklist) are now in the system prompt via scenario='group_chat'.
-      // Only per-message variable parts remain here.
-      if (chainCtx?.allAgentIds) {
-        prefixLines.push('');
-        const rosterLines = ['TEAM MEMBERS (use exact format for @mentions):'];
-        for (const aid of chainCtx.allAgentIds) {
-          try {
-            const a = agentManager.getAgent(aid);
-            const name = a.config.name;
-            const fmt = name.includes(' ') ? `@[${name}]` : `@${name}`;
-            rosterLines.push(`  ${fmt}${aid === agentId ? ' (you)' : ''}`);
-          } catch { /* skip */ }
-        }
-        prefixLines.push(rosterLines.join('\n'));
-      }
-      if (isTargeted && !thisAgentIsTarget && !isA2A) {
-        prefixLines.push('');
-        prefixLines.push('REMINDER: This message is directed at ' + [...targetNames].join(', ') + '. You are ' + agentName + '. Respond ONLY with [NO_RESPONSE].');
-      }
-
-      prefixLines.push('---', '');
-      const groupChatPrefix = prefixLines.join('\n');
-
+      const effectiveScenario = isDmReply ? 'a2a' as const : (isA2A ? 'a2a' as const : 'group_chat' as const);
       const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
       const reply = await agent.sendMessage(
-        groupChatPrefix + userMessage,
+        messagePrefix + userMessage,
         senderId,
         senderInfo,
         {
-          sourceType: isA2A ? 'a2a_message' : 'human_chat',
-          scenario: isA2A ? 'a2a' : 'group_chat',
+          sourceType: isDmReply ? 'a2a_message' : (isA2A ? 'a2a_message' : 'human_chat'),
+          scenario: effectiveScenario,
           channelContext,
           channelKey: channel,
-          directMention: thisAgentIsTarget,
+          directMention: isDmReply ? true : thisAgentIsTarget,
           toolEventCollector: toolEvents,
         }
       );
@@ -1202,7 +1272,7 @@ export class APIServer {
       //   1. Known Markus tool names — slash is optional (agent may write "recall_context" or "/recall_context")
       //   2. Generic slash commands from other platforms — slash is REQUIRED to avoid false positives
       //      (e.g. "/history 30" is a command, but "List the points" is normal text)
-      const KNOWN_TOOL_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|update_working_memory|clear_working_memory|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
+      const KNOWN_TOOL_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|memory_update|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|update_working_memory|clear_working_memory|update_notebook|clear_notebook|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
       const SLASH_CMD_RE = /^\s*\/(?:history|help|status|list|search|get|set|info|ping|who|whois|me|join|leave|invite|kick|ban|mute|unmute|clear|purge|poll|remind|note|todo|roll|flip|ask)\b/i;
       const cleanReply = noResponseStripped.split('\n')
         .filter(line => !KNOWN_TOOL_RE.test(line) && !SLASH_CMD_RE.test(line))
@@ -1213,10 +1283,39 @@ export class APIServer {
         return;
       }
 
+      // DM auto-suppress: in DM channels, catch *pure* acknowledgments the LLM
+      // sends instead of [NO_RESPONSE]. Only suppresses when the entire message
+      // (stripped of punctuation/emoji) is a single acknowledgment token — never
+      // touches messages that contain additional content beyond the ack word.
+      if (isDmReply) {
+        const stripped = cleanReply.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+        const PURE_ACK = /^(收到|好的|了解|明白|知道了|ok|okay|gotit|understood|roger|noted|copy|willdo|sure|soundsgood|ack|确认|遵命|standby|waiting|保持待命|待命中?|acknowledged?)$/i;
+        if (PURE_ACK.test(stripped)) {
+          log.info('DM auto-suppress: pure acknowledgment detected', { agentId, channel, original: cleanReply.slice(0, 80) });
+          emitNoResponse();
+          return;
+        }
+      }
+
+      // DM dedup: if the agent already used agent_send_message to reply to the
+      // DM peer during this turn, its message was already persisted to the channel
+      // via sendGroupMessage. Skip auto-persisting the text reply to avoid duplicates.
+      if (isDmReply && toolEvents.length > 0) {
+        const peerAgentId = chainCtx?.allAgentIds?.find(id => id !== agentId);
+        const alreadySentToPeer = toolEvents.some(
+          e => e.tool === 'agent_send_message' && e.status === 'done'
+            && peerAgentId && JSON.stringify(e.arguments ?? '').includes(peerAgentId),
+        );
+        if (alreadySentToPeer) {
+          log.info('DM dedup: agent already sent message via tool — skipping auto-persist', { agentId, channel });
+          return;
+        }
+      }
+
       const metadata: Record<string, unknown> = {};
       if (thinking.length > 0) metadata['thinking'] = thinking;
       if (toolEvents.length > 0) metadata['toolCalls'] = toolEvents;
-      if (isA2A && opts?.replyToAgentName) {
+      if ((isA2A || isDmReply) && opts?.replyToAgentName) {
         metadata['replyToAgent'] = opts.replyToAgentName;
       }
 
@@ -1266,25 +1365,61 @@ export class APIServer {
         else this.ws.broadcast(replyEvent);
       }
 
-      // ── Agent-to-agent chain: parse @mentions in the reply ──
-      const allAgentIds = chainCtx?.allAgentIds ?? [];
-      if (allAgentIds.length > 0) {
-        const nameMap = this.buildAgentNameMap(allAgentIds, agentManager);
-        const mentionedNames = this.parseAgentMentions(cleanReply, [...nameMap.keys()]);
-        const filteredMentions = mentionedNames.filter(n => n !== agentName);
-        log.info('A2A mention scan', { agentName, mentionedNames, filteredMentions, depth: chainCtx?.depth ?? 0 });
+      // ── Post-reply chaining ──
+      const isDmChannel = channel.startsWith('dm:a2a:');
 
-        if (filteredMentions.length > 0) {
-          const depth = (chainCtx?.depth ?? 0) + 1;
-          const roundId = chainCtx?.roundId ?? `round_${Date.now()}`;
-          const responded = chainCtx?.respondedAgents ?? new Set<string>();
-          responded.add(agentId);
+      if (isDmChannel) {
+        // DM: auto-trigger the other party to respond (IM-style back-and-forth).
+        // No @mention required — every DM reply triggers the peer.
+        const depth = (chainCtx?.depth ?? 0) + 1;
+        if (depth <= APIServer.A2A_MAX_DEPTH) {
+          const peerAgentId = chainCtx?.allAgentIds?.find(id => id !== agentId);
+          if (peerAgentId) {
+            // Load fresh channel context including the just-persisted reply
+            let freshContext: Array<{ role: string; content: string }> = [];
+            if (this.storage) {
+              try {
+                const recent = await this.storage.channelMessageRepo.getMessages(channel, CHANNEL_CONTEXT_MESSAGES);
+                freshContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
+                  role: m.senderType === 'agent' ? 'assistant' : 'user',
+                  content: m.senderType === 'agent' ? stripInternalBlocks(m.text) : `[${m.senderName}]: ${m.text}`,
+                }));
+              } catch { /* best-effort */ }
+            }
 
-          void this.triggerAgentToAgentChain(
-            filteredMentions, nameMap, agentName, agentId, cleanReply, persistedMsgId,
-            channel, orgId, agentManager, teamSize,
-            { roundId, depth, respondedAgents: responded, allAgentIds },
-          );
+            void this.processGroupChatReply(
+              peerAgentId, cleanReply, agentId,
+              { name: agentName, role: 'agent' },
+              channel, orgId, freshContext, agentManager,
+              2,
+              { replyToAgentName: agentName, replyToText: cleanReply.slice(0, 200), replyToMsgId: persistedMsgId },
+              { roundId: chainCtx?.roundId ?? `dm_${Date.now()}`, depth, respondedAgents: new Set<string>(), allAgentIds: chainCtx?.allAgentIds ?? [agentId, peerAgentId] },
+            );
+          }
+        } else {
+          log.info('DM chain depth limit reached — conversation paused', { channel, depth, roundId: chainCtx?.roundId });
+        }
+      } else {
+        // Group chat: @mention-based chaining (unchanged)
+        const allAgentIds = chainCtx?.allAgentIds ?? [];
+        if (allAgentIds.length > 0) {
+          const nameMap = this.buildAgentNameMap(allAgentIds, agentManager);
+          const mentionedNames = this.parseAgentMentions(cleanReply, [...nameMap.keys()]);
+          const filteredMentions = mentionedNames.filter(n => n !== agentName);
+          log.info('A2A mention scan', { agentName, mentionedNames, filteredMentions, depth: chainCtx?.depth ?? 0 });
+
+          if (filteredMentions.length > 0) {
+            const depth = (chainCtx?.depth ?? 0) + 1;
+            const roundId = chainCtx?.roundId ?? `round_${Date.now()}`;
+            const responded = chainCtx?.respondedAgents ?? new Set<string>();
+            responded.add(agentId);
+
+            void this.triggerAgentToAgentChain(
+              filteredMentions, nameMap, agentName, agentId, cleanReply, persistedMsgId,
+              channel, orgId, agentManager, teamSize,
+              { roundId, depth, respondedAgents: responded, allAgentIds },
+            );
+          }
         }
       }
     } catch (err) {
@@ -1308,10 +1443,11 @@ export class APIServer {
   }
 
   /**
-   * Trigger agent-to-agent chain replies with 3-layer storm prevention:
-   * 1. Depth limit (max 3 hops)
+   * Trigger agent-to-agent chain replies for GROUP CHAT with 3-layer storm prevention:
+   * 1. Depth limit (safety net at 20 hops — agents should stop via [NO_RESPONSE])
    * 2. Per-round dedup (each agent responds at most once per conversation round)
    * 3. Cooldown window (same agent won't be triggered twice within 30s on same channel)
+   * Note: DM channels use a separate chaining path in processGroupChatReply.
    */
   private async triggerAgentToAgentChain(
     mentionedNames: string[],
@@ -5182,6 +5318,57 @@ EXPLANATION_END`;
       return;
     }
 
+    // Slash command dispatch
+    if (path.match(/^\/api\/agents\/[^/]+\/command$/) && req.method === 'POST') {
+      const agentId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      const command = body['command'] as string;
+      const args = body['args'] as string | undefined;
+      const senderId = body['senderId'] as string | undefined ?? 'system';
+      const senderName = body['senderName'] as string | undefined ?? 'User';
+      if (!command) {
+        this.json(res, 400, { error: 'command is required' });
+        return;
+      }
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        switch (command) {
+          case 'goal': {
+            const prompt = args
+              ? `[SLASH COMMAND: /goal] The user wants to create a goal: "${args}". Use the goal_create tool to set this up with appropriate completion criteria.`
+              : '[SLASH COMMAND: /goal] The user wants to create a goal. Ask them what they want to achieve.';
+            agent.sendMessage(prompt, senderId, { name: senderName, role: 'owner' });
+            this.json(res, 200, { status: 'dispatched', command: 'goal' });
+            break;
+          }
+          case 'status': {
+            const prompt = '[SLASH COMMAND: /status] The user wants a status update. Summarize your current state: active goals, pending tasks, mailbox, and recent activity. Be concise.';
+            agent.sendMessage(prompt, senderId, { name: senderName, role: 'owner' });
+            this.json(res, 200, { status: 'dispatched', command: 'status' });
+            break;
+          }
+          case 'notebook': {
+            const snapshot = agent.getWorkingMemorySnapshot();
+            this.json(res, 200, { status: 'ok', command: 'notebook', entries: snapshot });
+            break;
+          }
+          case 'task': {
+            const prompt = args
+              ? `[SLASH COMMAND: /task] The user wants to create a task: "${args}". Use task_create with appropriate details. Ask if you need more context.`
+              : '[SLASH COMMAND: /task] The user wants to create a task. Ask them for details.';
+            agent.sendMessage(prompt, senderId, { name: senderName, role: 'owner' });
+            this.json(res, 200, { status: 'dispatched', command: 'task' });
+            break;
+          }
+          default:
+            this.json(res, 400, { error: `Unknown command: ${command}` });
+        }
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
     // Agent detail (GET) — enriched with config, tools, heartbeat summary
     if (path.match(/^\/api\/agents\/[^/]+$/) && req.method === 'GET') {
       const agentId = path.split('/')[3]!;
@@ -8401,7 +8588,12 @@ EXPLANATION_END`;
       }
       if (changed) {
         try {
-          saveConfig({ agent: { maxToolIterations: am.maxToolIterations } } as any, this.markusConfigPath);
+          saveConfig({
+            agent: {
+              maxToolIterations: am.maxToolIterations,
+              cognitive: am.cognitiveConfig,
+            },
+          } as any, this.markusConfigPath);
         } catch (e) {
           log.warn('Failed to persist agent settings to config file', { error: String(e) });
         }
@@ -12365,6 +12557,7 @@ EXPLANATION_END`;
       regex(/^\/api\/agents\/[^/]+\/activity-logs$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/heartbeat$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/heartbeat\/trigger$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+\/command$/, 'POST'),
 
       // ── Sessions / Channels ──────────────────────────────────────────────
       regex(/^\/api\/sessions\/[^/]+\/messages$/, 'GET'),

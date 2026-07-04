@@ -384,10 +384,10 @@ export const DELIBERATION_ALLOWED_TOOLS: readonly string[] = [
   'recall_activity', 'memory_search', 'memory_search_longterm',
   // Mailbox management
   'check_mailbox', 'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item',
-  // Working memory
-  'update_working_memory', 'clear_working_memory',
-  // Long-term memory (allows recording observations during deliberation)
-  'memory_save', 'memory_update_longterm',
+  // Notebook (cognitive workspace)
+  'update_notebook', 'clear_notebook', 'update_working_memory', 'clear_working_memory',
+  // Memory (observations + curated knowledge)
+  'memory_save', 'memory_update', 'memory_update_longterm',
   // Inline action (lightweight communication)
   'notify_user', 'task_comment', 'requirement_comment',
   'agent_send_message', 'agent_send_group_message',
@@ -396,13 +396,19 @@ export const DELIBERATION_ALLOWED_TOOLS: readonly string[] = [
   'complete_deliberation',
 ];
 
-// ─── Working Memory Limits ──────────────────────────────────────────────────
+// ─── Notebook Limits (formerly Working Memory) ──────────────────────────────
 
-/** Maximum number of keyed entries in the agent's working memory Map. */
-export const WORKING_MEMORY_MAX_ENTRIES = 10;
+/** Maximum number of agent-managed entries in the Notebook. System/CPP entries are unbounded. */
+export const NOTEBOOK_MAX_AGENT_ENTRIES = 15;
 
-/** Maximum characters per working memory entry value. */
-export const WORKING_MEMORY_MAX_CHARS = 4000;
+/** Maximum characters per notebook entry. */
+export const NOTEBOOK_MAX_CHARS_PER_ENTRY = 6000;
+
+/** @deprecated Use NOTEBOOK_MAX_AGENT_ENTRIES */
+export const WORKING_MEMORY_MAX_ENTRIES = NOTEBOOK_MAX_AGENT_ENTRIES;
+
+/** @deprecated Use NOTEBOOK_MAX_CHARS_PER_ENTRY */
+export const WORKING_MEMORY_MAX_CHARS = NOTEBOOK_MAX_CHARS_PER_ENTRY;
 
 // ─── Subagent Limits ────────────────────────────────────────────────────────
 // These control subagent execution behavior and progress preview truncation.

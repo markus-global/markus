@@ -30,6 +30,73 @@ All requests require authentication via one of:
 | POST | `/api/agents/:id/start` | Start agent |
 | POST | `/api/agents/:id/stop` | Stop agent |
 | GET | `/api/agents/:id/profile` | Get agent full profile (memory, tools, etc.) |
+| GET | `/api/agents/:id/mind` | Get agent mind state (attention, focus, mailbox, notebook) |
+| POST | `/api/agents/:id/command` | Dispatch slash command to agent |
+
+### POST `/api/agents/:id/command`
+
+Dispatch slash commands to an agent.
+
+**Body:**
+
+```json
+{
+  "command": "goal",
+  "args": "Improve test coverage to 80%",
+  "senderId": "user-123",
+  "senderName": "Alice"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `command` | string | Yes | Command name (without leading `/`) |
+| `args` | string | No | Command arguments |
+| `senderId` | string | No | Sender user ID (default: `system`) |
+| `senderName` | string | No | Sender display name (default: `User`) |
+
+**Supported commands:**
+
+| Command | Behavior |
+|---------|----------|
+| `goal` | Creates a goal from `args` (prompts agent to use `goal_create`) |
+| `status` | Returns agent status summary via chat |
+| `notebook` | Returns notebook snapshot directly (no agent round-trip) |
+| `task` | Creates a task from `args` (prompts agent to use `task_create`) |
+
+**Response** (most commands):
+
+```json
+{ "status": "dispatched", "command": "goal" }
+```
+
+**Response** (`notebook`):
+
+```json
+{
+  "status": "ok",
+  "notebook": [
+    { "key": "current-focus", "text": "...", "updatedAt": 1710000000000, "managed": "agent" }
+  ]
+}
+```
+
+### Agent MindState
+
+Returned by `GET /api/agents/:id/mind`. Includes attention state, mailbox depth, queued/deferred items, recent decisions, and:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `notebook` | `NotebookEntry[]` | Persistent cognitive workspace entries |
+
+```typescript
+interface NotebookEntry {
+  key: string;
+  text: string;
+  updatedAt: number;
+  managed: string;  // "agent" | "system" | "cpp"
+}
+```
 
 ---
 
@@ -181,6 +248,67 @@ All requests require authentication via one of:
 |--------|------|-------------|
 | GET | `/api/roles` | List available role templates |
 | GET | `/api/roles/:name` | Get role template details |
+
+---
+
+## Settings
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/settings/agent` | Get agent runtime settings |
+| POST | `/api/settings/agent` | Update agent runtime settings |
+
+### POST `/api/settings/agent`
+
+Persists agent settings to `markus.json`, including full cognitive config.
+
+**Body:**
+
+```json
+{
+  "maxToolIterations": 25,
+  "cognitive": {
+    "enabled": true,
+    "maxDepth": 3,
+    "appraisalModel": "gpt-4o-mini",
+    "timeoutMs": 30000
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `maxToolIterations` | number | Max tool-call loops per agent turn |
+| `cognitive.enabled` | boolean | Enable cognitive appraisal loop |
+| `cognitive.maxDepth` | number | Max deliberation depth |
+| `cognitive.appraisalModel` | string | LLM model for appraisal steps |
+| `cognitive.timeoutMs` | number | Appraisal timeout in milliseconds |
+
+---
+
+## Requirements & Goals
+
+Requirements may include an optional `goalConfig` when acting as a persistent goal:
+
+```typescript
+interface GoalConfig {
+  loopEnabled: boolean;
+  completionCriteria: string;
+  maxIterations: number;
+  currentIteration: number;
+  lastCheckedAt: string;
+  autoResume: boolean;
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `loopEnabled` | Heartbeat injects this requirement as an active goal |
+| `completionCriteria` | Natural-language criteria for goal completion |
+| `maxIterations` | Maximum heartbeat check iterations |
+| `currentIteration` | Current iteration count |
+| `lastCheckedAt` | ISO timestamp of last heartbeat check |
+| `autoResume` | Resume goal loop after agent restart |
 
 ---
 

@@ -400,7 +400,13 @@
     "cancelConfirmMessage": "确定要取消此需求吗？此操作不可撤销。",
     "cancelConfirmLabel": "取消需求",
     "createTask": "任务",
-    "noLinkedTasks": "暂无关联任务，创建一个来开始吧。"
+    "noLinkedTasks": "暂无关联任务，创建一个来开始吧。",
+    "goal": "目标循环",
+    "goalActive": "活跃",
+    "goalMaxReached": "已达上限",
+    "goalIteration": "迭代 {{current}}/{{max}}",
+    "goalLastChecked": "上次检查：{{time}}",
+    "goalAutoResume": "自动恢复"
   },
   "filters": {
     "all": "全部",

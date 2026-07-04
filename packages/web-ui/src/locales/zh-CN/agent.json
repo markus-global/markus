@@ -13,7 +13,7 @@
     "mind": "心智",
     "activity": "活动",
     "memory": "记忆",
-    "tools": "工具",
+    "tools": "能力",
     "settings": "设置",
     "files": "文件",
     "skills": "技能",
@@ -41,9 +41,9 @@
   "memory": {
     "title": "记忆",
     "layers": {
-      "working": "工作记忆",
-      "shortTerm": "短期记忆",
-      "longTerm": "长期记忆",
+      "working": "笔记本",
+      "shortTerm": "观察记录",
+      "longTerm": "知识 (MEMORY.md)",
       "episodic": "情景记忆",
       "semantic": "语义记忆"
     },
@@ -223,6 +223,8 @@
       "filesDiffer_plural": "有 {{count}} 个文件与模板 {{templateId}} 不一致：",
       "syncing": "同步中…",
       "syncAll": "全部同步",
+      "sendToAgent": "发送给智能体",
+      "sendToAgentTitle": "将模板变更通过聊天发送给智能体审阅",
       "agentConfigFiles": "智能体配置文件",
       "templateLabel": "模板：",
       "upToDate": "（已是最新）",

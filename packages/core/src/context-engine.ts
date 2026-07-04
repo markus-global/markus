@@ -163,6 +163,8 @@ export class ContextEngine {
     scenario?: AgentScenario;
     /** When scenario is 'a2a', indicates whether the sender is blocking for a reply */
     a2aWaitForReply?: boolean;
+    /** Channel key for DM/group detection in scenario prompts */
+    channelKey?: string;
     agentWorkspace?: {
       primaryWorkspace: string;
       sharedWorkspace?: string;
@@ -197,6 +199,7 @@ export class ContextEngine {
       }>;
     };
     cognitiveContext?: PreparedCognitiveContext;
+    notebookWriter?: (key: string, text: string, managed: 'system' | 'cpp') => void;
   }): Promise<SystemPromptResult> {
     const isDream = opts.scenario === 'memory_consolidation';
 
@@ -311,15 +314,14 @@ export class ContextEngine {
       stable.push('- `recall_activity` — query your own past execution logs by task or activity type. Use when you need to review what you did previously (e.g., to answer a follow-up question).');
       stable.push('');
       stable.push('**Communicating with other agents**:');
-      stable.push('- `agent_send_message` — send a direct message to a peer agent. **Always asynchronous**: the message enters their mailbox and you continue working without blocking.');
-      stable.push('- A2A messaging is **non-blocking by design**. You send a message, the recipient processes it on their own schedule, and may reply via their own `agent_send_message`. Do NOT spin-wait or poll.');
-      stable.push('- Use `conversation_id` to correlate multi-turn exchanges. Record what you asked in working memory (`update_working_memory`) so you recognize the reply when it arrives as a new mailbox item.');
+      stable.push('- `agent_send_message` — **proactively** start a direct message to a peer agent. Use when YOU initiate a conversation. The message enters their DM channel and they are automatically triggered to respond.');
+      stable.push('- When you **receive** a DM or group chat message, your text response is **automatically sent back** — do NOT call `agent_send_message` or `agent_send_group_message` to reply. Just respond directly.');
       stable.push('- For substantial work requests, create a `task_create` assigned to the target agent instead of asking via message.');
       stable.push('- Do NOT use A2A messages for routine task status notifications — the system handles those automatically.');
     }
 
     const scenario = opts.scenario ?? 'chat';
-    stable.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply, isManager: opts.isTeamManager }));
+    stable.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply, isManager: opts.isTeamManager, channelKey: opts.channelKey }));
 
     // ═══════════════════════════════════════════════════════════════════════
     // TIER 2 — SEMI-STABLE
@@ -571,25 +573,39 @@ export class ContextEngine {
     const alreadyShownIds = new Set<string>();
     const cpp = opts.cognitiveContext;
     if (cpp && !cpp.isEmpty) {
-      if (cpp.cognitiveContext) {
-        dynamic.push('\n## Cognitive Context');
-        dynamic.push(cpp.cognitiveContext);
-      }
-      if (cpp.retrievedContext) {
-        dynamic.push('\n## Retrieved Context');
-        dynamic.push(cpp.retrievedContext);
-      }
-      if (cpp.reflection) {
-        dynamic.push('\n## Reflection');
-        dynamic.push(cpp.reflection);
+      if (opts.notebookWriter) {
+        if (cpp.cognitiveContext) opts.notebookWriter('cognitive-context', cpp.cognitiveContext, 'cpp');
+        if (cpp.retrievedContext) opts.notebookWriter('relevant-context', cpp.retrievedContext, 'cpp');
+        if (cpp.reflection) opts.notebookWriter('reflection', cpp.reflection, 'cpp');
+      } else {
+        if (cpp.cognitiveContext) {
+          dynamic.push('\n## Cognitive Context');
+          dynamic.push(cpp.cognitiveContext);
+        }
+        if (cpp.retrievedContext) {
+          dynamic.push('\n## Retrieved Context');
+          dynamic.push(cpp.retrievedContext);
+        }
+        if (cpp.reflection) {
+          dynamic.push('\n## Reflection');
+          dynamic.push(cpp.reflection);
+        }
       }
     } else if (!isDream) {
       const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId, alreadyShownIds);
       if (relevantMemories.length > 0) {
-        dynamic.push('\n## Relevant Memories');
-        for (const mem of relevantMemories) {
-          const ts = mem.timestamp ? new Date(mem.timestamp).toLocaleDateString() : '';
-          dynamic.push(`- [${ts}] ${mem.content}`);
+        if (opts.notebookWriter) {
+          const lines = relevantMemories.map(mem => {
+            const ts = mem.timestamp ? new Date(mem.timestamp).toLocaleDateString() : '';
+            return `- [${ts}] ${mem.content}`;
+          });
+          opts.notebookWriter('relevant-context', lines.join('\n'), 'system');
+        } else {
+          dynamic.push('\n## Relevant Memories');
+          for (const mem of relevantMemories) {
+            const ts = mem.timestamp ? new Date(mem.timestamp).toLocaleDateString() : '';
+            dynamic.push(`- [${ts}] ${mem.content}`);
+          }
         }
       }
     }
@@ -739,10 +755,10 @@ export class ContextEngine {
       lines.push('- [ ] Record lessons learned via `memory_save`.');
       lines.push('- [ ] If nothing needs attention → HEARTBEAT_OK.');
       lines.push('');
-      lines.push('### Working Memory Guidelines');
-      lines.push('- **Save**: current priorities, ongoing context, key decisions, blockers.');
+      lines.push('### Notebook Guidelines');
+      lines.push('- **Save**: current priorities, ongoing context, key decisions, blockers via `update_notebook`.');
       lines.push('- **Update**: when situation changes — new task, resolved blocker, shifted priority.');
-      lines.push('- **Clear**: when a task completes, when context becomes irrelevant.');
+      lines.push('- **Clear**: when a task completes, when context becomes irrelevant via `clear_notebook`.');
       lines.push('- **Do NOT save**: raw message content, large data — use `memory_save` for durable observations.');
       lines.push('');
       lines.push('### Mailbox Management Guidelines');
@@ -755,7 +771,7 @@ export class ContextEngine {
     return lines.join('\n');
   }
 
-  private buildScenarioSection(scenario: AgentScenario, extra?: { a2aWaitForReply?: boolean; isManager?: boolean }): string {
+  private buildScenarioSection(scenario: AgentScenario, extra?: { a2aWaitForReply?: boolean; isManager?: boolean; channelKey?: string }): string {
     const lines: string[] = ['\n## Current Interaction Mode'];
 
     switch (scenario) {
@@ -841,26 +857,48 @@ export class ContextEngine {
         break;
 
       case 'a2a': {
-        lines.push('You are in an **agent-to-agent (A2A) conversation**. This context is for COORDINATION, not for executing work.');
-        lines.push('');
-        lines.push('**Communication channel**: All A2A messaging is **asynchronous**. The sender is NOT blocking for your reply. Humans do NOT see this conversation.');
-        lines.push('- To **reply to the sender**, use `agent_send_message` with the sender\'s agent ID and the same `conversation_id` (if present in the message as `[conversation:...]`).');
-        lines.push('- To reach a **human**, use `notify_user`.');
-        lines.push('- To reach a **different agent**, use `agent_send_message`.');
-        lines.push('- If no response is needed, just process the information silently (e.g., update your state, create tasks, take notes).');
-        lines.push('');
-        lines.push('**A2A etiquette**: Only act if:');
-        lines.push('- The message contains a direct question or request for you');
-        lines.push('- The information changes your current work priorities');
-        lines.push('- You have critical corrections to share');
-        lines.push('Otherwise, absorb silently and continue your current work.');
-        lines.push('');
-        lines.push('**Communication rules:**');
-        lines.push('- Be concise and structured — your colleague needs actionable information');
-        lines.push('- Always use **absolute file paths** when referencing files or deliverables');
-        lines.push('- Respond with clear facts. No conversational filler.');
-        lines.push('- Do NOT use A2A for routine task status notifications or acknowledgments — the system handles all status-triggered side effects automatically');
-        lines.push('- Only send A2A when you have substantive coordination needs: sharing context, asking questions, or providing instructions that go beyond a status change');
+        const isDm = extra?.channelKey?.startsWith('dm:a2a:');
+
+        if (isDm) {
+          // ── DM (1-on-1 agent conversation) ──
+          lines.push('You are in a **direct message (DM) conversation** with another agent — like a 1-on-1 chat in IM software.');
+          lines.push('');
+          lines.push('**Auto-reply**: Your text response is **automatically sent** to the other party. Do NOT call `agent_send_message` to reply in this DM — just respond directly with your message text.');
+          lines.push('- To message a **different** agent (not in this DM), use `agent_send_message`.');
+          lines.push('- To reach a **human**, use `notify_user`.');
+          lines.push('');
+          lines.push('**Conversation flow**: After you reply, the other agent will be automatically triggered to respond. This creates a natural back-and-forth conversation — like texting a colleague.');
+          lines.push('');
+          lines.push('**CRITICAL — When to STOP replying** (respond with exactly `[NO_RESPONSE]`):');
+          lines.push('Your reply triggers the other agent to respond, which triggers you again — an infinite loop if you do not stop. You MUST respond with `[NO_RESPONSE]` in ALL of these cases:');
+          lines.push('- The conversation has reached a natural conclusion (agreement reached, question answered, info exchanged)');
+          lines.push('- You have nothing **new and actionable** to add — no new facts, no new questions, no new instructions');
+          lines.push('- You are just acknowledging receipt ("OK", "got it", "understood", "收到", "noted", "roger", "will do", "保持待命", "standby")');
+          lines.push('- The same information is being repeated or rephrased');
+          lines.push('- The other party confirmed or acknowledged your last message — the exchange is complete');
+          lines.push('- You want to say something purely polite, ceremonial, or encouraging (e.g., "加油", "sounds good", "great work")');
+          lines.push('**Default to [NO_RESPONSE]**. Only reply if you have genuinely new information, a question that needs answering, or a correction. When in doubt, STOP.');
+          lines.push('');
+          lines.push('**Communication rules:**');
+          lines.push('- Be concise and structured — your colleague needs actionable information');
+          lines.push('- Always use **absolute file paths** when referencing files or deliverables');
+          lines.push('- Respond with clear facts. No conversational filler.');
+        } else {
+          // ── General A2A (e.g., via mailbox without DM channel) ──
+          lines.push('You are in an **agent-to-agent (A2A) conversation**. This context is for COORDINATION, not for executing work.');
+          lines.push('');
+          lines.push('**Communication channel**: All A2A messaging is **asynchronous**. The sender is NOT blocking for your reply. Humans do NOT see this conversation.');
+          lines.push('- To **reply to the sender**, use `agent_send_message` with the sender\'s agent ID and the same `conversation_id` (if present in the message as `[conversation:...]`).');
+          lines.push('- To reach a **human**, use `notify_user`.');
+          lines.push('- To reach a **different agent**, use `agent_send_message`.');
+          lines.push('- If no response is needed, just process the information silently (e.g., update your state, create tasks, take notes).');
+          lines.push('');
+          lines.push('**A2A etiquette**: Only act if:');
+          lines.push('- The message contains a direct question or request for you');
+          lines.push('- The information changes your current work priorities');
+          lines.push('- You have critical corrections to share');
+          lines.push('Otherwise, absorb silently and continue your current work.');
+        }
         lines.push('');
         lines.push('**Work delegation:**');
         lines.push('- A2A messages are for: quick coordination, simple questions, sharing file references, substantive instructions');
@@ -873,7 +911,7 @@ export class ContextEngine {
       case 'group_chat':
         lines.push('You are in a **team group chat channel**. Multiple agents and humans share this channel.');
         lines.push('');
-        lines.push('**Communication channel**: Your text output is sent to the group chat. All team members can see it. To reach a human privately, use `notify_user`. To reach a specific agent privately, use `agent_send_message`.');
+        lines.push('**Communication channel**: Your text response is **automatically sent** to the group chat. All team members can see it. Do NOT call `agent_send_group_message` to reply — just respond directly with your message text. Only use `agent_send_group_message` to proactively start a new topic or message a different channel. To reach a human privately, use `notify_user`. To reach a specific agent privately, use `agent_send_message`.');
         lines.push('');
         lines.push('**Rules for ALL group chat messages:**');
         lines.push('1. Check channel history — if another agent already answered, do NOT repeat.');
@@ -896,7 +934,7 @@ export class ContextEngine {
         lines.push('   - You can @mention MULTIPLE agents in one message to address several people at once.');
         lines.push('   - @mentions can appear ANYWHERE in the message — beginning, middle, or end. Place each @mention naturally next to the content directed at that person.');
         lines.push('   - Only @mention agents who need to take action or whose expertise you need. Do NOT @mention just to acknowledge, agree, or be polite.');
-        lines.push('7. REPLY IN GROUP: Always reply in the group chat using `agent_send_group_message`. Do NOT use `agent_send_message` for private replies unless the other party explicitly requests a private conversation. Use `reply_to_message_id` to link your reply to the message you\'re responding to.');
+        lines.push('7. REPLY IN GROUP: Your text response is automatically sent to the group chat — do NOT call `agent_send_group_message` to reply. Only use that tool to proactively send to a different channel. Do NOT use `agent_send_message` for private replies unless the other party explicitly requests a private conversation.');
         lines.push(`8. Your context already includes ~${CHANNEL_CONTEXT_MESSAGES} recent messages. For OLDER messages beyond that window, use recall_context(scope="channel"). For task/requirement details use task_get/requirement_get. Do NOT guess about prior discussion.`);
         lines.push('');
         lines.push('**GROUP CHAT PROCESSING CHECKLIST** (walk through before every response):');
@@ -905,8 +943,7 @@ export class ContextEngine {
         lines.push('- [ ] Does my role/expertise add UNIQUE value here? If no → `[NO_RESPONSE]`.');
         lines.push('- [ ] Draft my reply. Is it concise and actionable? Remove filler.');
         lines.push('- [ ] @mention specific agents if I need their input — use correct format (`@Name` or `@[Full Name]`).');
-        lines.push('- [ ] Use `reply_to_message_id` to thread my response to the right message.');
-        lines.push('- [ ] Use `agent_send_group_message` — NOT `agent_send_message`.');
+        lines.push('- [ ] My text response will be auto-sent to the group. No need to call `agent_send_group_message`.');
         lines.push('- [ ] Final check: does my response contain NEW information? If not → `[NO_RESPONSE]`.');
         break;
 

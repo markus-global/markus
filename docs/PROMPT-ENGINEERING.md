@@ -82,7 +82,7 @@ The system prompt is assembled by `ContextEngine.buildSystemPrompt()` and organi
 ║  12. User Profiles (users/*.md) + Team Context           ║
 ║  13. Trust Level                                         ║
 ║  14. Environment Profile                                 ║
-║  15. Your Knowledge (MEMORY.md — unified long-term)      ║
+║  15. Your Knowledge (MEMORY.md curated — no _observations)║
 ╠══════════════════════════════════════════════════════════╣
 ║  TIER 3 — DYNAMIC (no cache breakpoint)                  ║
 ║  Changes per call. Kept as small as possible.            ║
@@ -92,14 +92,11 @@ The system prompt is assembled by `ContextEngine.buildSystemPrompt()` and organi
 ║  18. Human Feedback                                      ║
 ║  19. Project Deliverables                                ║
 ║  20. Shared Deliverables                                 ║
-║  21. Dynamic Context (skills, working memory)            ║
-║  22. Cognitive Context / Relevant Memories               ║
-║      (22a. CPP Appraisal, 22b. Retrieval, 22c.          ║
-║       Reflection — when CPP active D1+/D2+)              ║
-║  23. Task Board (capped)                                 ║
-║  24. Mailbox & Attention Context                         ║
-║  25. Sender Identity                                     ║
-║  26. Timestamp                                           ║
+║  21. Dynamic Context (skills, Notebook)                  ║
+║  22. Task Board (capped)                                 ║
+║  23. Mailbox & Attention Context                         ║
+║  24. Sender Identity                                     ║
+║  25. Timestamp                                           ║
 ╚══════════════════════════════════════════════════════════╝
 ```
 
@@ -109,9 +106,9 @@ The system prompt uses a **3-tier cache architecture** with explicit cache break
 
 1. **Tier 1 (Stable)**: Role, policies, tool usage rules, scenario instructions. These rarely change for the same agent and scenario. A cache breakpoint after this tier allows the provider to cache this prefix across all calls with the same scenario.
 
-2. **Tier 2 (Semi-stable)**: Identity, org context, workspace paths, long-term memory. These change when the agent's configuration, team, or memory changes, but remain stable within a session. A cache breakpoint here enables caching the combined Tier 1+2 prefix.
+2. **Tier 2 (Semi-stable)**: Identity, org context, workspace paths, `## Your Knowledge` (curated MEMORY.md). These change when the agent's configuration, team, or memory changes, but remain stable within a session. A cache breakpoint here enables caching the combined Tier 1+2 prefix.
 
-3. **Tier 3 (Dynamic)**: Project context, announcements, feedback, task board, mailbox state, timestamps. These change per call and are kept as small as possible. No cache breakpoint — this section is always re-processed.
+3. **Tier 3 (Dynamic)**: Project context, announcements, feedback, task board, `## Notebook`, mailbox state, timestamps. These change per call and are kept as small as possible. No cache breakpoint — this section is always re-processed.
 
 **Message-level cache breakpoints**: In addition to system prompt caching, a `cacheBreakpoint` is placed on the last message before the current turn in the conversation history. This allows providers (e.g. Anthropic) to cache the stable conversation prefix (older history, channel context) independently from new messages.
 
@@ -123,14 +120,25 @@ The system prompt uses a **3-tier cache architecture** with explicit cache break
 Source: `role.systemPrompt` parsed from the agent's `ROLE.md`.  
 Contains the core behavioral instructions, personality, and domain expertise.
 
-#### Dynamic Context (§2)
+#### Your Knowledge (§15)
+Source: `memory.getLongTermMemory()` — curated sections from `MEMORY.md`.  
+The `## _observations` buffer is **excluded** from the prompt; observations are surfaced via `memory_search`, CPP retrieval, or mechanical relevance matching (written to Notebook as `relevant-context`). This section represents the agent's consolidated long-term knowledge — procedures, conventions, domain facts the agent maintains via `memory_update`.
+
+#### Dynamic Context — Notebook (§21)
 Source: `getDynamicContext()` — three sources:
 1. **Registered providers**: Callback functions set via `registerDynamicContextProvider()`.
 2. **Activated skill instructions**: When an agent calls `discover_tools` to activate a skill, its instructions are wrapped in `<skill name="...">...</skill>` tags and injected here.
-3. **Working Memory**: Agent-managed situational awareness stored as a keyed Map.
-   Each entry has a key, content, and update timestamp. Rendered as
-   `## Working Memory` with age labels. Controlled by `update_working_memory` /
-   `clear_working_memory` tools. System events (triage, deliberation) also auto-write entries.
+3. **Notebook**: Persistent cognitive workspace from `NOTEBOOK.md`, rendered as `## Notebook`. Each entry shows its key, age label, and managed type tag:
+
+| Tag | Writer | Typical keys |
+|-----|--------|--------------|
+| `agent` | `update_notebook` / `clear_notebook` | Agent-chosen keys (priorities, blockers, decisions) |
+| `system` | Runtime (triage, mechanical retrieval) | `triage-decision`, `relevant-context` |
+| `cpp` | Cognitive Preparation Pipeline | `cognitive-context`, `relevant-context`, `reflection` |
+
+The context engine no longer injects separate `## Cognitive Context`, `## Retrieved Context`, `## Reflection`, or `## Relevant Memories` sections. Instead, `buildSystemPrompt()` accepts a `notebookWriter` callback; CPP outputs and relevance-matched memories are written to Notebook entries, centralizing cognitive state in one section. See [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) §3–4 and [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md).
+
+Legacy aliases `update_working_memory` / `clear_working_memory` remain for backward compatibility.
 
 #### Identity Section (§3)
 Source: `buildIdentitySection()`.  
@@ -144,7 +152,7 @@ Contains:
 - Human team members
 - **Manager Responsibilities** (for managers): Routing, Coordination, Reporting, Cross-team, Escalation, Hiring
 
-#### Task Board (§17)
+#### Task Board (§22)
 Source: `opts.assignedTasks`.  
 Displays the agent's active tasks and team tasks, **capped to prevent prompt bloat**:
 - **My active tasks**: Top 15 by priority (critical → high → medium → low), each with title, ID, priority, and truncated description (150 chars).
@@ -152,7 +160,7 @@ Displays the agent's active tasks and team tasks, **capped to prevent prompt blo
 - Overflow is indicated with a count and a hint to use `task_list` for the full list.
 - Completed/closed tasks are only shown as a count.
 
-#### Mailbox & Attention Context (§22)
+#### Mailbox & Attention Context (§23)
 Source: `getMailboxContext()` → `buildMailboxSection()` in `ContextEngine`.  
 Every LLM call passes through the mailbox, so this section is always populated. It injects:
 - **Current focus**: What the agent is currently working on (item type, summary, time elapsed).
@@ -169,7 +177,7 @@ their mailbox on demand using `check_mailbox` in any scenario.
 
 All 12 mailbox item types (`human_chat`, `task_status_update`, `session_reply`, `daily_report`, `memory_consolidation`, `heartbeat`, etc.) route through this section. Internal agent processes like heartbeats, daily reports, and memory consolidation also enqueue to the mailbox, meaning the agent always has full situational awareness about its own cognitive state. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the full design.
 
-#### Scenario Section (§23)
+#### Scenario Section (§7)
 Source: `buildScenarioSection()`.  
 Eight distinct instruction sets depending on `scenario` parameter. Each scenario is slim and references the global Task Workflow (§18) and Tool Usage Rules (§21) rather than re-explaining them. Each scenario includes a **Communication channel** paragraph that specifies output visibility and appropriate tools:
 
@@ -177,11 +185,11 @@ Eight distinct instruction sets depending on `scenario` parameter. Each scenario
 |----------|-----------------|-------------------|-------------------|
 | `chat` | Inline immediate-answer work. Sustained implementation → `task_create`. | **Directly visible** to the chatting human (real-time stream) | Speak naturally; `agent_send_message` for agents |
 | `task_execution` | Isolated session. Decompose → execute → `task_submit_review`. | Visible in **task execution logs** (Work page) | `notify_user` for critical updates; `agent_send_message` for agents |
-| `heartbeat` | Brief check-in: review tasks, retry failures, self-evolution. | **Not visible** to anyone | `notify_user` (only way to reach humans); `agent_send_message` for agents |
+| `heartbeat` | Brief check-in: review tasks, retry failures, active goals, self-evolution. Inline prompt includes `## Active Goals` when standing goals exist. | **Not visible** to anyone | `notify_user` (only way to reach humans); `agent_send_message` for agents |
 | `a2a` | Coordination only. Concise, structured. Complex work → `task_create`. | Visible to **peer agent** only | Reply directly; `notify_user` to escalate to humans |
 | `group_chat` | Team group chat channel. Silence by default, @mention routing, processing checklist, reply-in-group rules. | Visible to **all team members** | `agent_send_group_message` for replies; `notify_user` for private escalation |
 | `comment_response` | Context-first protocol. Batch awareness (handle bundled comments as one). Use `reply_to_comment_id` for structural quoting. Convergence check before replying. | **Not directly visible** | `task_comment` / `requirement_comment` for thread (with `reply_to_comment_id`); `notify_user` if urgent |
-| `deliberation` | Multiple mailbox items — assess before committing. Use `check_mailbox` for full queue inspection; `defer_mailbox_item` / `drop_mailbox_item` for queue management; `update_working_memory` to record situational assessment; finish with `complete_deliberation`. | **Not visible** | Inline handling via deliberation whitelist (`notify_user`, `task_comment`, `agent_send_message`, etc.) |
+| `deliberation` | Multiple mailbox items — assess before committing. Use `check_mailbox` for full queue inspection; `defer_mailbox_item` / `drop_mailbox_item` for queue management; `update_notebook` to record situational assessment; finish with `complete_deliberation`. Goal tools (`goal_create`, `goal_update`, `goal_status`) available. | **Not visible** | Inline handling via deliberation whitelist (`notify_user`, `task_comment`, `agent_send_message`, etc.) |
 | `review` | Evaluate deliverable quality against acceptance criteria. | **Not directly visible** | `task_update` for verdict; `notify_user` optionally |
 | `memory_consolidation` | Internal memory management. Purely private. | **Not visible**; internal only | No communication tools needed |
 
@@ -295,6 +303,7 @@ The "harness" is the while-loop that drives agentic tool use: LLM → tool calls
    0c. Reflection — persona-aware LLM call → insights (D2+)
    0d. Assembly — merge prepared context (code only)
 1. Build system prompt (contextEngine.buildSystemPrompt + PreparedContext)
+   CPP/retrieval outputs → notebookWriter → ## Notebook (not separate sections)
 2. Build tool definitions (toolSelector.selectTools)
 3. Prepare messages (contextEngine.prepareMessages — compress to fit budget)
 4. LLM call (llmRouter.chat / chatStream, wrapped in withNetworkRetry)
@@ -377,20 +386,23 @@ Key differences from chat:
 
 Heartbeat uses `handleMessage(prompt, undefined, undefined, { sessionId: 'hb_<agentId>_<ts>', allowedTools, scenario: 'heartbeat' })`.
 
-The heartbeat prompt is assembled inline (not via `buildSystemPrompt`) and includes:
+The heartbeat user prompt is assembled inline; the system prompt still comes from `buildSystemPrompt(scenario:'heartbeat')` (identity, `## Your Knowledge`, `## Notebook`, mailbox context). The inline prompt includes:
 1. `[HEARTBEAT CHECK-IN]` header
 2. Agent's custom checklist (from `role.heartbeatChecklist`)
 3. Last heartbeat summary (from memory search)
-4. Failed task recovery instructions
-5. Requirement monitoring section
-6. Daily report section (managers, after 20:00)
-7. Self-evolution reflection instructions — includes Knowledge Lifecycle decision matrix (observation buffer vs curated knowledge vs skill creation)
-8. Quality signal check — revision rate self-assessment, knowledge effectiveness
-9. "Patrol, Don't Build" rules — lightweight actions allowed, complex work → create task
-10. When `background_exec` sessions have finished since the last turn, a `## Background Processes Completed` section is included so the model sees completion summaries on the next heartbeat
-11. Conditional actions (failed bg processes, blocked tasks, completed dependencies, patterns)
+4. **`## Active Goals`** — when `goalFetcher` is wired, lists each standing goal's title, status, iteration count (`currentIteration` / `maxIterations`), and completion criteria, with instructions to assess progress, create follow-up tasks, and mark requirements complete when criteria are met
+5. Failed task recovery instructions
+6. Requirement monitoring section
+7. Daily report section (managers, after 20:00)
+8. Self-evolution reflection instructions — includes Knowledge Lifecycle decision matrix (observation buffer vs curated knowledge vs skill creation)
+9. Quality signal check — revision rate self-assessment, knowledge effectiveness
+10. "Patrol, Don't Build" rules — lightweight actions allowed, complex work → create task
+11. When `background_exec` sessions have finished since the last turn, a `## Background Processes Completed` section is included so the model sees completion summaries on the next heartbeat
+12. Conditional actions (failed bg processes, blocked tasks, completed dependencies, patterns)
 
-Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `notify_user`, `request_user_approval`, `recall_activity`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`, `package_list`, `package_install`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
+**Notebook Guidelines** (in mailbox checklists / system prompt when queue context is present): use `update_notebook` to save priorities, context, decisions, and blockers; `clear_notebook` when context becomes irrelevant. Do not store raw message content — use `memory_save` for durable observations.
+
+Tool whitelist includes: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update`, `update_notebook`, `update_working_memory` (alias), `goal_create`, `goal_update`, `goal_status`, `discover_tools`, `notify_user`, `request_user_approval`, `recall_activity`, `package_list`, `package_install`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
 
 Agent communication guidance (heartbeat context):
 
@@ -491,9 +503,25 @@ This ensures that modern models with large output windows are not artificially c
 
 ## 7. Tool Selection
 
+### 7.0 Memory & Notebook Tools
+
+Five primary memory tools (down from seven); legacy aliases preserved:
+
+| Tool | Purpose |
+|------|---------|
+| `update_notebook` | Upsert a keyed entry in `NOTEBOOK.md` (situational workspace) |
+| `clear_notebook` | Remove one entry or all agent-managed entries |
+| `memory_save` | Append to `## _observations` in MEMORY.md |
+| `memory_update` | Edit curated MEMORY.md sections (always in `## Your Knowledge`) |
+| `memory_search` | Search observations and curated knowledge |
+
+**Legacy aliases** (same handlers): `update_working_memory`, `clear_working_memory`, `memory_list`, `memory_delete`, `memory_update_longterm`, `memory_search_longterm`.
+
+Goal tools (`goal_create`, `goal_update`, `goal_status`) are available during **heartbeat** and **deliberation** for standing-goal management.
+
 `ToolSelector.selectTools()` determines which tools appear in each LLM call:
 
-1. **Always-on tools**: Core set always included (e.g., `memory_save`, `memory_search`, `file_read`, `file_write`, `task_create`, `task_list`, `spawn_subagent`, `spawn_subagents`, `check_mailbox`, `update_working_memory`, `clear_working_memory`, etc.)
+1. **Always-on tools**: Core set always included (e.g., `memory_save`, `memory_search`, `memory_update`, `update_notebook`, `clear_notebook`, `file_read`, `file_write`, `task_create`, `task_list`, `spawn_subagent`, `spawn_subagents`, `check_mailbox`, etc.)
 2. **Manager-only tools**: Added when `isManager=true` (e.g., `task_assign`, `team_status`, `delegate_message`)
 3. **Package tools**: Available to all agents, activated by keyword (e.g., `package_list`, `package_install`, `hub_search`, `hub_install`)
 4. **Task-execution tools**: Added when `isTaskExecution=true` (e.g., `task_submit_review`, `subtask_create`)
@@ -505,7 +533,7 @@ This ensures that modern models with large output windows are not artificially c
 8. **Skill-provided tools**: MCP tools from activated skills
 9. **`discover_tools` meta-tool**: Always present, enabling agents to list/activate/install skills at runtime
 
-### 7.1 Agent/Team Creation & Deployment
+### 7.2 Agent/Team Creation & Deployment
 
 Creation and deployment are **two separate phases** with an explicit user gate between them.
 
@@ -553,7 +581,8 @@ For Claude Opus 4.x and Sonnet 4.x models, Anthropic's server-side `compact_2026
 | Document | Relationship |
 |----------|-------------|
 | [STATE-MACHINES.md](./STATE-MACHINES.md) | Task state transitions trigger different LLM call paths (§5.2 task execution, §5.3 heartbeat review) |
-| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Three memory layers (Semantic, Episodic, Procedural) feed into system prompt and are maintained by consolidation (§5.6-5.8) |
+| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Notebook + MEMORY.md layers; `## Your Knowledge` and `## Notebook` in prompts; consolidation (§5.6-5.8) |
+| [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) | CPP writes to Notebook via `notebookWriter`; cognitive depth levels (§4.2 step 0) |
 | `packages/core/src/agent.ts` | Implementation of all 7 LLM call scenarios and 4 harness variants |
 | `packages/core/src/context-engine.ts` | `buildSystemPrompt()` and `prepareMessages()` implementation |
 | `packages/core/src/llm/router.ts` | Provider routing, circuit breaker, model catalog, output token resolution |

@@ -144,6 +144,7 @@ Markus supports small team collaboration with multiple human users and AI agents
 | Channel | How to Access | Description |
 |---------|--------------|-------------|
 | **Agent Chat** | Team page > click agent | One-on-one conversation with an AI agent (session isolated per user) |
+| **Agent DM (A2A)** | Automatic between agents | Agent-to-agent DMs with persistent history via `agent_send_message` |
 | **DM** | Team page > People > click user | Private messages between two humans |
 | **Team Group** | Team page > select team channel | Group chat for all team members (auto-created per team) |
 | **Custom Group** | Team page > Create Group Chat | Manually managed group with selected humans and agents |
@@ -185,6 +186,26 @@ The left sidebar lets you choose a conversation target:
 - Click an Agent row to open the Profile panel on the right
 - In the Profile you can view role, status, memory, and tools
 - Start / Stop buttons switch based on state (only one is visible at a time)
+- **Mind tab** — view attention state, mailbox, and the agent's **Notebook** (persistent cognitive workspace)
+
+### Agent Notebook, Memory & Goals
+
+**Notebook** — Agents maintain a persistent notebook (`NOTEBOOK.md`) as their cognitive workspace. Keyed entries survive restarts and are injected into every turn. View entries in the **Notebook** section on the Mind tab of the Agent Profile page.
+
+**Memory** — Long-term knowledge lives in a unified `MEMORY.md` file containing both curated knowledge sections and a raw `## _observations` buffer. The dream cycle automatically consolidates observations into distilled knowledge.
+
+**Goals** — Agents can pursue persistent objectives backed by requirements with `GoalConfig`. Goals have completion criteria and iteration tracking; heartbeat periodically checks progress. Create a goal by typing `/goal <description>` in agent chat.
+
+**Slash Commands** — Type `/` in the chat input to open the command menu:
+
+| Command | Action |
+|---------|--------|
+| `/goal [description]` | Create a standing goal |
+| `/status` | Request a concise status update |
+| `/notebook` | View notebook snapshot |
+| `/task [description]` | Create a task |
+
+**A2A Communication** — Agents communicate with each other via DM channels with persistent conversation history (deterministic `dm:a2a:{sorted_ids}` routing). Use group chat or agent messaging; substantial work should go through requirements and tasks.
 
 ### Tasks Page
 

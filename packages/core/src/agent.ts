@@ -45,7 +45,7 @@ import { GuardrailPipeline } from './guardrails.js';
 import { ToolHookRegistry, generateIdempotencyKey, type ToolHook } from './tool-hooks.js';
 import { HeartbeatScheduler } from './heartbeat.js';
 import type { LLMRouter } from './llm/router.js';
-import { MemoryStore } from './memory/store.js';
+import { MemoryStore, loadNotebook, saveNotebook, type NotebookEntry, type NotebookEntryManaged } from './memory/store.js';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metrics.js';
@@ -60,6 +60,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createBuiltinTools } from './tools/builtin.js';
 import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback } from './tools/subagent.js';
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
+import { pendingCallbackRegistry } from './pending-callback.js';
 import { AgentMailbox, type EnqueueOptions } from './mailbox.js';
 import { AttentionController, type AttentionDelegate } from './attention.js';
 
@@ -284,6 +285,7 @@ export class Agent {
     assignedAgentId?: string;
     assignedAgentName?: string;
   }>;
+  private goalFetcher?: () => Array<{ id: string; title: string; status: string; taskIds: string[]; goalConfig?: import('@markus/shared').GoalConfig }>;
   private consecutiveFailures = 0;
   private metricsCollector: AgentMetricsCollector;
   /** Tracks concurrently executing task IDs */
@@ -302,12 +304,14 @@ export class Agent {
   private processingMailboxItemId?: string;
   /** Last activity type injected into main session — used to collapse consecutive duplicates like heartbeats. */
   private lastInjectedActivityType?: string;
-  /** Agent-managed working memory: keyed entries with timestamps. Replaces former currentCognition. */
-  private workingMemory: Map<string, { text: string; updatedAt: number }> = new Map();
-  private static readonly WORKING_MEMORY_MAX_ENTRIES = 10;
-  private static readonly WORKING_MEMORY_MAX_CHARS = 4000;
+  /** Notebook — the single cognitive workspace. Persisted to NOTEBOOK.md. */
+  private workingMemory: Map<string, NotebookEntry> = new Map();
+  private static readonly NOTEBOOK_MAX_AGENT_ENTRIES = 15;
+  private static readonly NOTEBOOK_MAX_CHARS_PER_ENTRY = 6000;
+  private notebookSaveTimer?: ReturnType<typeof setTimeout>;
   /** Cognitive Preparation Pipeline instance (null when CPP is disabled) */
   private cognitivePrep?: CognitivePreparation;
+  private cognitiveConfig?: CognitiveConfig;
   /** Ring buffer of recent activity summaries for triage context. */
   private recentActivityRing: string[] = [];
   private static readonly ACTIVITY_RING_SIZE = 8;
@@ -391,6 +395,7 @@ export class Agent {
     this.metricsCollector = new AgentMetricsCollector(this.id, options.dataDir);
     if (options.cognitive?.enabled) {
       this.cognitivePrep = new CognitivePreparation(options.cognitive);
+      this.cognitiveConfig = options.cognitive;
     }
     this.heartbeat = new HeartbeatScheduler(this.id, this.eventBus, {
       intervalMs: this.config.heartbeatIntervalMs,
@@ -422,11 +427,10 @@ export class Agent {
     this.tools.set('spawn_subagent', createSubagentTool(subagentCtx));
     this.tools.set('spawn_subagents', createParallelSubagentTool(subagentCtx));
 
-    // Route background_exec completion to the originating session (not always main chat).
+    // Route background_exec completion through the mailbox for proper attention handling.
     this._bgCompletionUnsub = onBackgroundCompletion((notification) => {
-      const targetSession = this.bgSessionOrigin.get(notification.sessionId)
+      const originSession = this.bgSessionOrigin.get(notification.sessionId)
         ?? this.currentSessionId;
-      if (!targetSession) return;
       this.bgSessionOrigin.delete(notification.sessionId);
 
       const status = notification.exitCode === 0 ? 'succeeded' : `failed (exit ${notification.exitCode})`;
@@ -441,7 +445,20 @@ export class Agent {
       if (notification.exitCode === 0 && notification.stdoutTail) {
         parts.push(`Output (last lines):\n${notification.stdoutTail}`);
       }
-      this.injectUserMessage(targetSession, parts.join('\n'));
+
+      // Resolve from PendingCallbackRegistry if registered
+      pendingCallbackRegistry.resolve(notification.sessionId);
+
+      this.enqueueToMailbox('callback_result', {
+        summary: `Background process ${status}: ${notification.command.slice(0, 80)}`,
+        content: parts.join('\n'),
+        extra: {
+          callbackId: notification.sessionId,
+          originSessionId: originSession,
+          callbackType: 'background_exec',
+          exitCode: notification.exitCode,
+        },
+      });
     });
 
     // Initialize task executor
@@ -526,6 +543,19 @@ export class Agent {
     this.setStatus('idle');
     this.stopReason = undefined;
 
+    // Load persistent notebook (NOTEBOOK.md)
+    try {
+      const loaded = loadNotebook(this.dataDir);
+      for (const [key, entry] of loaded) {
+        this.workingMemory.set(key, entry);
+      }
+      if (loaded.size > 0) {
+        log.info(`Loaded ${loaded.size} notebook entries from NOTEBOOK.md`);
+      }
+    } catch (err) {
+      log.warn('Failed to load NOTEBOOK.md', { error: String(err) });
+    }
+
     // Detect runtime environment (cached for 5 minutes)
     try {
       this.environmentProfile = await detectEnvironment();
@@ -604,6 +634,12 @@ export class Agent {
     this.heartbeat.stop();
     this._bgCompletionUnsub?.();
     this._heartbeatUnsub?.();
+    // Synchronous notebook persist on shutdown
+    if (this.notebookSaveTimer) {
+      clearTimeout(this.notebookSaveTimer);
+      this.notebookSaveTimer = undefined;
+    }
+    this.persistNotebookSync();
     if (this.consolidationInitialTimer) {
       clearTimeout(this.consolidationInitialTimer);
       this.consolidationInitialTimer = undefined;
@@ -841,8 +877,8 @@ export class Agent {
   }
 
   /** Get the current cognitive state of the agent. */
-  getMindState(): AgentMindState {
-    const mind = this.attentionController.getMindState();
+  getMindState(): AgentMindState & { notebook?: Array<{ key: string; text: string; updatedAt: number; managed: string }> } {
+    const mind = this.attentionController.getMindState() as AgentMindState & { notebook?: Array<{ key: string; text: string; updatedAt: number; managed: string }> };
     if (mind.isDeliberating && this.state.currentActivity) {
       mind.deliberationActivity = {
         activityId: this.state.currentActivity.id,
@@ -850,6 +886,12 @@ export class Agent {
         startedAt: this.state.currentActivity.startedAt,
       };
     }
+    mind.notebook = this.getWorkingMemorySnapshot().map(e => ({
+      key: e.key,
+      text: e.text,
+      updatedAt: e.updatedAt,
+      managed: e.managed ?? 'agent',
+    }));
     return mind;
   }
 
@@ -1333,6 +1375,21 @@ export class Agent {
           resolveResponse(reply);
           return reply;
         }
+
+        case 'callback_result': {
+          // Route to the originating session if known, otherwise a fresh system session
+          const originSessionId = extra.originSessionId as string | undefined;
+          const cbSessionId = originSessionId ?? `sys_${this.id}_${ts}`;
+          let reply = await this.handleMessage(
+            item.payload.content + markerSuffix,
+            undefined,
+            undefined,
+            buildHandleOpts({ sessionId: cbSessionId, scenario: 'heartbeat' }),
+          );
+          if (needsMarker) reply = await this.ensureCompletionMarker(reply, cbSessionId);
+          resolveResponse(reply);
+          return reply;
+        }
       }
     } catch (err) {
       rejectResponse(err);
@@ -1384,6 +1441,8 @@ export class Agent {
         return 'heartbeat processed';
       case 'session_reply':
         return 'replied in session';
+      case 'callback_result':
+        return 'callback processed';
       case 'system_event':
       case 'daily_report':
       case 'memory_consolidation':
@@ -2107,6 +2166,7 @@ export class Agent {
     this.workingMemory.set('triage-decision', {
       text: lines.join('\n'),
       updatedAt: Date.now(),
+      managed: 'system',
     });
   }
 
@@ -2130,6 +2190,7 @@ export class Agent {
     this.workingMemory.set('deliberation', {
       text: lines.join('\n'),
       updatedAt: Date.now(),
+      managed: 'system',
     });
   }
 
@@ -2247,21 +2308,28 @@ export class Agent {
     }
   }
 
+  private getNotebookWriter(): (key: string, text: string, managed: 'system' | 'cpp') => void {
+    return (key: string, text: string, managed: 'system' | 'cpp') => {
+      this.workingMemory.set(key, { text, updatedAt: Date.now(), managed });
+    };
+  }
+
   private getDynamicContext(): string | undefined {
     const parts = [...this.dynamicContextProviders.values()].map(p => p()).filter(Boolean);
     for (const [name, instructions] of this.activatedSkillInstructions) {
       parts.push(`<skill name="${name}">\n${instructions}\n</skill>`);
     }
     if (this.workingMemory.size > 0) {
-      const wmLines = ['## Working Memory'];
-      wmLines.push('Your self-maintained situational awareness. Update or clear entries via tools as needed.');
+      const wmLines = ['## Notebook'];
+      wmLines.push('Your cognitive workspace. Persists across sessions. Agent entries: update via `update_notebook`. System entries (triage-decision, relevant-context, etc.) are auto-managed.');
       wmLines.push('');
       for (const [key, entry] of this.workingMemory) {
         const ageMs = Date.now() - entry.updatedAt;
         const ageLabel = ageMs < 60_000 ? `${Math.round(ageMs / 1000)}s ago`
           : ageMs < 3_600_000 ? `${Math.round(ageMs / 60_000)}min ago`
           : `${(ageMs / 3_600_000).toFixed(1)}h ago`;
-        wmLines.push(`### ${key} (${ageLabel})`);
+        const managedTag = entry.managed !== 'agent' ? ` [${entry.managed}]` : '';
+        wmLines.push(`### ${key} (${ageLabel})${managedTag}`);
         wmLines.push(entry.text);
         wmLines.push('');
       }
@@ -2311,7 +2379,13 @@ export class Agent {
 
     try {
       const startMs = Date.now();
-      const result = await this.cognitivePrep.prepare(stimulus, agentCtx, depth, this.llmRouter);
+      const timeoutMs = this.cognitiveConfig?.timeoutMs ?? 15_000;
+      const result = await Promise.race([
+        this.cognitivePrep.prepare(stimulus, agentCtx, depth, this.llmRouter),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`CPP timed out after ${timeoutMs}ms`)), timeoutMs),
+        ),
+      ]);
       const elapsedMs = Date.now() - startMs;
       log.info('CPP completed', { depth: result.depth, isEmpty: result.isEmpty, elapsedMs });
       return result;
@@ -2790,6 +2864,10 @@ export class Agent {
     this.tasksFetcher = fetcher;
   }
 
+  setGoalFetcher(fetcher: () => Array<{ id: string; title: string; status: string; taskIds: string[]; goalConfig?: import('@markus/shared').GoalConfig }>): void {
+    this.goalFetcher = fetcher;
+  }
+
   private workflowContextFetcher?: () => {
     activeRuns: Array<{ workflowName: string; runNumber: number; status: string; taskCount: number; startedAt: string }>;
     availableWorkflows: Array<{ name: string; description: string; stepCount: number }>;
@@ -2984,6 +3062,7 @@ export class Agent {
       environment: this.environmentProfile,
       scenario,
       a2aWaitForReply: scenario === 'a2a' ? options?.waitForReply : undefined,
+      channelKey: options?.channelKey,
       agentWorkspace: this.pathPolicy ? {
         primaryWorkspace: this.pathPolicy.primaryWorkspace,
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
@@ -2995,6 +3074,7 @@ export class Agent {
       mailboxContext: this.getMailboxContext(),
       workflowContext: isLightweight ? undefined : this.workflowContextFetcher?.(),
       cognitiveContext,
+      notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
 
@@ -3635,6 +3715,7 @@ export class Agent {
       mailboxContext: this.getMailboxContext(),
       workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
+      notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
 
@@ -4287,6 +4368,7 @@ export class Agent {
       mailboxContext: this.getMailboxContext(),
       workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
+      notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
 
@@ -4819,6 +4901,7 @@ export class Agent {
       mailboxContext: this.getMailboxContext(),
       workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
+      notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
 
@@ -5031,32 +5114,59 @@ export class Agent {
     });
   }
 
-  updateWorkingMemory(key: string, content: string): { status: string; key: string; evicted?: string } {
+  updateWorkingMemory(key: string, content: string, managed?: NotebookEntryManaged): { status: string; key: string; evicted?: string } {
+    const entryManaged = managed ?? 'agent';
     let evicted: string | undefined;
-    if (this.workingMemory.size >= Agent.WORKING_MEMORY_MAX_ENTRIES && !this.workingMemory.has(key)) {
-      let oldestKey: string | undefined;
-      let oldestTime = Infinity;
-      for (const [k, v] of this.workingMemory) {
-        if (v.updatedAt < oldestTime) { oldestTime = v.updatedAt; oldestKey = k; }
+    // Only count agent-managed entries toward the limit
+    if (entryManaged === 'agent') {
+      const agentCount = [...this.workingMemory.values()].filter(v => v.managed === 'agent').length;
+      if (agentCount >= Agent.NOTEBOOK_MAX_AGENT_ENTRIES && !this.workingMemory.has(key)) {
+        let oldestKey: string | undefined;
+        let oldestTime = Infinity;
+        for (const [k, v] of this.workingMemory) {
+          if (v.managed === 'agent' && v.updatedAt < oldestTime) { oldestTime = v.updatedAt; oldestKey = k; }
+        }
+        if (oldestKey) { this.workingMemory.delete(oldestKey); evicted = oldestKey; }
       }
-      if (oldestKey) { this.workingMemory.delete(oldestKey); evicted = oldestKey; }
     }
-    const truncated = content.slice(0, Agent.WORKING_MEMORY_MAX_CHARS);
-    this.workingMemory.set(key, { text: truncated, updatedAt: Date.now() });
+    const truncated = content.slice(0, Agent.NOTEBOOK_MAX_CHARS_PER_ENTRY);
+    this.workingMemory.set(key, { text: truncated, updatedAt: Date.now(), managed: entryManaged });
+    this.scheduleNotebookPersist();
     return { status: 'updated', key, ...(evicted ? { evicted } : {}) };
   }
 
   clearWorkingMemory(key?: string): { status: string; cleared: number } {
     if (key) {
-      return { status: 'cleared', cleared: this.workingMemory.delete(key) ? 1 : 0 };
+      const result = { status: 'cleared', cleared: this.workingMemory.delete(key) ? 1 : 0 };
+      if (result.cleared > 0) this.scheduleNotebookPersist();
+      return result;
     }
     const count = this.workingMemory.size;
     this.workingMemory.clear();
+    if (count > 0) this.scheduleNotebookPersist();
     return { status: 'cleared', cleared: count };
   }
 
-  getWorkingMemorySnapshot(): Array<{ key: string; text: string; updatedAt: number }> {
+  getWorkingMemorySnapshot(): Array<{ key: string; text: string; updatedAt: number; managed?: string }> {
     return [...this.workingMemory.entries()].map(([key, v]) => ({ key, ...v }));
+  }
+
+  /** Schedule a debounced write of NOTEBOOK.md (2s debounce). */
+  private scheduleNotebookPersist(): void {
+    if (this.notebookSaveTimer) clearTimeout(this.notebookSaveTimer);
+    this.notebookSaveTimer = setTimeout(() => {
+      this.persistNotebookSync();
+      this.notebookSaveTimer = undefined;
+    }, 2000);
+  }
+
+  /** Synchronous write of the notebook to disk. */
+  private persistNotebookSync(): void {
+    try {
+      saveNotebook(this.dataDir, this.workingMemory);
+    } catch (err) {
+      log.warn('Failed to persist NOTEBOOK.md', { error: String(err) });
+    }
   }
 
   registerTool(handler: AgentToolHandler): void {
@@ -5072,8 +5182,17 @@ export class Agent {
     return false;
   }
 
-  registerBackgroundSession(bgSessionId: string, originSessionId: string): void {
+  registerBackgroundSession(bgSessionId: string, originSessionId: string, command?: string): void {
     this.bgSessionOrigin.set(bgSessionId, originSessionId);
+    pendingCallbackRegistry.register({
+      id: bgSessionId,
+      agentId: this.id,
+      originSessionId,
+      type: 'background_exec',
+      command,
+      registeredAt: Date.now(),
+      timeoutMs: 10 * 60 * 1000,
+    });
   }
 
   getTools(): Map<string, AgentToolHandler> {
@@ -5880,6 +5999,49 @@ export class Agent {
       ].join('\n');
     }
 
+    // Check for timed-out pending callbacks
+    const timedOut = pendingCallbackRegistry.getTimedOut();
+    let timedOutSection = '';
+    if (timedOut.length > 0) {
+      const lines = timedOut.map(cb => {
+        pendingCallbackRegistry.expireTimedOut(cb.id);
+        const elapsed = Math.round((Date.now() - cb.registeredAt) / 1000);
+        return `- [TIMED OUT] \`${cb.command ?? cb.type}\` (${elapsed}s elapsed, session: ${cb.originSessionId})`;
+      });
+      timedOutSection = [
+        '',
+        '## Timed-Out Background Operations',
+        `${timedOut.length} operation(s) exceeded their timeout:`,
+        ...lines,
+        'Investigate and take corrective action if needed.',
+      ].join('\n');
+    }
+
+    let activeGoalsSection = '';
+    if (this.goalFetcher) {
+      try {
+        const goals = this.goalFetcher();
+        if (goals.length > 0) {
+          const lines = goals.map(g => {
+            const gc = g.goalConfig;
+            return `- **${g.title}** (${g.id}) — status: ${g.status}, iteration: ${gc?.currentIteration ?? 0}/${gc?.maxIterations ?? '?'}\n  Criteria: ${gc?.completionCriteria ?? 'none'}`;
+          });
+          activeGoalsSection = [
+            '',
+            '## Active Goals',
+            `You have ${goals.length} active goal(s). Assess progress and take action:`,
+            ...lines,
+            '',
+            'For each goal:',
+            '1. Check linked tasks — are they progressing?',
+            '2. Create follow-up tasks if needed',
+            '3. If criteria are met, update the requirement status to "completed"',
+            '4. If stuck, escalate or adjust approach',
+          ].join('\n');
+        }
+      } catch { /* ignore */ }
+    }
+
     const qualitySignalSection = [
       '',
       '## Quality Signal Check',
@@ -5898,6 +6060,8 @@ export class Agent {
       checklist,
       lastHeartbeatSummary,
       bgCompletionSection,
+      timedOutSection,
+      activeGoalsSection,
       failedTaskRecoverySection,
       requirementMonitoringSection,
       dailyReportSection,
@@ -5951,9 +6115,11 @@ export class Agent {
       'task_comment', 'requirement_comment',
       'file_read', 'agent_send_message',
       'requirement_propose', 'requirement_list', 'requirement_update_status',
-      'memory_save', 'memory_search', 'memory_update_longterm',
+      'memory_save', 'memory_search', 'memory_update', 'memory_update_longterm',
+      'update_notebook', 'update_working_memory',
       'discover_tools', 'notify_user', 'request_user_approval', 'recall_activity',
       'package_install', 'package_list',
+      'goal_create', 'goal_update', 'goal_status',
     ];
     if (isManager) {
       baseTools.push(
@@ -6042,11 +6208,13 @@ export class Agent {
         'The conversation context is approaching its limit and will be compacted soon.',
         'Review the recent conversation and save any important information that should be remembered long-term.',
         '',
-        'Use `memory_save` to persist:',
+        'Use `memory_save` to save observations to MEMORY.md (## _observations section):',
         '- Key decisions or conclusions reached',
         '- Important facts learned about the project or user preferences',
         '- Task outcomes or status changes',
         '- Technical details that would be costly to rediscover',
+        '',
+        'Also use `update_notebook` to ensure your Notebook captures current working state.',
         '',
         'Only save genuinely important information. Skip routine exchanges.',
         'If nothing important needs saving, just respond with "No important information to save."',
@@ -6081,7 +6249,7 @@ export class Agent {
 
       // Memory dream: prune, deduplicate, merge.
       // Runs once per day normally, but up to 4x/day when memory is heavily bloated.
-      const entries = this.memory.getEntries();
+      const entries = this.memory.getObservations();
       const dreamKey = entries.length > 500 ? `${today}_${Math.floor(Date.now() / (6 * 3600_000))}` : today;
       if (entries.length >= 50 && this.lastDreamDate !== dreamKey) {
         this.lastDreamDate = dreamKey;
@@ -6127,20 +6295,21 @@ export class Agent {
     const prompt = [
       '[MEMORY CONSOLIDATION — Dream Cycle]',
       '',
-      `You have ${batch.length} memory entries${truncated ? ` (showing most recent ${MAX_ENTRIES_FOR_LLM} of ${entries.length} total)` : ''}. Review them and:`,
+      `You have ${batch.length} observation entries from MEMORY.md ## _observations${truncated ? ` (showing most recent ${MAX_ENTRIES_FOR_LLM} of ${entries.length} total)` : ''}. Review them and:`,
       '',
-      '**Phase 1 — Clean up:**',
+      '**Phase 1 — Clean up observations:**',
       '1. **Duplicates**: entries saying essentially the same thing → remove',
       '2. **Outdated**: entries superseded by newer information → remove',
       '3. **Merge candidates**: multiple entries about the same topic → combine into one',
       '',
-      '**Phase 2 — Promote recurring patterns:**',
-      '4. **Pattern promotion**: If 3+ entries share a common theme (e.g., same type of mistake, same tool approach),',
+      '**Phase 2 — Promote recurring patterns to curated MEMORY.md sections:**',
+      '4. **Pattern promotion**: If 3+ observations share a common theme (e.g., same type of mistake, same tool approach),',
       '   synthesize them into a consolidated insight and mark the source entries for removal.',
-      '   Use the `section` field to specify which MEMORY.md section the promoted content belongs to.',
+      '   Use the `section` field to specify which curated MEMORY.md section the promoted content belongs to.',
       '   The agent organizes their own sections — use whatever section name fits the content.',
+      '   Promoted content becomes persistent long-term knowledge above ## _observations.',
       '',
-      knowledgePreview ? `## Existing MEMORY.md Knowledge (for reference — avoid duplicating)\n${knowledgePreview}\n` : '',
+      knowledgePreview ? `## Existing Curated Knowledge (for reference — avoid duplicating)\n${knowledgePreview}\n` : '',
       '',
       'Respond with ONLY a JSON object (no markdown fences):',
       '{',

@@ -7,6 +7,15 @@ export type LegacyRequirementStatus = 'pending_review' | 'approved' | Requiremen
 
 export type RequirementSource = 'user' | 'agent' | 'workflow';
 
+export interface GoalConfig {
+  loopEnabled: boolean;
+  completionCriteria: string;
+  maxIterations: number;
+  currentIteration: number;
+  lastCheckedAt: string;
+  autoResume: boolean;
+}
+
 export interface Requirement {
   id: string;
   orgId: string;
@@ -27,6 +36,8 @@ export interface Requirement {
   /** IDs of tasks created to fulfill this requirement */
   taskIds: string[];
   tags?: string[];
+  /** Goal loop configuration — when set, the requirement acts as a persistent goal */
+  goalConfig?: GoalConfig;
   createdAt: string;
   updatedAt: string;
 }

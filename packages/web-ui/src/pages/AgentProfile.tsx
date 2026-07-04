@@ -17,13 +17,12 @@ const LazyMarkdownMessage = lazy(() => import('../components/MarkdownMessage.tsx
 
 interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string; authUser?: AuthUser; headless?: boolean; activeTab?: ProfileTab }
 
-export type ProfileTab = 'overview' | 'tools' | 'skills' | 'memory' | 'files' | 'deliverables';
+export type ProfileTab = 'overview' | 'mind' | 'files' | 'tools' | 'memory' | 'deliverables';
 
 export const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
   { key: 'overview', icon: '▦' },
   { key: 'files', icon: '📄' },
   { key: 'tools', icon: '⚒' },
-  { key: 'skills', icon: '◆' },
   { key: 'memory', icon: '🧠' },
   { key: 'deliverables', icon: '📦' },
 ];
@@ -98,7 +97,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
     return (
       <div className="flex-1 overflow-y-auto bg-surface-primary">
         <div className="p-5">
-          {effectiveTab === 'overview' && (
+          {(effectiveTab === 'overview' || effectiveTab === 'mind') && (
             <>
               <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
               <div className="mt-6">
@@ -107,8 +106,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
             </>
           )}
           {effectiveTab === 'files' && <FilesTab agentId={agentId} />}
-          {effectiveTab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}
-          {effectiveTab === 'skills' && <SkillsTab agent={agent} />}
+          {effectiveTab === 'tools' && <CapabilitiesTab tools={agent.tools ?? []} agent={agent} />}
           {effectiveTab === 'memory' && (
             <>
               <HeartbeatTab agentId={agentId} initialData={agent.heartbeat} />
@@ -176,7 +174,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
         </div>
       </div>
       <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
-        {tab === 'overview' && (
+        {(tab === 'overview' || tab === 'mind') && (
           <>
             <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
             <div className="mt-6">
@@ -185,8 +183,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
           </>
         )}
         {tab === 'files' && <FilesTab agentId={agentId} />}
-        {tab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}
-        {tab === 'skills' && <SkillsTab agent={agent} />}
+        {tab === 'tools' && <CapabilitiesTab tools={agent.tools ?? []} agent={agent} />}
         {tab === 'memory' && (
           <>
             <HeartbeatTab agentId={agentId} initialData={agent.heartbeat} />
@@ -653,6 +650,25 @@ function InlineDiff({ agent, template, templateId }: { agent: string; template: 
 
 // ─── Files Tab (System Prompts / Role Files) ─────────────────────────────────
 
+function buildSimpleDiff(current: string, template: string): string {
+  const curLines = current.split('\n');
+  const tplLines = template.split('\n');
+  const lines: string[] = [];
+  const maxLen = Math.max(curLines.length, tplLines.length);
+  for (let i = 0; i < maxLen; i++) {
+    const c = curLines[i];
+    const t = tplLines[i];
+    if (c === t) { lines.push(`  ${c ?? ''}`); continue; }
+    if (c !== undefined && (t === undefined || c !== t)) lines.push(`- ${c}`);
+    if (t !== undefined && (c === undefined || c !== t)) lines.push(`+ ${t}`);
+  }
+  if (lines.length > 80) {
+    const changed = lines.filter(l => l.startsWith('+ ') || l.startsWith('- '));
+    if (changed.length > 0) return changed.join('\n');
+  }
+  return lines.join('\n');
+}
+
 function FilesTab({ agentId }: { agentId: string }) {
   const { t } = useTranslation(['agent', 'common']);
   const [files, setFiles] = useState<Array<{ name: string; content: string }>>([]);
@@ -670,10 +686,7 @@ function FilesTab({ agentId }: { agentId: string }) {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [roleStatus, setRoleStatus] = useState<RoleUpdateStatus | null>(null);
-  const [syncing, setSyncing] = useState(false);
   const [diffView, setDiffView] = useState<{ file: string; agent: string; template: string } | null>(null);
-  const [smartSyncing, setSmartSyncing] = useState(false);
-  const [smartSyncResult, setSmartSyncResult] = useState<{ file: string; mergedContent: string; explanation: string; previousContent: string } | null>(null);
 
   const loadFiles = useCallback(() => {
     setLoading(true);
@@ -711,44 +724,39 @@ function FilesTab({ agentId }: { agentId: string }) {
     setSaving(false);
   };
 
-  const syncFromTemplate = async (fileName?: string) => {
-    setSyncing(true);
-    try {
-      await api.agents.roleSync(agentId, fileName ? [fileName] : undefined);
-      setDiffView(null);
-      setDirty(false);
-      setSmartSyncResult(null);
-      loadFiles();
-    } catch { /* */ }
-    setSyncing(false);
-  };
+  const staleFiles = roleStatus?.files.filter(f => f.status === 'modified' || f.status === 'added_in_template') ?? [];
 
-  const smartSync = async (fileName: string) => {
-    setSmartSyncing(true);
-    try {
-      const result = await api.agents.roleSmartSync(agentId, fileName);
-      if (result.success && result.mergedContent) {
-        const currentFile = files.find(f => f.name === fileName);
-        setSmartSyncResult({
-          file: fileName,
-          mergedContent: result.mergedContent,
-          explanation: result.explanation,
-          previousContent: currentFile?.content ?? editContent,
-        });
-        setEditContent(result.mergedContent);
-        setDirty(true);
-        setDiffView(null);
-      }
-    } catch { /* */ }
-    setSmartSyncing(false);
-  };
+  const sendUpdateToAgent = async (fileName?: string) => {
+    const filesToSend = fileName
+      ? staleFiles.filter(f => f.file === fileName)
+      : staleFiles;
+    if (filesToSend.length === 0) return;
 
-  const undoSmartSync = () => {
-    if (!smartSyncResult) return;
-    setEditContent(smartSyncResult.previousContent);
-    setFiles(prev => prev.map(f => f.name === smartSyncResult.file ? { ...f, content: smartSyncResult.previousContent } : f));
-    setDirty(false);
-    setSmartSyncResult(null);
+    const diffParts: string[] = [];
+    for (const sf of filesToSend) {
+      try {
+        const d = await api.agents.roleDiff(agentId, sf.file);
+        if (d.agentContent != null && d.templateContent != null) {
+          diffParts.push(
+            `## ${sf.file}\n\n` +
+            `**Template file path:** built-in template \`${roleStatus?.templateId ?? 'unknown'}\`\n\n` +
+            `**Key changes in the new template version:**\n` +
+            '```diff\n' +
+            buildSimpleDiff(d.agentContent, d.templateContent) +
+            '\n```\n'
+          );
+        }
+      } catch { /* skip */ }
+    }
+    if (diffParts.length === 0) return;
+
+    const message =
+      `Your role configuration files have been updated in the latest template (\`${roleStatus?.templateId ?? ''}\`). ` +
+      `Please review the following changes and decide whether to update your files accordingly.\n\n` +
+      diffParts.join('\n---\n\n') +
+      `\nPlease review each change and update your files if appropriate. You can use the \`update_file\` tool or ask me to apply the changes.`;
+
+    navBus.navigate(PAGE.TEAM, { agentId, prefillMessage: message });
   };
 
   const showDiff = async (fileName: string) => {
@@ -774,7 +782,6 @@ function FilesTab({ agentId }: { agentId: string }) {
     return k ? t(`agent:profilePage.filesTab.fileLabels.${k}`) : name;
   };
 
-  const staleFiles = roleStatus?.files.filter(f => f.status === 'modified' || f.status === 'added_in_template') ?? [];
   const hasUpdates = roleStatus?.hasTemplate && !roleStatus.isUpToDate;
   const selectedFileStale = selected ? staleFiles.some(f => f.file === selected) : false;
 
@@ -790,9 +797,9 @@ function FilesTab({ agentId }: { agentId: string }) {
               {' '}{staleFiles.map(f => f.file).join(', ')}
             </div>
           </div>
-          <button onClick={() => syncFromTemplate()} disabled={syncing}
-            className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors shrink-0 disabled:opacity-50"
-          >{syncing ? t('agent:profilePage.filesTab.syncing') : t('agent:profilePage.filesTab.syncAll')}</button>
+          <button onClick={() => sendUpdateToAgent()}
+            className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors shrink-0"
+          >{t('agent:profilePage.filesTab.sendToAgent')}</button>
         </div>
       )}
 
@@ -833,20 +840,11 @@ function FilesTab({ agentId }: { agentId: string }) {
                     <button onClick={() => showDiff(selected)} className="px-2.5 py-1 text-[11px] text-amber-600 hover:text-amber-600 border border-amber-500/30 hover:border-amber-500/50 rounded-lg transition-colors">
                       {diffView?.file === selected ? t('agent:profilePage.filesTab.hideDiff') : t('agent:profilePage.filesTab.viewDiff')}
                     </button>
-                    <button onClick={() => smartSync(selected)} disabled={smartSyncing || syncing}
-                      className="px-2.5 py-1 text-[11px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50"
-                      title={t('agent:profilePage.filesTab.smartSyncTitle')}
-                    >{smartSyncing ? t('agent:profilePage.filesTab.merging') : t('agent:profilePage.filesTab.smartSync')}</button>
-                    <button onClick={() => syncFromTemplate(selected)} disabled={syncing}
-                      className="px-2.5 py-1 text-[11px] bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50"
-                      title={t('agent:profilePage.filesTab.overwriteTemplateTitle')}
-                    >{syncing ? t('agent:profilePage.filesTab.syncing') : t('agent:profilePage.filesTab.syncThisFile')}</button>
+                    <button onClick={() => sendUpdateToAgent(selected)}
+                      className="px-2.5 py-1 text-[11px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors"
+                      title={t('agent:profilePage.filesTab.sendToAgentTitle')}
+                    >{t('agent:profilePage.filesTab.sendToAgent')}</button>
                   </>
-                )}
-                {smartSyncResult?.file === selected && (
-                  <button onClick={undoSmartSync} className="px-2.5 py-1 text-[11px] text-red-500 hover:text-red-400 border border-red-500/30 hover:border-red-500/50 rounded-lg transition-colors"
-                    title={t('agent:profilePage.filesTab.undoMergeTitle')}
-                  >{t('agent:profilePage.filesTab.undoMerge')}</button>
                 )}
                 {saving && <span className="text-[10px] text-fg-tertiary">{t('common:saving')}</span>}
               </div>
@@ -880,16 +878,6 @@ function FilesTab({ agentId }: { agentId: string }) {
 
             {diffView?.file === selected && (
               <InlineDiff agent={diffView.agent} template={diffView.template} templateId={roleStatus?.templateId ?? ''} />
-            )}
-
-            {smartSyncResult?.file === selected && (
-              <div className="mb-3 bg-brand-600/8 border border-brand-500/25 rounded-lg p-3">
-                <div className="flex items-center gap-2 mb-1.5">
-                  <span className="text-[10px] font-semibold text-brand-500 uppercase tracking-wider">{t('agent:profilePage.filesTab.smartSyncResult')}</span>
-                  <span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.filesTab.reviewAndSave')}</span>
-                </div>
-                <p className="text-[11px] text-fg-secondary whitespace-pre-wrap leading-relaxed">{smartSyncResult.explanation}</p>
-              </div>
             )}
 
             <FileMarkdownEditor
@@ -1220,13 +1208,36 @@ function SkillsTab({ agent }: { agent: AgentDetail }) {
   );
 }
 
+// ─── Capabilities Tab (Tools + Skills) ───────────────────────────────────────
+
+function CapabilitiesTab({ tools, agent }: { tools: AgentToolInfo[]; agent: AgentDetail }) {
+  const { t } = useTranslation(['agent', 'common']);
+  const [section, setSection] = useState<'tools' | 'skills'>('tools');
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 mb-2">
+        {(['tools', 'skills'] as const).map(s => (
+          <button key={s} onClick={() => setSection(s)}
+            className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${
+              section === s ? 'bg-brand-600/15 border-brand-500/40 text-brand-500' : 'border-border-default text-fg-tertiary hover:text-fg-secondary'
+            }`}
+          >
+            {s === 'tools' ? `${t('agent:profilePage.toolsTab.title', { defaultValue: 'Tools' })} (${tools.length})` : `${t('agent:tabs.skills')} (${agent.availableSkills?.length ?? 0})`}
+          </button>
+        ))}
+      </div>
+      {section === 'tools' ? <ToolsTab tools={tools} /> : <SkillsTab agent={agent} />}
+    </div>
+  );
+}
+
 // ─── Memory Tab ──────────────────────────────────────────────────────────────
 
 function MemoryTab({ agentId }: { agentId: string }) {
   const { t } = useTranslation(['agent', 'common']);
   const [data, setData] = useState<AgentMemorySummary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [section, setSection] = useState<'entries' | 'sessions' | 'daily' | 'longterm'>('entries');
+  const [section, setSection] = useState<'entries' | 'sessions' | 'daily' | 'longterm'>('longterm');
   const [dailyContent, setDailyContent] = useState('');
   const [longContent, setLongContent] = useState('');
   const [saving, setSaving] = useState(false);
@@ -1267,10 +1278,10 @@ function MemoryTab({ agentId }: { agentId: string }) {
   if (!data) return <div className="text-xs text-fg-tertiary py-8 text-center">{t('agent:profilePage.memoryTab.loadFailed')}</div>;
 
   const sectionTabs = [
-    { key: 'entries' as const, label: t('agent:profilePage.memoryTab.recent', { count: data.entries.length }) },
+    { key: 'longterm' as const, label: 'MEMORY.md' },
+    { key: 'entries' as const, label: `Observations (${data.entries.length})` },
     { key: 'sessions' as const, label: t('agent:profilePage.memoryTab.sessions', { count: data.sessions.length }) },
     { key: 'daily' as const, label: t('agent:profilePage.memoryTab.dailyLogs') },
-    { key: 'longterm' as const, label: t('agent:profilePage.memoryTab.longTerm') },
   ];
 
   return (
@@ -2165,6 +2176,38 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
           );
         })()}
       </section>
+
+      {/* ── Notebook (Cognitive Workspace) ── */}
+      {(mind?.notebook?.length ?? 0) > 0 && (
+        <section className="bg-surface-2 rounded-lg border border-border-subtle p-3">
+          <details open>
+            <summary className="flex items-center gap-2 cursor-pointer list-none">
+              <span className="text-sm">📓</span>
+              <h4 className="text-xs font-medium text-fg-secondary uppercase tracking-wider">Notebook</h4>
+              <span className="text-[10px] text-fg-quaternary ml-auto">{mind!.notebook!.length} {mind!.notebook!.length === 1 ? 'entry' : 'entries'}</span>
+            </summary>
+            <div className="mt-2 space-y-2">
+              {mind!.notebook!.map(entry => {
+                const ageMs = Date.now() - entry.updatedAt;
+                const ageLabel = ageMs < 60_000 ? `${Math.round(ageMs / 1000)}s ago`
+                  : ageMs < 3_600_000 ? `${Math.round(ageMs / 60_000)}min ago`
+                  : `${(ageMs / 3_600_000).toFixed(1)}h ago`;
+                const managedColor = entry.managed === 'system' ? 'text-blue-400' : entry.managed === 'cpp' ? 'text-purple-400' : 'text-emerald-400';
+                return (
+                  <div key={entry.key} className="px-3 py-2 rounded bg-surface-3 border border-border-subtle">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-xs font-medium text-fg-primary">{entry.key}</span>
+                      <span className={`text-[10px] ${managedColor}`}>[{entry.managed}]</span>
+                      <span className="text-[10px] text-fg-quaternary ml-auto">{ageLabel}</span>
+                    </div>
+                    <pre className="text-[11px] text-fg-secondary whitespace-pre-wrap break-words leading-relaxed max-h-32 overflow-y-auto">{entry.text.length > 500 ? entry.text.slice(0, 500) + '…' : entry.text}</pre>
+                  </div>
+                );
+              })}
+            </div>
+          </details>
+        </section>
+      )}
 
       {/* ── Live Deliberation Activity ── */}
       {mind?.deliberationActivity && (

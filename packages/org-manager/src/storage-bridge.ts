@@ -42,6 +42,7 @@ export interface StorageBridge {
   readCursorRepo?: any;
   workflowRunRepo?: any;
   workflowScheduleRepo?: any;
+  pendingCallbackRepo?: any;
   integrationRepo?: any;
 }
 
@@ -97,6 +98,7 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       workflowRunRepo: new storage.SqliteWorkflowRunRepo(db),
       workflowScheduleRepo: new storage.SqliteWorkflowScheduleRepo(db),
       integrationRepo: new storage.SqliteIntegrationRepo(db),
+      pendingCallbackRepo: new storage.SqlitePendingCallbackRepo(db),
     };
     log.info('SQLite storage initialized', { path: dbPath });
     return bridge;

@@ -13,7 +13,7 @@
     "mind": "Mind",
     "activity": "Activity",
     "memory": "Memory",
-    "tools": "Tools",
+    "tools": "Capabilities",
     "settings": "Settings",
     "files": "Files",
     "skills": "Skills",
@@ -41,9 +41,9 @@
   "memory": {
     "title": "Memory",
     "layers": {
-      "working": "Working Memory",
-      "shortTerm": "Short-term Memory",
-      "longTerm": "Long-term Memory",
+      "working": "Notebook",
+      "shortTerm": "Observations",
+      "longTerm": "Knowledge (MEMORY.md)",
       "episodic": "Episodic Memory",
       "semantic": "Semantic Memory"
     },
@@ -223,6 +223,8 @@
       "filesDiffer_other": "{{count}} files differ from the {{templateId}} template:",
       "syncing": "Syncing...",
       "syncAll": "Sync All",
+      "sendToAgent": "Send to Agent",
+      "sendToAgentTitle": "Send the template changes to the agent for review via chat",
       "agentConfigFiles": "Agent Configuration Files",
       "templateLabel": "Template:",
       "upToDate": " (up to date)",

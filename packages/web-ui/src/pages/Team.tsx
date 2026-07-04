@@ -53,10 +53,10 @@ function agentInitials(name: string) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 type MainTab = 'chat' | 'profile'
-  | 'overview' | 'files' | 'tools' | 'skills' | 'memory' | 'deliverables'
+  | 'overview' | 'mind' | 'files' | 'tools' | 'memory' | 'deliverables'
   | 'announcements' | 'norms' | 'settings';
 
-const AGENT_TABS: MainTab[] = ['chat', 'overview', 'files', 'tools', 'skills', 'memory', 'deliverables'];
+const AGENT_TABS: MainTab[] = ['chat', 'overview', 'files', 'tools', 'memory', 'deliverables'];
 const TEAM_TAB_SET: MainTab[] = ['chat', 'overview', 'announcements', 'norms', 'settings'];
 
 function tabLabel(tab: MainTab, t: TFunction): string {

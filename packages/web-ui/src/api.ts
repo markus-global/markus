@@ -612,6 +612,12 @@ export interface AgentMindState {
     inlineCompletedIds?: string[];
     timestamp: string;
   };
+  notebook?: Array<{
+    key: string;
+    text: string;
+    updatedAt: number;
+    managed: string;
+  }>;
 }
 
 export interface MailboxHistoryDecision {
@@ -786,6 +792,15 @@ export interface DeliverableItem {
   deliverables: Array<{ type: string; reference: string; summary: string }>;
 }
 
+export interface GoalConfig {
+  loopEnabled: boolean;
+  completionCriteria: string;
+  maxIterations: number;
+  currentIteration: number;
+  lastCheckedAt: string;
+  autoResume: boolean;
+}
+
 export interface RequirementInfo {
   id: string;
   title: string;
@@ -800,6 +815,7 @@ export interface RequirementInfo {
   taskIds: string[];
   tags?: string[];
   projectId?: string;
+  goalConfig?: GoalConfig;
   createdAt: string;
   updatedAt: string;
 }
@@ -1087,6 +1103,8 @@ export const api = {
       return request<{ activities: ActivityRecord[] }>(`/agents/${id}/activities${qs ? '?' + qs : ''}`);
     },
     getMindState: (id: string) => request<AgentMindState>(`/agents/${id}/mind`),
+    sendCommand: (id: string, command: string, args?: string) =>
+      request<{ status: string; command: string }>(`/agents/${id}/command`, { method: 'POST', body: JSON.stringify({ command, args }) }),
     getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string; status?: string }) => {
       const params = new URLSearchParams();
       if (opts?.limit) params.set('limit', String(opts.limit));

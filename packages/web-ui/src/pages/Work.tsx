@@ -1760,7 +1760,7 @@ function TaskDetailPanel({
   };
 
   const toggleSubtask = async (sub: { id: string; title: string; status: string }) => {
-    if (sub.status === 'completed') {
+    if (sub.status === 'completed' || sub.status === 'cancelled') {
       await api.tasks.cancelSubtask(task.id, sub.id);
     } else {
       await api.tasks.completeSubtask(task.id, sub.id);
@@ -1807,6 +1807,8 @@ function TaskDetailPanel({
   }, [task.id, loadSubtasks]);
 
   const completedCount = subtasks.filter(s => s.status === 'completed').length;
+  const cancelledCount = subtasks.filter(s => s.status === 'cancelled').length;
+  const finishedCount = completedCount + cancelledCount;
   const isRunning = task.status === 'in_progress';
   const isBlocked = task.status === 'blocked';
   const isAbnormallyBlocked = isBlocked && (!task.blockedBy || task.blockedBy.length === 0 || task.blockedBy.every(id => {
@@ -2111,30 +2113,39 @@ function TaskDetailPanel({
               <div className="px-6 py-4">
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">
-                    {t('work:task.subtasks')} {subtasks.length > 0 && <span className="ml-1.5 text-fg-tertiary font-normal normal-case">{t('work:task.subtasksProgress', { done: completedCount, total: subtasks.length })}</span>}
+                    {t('work:task.subtasks')} {subtasks.length > 0 && <span className="ml-1.5 text-fg-tertiary font-normal normal-case">{t('work:task.subtasksProgress', { done: completedCount, total: subtasks.length - cancelledCount })}{cancelledCount > 0 ? ` · ${cancelledCount} cancelled` : ''}</span>}
                   </span>
                   <div className="flex items-center gap-2">
-                    {completedCount > 0 && (
+                    {finishedCount > 0 && (
                       <button
                         onClick={() => setShowAllSubtasks(v => !v)}
                         className={`text-[10px] px-2 py-0.5 rounded-full border transition-colors ${showAllSubtasks ? 'bg-brand-500/15 text-brand-500 border-brand-500/30' : 'text-fg-tertiary border-border-default hover:text-fg-secondary'}`}
                       >
-                        {showAllSubtasks ? t('work:task.hideCompleted') : t('work:task.showCompleted', { count: completedCount })}
+                        {showAllSubtasks ? t('work:task.hideCompleted') : t('work:task.showCompleted', { count: finishedCount })}
                       </button>
                     )}
                     <button onClick={() => setAddingSubtask(true)} className="text-xs text-brand-500 hover:text-brand-500 transition-colors">{t('work:task.addSubtask')}</button>
                   </div>
                 </div>
                 {(() => {
-                  const visible = showAllSubtasks ? subtasks : subtasks.filter(s => s.status !== 'completed');
+                  const visible = showAllSubtasks ? subtasks : subtasks.filter(s => s.status !== 'completed' && s.status !== 'cancelled');
                   return visible.length > 0 ? (
                     <div className="space-y-1.5 mb-3">
                       {visible.map(sub => (
-                        <div key={sub.id} className="group flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-surface-elevated/50 transition-colors">
-                          <button onClick={() => void toggleSubtask(sub)} className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${sub.status === 'completed' ? 'bg-green-600 border-green-600 text-white' : 'border-gray-600 hover:border-brand-500'}`}>
+                        <div key={sub.id} className={`group flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-surface-elevated/50 transition-colors ${sub.status === 'cancelled' ? 'opacity-50' : ''}`}>
+                          <button onClick={() => void toggleSubtask(sub)} className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${
+                            sub.status === 'completed' ? 'bg-green-600 border-green-600 text-white'
+                            : sub.status === 'cancelled' ? 'bg-gray-500 border-gray-500 text-white'
+                            : 'border-gray-600 hover:border-brand-500'
+                          }`}>
                             {sub.status === 'completed' && <svg className="w-2.5 h-2.5" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                            {sub.status === 'cancelled' && <svg className="w-2.5 h-2.5" viewBox="0 0 12 12" fill="none"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>}
                           </button>
-                          <span className={`flex-1 text-sm ${sub.status === 'completed' ? 'line-through text-fg-tertiary' : 'text-fg-secondary'}`}>{sub.title}</span>
+                          <span className={`flex-1 text-sm ${
+                            sub.status === 'completed' ? 'line-through text-fg-tertiary'
+                            : sub.status === 'cancelled' ? 'line-through text-fg-quaternary'
+                            : 'text-fg-secondary'
+                          }`}>{sub.title}</span>
                           <button onClick={() => setPendingDelete(sub)} className="shrink-0 opacity-0 group-hover:opacity-100 text-fg-tertiary hover:text-red-500 transition-all text-xs">✕</button>
                         </div>
                       ))}
@@ -5449,6 +5460,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                     <span className="text-[10px] text-fg-quaternary">by {creatorName}</span>
                                   </div>
                                   <div className="flex items-center gap-1">
+                                    {req.goalConfig?.loopEnabled && <span className="text-[10px] text-brand-500/70 bg-brand-500/8 px-1.5 py-0.5 rounded-md" title={req.goalConfig.completionCriteria}>🎯 {req.goalConfig.currentIteration}/{req.goalConfig.maxIterations}</span>}
                                     {req.taskIds.length > 0 && <span className="text-[10px] text-brand-500/70 bg-brand-500/8 px-1.5 py-0.5 rounded-md">📋 {req.taskIds.length}</span>}
                                   </div>
                                 </div>
@@ -6346,6 +6358,29 @@ function RequirementDetailPanel({
             <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3">
               <span className="text-[10px] font-semibold text-red-500 uppercase tracking-wider block mb-1">{t('work:task.rejectionReason')}</span>
               <p className="text-sm text-red-500/80">{req.rejectedReason}</p>
+            </div>
+          )}
+
+          {req.goalConfig?.loopEnabled && (
+            <div className="bg-brand-500/8 border border-brand-500/20 rounded-lg p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-[10px] font-semibold text-brand-500 uppercase tracking-wider">{t('work:requirement.goal')}</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                  req.goalConfig.currentIteration >= req.goalConfig.maxIterations
+                    ? 'bg-amber-500/15 text-amber-600'
+                    : 'bg-green-500/15 text-green-600'
+                }`}>
+                  {req.goalConfig.currentIteration >= req.goalConfig.maxIterations
+                    ? t('work:requirement.goalMaxReached')
+                    : t('work:requirement.goalActive')}
+                </span>
+              </div>
+              <p className="text-xs text-fg-secondary mb-2">{req.goalConfig.completionCriteria}</p>
+              <div className="flex items-center gap-4 text-[10px] text-fg-tertiary">
+                <span>{t('work:requirement.goalIteration', { current: req.goalConfig.currentIteration, max: req.goalConfig.maxIterations })}</span>
+                {req.goalConfig.lastCheckedAt && <span>{t('work:requirement.goalLastChecked', { time: new Date(req.goalConfig.lastCheckedAt).toLocaleString() })}</span>}
+                {req.goalConfig.autoResume && <span className="text-brand-500">{t('work:requirement.goalAutoResume')}</span>}
+              </div>
             </div>
           )}
 
