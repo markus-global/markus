@@ -4443,6 +4443,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   useEffect(() => {
     if (previewMode) return;
     if (!isActive) return;
+    refreshBoard(); refreshAgents(); refreshRequirements();
     const pollMs = selectedTaskRef.current ? 120000 : 45000;
     const i = setInterval(() => { refreshBoard(); refreshAgents(); refreshRequirements(); }, pollMs);
     let boardDebounce: ReturnType<typeof setTimeout> | null = null;

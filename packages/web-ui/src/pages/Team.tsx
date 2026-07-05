@@ -661,9 +661,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     const unsubGroup = wsClient.on('chat:group_created', () => { throttledRefreshGroupChats(); throttledRefreshTeams(); });
     const unsubGroupUpdate = wsClient.on('chat:group_updated', throttledRefreshGroupChats);
     const unsubGroupDelete = wsClient.on('chat:group_deleted', () => { throttledRefreshGroupChats(); throttledRefreshTeams(); });
+    const unsubTaskUpdate = wsClient.on('task:update', (event) => {
+      const p = event?.payload as Record<string, unknown> | undefined;
+      if (!p?.taskId) return;
+      setTasks(prev => prev.map(t => t.id === p.taskId ? { ...t, status: p.status as string ?? t.status } : t));
+    });
     const onDataChanged = () => { refreshAgents(); refreshTeams(); refreshHumans(); };
     window.addEventListener('markus:data-changed', onDataChanged);
-    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeamUpdate(); unsubTeamOnAgentRemoved(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); window.removeEventListener('markus:data-changed', onDataChanged); };
+    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeamUpdate(); unsubTeamOnAgentRemoved(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); unsubTaskUpdate(); window.removeEventListener('markus:data-changed', onDataChanged); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewMode, isActive, refreshHumans]);
 
