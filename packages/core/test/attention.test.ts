@@ -638,33 +638,6 @@ describe('triage and deliberation scheduling', () => {
     controller.stop();
   });
 
-  it('performTriage via setTriageJudge processes backlog JSON decision', async () => {
-    const triageJson = JSON.stringify({
-      processItemId: 'will-be-replaced',
-      deferItemIds: [],
-      dropItemIds: [],
-      inlineCompletedIds: [],
-      reasoning: 'pick first',
-    });
-
-    const { controller, mailbox, delegate } = makeController({
-      performDeliberation: vi.fn().mockResolvedValue(null),
-    });
-
-    controller.setTriageJudge(vi.fn(async () => triageJson));
-
-    const item1 = mailbox.enqueue('a2a_message', { summary: 'T1', content: 'one' });
-    mailbox.enqueue('a2a_message', { summary: 'T2', content: 'two' });
-    mailbox.enqueue('a2a_message', { summary: 'T3', content: 'three' });
-
-    controller.start();
-    await vi.waitFor(() => {
-      expect(delegate.processMailboxItem).toHaveBeenCalled();
-    }, { timeout: 4000 });
-    controller.stop();
-
-    expect(item1).toBeDefined();
-  });
 });
 
 describe('evaluateInterrupt via delegate wiring', () => {

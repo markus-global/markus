@@ -51,7 +51,7 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
 
     {
       name: 'update_notebook',
-      description: 'Upsert a keyed entry in your Notebook — your persistent cognitive workspace. Use to track priorities, context, decisions, blockers. Max 15 agent entries, 6000 chars each. Notebook persists across sessions and restarts.',
+      description: 'Upsert a keyed entry in your Notebook — your persistent cognitive workspace. Use to track priorities, context, decisions, blockers. Max 4 agent entries, 6000 chars each. Notebook persists across sessions and restarts. Choose keys wisely — only 4 slots available.',
       inputSchema: {
         type: 'object',
         properties: {

@@ -1541,8 +1541,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       }
 
       try {
+        const channelTextWithQuote = replyCtx
+          ? `> **${replyCtx.sender}**: ${replyCtx.text}\n\n${text}`
+          : text;
         const result = await api.channels.sendMessage(activeChannel, {
-          text, senderName: authUser?.name ?? t('page.fallbackYou'), mentions,
+          text: channelTextWithQuote, senderName: authUser?.name ?? t('page.fallbackYou'), mentions,
           senderId: authUser?.id,
           orgId: 'default',
           replyToId: replyCtx?.id,
@@ -1809,8 +1812,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       try {
         lastSseEventTimeRef.current = Date.now();
         const effectiveSessionId = activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId;
+        const textWithQuote = replyCtx
+          ? `> **${replyCtx.sender}**: ${replyCtx.text}\n\n${text}`
+          : text;
         const streamResult = await api.agents.messageStream(
-          selectedAgent, text,
+          selectedAgent, textWithQuote,
           appendTextChunk,
           handleToolEvent,
           abortCtrl.signal,
@@ -1820,6 +1826,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           options?.isResume,
           handleCommitEvent,
           fileNamesToSend,
+          replyCtx,
         );
         if (currentConvKeyRef.current === sendKey) {
           // Message was merged into the agent's active processing — remove the
@@ -2144,7 +2151,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const handleReplyMsg = useCallback((msg: ChatMsg) => {
     const senderName = msg.sender === 'user' ? (authUser?.name ?? t('page.fallbackYou')) : (msg.agentName ?? t('page.fallbackAgent'));
-    setChatReplyTo({ id: msg.id, sender: senderName, text: msg.text.slice(0, 120) });
+    setChatReplyTo({ id: msg.id, sender: senderName, text: msg.text });
     // Auto-insert @mention when replying to an agent in a group channel
     if (chatMode === 'channel' && msg.sender === 'agent' && msg.agentName) {
       const mention = `@${msg.agentName} `;

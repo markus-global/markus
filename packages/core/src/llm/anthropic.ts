@@ -328,7 +328,7 @@ export class AnthropicProvider implements LLMProviderInterface {
   }
 
   private convertTools(tools: LLMTool[]): AnthropicToolDef[] {
-    const converted = tools.map((t) => ({
+    const converted: AnthropicToolDef[] = tools.map((t) => ({
       name: t.name,
       description: t.description,
       input_schema: t.inputSchema,

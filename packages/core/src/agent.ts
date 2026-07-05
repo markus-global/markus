@@ -306,7 +306,7 @@ export class Agent {
   private lastInjectedActivityType?: string;
   /** Notebook — the single cognitive workspace. Persisted to NOTEBOOK.md. */
   private workingMemory: Map<string, NotebookEntry> = new Map();
-  private static readonly NOTEBOOK_MAX_AGENT_ENTRIES = 15;
+  private static readonly NOTEBOOK_MAX_AGENT_ENTRIES = 4;
   private static readonly NOTEBOOK_MAX_CHARS_PER_ENTRY = 6000;
   private notebookSaveTimer?: ReturnType<typeof setTimeout>;
   /** Cognitive Preparation Pipeline instance (null when CPP is disabled) */
@@ -1539,20 +1539,33 @@ export class Agent {
     if (existingMemorySessionId) {
       const session = this.memory.getSession(existingMemorySessionId);
       if (session) {
-        this.currentSessionId = existingMemorySessionId;
-        if (options?.isRetry) {
-          while (session.messages.length > 0 && session.messages[session.messages.length - 1]!.role !== 'user') {
-            session.messages.pop();
+        // Check if DB has new messages (e.g. notify_user persisted externally)
+        // that the in-memory session doesn't have. If so, rebuild from DB.
+        if (!options?.isRetry && dbMessages.length > session.messages.length) {
+          log.info('In-memory session stale — rebuilding from DB', {
+            dbSessionId,
+            memoryMessages: session.messages.length,
+            dbMessages: dbMessages.length,
+          });
+          this.dbSessionMap.delete(dbSessionId);
+          // Fall through to create a fresh in-memory session from DB
+        } else {
+          this.currentSessionId = existingMemorySessionId;
+          if (options?.isRetry) {
+            while (session.messages.length > 0 && session.messages[session.messages.length - 1]!.role !== 'user') {
+              session.messages.pop();
+            }
+            if (session.messages.length > 0 && session.messages[session.messages.length - 1]!.role === 'user') {
+              session.messages.pop();
+            }
+            log.info(`Trimmed memory session for retry: ${existingMemorySessionId} (${session.messages.length} messages remaining)`);
           }
-          if (session.messages.length > 0 && session.messages[session.messages.length - 1]!.role === 'user') {
-            session.messages.pop();
-          }
-          log.info(`Trimmed memory session for retry: ${existingMemorySessionId} (${session.messages.length} messages remaining)`);
+          log.debug(`Switched to existing memory session ${existingMemorySessionId} for DB session ${dbSessionId}`);
+          return;
         }
-        log.debug(`Switched to existing memory session ${existingMemorySessionId} for DB session ${dbSessionId}`);
-        return;
+      } else {
+        this.dbSessionMap.delete(dbSessionId);
       }
-      this.dbSessionMap.delete(dbSessionId);
     }
 
     const session = this.memory.createSession(this.id);
@@ -2247,6 +2260,11 @@ export class Agent {
       '- **Memory updates**: Use `memory_updates` in `complete_deliberation` to record team decisions, observations, or context that should persist across cycles.',
       '- Your working memory persists across processing cycles — use it for continuity.',
       '',
+      '**CRITICAL**: When you call `complete_deliberation`, EVERY item in the mailbox MUST appear in exactly ONE of:',
+      '  `process_item_id`/`process_item_ids`, `defer_item_ids`, `drop_item_ids`, or `inline_completed_ids`.',
+      'Items not listed will remain queued and trigger another deliberation cycle — wasting tokens and time.',
+      'If items are stale or informational, LIST them in `drop_item_ids`. Do NOT just say "drop" in reasoning without listing IDs.',
+      '',
       'When ready, call `complete_deliberation`.',
     ].join('\n');
 
@@ -2321,7 +2339,7 @@ export class Agent {
     }
     if (this.workingMemory.size > 0) {
       const wmLines = ['## Notebook'];
-      wmLines.push('Your cognitive workspace. Persists across sessions. Agent entries: update via `update_notebook`. System entries (triage-decision, relevant-context, etc.) are auto-managed.');
+      wmLines.push('Your cognitive workspace (max 4 agent entries). Persists across sessions. Update via `update_notebook`. System entries are auto-managed. Choose keys wisely — oldest entry is evicted when full.');
       wmLines.push('');
       for (const [key, entry] of this.workingMemory) {
         const ageMs = Date.now() - entry.updatedAt;
@@ -5568,13 +5586,37 @@ export class Agent {
       if (!processItemId && (!processItemIds || processItemIds.length === 0)) {
         return JSON.stringify({ status: 'error', message: 'process_item_id or process_item_ids is required' });
       }
+
+      const effectiveProcessIds = (processItemIds && processItemIds.length > 0) ? processItemIds : [processItemId];
+      const deferIds = (toolCall.arguments.defer_item_ids as string[]) ?? [];
+      const dropIds = (toolCall.arguments.drop_item_ids as string[]) ?? [];
+      const inlineIds = (toolCall.arguments.inline_completed_ids as string[]) ?? [];
+
+      // Strict completeness check: every queued item must be accounted for.
+      // Incomplete results are always rejected — the agent must retry.
+      const accountedFor = new Set([...effectiveProcessIds, ...deferIds, ...dropIds, ...inlineIds]);
+      const allQueued = this.mailbox.getQueuedItems();
+      const currentItemId = this.processingMailboxItemId;
+      if (currentItemId) accountedFor.add(currentItemId);
+      const orphanIds = allQueued
+        .filter(i => !accountedFor.has(i.id) && i.sourceType !== 'human_chat')
+        .map(i => i.id);
+
+      if (orphanIds.length > 0) {
+        return JSON.stringify({
+          status: 'error',
+          message: `Rejected: ${orphanIds.length} item(s) not accounted for. Every item MUST appear in exactly one of: process_item_ids, defer_item_ids, drop_item_ids, or inline_completed_ids. Add the missing items and call again.`,
+          orphaned_item_ids: orphanIds,
+        });
+      }
+
       this.pendingDeliberationResult = {
         processItemId: processItemId || processItemIds![0],
         processItemIds: processItemIds && processItemIds.length > 1 ? processItemIds : undefined,
         batchContext: toolCall.arguments.batch_context as string | undefined,
-        deferItemIds: (toolCall.arguments.defer_item_ids as string[]) ?? [],
-        dropItemIds: (toolCall.arguments.drop_item_ids as string[]) ?? [],
-        inlineCompletedIds: (toolCall.arguments.inline_completed_ids as string[]) ?? [],
+        deferItemIds: deferIds,
+        dropItemIds: dropIds,
+        inlineCompletedIds: inlineIds,
         reasoning: (toolCall.arguments.reasoning as string) ?? '',
         situationalAwareness: toolCall.arguments.situational_awareness as string | undefined,
         memoryUpdates: toolCall.arguments.memory_updates as DeliberationResult['memoryUpdates'],

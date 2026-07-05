@@ -1564,6 +1564,7 @@ export class APIServer {
     senderId?: string,
     images?: string[],
     sessionId?: string | null,
+    replyTo?: { id: string; sender: string; text: string } | null,
   ): Promise<string | null> {
     if (!this.storage) return null;
     try {
@@ -1575,8 +1576,10 @@ export class APIServer {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
       const title = !session!.title ? userMessage.slice(0, 60) : undefined;
-      const meta = images?.length ? { images } : undefined;
-      await this.storage.chatSessionRepo.appendMessage(session!.id, agentId, 'user', userMessage, 0, meta);
+      const meta: Record<string, unknown> = {};
+      if (images?.length) meta.images = images;
+      if (replyTo) { meta.replyToId = replyTo.id; meta.replyToSender = replyTo.sender; meta.replyToText = replyTo.text; }
+      await this.storage.chatSessionRepo.appendMessage(session!.id, agentId, 'user', userMessage, 0, Object.keys(meta).length > 0 ? meta : undefined);
       if (title) await this.storage.chatSessionRepo.updateLastMessage(session!.id, title);
       return session!.id;
     } catch (err) {
@@ -3158,6 +3161,7 @@ export class APIServer {
         const fileNames = (body['fileNames'] as string[] | undefined)?.filter(Boolean);
         const isRetry = body['isRetry'] as boolean | undefined;
         const isResume = body['isResume'] as boolean | undefined;
+        const replyTo = body['replyTo'] as { id: string; sender: string; text: string } | undefined;
         const baseSenderInfo = this.orgService.resolveHumanIdentity(senderId);
         const isFirstConversation = this.storage
           ? !this.storage.chatSessionRepo.hasAnySessions(senderId)
@@ -3210,7 +3214,7 @@ export class APIServer {
 
         if (inject) {
           if (this.storage && sessionId) {
-            await this.persistUserMessage(agentId!, userText, senderId, images, sessionId);
+            await this.persistUserMessage(agentId!, userText, senderId, images, sessionId, replyTo);
           }
           agent.injectFollowUp(userText, senderId, senderInfo, images);
           this.json(res, 200, { injected: true });
@@ -3221,7 +3225,7 @@ export class APIServer {
         const bindingPersist = async (
           aId: string, text: string, sId?: string, imgs?: string[], sessId?: string,
         ): Promise<string | null> => {
-          const dbSessId = await this.persistUserMessage(aId, text, sId, imgs, sessId);
+          const dbSessId = await this.persistUserMessage(aId, text, sId, imgs, sessId, replyTo);
           if (dbSessId && !sessId) {
             agent.bindDbSession(dbSessId);
           }

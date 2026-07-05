@@ -399,7 +399,7 @@ export const DELIBERATION_ALLOWED_TOOLS: readonly string[] = [
 // ─── Notebook Limits (formerly Working Memory) ──────────────────────────────
 
 /** Maximum number of agent-managed entries in the Notebook. System/CPP entries are unbounded. */
-export const NOTEBOOK_MAX_AGENT_ENTRIES = 15;
+export const NOTEBOOK_MAX_AGENT_ENTRIES = 4;
 
 /** Maximum characters per notebook entry. */
 export const NOTEBOOK_MAX_CHARS_PER_ENTRY = 6000;

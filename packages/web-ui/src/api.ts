@@ -54,7 +54,7 @@ export interface ChatMessageInfo {
   agentId: string;
   role: string;
   content: string;
-  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean } | null;
+  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; replyToId?: string; replyToSender?: string; replyToText?: string } | null;
   tokensUsed: number;
   createdAt: string;
 }
@@ -1117,7 +1117,7 @@ export const api = {
     },
     getDecisions: (id: string, limit = 50) =>
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[]): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean }> => {
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[], replyTo?: { id: string; sender: string; text: string } | null): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean }> => {
       return new Promise(async (resolve, reject) => {
         let fullContent = '';
         let resultSessionId: string | undefined;
@@ -1127,7 +1127,7 @@ export const api = {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ text, stream: true, images, fileNames, sessionId: sessionId ?? undefined, isRetry: isRetry || undefined, isResume: isResume || undefined }),
+            body: JSON.stringify({ text, stream: true, images, fileNames, sessionId: sessionId ?? undefined, isRetry: isRetry || undefined, isResume: isResume || undefined, replyTo: replyTo || undefined }),
             signal,
           });
           if (!res.ok) { reject(new Error(`API error: ${res.status}`)); return; }

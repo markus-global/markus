@@ -103,6 +103,11 @@ export function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
       base.text = base.text.replace(/^\[ACTIVITY:\s*\w+\]\s*/, '');
     }
   }
+  if (m.metadata?.replyToId) {
+    base.replyToId = m.metadata.replyToId as string;
+    base.replyToSender = m.metadata.replyToSender as string;
+    base.replyToText = m.metadata.replyToText as string;
+  }
   return base;
 }
 
