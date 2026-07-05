@@ -1482,6 +1482,7 @@ async function startServerCore(
           const response = await llmRouter.chat({
             messages: messages as any,
             tools: llmTools,
+            systemCacheSegments: triageCacheSegments,
             temperature: TRIAGE_TEMPERATURE,
             maxTokens: TRIAGE_MAX_TOKENS,
           }, triageProvider);

@@ -63,6 +63,7 @@ The system prompt is assembled by `ContextEngine.buildSystemPrompt()` and organi
 ╔══════════════════════════════════════════════════════════╗
 ║  TIER 1 — STABLE (cache breakpoint ✓)                   ║
 ║  Rarely changes between calls for the same agent.        ║
+║  Scenario-free — cached across ALL mode switches.        ║
 ║                                                          ║
 ║   1. Role System Prompt (from ROLE.md)                   ║
 ║   2. Policies                                            ║
@@ -70,22 +71,25 @@ The system prompt is assembled by `ContextEngine.buildSystemPrompt()` and organi
 ║   4. Task & Requirement Workflow                         ║
 ║   5. Tool Usage Rules                                    ║
 ║   6. Communication Rules                                 ║
-║   7. Scenario Section (mode-specific instructions)       ║
 ╠══════════════════════════════════════════════════════════╣
 ║  TIER 2 — SEMI-STABLE (cache breakpoint ✓)              ║
 ║  Changes with org/config/session, not per query.         ║
+║  Scenario placed LAST so identity/org/memory prefix      ║
+║  remains stable across mode switches (OpenAI benefit).   ║
 ║                                                          ║
-║   8. Identity Section (name, role, colleagues)           ║
-║   9. Organization Context (CONTEXT.md)                   ║
-║  10. Team Announcements & Norms                          ║
-║  11. Workspace Info (paths)                              ║
-║  12. User Profiles (users/*.md) + Team Context           ║
-║  13. Trust Level                                         ║
-║  14. Environment Profile                                 ║
-║  15. Your Knowledge (MEMORY.md curated — no _observations)║
+║   7. Identity Section (name, role, colleagues w/o status)║
+║   8. Organization Context (CONTEXT.md)                   ║
+║   9. Team Announcements & Norms                          ║
+║  10. Workspace Info (paths)                              ║
+║  11. User Profiles (users/*.md) + Team Context           ║
+║  12. Trust Level                                         ║
+║  13. Environment Profile                                 ║
+║  14. Your Knowledge (MEMORY.md curated — no _observations)║
+║  15. Scenario Section (mode-specific instructions)       ║
 ╠══════════════════════════════════════════════════════════╣
 ║  TIER 3 — DYNAMIC (no cache breakpoint)                  ║
 ║  Changes per call. Kept as small as possible.            ║
+║  Values quantized where possible to reduce churn.        ║
 ║                                                          ║
 ║  16. Project Context (governance)                        ║
 ║  17. System Announcements                                ║
@@ -93,10 +97,13 @@ The system prompt is assembled by `ContextEngine.buildSystemPrompt()` and organi
 ║  19. Project Deliverables                                ║
 ║  20. Shared Deliverables                                 ║
 ║  21. Dynamic Context (skills, Notebook)                  ║
-║  22. Task Board (capped)                                 ║
-║  23. Mailbox & Attention Context                         ║
-║  24. Sender Identity                                     ║
-║  25. Timestamp                                           ║
+║  22. Available Skills (query-filtered, ≤30)              ║
+║  23. Task Board (capped)                                 ║
+║  24. Team Status (real-time colleague status)             ║
+║  25. Channel History (recent messages)                    ║
+║  26. Mailbox & Attention Context (quantized elapsed)      ║
+║  27. Sender Identity                                     ║
+║  28. Timestamp (minute-level, no seconds)                  ║
 ╚══════════════════════════════════════════════════════════╝
 ```
 
@@ -104,15 +111,19 @@ The system prompt is assembled by `ContextEngine.buildSystemPrompt()` and organi
 
 The system prompt uses a **3-tier cache architecture** with explicit cache breakpoints:
 
-1. **Tier 1 (Stable)**: Role, policies, tool usage rules, scenario instructions. These rarely change for the same agent and scenario. A cache breakpoint after this tier allows the provider to cache this prefix across all calls with the same scenario.
+1. **Tier 1 (Stable)**: Role, policies, tool usage rules, communication rules. Scenario-free — these rarely change for the same agent and stay cached across ALL mode switches (chat ↔ heartbeat ↔ a2a ↔ deliberation). A cache breakpoint after this tier allows the provider to cache this prefix across all calls.
 
-2. **Tier 2 (Semi-stable)**: Identity, org context, workspace paths, `## Your Knowledge` (curated MEMORY.md). These change when the agent's configuration, team, or memory changes, but remain stable within a session. A cache breakpoint here enables caching the combined Tier 1+2 prefix.
+2. **Tier 2 (Semi-stable)**: Identity, org context, workspace paths, `## Your Knowledge` (curated MEMORY.md), then scenario instructions at the end. These change when the agent's configuration, team, or memory changes, but remain stable within a session. Scenario is placed last so the identity/org/memory prefix remains stable across mode switches (benefits OpenAI implicit prefix caching). A cache breakpoint here enables caching the combined Tier 1+2 prefix.
 
-3. **Tier 3 (Dynamic)**: Project context, announcements, feedback, task board, `## Notebook`, mailbox state, timestamps. These change per call and are kept as small as possible. No cache breakpoint — this section is always re-processed.
+3. **Tier 3 (Dynamic)**: Project context, announcements, feedback, available skills (query-filtered), task board, `## Notebook`, team status, channel history, mailbox state, timestamps. These change per call and are kept as small as possible. Values are quantized where possible (timestamps to 5-min buckets, mailbox elapsed time to coarse labels, notebook ages to buckets) to reduce churn and improve implicit prefix caching on OpenAI-compatible providers. No cache breakpoint — this section is always re-processed.
 
 **Message-level cache breakpoints**: In addition to system prompt caching, a `cacheBreakpoint` is placed on the last message before the current turn in the conversation history. This allows providers (e.g. Anthropic) to cache the stable conversation prefix (older history, channel context) independently from new messages.
 
-**Channel session reuse**: A2A and group chat messages using the same channel share a stable session ID (`channel_{channelKey}_{agentId}`), so conversation history accumulates naturally and benefits from message-level prefix caching. Only the delta (new messages since last call) is added on subsequent turns.
+**Channel session reuse**: A2A and group chat messages using the same channel share a stable session ID (`channel_{channelKey}_{agentId}`), so conversation history accumulates naturally and benefits from message-level prefix caching. Only the delta (new messages since last call) is added on subsequent turns. Channel history is injected in the system prompt (Tier 3) rather than prepended into conversation messages, preserving conversation-prefix cache stability.
+
+**Tool definition caching (Anthropic)**: The last tool in the `tools` array is marked with `cache_control: { type: 'ephemeral' }`, allowing Anthropic to cache the tool definitions prefix. Since tool lists are relatively stable within a session, this provides additional cache hits.
+
+**Dynamic value quantization**: Several dynamic fields use coarse-grained labels instead of precise values to reduce prompt churn: notebook entry ages use buckets (`just now`, `recent`, `~Nh ago`), mailbox elapsed time uses labels (`just started`, `a few minutes`, `~Nmin`), and timestamps drop seconds (minute-level precision). Coarser timestamp buckets were considered but rejected — Tier 3 has many other per-call varying fields, so the marginal cache benefit does not justify the risk of inaccurate time perception.
 
 ### 2.2 Section Details
 
@@ -120,7 +131,7 @@ The system prompt uses a **3-tier cache architecture** with explicit cache break
 Source: `role.systemPrompt` parsed from the agent's `ROLE.md`.  
 Contains the core behavioral instructions, personality, and domain expertise.
 
-#### Your Knowledge (§15)
+#### Your Knowledge (§14)
 Source: `memory.getLongTermMemory()` — curated sections from `MEMORY.md`.  
 The `## _observations` buffer is **excluded** from the prompt; observations are surfaced via `memory_search`, CPP retrieval, or mechanical relevance matching (written to Notebook as `relevant-context`). This section represents the agent's consolidated long-term knowledge — procedures, conventions, domain facts the agent maintains via `memory_update`.
 
@@ -140,19 +151,18 @@ The context engine no longer injects separate `## Cognitive Context`, `## Retrie
 
 Legacy aliases `update_working_memory` / `clear_working_memory` remain for backward compatibility.
 
-#### Identity Section (§3)
+#### Identity Section (§7)
 Source: `buildIdentitySection()`.  
 Contains:
 - Agent name, role, position (manager vs worker)
 - Active skills (already installed)
-- **Available skills catalog** (filtered by relevance to current query, max 30 entries — see §2.3)
 - Organization name, Agent ID
 - Manager info (for workers)
 - Colleague list (name, role, type, status, skills)
 - Human team members
 - **Manager Responsibilities** (for managers): Routing, Coordination, Reporting, Cross-team, Escalation, Hiring
 
-#### Task Board (§22)
+#### Task Board (§23)
 Source: `opts.assignedTasks`.  
 Displays the agent's active tasks and team tasks, **capped to prevent prompt bloat**:
 - **My active tasks**: Top 15 by priority (critical → high → medium → low), each with title, ID, priority, and truncated description (150 chars).
@@ -160,7 +170,7 @@ Displays the agent's active tasks and team tasks, **capped to prevent prompt blo
 - Overflow is indicated with a count and a hint to use `task_list` for the full list.
 - Completed/closed tasks are only shown as a count.
 
-#### Mailbox & Attention Context (§23)
+#### Mailbox & Attention Context (§26)
 Source: `getMailboxContext()` → `buildMailboxSection()` in `ContextEngine`.  
 Every LLM call passes through the mailbox, so this section is always populated. It injects:
 - **Current focus**: What the agent is currently working on (item type, summary, time elapsed).
@@ -177,9 +187,9 @@ their mailbox on demand using `check_mailbox` in any scenario.
 
 All 12 mailbox item types (`human_chat`, `task_status_update`, `session_reply`, `daily_report`, `memory_consolidation`, `heartbeat`, etc.) route through this section. Internal agent processes like heartbeats, daily reports, and memory consolidation also enqueue to the mailbox, meaning the agent always has full situational awareness about its own cognitive state. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the full design.
 
-#### Scenario Section (§7)
+#### Scenario Section (§15)
 Source: `buildScenarioSection()`.  
-Eight distinct instruction sets depending on `scenario` parameter. Each scenario is slim and references the global Task Workflow (§18) and Tool Usage Rules (§21) rather than re-explaining them. Each scenario includes a **Communication channel** paragraph that specifies output visibility and appropriate tools:
+Placed at the **end of Tier 2** so the identity/org/memory prefix remains stable across mode switches (chat ↔ heartbeat ↔ a2a). Eight distinct instruction sets depending on `scenario` parameter. Each scenario is slim and references the global Task Workflow and Tool Usage Rules rather than re-explaining them. Each scenario includes a **Communication channel** paragraph that specifies output visibility and appropriate tools:
 
 | Scenario | Key Instructions | Output Visibility | Communication Tools |
 |----------|-----------------|-------------------|-------------------|
@@ -195,7 +205,7 @@ Eight distinct instruction sets depending on `scenario` parameter. Each scenario
 
 ### 2.3 Skill Filtering
 
-`filterSkillsByRelevance()` scores each skill against the current query by keyword overlap. Returns top 30. Each entry is one line: `**name** [category]: description`. This keeps token cost proportional — agents with many installed skills don't bloat every prompt.
+`filterSkillsByRelevance()` scores each skill against the current query by keyword overlap. Returns top 30. Each entry is one line: `**name** [category]: description`. The filtered skills catalog is placed in **Tier 3 (Dynamic)** because the filter results depend on the current query, which changes per message. This keeps Tier 2 stable and prevents per-message skill filtering from busting the semi-stable cache prefix.
 
 ---
 

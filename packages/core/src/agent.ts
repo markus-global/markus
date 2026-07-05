@@ -2325,9 +2325,13 @@ export class Agent {
       wmLines.push('');
       for (const [key, entry] of this.workingMemory) {
         const ageMs = Date.now() - entry.updatedAt;
-        const ageLabel = ageMs < 60_000 ? `${Math.round(ageMs / 1000)}s ago`
-          : ageMs < 3_600_000 ? `${Math.round(ageMs / 60_000)}min ago`
-          : `${(ageMs / 3_600_000).toFixed(1)}h ago`;
+        // Quantized age buckets to reduce prompt churn and improve cache hit rates.
+        // Precise timestamps ("3s ago" vs "45s ago") change every call, preventing
+        // any prefix caching of the dynamic tier on providers with implicit caching.
+        const ageLabel = ageMs < 300_000 ? 'just now'
+          : ageMs < 1_800_000 ? 'recent'
+          : ageMs < 7_200_000 ? `~${Math.round(ageMs / 3_600_000)}h ago`
+          : `${Math.round(ageMs / 3_600_000)}h ago`;
         const managedTag = entry.managed !== 'agent' ? ` [${entry.managed}]` : '';
         wmLines.push(`### ${key} (${ageLabel})${managedTag}`);
         wmLines.push(entry.text);
@@ -3010,31 +3014,8 @@ export class Agent {
     const userContent = await this.buildUserContent(userMessage, options?.images, options?.fileNames);
     this.memory.appendMessage(sessionId, { role: 'user', content: userContent });
 
-    // Inject channel context: on first turn, prepend all messages.
-    // On subsequent turns, inject latest N messages as a context block if changed.
-    if (options?.channelContext?.length) {
-      const session = this.memory.getSession(sessionId);
-      if (session) {
-        const contextHash = options.channelContext.map(m => m.content).join('|').slice(0, 200);
-        const lastHash = (session as unknown as { _channelCtxHash?: string })._channelCtxHash;
-        if (session.messages.length <= 1) {
-          const channelMsgs: LLMMessage[] = options.channelContext.map(m => ({
-            role: (m.role === 'assistant' ? 'assistant' : 'user') as LLMMessage['role'],
-            content: m.content,
-          }));
-          session.messages = [...channelMsgs, ...session.messages];
-          (session as unknown as { _channelCtxHash: string })._channelCtxHash = contextHash;
-        } else if (lastHash !== contextHash) {
-          const latest = options.channelContext.slice(-5);
-          const block = latest.map(m => `[${m.role}] ${m.content}`).join('\n');
-          this.memory.appendMessage(sessionId, {
-            role: 'user',
-            content: `[Channel context update — latest messages]\n${block}\n[End channel context]`,
-          });
-          (session as unknown as { _channelCtxHash: string })._channelCtxHash = contextHash;
-        }
-      }
-    }
+    // Channel context is now injected in the system prompt (dynamic tier) rather
+    // than prepended into conversation messages, preserving prefix cache stability.
 
     // Set active model on token counter and ensure tiktoken encoder is loaded
     const effectiveModelName = this.llmRouter.getActiveModelName(this.getEffectiveProvider());
@@ -3063,6 +3044,7 @@ export class Agent {
       scenario,
       a2aWaitForReply: scenario === 'a2a' ? options?.waitForReply : undefined,
       channelKey: options?.channelKey,
+      channelContext: options?.channelContext,
       agentWorkspace: this.pathPolicy ? {
         primaryWorkspace: this.pathPolicy.primaryWorkspace,
         sharedWorkspace: this.pathPolicy.sharedWorkspace,

@@ -10,12 +10,9 @@ import {
   type PreparedCognitiveContext,
   SYSTEM_MY_TASKS_MAX,
   SYSTEM_TEAM_TASKS_MAX,
-  SYSTEM_TASK_DESC_CHARS,
   SYSTEM_KNOWLEDGE_CHARS,
-  SYSTEM_DELIVERABLES_CHARS,
   SYSTEM_USER_PROFILE_CHARS,
   SYSTEM_PROJECT_DESC_CHARS,
-  SYSTEM_DELIVERABLE_PREVIEW_CHARS,
   SYSTEM_MAILBOX_MERGED_CHARS,
   SYSTEM_MAILBOX_ITEM_PREVIEW_CHARS,
   CHANNEL_CONTEXT_MESSAGES,
@@ -200,6 +197,7 @@ export class ContextEngine {
     };
     cognitiveContext?: PreparedCognitiveContext;
     notebookWriter?: (key: string, text: string, managed: 'system' | 'cpp') => void;
+    channelContext?: Array<{ role: string; content: string }>;
   }): Promise<SystemPromptResult> {
     const isDream = opts.scenario === 'memory_consolidation';
 
@@ -320,13 +318,22 @@ export class ContextEngine {
       stable.push('- Do NOT use A2A messages for routine task status notifications — the system handles those automatically.');
     }
 
-    const scenario = opts.scenario ?? 'chat';
-    stable.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply, isManager: opts.isTeamManager, channelKey: opts.channelKey }));
+    // NOTE: Scenario section was deliberately moved OUT of Tier 1 into Tier 2.
+    // Scenario changes every interaction mode switch (chat → heartbeat → a2a →
+    // deliberation), which would invalidate the entire stable prefix on every
+    // transition. By keeping Tier 1 scenario-free, the role + platform rules
+    // prefix stays cached across ALL scenario switches for the same agent.
 
     // ═══════════════════════════════════════════════════════════════════════
     // TIER 2 — SEMI-STABLE
     // Changes with org/config/session, not per query. Identity, org
     // structure, workspace paths, long-term memory.
+    // Scenario section is placed LAST here so that identity/org/memory
+    // content forms a stable prefix within Tier 2. On OpenAI (implicit
+    // prefix caching), this means a chat→heartbeat mode switch only
+    // invalidates the tail of the second system message, not the whole
+    // thing. On Anthropic, Tier 2 is a single cache_control block so
+    // internal ordering doesn't affect cache hits.
     // ═══════════════════════════════════════════════════════════════════════
     const semiStable: string[] = [];
 
@@ -335,7 +342,7 @@ export class ContextEngine {
       agentName: opts.agentName,
       role: opts.role,
       identity: opts.identity,
-      availableSkills: opts.availableSkills,
+      availableSkillCount: opts.availableSkills?.length ?? 0,
     }));
 
     const orgCtx = this.buildOrgContextSection(opts.orgContext, opts.contextMdPath);
@@ -423,6 +430,9 @@ export class ContextEngine {
       semiStable.push(longTermMem.slice(0, SYSTEM_KNOWLEDGE_CHARS));
     }
 
+    const scenario = opts.scenario ?? 'chat';
+    semiStable.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply, isManager: opts.isTeamManager, channelKey: opts.channelKey }));
+
     // ═══════════════════════════════════════════════════════════════════════
     // TIER 3 — DYNAMIC
     // Changes per interaction: project data, task board, cognitive context,
@@ -473,17 +483,9 @@ export class ContextEngine {
       }
     }
 
-    if (opts.projectDeliverables?.length) {
-      dynamic.push('\n## Project Deliverables (key entries)');
-      for (const k of opts.projectDeliverables) {
-        dynamic.push(`- **[${k.category}]** ${k.title}: ${k.content.slice(0, SYSTEM_DELIVERABLE_PREVIEW_CHARS)}`);
-      }
-    }
-
-    if (!isDream && (opts.deliverableContext || opts.knowledgeContext)) {
-      dynamic.push('\n## Shared Deliverables');
-      dynamic.push((opts.deliverableContext ?? opts.knowledgeContext ?? '').slice(0, SYSTEM_DELIVERABLES_CHARS));
-    }
+    // Project deliverables and shared deliverables are no longer injected
+    // proactively. Agents use `deliverable_search` (always-on tool) to query
+    // them on demand, saving ~400 tokens per call with minimal risk.
 
     if (!isDream) {
       if (opts.assignedTasks && opts.assignedTasks.length > 0) {
@@ -510,7 +512,6 @@ export class ContextEngine {
             dynamic.push(
               `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, priority: ${t.priority})`
             );
-            if (t.description) dynamic.push(`  ${t.description.slice(0, SYSTEM_TASK_DESC_CHARS)}`);
           }
           if (myActive.length > MY_TASK_LIMIT) {
             dynamic.push(`_(${myActive.length - MY_TASK_LIMIT} more active tasks not shown — use \`task_list\` for full list)_`);
@@ -610,6 +611,28 @@ export class ContextEngine {
       }
     }
 
+    // Colleague real-time status is in the dynamic tier (not identity/Tier 2)
+    // to prevent status changes from invalidating the semi-stable cache prefix.
+    if (!isDream && opts.identity?.colleagues.length) {
+      const statusEntries = opts.identity.colleagues
+        .filter(c => c.status)
+        .map(c => `${c.name}: ${c.status}`);
+      if (statusEntries.length > 0) {
+        dynamic.push(`\n## Team Status\n${statusEntries.join(' | ')}`);
+      }
+    }
+
+    // Channel context (group chat / DM history) is injected in the system prompt
+    // rather than prepended into the conversation messages array. This preserves
+    // the conversation-prefix cache — message indices stay stable across calls.
+    if (!isDream && opts.channelContext?.length) {
+      const contextLines = opts.channelContext
+        .slice(-15)
+        .map(m => `[${m.role}] ${m.content}`)
+        .join('\n');
+      dynamic.push(`\n## Channel History (recent messages)\n${contextLines}`);
+    }
+
     if (!isDream && opts.mailboxContext) {
       dynamic.push(this.buildMailboxSection(opts.mailboxContext));
     }
@@ -641,6 +664,10 @@ export class ContextEngine {
 
     // Timestamp at the end of the system prompt preserves KV-cache for the
     // stable prefix (identity, role, policies, memory) which rarely changes.
+    // Seconds are dropped (minute-level precision) to mildly reduce Tier 3
+    // churn, but we don't quantize further — Tier 3 has many other per-call
+    // varying fields, so coarser buckets risk inaccurate time perception
+    // with negligible additional cache benefit.
     const now = new Date();
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const offset = now.getTimezoneOffset();
@@ -648,7 +675,7 @@ export class ContextEngine {
     const absH = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
     const absM = String(Math.abs(offset) % 60).padStart(2, '0');
     const pad = (n: number) => String(n).padStart(2, '0');
-    const localStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const localStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
     dynamic.push(`\n---\nCurrent date and time: ${localStr} (${tz}, UTC${sign}${absH}:${absM})`);
 
     // Build cache-aware segments: each tier becomes a segment with an
@@ -673,8 +700,12 @@ export class ContextEngine {
     const lines: string[] = ['\n## Your Attention State'];
 
     if (ctx.currentFocus) {
-      const elapsed = Math.round(ctx.currentFocus.elapsedMs / 1000);
-      lines.push(`**Current focus**: [${ctx.currentFocus.type}] ${ctx.currentFocus.label} (${elapsed}s elapsed)`);
+      const ms = ctx.currentFocus.elapsedMs;
+      const elapsedLabel = ms < 60_000 ? 'just started'
+        : ms < 300_000 ? 'a few minutes'
+        : ms < 3_600_000 ? `~${Math.round(ms / 60_000)}min`
+        : `${Math.round(ms / 3_600_000)}h`;
+      lines.push(`**Current focus**: [${ctx.currentFocus.type}] ${ctx.currentFocus.label} (${elapsedLabel} elapsed)`);
       if (ctx.currentFocus.taskId) {
         lines.push(`  Task: ${ctx.currentFocus.taskId}`);
       }
@@ -1089,8 +1120,7 @@ export class ContextEngine {
     agentName: string;
     role: RoleTemplate;
     identity?: IdentityContext;
-    availableSkills?: Array<{ name: string; description: string; category: string }>;
-    currentQuery?: string;
+    availableSkillCount?: number;
   }): string {
     const lines: string[] = ['\n## Your Identity'];
 
@@ -1108,20 +1138,11 @@ export class ContextEngine {
       } else {
         lines.push(`- Position: Team Member`);
       }
-      if (opts.availableSkills && opts.availableSkills.length > 0) {
-        const filtered = this.filterSkillsByRelevance(opts.availableSkills, opts.currentQuery);
-        const activeSet = new Set(self.skills);
-        lines.push(`- Installed Skills:`);
-        for (const s of filtered) {
-          const tag = activeSet.has(s.name) ? ' ✦' : '';
-          lines.push(`  - **${s.name}** [${s.category}]: ${s.description}${tag}`);
-        }
-        if (filtered.length < opts.availableSkills.length) {
-          lines.push(`  _(${opts.availableSkills.length - filtered.length} more skills installed — use \`discover_tools({ mode: "list_skills" })\` to see all)_`);
-        }
-        lines.push(`  Use \`discover_tools({ name: ["skill-name"] })\` to load a skill's full instructions when needed.`);
-      } else if (self.skills.length > 0) {
+      if (self.skills.length > 0) {
         lines.push(`- Active Skills: ${self.skills.join(', ')}`);
+      }
+      if (opts.availableSkillCount && opts.availableSkillCount > 0) {
+        lines.push(`- Installed Skills: ${opts.availableSkillCount} available — use \`discover_tools({ mode: "list_skills" })\` to browse and activate`);
       }
       lines.push(`- Organization: ${opts.identity.organization.name}`);
       lines.push(`- Agent ID: ${opts.agentId}`);
@@ -1136,10 +1157,11 @@ export class ContextEngine {
       if (opts.identity.colleagues.length > 0) {
         lines.push(teamName ? `\n### Your Team — ${teamName}` : '\n### Your Team');
         for (const c of opts.identity.colleagues) {
-          const statusTag = c.status ? ` [${c.status}]` : '';
+          // Status tags (idle/working/offline) omitted from identity to keep
+          // Tier 2 stable. Real-time status is in the dynamic tier instead.
           const idTag = c.id ? ` id:${c.id}` : '';
           lines.push(
-            `- ${c.name} (${c.role})${statusTag}${idTag}${c.skills?.length ? ` — skills: ${c.skills.join(', ')}` : ''}`
+            `- ${c.name} (${c.role})${idTag}${c.skills?.length ? ` — skills: ${c.skills.join(', ')}` : ''}`
           );
         }
       }

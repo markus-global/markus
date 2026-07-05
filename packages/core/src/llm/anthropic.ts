@@ -23,6 +23,7 @@ interface AnthropicToolDef {
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
+  cache_control?: { type: string };
 }
 
 interface AnthropicResponse {
@@ -327,11 +328,15 @@ export class AnthropicProvider implements LLMProviderInterface {
   }
 
   private convertTools(tools: LLMTool[]): AnthropicToolDef[] {
-    return tools.map((t) => ({
+    const converted = tools.map((t) => ({
       name: t.name,
       description: t.description,
       input_schema: t.inputSchema,
     }));
+    if (converted.length > 0) {
+      converted[converted.length - 1]!.cache_control = { type: 'ephemeral' };
+    }
+    return converted;
   }
 
   private isCompactionSupported(): boolean {
@@ -348,7 +353,9 @@ export class AnthropicProvider implements LLMProviderInterface {
     plainText: string,
     segments?: Array<{ content: string; cacheBreakpoint?: boolean }>,
   ): string | Array<{ type: 'text'; text: string; cache_control?: { type: string } }> {
-    if (!segments || segments.length <= 1) return plainText;
+    if (!segments || segments.length === 0) return plainText;
+    const hasAnyCacheBreakpoint = segments.some(s => s.cacheBreakpoint);
+    if (!hasAnyCacheBreakpoint) return plainText;
     return segments
       .filter(s => s.content.length > 0)
       .map(s => ({
