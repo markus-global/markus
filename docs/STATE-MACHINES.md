@@ -1,6 +1,6 @@
-# Task & Requirement State Machines
+# State Machines
 
-This document defines the Finite State Machine (FSM) specifications for tasks and requirements in Markus.
+This document defines the Finite State Machine (FSM) specifications for tasks, requirements, and related subsystems in Markus (goals, callbacks, mailbox items, A2A channels, notebook).
 
 ## 1. Unified Status Vocabulary
 
@@ -333,6 +333,7 @@ Requirements represent high-level work items fulfilled by one or more tasks.
 7. **No `draft` state** — items are created directly as `pending`; there is no separate drafting phase
 8. **Rejected requirements can be resubmitted** — agent calls `requirement_resubmit` to move back to `pending`, optionally updating title, description, priority, or tags. Rejection metadata is cleared on resubmit
 9. **Heartbeat checks requirements** — agents proactively check their created requirements during heartbeat: reviewing progress of `in_progress` requirements, reminding users about stale `pending` proposals, and handling `rejected` requirements
+10. **Optional goal loop overlay** — requirements may carry `GoalConfig` (`loopEnabled`, `completionCriteria`, `maxIterations`, etc.). When enabled, a parallel goal loop state runs on top of the requirement FSM (see §11)
 
 ---
 
@@ -390,3 +391,203 @@ On startup, the following data migrations run automatically:
 | `requirements` | `draft` | `pending` | `draft` state eliminated |
 | `requirements` | `pending_review` | `pending` | Unified naming |
 | `requirements` | `approved` | `in_progress` | `approved` state eliminated |
+
+---
+
+## 11. Goal Loop States
+
+Requirements with an optional `GoalConfig` gain a **goal loop state** overlay when `loopEnabled` is true. The requirement FSM (§8) still governs approval and completion; goal loop states track heartbeat-driven iteration.
+
+### State Diagram
+
+```
+requirement in_progress + loopEnabled
+              │
+              ▼
+        goal_active ◄─────────────────────────┐
+              │                               │
+              │  heartbeat check              │  next iteration
+              │  (incrementGoalIteration)     │  (autoResume)
+              ▼                               │
+    ┌─────────┼─────────┐                     │
+    │         │         │                     │
+    ▼         ▼         ▼                     │
+goal_completed  goal_max_iterations    goal_paused
+(criteria met)  (iteration limit)      (loop disabled
+    │              │                    or waiting)
+    ▼              │                      │
+requirement        │                      │
+→ completed        └──── goal_update ─────┘
+loopEnabled=false      (re-enable / raise max)
+```
+
+### Transitions
+
+| From | To | Trigger |
+|------|----|---------|
+| — | `goal_active` | `enableGoalLoop()` or `goal_create` on an `in_progress` requirement |
+| `goal_active` | `goal_active` | Heartbeat patrol assesses progress; `currentIteration` increments |
+| `goal_active` | `goal_completed` | Agent evaluates criteria met → requirement marked `completed`, `loopEnabled` → false |
+| `goal_active` | `goal_max_iterations` | `currentIteration >= maxIterations` |
+| `goal_active` | `goal_paused` | `disableGoalLoop()` or `goal_update(loop_enabled: false)` |
+| `goal_paused` | `goal_active` | `enableGoalLoop()` / `goal_update(loop_enabled: true)` with `autoResume` |
+| `goal_max_iterations` | `goal_active` | `goal_update` raises `max_iterations` or resets iteration count |
+
+### Key Rules
+
+1. **Heartbeat-driven** — active goals appear in the heartbeat **Active Goals** section via `goalFetcher`; the agent creates follow-up tasks and reassesses each iteration
+2. **Orthogonal to requirement status** — goal loop states apply only while the requirement is `in_progress`; terminal requirement statuses (`completed`, `cancelled`, `rejected`) end the loop
+3. **Safety cap** — `maxIterations` prevents unbounded heartbeat cycles; hitting the limit enters `goal_max_iterations`, not automatic completion
+4. **Tools** — `goal_create`, `goal_update`, `goal_status` manage the loop; see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) §11.4
+
+---
+
+## 12. Pending Callback States
+
+`PendingCallbackRegistry` tracks async operations (e.g., `background_exec`) that must report results through the mailbox. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) §11.3.
+
+### State Diagram
+
+```
+registerBackgroundSession()
+              │
+              ▼
+          pending ────── resolve() ──────► resolved
+              │         (operation done)     │
+              │                              └── enqueue callback_result
+              │
+              ├── getTimedOut() ──► timed_out
+              │                          │
+              │                          └── expireTimedOut() ──► expired
+              │                               (removed; surfaced in heartbeat)
+              └── (server restart) ──► pending  (restored from SQLite)
+```
+
+### Transitions
+
+| From | To | Trigger | Side Effect |
+|------|----|---------|-------------|
+| — | `pending` | `registerBackgroundSession()` / `PendingCallbackRegistry.register()` | Persisted via `SqlitePendingCallbackRepo` |
+| `pending` | `resolved` | Operation completes; `resolve(id)` | Registry entry removed; `callback_result` mailbox item enqueued |
+| `pending` | `timed_out` | Heartbeat calls `getTimedOut()` (`now - registeredAt > timeoutMs`) | Detected only — entry still in registry |
+| `timed_out` | `expired` | Heartbeat calls `expireTimedOut(id)` | Registry entry removed; details injected into heartbeat prompt (no `callback_result`) |
+| `pending` | `pending` | Server restart | `setPersistence()` restores all pending callbacks |
+
+### Key Rules
+
+1. **Resolved → mailbox** — only the `resolved` path produces a `callback_result` item; timeouts are surfaced for agent investigation, not auto-enqueued
+2. **Default timeout** — 10 minutes for `background_exec`
+3. **Origin session preserved** — `originSessionId` on the callback is copied into `callback_result.extra` for session resumption
+
+---
+
+## 13. Mailbox Item Lifecycle (`callback_result`)
+
+All mailbox items, including `callback_result`, follow the standard attention pipeline. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) §6.5.
+
+### Pipeline
+
+```
+enqueue (queued)
+    │
+    ▼
+dequeueAsync → processing
+    │
+    ▼
+AttentionController triage → handleMessage(originSessionId)
+    │
+    ▼
+complete (completed)
+```
+
+### `callback_result` Specifics
+
+| Stage | Behaviour |
+|-------|-----------|
+| **Enqueue** | Priority 1 (high); `invokesLLM: true`; payload includes `callbackId`, `originSessionId`, `callbackType` in `extra` |
+| **Process** | Routed to originating session when known; falls back to system session |
+| **Complete** | Activity recorded; item marked `completed` in persistence |
+
+Unlike informational `task_status_update` items, `callback_result` always invokes an LLM call — the agent must act on async operation outcomes.
+
+---
+
+## 14. A2A DM Channel States
+
+A2A messaging routes through **deterministic DM channels** (`dm:a2a:{sorted_id_1}:{sorted_id_2}`). Channels are created lazily on the first message and persist indefinitely — there is no explicit close state.
+
+### State Diagram
+
+```
+(first agent_send_message between pair)
+              │
+              ▼
+          created ──► active ◄──────┐
+                        │           │
+                        │  messages │  new message
+                        ▼           │
+                      idle ─────────┘
+                 (no recent traffic)
+```
+
+### Transitions
+
+| From | To | Trigger |
+|------|----|---------|
+| — | `created` | First A2A message; `ensureDmChannel()` creates group-chat record with deterministic `channelKey` |
+| `created` | `active` | Message sent/received; persisted to `channel_messages`, target agent mailbox enqueued (`a2a_message`) |
+| `active` | `idle` | No messages for a period (implicit — channel remains open) |
+| `idle` | `active` | New `agent_send_message` or inbound `a2a_message` |
+
+### Key Rules
+
+1. **One channel per agent pair** — IDs sorted lexicographically; same key regardless of sender
+2. **Stable sessions** — session ID derived from `channel_{channelKey}_{agentId}`; history recallable via `recall_context`
+3. **Fire-and-forget** — `agent_send_message` is always async; no `wait_for_reply`
+4. **No teardown** — channels survive agent restarts and idle periods; see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) §11.1
+
+---
+
+## 15. Notebook Lifecycle
+
+`NOTEBOOK.md` is the agent's persistent cognitive workspace. Entry lifecycle is separate from task/requirement FSMs but follows the agent runtime.
+
+### State Diagram
+
+```
+agent start
+    │
+    ▼
+loadNotebook() ──► in-memory Map (keyed entries)
+    │
+    ├── session: updateWorkingMemory / CPP / triage
+    │       │
+    │       └── scheduleNotebookPersist (2s debounce)
+    │               │
+    │               ▼
+    │         saveNotebook() → NOTEBOOK.md on disk
+    │
+agent stop
+    │
+    └── flush debounce → persistNotebookSync()
+```
+
+### Entry Managed Types
+
+| Tag | Writer | Purpose |
+|-----|--------|---------|
+| `agent` | `update_notebook` / `clear_notebook` | Agent-chosen keys (priorities, blockers, decisions) |
+| `system` | Triage, mechanical retrieval | `triage-decision`, `relevant-context` when CPP off |
+| `cpp` | Cognitive Preparation Pipeline | `cognitive-context`, `relevant-context`, `reflection` |
+
+### Transitions
+
+| Event | Effect |
+|-------|--------|
+| Agent start | `loadNotebook(dataDir)` populates in-memory workspace; injected as `## Notebook` in every turn |
+| Entry upsert | `updateWorkingMemory(key, content, managed?)` — agent-managed entries capped at 15 keys / 6000 chars each |
+| Entry clear | `clearWorkingMemory(key?)` — single key or all entries |
+| Debounced persist | 2s after last mutation → `saveNotebook()` |
+| Agent stop | Cancel debounce timer; synchronous final `persistNotebookSync()` |
+
+See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) and [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for storage format and CPP integration.

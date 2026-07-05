@@ -24,8 +24,8 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
         'Send a message to another agent (colleague) in your organization.',
         'This tool is ALWAYS asynchronous (fire-and-forget): the message enters the target agent\'s mailbox and you continue working.',
         'The recipient will process it on their own schedule and may reply via their own agent_send_message.',
-        'Use conversation_id to correlate multi-turn exchanges — you and the recipient will both see this ID.',
-        'Record what you asked in your working memory so you recognize the reply when it arrives.',
+        'Messages are routed through a persistent DM channel between you and the recipient.',
+        'The channel has full history — both of you can recall past exchanges using recall_context.',
         'IMPORTANT: Do NOT use this tool to request substantial work from another agent.',
         'If you need another agent to perform multi-step work, file changes, or extended execution,',
         'use requirement_propose + task_create instead — tasks provide tracking, review, and audit trail.',
@@ -37,11 +37,11 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
           message: { type: 'string', description: 'The message to send' },
           conversation_id: {
             type: 'string',
-            description: 'Optional correlation ID for multi-turn exchanges. Auto-generated if omitted. Include this when replying to a previous message to maintain context.',
+            description: 'Optional correlation ID for multi-turn exchanges. Auto-generated if omitted.',
           },
           wait_for_reply: {
             type: 'boolean',
-            description: '[DEPRECATED — ignored] A2A is always async. Record your question in working memory and process the reply when it arrives.',
+            description: '[DEPRECATED — ignored] A2A is always async.',
           },
         },
         required: ['agent_id', 'message'],
@@ -65,10 +65,13 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
         ctx.sendMessage(targetId, taggedMessage, ctx.selfId, ctx.selfName, undefined, false).catch((err: unknown) => {
           log.warn(`A2A async message to ${targetId} failed in background`, { error: String(err) });
         });
+        const sorted = [ctx.selfId, targetId].sort();
+        const channelKey = `dm:a2a:${sorted[0]}:${sorted[1]}`;
         return JSON.stringify({
           status: 'dispatched',
           conversation_id: conversationId,
-          message: 'Message sent asynchronously. The agent will process it on their schedule. Record your question in working memory to recognize the reply.',
+          channel_key: channelKey,
+          message: 'Message sent via DM channel. The agent will process it on their schedule. Use recall_context with the channel_key to review conversation history.',
         });
       },
     },

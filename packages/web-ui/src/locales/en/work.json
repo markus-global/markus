@@ -400,7 +400,13 @@
     "cancelConfirmMessage": "Are you sure you want to cancel this requirement? This action cannot be undone.",
     "cancelConfirmLabel": "Cancel Requirement",
     "createTask": "Task",
-    "noLinkedTasks": "No tasks linked yet. Create one to get started."
+    "noLinkedTasks": "No tasks linked yet. Create one to get started.",
+    "goal": "Goal Loop",
+    "goalActive": "Active",
+    "goalMaxReached": "Max Reached",
+    "goalIteration": "Iteration {{current}}/{{max}}",
+    "goalLastChecked": "Last checked: {{time}}",
+    "goalAutoResume": "Auto-resume"
   },
   "filters": {
     "all": "All",

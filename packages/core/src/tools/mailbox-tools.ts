@@ -50,12 +50,12 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
     },
 
     {
-      name: 'update_working_memory',
-      description: 'Upsert a keyed entry in your working memory. Use to track priorities, context, decisions. Max 10 entries, 4000 chars each.',
+      name: 'update_notebook',
+      description: 'Upsert a keyed entry in your Notebook — your persistent cognitive workspace. Use to track priorities, context, decisions, blockers. Max 4 agent entries, 6000 chars each. Notebook persists across sessions and restarts. Choose keys wisely — only 4 slots available.',
       inputSchema: {
         type: 'object',
         properties: {
-          key: { type: 'string', description: 'Label for this entry (e.g. "current-priorities", "task-context")' },
+          key: { type: 'string', description: 'Label for this entry (e.g. "current-priorities", "blockers", "pending-conversations")' },
           content: { type: 'string', description: 'The content to store' },
         },
         required: ['key', 'content'],
@@ -75,13 +75,13 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
     },
 
     {
-      name: 'clear_working_memory',
-      description: 'Remove a working memory entry by key, or clear all entries.',
+      name: 'clear_notebook',
+      description: 'Remove a Notebook entry by key, or clear all agent-managed entries.',
       inputSchema: {
         type: 'object',
         properties: {
-          key: { type: 'string', description: 'Key to clear. Omit to clear all entries.' },
-          all: { type: 'boolean', description: 'Set true to clear all entries' },
+          key: { type: 'string', description: 'Key to clear. Omit to clear all agent entries.' },
+          all: { type: 'boolean', description: 'Set true to clear all agent entries' },
         },
       },
       async execute(args: Record<string, unknown>): Promise<string> {
@@ -91,6 +91,41 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
           return JSON.stringify(ctx.clearWorkingMemory());
         }
         return JSON.stringify(ctx.clearWorkingMemory(key));
+      },
+    },
+
+    // Backward compatibility aliases (hidden from discovery)
+    {
+      name: 'update_working_memory',
+      description: '[Alias for update_notebook] Upsert a keyed entry in your Notebook.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: 'Label for this entry' },
+          content: { type: 'string', description: 'The content to store' },
+        },
+        required: ['key', 'content'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const key = args['key'] as string;
+        const content = args['content'] as string;
+        if (!key || !content) return JSON.stringify({ status: 'error', error: 'key and content required' });
+        return JSON.stringify(ctx.updateWorkingMemory(key, content));
+      },
+    },
+    {
+      name: 'clear_working_memory',
+      description: '[Alias for clear_notebook] Remove a Notebook entry by key.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: 'Key to clear. Omit to clear all.' },
+          all: { type: 'boolean', description: 'Set true to clear all entries' },
+        },
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const key = args['key'] as string | undefined;
+        return JSON.stringify(ctx.clearWorkingMemory(args['all'] ? undefined : key));
       },
     },
 

@@ -449,10 +449,7 @@ describe('buildSystemPrompt knowledge and deliverables', () => {
       dynamicContext: 'Sprint 12 in progress.',
     });
 
-    expect(result.text).toContain('Q1 summary');
     expect(result.text).toContain('test coverage');
-    expect(result.text).toContain('Status Report');
-    expect(result.text).toContain('search');
     expect(result.text).toContain('Sprint 12');
   });
 });

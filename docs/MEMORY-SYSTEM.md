@@ -1,14 +1,22 @@
 # Agent Memory System
 
-Architecture and data flows for the Markus agent memory system, grounded in Tulving-style procedural / semantic / episodic persistence plus an explicit **working memory** layer for situational scratchpad state.
+Architecture and data flows for the Markus agent memory system. Persistent cognition uses a **two-file model** — `NOTEBOOK.md` (cognitive workspace) and `MEMORY.md` (long-term knowledge) — grounded in Tulving-style procedural / semantic / episodic persistence plus cognitive-science working-memory models.
 
 ## 1. Design Principles
 
-1. **Tulving mapping + working memory**: Persistent layers align with Tulving-style cognition — **Procedural** (ROLE.md), **Semantic** (MEMORY.md + memories.json), **Episodic** (sessions + activities). **Working memory** is the fourth explicit layer: volatile, agent-managed keyed entries (in-memory on the agent), always injected into the system prompt — it replaces the former `currentCognition` string for situational awareness.
-2. **File-first for durable cognition**: Sessions and long-term stores (MEMORY.md, memories.json, ROLE.md) live on the file system — human-readable and portable. Volatile **working memory** (see **Working Memory** under Four-Layer Architecture) stays in-process only.
+1. **Two-file model**: `NOTEBOOK.md` holds the situational cognitive workspace; `MEMORY.md` holds curated knowledge plus a `## _observations` buffer. Both are human-readable markdown on disk.
+2. **Tulving mapping + notebook**: Persistent layers align with Tulving-style cognition — **Procedural** (ROLE.md), **Semantic** (MEMORY.md), **Episodic** (sessions + activities). The **Notebook** replaces volatile in-memory working memory with a persistent scratchpad always injected into the system prompt.
 3. **SQLite for history**: Activity history lives in SQLite — indexed, searchable, and queryable via tools.
 4. **Context is currency**: Every byte in the LLM prompt competes for limited context window. Retrieval must maximize signal-to-noise.
-5. **Agent autonomy**: Agents decide what to remember (`memory_save`), what to distill (`memory_update_longterm`), and how to evolve (ROLE.md edits).
+5. **Agent autonomy**: Agents decide what to remember (`memory_save`), what to distill (`memory_update`), and how to evolve (ROLE.md edits).
+
+### Cognitive Science Foundations
+
+| Concept | Markus mapping |
+|---------|----------------|
+| **Baddeley — Working Memory Model** | `NOTEBOOK.md` = central executive + visuospatial sketchpad: limited-capacity, actively maintained situational state |
+| **Cowan — Embedded Processes** | Curated sections of `MEMORY.md` = activated long-term memory, always in prompt |
+| **Kahneman — Dual Process** | System 1 = fast retrieval (`memory_search`, prompt injection); System 2 = CPP deliberative processing writes `cpp`-managed notebook entries |
 
 ## 2. Four-Layer Architecture
 
@@ -20,11 +28,9 @@ Architecture and data flows for the Markus agent memory system, grounded in Tulv
 │  Code: RoleLoader, Agent.reloadRole(), skill system           │
 ├───────────────────────────────────────────────────────────────┤
 │  Semantic Memory — "what I know"                              │
-│  MEMORY.md (curated, always in prompt)                        │
-│  memories.json (observation buffer, searched on demand)        │
+│  MEMORY.md — curated sections + ## _observations buffer       │
 │  Code: MemoryStore (addEntry, search, addLongTermMemory)      │
-│  Tools: memory_save, memory_search, memory_list,              │
-│         memory_update_longterm                                 │
+│  Tools: memory_save, memory_search, memory_update             │
 ├───────────────────────────────────────────────────────────────┤
 │  Episodic Memory — "what I've experienced"                    │
 │  Current episode: sessions/*.json (active conversation)       │
@@ -32,86 +38,120 @@ Architecture and data flows for the Markus agent memory system, grounded in Tulv
 │  Code: MemoryStore (sessions) + SqliteActivityRepo            │
 │  Tools: recall_activity (list / search / get)                 │
 ├───────────────────────────────────────────────────────────────┤
-│  Working Memory — volatile situational scratchpad             │
-│  In-memory Map on Agent; always in prompt as ## Working Memory │
-│  Tools: update_working_memory, clear_working_memory           │
-│  Code: Agent (Map + eviction), tools in mailbox-tools          │
+│  Notebook — persistent cognitive workspace                    │
+│  NOTEBOOK.md — keyed entries (agent / system / cpp managed)   │
+│  Tools: update_notebook, clear_notebook                       │
+│  Code: Agent + MemoryStore (loadNotebook / saveNotebook)     │
 └───────────────────────────────────────────────────────────────┘
 
 Not memory (never read back by agent):
   daily-logs/*.md — audit trail for humans only
 ```
 
-### Working Memory (Volatile, Agent-Managed)
+### Notebook (NOTEBOOK.md)
 
-- **Store**: In-memory `Map<string, {text, updatedAt}>` on the Agent instance
-- **Scope**: Injected into every system prompt as `## Working Memory`
-- **Lifecycle**: Persists while agent process runs; lost on restart
-- **Agent control**: `update_working_memory(key, content)` / `clear_working_memory(key?)`
-- **System writes**: Triage → key `"triage-decision"`, deliberation → key `"deliberation"`
-- **Limits**: Max 10 entries, 4000 chars each; oldest evicted when full
-- **Relationship to other layers**:
-  - More volatile than `memories.json` (no disk persistence) but always in prompt
-  - For durable observations, use `memory_save` → `memories.json`
-  - For curated knowledge, use `memory_update_longterm` → `MEMORY.md`
-  - Working memory replaces the former `currentCognition` string, giving the agent
-    explicit control over its situational awareness lifecycle
+Persistent markdown replacing the former volatile in-memory working memory.
+
+| Attribute | Value |
+|-----------|-------|
+| Storage | `~/.markus/agents/{id}/NOTEBOOK.md` |
+| Format | `## key` headings with metadata comments + body text |
+| Entry fields | `key`, `text`, `managed` (`agent` \| `system` \| `cpp`), `updatedAt` |
+| Prompt injection | Always loaded as `## Notebook` |
+| Limits | 15 agent-managed entries, 6000 chars each; oldest evicted when full |
+
+**Managed tags**:
+
+- `agent` — written via `update_notebook` / `clear_notebook`
+- `system` — triage → `"triage-decision"`, deliberation → `"deliberation"`, etc.
+- `cpp` — Cognitive Preparation Pipeline writes situational context
+
+**Lifecycle**: Loaded at agent startup → updated in-process → debounced persist (2s) to disk. Survives restarts.
+
+**Relationship to other layers**:
+
+- More volatile than `MEMORY.md` curated sections but always in prompt
+- Raw observations → `memory_save` → `## _observations`
+- Validated knowledge → `memory_update` → curated sections above `_observations`
 
 ### Code Location
 
 | Concern | Implementation | File |
 |---------|---------------|------|
 | Semantic + Episodic (sessions) | `MemoryStore` | `packages/core/src/memory/store.ts` |
+| Notebook parse/serialize | `loadNotebook`, `saveNotebook` | `packages/core/src/memory/store.ts` |
 | Interface | `IMemoryStore` | `packages/core/src/memory/types.ts` |
 | Episodic (history) | `SqliteActivityRepo` | `packages/storage/src/sqlite-storage.ts` |
 | Episodic retrieval | `recall_activity` tool | `packages/core/src/tools/recall.ts` |
 | Procedural | `RoleLoader` | `packages/core/src/role-loader.ts` |
-| Procedural (enhanced) | `EnhancedRoleLoader` | `packages/core/src/enhanced-role-loader.ts` |
-| Semantic tools | `memory_save`, etc. | `packages/core/src/tools/memory.ts` |
+| Semantic tools | `memory_save`, `memory_search`, `memory_update` | `packages/core/src/tools/memory.ts` |
+| Notebook tools | `update_notebook`, `clear_notebook` | `packages/core/src/tools/mailbox-tools.ts` |
 | Vector search | `SemanticMemorySearch` | `packages/core/src/memory/semantic-search.ts` |
-| Working memory | `Agent.workingMemory`, prompt injection | `packages/core/src/agent.ts` |
-| Working memory tools | `update_working_memory`, `clear_working_memory` | `packages/core/src/tools/mailbox-tools.ts` |
+| Notebook runtime | `Agent.workingMemory`, prompt injection | `packages/core/src/agent.ts` |
 
 ---
 
-## 3. Semantic Memory
+## 3. Semantic Memory (MEMORY.md)
 
-Factual knowledge the agent has accumulated. Two complementary substores:
+Unified file for both curated knowledge and raw observations.
 
-### MEMORY.md — Curated Knowledge
+```
+MEMORY.md
+├── ## conventions          ← agent-organized curated sections
+├── ## procedures
+├── ## preferences
+├── ...
+└── ## _observations        ← raw observation buffer (NOT in prompt)
+    ├── ### obs_123...
+    └── ### obs_456...
+```
+
+### Curated Sections
 
 | Attribute | Value |
 |-----------|-------|
-| Storage | `~/.markus/agents/{id}/MEMORY.md` |
-| Format | Markdown with `## section-name` headers |
-| Write triggers | `memory_update_longterm` tool, Dream Cycle promotion |
-| System prompt | Always loaded as `## Your Knowledge` |
+| Write triggers | `memory_update` tool, Dream Cycle promotion |
+| System prompt | Always loaded as `## Your Knowledge` (excludes `## _observations`) |
 | Limits | 3000 chars/section (`MEMORY_MD_SECTION_MAX_CHARS`), 15000 chars total (`MEMORY_MD_TOTAL_MAX_CHARS`) |
 
-The agent organizes sections freely. Common patterns:
+The agent organizes sections freely — common patterns: `conventions`, `procedures`, `preferences`, `domain-knowledge`.
 
-- `conventions` — coding standards, naming rules
-- `procedures` — recurring workflows
-- `preferences` — tool choices, communication styles
-- `domain-knowledge` — technical facts
-
-### memories.json — Observation Buffer
+### `## _observations` — Observation Buffer
 
 | Attribute | Value |
 |-----------|-------|
-| Storage | `~/.markus/agents/{id}/memories.json` |
-| Format | `MemoryEntry[]` with `id`, `timestamp`, `type`, `content`, `metadata` |
+| Format | `### {id}` subsections with HTML comment metadata + content |
 | Entry types | `fact`, `note`, `task_result`, `conversation` |
 | Write triggers | `memory_save` tool, task reflection |
+| Prompt injection | **Not** injected — searched on demand via `memory_search` |
 | Search | Substring match + optional vector overlay (`SemanticMemorySearch`) |
+| Max entries | 500 (oldest trimmed on save) |
 
-**Entry lifecycle**: Created via `memory_save` → Searched via `memory_search` → Consolidated by Dream Cycle (merge duplicates) → Promoted to MEMORY.md (recurring patterns)
+**Entry lifecycle**: `memory_save` → buffered in `_observations` → searched via `memory_search` → consolidated by Dream Cycle (merge/prune/promote) → promoted to curated sections.
 
-**Tags** (stored in `metadata.tags`): `insight`, `role-evolution`, `domain:<topic>`
+**Tags** (in metadata comments): `insight`, `role-evolution`, `domain:<topic>`
+
+### Migration from memories.json
+
+On first load, if `memories.json` exists, entries migrate into `## _observations` within `MEMORY.md` and the JSON file is deleted. No manual migration required.
 
 ---
 
-## 4. Episodic Memory
+## 4. Memory Tools
+
+Five primary tools (down from seven). Legacy aliases (`memory_list`, `memory_delete`, `memory_update_longterm`, `update_working_memory`, `clear_working_memory`) remain for backward compatibility.
+
+| Tool | Purpose |
+|------|---------|
+| `update_notebook` | Upsert a keyed entry in NOTEBOOK.md |
+| `clear_notebook` | Remove one entry or all agent-managed entries |
+| `memory_save` | Append observation to `## _observations` |
+| `memory_update` | Update curated section (`replace` / `patch`) or delete observations by ID (`mode: delete`) |
+| `memory_search` | Search observations and curated knowledge; empty query lists recent observations |
+
+---
+
+## 5. Episodic Memory
 
 Everything the agent has experienced. Two substores serving different time horizons:
 
@@ -188,7 +228,7 @@ This is how an agent answers "what did I do last time with X?" — it searches i
 
 ---
 
-## 5. Procedural Memory
+## 6. Procedural Memory
 
 How the agent operates — managed outside `MemoryStore` by the role/skill system.
 
@@ -202,14 +242,14 @@ ROLE.md is loaded at startup and hot-reloaded when the agent modifies it via `fi
 
 ---
 
-## 6. Storage Layout
+## 7. Storage Layout
 
 ### File System (per agent)
 
 ```
 ~/.markus/agents/{agent-id}/
-├── MEMORY.md              # Semantic: curated knowledge
-├── memories.json          # Semantic: observation buffer
+├── NOTEBOOK.md            # Notebook: persistent cognitive workspace
+├── MEMORY.md              # Semantic: curated knowledge + ## _observations
 ├── metrics.json           # Health counters (not memory)
 ├── role/
 │   └── ROLE.md            # Procedural: identity
@@ -220,6 +260,8 @@ ROLE.md is loaded at startup and hot-reloaded when the agent modifies it via `fi
 ├── workspace/             # Working files (not memory)
 └── tool-outputs/          # Tool result offloads (not memory)
 ```
+
+> **Note**: `memories.json` is deprecated. Existing files auto-migrate to `MEMORY.md ## _observations` on first load.
 
 ### SQLite (`~/.markus/data.db`)
 
@@ -234,22 +276,22 @@ ROLE.md is loaded at startup and hot-reloaded when the agent modifies it via `fi
 
 ---
 
-## 7. Consolidation (Dream Cycle)
+## 8. Consolidation (Dream Cycle)
 
-Periodic process that maintains semantic memory health. Runs via `consolidateMemory()`.
+Periodic process that maintains semantic memory health. Runs via `consolidateMemory()`. All consolidation happens within `MEMORY.md`.
 
 ### Trigger
 
-- `memories.json` has 50+ entries
-- Dream cycle has not run today (`lastDreamDate`)
+- `## _observations` has 50+ entries
+- Dream cycle has not run today (`lastDreamDate`); up to 4×/day when heavily bloated (500+ entries)
 
 ### Process (LLM-assisted)
 
-1. Cap entries at 200, send to LLM with: id, type, date, tags, content preview
+1. Cap entries at 500, send to LLM with: id, type, date, tags, content preview
 2. LLM responds with JSON: `{ remove: [...ids], merge: [...groups], promote: [...] }`
-3. Apply removals: delete from memories.json + vector index
-4. Apply merges: replace groups with merged entry
-5. Apply promotions: append synthesized content to MEMORY.md sections
+3. Apply removals: delete from `## _observations` + vector index
+4. Apply merges: replace groups with merged entry in `_observations`
+5. Apply promotions: append synthesized content to curated sections above `_observations`
 
 ### MEMORY.md Hygiene (`pruneMemoryMd`)
 
@@ -259,19 +301,20 @@ Periodic process that maintains semantic memory health. Runs via `consolidateMem
 
 ---
 
-## 8. Key Rules
+## 9. Key Rules
 
-1. **MEMORY.md is sacred** — only distilled knowledge. Never raw LLM output or debug info.
-2. **memories.json is source of truth for observations** — vector index is a secondary search overlay.
-3. **Activity history is episodic memory** — the agent retrieves it via `recall_activity` to inform future decisions.
-4. **Sessions are thin** — hold current conversation only, auto-compacted.
-5. **Daily logs are NOT memory** — append-only audit trail for humans. Never read back into prompts.
-6. **Dream Cycle is conservative** — err on keeping entries; incorrect removal is worse than duplicates.
-7. **One MemoryStore per agent** — file-system based, no cross-agent contamination.
+1. **MEMORY.md curated sections are sacred** — only distilled knowledge. Never raw LLM output or debug info.
+2. **`## _observations` is the observation buffer** — not injected into prompts; vector index is a secondary search overlay.
+3. **NOTEBOOK.md is always in prompt** — keep entries concise; use `memory_save` for durable observations.
+4. **Activity history is episodic memory** — retrieved via `recall_activity` to inform future decisions.
+5. **Sessions are thin** — hold current conversation only, auto-compacted.
+6. **Daily logs are NOT memory** — append-only audit trail for humans. Never read back into prompts.
+7. **Dream Cycle is conservative** — err on keeping entries; incorrect removal is worse than duplicates.
+8. **One MemoryStore per agent** — file-system based, no cross-agent contamination.
 
 ---
 
-## 9. Cross-Reference
+## 10. Cross-Reference
 
 | Document | Relationship |
 |----------|-------------|

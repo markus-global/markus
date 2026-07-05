@@ -1,5 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
-import { createLogger, TASK_GET_NOTES_DEFAULT, TASK_GET_DELIVERABLES_DEFAULT, TASK_GET_STATUS_HISTORY_DEFAULT, REQUIREMENT_LIST_DEFAULT, ENTITY_COMMENTS_DEFAULT } from '@markus/shared';
+import { createLogger, TASK_GET_NOTES_DEFAULT, TASK_GET_DELIVERABLES_DEFAULT, TASK_GET_STATUS_HISTORY_DEFAULT, REQUIREMENT_LIST_DEFAULT, ENTITY_COMMENTS_DEFAULT, type GoalConfig } from '@markus/shared';
 
 const log = createLogger('task-tools');
 
@@ -175,6 +175,15 @@ export interface AgentTaskContext {
   getCurrentActivityId?: () => string | undefined;
   /** Get status transition history for a task or requirement */
   getStatusHistory?: (entityType: 'task' | 'requirement', entityId: string) => Promise<Array<{ id: number; fromStatus: string; toStatus: string; changedById: string | null; changedByType: string; changedByName: string | null; reason: string | null; createdAt: string }>>;
+  /** RequirementService for goal operations */
+  requirementService?: {
+    create(data: { title: string; description: string; source: string; createdBy: string; priority: string; orgId: string; status?: string }): Promise<{ id: string }>;
+    enableGoalLoop(reqId: string, config: { completionCriteria: string; maxIterations?: number; autoResume?: boolean }): Promise<void>;
+    disableGoalLoop(reqId: string): Promise<void>;
+    getById(id: string): { id: string; title: string; status: string; taskIds: string[]; goalConfig?: GoalConfig } | undefined;
+    getActiveGoals(orgId: string): Array<{ id: string; title: string; status: string; goalConfig?: GoalConfig }>;
+  };
+  orgId?: string;
 }
 
 export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] {
@@ -1507,6 +1516,147 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   status: 'success',
                   commentId: result.id,
                   message: `Comment posted on requirement ${requirementId}${mentions.length > 0 ? ` (notified ${mentions.length} agent(s))` : ''}${replyToId ? ` (replying to ${replyToId})` : ''}`,
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    // ── Goal Tools ────────────────────────────────────────────────────────────
+    ...(ctx.requirementService
+      ? [
+          {
+            name: 'goal_create',
+            description: [
+              'Create a new goal — a requirement with an automatic loop that drives progress.',
+              'The goal will appear in your heartbeat patrol so you periodically assess progress,',
+              'create follow-up tasks, and unblock work until completion criteria are met.',
+            ].join(' '),
+            inputSchema: {
+              type: 'object' as const,
+              properties: {
+                title: { type: 'string', description: 'Goal title' },
+                description: { type: 'string', description: 'Detailed description of what needs to be achieved' },
+                completion_criteria: { type: 'string', description: 'LLM-evaluable criteria for when this goal is considered complete' },
+                max_iterations: { type: 'number', description: 'Safety limit on heartbeat iterations (default: 10)' },
+                priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'Priority (default: medium)' },
+              },
+              required: ['title', 'description', 'completion_criteria'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const title = args['title'] as string;
+                const description = args['description'] as string;
+                const completionCriteria = args['completion_criteria'] as string;
+                const maxIterations = (args['max_iterations'] as number) ?? 10;
+                const priority = (args['priority'] as string) ?? 'medium';
+                if (!title || !description || !completionCriteria) {
+                  return JSON.stringify({ status: 'error', error: 'title, description, and completion_criteria are required' });
+                }
+                const req = await ctx.requirementService!.create({
+                  title,
+                  description,
+                  source: 'agent',
+                  createdBy: ctx.agentId!,
+                  priority,
+                  orgId: ctx.orgId!,
+                  status: 'in_progress',
+                });
+                await ctx.requirementService!.enableGoalLoop(req.id, {
+                  completionCriteria,
+                  maxIterations,
+                  autoResume: true,
+                });
+                return JSON.stringify({
+                  status: 'success',
+                  goalId: req.id,
+                  message: `Goal "${title}" created with ${maxIterations} max iterations. It will appear in your heartbeat patrol.`,
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+          {
+            name: 'goal_update',
+            description: 'Update goal configuration — modify criteria, iterations, or enable/disable the loop.',
+            inputSchema: {
+              type: 'object' as const,
+              properties: {
+                goal_id: { type: 'string', description: 'Requirement ID of the goal' },
+                completion_criteria: { type: 'string', description: 'Updated completion criteria' },
+                max_iterations: { type: 'number', description: 'Updated max iterations' },
+                loop_enabled: { type: 'boolean', description: 'Enable or disable the goal loop' },
+              },
+              required: ['goal_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const goalId = args['goal_id'] as string;
+                if (!goalId) return JSON.stringify({ status: 'error', error: 'goal_id is required' });
+                if (args['loop_enabled'] === false) {
+                  await ctx.requirementService!.disableGoalLoop(goalId);
+                  return JSON.stringify({ status: 'success', message: `Goal loop disabled for ${goalId}` });
+                }
+                const updates: Record<string, unknown> = {};
+                if (args['completion_criteria']) updates['completionCriteria'] = args['completion_criteria'];
+                if (args['max_iterations']) updates['maxIterations'] = args['max_iterations'];
+                if (Object.keys(updates).length > 0 || args['loop_enabled'] === true) {
+                  const req = ctx.requirementService!.getById(goalId);
+                  if (!req) return JSON.stringify({ status: 'error', error: 'Goal not found' });
+                  await ctx.requirementService!.enableGoalLoop(goalId, {
+                    completionCriteria: (updates['completionCriteria'] as string) ?? req.goalConfig?.completionCriteria ?? '',
+                    maxIterations: (updates['maxIterations'] as number) ?? req.goalConfig?.maxIterations ?? 10,
+                    autoResume: req.goalConfig?.autoResume ?? true,
+                  });
+                }
+                return JSON.stringify({ status: 'success', message: `Goal ${goalId} updated` });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+          {
+            name: 'goal_status',
+            description: 'Get a summary of active goals and their progress.',
+            inputSchema: {
+              type: 'object' as const,
+              properties: {
+                goal_id: { type: 'string', description: 'Specific goal ID (optional — omit for all active goals)' },
+              },
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const goalId = args['goal_id'] as string | undefined;
+                if (goalId) {
+                  const req = ctx.requirementService!.getById(goalId);
+                  if (!req) return JSON.stringify({ status: 'error', error: 'Goal not found' });
+                  return JSON.stringify({
+                    status: 'success',
+                    goal: {
+                      id: req.id,
+                      title: req.title,
+                      reqStatus: req.status,
+                      goalConfig: req.goalConfig,
+                      taskIds: req.taskIds,
+                    },
+                  });
+                }
+                const goals = ctx.requirementService!.getActiveGoals(ctx.orgId!);
+                return JSON.stringify({
+                  status: 'success',
+                  count: goals.length,
+                  goals: goals.map(g => ({
+                    id: g.id,
+                    title: g.title,
+                    status: g.status,
+                    iteration: g.goalConfig?.currentIteration ?? 0,
+                    maxIterations: g.goalConfig?.maxIterations ?? 0,
+                    criteria: g.goalConfig?.completionCriteria ?? '',
+                  })),
                 });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });

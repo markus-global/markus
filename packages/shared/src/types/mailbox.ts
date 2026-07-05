@@ -14,7 +14,8 @@ export type MailboxItemType =
   | 'session_reply'
   | 'daily_report'
   | 'memory_consolidation'
-  | 'workflow_update';
+  | 'workflow_update'
+  | 'callback_result';
 
 export type MailboxPriority = 0 | 1 | 2 | 3 | 4;
 
@@ -67,13 +68,14 @@ export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescripto
   heartbeat:            { label: 'Heartbeat',            defaultPriority: 3, category: 'system',        icon: '♡',  activityType: 'heartbeat',          createsActivity: true,  invokesLLM: true  },
   memory_consolidation: { label: 'Memory Consolidation', defaultPriority: 4, category: 'system',        icon: '🧠', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
   workflow_update:      { label: 'Workflow Update',      defaultPriority: 2, category: 'task',          icon: '🔄', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
+  callback_result:     { label: 'Callback Result',     defaultPriority: 1, category: 'system',        icon: '↩',  activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
 };
 
 export const MAILBOX_CATEGORIES: Record<MailboxCategory, { label: string; types: MailboxItemType[] }> = {
   interaction:  { label: 'Interaction',  types: ['human_chat', 'a2a_message', 'mention'] },
   task:         { label: 'Task',         types: ['task_status_update', 'task_comment', 'requirement_comment', 'review_request', 'session_reply', 'workflow_update'] },
   notification: { label: 'Notification', types: ['requirement_update'] },
-  system:       { label: 'System',       types: ['system_event', 'heartbeat', 'daily_report', 'memory_consolidation'] },
+  system:       { label: 'System',       types: ['system_event', 'heartbeat', 'daily_report', 'memory_consolidation', 'callback_result'] },
 };
 
 export type MailboxItemStatus =

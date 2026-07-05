@@ -50,6 +50,7 @@ export {
   SqliteReadCursorRepo,
   SqliteWorkflowRunRepo,
   SqliteWorkflowScheduleRepo,
+  SqlitePendingCallbackRepo,
   migrateToExecutionStreamLogs,
   type SqliteExternalAgentRegistration,
   type ActivityRecord,

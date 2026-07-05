@@ -13,9 +13,6 @@ import {
   checkForUpdate,
   generateId,
   userId,
-  TRIAGE_MAX_TOKENS,
-  TRIAGE_TEMPERATURE,
-  TRIAGE_ALLOWED_TOOLS,
   type LLMProviderConfig,
   type DecisionType,
 } from '@markus/shared';
@@ -1430,28 +1427,11 @@ async function startServerCore(
             } catch (e) { log.warn('Failed to persist decision', { id: decision.id, error: String(e) }); }
           },
         });
-        // Wire TriageJudge — used as fallback when full-session deliberation
-        // (delegate.performDeliberation) is not triggered or returns null.
-        const triageProvider = agent.config.llmConfig?.modelMode === 'custom'
-          ? agent.config.llmConfig.primary : undefined;
-        const triageSystemPrompt = 'You are a mailbox triage assistant. Output ONLY a single JSON object — no explanation, no markdown fences, no <think> tags. Start your response with {';
-        const triageCacheSegments = [{ content: triageSystemPrompt, cacheBreakpoint: true }];
-        agent.getAttentionController().setTriageJudge(async (prompt: string) => {
-          const response = await llmRouter.chat({
-            messages: [
-              { role: 'system', content: triageSystemPrompt },
-              { role: 'user', content: prompt },
-            ],
-            systemCacheSegments: triageCacheSegments,
-            temperature: TRIAGE_TEMPERATURE,
-            maxTokens: TRIAGE_MAX_TOKENS,
-          }, triageProvider);
-          return response.content;
-        });
-
         // Wire LLM interrupt judge — evaluates whether to preempt current
         // work when a new message arrives (e.g. "stop publishing", "pause that task").
         // Only called when heuristics return 'continue' for ambiguous cases.
+        const triageProvider = agent.config.llmConfig?.modelMode === 'custom'
+          ? agent.config.llmConfig.primary : undefined;
         const interruptSystemPrompt = 'You are an attention interrupt judge. Decide whether to interrupt current work for a new incoming message. Reply with ONLY one word: continue, preempt, cancel, merge, or defer. Use "preempt" to pause (resume later) and "cancel" to permanently stop current work.';
         const interruptCacheSegments = [{ content: interruptSystemPrompt, cacheBreakpoint: true }];
         agent.getAttentionController().setLLMJudge(async (prompt: string) => {
@@ -1468,43 +1448,6 @@ async function startServerCore(
           const valid: DecisionType[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];
           return valid.includes(raw as DecisionType) ? (raw as DecisionType) : 'continue';
         });
-
-        // Wire triage chat function (fallback mini tool loop, used when
-        // performDeliberation is not available or deliberation is disabled).
-        // The attention controller prefers full-session deliberation via
-        // delegate.performDeliberation when available.
-        agent.getAttentionController().setTriageChatFn(async (messages, tools) => {
-          const llmTools = tools?.map(t => ({
-            name: t.name,
-            description: t.description,
-            inputSchema: t.inputSchema,
-          }));
-          const response = await llmRouter.chat({
-            messages: messages as any,
-            tools: llmTools,
-            temperature: TRIAGE_TEMPERATURE,
-            maxTokens: TRIAGE_MAX_TOKENS,
-          }, triageProvider);
-          return { content: response.content, toolCalls: response.toolCalls, reasoningContent: response.reasoningContent };
-        });
-
-        // Wire read-only triage tools from the agent's tool set
-        const triageToolMap = new Map<string, { name: string; description: string; inputSchema: Record<string, unknown>; execute: (args: Record<string, unknown>) => Promise<string> }>();
-        const agentTools = agent.getTools();
-        for (const toolName of TRIAGE_ALLOWED_TOOLS) {
-          const handler = agentTools.get(toolName);
-          if (handler) {
-            triageToolMap.set(toolName, {
-              name: handler.name,
-              description: handler.description,
-              inputSchema: handler.inputSchema,
-              execute: handler.execute.bind(handler),
-            });
-          }
-        }
-        if (triageToolMap.size > 0) {
-          agent.getAttentionController().setTriageTools(triageToolMap);
-        }
       } catch { /* agent not found */ }
     };
 

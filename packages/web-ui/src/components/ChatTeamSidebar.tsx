@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback, memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
@@ -193,7 +193,7 @@ function CreateGroupChatModal({ agents, humans, authUser, onClose, onCreate }: {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export function ChatTeamSidebar({
+export const ChatTeamSidebar = memo(function ChatTeamSidebar({
   authUser, agents, teams, humans, tasks, externalAgents, groupChats,
   chatMode, selectedAgent, activeChannel, activeDmUserId,
   onSelectAgent, onSelectChannel, onSelectDm, onSelectTeam, selectedTeamId,
@@ -342,10 +342,13 @@ export function ChatTeamSidebar({
   useEffect(() => {
     if (!agents.length || !isActive) return;
     let cancelled = false;
-    const fetchAll = async () => {
+
+    // One-shot initial load: batch all agents, no periodic polling
+    const fetchInitial = async () => {
       const entries: [string, string][] = [];
       await Promise.allSettled(
         agents.map(async (a) => {
+          if (_lastMsgCache.has(a.id)) return; // already have from WS
           try {
             const { sessions: ss } = await api.sessions.listByAgent(a.id, 1);
             if (!ss.length) return;
@@ -367,24 +370,24 @@ export function ChatTeamSidebar({
           } catch { /* ignore */ }
         }),
       );
-      if (!cancelled) {
-        const m = new Map(entries);
-        _lastMsgCache = m;
-        setAgentLastMsg(m);
+      if (!cancelled && entries.length) {
+        setAgentLastMsg(prev => {
+          const next = new Map(prev);
+          for (const [id, txt] of entries) next.set(id, txt);
+          _lastMsgCache = next;
+          return next;
+        });
       }
     };
-    fetchAll();
-    const timer = setInterval(fetchAll, 120_000);
+    fetchInitial();
 
+    // WS-driven updates: listen for real-time message events
     const agentIdSet = new Set(agents.map(a => a.id));
     const stripMarkup = (raw: string) => raw
       .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
       .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
       .replace(/\n+/g, ' ').trim().slice(0, 80);
-    const unsubMsg = wsClient.on('chat:proactive_message', (event) => {
-      const p = event.payload;
-      const agentId = (p['agentId'] as string) ?? '';
-      const message = (p['message'] as string) ?? '';
+    const updateLastMsg = (agentId: string, message: string) => {
       if (!agentId || !message || !agentIdSet.has(agentId)) return;
       const txt = stripMarkup(message);
       if (!txt) return;
@@ -394,8 +397,18 @@ export function ChatTeamSidebar({
         _lastMsgCache = next;
         return next;
       });
+    };
+    const unsubProactive = wsClient.on('chat:proactive_message', (event) => {
+      const p = event.payload;
+      updateLastMsg((p['agentId'] as string) ?? '', (p['message'] as string) ?? '');
     });
-    return () => { cancelled = true; clearInterval(timer); unsubMsg(); };
+    const unsubMsg = wsClient.on('chat:message', (event) => {
+      const p = event.payload;
+      const senderId = (p['senderId'] as string) ?? (p['agentId'] as string) ?? '';
+      const text = (p['text'] as string) ?? (p['message'] as string) ?? '';
+      updateLastMsg(senderId, text);
+    });
+    return () => { cancelled = true; unsubProactive(); unsubMsg(); };
   }, [agentIdsKey, isActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Data loading ──────────────────────────────────────────────────────────
@@ -901,8 +914,11 @@ export function ChatTeamSidebar({
     const map = new Map<string, typeof groupChats>();
     const unmatched: typeof groupChats = [];
     const custom: typeof groupChats = [];
+    const dmChannels: typeof groupChats = [];
     for (const gc of groupChats) {
-      if (gc.type === 'custom') {
+      if (gc.channelKey.startsWith('dm:a2a:')) {
+        dmChannels.push(gc);
+      } else if (gc.type === 'custom') {
         custom.push(gc);
       } else if (gc.teamId) {
         const list = map.get(gc.teamId) ?? [];
@@ -919,8 +935,12 @@ export function ChatTeamSidebar({
         }
       }
     }
-    return { byTeam: map, unmatched, custom };
+    return { byTeam: map, unmatched, custom, dmChannels };
   }, [groupChats, teams]);
+
+  const [dmSectionExpanded, setDmSectionExpanded] = useState(false);
+  const dmHasActiveChannel = chatMode === 'channel' && groupChatsByTeam.dmChannels.some(gc => gc.channelKey === activeChannel);
+  const showDmExpanded = dmSectionExpanded || dmHasActiveChannel;
 
   return (
     <>
@@ -1185,6 +1205,46 @@ export function ChatTeamSidebar({
 
           {/* No teams and no ungrouped agents — flat agent list as fallback */}
           {teams.length === 0 && agentsByTeam.ungrouped.length === 0 && agents.length > 0 && agents.map(a => renderAgentItem(a))}
+
+          {/* Agent-to-Agent DM channels — collapsible */}
+          {groupChatsByTeam.dmChannels.length > 0 && (
+            <div className="mb-2">
+              <button
+                onClick={() => setDmSectionExpanded(!showDmExpanded)}
+                className="w-full flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-semibold text-fg-muted uppercase tracking-wider hover:text-fg-secondary transition-colors"
+              >
+                <svg className={`w-2.5 h-2.5 transition-transform ${showDmExpanded ? 'rotate-90' : ''}`} fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
+                </svg>
+                {t('chat.agentDMs', { defaultValue: 'Agent DMs' })}
+                <span className="ml-auto text-[9px] font-normal text-fg-tertiary">{groupChatsByTeam.dmChannels.length}</span>
+              </button>
+              {showDmExpanded && groupChatsByTeam.dmChannels.map(gc => {
+                const isActive = chatMode === 'channel' && activeChannel === gc.channelKey;
+                const chUnread = unreadByChannel?.[gc.channelKey] ?? 0;
+                const dmLabel = gc.name.replace(/^DM:\s*/, '');
+                return (
+                  <button
+                    key={gc.id}
+                    onClick={() => onSelectChannel(gc.channelKey)}
+                    className={`w-full flex items-center gap-2.5 px-2.5 pl-5 py-1.5 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
+                      isActive ? 'bg-surface-overlay' : 'hover:bg-surface-overlay/60'
+                    }`}
+                  >
+                    <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0 bg-surface-overlay/60 text-fg-tertiary text-[9px]">
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                      </svg>
+                    </div>
+                    <span className="flex-1 min-w-0 text-left truncate text-[11px] text-fg-secondary">{dmLabel}</span>
+                    {chUnread > 0 && (
+                      <span className="min-w-[14px] h-[14px] flex items-center justify-center text-[8px] font-semibold text-white bg-red-500 rounded-full px-0.5 leading-none">{chUnread}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
 
@@ -1556,5 +1616,5 @@ export function ChatTeamSidebar({
       )}
     </>
   );
-}
+});
 

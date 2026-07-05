@@ -1,6 +1,6 @@
 # Mailbox & Attention System
 
-> Last updated: 2026-04
+> Last updated: 2026-07
 
 ---
 
@@ -39,14 +39,16 @@ External Events                    Agent Internals
   heartbeat ────┤               ┌──────────────────┐
   session_reply──┤               │ AttentionController│ event-driven loop
   daily_report ──┤               │  state: idle →    │
-  memory_consol──┘               │  focused → idle   │
-                                 └──────┬───────────┘
+  callback_result┤               │  focused → idle   │
+  memory_consol──┘               └──────┬───────────┘
                                         │ delegate.processMailboxItem()
                                         ▼
                                  ┌──────────────┐
                                  │  Agent Core   │ handleMessage / executeTask
                                  │  (internal)   │ handleHeartbeat / respondInSession
                                  └──────────────┘
+
+PendingCallbackRegistry ──enqueue('callback_result')──► AgentMailbox  (async op completions)
 ```
 
 ---
@@ -74,6 +76,7 @@ export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescripto
   daily_report:         { label: 'Daily Report',         defaultPriority: 2, category: 'system',        icon: '📊', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
   heartbeat:            { label: 'Heartbeat',            defaultPriority: 3, category: 'system',        icon: '♡',  activityType: 'heartbeat',          createsActivity: true,  invokesLLM: true  },
   memory_consolidation: { label: 'Memory Consolidation', defaultPriority: 4, category: 'system',        icon: '🧠', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
+  callback_result:     { label: 'Callback Result',     defaultPriority: 1, category: 'system',        icon: '↩',  activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
 };
 ```
 
@@ -102,7 +105,7 @@ The frontend uses `category` for filtering. Users can also filter by individual 
 | `interaction` | `human_chat`, `a2a_message`, `mention` | Direct conversations with humans or agents |
 | `task` | `task_status_update`, `task_comment`, `requirement_comment`, `review_request`, `session_reply` | Task & requirement lifecycle events (including execution triggers) |
 | `notification` | `requirement_update` | Status change notifications |
-| `system` | `system_event`, `heartbeat`, `daily_report`, `memory_consolidation` | Internal agent processes |
+| `system` | `system_event`, `heartbeat`, `daily_report`, `memory_consolidation`, `callback_result` | Internal agent processes |
 
 ### 3.4 Special Processing Rules
 
@@ -179,6 +182,32 @@ When a reviewer (agent or human) posts `task_comment` during an active review (`
 3. Reviewer processes A2A message → posts redundant second review
 
 The review outcome is properly communicated through the status transition (`completed` or `in_progress` revision), not intermediate comments.
+
+**`callback_result` — Async Operation Completions**
+
+`callback_result` delivers the outcome of asynchronous operations back to the originating agent through the mailbox (priority **1 — high**). It replaces the legacy pattern of injecting results directly into an active LLM session via `injectUserMessage`, ensuring completions enter the attention loop like any other stimulus.
+
+Typical sources:
+
+1. **`background_exec` completion** — When a background shell process finishes, the agent receives a `callback_result` with exit code, duration, and stdout/stderr tail.
+2. **Future async operations** — A2A replies, delegated work, and other long-running ops can register callbacks the same way.
+
+Payload shape (`payload.extra`):
+
+```typescript
+{
+  callbackId: string;           // Registry ID (matches pending callback)
+  originSessionId: string;      // Session to resume context in
+  callbackType: 'background_exec' | ...;
+  exitCode?: number;            // For background_exec
+}
+```
+
+Processing: routed to `handleMessage()` with the **originating session** (`originSessionId`) so the agent continues where it left off. Falls back to a fresh system session if origin is unknown. `invokesLLM: true`, `createsActivity: true`.
+
+Registration flow: when an agent starts an async operation, it calls `registerBackgroundSession()` (or equivalent), which registers a `PendingCallback` in `PendingCallbackRegistry` and persists it to SQLite. On completion, the registry entry is resolved and a `callback_result` item is enqueued.
+
+See §11.3 for the full `PendingCallbackRegistry` specification.
 
 ---
 
@@ -326,6 +355,7 @@ This is a critical design invariant. The following internal methods invoke the L
 | `handleHeartbeat()` | heartbeat:trigger → `mailbox.enqueue('heartbeat')` | `heartbeat` |
 | `generateDailyReport()` | internally calls `sendMessage()` | `daily_report` |
 | `dreamConsolidateMemory()` | internally calls `sendMessage()` | `memory_consolidation` |
+| async op completion handler | `PendingCallbackRegistry.resolve()` → `enqueueToMailbox('callback_result')` | `callback_result` |
 
 ### REST API Endpoints
 
@@ -479,6 +509,7 @@ The `agent_activities.type` field is **not an independent enum**. It is determin
 | `review_request` | `chat` | |
 | `session_reply` | `respond_in_session` | Has `task_id` |
 | `heartbeat` | `heartbeat` | |
+| `callback_result` | `internal` | Resumes originating session |
 | `system_event` | `internal` | |
 | `daily_report` | `internal` | |
 | `memory_consolidation` | `internal` | |
@@ -583,9 +614,10 @@ All paths that invoke the LLM are routed through the mailbox:
 - **Task execution** (runTask / runTaskFresh) → `sendTaskExecution`
 - **Post-task comment reply** → `sendSessionReply`
 - **Daily report** (API trigger) → `generateDailyReport` → `sendMessage(sourceType: 'daily_report')`
-- **Heartbeat** (periodic timer) → `heartbeat:trigger` event → `mailbox.enqueue('heartbeat')`
+- **Heartbeat** (periodic timer) → `heartbeat:trigger` event → `mailbox.enqueue('heartbeat')` — includes active goals review and timed-out callback checks (§11.4)
 - **Memory consolidation** (dream cycle) → `dreamConsolidateMemory` → `sendMessage(sourceType: 'memory_consolidation')`
-- **Cross-agent messages** (A2A / delegation) → `sendMessage` / `enqueueToMailbox`
+- **Cross-agent messages** (A2A / delegation) → DM channel → `enqueueToMailbox('a2a_message')` (§11)
+- **Async operation completions** (`background_exec`, etc.) → `PendingCallbackRegistry` → `enqueueToMailbox('callback_result')`
 - **Notifications** (task status, requirement, comments) → `enqueueToMailbox`
 
 No LLM call is made outside this architecture.
@@ -594,32 +626,100 @@ No LLM call is made outside this architecture.
 
 ## 11. Agent-to-Agent Communication (A2A via Mailbox)
 
-Inter-agent messaging is fully consolidated into the Mailbox system. The legacy `A2ABus` class has been retired — it added a redundant routing layer when `agent.sendMessage()` already routes through the mailbox.
+Inter-agent messaging is fully consolidated into the Mailbox system. The legacy `A2ABus` class has been retired — it added a redundant routing layer when the mailbox already provides serialised attention handling.
 
-### How It Works Now
+### 11.1 A2A DM Channels
+
+A2A messages now route through **deterministic DM channels** that reuse the group-chat infrastructure for persistence, WebSocket delivery, and mailbox enqueue:
+
+```
+Channel key: dm:a2a:{sorted_id_1}:{sorted_id_2}
+             (agent IDs sorted lexicographically — one channel per pair)
+```
 
 ```
 Agent A                              Agent B
 ────────                             ────────
-tool: agent_send_message ──►  agentManager.sendAgentMessage()
+tool: agent_send_message ──►  AgentManager.sendMessage()
                                      │
                                      ▼
-                               agentB.sendMessage(text, senderInfo)
+                               ensureDmChannel(dm:a2a:...)
                                      │
                                      ▼
-                               mailbox.enqueue('a2a_message', ...)
+                               sendGroupMessage(channelKey, ...)
+                               ├─ persist to channel_messages
+                               ├─ WebSocket broadcast
+                               └─ enqueueToMailbox('a2a_message', { extra: { channelKey } })
                                      │
                                      ▼
                                AttentionController picks it up
+                               (stable session: channel_{channelKey}_{agentId})
 ```
 
-- **`agent_send_message`** tool: Agent calls this to message a peer. It resolves to `agentManager.sendAgentMessage()` which calls `targetAgent.sendMessage()`. **Always asynchronous** — the tool returns immediately with a `conversation_id` for correlation.
-- **`agent_delegate_task`** tool: Delegation still uses `DelegationManager` for protocol orchestration (handshake, progress updates, completion), but the underlying message transport goes through `sendMessage()` → mailbox.
-- **`agent_broadcast_status`** tool: Broadcasts to all other agents via `enqueueToMailbox('system_event', ...)` on each recipient.
+Benefits over ephemeral session IDs:
+
+- **Persistent history** — both agents recall past exchanges via `recall_context` with the `channel_key`
+- **Stable sessions** — all messages in a pair share one session ID derived from the channel key
+- **Enqueue-time dedup** — messages from the same `channelKey` coalesce (§14)
+- **Group chat parity** — DM channels use the same `groupChatRepo`, member resolution, and API paths as custom group chats
+
+When `groupChatHandlers` are not wired (e.g., unit tests), A2A falls back to direct `sendMessage()` with `sourceType: 'a2a_message'` and the same `channelKey` in `extra`.
+
+### 11.2 Tools & Transport
+
+- **`agent_send_message`**: Always asynchronous — returns immediately with `conversation_id` and `channel_key`. Messages are tagged `[conversation:...]` for multi-turn correlation.
+- **`agent_delegate_task`**: Uses `DelegationManager` for protocol orchestration; transport goes through the DM channel path above.
+- **`agent_broadcast_status`**: Lightweight path — writes to target agent's daily log without an LLM call. Does not use DM channels.
+- **`agent_send_group_message`**: Team/custom group channels (`group:<teamId>`, `group:custom:<id>`). @mentions control which peer agents receive `a2a_message` mailbox items.
 
 The `@markus/a2a` package retains `DelegationManager` and protocol types. `A2ABus` is exported with a `@deprecated` annotation for backward compatibility only.
 
-### Async-Only A2A (Deadlock Prevention)
+### 11.3 PendingCallbackRegistry
+
+`PendingCallbackRegistry` (`packages/core/src/pending-callback.ts`) tracks async operations that must report results back through the mailbox rather than injecting directly into an active session.
+
+```typescript
+interface PendingCallback {
+  id: string;              // Unique callback ID (e.g., background session ID)
+  agentId: string;         // Originating agent
+  originSessionId: string; // Session to resume on completion
+  type: 'background_exec'; // Operation type (extensible)
+  command?: string;        // Optional context (shell command, etc.)
+  registeredAt: number;      // Epoch ms
+  timeoutMs: number;         // Default: 10 minutes for background_exec
+}
+```
+
+**Lifecycle:**
+
+1. **Register** — Agent initiates async work (e.g., `background_exec`). `registerBackgroundSession()` adds a callback to the registry and persists via `SqlitePendingCallbackRepo`.
+2. **Complete** — Operation finishes. Handler calls `resolve(id)`, then enqueues `callback_result` with `originSessionId` and result payload preserved in `extra`.
+3. **Timeout** — Heartbeat calls `getTimedOut()` to find expired callbacks, then `expireTimedOut(id)` removes each from the registry. Timed-out operations are surfaced in the heartbeat prompt (§11.4) for agent investigation — they do not silently disappear.
+
+The registry is a process singleton (`pendingCallbackRegistry`), restored from SQLite on startup so callbacks survive server restarts.
+
+### 11.4 Heartbeat Integration
+
+Periodic heartbeat items (`priority: 3 — low`) drive proactive agent patrol. Beyond the standard checklist, heartbeat now integrates:
+
+**Active goals review** — When `goalFetcher` is wired (from org-manager requirement service), the heartbeat prompt includes an **Active Goals** section listing each goal's title, status, iteration count (`currentIteration` / `maxIterations`), and completion criteria. The agent is instructed to:
+
+1. Check linked tasks for progress
+2. Create follow-up tasks if needed
+3. Mark requirements complete when criteria are met
+4. Escalate or adjust approach if stuck
+
+**Callback timeout handling** — Before building the heartbeat prompt, `handleHeartbeat()` calls `pendingCallbackRegistry.getTimedOut()`. For each expired callback:
+
+1. `expireTimedOut(id)` removes it from the registry (and persistence)
+2. Details are injected into the heartbeat prompt under **Timed-Out Background Operations**
+3. The agent investigates and takes corrective action during the heartbeat LLM session
+
+This ensures orphaned async operations are surfaced even when the completion handler never fires (process crash, hung command, etc.).
+
+Background process completions that *do* finish normally are still routed as separate `callback_result` mailbox items (priority 1) — the heartbeat section only handles the timeout case.
+
+### 11.5 Async-Only A2A (Deadlock Prevention)
 
 The `wait_for_reply=true` parameter is **deprecated and ignored**. All A2A messaging is non-blocking. This eliminates deadlocks that occurred when two agents simultaneously awaited each other's reply.
 
@@ -787,7 +887,7 @@ When multiple messages for the same entity arrive before the agent can process t
 |-------|-----------|---------------|
 | Task comments | `payload.taskId` | `task_comment` |
 | Requirement comments | `payload.requirementId` | `requirement_comment` |
-| Channel messages | `payload.extra.channelKey` | `a2a_message` |
+| Channel messages | `payload.extra.channelKey` | `a2a_message` (includes `dm:a2a:*` DM channels and `group:*` channels) |
 
 **Why status updates are excluded**: `task_status_update` and `requirement_update` represent distinct state transitions with different processing semantics. Merging a "task blocked" notification with a "task resumed" notification would lose critical state information. Only comments — which are additive human/agent text — are safe to merge.
 
@@ -1003,6 +1103,7 @@ Agent processes mailbox item
 
 Examples:
 - `[ACTIVITY: heartbeat] Heartbeat check-in → heartbeat processed`
+- `[ACTIVITY: callback_result] Background process succeeded: npm test → callback processed`
 - `[ACTIVITY: review_request] Review task "Fix login bug" → reviewed`
 - `[ACTIVITY: task_status_update] Task assigned: implement API → executed`
 
@@ -1301,10 +1402,12 @@ Agent calls notify_user(title, body, target_user_id?)
 
 ### 25.3 Agent-to-Agent (A2A)
 
+A2A messages route through persistent DM channels (`dm:a2a:{sorted_ids}`) — see §11.1.
+
 | Tool | Capability |
 |------|-----------|
-| `agent_send_message` | Direct message to another agent |
-| `agent_broadcast_status` | Status update to all colleagues |
+| `agent_send_message` | Direct message to another agent via DM channel |
+| `agent_broadcast_status` | Status update to all colleagues (lightweight, no LLM) |
 | `agent_delegate_task` | Formal task delegation with protocol |
 
 ### 25.4 Proactive Messaging During Deliberation

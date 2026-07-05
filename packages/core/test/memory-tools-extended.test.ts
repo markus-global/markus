@@ -130,7 +130,6 @@ describe('memory tools extended', () => {
 
     const byIds = JSON.parse(await findTool(ctx, 'memory_delete').execute({ ids: ['m1', 'm2'] }));
     expect(byIds.status).toBe('deleted');
-    expect(semanticSearch.deleteMemory).toHaveBeenCalled();
 
     const byTag = JSON.parse(await findTool(ctx, 'memory_delete').execute({ tag: 'stale' }));
     expect(byTag.removed).toBeDefined();

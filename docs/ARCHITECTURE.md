@@ -1,6 +1,6 @@
 # Markus -- Technical Architecture
 
-> Last updated: 2026-04
+> Last updated: 2026-07
 
 ---
 
@@ -29,8 +29,8 @@ Markus is an **AI Digital Workforce Platform** that lets organizations hire, man
 ┌──▼─────────▼──────────▼─────────▼───────────▼───────────────┐
 │                Agent Runtime (@markus/core)                   │
 │  Agent · Mailbox · AttentionController · ContextEngine        │
-│  CognitivePreparation · LLMRouter · Memory                    │
-│  HeartbeatScheduler · Tools · MCP Client · ReviewService      │
+│  Notebook · Memory · CognitivePreparation · PendingCallback   │
+│  Goal/Loop · LLMRouter · Heartbeat · Tools · MCP · Review     │
 └──────────────────────────┬──────────────────────────────────┘
                            │
               ┌────────────▼──────────────┐
@@ -73,7 +73,8 @@ Each Agent consists of:
 | `SKILLS.md` | Skill list (tool permissions) |
 | `HEARTBEAT.md` | Scheduled proactive tasks (e.g. daily issue checks) |
 | `POLICIES.md` | Behavior rules and boundaries |
-| `MEMORY.md` | Long-term memory (Agent-maintained) |
+| `NOTEBOOK.md` | Persistent cognitive workspace (situational state, CPP output) |
+| `MEMORY.md` | Unified long-term knowledge + observation buffer (Agent-maintained) |
 | `CONTEXT.md` | Organization context (shared knowledge base) |
 
 The runtime also supports **spawning lightweight LLM subagents** (`spawn_subagent` / `spawn_subagents`) for delegated subtasks. Subagent limits (parallelism, retry policy, preview truncation) are centralized in `packages/shared/src/limits.ts` rather than hardcoded. The parent agent has a **configurable tool-use iteration limit** (`AgentOptions.maxToolIterations`, system settings; default 200, range 1–10000) on chat-style harnesses — task execution and subagent loops remain uncapped by default.
@@ -96,7 +97,7 @@ The runtime also supports **spawning lightweight LLM subagents** (`spawn_subagen
 Each agent has a **single-threaded attention model** — it processes one item at a time. **Every LLM invocation** flows through a per-agent **Mailbox** (priority queue), and an **AttentionController** manages which item the agent focuses on.
 
 Key components:
-- **AgentMailbox** — Priority queue accepting 13 item types: `human_chat`, `a2a_message`, `task_status_update`, `task_comment`, `requirement_comment`, `mention`, `review_request`, `requirement_update`, `session_reply`, `daily_report`, `heartbeat`, `memory_consolidation`, `system_event`
+- **AgentMailbox** — Priority queue accepting 15 item types including `human_chat`, `a2a_message`, `callback_result`, `heartbeat`, `memory_consolidation`, and task/requirement events (see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md))
 - **AttentionController** — Event-driven focus loop; reacts to new mail with interrupt signals
 - **Yield Points** — Safe checkpoints in the tool loop where the agent can pause to evaluate interrupts
 - **Decision Engine** — Produces decisions: `continue`, `preempt`, `cancel`, `merge`, `defer`, `drop`. Heuristic rules handle clear cases (e.g., user chat always preempts); an **LLM interrupt judge** handles ambiguous cases with semantic understanding (e.g., "stop publishing" → cancel, "hold off for now" → preempt)
@@ -104,13 +105,15 @@ Key components:
 - **Deferred Item Auto-Resume** — Items deferred by preemption or explicit deferral are automatically resurfaced when the agent is idle (`resurfaceDue()`)
 - **Triage with Read-Only Tools** — When multiple items compete for attention, the triage LLM can invoke a curated set of read-only tools (`task_list`, `task_get`, `requirement_list`, etc.) to gather context before deciding priority
 
-Agents now have tools to actively manage their mailbox queue and working memory:
+Agents now have tools to actively manage their mailbox queue and cognitive workspace:
 
 - `check_mailbox` (read-only inspection, all scenarios)
 - `defer_mailbox_item` / `drop_mailbox_item` (queue management)
-- `update_working_memory` / `clear_working_memory` (cognition management)
+- `update_notebook` / `clear_notebook` (cognitive workspace management)
 
 This shifts from system-driven to agent-driven cognition. The deliberation threshold is lowered to 2 items, making agent-driven triage the norm.
+
+**PendingCallbackRegistry** tracks async operations (A2A messages, `background_exec`, etc.). Completions route back through the mailbox as `callback_result` items rather than being injected directly into active sessions.
 
 External callers use the mailbox API exclusively:
 - `agent.sendMessage()` — Awaitable chat/notification
@@ -125,32 +128,27 @@ Internal processes (heartbeat, daily report, memory consolidation) also enqueue 
 
 See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the complete design.
 
-### 3.2.1 Cognitive Preparation Pipeline
+### 3.2.1 Cognitive System
 
-Before the main LLM call, agents run a multi-phase **Cognitive Preparation Pipeline** that curates context based on the agent's persona and current state. This is grounded in cognitive psychology (Kahneman's Dual Process Theory, Baddeley's Working Memory) and ensures that different agents in different states prepare different context for the same stimulus.
+The agent cognitive system is a continuous cycle backed by persistent stores and optional deliberate preparation:
 
 ```
-Stimulus → Triage (what to focus on)
-         → Cognitive Preparation (how to prepare):
-            Phase 1: Appraisal  — persona-aware LLM: "What context do I need?"
-            Phase 2: Retrieval  — directed search against indexed stores
-            Phase 3: Reflection — persona-aware LLM: "What does this mean for me?"
-            Phase 4: Assembly   — merge stable + prepared context
-         → Main LLM Call (with rich, curated context)
+Stimulus (Mailbox) → Triage → [CPP optional] → Context Assembly → Main LLM → Action → Reflection
+                                    ↓
+                              NOTEBOOK.md + MEMORY.md
 ```
 
-The **Appraisal** phase reads from the agent's explicit working memory (`workingMemory`), not only persona and transient runtime state.
+| Component | Storage / Location | Role |
+|-----------|-------------------|------|
+| **Notebook** | `NOTEBOOK.md` | Persistent cognitive workspace — situational state, triage decisions, CPP outputs |
+| **Memory** | `MEMORY.md` | Unified long-term knowledge (curated sections) + raw `## _observations` buffer |
+| **CPP** | `packages/core/src/cognitive.ts` | Opt-in multi-phase context preparation (Appraisal → Retrieval → Reflection) |
+| **Goal/Loop** | `GoalConfig` on Requirements | Persistent objectives with heartbeat integration |
+| **PendingCallbackRegistry** | `packages/core/src/pending-callback.ts` | Async operation tracking; completions → mailbox `callback_result` |
 
-Four cognitive depth levels control how much preparation happens:
-- **D0 Reflexive**: No preparation (heartbeat OK, acks)
-- **D1 Reactive**: Appraisal only (most chats, A2A)
-- **D2 Deliberative**: Full preparation (task execution, complex questions)
-- **D3 Meta-cognitive**: Full + post-response evaluation (high-stakes decisions)
+**Cognitive Preparation Pipeline (CPP)** — opt-in via `agent.cognitive.enabled` in `markus.json` (default `false`). When enabled, CPP runs between triage and the main LLM call, writing outputs to `NOTEBOOK.md` (not separate prompt sections). Four depth levels (D0–D3) control preparation intensity: D0 reflexive (heartbeat OK), D1 reactive (most chats/A2A), D2 deliberative (task execution), D3 meta-cognitive (high-stakes).
 
-Key components:
-- **CognitivePreparation** (`packages/core/src/cognitive.ts`) — Orchestrates the 4-phase pipeline
-- **AppraisalPromptBuilder** — Builds persona-aware prompts using role description + agent state
-- **ReflectionPromptBuilder** — Builds prompts that interpret retrieved context from the agent's perspective
+**Goal/Loop mechanism** — Requirements can carry a `GoalConfig` (`loopEnabled`, `completionCriteria`, `maxIterations`, etc.) turning them into standing objectives. Heartbeat injects active goals; agents manage them via `goal_create`, `goal_update`, and `goal_status` tools.
 
 See [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for the full design with theoretical foundations.
 
@@ -176,14 +174,23 @@ Organization (Org)
 
 ### 3.4 Memory and Knowledge System
 
-**Agent memory (four layers, based on Tulving's classification plus explicit working memory):**
+**Two-file cognitive model** replaces the former volatile working memory + `memories.json` system:
+
+| File | Role | Prompt injection |
+|------|------|-----------------|
+| **`NOTEBOOK.md`** | Persistent cognitive workspace — situational state, CPP/triage outputs | Always loaded as `## Notebook` |
+| **`MEMORY.md`** | Curated long-term knowledge + raw `## _observations` buffer | Curated sections as `## Your Knowledge`; observations excluded |
+
+The **dream cycle** (`memory_consolidation`) operates within `MEMORY.md` — consolidating observations into curated sections and pruning stale content.
+
+**Memory layers (Tulving's classification):**
 
 | Layer | Storage | Role |
 |-------|---------|------|
 | **Procedural** | `role/ROLE.md` + skills | How the agent operates. Identity, behavioral rules. |
-| **Semantic** | `MEMORY.md` + `memories.json` | What the agent knows. Agent-organized knowledge. |
+| **Semantic** | `MEMORY.md` curated sections | What the agent knows. Agent-organized knowledge. |
 | **Episodic** | `sessions/*.json` (current) + SQLite `agent_activities` (past) | What happened. Current conversation + searchable activity history. |
-| **Working Memory** | `workingMemory` Map | Volatile, agent-managed, keyed entries (update/clear via tools). Replaces the former system-only `currentCognition`. |
+| **Working Memory** | `NOTEBOOK.md` | Persistent, agent-managed keyed entries (`update_notebook` / `clear_notebook`). |
 
 The agent retrieves past episodes via the `recall_activity` tool (keyword search on summary/keywords). Daily logs (`daily-logs/`) are a write-only audit trail for humans — never read back into prompts.
 
@@ -304,11 +311,12 @@ Before each conversation, the ContextEngine dynamically builds the system prompt
 7. **System announcements** (urgent/high-priority announcements)
 8. **Human feedback** (annotations and instructions from report reviews)
 9. **Project knowledge highlights** (high-importance verified knowledge entries)
-10. **Your Knowledge** (MEMORY.md — Knowledge store, single unified section)
-11. Cognitive/Retrieved Context + Reflection (when CPP active — from Experience + Knowledge stores)
-12. Task board (currently assigned Tasks)
-13. Current conversation identity (sender info)
-14. Environment info (OS, toolchain, runtime)
+10. **Your Knowledge** (MEMORY.md curated sections — observations excluded)
+11. **Notebook** (NOTEBOOK.md — cognitive workspace; CPP outputs land here when enabled)
+12. Active Goals (when heartbeat or goal-aware context)
+13. Task board (currently assigned Tasks)
+14. Current conversation identity (sender info)
+15. Environment info (OS, toolchain, runtime)
 
 See [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) for the complete section ordering and [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for the cognitive preparation pipeline.
 
@@ -541,6 +549,19 @@ Each human user has a profile file maintained by the Secretary agent:
 
 These files are injected into agent context when interacting with the corresponding user, allowing agents to personalize their behavior.
 
+### 6.4 Slash Commands
+
+The Web UI chat supports slash commands dispatched via `POST /api/agents/:id/command`:
+
+| Command | Action |
+|---------|--------|
+| `/goal [description]` | Prompt agent to create a standing goal via `goal_create` |
+| `/status` | Request concise status: active goals, tasks, mailbox, recent activity |
+| `/notebook` | Return current notebook entries (read-only snapshot) |
+| `/task [description]` | Prompt agent to create a task via `task_create` |
+
+Commands are rendered via `SlashCommandMenu` in the chat input. `/notebook` returns data directly; others enqueue a `human_chat` message to the agent.
+
 ---
 
 ## 7. WebSocket Events
@@ -586,8 +607,13 @@ Connection: `ws://localhost:8056`
 | `group:custom:{id}` | Custom group chat (manually managed members) |
 | `notes:{userId}` | Personal notes (not routed to any Agent) |
 | `dm:{id1}:{id2}` | Direct message between two humans (not routed to any Agent) |
+| `dm:a2a:{sorted_id_1}:{sorted_id_2}` | Agent-to-agent DM channel (deterministic key from sorted agent IDs) |
 
-### 8.1 Multi-User Communication Model
+### 8.1 A2A Communication
+
+Agent-to-agent messaging uses **DM Channels** with deterministic keys (`dm:a2a:{sorted_ids}`), leveraging existing group-chat infrastructure. This provides persistent message history, stable routing, and mailbox integration — eliminating custom A2A session management. `agent_send_message` is fire-and-forget; substantial work should use requirements + tasks.
+
+### 8.2 Multi-User Communication Model
 
 Markus supports multiple human users and agents communicating through various channels. The communication model varies by context:
 
@@ -627,11 +653,13 @@ Markus supports multiple human users and agents communicating through various ch
 After Agent startup, HeartbeatScheduler triggers periodic tasks at configured intervals:
 
 - Each run executes checks with `[HEARTBEAT CHECK-IN]` prompt under the "Patrol, Don't Build" principle
+- **Active goals check**: injects standing objectives from requirements with `GoalConfig.loopEnabled`
+- **Callback timeout check**: surfaces timed-out `PendingCallbackRegistry` entries
 - **Heartbeat includes task retrospective**: calls task_list to check active tasks and update stale states
 - **Lightweight actions allowed**: check status, send messages, create tasks, retry failed tasks, quick reviews, save insights
 - **Complex work goes into tasks**: if something needs heavy implementation, heartbeat creates a task and notifies the user
 - Infinite loop protection via a configurable tool-iteration safety cap (default 200, `maxToolIterations`), not artificial per-heartbeat limits
-- **Background process notifications**: finished `background_exec` sessions enqueue completions for injection into the agent’s session; heartbeat drains them so the model sees a `[BACKGROUND PROCESS COMPLETED]` notification on the next turn
+- **Background process completions**: `background_exec` results route through `PendingCallbackRegistry` → mailbox `callback_result` items (heartbeat also surfaces timed-out callbacks)
 - **Governance mode**: in_progress tasks are not auto-resumed on service start; requires manual trigger
 
 ---

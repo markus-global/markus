@@ -48,7 +48,10 @@ export { AuthProfileStore } from './llm/auth-profiles.js';
 export { OAuthManager } from './llm/oauth-manager.js';
 export { ModelCatalogService } from './llm/model-catalog.js';
 export { estimateQualityScore, tierFromQualityScore, costTierFromPrice } from './llm/router.js';
-export { MemoryStore } from './memory/store.js';
+export { MemoryStore, parseNotebook, serializeNotebook, loadNotebook, saveNotebook } from './memory/store.js';
+export type { NotebookEntry, NotebookEntryManaged } from './memory/store.js';
+export { PendingCallbackRegistry, pendingCallbackRegistry } from './pending-callback.js';
+export type { PendingCallback, CallbackResult, CallbackPersistence } from './pending-callback.js';
 export type { IMemoryStore, MemoryEntry, ConversationSession } from './memory/types.js';
 
 export {

@@ -642,6 +642,17 @@ CREATE TABLE IF NOT EXISTS integrations (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_integrations_org ON integrations(org_id, platform);
+
+CREATE TABLE IF NOT EXISTS pending_callbacks (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  origin_session_id TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'background_exec',
+  command TEXT,
+  registered_at INTEGER NOT NULL,
+  timeout_ms INTEGER NOT NULL DEFAULT 600000
+);
+CREATE INDEX IF NOT EXISTS idx_pending_callbacks_agent ON pending_callbacks(agent_id);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -707,6 +718,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'task_comments', column: 'reply_to_id', sql: 'ALTER TABLE task_comments ADD COLUMN reply_to_id TEXT' },
     { table: 'requirement_comments', column: 'reply_to_id', sql: 'ALTER TABLE requirement_comments ADD COLUMN reply_to_id TEXT' },
     { table: 'tasks', column: 'completion_summary', sql: 'ALTER TABLE tasks ADD COLUMN completion_summary TEXT' },
+    { table: 'requirements', column: 'goal_config', sql: 'ALTER TABLE requirements ADD COLUMN goal_config TEXT' },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -1413,7 +1425,20 @@ export class SqliteRequirementRepo {
     this.db.prepare('DELETE FROM requirements WHERE id = ?').run(id);
   }
 
+  async updateGoalConfig(id: string, goalConfig: Record<string, unknown> | null) {
+    this.db.prepare('UPDATE requirements SET goal_config = ?, updated_at = ? WHERE id = ?')
+      .run(goalConfig ? toJson(goalConfig) : null, now(), id);
+  }
+
+  listActiveGoals(orgId: string) {
+    const rows = this.db.prepare(
+      "SELECT * FROM requirements WHERE org_id = ? AND goal_config IS NOT NULL AND status NOT IN ('done', 'cancelled', 'rejected')"
+    ).all(orgId) as Record<string, unknown>[];
+    return rows.map(r => this._map(r)).filter(r => r.goalConfig?.loopEnabled);
+  }
+
   private _map(r: Record<string, unknown>) {
+    const gc = r['goal_config'] ? fromJson<Record<string, unknown>>(r['goal_config'] as string) : undefined;
     return {
       id: r['id'],
       orgId: r['org_id'],
@@ -1429,6 +1454,14 @@ export class SqliteRequirementRepo {
       rejectedReason: r['rejected_reason'] as string | null,
       rejectedBy: r['rejected_by'] as string | null,
       tags: fromJson<string[]>(r['tags'] as string),
+      goalConfig: gc ? {
+        loopEnabled: gc['loopEnabled'] === true,
+        completionCriteria: (gc['completionCriteria'] as string) ?? '',
+        maxIterations: (gc['maxIterations'] as number) ?? 10,
+        currentIteration: (gc['currentIteration'] as number) ?? 0,
+        lastCheckedAt: (gc['lastCheckedAt'] as string) ?? '',
+        autoResume: gc['autoResume'] === true,
+      } : undefined,
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),
     };
@@ -4309,9 +4342,10 @@ export class SqliteGroupChatRepo {
     creatorId: string;
     creatorName: string;
     members: Array<{ id: string; type: 'human' | 'agent'; name: string }>;
+    channelKey?: string;
   }): GroupChat & { members: GroupChatMember[] } {
     const id = generateId('gc');
-    const channelKey = `group:custom:${id}`;
+    const channelKey = data.channelKey ?? `group:custom:${id}`;
     const ts = now();
     this.db
       .prepare(
@@ -4836,6 +4870,36 @@ export class SqliteWorkflowScheduleRepo {
       last_role_mapping: r['last_role_mapping'] as string,
       updated_at: r['updated_at'] as string,
     };
+  }
+}
+
+// ─── Pending Callback Repo ───────────────────────────────────────────────────
+
+export class SqlitePendingCallbackRepo {
+  constructor(private db: DatabaseSync) {}
+
+  save(cb: { id: string; agentId: string; originSessionId: string; type: string; command?: string; registeredAt: number; timeoutMs: number }): void {
+    this.db.prepare(
+      `INSERT OR REPLACE INTO pending_callbacks (id, agent_id, origin_session_id, type, command, registered_at, timeout_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(cb.id, cb.agentId, cb.originSessionId, cb.type, cb.command ?? null, cb.registeredAt, cb.timeoutMs);
+  }
+
+  remove(id: string): void {
+    this.db.prepare('DELETE FROM pending_callbacks WHERE id = ?').run(id);
+  }
+
+  loadAll(): Array<{ id: string; agentId: string; originSessionId: string; type: 'background_exec'; command?: string; registeredAt: number; timeoutMs: number }> {
+    const rows = this.db.prepare('SELECT * FROM pending_callbacks').all() as Record<string, unknown>[];
+    return rows.map(r => ({
+      id: r['id'] as string,
+      agentId: r['agent_id'] as string,
+      originSessionId: r['origin_session_id'] as string,
+      type: r['type'] as 'background_exec',
+      command: r['command'] as string | undefined,
+      registeredAt: r['registered_at'] as number,
+      timeoutMs: r['timeout_ms'] as number,
+    }));
   }
 }
 

@@ -132,22 +132,6 @@ describe('AttentionController processFocusedItem outcomes', () => {
 });
 
 describe('AttentionController triage and coalescing', () => {
-  it('performTriage returns null without triageJudge', async () => {
-    const { controller, mailbox } = makeController();
-    const head = mailbox.enqueue('a2a_message', { summary: 'head', content: 'h' });
-    const result = await controller['performTriage'](head);
-    expect(result).toBeNull();
-  });
-
-  it('buildTriagePrompt includes queue context', async () => {
-    const { controller, mailbox } = makeController();
-    const head = mailbox.enqueue('a2a_message', { summary: 'head', content: 'h' });
-    mailbox.enqueue('task_comment', { summary: 'comment', content: 'c' });
-    const prompt = controller['buildTriagePrompt'](head, { workingMemory: 'Focused on deploy' });
-    expect(prompt).toContain('head');
-    expect(prompt.toLowerCase()).toMatch(/queue|items|mailbox/);
-  });
-
   it('hasInterruptPending reflects interrupt signal state', () => {
     const { controller } = makeController();
     expect(controller.hasInterruptPending()).toBe(false);

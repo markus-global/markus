@@ -25,7 +25,11 @@ interface OpenAIResponse {
     message: OpenAIMessage & { reasoning_content?: string };
     finish_reason: string;
   }>;
-  usage: { prompt_tokens: number; completion_tokens: number };
+  usage: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+  };
 }
 
 export type TokenResolver = () => Promise<string>;
@@ -81,7 +85,7 @@ export class OpenAIProvider implements MultiModalProviderInterface {
   }
 
   async chat(request: LLMRequest): Promise<LLMResponse> {
-    const messages = this.convertMessages(request.messages);
+    const messages = this.convertMessages(request.messages, request.systemCacheSegments);
 
     const body: Record<string, unknown> = {
       model: this.model,
@@ -126,14 +130,30 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     }
   }
 
-  private convertMessages(rawMessages: LLMMessage[]): OpenAIMessage[] {
+  private convertMessages(rawMessages: LLMMessage[], systemCacheSegments?: Array<{ content: string; cacheBreakpoint?: boolean }>): OpenAIMessage[] {
     const messages = sanitizeLLMMessages(rawMessages);
 
     // DeepSeek thinking models require reasoning_content on ALL assistant messages.
     // Old session messages may lack this field; backfill with empty string to avoid 400 errors.
     const backfillReasoning = this.name === 'deepseek';
 
-    return messages.map((m) => {
+    // For OpenAI-compatible providers, split the system message into multiple
+    // system messages based on cache segments. OpenAI's implicit prefix caching
+    // matches messages by prefix — if messages[0] (Tier 1) stays identical
+    // across calls, that prefix stays cached even when later system messages
+    // (Tier 2/3) change.
+    const splitSystemIntoSegments = systemCacheSegments && systemCacheSegments.length >= 1;
+
+    return messages.flatMap((m): OpenAIMessage | OpenAIMessage[] => {
+      if (splitSystemIntoSegments && m.role === 'system') {
+        return systemCacheSegments
+          .filter(seg => seg.content.length > 0)
+          .map(seg => ({
+            role: 'system' as const,
+            content: seg.content,
+          }));
+      }
+
       if (m.role === 'tool') {
         return {
           role: 'tool' as const,
@@ -199,7 +219,7 @@ export class OpenAIProvider implements MultiModalProviderInterface {
   }
 
   async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void, signal?: AbortSignal): Promise<LLMResponse> {
-    const messages = this.convertMessages(request.messages);
+    const messages = this.convertMessages(request.messages, request.systemCacheSegments);
     const body: Record<string, unknown> = {
       model: this.model,
       max_tokens: request.maxTokens ?? this.maxTokens,
@@ -247,6 +267,7 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     let finishReason: LLMResponse['finishReason'] = 'end_turn';
     let promptTokens = 0;
     let completionTokens = 0;
+    let cachedTokens = 0;
 
     const reader = res.body?.getReader();
     if (!reader) throw new Error('No response body reader');
@@ -273,7 +294,7 @@ export class OpenAIProvider implements MultiModalProviderInterface {
               delta?: { content?: string; tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>; reasoning_content?: string; reasoning_details?: string; thinking?: string };
               finish_reason?: string;
             }>;
-            usage?: { prompt_tokens?: number; completion_tokens?: number };
+            usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
           };
 
           const choice = chunk.choices?.[0];
@@ -317,6 +338,8 @@ export class OpenAIProvider implements MultiModalProviderInterface {
           if (chunk.usage) {
             promptTokens = chunk.usage.prompt_tokens ?? 0;
             completionTokens = chunk.usage.completion_tokens ?? 0;
+            const ct = chunk.usage.prompt_tokens_details?.cached_tokens;
+            if (ct && ct > 0) cachedTokens = ct;
           }
         } catch { /* skip unparseable lines */ }
       }
@@ -335,7 +358,8 @@ export class OpenAIProvider implements MultiModalProviderInterface {
         };
       });
 
-    const usage = { inputTokens: promptTokens, outputTokens: completionTokens };
+    const usage: LLMResponse['usage'] = { inputTokens: promptTokens, outputTokens: completionTokens };
+    if (cachedTokens > 0) usage.cacheReadTokens = cachedTokens;
     onEvent({ type: 'message_end', usage, finishReason });
 
     const streamResult: LLMResponse = {
@@ -365,13 +389,19 @@ export class OpenAIProvider implements MultiModalProviderInterface {
       length: 'max_tokens',
     };
 
+    const usage: LLMResponse['usage'] = {
+      inputTokens: data.usage.prompt_tokens,
+      outputTokens: data.usage.completion_tokens,
+    };
+    const cached = data.usage.prompt_tokens_details?.cached_tokens;
+    if (cached && cached > 0) {
+      usage.cacheReadTokens = cached;
+    }
+
     const result: LLMResponse = {
       content: typeof msg.content === 'string' ? msg.content : '',
       toolCalls: toolCalls?.length ? toolCalls : undefined,
-      usage: {
-        inputTokens: data.usage.prompt_tokens,
-        outputTokens: data.usage.completion_tokens,
-      },
+      usage,
       finishReason: finishMap[choice.finish_reason] ?? 'end_turn',
     };
     if (msg.reasoning_content) result.reasoningContent = msg.reasoning_content;

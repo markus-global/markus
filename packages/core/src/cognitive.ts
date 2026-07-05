@@ -171,7 +171,7 @@ export class CognitivePreparation {
         maxTokens: 500,
         temperature: 0.3,
         metadata: { purpose: 'cognitive_appraisal' },
-      });
+      }, this.config.appraisalModel);
 
       const parsed = JSON.parse(response.content.trim()) as AppraisalResult;
       log.debug('Appraisal completed', { intent: parsed.intent, confidence: parsed.confidence });
@@ -285,7 +285,7 @@ export class CognitivePreparation {
         maxTokens: 400,
         temperature: 0.3,
         metadata: { purpose: 'cognitive_reflection' },
-      });
+      }, this.config.appraisalModel);
 
       const parsed = JSON.parse(response.content.trim()) as ReflectionResult;
       log.debug('Reflection completed', { recommendations: parsed.recommendations.length });

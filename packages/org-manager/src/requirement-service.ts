@@ -652,6 +652,7 @@ export class RequirementService {
           rejectedBy: row.rejectedBy ?? undefined,
           taskIds: [],
           tags: (row.tags as string[]) ?? [],
+          goalConfig: (row as any).goalConfig ?? undefined,
           createdAt: new Date(row.createdAt as any).toISOString(),
           updatedAt: new Date(row.updatedAt as any).toISOString(),
         };
@@ -788,6 +789,60 @@ export class RequirementService {
       } catch { /* ignore */ }
     }
     return agentId;
+  }
+
+  async enableGoalLoop(reqId: string, config: {
+    completionCriteria: string;
+    maxIterations?: number;
+    autoResume?: boolean;
+  }): Promise<void> {
+    const req = this.requirements.get(reqId);
+    if (!req) throw new Error(`Requirement not found: ${reqId}`);
+    const goalConfig = {
+      loopEnabled: true,
+      completionCriteria: config.completionCriteria,
+      maxIterations: config.maxIterations ?? 10,
+      currentIteration: req.goalConfig?.currentIteration ?? 0,
+      lastCheckedAt: new Date().toISOString(),
+      autoResume: config.autoResume ?? true,
+    };
+    req.goalConfig = goalConfig;
+    if (this.requirementRepo) {
+      await this.requirementRepo.updateGoalConfig(reqId, goalConfig);
+    }
+    this.broadcast('requirement:update', { requirement: req });
+  }
+
+  async disableGoalLoop(reqId: string): Promise<void> {
+    const req = this.requirements.get(reqId);
+    if (!req) throw new Error(`Requirement not found: ${reqId}`);
+    if (req.goalConfig) {
+      req.goalConfig.loopEnabled = false;
+    }
+    if (this.requirementRepo) {
+      await this.requirementRepo.updateGoalConfig(reqId, req.goalConfig ?? null);
+    }
+    this.broadcast('requirement:update', { requirement: req });
+  }
+
+  getActiveGoals(orgId: string): Array<Requirement> {
+    const goals: Requirement[] = [];
+    for (const req of this.requirements.values()) {
+      if (req.orgId === orgId && req.goalConfig?.loopEnabled && !['done', 'cancelled', 'rejected', 'completed'].includes(req.status)) {
+        goals.push(req);
+      }
+    }
+    return goals;
+  }
+
+  async incrementGoalIteration(reqId: string): Promise<void> {
+    const req = this.requirements.get(reqId);
+    if (!req?.goalConfig) return;
+    req.goalConfig.currentIteration += 1;
+    req.goalConfig.lastCheckedAt = new Date().toISOString();
+    if (this.requirementRepo) {
+      await this.requirementRepo.updateGoalConfig(reqId, req.goalConfig);
+    }
   }
 
   private broadcast(type: string, data: unknown): void {

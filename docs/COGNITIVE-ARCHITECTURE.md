@@ -1,508 +1,295 @@
-# Cognitive Architecture: Multi-Layer Context Preparation
+# Cognitive Architecture: Unified Agent Cognition
 
-This document defines the cognitive architecture that governs how agents prepare context before acting. It replaced the previous "mechanical assembly" model (system prompt + raw session + compression) with a **cognitive preparation pipeline** where multiple LLM calls, each with persona-aware prompts, prepare context before the main reasoning call.
+This document describes the unified cognitive architecture that governs how Markus agents perceive stimuli, prepare context, deliberate, act, and learn. It replaces the previous model — mechanical prompt assembly plus volatile in-memory working memory — with a **continuous cognitive cycle** backed by persistent stores (`NOTEBOOK.md`, `MEMORY.md`) and an optional **Cognitive Preparation Pipeline (CPP)** for deliberate context preparation.
 
-> **Implementation status**: The core CPP (Phases 1-4, depth levels D0-D2) is implemented in `packages/core/src/cognitive.ts` with types in `packages/shared/src/types/cognitive.ts`. D1 (appraisal) is wired into the Agent runtime behind a feature flag (`agent.cognitive.enabled` in `markus.json`, default `false`). D2+ requires a `RetrievalBackend` adapter (not yet built). D3 post-response evaluation remains a future enhancement.
-
----
-
-## 1. Theoretical Foundations
-
-### 1.1 From Cognitive Psychology
-
-**Dual Process Theory (Kahneman, 2011)**. Human cognition operates in two modes: System 1 (fast, automatic, low-effort) and System 2 (slow, deliberate, high-effort). The current agent architecture is all System 1 -- stimulus arrives, context is mechanically assembled, LLM responds. There is no System 2 -- no deliberate "let me think about what I need to know before I respond."
-
-The cognitive architecture introduces System 2 via the **Cognitive Preparation Pipeline**: before the main LLM call, the agent deliberately assesses what context it needs, retrieves it, and reflects on it.
-
-**Working Memory Model (Baddeley, 2000)**. Baddeley's model includes a Central Executive that controls attention and coordinates subsidiary systems, plus an Episodic Buffer that integrates information from different sources into a coherent representation. Without CPP, `ContextEngine.buildSystemPrompt()` acts as a passive buffer -- it dumps everything mechanically. CPP introduces an active Central Executive (the Appraisal phase) that decides what to load, and the Assembly phase acts as the Episodic Buffer.
-
-The system now implements Baddeley's model more explicitly. The agent has an explicit `workingMemory` store (keyed entries with timestamps), where the agent itself acts as the Central Executive — deciding what to retain, update, or expire via `update_working_memory` / `clear_working_memory` tools.
-
-**Metacognition (Flavell, 1979)**. Metacognition is "thinking about thinking" -- the ability to assess one's own knowledge state and regulate cognitive processes accordingly. Without CPP, agents have no metacognitive capability: they cannot assess "do I know enough to answer this?" before responding. The Appraisal phase adds metacognition: the agent evaluates its own readiness and plans what additional context it needs.
-
-**Levels of Processing (Craik & Lockhart, 1972)**. Deep processing (meaning, connections, implications) produces better memory and understanding than shallow processing (surface features). Basic memory retrieval is shallow: keyword matching, substring search, or raw recency. The Reflection phase adds deep processing: the agent considers patterns, implications, and connections between retrieved information.
-
-**Spreading Activation (Collins & Loftus, 1975)**. In semantic networks, activating one concept activates related concepts. The Association mechanism works like spreading activation: starting from the current stimulus, the agent identifies related concepts, which activate further related concepts, producing a rich context network rather than isolated keyword hits.
-
-**Tulving's Memory Systems (1972, 1985)**. Three distinct memory systems serve different functions:
-
-| Memory System | Maps to Agent Store | Before CPP | Problem | After CPP (Current) |
-|---------------|--------------------|--------------------|---------|----------|
-| **Episodic** (personal experiences) | Experience (SQLite activity index) | `recall_activity` (list/get by ID) | No semantic search | Persona-directed: "As a backend dev, what's my experience with auth?" |
-| **Semantic** (general knowledge) | Knowledge (MEMORY.md + memories.json) | 5 overlapping prompt sections (SOPs, lessons, best practices, long-term knowledge, applicable lessons) | Redundant taxonomy | Single `## Your Knowledge` section; agent-organized, not system-categorized |
-| **Procedural** (how to do things) | Identity (ROLE.md) + Skills | Static injection; skills on-demand | Skills and SOPs overlap | ROLE.md defines core behaviors; Skills are external capability packages; SOPs merge into MEMORY.md knowledge |
-
-The previous treatment of semantic memory was problematic: it split "what the agent knows" across 5 separate prompt sections with a rigid lesson → best-practice → SOP promotion pipeline. In human cognition, there is no such taxonomy -- knowledge is knowledge, organized by the knower into whatever structure makes sense for their work. CPP lets agents organize MEMORY.md freely.
-
-### 1.2 From Philosophy of Mind
-
-**Intentionality (Brentano, 1874; Husserl, 1901)**. Mental states are always "about" something -- they are directed at objects. The agent's current state (working on task X, idle, blocked on Y) defines what its cognitive processes are "about." Context preparation should be directed by this intentionality: when the agent is working on an auth module task and receives a message, everything is perceived through the lens of "how does this relate to my auth work?"
-
-**Global Workspace Theory (Baars, 1988)**. Consciousness arises from information being broadcast to a "global workspace" where multiple unconscious processes compete for access. Not everything can be conscious at once -- the workspace has limited capacity (analogous to context window limits). The cognitive preparation pipeline is the competition mechanism: multiple information sources (activity history, memories, team context, task state) compete for inclusion in the final context, and the Appraisal phase acts as the selection filter.
-
-**Extended Mind Thesis (Clark & Chalmers, 1998)**. Cognitive processes extend beyond the individual brain into the environment. For agents, tools (recall, search, file read), stored memories, and team knowledge are extensions of the agent's cognitive system. The key insight: using these extensions should be a cognitive act (the agent decides when and how to use them based on its assessment of the situation), not a mechanical one (the system always loads the same context regardless of situation).
-
-**Enactivism (Varela, Thompson & Rosch, 1991)**. Cognition is not passive information processing but active sense-making through interaction with the environment. The agent doesn't merely receive and process stimuli -- it actively constructs its understanding by probing its environment (checking task state, reading files, querying colleagues). Context preparation should support this active construction.
-
-**Phenomenological Perspective (Merleau-Ponty, 1945)**. Experience is always perspectival -- shaped by the perceiver's embodied situation. A backend developer and a project manager perceive the same "auth module error" differently. The cognitive preparation prompts must encode this perspectival difference: the same retrieval query, filtered through different roles, produces different relevant context.
-
-### 1.3 From LLM Principles
-
-**Attention Mechanism**. Transformer attention is query-key-value based: the model attends to tokens that are relevant to the current query. A curated 5,000-token context with high relevance outperforms a mechanically-assembled 50,000-token context with low signal-to-noise ratio. The cognitive preparation pipeline is an external attention mechanism that pre-selects high-relevance information.
-
-**In-Context Learning**. LLMs learn from examples in the prompt. Past experiences presented as structured examples ("Last time I encountered a similar auth issue, I...") are more effective than raw activity logs. The Reflection phase transforms raw retrieved data into structured lessons.
-
-**Chain of Thought**. Breaking reasoning into explicit steps improves accuracy. The multi-phase preparation pipeline IS a chain of thought at the meta level: Appraisal ("what do I need?") -> Retrieval ("let me gather it") -> Reflection ("what does it mean?") -> Response ("now I act").
-
-**Prompt Sensitivity**. Small prompt changes cause large behavioral differences. Persona + state + goal in the prompt significantly affects output quality. This is precisely WHY different mechanisms need different prompts: the same retrieval question asked from a backend developer's perspective vs. a manager's perspective should yield different context selections.
-
-**Context Window Efficiency**. Not all context is equally useful. Relevant context >> irrelevant context. LLM-curated context (selected by the Appraisal phase based on persona and situation) > mechanically assembled context (loaded by fixed rules regardless of situation).
+> **Implementation status**: Core cycle, Notebook, unified MEMORY.md, Attention Controller, Goal/Loop heartbeat integration, A2A DM channels, and `PendingCallbackRegistry` are implemented. CPP (Phases 1–3, depth D0–D3) lives in `packages/core/src/cognitive.ts`. CPP is opt-in via `agent.cognitive.enabled` in `markus.json` (default `false` until explicitly enabled). D2+ retrieval requires a `RetrievalBackend` adapter.
 
 ---
 
-## 2. The Cognitive Preparation Pipeline
+## 1. Unified Cognitive Cycle
 
-### 2.1 Architecture Overview
-
-The Cognitive Preparation Pipeline (CPP) runs between triage and main processing. It replaces the current model (mechanical context assembly) with a cognitive model (agent-driven context preparation).
+Every agent interaction follows the same loop. Heartbeat checks keep the cycle running when no external stimulus arrives.
 
 ```
-Without CPP:
-  Stimulus -> Triage -> buildSystemPrompt() [mechanical] -> LLM call
-
-With CPP (current):
-  Stimulus -> Triage -> Cognitive Preparation Pipeline -> LLM call
-                              |
-                              +-- Phase 1: Appraisal (lightweight LLM)
-                              +-- Phase 2: Retrieval (directed tool calls)
-                              +-- Phase 3: Reflection (lightweight LLM)
-                              +-- Phase 4: Assembly (code, no LLM)
+                    ┌─────────────────────────────────────┐
+                    │         Heartbeat (patrol)          │
+                    │  goals · callbacks · failed tasks │
+                    └──────────────┬──────────────────────┘
+                                   │
+Stimulus ──► Triage / Appraisal ──► Context Assembly ──► Deliberation ──► Action ──► Reflection / Update
+(Mailbox)    (AttentionController   (NOTEBOOK.md +         (main LLM +      (tools)    (memory_save,
+              + optional CPP)        MEMORY.md)             tools)                      notebook, dream)
 ```
 
-### 2.2 Cognitive Depth Levels
+| Stage | What happens | Primary components |
+|-------|--------------|-------------------|
+| **Stimulus** | Message, task, heartbeat, A2A, callback result enters the mailbox | `Mailbox`, `AttentionController` |
+| **Triage / Appraisal** | Decide what to focus on; optionally run CPP appraisal | `AttentionController`, `CognitivePreparation` |
+| **Context Assembly** | Load procedural identity, curated knowledge, notebook workspace, mailbox state | `ContextEngine`, `NOTEBOOK.md`, `MEMORY.md` |
+| **Deliberation** | Main LLM reasons with assembled context and available tools | `Agent`, tool loop |
+| **Action** | Execute tool calls (tasks, files, A2A, memory writes) | Tool handlers |
+| **Reflection / Update** | Persist observations, update notebook, consolidate via dream cycle | `memory_save`, `update_notebook`, dream cycle |
 
-Not every stimulus requires full cognitive preparation. Following Dual Process Theory, the system operates at four depth levels:
-
-| Level | Name | Phases | When | Extra LLM Calls | Analogy |
-|-------|------|--------|------|-----------------|---------|
-| D0 | **Reflexive** | None | HEARTBEAT_OK, simple acknowledgment, memory_consolidation | 0 | System 1: automatic |
-| D1 | **Reactive** | Appraisal only | Most chats, A2A messages, comments | 0-1 | System 1.5: quick assessment |
-| D2 | **Deliberative** | Appraisal + Retrieval + Reflection | New task execution, complex questions, escalations | 2 | System 2: careful thought |
-| D3 | **Meta-cognitive** | Full pipeline + post-response evaluation | High-stakes decisions, novel situations, repeated failures | 2-3 | System 2+: thinking about thinking |
-
-The **triage system** (already implemented) determines which depth level to use. The mapping:
-
-| Triage Outcome | Default Depth | Override Conditions |
-|----------------|---------------|---------------------|
-| `human_chat` (simple question) | D1 | D2 if topic is unfamiliar or crosses session boundary |
-| `human_chat` (complex request) | D2 | D3 if high-risk (file edits, deployments) |
-| `task_execution` (new task) | D2 | D3 if task involves unfamiliar domain |
-| `task_execution` (retry/resume) | D2 | Always D2 -- prior attempt context is critical |
-| `a2a_message` | D1 | D2 if coordination requires cross-task context |
-| `heartbeat` | D0 | D1 if failed tasks or blockers exist |
-| `comment_response` | D1 | D2 if comment references prior context |
-| `memory_consolidation` | D0 | Always D0 -- dream cycle has its own prompts |
-
-### 2.3 Phase 1: Appraisal
-
-**Theoretical basis**: Lazarus's Cognitive Appraisal Theory -- we first evaluate the significance and demands of a situation before responding.
-
-**What it does**: A lightweight LLM call that assesses the current situation from the agent's perspective and produces a context preparation plan.
-
-**Key principle**: The prompt is persona-aware and state-aware. Different agents in different states produce different appraisal plans for the same stimulus.
-
-**Prompt template**:
-
-```
-You are {agentName}, a {roleDescription}.
-
-Your current state:
-- Status: {status}
-- Working on: {currentTaskSummary || 'nothing specific'}
-- Recent activity: {recentActivityRing, last 3 items}
-- Current knowledge gaps: {from last reflection, if any}
-
-A new stimulus has arrived:
-- Type: {mailboxItemType}
-- From: {senderName} ({senderRole})
-- Summary: {itemSummary}
-- Content preview: {first 500 chars}
-
-As {agentName}, consider your role, expertise, and current state.
-
-1. RELEVANCE: How does this relate to your current work and expertise?
-2. CONTEXT NEEDS: What specific past experience or knowledge do you need?
-   (Be specific: task names, file paths, topics, error types, colleague names)
-3. TEAM CONTEXT: What do you need to know about what colleagues are doing?
-4. CONFIDENCE: Can you respond well with your current context? (high/medium/low)
-
-If confidence is HIGH, explain why and skip further preparation.
-If confidence is MEDIUM or LOW, specify exactly what to retrieve.
-
-Respond as JSON:
-{
-  "confidence": "high" | "medium" | "low",
-  "reasoning": "...",
-  "retrievalPlan": {
-    "activityQueries": ["keyword search strings for activity history"],
-    "memoryQueries": ["semantic search strings for memories"],
-    "taskIds": ["specific task IDs to check"],
-    "fileHints": ["file paths that may be relevant"],
-    "teamQueries": ["what to check about colleagues"]
-  },
-  "reflectionNeeded": true | false,
-  "reflectionFocus": "what to reflect on"
-}
-```
-
-**LLM parameters**: Low cost -- temperature 0.1, max_tokens 512, use the cheapest available model tier.
-
-**Skip condition**: If confidence is "high", skip Phases 2 and 3 -- proceed directly to Assembly with standard context.
-
-### 2.4 Phase 2: Directed Retrieval
-
-**Theoretical basis**: Tulving's encoding specificity principle -- retrieval is most effective when the retrieval cues match the encoding conditions. The Appraisal phase generates retrieval cues that are specific to the agent's current situation, not generic keywords.
-
-**What it does**: Executes the retrieval plan from Phase 1. No LLM call -- this is mechanical execution of the cognitive plan.
-
-**Operations** (driven by `retrievalPlan` from Phase 1):
-
-| Plan Field | Execution | Source |
-|------------|-----------|--------|
-| `activityQueries` | Search `agent_activities` by `summary` and `keywords` columns | SQLite activity store |
-| `memoryQueries` | Semantic search on `memories.json` via vector index; fallback to substring | MemoryStore + VectorIndex |
-| `taskIds` | Fetch task details via `taskService.getTask()` | SQLite task store |
-| `fileHints` | Note for main LLM call context (not read here -- too expensive) | Passed through |
-| `teamQueries` | Check recent A2A messages, colleague status | AgentManager identity context |
-
-**Output**: `RetrievedContext` -- a structured object with categorized results:
-
-```typescript
-interface RetrievedContext {
-  activities: Array<{ id: string; summary: string; when: string; relevance: string }>;
-  memories: Array<{ id: string; content: string; type: string }>;
-  taskContext: Array<{ id: string; title: string; status: string; summary: string }>;
-  teamContext: Array<{ colleague: string; status: string; recentActivity: string }>;
-  fileHints: string[];
-}
-```
-
-**Budget**: Total retrieved context capped at 4000 tokens. If over budget, prioritize by the Appraisal's ordering (first items are most important).
-
-### 2.5 Phase 3: Reflection
-
-**Theoretical basis**: Schon's Reflective Practice (1983) -- reflection-in-action, where practitioners think about what they're doing while they're doing it. Also Dewey's reflective thought (1933) -- the active, persistent consideration of any belief in light of the grounds that support it.
-
-**What it does**: A lightweight LLM call that processes the retrieved context through the lens of the agent's persona, extracting patterns, lessons, and warnings.
-
-**Key principle**: The same retrieved data, filtered through different agent personas, produces different reflections. A backend developer reflects on code quality and error patterns. A project manager reflects on timeline impacts and team coordination.
-
-**Prompt template**:
-
-```
-You are {agentName}, a {roleDescription}.
-You are preparing to handle: {stimulus_summary}
-
-Here is what you recalled from your experience:
-
-## Activity History
-{retrieved activities, formatted}
-
-## Relevant Knowledge
-{retrieved memories, formatted}
-
-## Task Context
-{retrieved task details, formatted}
-
-## Team Situation
-{retrieved team context, formatted}
-
-From your perspective as {roleDescription}, reflect:
-
-1. PATTERNS: What connects these past experiences to the current situation?
-2. LESSONS: What mistakes or successes from the past are directly relevant?
-3. CAUTIONS: What assumptions should you be careful about? What might go wrong?
-4. KEY CONTEXT: What is the single most important thing to keep in mind?
-
-Be concise. Focus on actionable insight, not summary. Max 200 words.
-```
-
-**LLM parameters**: Low cost -- temperature 0.2, max_tokens 512, cheapest model tier.
-
-**Skip condition**: If `reflectionNeeded` is false from Phase 1 (Appraisal determined this is straightforward).
-
-### 2.6 Phase 4: Assembly
-
-**Theoretical basis**: Global Workspace Theory -- the final assembly is the "broadcast" that makes selected information available to the main cognitive process.
-
-**What it does**: No LLM call. Code assembles the prepared context into the system prompt for the main LLM call.
-
-**Assembly structure**:
-
-The system prompt gains three new dynamic sections at §16a-c, replacing `## Relevant Memories` (§16) when CPP is active:
-
-```
-## Cognitive Context                          <-- NEW (Phase 1 output)
-[Appraisal reasoning -- why this context was selected]
-
-## Retrieved Context                          <-- NEW (Phase 2 output)
-[Structured retrieved information from activities, memories, tasks]
-
-## Reflection                                 <-- NEW (Phase 3 output)
-[Persona-aware insights, patterns, cautions]
-```
-
-These sections replace the following current sections when CPP is active:
-- `## Recent Activity Summary` (daily logs) -- replaced by targeted activity retrieval
-- `## Relevant Memories` (bulk retrieval) -- replaced by directed memory retrieval
-
-When CPP is at D0 (Reflexive), these sections are absent and the current mechanical assembly is used unchanged.
+The cycle is **continuous**: heartbeat patrols re-enter the loop, checking active goals, timed-out callbacks, and stalled work even when the mailbox is quiet.
 
 ---
 
-## 3. Persona-Aware Prompt Differentiation
+## 2. Cognitive Science Foundations
 
-### 3.1 The Core Principle
+The architecture maps directly to established cognitive models:
 
-The same cognitive function (appraisal, retrieval, reflection) uses different prompts depending on the agent's persona and state. This is not cosmetic -- it fundamentally changes what information the agent considers relevant.
+| Model | Concept | Markus mapping |
+|-------|---------|----------------|
+| **Baddeley — Working Memory** | Central executive coordinates subsidiary systems; episodic buffer integrates sources | `NOTEBOOK.md` = central executive + visuospatial sketchpad (active workspace); `MEMORY.md` = episodic buffer (integrates curated knowledge with experience) |
+| **Cowan — Embedded Processes** | Focus of attention (4±1 chunks) within activated long-term memory | `## _observations` buffer = focus of attention (raw, not in prompt); curated `MEMORY.md` sections = activated LTM (always injected) |
+| **Kahneman — Dual Process** | System 1 (fast, automatic) vs System 2 (slow, deliberate) | System 1 = triage, fast `memory_search`, mechanical retrieval fallback; System 2 = CPP (appraisal → retrieval → reflection) |
+| **Boyd — OODA Loop** | Observe → Orient → Decide → Act | **Observe**: mailbox items; **Orient**: CPP + notebook updates; **Decide**: main LLM deliberation; **Act**: tool execution |
 
-### 3.2 How Persona Shapes Each Phase
+Additional influences preserved from earlier design:
 
-| Phase | What Persona Affects | Example: Backend Developer | Example: Project Manager |
-|-------|---------------------|---------------------------|--------------------------|
-| Appraisal | What counts as "relevant context" | Code files, error patterns, test results, dependencies | Timeline, team capacity, stakeholder expectations, risk |
-| Retrieval | Which queries are generated | "auth module error", "login.ts", "test failure" | "auth feature timeline", "team blockers", "stakeholder feedback" |
-| Reflection | What patterns are extracted | "This is similar to the race condition I fixed last week" | "This delay impacts the sprint goal, need to re-prioritize" |
+- **Tulving's memory systems**: Procedural (ROLE.md + skills), Semantic (MEMORY.md), Episodic (sessions + activity index).
+- **Metacognition (Flavell)**: CPP appraisal asks "do I know enough?" before acting.
+- **Global Workspace Theory (Baars)**: Notebook is the broadcast workspace — selected context competes for limited prompt capacity.
 
-### 3.3 How State Shapes Each Phase
-
-Agent state creates a cognitive frame that filters all processing:
-
-| State | Cognitive Frame | Effect on Appraisal |
-|-------|----------------|---------------------|
-| Working on Task X | "Everything through lens of Task X" | Higher confidence for Task X-related stimuli; lower for unrelated |
-| Idle | "Open to any stimulus" | Broader retrieval, more exploratory reflection |
-| After failure | "What went wrong?" | Retrieval focused on error context; reflection focused on cautions |
-| After success | "What worked?" | Retrieval focused on approach; reflection focused on lessons |
-| Collaborating with Agent Y | "Joint context matters" | Team queries prioritized; A2A history included |
-
-### 3.4 Prompt Construction Rules
-
-1. **Role description comes from ROLE.md** -- the first paragraph, which captures the agent's identity and expertise. This is NOT the full ROLE.md (that would be too long for preparation prompts).
-2. **Current state is computed** -- status, current task, recent activity ring, recent failures/successes.
-3. **Preparation prompts are short** -- under 1000 tokens input. They are lightweight by design.
-4. **Preparation prompts never include tools** -- Phases 1 and 3 are pure reasoning, no tool use.
-5. **Preparation prompts use the cheapest model** -- they don't need the strongest model; pattern recognition and planning are sufficient.
+See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) for storage-layer detail.
 
 ---
 
-## 4. Integration with Existing Systems
+## 3. Cognitive Preparation Pipeline (CPP)
 
-### 4.1 Relationship to Triage
-
-Triage (AttentionController) decides WHAT to process. CPP decides HOW to prepare for processing.
+CPP is the System 2 layer. It runs **between triage and the main LLM call**, using 0–3 lightweight LLM calls to prepare persona-aware context before deliberation.
 
 ```
-AttentionController          Cognitive Preparation Pipeline
-  |                            |
-  +-- What to focus on?        +-- What context do I need?
-  +-- Priority ordering        +-- How to retrieve it?
-  +-- Preempt/cancel/defer/drop +-- What does it mean for me?
-  |                            |
-  v                            v
-  TriageResult                 PreparedContext
-  (processItemId,              (cognitiveContext,
-   deferItemIds,                retrievedContext,
-   reasoning)                   reflection)
+Stimulus → Triage → CPP (optional) → Context Assembly → Main LLM
+                         │
+                         ├─ Phase 1: Appraisal      ("What is this? What do I need?")
+                         ├─ Phase 2: Retrieval      (directed queries — no LLM)
+                         └─ Phase 3: Reflection     ("What does this mean for me?")
 ```
 
-The triage reasoning (stored as a keyed entry in the agent's working memory via `workingMemory.set('triage-decision', ...)`) feeds into the Appraisal phase as part of the agent's current state. Working memory entries, including their age, are visible to CPP via the `recentActivity` field in `CognitiveAgentContext`. This preserves the existing triage investment while extending it.
+### Output destination: Notebook, not prompt sections
 
-### 4.2 Relationship to Memory System
+When the notebook writer is active (normal agent runtime), CPP output is written directly to **`NOTEBOOK.md`** entries rather than injected as separate system-prompt sections:
 
-CPP changes both HOW memories are accessed and HOW knowledge is organized.
+| CPP phase | Notebook key | Managed tag |
+|-----------|--------------|-------------|
+| Appraisal | `cognitive-context` | `cpp` |
+| Retrieval | `relevant-context` | `cpp` |
+| Reflection | `reflection` | `cpp` |
 
-**Retrieval model change:**
+Mechanical memory retrieval (when CPP is off or at D0) writes `relevant-context` with managed tag `system`. Triage decisions write `triage-decision` (`system`).
 
-| Without CPP | With CPP (current) |
-|-------------|-------------------|
-| `buildSystemPrompt()` always loads 5 knowledge sections (SOPs, lessons, best practices, long-term, applicable lessons) | `buildSystemPrompt()` loads one `## Your Knowledge` section from MEMORY.md |
-| `retrieveRelevantMemories()` does bulk semantic search on every call | Phase 2 does targeted retrieval based on Phase 1's plan |
-| Memory retrieval is the same regardless of agent role | Memory retrieval is shaped by persona (via Appraisal queries) |
-| `injectActivityToMainSession()` dumps summaries into session | Activity context assembled from indexed store, not session messages |
-| Daily logs injected into every prompt (1500 chars) | Daily logs are write-only audit trail; activity index replaces them |
+### Cognitive depth levels
 
-**Knowledge organization change:**
+| Level | Name | Phases | When | Extra LLM calls |
+|-------|------|--------|------|-----------------|
+| D0 | Reflexive | None | Heartbeat OK, memory consolidation | 0 |
+| D1 | Reactive | Appraisal | Most chats, A2A, comments | 0–1 |
+| D2 | Deliberative | Appraisal + Retrieval + Reflection | Task execution, complex questions | 2 |
+| D3 | Meta-cognitive | Full pipeline + post-response eval (future) | High-stakes, blockers, novel situations | 2–3 |
 
-The current system forces a rigid taxonomy on agent knowledge: `lesson` → `best-practice` → `SOP` with separate prompt sections for each. This creates five overlapping prompt sections that waste context window space repeating the same kind of information.
+Depth is selected by scenario (`selectCognitiveDepth`) and clamped by `maxDepth` config. Triage outcome influences the effective depth (e.g., failed tasks upgrade heartbeat from D0 → D1).
 
-Following cognitive science, knowledge is knowledge, organized by the knower. MEMORY.md is now a free-form agent-organized knowledge base with a single `## Your Knowledge` section in the prompt. Skills remain separate -- they are externalized, installable capability packages, architecturally distinct from personal knowledge.
+### Configuration
 
-| Old Mechanism | Disposition |
-|--------------|-------------|
-| `lesson` tag in memories.json | → `insight` tag (simpler name, same function) |
-| `best-practice` tag in memories.json | → merged with `insight` (false distinction) |
-| `tool-preference` tag in memories.json | → merged with `insight` |
-| MEMORY.md `lessons-learned` section | → agent-organized sections (agent decides structure) |
-| MEMORY.md `tool-preferences` section | → agent-organized sections |
-| MEMORY.md `sops` section | → agent-organized sections |
-| `## Lessons from Past Experience` prompt section | → replaced by `## Your Knowledge` (unified) |
-| `## Best Practices` prompt section | → eliminated (redundant) |
-| `## Your SOPs` prompt section | → eliminated (merged into `## Your Knowledge`) |
-| `## Applicable Lessons for This Task` prompt section | → CPP Phase 2 handles task-specific retrieval |
-| Skills (`discover_tools`) | → **unchanged** (different mechanism: installable capability packages) |
-
-### 4.3 Relationship to Compression Pipeline
-
-CPP reduces compression pressure by producing thinner, more relevant context:
-
-| Current Problem | How CPP Helps |
-|----------------|--------------|
-| Sessions bloated with activity injections | Activities retrieved on-demand, not injected |
-| 5 overlapping compression mechanisms | With thinner sessions, most never trigger |
-| Compression loses high-value information | CPP pre-selects high-value information; compression operates on less important remainder |
-| LLM summaries written to daily logs (feedback loop) | `prepareMessages` becomes pure -- no side effects |
-
-### 4.4 Relationship to Store-Index-Assemble Model
-
-CPP is the "Assemble" part of the Store-Index-Assemble model:
-
-| Principle | Implementation |
-|-----------|---------------|
-| **Store everything indexed** | `agent_activities` with `summary` + `keywords` columns (Tier 0A) |
-| **On-demand recall** | Phase 2: Directed Retrieval based on Phase 1's plan |
-| **Smart context assembly** | Phase 4: Assembly merges stable context + prepared context |
-
----
-
-## 5. Cognitive Lifecycle Beyond Single Calls
-
-### 5.1 Post-Response Evaluation (D3 only)
-
-At the Meta-cognitive depth level, after the main LLM call completes, a brief evaluation pass runs:
-
-```
-You are {agentName}. You just completed handling: {stimulus_summary}
-Your response: {response_summary}
-
-Evaluate:
-1. Did you have enough context? What was missing?
-2. Did your response match your role's expertise?
-3. What should you remember for next time?
-
-Output JSON: { "contextGaps": [...], "lessonsToSave": [...], "confidence": 0-1 }
-```
-
-This feeds back into the memory system: `lessonsToSave` are persisted via `memory_save`, and `contextGaps` inform future Appraisal phases (stored as `lastKnowledgeGaps` on the agent).
-
-### 5.2 Dream Cycle Integration
-
-The existing dream cycle (memory consolidation) benefits from CPP's indexed storage:
-
-- **Before**: Dream cycle operates on raw `memories.json` entries, using an LLM to identify duplicates and merge candidates from content alone.
-- **After**: Dream cycle can use `summary` and `keywords` from the activity index to identify related entries more accurately, reducing hallucination risk in the consolidation process.
-
-### 5.3 Cross-Session Continuity
-
-CPP solves the "context wall" problem between sessions:
-
-- **Before**: When switching from task execution to chat, the agent loses detailed task context. Only `injectActivityToMainSession()` summaries bridge the gap.
-- **After**: Phase 1 (Appraisal) recognizes "I was just working on Task X" from the agent's state. Phase 2 retrieves the relevant activity history. Phase 3 reflects on what was learned. The main call has full context despite being in a different session.
-
----
-
-## 6. Cost and Latency Analysis
-
-### 6.1 Additional LLM Calls
-
-| Depth | Extra Calls | Est. Input Tokens | Est. Output Tokens | Est. Latency |
-|-------|-------------|-------------------|-------------------|-------------|
-| D0 | 0 | 0 | 0 | 0ms |
-| D1 | 0-1 (Appraisal, often skipped for high-confidence) | ~800 | ~300 | ~500ms |
-| D2 | 2 (Appraisal + Reflection) | ~2500 total | ~800 total | ~1500ms |
-| D3 | 2-3 (Appraisal + Reflection + Evaluation) | ~3500 total | ~1200 total | ~2000ms |
-
-### 6.2 Cost Justification
-
-The extra preparation cost is justified by:
-
-1. **Reduced main call tokens**: Better-curated context means smaller system prompts. A 50K-token system prompt with 10% relevance is replaced by a 15K-token prompt with 80% relevance.
-2. **Fewer tool call iterations**: With better context, the main LLM makes better decisions earlier, reducing the tool loop length.
-3. **Reduced compression cost**: Thinner sessions mean the expensive 4-stage compression pipeline rarely activates.
-4. **Better first-attempt quality**: Fewer retries, fewer escalations, fewer "I don't have context for this" situations.
-
-### 6.3 Cheap Model for Preparation
-
-Preparation phases use the cheapest available model (e.g., a "simple" tier model in the LLM router). The Appraisal and Reflection tasks are well within the capability of smaller models -- they require pattern recognition and planning, not complex reasoning.
-
----
-
-## 7. Implementation Mapping
-
-### 7.1 New Components
-
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| `CognitivePreparation` | `packages/core/src/cognitive.ts` | Orchestrates the 4-phase pipeline |
-| `AppraisalPromptBuilder` | `packages/core/src/cognitive.ts` | Builds persona-aware appraisal prompts |
-| `ReflectionPromptBuilder` | `packages/core/src/cognitive.ts` | Builds persona-aware reflection prompts |
-| `ContextPlan` type | `packages/shared/src/types/cognitive.ts` | Output of Phase 1 |
-| `RetrievedContext` type | `packages/shared/src/types/cognitive.ts` | Output of Phase 2 |
-| `PreparedContext` type | `packages/shared/src/types/cognitive.ts` | Final output of Phase 4 |
-
-### 7.2 Modified Components
-
-| Component | Change |
-|-----------|--------|
-| `Agent.handleMessage()` | Call `CognitivePreparation.prepare()` before `buildSystemPrompt()` |
-| `Agent._executeTaskInternal()` | Call `CognitivePreparation.prepare()` before first LLM call |
-| `ContextEngine.buildSystemPrompt()` | Accept `PreparedContext` param; inject cognitive sections |
-| `ContextEngine.prepareMessages()` | Remove `writeDailyLog` side effect; pure function |
-| `ContextEngine.retrieveRelevantMemories()` | Becomes the Phase 2 retrieval backend; no longer called from `buildSystemPrompt()` when CPP is active |
-
-### 7.3 Configuration
+Opt-in via settings (`markus.json` → `agent.cognitive`, REST `/api/settings/agent`):
 
 ```typescript
 interface CognitiveConfig {
-  enabled: boolean;                    // Feature flag for gradual rollout
-  defaultDepth: CognitiveDepth;        // D0 | D1 | D2 | D3
-  depthOverrides: Record<string, CognitiveDepth>;  // Per-scenario overrides
-  appraisalModel?: string;             // Model for Phase 1/3 (defaults to cheapest)
-  retrievalBudgetTokens: number;       // Max tokens for Phase 2 output (default: 4000)
-  reflectionMaxTokens: number;         // Max output for Phase 3 (default: 512)
-  confidenceThreshold: number;         // Appraisal confidence to skip Phase 2/3 (default: 0.8)
+  enabled: boolean;           // master switch (default: false)
+  maxDepth?: CognitiveDepth;  // cap depth during rollout (default allows D1)
+  appraisalModel?: string;    // model for appraisal/reflection (defaults to cheapest)
+  timeoutMs?: number;         // CPP timeout (default: 15000)
 }
 ```
 
+When CPP times out or errors, the agent falls back to mechanical retrieval without blocking the cycle.
+
 ---
 
-## 8. Relationship to Other Documents
+## 4. Notebook (NOTEBOOK.md)
+
+The Notebook is the agent's **persistent cognitive workspace** — Baddeley's central executive rendered as markdown on disk. It replaces the former volatile in-memory working memory.
+
+| Attribute | Value |
+|-----------|-------|
+| Storage | `~/.markus/agents/{id}/NOTEBOOK.md` |
+| Prompt injection | Always loaded as `## Notebook` |
+| Format | `## key` headings with `<!-- managed: … -->` and `<!-- updated: … -->` metadata |
+
+### Managed entry types
+
+| Tag | Writer | Purpose |
+|-----|--------|---------|
+| `agent` | Agent via `update_notebook` / `clear_notebook` | Explicit notes, priorities, blockers |
+| `system` | Runtime (triage, deliberation, mechanical retrieval) | Triage decisions, fallback context |
+| `cpp` | Cognitive Preparation Pipeline | Appraisal, retrieval, reflection outputs |
+
+**Lifecycle**: Loaded at startup → updated in-process → debounced persist (2s) → survives restarts. Limits: 15 agent-managed entries, 6000 chars each.
+
+The Notebook holds *situational* state. Durable knowledge flows to `MEMORY.md` via `memory_save` / `memory_update`.
+
+---
+
+## 5. Memory (MEMORY.md)
+
+Unified long-term store for curated knowledge plus a raw observation buffer — Cowan's activated LTM plus focus-of-attention staging area.
+
+```
+MEMORY.md
+├── ## conventions          ← agent-organized curated sections (in prompt)
+├── ## procedures
+├── ...
+└── ## _observations        ← raw buffer (NOT in prompt)
+```
+
+| Layer | Role | Prompt |
+|-------|------|--------|
+| Curated sections | Distilled knowledge the agent maintains | Always injected as `## Your Knowledge` |
+| `## _observations` | Raw observations from `memory_save` | Excluded from prompt; processed by dream cycle |
+
+The **dream cycle** (`memory_consolidation`) consolidates observations into curated sections, prunes stale content, and maintains MEMORY.md hygiene. This is the long-term learning path at the end of the cognitive cycle.
+
+---
+
+## 6. Decision Mechanisms
+
+Three interlocking mechanisms drive agent attention and sustained work:
+
+### Attention Controller
+
+Processes the **Mailbox** — the agent's unified stimulus queue. Responsibilities:
+
+- Priority ordering and preemption
+- LLM-driven triage (`performTriage`) and full-session deliberation
+- Triage decisions persisted to notebook (`triage-decision`)
+- Yields to higher-priority items (e.g., human chat during deliberation)
+
+Triage decides **what** to process; CPP decides **how to prepare** for processing.
+
+### Heartbeat
+
+Periodic patrol re-enters the cognitive cycle without external stimulus. Each heartbeat checks:
+
+- Active goals (Goal/Loop — see §7)
+- Timed-out `PendingCallbackRegistry` entries
+- Failed tasks and requirement monitoring
+- Background operation completions
+- Self-evolution and quality signals
+
+Heartbeat uses D0 (reflexive) depth unless failed tasks or blockers upgrade it.
+
+### Goal / Loop Mechanism
+
+Requirements can carry a `GoalConfig` that turns them into **persistent objectives**:
+
+```typescript
+interface GoalConfig {
+  loopEnabled: boolean;
+  completionCriteria: string;
+  maxIterations: number;
+  currentIteration: number;
+  lastCheckedAt: string;
+  autoResume: boolean;
+}
+```
+
+When `goalConfig.loopEnabled` is set, the requirement acts as a standing goal. Heartbeat injects an **Active Goals** section listing each goal's title, iteration count, and completion criteria. The agent assesses progress, creates follow-up tasks, and marks requirements complete when criteria are met.
+
+Goal state is fetched via `goalFetcher` (wired from org-manager requirement service) and managed through requirement/task tools.
+
+---
+
+## 7. A2A Communication
+
+Agent-to-agent messaging is unified under **DM Channels** — deterministic keys derived from sorted agent IDs:
+
+```
+dm:a2a:{sorted_id_1}:{sorted_id_2}
+```
+
+This leverages existing group-chat infrastructure:
+
+- **Persistent history** — both agents can recall past exchanges via `recall_context`
+- **Stable sessions** — messages route through the channel rather than ephemeral session IDs
+- **Mailbox integration** — `sendGroupMessage` persists, notifies WebSocket clients, and enqueues on the target agent's mailbox
+
+`agent_send_message` is always asynchronous (fire-and-forget). Substantial work should use requirements + tasks, not A2A messages.
+
+### PendingCallbackRegistry
+
+Async operations (e.g., `background_exec`) register callbacks tracked by `PendingCallbackRegistry`. When complete, results enter the originating agent's mailbox as `callback_result` items — ensuring they flow through the attention loop rather than being injected directly into sessions. Timed-out callbacks surface in heartbeat for investigation.
+
+Implementation: `packages/core/src/pending-callback.ts`, persisted via `SqlitePendingCallbackRepo`.
+
+---
+
+## 8. Integration Map
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        Agent Runtime                              │
+│  ┌─────────────┐   ┌──────────────┐   ┌─────────────────────┐  │
+│  │  Mailbox    │──►│  Attention   │──►│  CPP (optional)     │  │
+│  │             │   │  Controller  │   │  cognitive.ts       │  │
+│  └─────────────┘   └──────────────┘   └──────────┬──────────┘  │
+│                                                   │               │
+│  ┌────────────────────────────────────────────────▼──────────┐  │
+│  │                    ContextEngine                             │  │
+│  │  ROLE.md · MEMORY.md · NOTEBOOK.md · mailbox · goals       │  │
+│  └──────────────────────────────┬───────────────────────────────┘  │
+│                                 ▼                                  │
+│                          Main LLM + Tools                          │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+| Component | Location | Role in cycle |
+|-----------|----------|---------------|
+| `AttentionController` | `packages/core/src/attention.ts` | Triage, deliberation, focus management |
+| `CognitivePreparation` | `packages/core/src/cognitive.ts` | CPP orchestration |
+| `ContextEngine` | `packages/core/src/context-engine.ts` | Context assembly, notebook writer |
+| `Agent` | `packages/core/src/agent.ts` | Cycle orchestration, heartbeat, notebook persistence |
+| `MemoryStore` | `packages/core/src/memory/store.ts` | MEMORY.md + NOTEBOOK.md I/O |
+| `PendingCallbackRegistry` | `packages/core/src/pending-callback.ts` | Async callback tracking |
+| `AgentManager` | `packages/core/src/agent-manager.ts` | A2A DM routing, cognitive config |
+
+Types: `packages/shared/src/types/cognitive.ts`, `requirement.ts` (`GoalConfig`).
+
+---
+
+## 9. Relationship to Other Documents
 
 | Document | Relationship |
 |----------|-------------|
-| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | CPP changes how memory stores are accessed (targeted vs bulk). Storage unchanged. |
-| [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) | CPP adds a new LLM call taxonomy category. System prompt gains 3 new sections. |
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | CPP adds `CognitivePreparation` as a new core component alongside `ContextEngine`. |
-| [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) | Triage output feeds into CPP Phase 1. No changes to mailbox itself. |
+| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Two-file model detail, dream cycle, tool reference |
+| [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) | Mailbox types, priority, triage protocol |
+| [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) | Prompt section taxonomy |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | System-wide component overview |
 
 ---
 
-## 9. Implementation Status
+## 10. Implementation Status
 
 ### Completed
-- **Phase A**: `summary` + `keywords` columns on `agent_activities`; `prepareMessages` side-effects cleaned up; activity injection volume reduced
-- **Phase B**: `CognitivePreparation` class with all 4 phases implemented in `packages/core/src/cognitive.ts`; types defined in `packages/shared/src/types/cognitive.ts`; `buildSystemPrompt` in `context-engine.ts` accepts optional `cognitiveContext` and renders Cognitive Context / Retrieved Context / Reflection sections (skipping legacy `## Relevant Memories` when active)
-- **Phase C (D1 only)**: CPP wired into `Agent` runtime behind feature flag (`enabled: false` by default). `Agent.handleMessage()`, `handleMessageStream()`, `_executeTaskInternal()`, and `respondInSession()` all call `prepareCognitiveContext()` before `buildSystemPrompt()`. Scenario strings aligned with Agent's actual scenario union. `CognitiveConfig` expanded with `maxDepth`, `appraisalModel`, `timeoutMs`. Config threaded through `AgentManager` from `markus.json` and REST API (`/api/settings/agent`). 25 unit tests covering depth selection, appraisal, fallback, maxDepth clamping, and `ContextEngine` CPP section rendering.
 
-### Not Yet Implemented
-- No `RetrievalBackend` implementation — the interface is defined but no adapter wraps `IMemoryStore` / activity store / task store (not needed for D1; required for D2+)
-- D2/D3 depth is available in code but blocked by `maxDepth` config (default D1) until `RetrievalBackend` is built
-- `CognitiveConfig` does not yet include per-scenario overrides or confidence threshold from §7.3
+- Unified cognitive cycle with persistent Notebook and MEMORY.md
+- CPP Phases 1–3 with depth selection (D0–D3) and notebook output path
+- Attention Controller triage + deliberation with notebook persistence
+- Goal/Loop heartbeat integration with `GoalConfig` on requirements
+- A2A DM channels (`dm:a2a:{sorted_ids}`) with group-chat persistence
+- `PendingCallbackRegistry` with SQLite persistence
+- Mechanical retrieval fallback writes `relevant-context` to notebook
+- Unit tests in `packages/core/test/cognitive-enhancement.test.ts`
+
+### In Progress / Not Yet Built
+
+- `RetrievalBackend` adapter for D2+ directed retrieval (interface defined, no adapter)
+- D2/D3 blocked by `maxDepth` default until retrieval backend exists
+- D3 post-response evaluation (meta-cognitive feedback loop)
+- Dream cycle integration with CPP activity index
 
 ### Future Work
-- Build `RetrievalBackend` adapter over existing stores (enables D2)
-- Add post-response evaluation (D3)
-- Integrate with dream cycle
-- Tune depth selection heuristics and appraisal prompts based on production data
-- Remove legacy bulk memory retrieval from `buildSystemPrompt` (when CPP handles all scenarios)
-- Simplify compression pipeline (most stages become unnecessary with thinner sessions)
+
+- Enable D2 by default once `RetrievalBackend` ships
+- Tune depth heuristics and appraisal prompts from production data
+- Simplify compression pipeline (thinner sessions reduce pressure)

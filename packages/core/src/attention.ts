@@ -16,16 +16,11 @@ import {
   MAILBOX_TYPE_REGISTRY,
   MAILBOX_ITEM_MAX_RETRIES,
   hasCompletionMarker,
-  PRIORITY_LABELS,
-  TRIAGE_PROMPT_MAX_ITEMS,
   MAILBOX_PROCESSING_TIMEOUT_MS,
   MAILBOX_COALESCE_WINDOW_MS,
   APPROVAL_WAIT_TIMEOUT_MS,
   WATCHDOG_INTERVAL_MS,
   WATCHDOG_DRIFT_THRESHOLD_MS,
-  TRIAGE_ITEM_CONTENT_CHARS,
-  TRIAGE_MAX_TOOL_ITERATIONS,
-  TRIAGE_ALLOWED_TOOLS,
   TRIAGE_BACKLOG_THRESHOLD,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
@@ -106,19 +101,6 @@ export interface DecisionPersistence {
  */
 export type LLMDecisionJudge = (prompt: string) => Promise<DecisionType>;
 
-/**
- * LLM judge for triage decisions — holistic assessment of all queued items.
- * Returns a raw JSON string that the caller parses into a TriageResult.
- * Separate from LLMDecisionJudge because triage is N-item → structured JSON,
- * while interrupt decisions are 2-item → single word.
- */
-export type TriageJudge = (prompt: string) => Promise<string>;
-
-/**
- * Extended triage function that supports tool use during deliberation.
- * When set, performTriage uses a mini tool loop for read-only context gathering.
- */
-export type TriageChatFn = (messages: Array<{ role: string; content: string; toolCalls?: any[]; toolCallId?: string; reasoningContent?: string }>, tools?: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>) => Promise<{ content: string; toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>; reasoningContent?: string }>;
 
 /**
  * Event-driven attention controller for a single agent.
@@ -147,9 +129,6 @@ export class AttentionController {
   private delegate?: AttentionDelegate;
   private decisionPersistence?: DecisionPersistence;
   private llmJudge?: LLMDecisionJudge;
-  private triageJudge?: TriageJudge;
-  private triageToolHandlers?: Map<string, { name: string; description: string; inputSchema: Record<string, unknown>; execute: (args: Record<string, unknown>) => Promise<string> }>;
-  private triageChatFn?: TriageChatFn;
   private lastTriageResult?: TriageResult & { timestamp: string };
   /** True while a full-session deliberation is in progress (suppresses yield points). */
   private isDeliberating = false;
@@ -412,44 +391,32 @@ export class AttentionController {
             // 1. Multiple distinct items remain after consolidation
             // 2. Priority alone can't decide — the head item shares its priority
             //    with at least one other queued item (ambiguous ordering)
-            // 3. A TriageJudge OR delegate.performDeliberation is configured
+            // 3. delegate.performDeliberation is configured
             // When priorities clearly separate items, the priority queue already
             // produces the right order — no LLM call needed.
             let triaged = false;
             let deliberationAttempted = false;
-            if (this.mailbox.depth > 0 && !isUserMessage && this.needsLLMTriage(item) && (this.delegate?.performDeliberation || this.triageJudge)) {
-              // Prefer full-session deliberation over mini triage loop
-              if (this.delegate?.performDeliberation) {
-                deliberationAttempted = true;
-                const allItems = [item, ...this.mailbox.getQueuedItems()];
-                this.isDeliberating = true;
-                this.deliberationAbortSignal = false;
-                try {
-                  const deliberationResult = await this.delegate.performDeliberation(item, allItems);
-                  if (this.deliberationAbortSignal) {
-                    // A human_chat arrived during deliberation — discard result,
-                    // put item back so the user message gets processed first.
-                    log.info('Deliberation aborted: human_chat arrived', { agentId: this.agentId });
-                    this.mailbox.putBack(item);
-                    const userItem = this.mailbox.dequeue();
-                    if (userItem) {
-                      item = userItem;
-                    }
-                  } else if (deliberationResult) {
-                    triaged = true;
-                    item = this.applyDeliberationResult(item, deliberationResult);
+            if (this.mailbox.depth > 0 && !isUserMessage && this.needsLLMTriage(item) && this.delegate?.performDeliberation) {
+              deliberationAttempted = true;
+              const allItems = [item, ...this.mailbox.getQueuedItems()];
+              this.isDeliberating = true;
+              this.deliberationAbortSignal = false;
+              try {
+                const deliberationResult = await this.delegate.performDeliberation(item, allItems);
+                if (this.deliberationAbortSignal) {
+                  log.info('Deliberation aborted: human_chat arrived', { agentId: this.agentId });
+                  this.mailbox.putBack(item);
+                  const userItem = this.mailbox.dequeue();
+                  if (userItem) {
+                    item = userItem;
                   }
-                } finally {
-                  this.isDeliberating = false;
-                  this.deliberationAbortSignal = false;
-                }
-              } else {
-                deliberationAttempted = true;
-                const triageResult = await this.performTriage(item);
-                if (triageResult) {
+                } else if (deliberationResult) {
                   triaged = true;
-                  item = this.applyTriageResult(item, triageResult);
+                  item = this.applyDeliberationResult(item, deliberationResult);
                 }
+              } finally {
+                this.isDeliberating = false;
+                this.deliberationAbortSignal = false;
               }
             }
 
@@ -849,21 +816,6 @@ export class AttentionController {
     this.llmJudge = judge;
   }
 
-  setTriageJudge(judge: TriageJudge | undefined): void {
-    this.triageJudge = judge;
-  }
-
-  /**
-   * Set read-only tools available during triage deliberation.
-   * These let the LLM gather context (task_list, team_list, etc.) before deciding.
-   */
-  setTriageTools(tools: Map<string, { name: string; description: string; inputSchema: Record<string, unknown>; execute: (args: Record<string, unknown>) => Promise<string> }> | undefined): void {
-    this.triageToolHandlers = tools;
-  }
-
-  setTriageChatFn(fn: TriageChatFn | undefined): void {
-    this.triageChatFn = fn;
-  }
 
   /**
    * Fast heuristic decision when no LLM judgment is available.
@@ -1106,158 +1058,6 @@ export class AttentionController {
     return samePriorityCount > 0;
   }
 
-  /**
-   * LLM-driven triage: given the dequeued head item plus all remaining
-   * queued items, ask the agent to decide which one to process first
-   * and whether to defer or drop any others.
-   */
-  private async performTriage(headItem: MailboxItem): Promise<TriageResult | null> {
-    if (!this.triageJudge) return null;
-    this.setState('deciding');
-
-    try {
-      const ctx = await this.delegate?.getTriageContext?.();
-      const prompt = this.buildTriagePrompt(headItem, ctx ?? undefined);
-
-      let raw: string | undefined;
-
-      // Mini tool loop: if triageChatFn and tools are available, allow limited
-      // read-only tool calls before the final JSON decision
-      if (this.triageChatFn && this.triageToolHandlers && this.triageToolHandlers.size > 0) {
-        const llmTools = [...this.triageToolHandlers.values()].map(t => ({
-          name: t.name,
-          description: t.description,
-          inputSchema: t.inputSchema,
-        }));
-        const triageAgentName = ctx?.agentName ?? 'Agent';
-        const triageRoleHint = ctx?.agentRole ? ` Your role: ${ctx.agentRole}.` : '';
-        const messages: Array<{ role: string; content: string; toolCalls?: any[]; toolCallId?: string; reasoningContent?: string }> = [
-          { role: 'system', content: `You are ${triageAgentName}, deliberating over your mailbox.${triageRoleHint} You may call tools to gather context before making your decision. When ready, output ONLY a single JSON object — no explanation, no markdown fences, no <think> tags. Start your response with {` },
-          { role: 'user', content: prompt },
-        ];
-
-        let iterations = 0;
-        while (iterations < TRIAGE_MAX_TOOL_ITERATIONS) {
-          const response = await this.triageChatFn(messages, llmTools);
-
-          if (!response.toolCalls?.length) {
-            raw = response.content;
-            break;
-          }
-
-          messages.push({ role: 'assistant', content: response.content, toolCalls: response.toolCalls, reasoningContent: response.reasoningContent });
-
-          for (const tc of response.toolCalls) {
-            const handler = this.triageToolHandlers!.get(tc.name);
-            let result: string;
-            if (handler) {
-              try { result = await handler.execute(tc.arguments); }
-              catch (err) { result = `Error: ${String(err)}`; }
-            } else {
-              result = JSON.stringify({ error: `Unknown tool: ${tc.name}` });
-            }
-            messages.push({ role: 'tool', content: result, toolCallId: tc.id });
-          }
-          iterations++;
-        }
-
-        // If loop exhausted without a final text response, make one last call without tools
-        if (raw === undefined) {
-          const finalResp = await this.triageChatFn(messages, undefined);
-          raw = finalResp.content;
-        }
-      } else {
-        raw = await this.triageJudge(prompt);
-      }
-
-      // Strip <think>...</think> blocks that some models (e.g. Qwen, DeepSeek) emit.
-      const cleaned = raw
-        .replace(/<think>[\s\S]*?<\/think>/gi, '')
-        .replace(/<think>[\s\S]*/gi, '')
-        .trim();
-      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        log.warn('Triage judge returned non-JSON response', { agentId: this.agentId, raw: raw.slice(0, 300) });
-        return null;
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]) as Partial<TriageResult>;
-      if (!parsed.processItemId || !parsed.reasoning) {
-        log.warn('Triage judge returned incomplete result', { agentId: this.agentId, parsed });
-        return null;
-      }
-
-      const allCandidateIds = new Set([headItem.id, ...this.mailbox.getQueuedItems().map(i => i.id)]);
-      if (!allCandidateIds.has(parsed.processItemId)) {
-        log.warn('Triage judge chose unknown item ID', {
-          agentId: this.agentId,
-          chosen: parsed.processItemId,
-          candidates: [...allCandidateIds],
-        });
-        return null;
-      }
-
-      return {
-        processItemId: parsed.processItemId,
-        deferItemIds: (parsed.deferItemIds ?? []).filter(id => allCandidateIds.has(id)),
-        dropItemIds: (parsed.dropItemIds ?? []).filter(id => allCandidateIds.has(id)),
-        reasoning: parsed.reasoning,
-      };
-    } catch (err) {
-      log.warn('Triage deliberation failed, falling back to priority order', {
-        agentId: this.agentId,
-        error: String(err),
-      });
-      return null;
-    }
-  }
-
-  /**
-   * Apply a TriageResult to the mailbox: reorder, defer, drop items.
-   * Returns the item to process next.
-   */
-  private applyTriageResult(currentItem: MailboxItem, triageResult: TriageResult): MailboxItem {
-    let item = currentItem;
-    if (triageResult.processItemId !== item.id) {
-      this.mailbox.putBack(item);
-      const chosen = this.mailbox.dequeueById(triageResult.processItemId);
-      if (chosen) {
-        item = chosen;
-      } else {
-        const redequeued = this.mailbox.dequeueById(currentItem.id);
-        if (redequeued) item = redequeued;
-      }
-    }
-
-    const queueSnapshot = this.mailbox.getQueuedItems();
-    const isProtected = (id: string) => {
-      const it = queueSnapshot.find(i => i.id === id);
-      if (!it) return false;
-      if (it.sourceType === 'human_chat') return true;
-      if (it.payload.extra?.triggerExecution) return true;
-      if (it.payload.extra?.directMention) return true;
-      return false;
-    };
-
-    for (const deferId of triageResult.deferItemIds) {
-      if (isProtected(deferId)) continue;
-      this.mailbox.defer(deferId);
-    }
-    for (const dropId of triageResult.dropItemIds) {
-      if (isProtected(dropId)) continue;
-      this.mailbox.drop(dropId);
-    }
-
-    this.lastTriageResult = { ...triageResult, timestamp: new Date().toISOString() };
-    this.delegate?.onTriageCompleted?.(triageResult);
-    this.eventBus.emit('attention:triage', {
-      agentId: this.agentId,
-      triage: this.lastTriageResult,
-    });
-    const triageDecision = this.recordDecision('triage', item, triageResult.reasoning);
-    this.delegate?.onDecisionMade(triageDecision);
-    return item;
-  }
 
   /**
    * Apply a DeliberationResult to the mailbox: handle inline completions, reorder, defer, drop.
@@ -1363,111 +1163,6 @@ export class AttentionController {
     return item;
   }
 
-  private buildTriagePrompt(headItem: MailboxItem, ctx?: TriageContext): string {
-    const agentName = ctx?.agentName ?? 'Agent';
-    const queuedItems = this.mailbox.getQueuedItems();
-    const allItems = [headItem, ...queuedItems];
-
-    const shown = allItems.slice(0, TRIAGE_PROMPT_MAX_ITEMS);
-    const overflow = allItems.length - shown.length;
-
-    const formatAge = (ms: number): string => {
-      if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
-      if (ms < 3_600_000) return `${Math.round(ms / 60_000)}min`;
-      return `${(ms / 3_600_000).toFixed(1)}h`;
-    };
-
-    const formatItem = (item: MailboxItem, idx: number) => {
-      const pri = PRIORITY_LABELS?.[item.priority] ?? `p${item.priority}`;
-      const ageMs = Date.now() - new Date(item.queuedAt).getTime();
-      const timestamp = new Date(item.queuedAt).toISOString().slice(11, 19);
-      const contentPreview = item.payload.content
-        ? `\n      content: "${item.payload.content.slice(0, TRIAGE_ITEM_CONTENT_CHARS)}"`
-        : '';
-      return [
-        `  [${idx + 1}] id="${item.id}"`,
-        `      type=${item.sourceType}  priority=${pri}  age=${formatAge(ageMs)}  queued=${timestamp}`,
-        `      summary: "${item.payload.summary}"`,
-        item.payload.taskId ? `      taskId: ${item.payload.taskId}` : null,
-        item.metadata?.senderName ? `      from: ${item.metadata.senderName} (${item.metadata?.senderRole ?? 'unknown'})` : null,
-        contentPreview || null,
-      ].filter(Boolean).join('\n');
-    };
-
-    const itemsSection = shown.map(formatItem).join('\n\n');
-    const overflowNote = overflow > 0
-      ? `\n\n  ... and ${overflow} more items (lower priority, similar types). You can only choose from the items listed above.`
-      : '';
-
-    // Group items by taskId for the LLM to see relationships
-    const taskGroups = new Map<string, number>();
-    for (const item of shown) {
-      const tid = item.payload.taskId ?? (item.metadata?.taskId as string | undefined);
-      if (tid) taskGroups.set(tid, (taskGroups.get(tid) ?? 0) + 1);
-    }
-    const taskGroupSummary = taskGroups.size > 0
-      ? [...taskGroups.entries()].map(([tid, count]) => `  ${tid}: ${count} items`).join('\n')
-      : '  (no task grouping)';
-
-    const recentContext = ctx?.recentMainSessionMessages
-      ?.map(m => `  [${m.role}]: ${m.content}`)
-      .join('\n') ?? '  (no recent context)';
-
-    const recentActivity = ctx?.recentActivitySummaries?.length
-      ? ctx.recentActivitySummaries.map(a => `  - ${a}`).join('\n')
-      : '  (no recent activity)';
-
-    const recentDecs = this.decisions.slice(-5).map(d =>
-      `  - ${d.decisionType}: ${d.reasoning}`
-    ).join('\n') || '  (none)';
-
-    const activeTasksSection = ctx?.activeTaskIds?.length
-      ? `  Active tasks: ${ctx.activeTaskIds.join(', ')}`
-      : '  (no active tasks)';
-
-    return [
-      `You are ${agentName}. You have ${allItems.length} items in your mailbox that need attention.`,
-      `Your job is to decide which item to process NOW. Current time: ${new Date().toISOString().slice(11, 19)} UTC.`,
-      '',
-      `## Mailbox Items (top ${shown.length} candidates)`,
-      itemsSection + overflowNote,
-      '',
-      '## Items Grouped by Task',
-      taskGroupSummary,
-      '',
-      '## Your Current State',
-      activeTasksSection,
-      '',
-      '## Your Recent Conversation Context',
-      recentContext,
-      '',
-      '## Your Recent Activity',
-      recentActivity,
-      '',
-      '## Your Recent Decisions',
-      recentDecs,
-      '',
-      '## Rules',
-      '- Human messages (human_chat) and human comments are ALWAYS highest priority — process them first.',
-      '- Agent messages with direct @mentions (a2a_message where you were explicitly mentioned) should be treated like human messages — NEVER drop them. They represent explicit requests for your input.',
-      '- Task status updates (task_status_update) come in two flavours: **execution triggers** (priority 1, carry execution context) that MUST be processed — never drop or defer them; and **informational** ones that the system already handled. Informational updates serve as decision context, not work items.',
-      '- **Time decay**: Items older than 1 hour are increasingly stale. Multiple status updates about the same task — only the latest matters. Aggressively DROP old informational items (heartbeats, old status updates, memory consolidation) that no longer provide actionable context.',
-      '- **Task grouping**: When multiple items reference the same taskId, consider them together. Drop redundant/superseded items for the same task — only keep the most recent or most actionable one.',
-      '- Consider dependencies: if one item provides context needed by another, process it first.',
-      '- DEFER means "handle later" — use for items that can wait but should not be forgotten.',
-      '- DROP means "not worth processing" — use for stale, redundant, or obsolete items. When in doubt about old informational items, DROP them.',
-      '- When in doubt, process items in priority order (lower number = higher priority).',
-      '',
-      '## Required Response Format',
-      'Respond with ONLY a JSON object, nothing else:',
-      '{',
-      '  "processItemId": "<id of the item to process NOW>",',
-      '  "deferItemIds": ["<ids to defer>"],',
-      '  "dropItemIds": ["<ids to drop>"],',
-      '  "reasoning": "<1-2 sentence explanation>"',
-      '}',
-    ].join('\n');
-  }
 
   // ─── State & Queries ──────────────────────────────────────────────────────
 

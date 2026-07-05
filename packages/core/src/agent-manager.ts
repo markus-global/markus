@@ -16,6 +16,7 @@ import {
   saveConfig,
   type CodingToolName,
   type CodingToolConfig,
+  type GoalConfig,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import type { OrgContext } from './context-engine.js';
@@ -146,6 +147,10 @@ export interface RequirementServiceBridge {
     taskIds: string[]; tags?: string[]; createdAt: string; updatedAt: string;
   } | undefined;
   getRequirementStatusHistory?(requirementId: string, limit?: number): unknown[];
+  getActiveGoals?(orgId: string): Array<{ id: string; title: string; status: string; taskIds: string[]; goalConfig?: GoalConfig }>;
+  enableGoalLoop?(reqId: string, config: { completionCriteria: string; maxIterations?: number; autoResume?: boolean }): Promise<void>;
+  disableGoalLoop?(reqId: string): Promise<void>;
+  getById?(id: string): { id: string; title: string; status: string; taskIds: string[]; goalConfig?: GoalConfig } | undefined;
 }
 
 export interface TaskServiceBridge {
@@ -395,6 +400,11 @@ export class AgentManager {
       limit: number,
       before?: string
     ) => Promise<{ messages: Array<{ id?: string; senderName: string; senderType: string; text: string; replyToId?: string; replyToSender?: string; replyToText?: string; createdAt: string }>; hasMore: boolean }>;
+    ensureDmChannel?: (
+      channelKey: string,
+      member1: { id: string; name: string },
+      member2: { id: string; name: string },
+    ) => Promise<{ channelKey: string }>;
   };
 
   private buildDeliverableCallbacks(agentId: string, projectId?: string): Pick<
@@ -1151,6 +1161,25 @@ export class AgentManager {
           }
         } catch { /* not JSON — expected for non-broadcast messages, fall through to full LLM handling */ }
 
+        // Route A2A messages through a DM channel for persistent history and stable sessions.
+        // The channel key is deterministic: dm:a2a:{sorted_id_1}:{sorted_id_2}
+        const dmChannelKey = this.getA2ADmChannelKey(fromId, targetId);
+        if (this.groupChatHandlers?.ensureDmChannel) {
+          const target = this.getAgent(targetId);
+          const targetName = target.config.name;
+          await this.groupChatHandlers.ensureDmChannel(
+            dmChannelKey,
+            { id: fromId, name: fromName },
+            { id: targetId, name: targetName },
+          );
+          // Use sendGroupMessage to persist, notify WS, and route to target's mailbox
+          await this.groupChatHandlers.sendGroupMessage(
+            dmChannelKey, message, fromId, fromName,
+          );
+          return `Message sent via DM channel ${dmChannelKey}`;
+        }
+
+        // Fallback: direct enqueue when group chat handlers are not wired
         const target = this.getAgent(targetId);
         const reply = await target.sendMessage(
           message,
@@ -1160,6 +1189,7 @@ export class AgentManager {
             sourceType: 'a2a_message',
             sessionId: `a2a_${targetId}_${Date.now()}`,
             scenario: 'a2a',
+            channelKey: dmChannelKey,
             priority: priority as 0 | 1 | 2 | 3 | 4 | undefined,
             waitForReply,
           }
@@ -1403,6 +1433,14 @@ export class AgentManager {
               return [];
             }
           : undefined,
+        requirementService: this.requirementService?.getActiveGoals ? {
+          create: async (data: any) => this.requirementService!.proposeRequirement(data),
+          enableGoalLoop: (rid: string, cfg: any) => this.requirementService!.enableGoalLoop!(rid, cfg),
+          disableGoalLoop: (rid: string) => this.requirementService!.disableGoalLoop!(rid),
+          getById: (gid: string) => this.requirementService!.getById?.(gid) ?? this.requirementService!.getRequirement(gid) as any,
+          getActiveGoals: (oid: string) => this.requirementService!.getActiveGoals!(oid),
+        } : undefined,
+        orgId,
       };
       for (const tool of createAgentTaskTools(taskCtx)) {
         agent.registerTool(tool);
@@ -1427,6 +1465,13 @@ export class AgentManager {
           return [];
         }
       });
+
+      if (this.requirementService?.getActiveGoals) {
+        const rs = this.requirementService;
+        agent.setGoalFetcher(() => {
+          try { return rs.getActiveGoals!(orgId); } catch { return []; }
+        });
+      }
 
       log.info(`Task tools injected for agent ${id}`);
     }
@@ -2018,6 +2063,23 @@ export class AgentManager {
           }
         } catch { /* not JSON — expected for non-broadcast messages, fall through to full LLM handling */ }
 
+        // Route A2A messages through a DM channel for persistent history and stable sessions.
+        const dmChannelKey = this.getA2ADmChannelKey(fromId, targetId);
+        if (this.groupChatHandlers?.ensureDmChannel) {
+          const target = this.getAgent(targetId);
+          const targetName = target.config.name;
+          await this.groupChatHandlers.ensureDmChannel(
+            dmChannelKey,
+            { id: fromId, name: fromName },
+            { id: targetId, name: targetName },
+          );
+          await this.groupChatHandlers.sendGroupMessage(
+            dmChannelKey, message, fromId, fromName,
+          );
+          return `Message sent via DM channel ${dmChannelKey}`;
+        }
+
+        // Fallback: direct enqueue when group chat handlers are not wired
         const target = this.getAgent(targetId);
         return target.sendMessage(
           message,
@@ -2027,6 +2089,7 @@ export class AgentManager {
             sourceType: 'a2a_message',
             sessionId: `a2a_${targetId}_${Date.now()}`,
             scenario: 'a2a',
+            channelKey: dmChannelKey,
             priority: priority as 0 | 1 | 2 | 3 | 4 | undefined,
             waitForReply,
           }
@@ -2237,6 +2300,14 @@ export class AgentManager {
               return [];
             }
           : undefined,
+        requirementService: this.requirementService?.getActiveGoals ? {
+          create: async (data: any) => this.requirementService!.proposeRequirement(data),
+          enableGoalLoop: (rid: string, cfg: any) => this.requirementService!.enableGoalLoop!(rid, cfg),
+          disableGoalLoop: (rid: string) => this.requirementService!.disableGoalLoop!(rid),
+          getById: (gid: string) => this.requirementService!.getById?.(gid) ?? this.requirementService!.getRequirement(gid) as any,
+          getActiveGoals: (oid: string) => this.requirementService!.getActiveGoals!(oid),
+        } : undefined,
+        orgId,
       };
       for (const tool of createAgentTaskTools(taskCtx)) agent.registerTool(tool);
       agent.setTasksFetcher(() => {
@@ -2257,6 +2328,13 @@ export class AgentManager {
           return [];
         }
       });
+
+      if (this.requirementService?.getActiveGoals) {
+        const rs = this.requirementService;
+        agent.setGoalFetcher(() => {
+          try { return rs.getActiveGoals!(orgId); } catch { return []; }
+        });
+      }
     }
 
     // Workflow context + tools for restored manager agents
@@ -2877,8 +2955,19 @@ export class AgentManager {
       limit: number,
       before?: string
     ) => Promise<{ messages: Array<{ senderName: string; senderType: string; text: string; createdAt: string }>; hasMore: boolean }>;
+    ensureDmChannel?: (
+      channelKey: string,
+      member1: { id: string; name: string },
+      member2: { id: string; name: string },
+    ) => Promise<{ channelKey: string }>;
   }): void {
     this.groupChatHandlers = handlers;
+  }
+
+  /** Deterministic channel key for A2A DM between two agents. Sorted to ensure one channel per pair. */
+  getA2ADmChannelKey(agentId1: string, agentId2: string): string {
+    const sorted = [agentId1, agentId2].sort();
+    return `dm:a2a:${sorted[0]}:${sorted[1]}`;
   }
 
   /**

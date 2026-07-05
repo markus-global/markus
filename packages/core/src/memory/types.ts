@@ -2,7 +2,7 @@
  * Agent Memory Types
  *
  * Organized by Tulving's cognitive classification:
- * - Semantic: factual knowledge (memories.json + MEMORY.md)
+ * - Semantic: observations + curated knowledge (unified MEMORY.md)
  * - Episodic: conversation sessions (sessions/*.json)
  * - Procedural: identity & skills (managed by RoleLoader, not here)
  */
@@ -29,7 +29,7 @@ export interface ConversationSession {
  * MemoryStore is the primary implementation.
  */
 export interface IMemoryStore {
-  // -- Semantic Memory: observation buffer (memories.json) --
+  // -- Semantic Memory: observation buffer (## _observations in MEMORY.md) --
   addEntry(entry: MemoryEntry): void;
   getEntries(type?: MemoryEntry['type'], limit?: number): MemoryEntry[];
   getEntriesByTag(tag: string, limit?: number): MemoryEntry[];
@@ -37,6 +37,7 @@ export interface IMemoryStore {
   removeEntries(ids: string[]): number;
   replaceEntries(removedIds: string[], newEntry: MemoryEntry): void;
   removeEntriesByTag(tag: string): number;
+  getObservations(): MemoryEntry[];
 
   // -- Semantic Memory: curated knowledge (MEMORY.md) --
   addLongTermMemory(key: string, content: string): void;

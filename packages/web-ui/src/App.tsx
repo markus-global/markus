@@ -1,15 +1,16 @@
-import { useEffect, useState, useCallback, useMemo, memo } from 'react';
+import { useEffect, useState, useCallback, useMemo, memo, lazy, Suspense } from 'react';
 import { type PageId, PAGE, resolvePageId, getPageFromHash, MOBILE_REDIRECTS } from './routes.ts';
 import { HomePage } from './pages/Home.tsx';
-import { TeamPage } from './pages/Team.tsx';
-import { Settings } from './pages/Settings.tsx';
-import { StorePage } from './pages/Store.tsx';
-import { AgentBuilder } from './pages/AgentBuilder.tsx';
-import { WorkPage } from './pages/Work.tsx';
-import { DeliverablesPage } from './pages/Deliverables.tsx';
-import { ReportsPage } from './pages/Reports.tsx';
-import { NotificationsPage } from './pages/Notifications.tsx';
-import { SearchPage } from './pages/Search.tsx';
+
+const TeamPage = lazy(() => import('./pages/Team.tsx').then(m => ({ default: m.TeamPage })));
+const Settings = lazy(() => import('./pages/Settings.tsx').then(m => ({ default: m.Settings })));
+const StorePage = lazy(() => import('./pages/Store.tsx').then(m => ({ default: m.StorePage })));
+const AgentBuilder = lazy(() => import('./pages/AgentBuilder.tsx').then(m => ({ default: m.AgentBuilder })));
+const WorkPage = lazy(() => import('./pages/Work.tsx').then(m => ({ default: m.WorkPage })));
+const DeliverablesPage = lazy(() => import('./pages/Deliverables.tsx').then(m => ({ default: m.DeliverablesPage })));
+const ReportsPage = lazy(() => import('./pages/Reports.tsx').then(m => ({ default: m.ReportsPage })));
+const NotificationsPage = lazy(() => import('./pages/Notifications.tsx').then(m => ({ default: m.NotificationsPage })));
+const SearchPage = lazy(() => import('./pages/Search.tsx').then(m => ({ default: m.SearchPage })));
 import { Sidebar } from './components/Sidebar.tsx';
 import { BottomNav } from './components/BottomNav.tsx';
 import { MobileBuilderTabs } from './components/MobileBuilderTabs.tsx';
@@ -34,6 +35,14 @@ const HIDDEN_STYLE: React.CSSProperties = {
   zIndex: -1,
 };
 
+function PageFallback() {
+  return (
+    <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm animate-pulse">
+      Loading...
+    </div>
+  );
+}
+
 const PageSlot = memo(function PageSlot({
   id, activePage, children,
 }: {
@@ -44,7 +53,9 @@ const PageSlot = memo(function PageSlot({
   const active = id === activePage;
   return (
     <div className="flex-1 overflow-hidden flex flex-col" style={active ? undefined : HIDDEN_STYLE}>
-      {children}
+      <Suspense fallback={<PageFallback />}>
+        {children}
+      </Suspense>
     </div>
   );
 }, (prev, next) => {

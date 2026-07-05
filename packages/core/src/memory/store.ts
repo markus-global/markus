@@ -2,12 +2,13 @@
  * MemoryStore — the agent's file-system-based memory.
  *
  * Covers two of Tulving's three memory systems:
- * - Semantic Memory: observation buffer (memories.json) + curated knowledge (MEMORY.md)
+ * - Semantic Memory: unified MEMORY.md (curated sections + ## _observations buffer)
  * - Episodic Memory: conversation sessions (sessions/*.json)
  *
+ * Additionally exports Notebook (NOTEBOOK.md) parse/serialize for the cognitive workspace.
  * Procedural Memory (ROLE.md + skills) is managed by RoleLoader and the skill system.
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createLogger, getTextContent, type LLMMessage, MEMORY_MD_SECTION_MAX_CHARS, MEMORY_MD_TOTAL_MAX_CHARS } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry, ConversationSession } from './types.js';
@@ -40,6 +41,120 @@ function sanitizeEntry(raw: Record<string, unknown> | MemoryEntry): MemoryEntry 
       : undefined,
   };
 }
+
+// ─── Notebook (NOTEBOOK.md) parse/serialize ─────────────────────────────────
+
+export type NotebookEntryManaged = 'agent' | 'system' | 'cpp';
+
+export interface NotebookEntry {
+  text: string;
+  updatedAt: number;
+  managed: NotebookEntryManaged;
+}
+
+const NOTEBOOK_HEADING_RE = /^## (.+)$/;
+const NOTEBOOK_UPDATED_RE = /^<!-- updated: (.+) -->$/;
+const NOTEBOOK_MANAGED_RE = /^<!-- managed: (\w+) -->$/;
+
+/**
+ * Parse a NOTEBOOK.md file into a Map of keyed entries.
+ * Format: ## key\n<!-- updated: ISO -->\n<!-- managed: type -->\ncontent...
+ */
+export function parseNotebook(markdown: string): Map<string, NotebookEntry> {
+  const entries = new Map<string, NotebookEntry>();
+  if (!markdown.trim()) return entries;
+
+  const lines = markdown.split('\n');
+  let currentKey: string | null = null;
+  let currentUpdated = Date.now();
+  let currentManaged: NotebookEntryManaged = 'agent';
+  let contentLines: string[] = [];
+
+  const flush = () => {
+    if (currentKey !== null) {
+      const text = contentLines.join('\n').trim();
+      entries.set(currentKey, { text, updatedAt: currentUpdated, managed: currentManaged });
+    }
+  };
+
+  for (const line of lines) {
+    const headingMatch = NOTEBOOK_HEADING_RE.exec(line);
+    if (headingMatch) {
+      flush();
+      currentKey = headingMatch[1].trim();
+      currentUpdated = Date.now();
+      currentManaged = 'agent';
+      contentLines = [];
+      continue;
+    }
+
+    if (currentKey !== null) {
+      const updatedMatch = NOTEBOOK_UPDATED_RE.exec(line);
+      if (updatedMatch) {
+        const parsed = Date.parse(updatedMatch[1]);
+        if (!isNaN(parsed)) currentUpdated = parsed;
+        continue;
+      }
+      const managedMatch = NOTEBOOK_MANAGED_RE.exec(line);
+      if (managedMatch) {
+        const val = managedMatch[1] as NotebookEntryManaged;
+        if (val === 'agent' || val === 'system' || val === 'cpp') currentManaged = val;
+        continue;
+      }
+      contentLines.push(line);
+    }
+  }
+  flush();
+  return entries;
+}
+
+/**
+ * Serialize a Map of notebook entries into NOTEBOOK.md format.
+ */
+export function serializeNotebook(entries: Map<string, NotebookEntry>): string {
+  if (entries.size === 0) return '# Notebook\n';
+
+  const sections: string[] = ['# Notebook', ''];
+  for (const [key, entry] of entries) {
+    sections.push(`## ${key}`);
+    sections.push(`<!-- updated: ${new Date(entry.updatedAt).toISOString()} -->`);
+    sections.push(`<!-- managed: ${entry.managed} -->`);
+    sections.push(entry.text);
+    sections.push('');
+  }
+  return sections.join('\n');
+}
+
+/**
+ * Load NOTEBOOK.md from disk, returning parsed entries.
+ * Returns empty map if file doesn't exist.
+ */
+export function loadNotebook(dataDir: string): Map<string, NotebookEntry> {
+  const filePath = join(dataDir, 'NOTEBOOK.md');
+  try {
+    if (existsSync(filePath)) {
+      const content = readFileSync(filePath, 'utf-8');
+      return parseNotebook(content);
+    }
+  } catch (err) {
+    log.warn('Failed to load NOTEBOOK.md', { error: String(err) });
+  }
+  return new Map();
+}
+
+/**
+ * Save notebook entries to NOTEBOOK.md on disk.
+ */
+export function saveNotebook(dataDir: string, entries: Map<string, NotebookEntry>): void {
+  const filePath = join(dataDir, 'NOTEBOOK.md');
+  try {
+    writeFileSync(filePath, serializeNotebook(entries), 'utf-8');
+  } catch (err) {
+    log.warn('Failed to save NOTEBOOK.md', { error: String(err) });
+  }
+}
+
+// ─── MemoryStore ─────────────────────────────────────────────────────────────
 
 export class MemoryStore implements IMemoryStore {
   private static readonly MAX_SESSIONS_IN_MEMORY = 20;
@@ -302,7 +417,15 @@ export class MemoryStore implements IMemoryStore {
 
   getLongTermMemory(): string {
     if (!existsSync(this.longTermFile)) return '';
-    return readFileSync(this.longTermFile, 'utf-8');
+    const content = readFileSync(this.longTermFile, 'utf-8');
+    // Return only curated sections (above ## _observations)
+    const obsIdx = content.indexOf('\n## _observations');
+    return obsIdx >= 0 ? content.slice(0, obsIdx).trimEnd() : content;
+  }
+
+  /** Get the raw ## _observations section content for dream cycle / search. */
+  getObservations(): MemoryEntry[] {
+    return [...this.entries];
   }
 
   getLongTermMemoryExcluding(sections: string[]): string {
@@ -429,25 +552,80 @@ export class MemoryStore implements IMemoryStore {
   private static readonly MAX_MEMORY_ENTRIES = 500;
 
   private loadFromDisk(): void {
+    // Migration: if memories.json exists, convert to ## _observations in MEMORY.md
     const memFile = join(this.dataDir, 'memories.json');
     if (existsSync(memFile)) {
       try {
         const raw = JSON.parse(readFileSync(memFile, 'utf-8')) as unknown[];
-        const before = raw.length;
         let entries = raw.filter(isValidEntry).map(sanitizeEntry);
-        if (entries.length < before) {
-          log.warn(`Dropped ${before - entries.length} malformed memory entries on load`);
-        }
         if (entries.length > MemoryStore.MAX_MEMORY_ENTRIES) {
-          log.warn(`Memory entries exceed cap (${entries.length}/${MemoryStore.MAX_MEMORY_ENTRIES}), keeping most recent`);
           entries = entries.slice(-MemoryStore.MAX_MEMORY_ENTRIES);
         }
         this.entries = entries;
-        log.info(`Loaded ${this.entries.length} memory entries`);
+        // Migrate: write observations into MEMORY.md and remove memories.json
+        this.saveToDisk();
+        try {
+          unlinkSync(memFile);
+          log.info(`Migrated ${entries.length} entries from memories.json to MEMORY.md ## _observations`);
+        } catch { /* best effort deletion */ }
+        return;
       } catch {
-        log.warn('Failed to load memories from disk, starting fresh');
-        this.entries = [];
+        log.warn('Failed to migrate memories.json, starting fresh');
       }
+    }
+
+    // Load observations from ## _observations section of MEMORY.md
+    this.entries = this.parseObservationsFromMemoryMd();
+    if (this.entries.length > 0) {
+      log.info(`Loaded ${this.entries.length} observation entries from MEMORY.md`);
+    }
+  }
+
+  /** Parse the ## _observations section of MEMORY.md into MemoryEntry[] */
+  private parseObservationsFromMemoryMd(): MemoryEntry[] {
+    if (!existsSync(this.longTermFile)) return [];
+    try {
+      const content = readFileSync(this.longTermFile, 'utf-8');
+      const obsMatch = content.match(/(?:^|\n)## _observations\n([\s\S]*)$/);
+      if (!obsMatch) return [];
+      const obsContent = obsMatch[1];
+      const entries: MemoryEntry[] = [];
+      const subsections = obsContent.split(/\n### /).filter(s => s.trim());
+      for (const section of subsections) {
+        const lines = section.split('\n');
+        const headerLine = lines[0] ?? '';
+        if (headerLine.startsWith('<!--')) continue;
+        const idMatch = headerLine.match(/^(\S+)/);
+        if (!idMatch) continue;
+        const id = idMatch[1];
+        // Parse metadata from HTML comments
+        let type: MemoryEntry['type'] = 'note';
+        let tags: string[] = [];
+        const contentLines: string[] = [];
+        for (let i = 1; i < lines.length; i++) {
+          const metaMatch = lines[i].match(/^<!-- type: (\w+)(?:, tags: (.+))? -->$/);
+          if (metaMatch) {
+            const typeVal = metaMatch[1];
+            if (typeVal && VALID_TYPES.has(typeVal)) type = typeVal as MemoryEntry['type'];
+            if (metaMatch[2]) tags = metaMatch[2].split(',').map(t => t.trim());
+            continue;
+          }
+          contentLines.push(lines[i]);
+        }
+        const idTs = id.match(/^obs_(\d+)/);
+        const timestamp = idTs ? new Date(parseInt(idTs[1])).toISOString() : new Date().toISOString();
+        entries.push({
+          id,
+          timestamp,
+          type,
+          content: contentLines.join('\n').trim(),
+          metadata: tags.length > 0 ? { tags } : undefined,
+        });
+      }
+      return entries;
+    } catch (err) {
+      log.warn('Failed to parse observations from MEMORY.md', { error: String(err) });
+      return [];
     }
   }
 
@@ -517,10 +695,43 @@ export class MemoryStore implements IMemoryStore {
 
   private saveToDisk(): void {
     try {
-      const memFile = join(this.dataDir, 'memories.json');
-      writeFileSync(memFile, JSON.stringify(this.entries, null, 2));
+      // Serialize observations as ## _observations subsections within MEMORY.md
+      const obsLines: string[] = [
+        '## _observations',
+        '<!-- This section is the observation buffer. Searched on-demand, NOT always injected into prompt. -->',
+        '<!-- Dream cycle consolidates recurring patterns into curated sections above. -->',
+        '',
+      ];
+      const entries = this.entries.slice(-MemoryStore.MAX_MEMORY_ENTRIES);
+      for (const entry of entries) {
+        const tags = Array.isArray(entry.metadata?.tags)
+          ? (entry.metadata!.tags as string[]).join(', ')
+          : '';
+        obsLines.push(`### ${entry.id}`);
+        obsLines.push(`<!-- type: ${entry.type}${tags ? `, tags: ${tags}` : ''} -->`);
+        obsLines.push(entry.content);
+        obsLines.push('');
+      }
+      const obsSection = obsLines.join('\n');
+
+      // Read existing MEMORY.md, replace or append ## _observations
+      let existing = '';
+      if (existsSync(this.longTermFile)) {
+        existing = readFileSync(this.longTermFile, 'utf-8');
+      }
+      let obsStart = existing.indexOf('\n## _observations');
+      if (obsStart < 0 && existing.startsWith('## _observations')) obsStart = 0;
+      let updated: string;
+      if (obsStart > 0) {
+        updated = existing.slice(0, obsStart) + '\n' + obsSection;
+      } else if (obsStart === 0) {
+        updated = obsSection;
+      } else {
+        updated = (existing ? existing.trimEnd() + '\n\n' : '') + obsSection;
+      }
+      writeFileSync(this.longTermFile, updated);
     } catch (err) {
-      log.warn('Failed to save memories to disk', { error: String(err) });
+      log.warn('Failed to save observations to MEMORY.md', { error: String(err) });
     }
   }
 
