@@ -1,11 +1,12 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, type AgentInfo, type TaskInfo, type ProjectInfo, type DeliverableInfo, type RequirementInfo, type WorkflowInfo } from '../api.ts';
+import { api, type AgentInfo, type TaskInfo, type ProjectInfo, type DeliverableInfo, type RequirementInfo, type WorkflowInfo, type SearchResult } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE, type PageId } from '../routes.ts';
 import { Avatar } from './Avatar.tsx';
 
-type SearchCategory = 'all' | 'agents' | 'tasks' | 'requirements' | 'projects' | 'deliverables' | 'workflows';
+type SearchCategory = 'all' | 'agents' | 'tasks' | 'requirements' | 'projects' | 'deliverables' | 'workflows' | 'messages';
+type SearchScope = 'all' | 'channel' | 'direct';
 
 interface SearchResults {
   agents: AgentInfo[];
@@ -18,7 +19,7 @@ interface SearchResults {
 
 interface FlatItem {
   id: string;
-  type: 'agent' | 'task' | 'requirement' | 'project' | 'deliverable' | 'workflow' | 'showMore';
+  type: 'agent' | 'task' | 'requirement' | 'project' | 'deliverable' | 'workflow' | 'message' | 'showMore';
   page: PageId;
   params?: Record<string, string>;
   expandCategory?: SearchCategory;
@@ -41,14 +42,25 @@ let _persistedCategory: SearchCategory = 'all';
 let _persistedResults: SearchResults = EMPTY;
 let _persistedSearched = false;
 
-export function SearchModal({ onClose, currentPage }: { onClose: () => void; currentPage?: string }) {
+export function SearchModal({ onClose, currentPage, initialTab }: { onClose: () => void; currentPage?: string; initialTab?: SearchCategory }) {
   const { t } = useTranslation(['common', 'home', 'work']);
+  const initialCategory = initialTab && initialTab !== 'all' ? initialTab : _persistedCategory;
   const [query, setQuery] = useState(_persistedQuery);
-  const [category, setCategory] = useState<SearchCategory>(_persistedCategory);
+  const [category, setCategory] = useState<SearchCategory>(initialCategory);
   const [results, setResults] = useState<SearchResults>(_persistedResults);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(_persistedSearched);
   const [focusIdx, setFocusIdx] = useState(-1);
+
+  // Message search state
+  const [messageResults, setMessageResults] = useState<SearchResult[]>([]);
+  const [messageLoading, setMessageLoading] = useState(false);
+  const [messageTotal, setMessageTotal] = useState(0);
+  const [messageError, setMessageError] = useState<string | null>(null);
+  const [messageScope, setMessageScope] = useState<SearchScope>('all');
+
+  const messageAbortRef = useRef<AbortController | null>(null);
+  const messageDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => { _persistedQuery = query; }, [query]);
   useEffect(() => { _persistedCategory = category; }, [category]);
@@ -63,6 +75,47 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
     setTimeout(() => { inputRef.current?.focus(); inputRef.current?.select(); }, 100);
   }, []);
 
+  // ─── Messages search ───────────────────────────────────────────────
+  const doMessageSearch = useCallback(async (q: string, scope: SearchScope, channel?: string, agentId?: string) => {
+    if (!q.trim() || q.length < 2) {
+      setMessageResults([]);
+      setMessageTotal(0);
+      setMessageLoading(false);
+      return;
+    }
+    messageAbortRef.current?.abort();
+    const controller = new AbortController();
+    messageAbortRef.current = controller;
+    setMessageLoading(true);
+    setMessageError(null);
+    try {
+      const response = await api.messages.search(q, { scope, channel, agentId, limit: 30 });
+      if (controller.signal.aborted) return;
+      setMessageResults(response.results ?? []);
+      setMessageTotal(response.total ?? response.results?.length ?? 0);
+    } catch (err: unknown) {
+      if (controller.signal.aborted) return;
+      setMessageResults([]);
+      setMessageTotal(0);
+      setMessageError(err instanceof Error ? err.message : 'Search failed');
+    } finally {
+      if (!controller.signal.aborted) setMessageLoading(false);
+    }
+  }, []);
+
+  const handleMessageInput = useCallback((q: string) => {
+    if (messageDebounceRef.current) clearTimeout(messageDebounceRef.current);
+    messageDebounceRef.current = setTimeout(() => doMessageSearch(q, messageScope), 300);
+  }, [doMessageSearch, messageScope]);
+
+  const handleMessageScopeChange = useCallback((scope: SearchScope) => {
+    setMessageScope(scope);
+    if (query.trim().length >= 2) {
+      doMessageSearch(query, scope);
+    }
+  }, [query, doMessageSearch]);
+
+  // ─── Entity search ─────────────────────────────────────────────────
   const doSearch = useCallback(async (q: string) => {
     if (!q.trim()) { setResults(EMPTY); setSearched(false); setFocusIdx(-1); return; }
     setLoading(true);
@@ -114,6 +167,10 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
 
   const handleInput = (value: string) => {
     setQuery(value);
+    if (category === 'messages') {
+      handleMessageInput(value);
+      return;
+    }
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => doSearch(value), 400);
   };
@@ -131,6 +188,7 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
     { id: 'projects', label: t('common:projects', { defaultValue: '项目' }) },
     { id: 'deliverables', label: t('common:deliverables', { defaultValue: '交付物' }) },
     { id: 'workflows', label: t('common:workflows', { defaultValue: '工作流' }) },
+    { id: 'messages', label: t('common:chatMessages', { defaultValue: '对话' }) },
   ];
 
   const sectionOrder = useMemo(() => PAGE_SECTION_ORDER[currentPage || ''] || DEFAULT_ORDER, [currentPage]);
@@ -267,20 +325,130 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
 
         {/* Results */}
         <div ref={listRef} className="flex-1 overflow-y-auto px-5 py-3">
-          {loading && (
+          {/* ── Messages tab ───────────────────────────────────── */}
+          {category === 'messages' && (
+            <>
+              {/* Scope filter (only visible in messages tab) */}
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-[11px] text-fg-tertiary shrink-0">{t('page.searchScope', { defaultValue: '范围' })}:</span>
+                {(['all', 'channel', 'direct'] as const).map(s => (
+                  <button
+                    key={s}
+                    onClick={() => handleMessageScopeChange(s)}
+                    className={`px-2 py-1 rounded text-[10px] font-medium transition-colors ${
+                      messageScope === s
+                        ? 'bg-brand-500/15 text-brand-500 ring-1 ring-brand-500/30'
+                        : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
+                    }`}
+                  >
+                    {s === 'all' ? (t('page.searchAll', { defaultValue: '全部' })) :
+                     s === 'channel' ? (t('page.searchChannel', { defaultValue: '频道' })) :
+                     (t('page.searchDirect', { defaultValue: '私聊' }))}
+                  </button>
+                ))}
+              </div>
+
+              {/* Loading */}
+              {messageLoading && (
+                <div className="flex items-center justify-center py-8">
+                  <div className="text-fg-tertiary text-sm animate-pulse">{t('common:loading')}</div>
+                </div>
+              )}
+
+              {/* Results */}
+              {!messageLoading && messageResults.length > 0 && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between px-1 py-1 text-[10px] text-fg-tertiary/60">
+                    <span>{messageTotal > 0 ? `${messageTotal} ${t('common:results', { defaultValue: '个结果' })}` : ''}</span>
+                  </div>
+                  {messageResults.map((r) => {
+                    const idx = itemCounter++;
+                    const displayText = r.snippetText ?? r.text;
+                    return (
+                      <button
+                        key={r.id}
+                        data-idx={idx}
+                        onClick={() => {
+                          onClose();
+                          // Navigate: for channel messages go to team with channel, for direct go to agent
+                          if (r.source === 'channel' && r.channel) {
+                            navBus.navigate(PAGE.TEAM, { channelId: r.channel });
+                          } else if (r.source === 'direct' && r.agentId) {
+                            navBus.navigate(PAGE.TEAM, { agentId: r.agentId });
+                          }
+                        }}
+                        className={`w-full text-left p-3 rounded-xl transition-colors ${idx === focusIdx ? 'bg-brand-600/15 ring-1 ring-brand-500/40' : 'hover:bg-surface-overlay'}`}
+                      >
+                        {/* Meta row */}
+                        <div className="flex items-center gap-2 text-[11px] text-fg-tertiary mb-1">
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                            r.source === 'channel' ? 'bg-blue-500/10 text-blue-500' : 'bg-emerald-500/10 text-emerald-500'
+                          }`}>
+                            {r.source === 'channel' ? '#' : '1:1'}
+                          </span>
+                          {r.senderName && <span className="truncate max-w-[120px]">{r.senderName}</span>}
+                          {r.sessionName && <span className="truncate text-fg-tertiary/70">· {r.sessionName}</span>}
+                        </div>
+                        {/* Content with highlights */}
+                        <div className="text-xs text-fg-secondary line-clamp-2 leading-relaxed">
+                          {renderMessageHighlight(displayText, query)}
+                        </div>
+                        {/* Match count */}
+                        {r.matchCount !== undefined && r.matchCount > 1 && (
+                          <div className="mt-1 text-[10px] text-fg-tertiary/60">{r.matchCount} {t('common:matches', { defaultValue: '个匹配' })}</div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Empty */}
+              {!messageLoading && query.length >= 2 && messageResults.length === 0 && !messageError && (
+                <div className="flex flex-col items-center justify-center py-8 text-center">
+                  <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-fg-tertiary mb-2"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+                  <p className="text-sm text-fg-tertiary">{t('common:noResults', { defaultValue: '没有找到相关结果' })}</p>
+                </div>
+              )}
+
+              {/* Error */}
+              {messageError && (
+                <div className="flex flex-col items-center justify-center py-6 text-center">
+                  <p className="text-sm text-red-500">{messageError}</p>
+                  <button
+                    onClick={() => doMessageSearch(query, messageScope)}
+                    className="text-xs text-brand-500 hover:text-brand-400 mt-1"
+                  >
+                    {t('common:retry', { defaultValue: '重试' })}
+                  </button>
+                </div>
+              )}
+
+              {/* Initial state */}
+              {!messageLoading && query.length < 2 && (
+                <div className="flex flex-col items-center justify-center py-8 text-center">
+                  <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-fg-tertiary mb-2"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+                  <p className="text-sm text-fg-tertiary">{t('common:searchHint', { defaultValue: '输入关键词搜索对话内容' })}</p>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ── Entity tabs (non-messages) ──────────────────────── */}
+          {category !== 'messages' && loading && (
             <div className="flex items-center justify-center py-8">
               <div className="text-fg-tertiary text-sm animate-pulse">{t('common:loading')}</div>
             </div>
           )}
 
-          {!loading && searched && !hasResults && (
+          {category !== 'messages' && !loading && searched && !hasResults && (
             <div className="flex flex-col items-center justify-center py-8 text-center">
               <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-fg-tertiary mb-2"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
               <p className="text-sm text-fg-tertiary">{t('common:noResults', { defaultValue: '没有找到相关结果' })}</p>
             </div>
           )}
 
-          {!loading && hasResults && (
+          {category !== 'messages' && !loading && hasResults && (
             <div className="space-y-4">
               {sectionOrder.map(section => {
                 if (category !== 'all' && category !== section) return null;
@@ -438,7 +606,7 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
             </div>
           )}
 
-          {!loading && !searched && (
+          {category !== 'messages' && !loading && !searched && (
             <div className="flex flex-col items-center justify-center py-8 text-center">
               <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-fg-tertiary mb-2"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
               <p className="text-sm text-fg-tertiary">{t('common:searchHint', { defaultValue: '输入关键词搜索' })}</p>
@@ -456,6 +624,39 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Render text with <mark> tags from FTS5 snippet, or fallback to case-insensitive highlight.
+ */
+function renderMessageHighlight(text: string, query: string): React.ReactNode {
+  if (text.includes('<mark>')) {
+    const parts: React.ReactNode[] = [];
+    const regex = /<mark>(.*?)<\/mark>|([^<]+(?!<\/mark>))|<[^>]+>/g;
+    let match: RegExpExecArray | null;
+    let lastIndex = 0;
+    let key = 0;
+    while ((match = regex.exec(text)) !== null) {
+      if (match[1] !== undefined) {
+        parts.push(<mark key={key++} className="bg-amber-400/20 text-amber-400 rounded-sm px-0.5">{match[1]}</mark>);
+      } else if (match[0]) {
+        parts.push(<span key={key++}>{match[0]}</span>);
+      }
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < text.length) parts.push(<span key={key++}>{text.slice(lastIndex)}</span>);
+    return parts.length > 0 ? parts : text;
+  }
+  if (!query || query.length < 2) return text;
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\function StatusDot({ status }: { status: string }) {');
+  const regex = new RegExp(`(${escaped})`, 'gi');
+  const parts = text.split(regex);
+  if (parts.length === 1) return text;
+  return parts.map((part, i) =>
+    regex.test(part)
+      ? <mark key={i} className="bg-amber-400/20 text-amber-400 rounded-sm px-0.5">{part}</mark>
+      : part
   );
 }
 
