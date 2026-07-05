@@ -6,6 +6,7 @@ import {
   type AuthUser, type StoredSegment,
 } from '../api.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
+import { ChatSearchPanel } from './ChatSearchPanel.tsx';
 import {
   AgentMessageBody, segmentsToStreamEntries, friendlyAgentError,
 } from '../pages/ChatComponents.tsx';
@@ -53,6 +54,7 @@ export function ChatPanel({
   const [input, setInput] = useState('');
   const [activities, setActivities] = useState<ActivityStep[]>([]);
   const [currentMentionChips, setCurrentMentionChips] = useState<MentionChip[]>([]);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -505,6 +507,13 @@ export function ChatPanel({
           className="rounded-md"
         />
         <span className="text-sm font-medium text-fg-primary truncate flex-1">{agentName}</span>
+        <button
+          onClick={() => setSearchOpen(!searchOpen)}
+          className={`p-1 rounded-md transition-colors ${searchOpen ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'}`}
+          title={t('page.searchMessages')}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+        </button>
         {onClose && (
           <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary transition-colors p-1">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -513,6 +522,18 @@ export function ChatPanel({
           </button>
         )}
       </div>
+
+      {searchOpen && (
+        <div className="border-b border-border-default bg-surface-secondary/50" style={{ maxHeight: '50%' }}>
+          <ChatSearchPanel
+            scope="direct"
+            onSelectResult={(result) => {
+              setSearchOpen(false);
+            }}
+            onClose={() => setSearchOpen(false)}
+          />
+        </div>
+      )}
 
       {/* Messages */}
       <div

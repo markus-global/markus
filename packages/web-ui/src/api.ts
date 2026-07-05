@@ -89,11 +89,19 @@ export interface SearchResult {
   source: 'channel' | 'direct';
   id: string;
   text: string;
+  /** Text snippet from FTS5 with <mark> tags for highlight rendering */
+  snippetText?: string;
   senderName?: string;
+  senderId?: string;
   channel?: string;
   sessionId?: string;
+  sessionName?: string;
   agentId?: string;
   createdAt: string;
+  /** Number of matches in this message (from FTS5) */
+  matchCount?: number;
+  /** FTS5 relevance score */
+  relevanceScore?: number;
 }
 
 
@@ -1679,12 +1687,26 @@ export const api = {
 
   // ─── Message Search ───────────────────────────────────────────────
   messages: {
-    search: (query: string, opts?: { scope?: 'all' | 'channel' | 'direct'; channel?: string; limit?: number }) => {
+    search: (query: string, opts?: {
+      scope?: 'all' | 'channel' | 'direct';
+      channel?: string;
+      agentId?: string;
+      sessionId?: string;
+      limit?: number;
+      offset?: number;
+      from?: string;
+      to?: string;
+    }) => {
       const params = new URLSearchParams({ q: query });
       if (opts?.scope) params.set('scope', opts.scope);
       if (opts?.channel) params.set('channel', opts.channel);
+      if (opts?.agentId) params.set('agentId', opts.agentId);
+      if (opts?.sessionId) params.set('sessionId', opts.sessionId);
       if (opts?.limit) params.set('limit', String(opts.limit));
-      return request<{ results: SearchResult[] }>(`/messages/search?${params}`);
+      if (opts?.offset) params.set('offset', String(opts.offset));
+      if (opts?.from) params.set('from', opts.from);
+      if (opts?.to) params.set('to', opts.to);
+      return request<{ results: SearchResult[]; total?: number; speedMs?: number }>(`/messages/search?${params}`);
     },
   },
 

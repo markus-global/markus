@@ -19,6 +19,7 @@ import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { parseMentionNames, renderMentionText } from '../components/CommentInput.tsx';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
+import { ChatSearchPanel } from '../components/ChatSearchPanel.tsx';
 import { TeamDetailPanel } from '../components/TeamDetailPanel.tsx';
 import { AgentProfile, TAB_DEF as AGENT_TAB_DEF, type ProfileTab } from './AgentProfile.tsx';
 import { TeamProfile, TABS as TEAM_TABS, type TeamTab } from './TeamProfile.tsx';
@@ -451,10 +452,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // Message search
   const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<import('../api.ts').SearchResult[]>([]);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const searchDebounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Teams
   const [teams, setTeams] = useState<TeamInfo[]>(previewData?.teams ?? []);
@@ -2346,28 +2343,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   };
 
-  const executeSearch = useCallback(async (q: string) => {
-    if (q.length < 2) { setSearchResults([]); return; }
-    setSearchLoading(true);
-    try {
-      const scope = chatMode === 'channel' ? 'channel' : chatMode === 'direct' ? 'direct' : 'all';
-      const channel = chatMode === 'channel' ? activeChannel : undefined;
-      const { results } = await api.messages.search(q, { scope, channel, limit: 30 });
-      setSearchResults(results);
-    } catch { setSearchResults([]); }
-    setSearchLoading(false);
-  }, [chatMode, activeChannel]);
-
-  const handleSearchInput = useCallback((q: string) => {
-    setSearchQuery(q);
-    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
-    searchDebounceRef.current = setTimeout(() => executeSearch(q), 300);
-  }, [executeSearch]);
-
   const handleSearchResultClick = useCallback((result: import('../api.ts').SearchResult) => {
     setSearchOpen(false);
-    setSearchQuery('');
-    setSearchResults([]);
     if (result.source === 'channel' && result.channel) {
       setChatMode('channel');
       setActiveChannel(result.channel);
@@ -2825,7 +2802,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 >{chatMode === 'channel' ? t('page.teamTab') : t('page.profileTab')}</button>
                 <div className="flex-1" />
                 <button
-                  onClick={() => { setSearchOpen(!searchOpen); if (!searchOpen) { setSearchQuery(''); setSearchResults([]); } }}
+                  onClick={() => { setSearchOpen(!searchOpen); }}
                   className={`p-1 rounded-md transition-colors shrink-0 ${searchOpen ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'}`}
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
@@ -3012,7 +2989,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 {/* Right side buttons */}
                 <div className="ml-auto flex items-center gap-2 shrink-0">
                   <button
-                    onClick={() => { setSearchOpen(!searchOpen); if (!searchOpen) { setSearchQuery(''); setSearchResults([]); } }}
+                    onClick={() => { setSearchOpen(!searchOpen); }}
                     className={`p-1.5 rounded-md transition-colors ${searchOpen ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
                     title={t('page.searchMessages')}
                   >
@@ -3082,57 +3059,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
           {/* Search panel */}
           {searchOpen && (
-            <div className="border-b border-border-default bg-surface-secondary/50 px-4 py-2 space-y-2 animate-in slide-in-from-top-2 duration-200">
-              <div className="flex items-center gap-2">
-                <div className="flex-1 relative">
-                  <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
-                  </svg>
-                  <input
-                    autoFocus
-                    value={searchQuery}
-                    onChange={e => handleSearchInput(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Escape') { setSearchOpen(false); setSearchQuery(''); setSearchResults([]); } }}
-                    placeholder={t('page.searchPlaceholder')}
-                    className="w-full pl-8 pr-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg outline-none focus:border-brand-500/50 transition-colors"
-                  />
-                </div>
-                <button
-                  onClick={() => { setSearchOpen(false); setSearchQuery(''); setSearchResults([]); }}
-                  className="text-fg-tertiary hover:text-fg-secondary text-xs px-1"
-                >✕</button>
-              </div>
-              {searchLoading && (
-                <div className="flex items-center gap-2 text-xs text-fg-tertiary py-1">
-                  <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
-                  {t('page.searching')}
-                </div>
-              )}
-              {!searchLoading && searchQuery.length >= 2 && searchResults.length === 0 && (
-                <div className="text-xs text-fg-tertiary py-1">{t('page.noSearchResults')}</div>
-              )}
-              {searchResults.length > 0 && (
-                <div className="max-h-60 overflow-y-auto space-y-0.5">
-                  {searchResults.map(r => (
-                    <button
-                      key={r.id}
-                      onClick={() => handleSearchResultClick(r)}
-                      className="w-full text-left px-3 py-2 rounded-lg hover:bg-surface-elevated transition-colors group"
-                    >
-                      <div className="flex items-center gap-2 text-[11px] text-fg-tertiary mb-0.5">
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${r.source === 'channel' ? 'bg-blue-500/10 text-blue-500' : 'bg-emerald-500/10 text-emerald-500'}`}>
-                          {r.source === 'channel' ? '#' : '1:1'}
-                        </span>
-                        {r.senderName && <span>{r.senderName}</span>}
-                        <span>{new Date(r.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
-                      </div>
-                      <div className="text-xs text-fg-secondary line-clamp-2 group-hover:text-fg-primary transition-colors">
-                        {r.text.length > 200 ? r.text.slice(0, 200) + '…' : r.text}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
+            <div className="h-full bg-surface-secondary/50 border-b border-border-default" style={{ maxHeight: '60%' }}>
+              <ChatSearchPanel
+                scope={chatMode === 'channel' ? 'channel' : chatMode === 'direct' ? 'direct' : 'all'}
+                channel={chatMode === 'channel' ? activeChannel : undefined}
+                onSelectResult={handleSearchResultClick}
+                onClose={() => setSearchOpen(false)}
+              />
             </div>
           )}
 
