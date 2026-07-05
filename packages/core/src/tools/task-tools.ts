@@ -1,5 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
-import { createLogger, TASK_GET_NOTES_DEFAULT, TASK_GET_DELIVERABLES_DEFAULT, TASK_GET_STATUS_HISTORY_DEFAULT, REQUIREMENT_LIST_DEFAULT, ENTITY_COMMENTS_DEFAULT } from '@markus/shared';
+import { createLogger, TASK_GET_NOTES_DEFAULT, TASK_GET_DELIVERABLES_DEFAULT, TASK_GET_STATUS_HISTORY_DEFAULT, REQUIREMENT_LIST_DEFAULT, ENTITY_COMMENTS_DEFAULT, type GoalConfig } from '@markus/shared';
 
 const log = createLogger('task-tools');
 
@@ -180,8 +180,8 @@ export interface AgentTaskContext {
     create(data: { title: string; description: string; source: string; createdBy: string; priority: string; orgId: string; status?: string }): Promise<{ id: string }>;
     enableGoalLoop(reqId: string, config: { completionCriteria: string; maxIterations?: number; autoResume?: boolean }): Promise<void>;
     disableGoalLoop(reqId: string): Promise<void>;
-    getById(id: string): { id: string; title: string; status: string; taskIds: string[]; goalConfig?: import('@markus/shared').GoalConfig } | undefined;
-    getActiveGoals(orgId: string): Array<{ id: string; title: string; status: string; goalConfig?: import('@markus/shared').GoalConfig }>;
+    getById(id: string): { id: string; title: string; status: string; taskIds: string[]; goalConfig?: GoalConfig } | undefined;
+    getActiveGoals(orgId: string): Array<{ id: string; title: string; status: string; goalConfig?: GoalConfig }>;
   };
   orgId?: string;
 }

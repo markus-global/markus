@@ -16,6 +16,7 @@ import {
   saveConfig,
   type CodingToolName,
   type CodingToolConfig,
+  type GoalConfig,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import type { OrgContext } from './context-engine.js';
@@ -146,10 +147,10 @@ export interface RequirementServiceBridge {
     taskIds: string[]; tags?: string[]; createdAt: string; updatedAt: string;
   } | undefined;
   getRequirementStatusHistory?(requirementId: string, limit?: number): unknown[];
-  getActiveGoals?(orgId: string): Array<{ id: string; title: string; status: string; taskIds: string[]; goalConfig?: import('@markus/shared').GoalConfig }>;
+  getActiveGoals?(orgId: string): Array<{ id: string; title: string; status: string; taskIds: string[]; goalConfig?: GoalConfig }>;
   enableGoalLoop?(reqId: string, config: { completionCriteria: string; maxIterations?: number; autoResume?: boolean }): Promise<void>;
   disableGoalLoop?(reqId: string): Promise<void>;
-  getById?(id: string): { id: string; title: string; status: string; taskIds: string[]; goalConfig?: import('@markus/shared').GoalConfig } | undefined;
+  getById?(id: string): { id: string; title: string; status: string; taskIds: string[]; goalConfig?: GoalConfig } | undefined;
 }
 
 export interface TaskServiceBridge {

@@ -38,6 +38,7 @@ import {
   TRIAGE_ITEM_CONTENT_CHARS,
   PRIORITY_LABELS,
   safeSlice,
+  type GoalConfig,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -285,7 +286,7 @@ export class Agent {
     assignedAgentId?: string;
     assignedAgentName?: string;
   }>;
-  private goalFetcher?: () => Array<{ id: string; title: string; status: string; taskIds: string[]; goalConfig?: import('@markus/shared').GoalConfig }>;
+  private goalFetcher?: () => Array<{ id: string; title: string; status: string; taskIds: string[]; goalConfig?: GoalConfig }>;
   private consecutiveFailures = 0;
   private metricsCollector: AgentMetricsCollector;
   /** Tracks concurrently executing task IDs */
@@ -2886,7 +2887,7 @@ export class Agent {
     this.tasksFetcher = fetcher;
   }
 
-  setGoalFetcher(fetcher: () => Array<{ id: string; title: string; status: string; taskIds: string[]; goalConfig?: import('@markus/shared').GoalConfig }>): void {
+  setGoalFetcher(fetcher: () => Array<{ id: string; title: string; status: string; taskIds: string[]; goalConfig?: GoalConfig }>): void {
     this.goalFetcher = fetcher;
   }
 

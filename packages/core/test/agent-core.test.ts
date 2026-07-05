@@ -453,12 +453,12 @@ describe('working memory helpers', () => {
 
   it('evicts oldest entry when working memory exceeds max entries', () => {
     const agent = createTestAgent(makeMockRouter());
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 4; i++) {
       agent.updateWorkingMemory(`key_${i}`, `value ${i}`);
     }
     const result = agent.updateWorkingMemory('key_new', 'newest');
     expect(result.evicted).toBeDefined();
-    expect(agent.getWorkingMemorySnapshot()).toHaveLength(10);
+    expect(agent.getWorkingMemorySnapshot()).toHaveLength(4);
     expect(agent.getWorkingMemorySnapshot().some(e => e.key === 'key_new')).toBe(true);
   });
 

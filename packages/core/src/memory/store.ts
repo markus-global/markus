@@ -586,7 +586,7 @@ export class MemoryStore implements IMemoryStore {
     if (!existsSync(this.longTermFile)) return [];
     try {
       const content = readFileSync(this.longTermFile, 'utf-8');
-      const obsMatch = content.match(/\n## _observations\n([\s\S]*)$/);
+      const obsMatch = content.match(/(?:^|\n)## _observations\n([\s\S]*)$/);
       if (!obsMatch) return [];
       const obsContent = obsMatch[1];
       const entries: MemoryEntry[] = [];
@@ -594,7 +594,8 @@ export class MemoryStore implements IMemoryStore {
       for (const section of subsections) {
         const lines = section.split('\n');
         const headerLine = lines[0] ?? '';
-        const idMatch = headerLine.match(/^(obs_\w+)/);
+        if (headerLine.startsWith('<!--')) continue;
+        const idMatch = headerLine.match(/^(\S+)/);
         if (!idMatch) continue;
         const id = idMatch[1];
         // Parse metadata from HTML comments
@@ -718,10 +719,13 @@ export class MemoryStore implements IMemoryStore {
       if (existsSync(this.longTermFile)) {
         existing = readFileSync(this.longTermFile, 'utf-8');
       }
-      const obsStart = existing.indexOf('\n## _observations');
+      let obsStart = existing.indexOf('\n## _observations');
+      if (obsStart < 0 && existing.startsWith('## _observations')) obsStart = 0;
       let updated: string;
-      if (obsStart >= 0) {
+      if (obsStart > 0) {
         updated = existing.slice(0, obsStart) + '\n' + obsSection;
+      } else if (obsStart === 0) {
+        updated = obsSection;
       } else {
         updated = (existing ? existing.trimEnd() + '\n\n' : '') + obsSection;
       }

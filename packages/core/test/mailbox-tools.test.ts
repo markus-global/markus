@@ -40,6 +40,8 @@ describe('createMailboxTools', () => {
     const tools = createMailboxTools(createContext());
     expect(tools.map(t => t.name)).toEqual([
       'check_mailbox',
+      'update_notebook',
+      'clear_notebook',
       'update_working_memory',
       'clear_working_memory',
       'defer_mailbox_item',
@@ -174,7 +176,7 @@ describe('createMailboxTools', () => {
       const tool = createMailboxTools(ctx).find(t => t.name === 'clear_working_memory')!;
       const result = JSON.parse(await tool.execute({ all: true }));
       expect(result.cleared).toBe(3);
-      expect(clearWorkingMemory).toHaveBeenCalledWith();
+      expect(clearWorkingMemory).toHaveBeenCalledWith(undefined);
     });
   });
 });

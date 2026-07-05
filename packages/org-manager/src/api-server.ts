@@ -704,7 +704,7 @@ export class APIServer {
   setStorage(storage: StorageBridge): void {
     this.storage = storage;
     this.tryInitFeishuNotifier();
-    if (storage.pendingCallbackRepo) {
+    if (storage?.pendingCallbackRepo) {
       pendingCallbackRegistry.setPersistence(storage.pendingCallbackRepo);
     }
   }

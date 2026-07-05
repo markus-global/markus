@@ -825,8 +825,8 @@ export class RequirementService {
     this.broadcast('requirement:update', { requirement: req });
   }
 
-  getActiveGoals(orgId: string): Array<import('@markus/shared').Requirement> {
-    const goals: import('@markus/shared').Requirement[] = [];
+  getActiveGoals(orgId: string): Array<Requirement> {
+    const goals: Requirement[] = [];
     for (const req of this.requirements.values()) {
       if (req.orgId === orgId && req.goalConfig?.loopEnabled && !['done', 'cancelled', 'rejected', 'completed'].includes(req.status)) {
         goals.push(req);

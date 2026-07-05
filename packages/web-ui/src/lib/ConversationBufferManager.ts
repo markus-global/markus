@@ -10,6 +10,7 @@
  */
 import type { ChatMsg, ChatMode } from '../pages/ChatHelpers.ts';
 import type { ActivityStep } from '../components/ActivityIndicator.tsx';
+import type { ChatSessionInfo } from '../api.ts';
 
 export type ConvPhase = 'idle' | 'loading' | 'ready' | 'streaming';
 
@@ -37,7 +38,7 @@ export class ConversationBufferManager {
   readonly sessionMsgCache = new Map<string, ChatMsg[]>();
   readonly activeSession = new Map<string, string>();
   readonly actBuffers = new Map<string, ActivityStep[]>();
-  readonly sessionTabs = new Map<string, unknown[]>();
+  readonly sessionTabs = new Map<string, ChatSessionInfo[]>();
 
   private phase = new Map<string, ConvPhase>();
   private sendCount = new Map<string, number>();

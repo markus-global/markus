@@ -31,6 +31,8 @@ vi.mock('@markus/storage', () => ({
   SqliteWorkflowRunRepo: vi.fn(),
   SqliteWorkflowScheduleRepo: vi.fn(),
   SqliteIntegrationRepo: vi.fn(),
+  SqlitePendingCallbackRepo: vi.fn(),
+  runInTransaction: vi.fn((db: unknown, fn: () => unknown) => fn()),
 }));
 
 describe('initStorage', () => {
