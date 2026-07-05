@@ -19,7 +19,6 @@ import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { parseMentionNames, renderMentionText } from '../components/CommentInput.tsx';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
-import { ChatSearchPanel } from '../components/ChatSearchPanel.tsx';
 import { TeamDetailPanel } from '../components/TeamDetailPanel.tsx';
 import { AgentProfile, TAB_DEF as AGENT_TAB_DEF, type ProfileTab } from './AgentProfile.tsx';
 import { TeamProfile, TABS as TEAM_TABS, type TeamTab } from './TeamProfile.tsx';
@@ -3055,18 +3054,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             </div>
             );
           })()
-          )}
-
-          {/* Search panel */}
-          {searchOpen && (
-            <div className="h-full bg-surface-secondary/50 border-b border-border-default" style={{ maxHeight: '60%' }}>
-              <ChatSearchPanel
-                scope={chatMode === 'channel' ? 'channel' : chatMode === 'direct' ? 'direct' : 'all'}
-                channel={chatMode === 'channel' ? activeChannel : undefined}
-                onSelectResult={handleSearchResultClick}
-                onClose={() => setSearchOpen(false)}
-              />
-            </div>
           )}
 
           {/* Session tab bar (direct mode, chat tab) — hide when only 1 session */}

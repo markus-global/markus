@@ -24,7 +24,7 @@ import { useTheme } from './hooks/useTheme.ts';
 import { useIsMobile } from './hooks/useIsMobile.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 import { useTranslation } from 'react-i18next';
-import { SearchModal } from './components/SearchModal.tsx';
+import { SearchModal, type SearchCategory } from './components/SearchModal.tsx';
 
 const HIDDEN_STYLE: React.CSSProperties = {
   visibility: 'hidden',
@@ -110,6 +110,7 @@ export function App() {
   }, [checkLicenseLimits]);
 
   const [showSearchModal, setShowSearchModal] = useState(false);
+  const [searchInitialTab, setSearchInitialTab] = useState<SearchCategory>();
 
   // Global search shortcut: Cmd+P (Mac) / Ctrl+P (Win/Linux)
   useEffect(() => {
@@ -118,16 +119,22 @@ export function App() {
     const onKey = (e: KeyboardEvent) => {
       if (isMac && e.metaKey && !e.ctrlKey && e.key === 'p') {
         e.preventDefault();
+        setSearchInitialTab(undefined);
         setShowSearchModal(prev => !prev);
       } else if (!isMac && e.ctrlKey && !e.metaKey && e.key === 'p') {
         e.preventDefault();
+        setSearchInitialTab(undefined);
         setShowSearchModal(prev => !prev);
       }
     };
-    const onOpen = () => setShowSearchModal(true);
+    const onOpen = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      setSearchInitialTab(detail?.initialTab);
+      setShowSearchModal(true);
+    };
     document.addEventListener('keydown', onKey);
-    window.addEventListener('markus:open-search', onOpen);
-    return () => { document.removeEventListener('keydown', onKey); window.removeEventListener('markus:open-search', onOpen); };
+    window.addEventListener('markus:open-search', onOpen as EventListener);
+    return () => { document.removeEventListener('keydown', onKey); window.removeEventListener('markus:open-search', onOpen as EventListener); };
   }, [isMobile]);
 
   const navigate = useCallback((p: PageId) => {
@@ -449,7 +456,7 @@ export function App() {
 
       {/* Global search modal (desktop) */}
       {!isMobile && showSearchModal && (
-        <SearchModal onClose={() => setShowSearchModal(false)} currentPage={page} />
+        <SearchModal onClose={() => { setShowSearchModal(false); setSearchInitialTab(undefined); }} currentPage={page} initialTab={searchInitialTab} />
       )}
     </div>
   );

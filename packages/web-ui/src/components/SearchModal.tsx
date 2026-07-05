@@ -5,7 +5,7 @@ import { navBus } from '../navBus.ts';
 import { PAGE, type PageId } from '../routes.ts';
 import { Avatar } from './Avatar.tsx';
 
-type SearchCategory = 'all' | 'agents' | 'tasks' | 'requirements' | 'projects' | 'deliverables' | 'workflows' | 'messages';
+export type SearchCategory = 'all' | 'agents' | 'tasks' | 'requirements' | 'projects' | 'deliverables' | 'workflows' | 'messages';
 type SearchScope = 'all' | 'channel' | 'direct';
 
 interface SearchResults {
