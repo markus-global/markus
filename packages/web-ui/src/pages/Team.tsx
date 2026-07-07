@@ -449,9 +449,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const pendingSelectTeamRef = useRef<string | null>(null);
   const [showMemberPanel, setShowMemberPanel] = useState(false);
 
-  // Message search
-  const [searchOpen, setSearchOpen] = useState(false);
-
   // Teams
   const [teams, setTeams] = useState<TeamInfo[]>(previewData?.teams ?? []);
 
@@ -2342,25 +2339,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   };
 
-  const handleSearchResultClick = useCallback((result: import('../api.ts').SearchResult) => {
-    setSearchOpen(false);
-    if (result.source === 'channel' && result.channel) {
-      setChatMode('channel');
-      setActiveChannel(result.channel);
-    } else if (result.source === 'direct' && result.agentId) {
-      setChatMode('direct');
-      setSelectedAgent(result.agentId);
-    }
-    setTimeout(() => {
-      const el = document.getElementById(`msg-${result.id}`);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        el.classList.add('bg-brand-500/10');
-        setTimeout(() => el.classList.remove('bg-brand-500/10'), 2000);
-      }
-    }, 500);
-  }, []);
-
   const newConversation = () => {
     setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
     const key = currentConvKeyRef.current;
@@ -2801,8 +2779,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 >{chatMode === 'channel' ? t('page.teamTab') : t('page.profileTab')}</button>
                 <div className="flex-1" />
                 <button
-                  onClick={() => { setSearchOpen(!searchOpen); }}
-                  className={`p-1 rounded-md transition-colors shrink-0 ${searchOpen ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'}`}
+                  onClick={() => { window.dispatchEvent(new CustomEvent('markus:open-search', { detail: { initialTab: 'messages' } })); }}
+                  className="p-1 rounded-md transition-colors shrink-0 text-fg-tertiary"
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
                 </button>
@@ -2988,8 +2966,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 {/* Right side buttons */}
                 <div className="ml-auto flex items-center gap-2 shrink-0">
                   <button
-                    onClick={() => { setSearchOpen(!searchOpen); }}
-                    className={`p-1.5 rounded-md transition-colors ${searchOpen ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
+                    onClick={() => { window.dispatchEvent(new CustomEvent('markus:open-search', { detail: { initialTab: 'messages' } })); }}
+                    className="p-1.5 rounded-md transition-colors text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
                     title={t('page.searchMessages')}
                   >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
