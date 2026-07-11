@@ -290,6 +290,12 @@ export class LLMRouter {
     return msg.includes('CU_EXCEEDED:');
   }
 
+  /** Detect Markus-specific rate limit (separate from generic 429). */
+  static isMarkusRateLimited(error: unknown): boolean {
+    const msg = error instanceof Error ? error.message : String(error);
+    return msg.includes('MARKUS_RATE_LIMITED:');
+  }
+
   /**
    * Apply random jitter when a provider has many concurrent in-flight requests.
    * Spreads burst traffic to avoid thundering-herd 429 cascades.
@@ -980,8 +986,8 @@ export class LLMRouter {
       lastError = error;
       log.error(`LLM request failed for ${primary}:${routedModel ?? provider.model}`, { error: String(error) });
 
-      // CU_EXCEEDED is fatal — do NOT fall back to other providers
-      if (LLMRouter.isCUExceededError(error)) {
+      // CU_EXCEEDED / MARKUS_RATE_LIMITED are Markus-specific — do NOT fall back to BYOK providers
+      if (LLMRouter.isCUExceededError(error) || LLMRouter.isMarkusRateLimited(error)) {
         throw lastError;
       }
 
@@ -1125,8 +1131,8 @@ export class LLMRouter {
       }
       log.error(`LLM stream request failed for ${primary}:${provider.model}`, { error: String(error) });
 
-      // CU_EXCEEDED is fatal — do NOT fall back to other providers
-      if (LLMRouter.isCUExceededError(error)) {
+      // CU_EXCEEDED / MARKUS_RATE_LIMITED are Markus-specific — do NOT fall back to BYOK providers
+      if (LLMRouter.isCUExceededError(error) || LLMRouter.isMarkusRateLimited(error)) {
         span.setError(lastError instanceof Error ? lastError : String(lastError));
         span.end();
         throw lastError;
@@ -1551,7 +1557,6 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'markus-lite', name: 'Markus Lite', provider: 'markus', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 0.14, output: 0.28, cacheRead: 0.0028 }, reasoning: false, inputTypes: ['text'], tier: 'base', description: 'Fast and affordable text model via Markus platform' },
   { id: 'markus-pro', name: 'Markus Pro', provider: 'markus', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 1.74, output: 3.48, cacheRead: 0.0145 }, reasoning: false, inputTypes: ['text'], tier: 'pro', description: 'High-quality text model via Markus platform' },
   { id: 'markus-max', name: 'Markus Max', provider: 'markus', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 3.0, output: 15.0, cacheRead: 0.3 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'max', description: 'Premium model via Markus platform (Claude Sonnet 4.6)' },
-  { id: 'markus-reason', name: 'Markus Reason', provider: 'markus', contextWindow: 65536, maxOutputTokens: 8192, cost: { input: 1.74, output: 3.48, cacheRead: 0.0145 }, reasoning: true, inputTypes: ['text'], tier: 'pro', description: 'Reasoning model via Markus platform' },
 ];
 
 // ---------------------------------------------------------------------------

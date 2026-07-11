@@ -258,7 +258,10 @@
     },
     "configuredCount": "configured",
     "groupConfigured": "Configured ({{count}})",
-    "groupUnconfigured": "More Providers"
+    "groupUnconfigured": "More Providers",
+    "markusHint": "Connect to Markus Cloud AI service",
+    "markusSetup": "Enter your Markus API key to connect. You can get one from your Markus Hub account.",
+    "connect": "Connect"
   },
   "networkProxy": {
     "title": "Network Proxy",

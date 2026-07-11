@@ -20,8 +20,8 @@ const PLANS: Record<PlanName, PlanConfig> = {
   free: {
     name: 'free',
     displayName: 'Free',
-    monthlyQuotaCu: 5000,
-    windowQuotas: [{ hours: 5, maxCu: 500 }],
+    monthlyQuotaCu: 2000,
+    windowQuotas: [{ hours: 5, maxCu: 200 }],
     priceUsd: 0,
     priceUsdYearly: 0,
     maxAgents: 1,

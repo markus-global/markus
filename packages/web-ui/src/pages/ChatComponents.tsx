@@ -154,6 +154,38 @@ export function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
   );
 }
 
+// ─── Credit error detection ───────────────────────────────────────────────────
+
+/** Returns true if the error is a Markus Cloud AI credit/quota error. */
+export function isMarkusCreditError(err: unknown): boolean {
+  const raw = String(err);
+  return raw.includes('CU_EXCEEDED') || raw.includes('CU_MONTHLY_EXCEEDED');
+}
+
+const CREDIT_MUTE_KEY = 'markus:credit-notif-muted';
+let _lastCreditNotifTs = 0;
+
+/**
+ * Inject a credit-exhausted notification into the notification bell.
+ * - Respects "don't remind again" (persisted in localStorage).
+ * - 5-minute cooldown between notifications (desktop app stays open long).
+ */
+export function dispatchCreditNotification(): void {
+  try { if (localStorage.getItem(CREDIT_MUTE_KEY)) return; } catch { /* */ }
+  const now = Date.now();
+  if (now - _lastCreditNotifTs < 5 * 60_000) return;
+  _lastCreditNotifTs = now;
+  window.dispatchEvent(new CustomEvent('markus:credit-exhausted'));
+}
+
+export function muteCreditNotifications(): void {
+  try { localStorage.setItem(CREDIT_MUTE_KEY, '1'); } catch { /* */ }
+}
+
+export function unmuteCreditNotifications(): void {
+  try { localStorage.removeItem(CREDIT_MUTE_KEY); } catch { /* */ }
+}
+
 // ─── friendlyAgentError ───────────────────────────────────────────────────────
 
 export function friendlyAgentError(err: unknown, t: TFunction): string {
@@ -174,6 +206,13 @@ export function friendlyAgentError(err: unknown, t: TFunction): string {
     const colonIdx = raw.lastIndexOf(': ');
     if (colonIdx >= 0) detail = raw.slice(colonIdx + 2).trim();
   }
+
+  // Markus Cloud AI: credits exhausted (402)
+  if (raw.includes('CU_EXCEEDED'))
+    return t('errors.markusCuExceeded');
+  // Markus Cloud AI: rate limited (429 sliding window)
+  if (raw.includes('MARKUS_RATE_LIMITED'))
+    return t('errors.markusRateLimited');
 
   if (raw.includes('402') || /insufficient.?balance/i.test(raw))
     return t('errors.ai402', { detail: detail || t('errors.defaultInsufficientCredits') });

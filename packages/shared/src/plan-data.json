@@ -2,9 +2,9 @@
   "free": {
     "name": "free",
     "displayName": "Free",
-    "monthlyQuotaCu": 5000,
+    "monthlyQuotaCu": 2000,
     "windowQuotas": [
-      { "hours": 5, "maxCu": 500 }
+      { "hours": 5, "maxCu": 200 }
     ],
     "priceUsd": 0,
     "priceUsdYearly": 0,

@@ -74,6 +74,22 @@ const STREAM_TIMEOUT_MS = 120_000;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 500;
 
+const CREDIT_MUTE_KEY = 'markus:credit-notif-muted';
+let _lastCreditNotifTs = 0;
+
+function fireCreditExhaustedEvent(): void {
+  const g = globalThis as Record<string, unknown>;
+  if (typeof g.dispatchEvent !== 'function') return;
+  try {
+    const ls = g.localStorage as { getItem(k: string): string | null } | undefined;
+    if (ls?.getItem(CREDIT_MUTE_KEY)) return;
+  } catch { /* */ }
+  const now = Date.now();
+  if (now - _lastCreditNotifTs < 5 * 60_000) return;
+  _lastCreditNotifTs = now;
+  (g.dispatchEvent as (e: unknown) => void)(new (g.CustomEvent as typeof CustomEvent)('markus:credit-exhausted'));
+}
+
 export interface MarkusModelInfo {
   id: string;
   display_name: string;
@@ -188,6 +204,8 @@ export class MarkusProvider implements LLMProviderInterface {
     this.cuCache.clear();
   }
 
+  private lowCreditWarned = false;
+
   /** Extract CU quota headers from a proxy response. */
   private extractQuotaHeaders(response: Response): number {
     const cuCost = parseInt(response.headers.get('x-cu-cost') ?? '0', 10);
@@ -209,6 +227,16 @@ export class MarkusProvider implements LLMProviderInterface {
     return cuCost;
   }
 
+  /** Build a credit warning string if remaining credits are low; undefined otherwise. Fires once per session. */
+  private checkLowCredit(): string | undefined {
+    const q = this.lastQuotaInfo;
+    if (!q || q.cuRemaining < 0 || q.cuLimit <= 0) return undefined;
+    const pct = q.cuRemaining / q.cuLimit;
+    if (pct > 0.1 || this.lowCreditWarned) return undefined;
+    this.lowCreditWarned = true;
+    return `Credits running low (${q.cuRemaining}/${q.cuLimit} remaining). Visit https://markus.global/settings?tab=billing to purchase more or upgrade your plan. | 积分即将用完（剩余 ${q.cuRemaining}/${q.cuLimit}），请访问 https://markus.global/settings?tab=billing 购买积分或升级计划。`;
+  }
+
   // -------------------------------------------------------------------------
   // Chat (non-streaming)
   // -------------------------------------------------------------------------
@@ -225,11 +253,16 @@ export class MarkusProvider implements LLMProviderInterface {
       signal: AbortSignal.timeout(this.chatTimeoutMs),
     });
 
-    // CU/billing errors — throw recognizable error so router won't fallback
-    if (response.status === 402 || response.status === 429) {
+    if (response.status === 402) {
+      fireCreditExhaustedEvent();
       const errBody = await response.json().catch(() => ({})) as Record<string, unknown>;
-      const errMsg = ((errBody.error as Record<string, unknown>)?.message as string) ?? 'CU quota exceeded';
-      throw new Error(`CU_EXCEEDED: ${errMsg}. Visit https://markus.global/settings to upgrade your plan or purchase more CU.`);
+      const errMsg = ((errBody.error as Record<string, unknown>)?.message as string) ?? 'Credits quota exceeded';
+      throw new Error(`CU_EXCEEDED: ${errMsg}`);
+    }
+    if (response.status === 429) {
+      const errBody = await response.json().catch(() => ({})) as Record<string, unknown>;
+      const errMsg = ((errBody.error as Record<string, unknown>)?.message as string) ?? 'Rate limit exceeded';
+      throw new Error(`MARKUS_RATE_LIMITED: ${errMsg}`);
     }
 
     if (!response.ok) {
@@ -247,6 +280,7 @@ export class MarkusProvider implements LLMProviderInterface {
 
     const llmResponse = this.parseResponse(data);
     if (cuCost > 0) llmResponse.cuCost = cuCost;
+    llmResponse.creditWarning = this.checkLowCredit();
     this.recordCU(llmResponse);
 
     return llmResponse;
@@ -287,8 +321,12 @@ export class MarkusProvider implements LLMProviderInterface {
     if (!res.ok) {
       clearTimeout(timeout);
       const errText = await res.text();
-      if (res.status === 402 || res.status === 429) {
-        throw new Error(`CU_EXCEEDED: ${errText}. Visit https://markus.global/settings to upgrade your plan or purchase more CU.`);
+      if (res.status === 402) {
+        fireCreditExhaustedEvent();
+        throw new Error(`CU_EXCEEDED: ${errText}`);
+      }
+      if (res.status === 429) {
+        throw new Error(`MARKUS_RATE_LIMITED: ${errText}`);
       }
       throw new Error(`Markus proxy error ${res.status}: ${errText}`);
     }
@@ -364,6 +402,7 @@ export class MarkusProvider implements LLMProviderInterface {
     const streamResult: LLMResponse = { content, usage, finishReason };
     if (reasoningContent) streamResult.reasoningContent = reasoningContent;
     if (streamCuCost > 0) streamResult.cuCost = streamCuCost;
+    streamResult.creditWarning = this.checkLowCredit();
 
     this.cuCache.add(promptTokens, completionTokens);
     return streamResult;
@@ -425,12 +464,15 @@ export class MarkusProvider implements LLMProviderInterface {
 
         if (res.ok) return res;
 
-        // 5xx: retry
-        const errText = await res.text().catch(() => '');
-        log.warn(`Markus proxy error ${res.status} (attempt ${attempt + 1}/${retries})`, { body: errText.slice(0, 200) });
-        lastError = new Error(`Markus proxy error ${res.status}: ${errText}`);
+        // 5xx: log status (without consuming body) and decide whether to retry
+        log.warn(`Markus proxy error ${res.status} (attempt ${attempt + 1}/${retries})`);
+        lastError = new Error(`Markus proxy error ${res.status}`);
 
         if (skipRetry) return res;
+
+        // Consume body only for logging on retry path (won't be returned to caller)
+        const errText = await res.text().catch(() => '');
+        if (errText) log.warn('Response body', { body: errText.slice(0, 200) });
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         log.warn(`Markus proxy network error (attempt ${attempt + 1}/${retries})`, { error: lastError.message });
@@ -494,5 +536,4 @@ const FALLBACK_MODELS: MarkusModelInfo[] = [
   { id: 'markus-lite', display_name: 'Markus Lite', capability: 'text', tier: 'flash', context_window: 65536, max_output_tokens: 8192, supports_vision: false, supports_reasoning: false },
   { id: 'markus-pro', display_name: 'Markus Pro', capability: 'text', tier: 'pro', context_window: 65536, max_output_tokens: 8192, supports_vision: false, supports_reasoning: false },
   { id: 'markus-max', display_name: 'Markus Max', capability: 'text', tier: 'high', context_window: 200000, max_output_tokens: 16384, supports_vision: true, supports_reasoning: false },
-  { id: 'markus-reason', display_name: 'Markus Reason', capability: 'text', tier: 'pro', context_window: 65536, max_output_tokens: 8192, supports_vision: false, supports_reasoning: true },
 ];

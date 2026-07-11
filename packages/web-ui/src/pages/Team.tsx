@@ -36,19 +36,13 @@ import {
 } from './ChatHelpers.ts';
 import {
   NotificationBadge, ChatAgentLink, AvatarPopover, MessageActions,
-  AgentMessageBody, segmentsToStreamEntries, friendlyAgentError,
+  AgentMessageBody, segmentsToStreamEntries, friendlyAgentError, isMarkusCreditError, dispatchCreditNotification,
 } from './ChatComponents.tsx';
 export type { MsgSegment };
 
 function agentInitials(name: string) {
   return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
 }
-
-// Components extracted to ChatComponents.tsx:
-// NotificationBadge, ChatAgentLink, AvatarPopover, friendlyAgentError,
-// MessageActions, segmentsToStreamEntries, AgentMessageBody
-
-// (AvatarPopover, ChatAgentLink extracted to ChatComponents.tsx)
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
@@ -1511,6 +1505,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           return newMsgs.length > 0 ? [...without, ...newMsgs] : prev;
         });
       } catch (e) {
+        if (isMarkusCreditError(e)) dispatchCreditNotification();
         updateConvMsgs(sendKey, prev => [...prev, {
           id: `err_${Date.now()}`, sender: 'agent', text: t('page.errorWithMessage', { message: String(e) }),
           time: new Date().toLocaleTimeString(), agentName: t('page.systemName'), isError: true,
@@ -1565,6 +1560,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           return newMsgs.length > 0 ? [...without, ...newMsgs] : prev;
         });
       } catch (e) {
+        if (isMarkusCreditError(e)) dispatchCreditNotification();
         const friendly = friendlyAgentError(e, t) || t('page.errorWithMessage', { message: String(e) });
         updateConvMsgs(sendKey, prev => [...prev, {
           id: `err_${Date.now()}`, sender: 'agent', text: friendly,
@@ -1942,6 +1938,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             }
           });
         }
+
+        if (isMarkusCreditError(e)) dispatchCreditNotification();
 
         const errText = friendlyAgentError(e, t);
         if (errText) {
@@ -3646,6 +3644,12 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
     && (Date.now() - new Date(agent.lastErrorAt).getTime()) < 30 * 60 * 1000;
   const currentTask = isWorking ? tasks.find(t => t.assignedAgentId === agent.id && t.status === 'in_progress') : null;
   const activity = agent.currentActivity;
+
+  useEffect(() => {
+    if ((isError || hasRecentError) && agent.lastError && isMarkusCreditError(agent.lastError)) {
+      dispatchCreditNotification();
+    }
+  }, [isError, hasRecentError, agent.lastError]);
 
   useEffect(() => {
     if (!open) return;

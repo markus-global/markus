@@ -7,6 +7,7 @@ export interface ProviderOption {
 }
 
 export const PROVIDER_OPTIONS: ProviderOption[] = [
+  { id: 'markus', label: 'Markus Cloud AI', envKey: 'MARKUS_SUBSCRIPTION_KEY', defaultModel: 'markus-lite' },
   { id: 'anthropic', label: 'Anthropic', envKey: 'ANTHROPIC_API_KEY', defaultModel: 'claude-opus-4-6' },
   { id: 'openai', label: 'OpenAI', envKey: 'OPENAI_API_KEY', defaultModel: 'gpt-5.4' },
   { id: 'google', label: 'Google Gemini', envKey: 'GOOGLE_API_KEY', defaultModel: 'gemini-3-1-pro' },
@@ -28,7 +29,6 @@ export const PROVIDER_OPTIONS: ProviderOption[] = [
   { id: 'volcengine', label: 'Volcengine (Doubao)', envKey: 'VOLCENGINE_API_KEY', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', defaultModel: 'doubao-1.5-pro-32k' },
   { id: 'dashscope', label: 'DashScope (Qwen)', envKey: 'DASHSCOPE_API_KEY', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', defaultModel: 'qwen-max' },
   { id: 'ollama', label: 'Ollama (Local)', envKey: 'OLLAMA_BASE_URL', baseUrl: 'http://localhost:11434/v1', defaultModel: 'llama3' },
-  { id: 'markus', label: 'Markus', envKey: '', defaultModel: 'markus-lite' },
   // Full-modal aggregators
   { id: 'atlascloud', label: 'Atlas Cloud (Full-Modal)', envKey: 'ATLASCLOUD_API_KEY', baseUrl: 'https://api.atlascloud.ai/v1', defaultModel: 'claude-sonnet-4-6' },
   { id: 'strongly', label: 'Strongly.AI (Full-Modal)', envKey: 'STRONGLY_API_KEY', baseUrl: 'https://api.strongly.ai/v1', defaultModel: 'claude-sonnet-4-6' },

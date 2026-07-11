@@ -5348,6 +5348,25 @@ EXPLANATION_END`;
       return;
     }
 
+    if (path === '/api/notifications' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const body = await this.readBody(req);
+      const title = body['title'] as string;
+      const bodyText = body['body'] as string;
+      if (!title || !bodyText) { this.json(res, 400, { error: 'title and body required' }); return; }
+      const n = this.hitlService?.notify({
+        targetUserId: authUser.userId,
+        type: ((body['type'] as string) ?? 'system') as 'system',
+        title,
+        body: bodyText,
+        priority: ((body['priority'] as string) ?? 'normal') as 'normal',
+        metadata: body['metadata'] as Record<string, unknown> | undefined,
+      });
+      this.json(res, 201, { notification: n });
+      return;
+    }
+
     if (path === '/api/notifications/mark-all-read' && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
@@ -5957,6 +5976,35 @@ EXPLANATION_END`;
         type: 'settings_changed',
         action: 'hub_token',
         detail: token ? 'Hub token saved' : 'Hub token cleared',
+        userId: authUser?.userId,
+        success: true,
+      });
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
+    // Settings — Subscription Key (auto-saved during Hub connect flow)
+    if (path === '/api/settings/subscription-key' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const authUser = await this.getAuthUser(req);
+      const subscriptionKey = body['subscriptionKey'] as string | null;
+      const proxyUrl = body['proxyUrl'] as string | undefined;
+      if (subscriptionKey) {
+        try {
+          const { saveConfig } = await import('@markus/shared');
+          const markusConfig: Record<string, string> = { apiKey: subscriptionKey };
+          if (proxyUrl) markusConfig.baseUrl = proxyUrl;
+          saveConfig({ llm: { providers: { markus: markusConfig } } } as any);
+          log.info('Subscription key saved to config', { hasProxyUrl: !!proxyUrl });
+        } catch (err) {
+          log.error('Failed to save subscription key', { error: String(err) });
+        }
+      }
+      this.auditService?.record({
+        orgId: 'system',
+        type: 'settings_changed',
+        action: 'subscription_key',
+        detail: subscriptionKey ? 'Subscription key saved' : 'No key provided',
         userId: authUser?.userId,
         success: true,
       });
@@ -10490,7 +10538,7 @@ EXPLANATION_END`;
       regex(/^\/api\/projects\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
 
       // ── Notifications ────────────────────────────────────────────────────
-      exact('/api/notifications', 'GET'),
+      exact('/api/notifications', 'GET', 'POST'),
       exact('/api/notifications/mark-all-read', 'POST'),
       startsWith('/api/notifications/', 'POST'),
 
@@ -10543,6 +10591,7 @@ EXPLANATION_END`;
       exact('/api/settings/telemetry', 'GET', 'POST'),
       exact('/api/settings/hub', 'GET'),
       exact('/api/settings/hub-token', 'POST'),
+      exact('/api/settings/subscription-key', 'POST'),
       exact('/api/settings/llm', 'GET', 'POST'),
       exact('/api/settings/llm/models', 'GET'),
       exact('/api/settings/agent', 'GET', 'POST'),

@@ -168,6 +168,8 @@ export interface LLMResponse {
   reasoningContent?: string;
   /** Compute Units charged by Markus proxy (from x-cu-cost header). */
   cuCost?: number;
+  /** Low-credit warning to display after this response (e.g. "Credits running low"). */
+  creditWarning?: string;
 }
 
 export interface SubagentProgressEvent {

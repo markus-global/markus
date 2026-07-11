@@ -116,7 +116,7 @@ export const PROVIDERS: ProviderModel[] = [
     label: 'Markus Platform',
     envKey: 'MARKUS_SUBSCRIPTION_KEY',
     defaultModel: 'markus-lite',
-    models: ['markus-lite', 'markus-pro', 'markus-max', 'markus-reason'],
+    models: ['markus-lite', 'markus-pro', 'markus-max'],
   },
   {
     id: 'deepseek',

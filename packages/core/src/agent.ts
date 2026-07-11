@@ -3783,6 +3783,9 @@ export class Agent {
       this.calibrateTokenCounter(response.usage.inputTokens);
       lastResponseContent = response.content || '';
       this.emitLlmRequestAudit('chat_stream', response, Date.now() - llmStart, tokensThisCall);
+      if (response.creditWarning) {
+        onEvent({ type: 'text_delta', text: `\n\n⚠️ ${response.creditWarning}` });
+      }
 
       let streamToolIterations = 0;
 

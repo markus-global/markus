@@ -247,14 +247,39 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   const markusSubKey =
     config.llm.providers['markus']?.apiKey ?? process.env['MARKUS_SUBSCRIPTION_KEY'];
   if (markusSubKey) {
+    // Resolve the proxy base URL with auto-detection:
+    // Priority: MARKUS_PROXY_URL env > explicit localhost in config > probe local worker > remote config > production
+    const cfgBaseUrl = config.llm.providers['markus']?.baseUrl ?? '';
+    let markusBaseUrl = process.env['MARKUS_PROXY_URL'] ?? '';
+    if (!markusBaseUrl && cfgBaseUrl.includes('localhost')) {
+      markusBaseUrl = cfgBaseUrl;
+    }
+    if (!markusBaseUrl) {
+      const localPorts = [8787, 8788, 8789];
+      for (const port of localPorts) {
+        try {
+          const probe = await fetch(`http://localhost:${port}/health`, {
+            signal: AbortSignal.timeout(500),
+          }).catch(() => null);
+          if (probe && probe.ok) {
+            markusBaseUrl = `http://localhost:${port}`;
+            log.info(`Auto-detected local Markus proxy at ${markusBaseUrl}`);
+            break;
+          }
+        } catch { /* timeout or connection refused — try next */ }
+      }
+    }
+    if (!markusBaseUrl && cfgBaseUrl) {
+      markusBaseUrl = cfgBaseUrl;
+    }
+    if (!markusBaseUrl) {
+      markusBaseUrl = 'https://proxy.markus.global';
+    }
     providerConfigs['markus'] = {
       provider: 'markus',
       model: config.llm.providers['markus']?.model ?? 'markus-lite',
       apiKey: markusSubKey,
-      baseUrl:
-        config.llm.providers['markus']?.baseUrl ??
-        process.env['MARKUS_PROXY_URL'] ??
-        'https://proxy.markus.global',
+      baseUrl: markusBaseUrl,
       timeoutMs: llmTimeoutMs,
     };
     if (config.llm.defaultProvider === 'markus') {

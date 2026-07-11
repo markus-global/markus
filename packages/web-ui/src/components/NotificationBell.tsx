@@ -6,6 +6,7 @@ import { api, invalidateApiCache, wsClient, type NotificationInfo, type Approval
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
+import { muteCreditNotifications } from '../pages/ChatComponents.tsx';
 
 interface Props {
   collapsed?: boolean;
@@ -130,6 +131,8 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const [loadingMore, setLoadingMore] = useState(false);
   const notifScrollRef = useRef<HTMLDivElement>(null);
   const lastTabRef = useRef<'approvals' | 'notifications'>('approvals');
+  const [creditDialog, setCreditDialog] = useState(false);
+  const [creditMuteChecked, setCreditMuteChecked] = useState(false);
 
   const NOTIF_PAGE_SIZE = 30;
 
@@ -140,7 +143,8 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
         api.approvals.list(),
       ]);
       setNotifications(n.notifications);
-      setUnreadCount(n.unreadCount ?? n.notifications.filter((x: NotificationInfo) => !x.read).length);
+      const serverUnread = n.unreadCount ?? n.notifications.filter((x: NotificationInfo) => !x.read).length;
+      setUnreadCount(serverUnread);
       setHasMoreNotifications(n.totalCount != null ? n.notifications.length < n.totalCount : n.notifications.length >= NOTIF_PAGE_SIZE);
       setApprovals(a.approvals);
       if (!initialFetchDone.current) {
@@ -182,6 +186,25 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     });
   }, []);
 
+  const onCreditExhausted = useCallback(async () => {
+    const hasUnread = notifications.some(n => !n.read && n.type === 'system' && n.metadata?.creditExhausted);
+    if (hasUnread) return;
+    const lang = (typeof navigator !== 'undefined' && navigator.language?.startsWith('zh')) ? 'zh' : 'en';
+    try {
+      await api.notifications.create({
+        title: lang === 'zh' ? 'Markus Cloud AI 积分已用完' : 'Markus Cloud AI Credits Exhausted',
+        body: lang === 'zh'
+          ? '您的积分已耗尽，AI 服务暂时不可用。请前往设置页面充值或升级订阅计划。'
+          : 'Your credits have been exhausted and AI service is temporarily unavailable. Please top up or upgrade your subscription plan in Settings.',
+        type: 'system',
+        priority: 'urgent',
+        metadata: { creditExhausted: true },
+      });
+      fetchData();
+      playNotificationSound();
+    } catch { /* */ }
+  }, [notifications, fetchData]);
+
   useEffect(() => {
     fetchData();
     const timer = setInterval(fetchData, 60000);
@@ -190,10 +213,11 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     window.addEventListener('markus:notifications-changed', onChanged);
     window.addEventListener('markus:mark-read-by-ref', markReadByRef);
     window.addEventListener('markus:open-notifications', onOpenNotifications);
+    window.addEventListener('markus:credit-exhausted', onCreditExhausted);
     const unsubNotif = wsClient.on('notification:created', () => fetchData());
     const unsubApproval = wsClient.on('approval:created', () => fetchData());
-    return () => { clearInterval(timer); window.removeEventListener('markus:notifications-changed', onChanged); window.removeEventListener('markus:mark-read-by-ref', markReadByRef); window.removeEventListener('markus:open-notifications', onOpenNotifications); unsubNotif(); unsubApproval(); };
-  }, [fetchData, markReadByRef]);
+    return () => { clearInterval(timer); window.removeEventListener('markus:notifications-changed', onChanged); window.removeEventListener('markus:mark-read-by-ref', markReadByRef); window.removeEventListener('markus:open-notifications', onOpenNotifications); window.removeEventListener('markus:credit-exhausted', onCreditExhausted); unsubNotif(); unsubApproval(); };
+  }, [fetchData, markReadByRef, onCreditExhausted]);
 
   const reposition = useCallback(() => {
     if (!btnRef.current) return;
@@ -348,7 +372,11 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
         break;
       case 'agent_report':
       case 'system': {
-        if (meta.agentId) {
+        if (meta.creditExhausted) {
+          setCreditDialog(true);
+          setCreditMuteChecked(false);
+          return;
+        } else if (meta.agentId) {
           const params: Record<string, string> = { agentId: meta.agentId as string };
           if (meta.sessionId) params.sessionId = meta.sessionId as string;
           navBus.navigate(PAGE.TEAM, params);
@@ -379,7 +407,9 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   };
 
   const handleNotificationClick = async (n: NotificationInfo) => {
-    if (!n.read) handleMarkRead(n.id);
+    if (!n.read) {
+      handleMarkRead(n.id);
+    }
     const meta = n.metadata ?? {};
     const targetTaskId = meta.taskId as string | undefined;
     const targetReqId = meta.requirementId as string | undefined;
@@ -798,6 +828,85 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     </>
   );
 
+  const hubUrl = typeof window !== 'undefined' && window.location.origin.includes('localhost')
+    ? 'http://localhost:5174/settings?tab=billing'
+    : 'https://markus.global/settings?tab=billing';
+
+  const lang = (typeof navigator !== 'undefined' && navigator.language?.startsWith('zh')) ? 'zh' : 'en';
+
+  const closeCreditDialog = useCallback(() => {
+    if (creditMuteChecked) muteCreditNotifications();
+    setCreditDialog(false);
+  }, [creditMuteChecked]);
+
+  const creditDialogEl = creditDialog ? createPortal(
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center" onClick={closeCreditDialog}>
+      <div className="absolute inset-0 bg-black/50" />
+      <div
+        className="relative w-full max-w-sm mx-4 rounded-2xl overflow-hidden shadow-2xl"
+        style={{ background: 'var(--bg-surface-secondary, #1e1e2e)', border: '1px solid var(--border-default, #333)' }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="h-1 bg-gradient-to-r from-orange-500 via-red-500 to-pink-500" />
+        {/* Close X button */}
+        <button
+          onClick={closeCreditDialog}
+          className="absolute top-3 right-3 w-7 h-7 flex items-center justify-center rounded-full text-fg-tertiary hover:text-fg-primary hover:bg-white/10 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+        <div className="p-6 pt-5 text-center">
+          <div className="w-14 h-14 mx-auto mb-4 rounded-full flex items-center justify-center" style={{ background: 'rgba(249,115,22,0.12)' }}>
+            <svg className="w-7 h-7 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+            </svg>
+          </div>
+          <h3 className="text-lg font-semibold mb-2 text-fg-primary">
+            {lang === 'zh' ? 'Markus Cloud AI 积分已用完' : 'Credits Exhausted'}
+          </h3>
+          <p className="text-sm mb-6 text-fg-tertiary leading-relaxed">
+            {lang === 'zh'
+              ? '您的 Markus Cloud AI 积分已耗尽。您可以充值积分，或配置其他模型 Provider 继续使用。'
+              : 'Your Markus Cloud AI credits have been exhausted. You can top up credits or configure other model providers to continue.'}
+          </p>
+          <div className="flex gap-3 mb-4">
+            <button
+              onClick={() => {
+                closeCreditDialog();
+                navBus.navigate(PAGE.SETTINGS);
+                setTimeout(() => { window.location.hash = 'settings/providers'; }, 50);
+              }}
+              className="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors bg-surface-overlay text-fg-secondary hover:text-fg-primary"
+            >
+              {lang === 'zh' ? '配置模型' : 'Configure Models'}
+            </button>
+            <a
+              href={hubUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => closeCreditDialog()}
+              className="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors text-center"
+            >
+              {lang === 'zh' ? '去充值' : 'Top Up'}
+            </a>
+          </div>
+          <label className="inline-flex items-center gap-2 cursor-pointer text-xs text-fg-tertiary hover:text-fg-secondary transition-colors">
+            <input
+              type="checkbox"
+              checked={creditMuteChecked}
+              onChange={e => setCreditMuteChecked(e.target.checked)}
+              className="w-3.5 h-3.5 rounded accent-indigo-500"
+            />
+            {lang === 'zh' ? '不再提醒' : "Don't remind me again"}
+          </label>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  ) : null;
+
   if (embeddedMode) {
     const tabs: Array<'approvals' | 'notifications'> = ['approvals', 'notifications'];
     const tabIdx = tabs.indexOf(tab);
@@ -819,6 +928,8 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     })();
 
     return (
+      <>
+      {creditDialogEl}
       <div className="flex flex-col h-full overflow-hidden">
         {/* Tabs */}
         <div className="flex border-b border-border-default shrink-0">
@@ -1070,6 +1181,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
           </div>
         </div>
       </div>
+      </>
     );
   }
 
@@ -1107,6 +1219,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
           </div>,
           document.body
         )}
+        {creditDialogEl}
       </>
     );
   }
@@ -1138,6 +1251,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
         </div>,
         document.body
       )}
+      {creditDialogEl}
     </>
   );
 }

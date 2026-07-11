@@ -1052,13 +1052,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           for (const [name, info] of Object.entries(llm.providers)) {
             if (info.configured) {
               configuredEntries.push([name, info]);
-            } else {
+            } else if (name !== 'markus') {
               unconfiguredEntries.push([name, info]);
             }
             seen.add(name);
           }
           for (const po of PROVIDER_OPTIONS) {
-            if (!seen.has(po.id)) {
+            if (!seen.has(po.id) && po.id !== 'markus') {
               unconfiguredEntries.push([po.id, {
                 name: po.id,
                 displayName: po.label,
@@ -1073,12 +1073,59 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           configuredEntries.sort((a, b) => (b[1].enabled ? 1 : 0) - (a[1].enabled ? 1 : 0));
           allProviderEntries.push(...configuredEntries, ...unconfiguredEntries);
           const hasConfigured = configuredEntries.length > 0;
+          // Markus Cloud AI — show pinned section if not yet configured
+          const markusInBackend = llm.providers['markus'];
+          const markusConfigured = markusInBackend?.configured ?? false;
           return (
+            <>
+            {/* Markus Cloud AI — pinned at top when not configured */}
+            {!markusConfigured && (
+            <Section title="Markus Cloud AI">
+              <div className="bg-surface-secondary border border-brand-500/30 rounded-xl overflow-hidden transition-colors hover:border-brand-500/50">
+                <div className="flex items-center justify-between px-5 py-4 cursor-pointer" onClick={() => { setExpandedProvider(expandedProvider === 'markus' ? null : 'markus'); setQuickSetupKey(''); setQuickSetupMsg(null); }}>
+                  <div className="flex items-center gap-3">
+                    <span className="w-2.5 h-2.5 rounded-full bg-brand-500 shadow-[0_0_6px_rgba(99,102,241,0.4)]" />
+                    <div>
+                      <span className="text-sm font-medium">Markus Cloud AI</span>
+                      <div className="text-xs text-fg-tertiary mt-0.5">{t('modelProviders.markusHint')}</div>
+                    </div>
+                  </div>
+                  <svg className={`w-4 h-4 text-fg-tertiary transition-transform ${expandedProvider === 'markus' ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                </div>
+                {expandedProvider === 'markus' && (
+                  <div className="px-5 pb-5 space-y-3 border-t border-border-default/50">
+                    <p className="text-xs text-fg-tertiary pt-3">{t('modelProviders.markusSetup')}</p>
+                    <div className="space-y-2">
+                      <label className="text-[10px] text-fg-tertiary uppercase">{t('modelProviders.apiKey')}</label>
+                      <input type="password" value={quickSetupKey} onChange={e => setQuickSetupKey(e.target.value)}
+                        placeholder="markus_..."
+                        className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none" />
+                    </div>
+                    <button onClick={() => quickSetupProvider('markus', { name: 'markus', displayName: 'Markus Cloud AI', configured: false, enabled: false })}
+                      disabled={!quickSetupKey.trim() || quickSetupSaving}
+                      className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
+                      {quickSetupSaving ? t('common:saving') : t('modelProviders.connect')}
+                    </button>
+                    {quickSetupMsg && <Msg type={quickSetupMsg.type} text={quickSetupMsg.text} />}
+                  </div>
+                )}
+              </div>
+            </Section>
+            )}
+
             <ProviderSection
               title={t('modelProviders.title')}
               defaultCollapsed={hasConfigured}
               configuredProviders={configuredEntries}
               t={t}
+              onBadgeClick={(providerName) => {
+                setExpandedProvider(providerName);
+                setQuickSetupKey(''); setQuickSetupMsg(null);
+                setTimeout(() => {
+                  const el = document.querySelector(`[data-provider-id="${providerName}"]`);
+                  el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }, 80);
+              }}
             >
               <div className="space-y-3">
                 {hasConfigured && (
@@ -1089,7 +1136,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 {allProviderEntries.map(([name, info], idx) => {
                   const isFirstUnconfigured = !info.configured && (idx === 0 || allProviderEntries[idx - 1][1].configured);
                   return (
-                    <div key={name}>
+                    <div key={name} data-provider-id={name}>
                       {isFirstUnconfigured && hasConfigured && (
                         <div className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider px-1 mt-4 mb-2">
                           {t('modelProviders.groupUnconfigured')}
@@ -1494,6 +1541,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             </div>
               )}
             </ProviderSection>
+            </>
           );
         })()}
 
@@ -2821,12 +2869,13 @@ function Msg({ type, text }: { type: 'ok' | 'err'; text: string }) {
   );
 }
 
-function ProviderSection({ title, defaultCollapsed, configuredProviders, t, children }: {
+function ProviderSection({ title, defaultCollapsed, configuredProviders, t, children, onBadgeClick }: {
   title: string;
   defaultCollapsed: boolean;
   configuredProviders: Array<[string, { displayName?: string; enabled: boolean }]>;
   t: (key: string) => string;
   children: React.ReactNode;
+  onBadgeClick?: (providerName: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   return (
@@ -2851,17 +2900,19 @@ function ProviderSection({ title, defaultCollapsed, configuredProviders, t, chil
       {collapsed && configuredProviders.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2">
           {configuredProviders.map(([name, info]) => (
-            <span
+            <button
               key={name}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border ${
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setCollapsed(false); onBadgeClick?.(name); }}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border cursor-pointer transition-colors ${
                 info.enabled
-                  ? 'bg-green-500/10 border-green-500/30 text-green-400'
-                  : 'bg-surface-elevated border-border-default text-fg-tertiary'
+                  ? 'bg-green-500/10 border-green-500/30 text-green-400 hover:bg-green-500/20'
+                  : 'bg-surface-elevated border-border-default text-fg-tertiary hover:border-gray-500'
               }`}
             >
               <span className={`w-1.5 h-1.5 rounded-full ${info.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
               {info.displayName ?? name}
-            </span>
+            </button>
           ))}
         </div>
       )}

@@ -1688,6 +1688,8 @@ export const api = {
       if (opts?.offset) params.set('offset', String(opts.offset));
       return request<{ notifications: NotificationInfo[]; totalCount?: number; unreadCount?: number }>(`/notifications?${params}`);
     },
+    create: (opts: { title: string; body: string; type?: string; priority?: string; metadata?: Record<string, unknown> }) =>
+      request<{ notification: NotificationInfo }>('/notifications', { method: 'POST', body: JSON.stringify(opts) }),
     markRead: (id: string) => request<{ success: boolean }>(`/notifications/${id}`, { method: 'POST' }),
     markAllRead: (userId: string) => request<{ success: boolean; count: number }>('/notifications/mark-all-read', { method: 'POST', body: JSON.stringify({ userId }) }),
   },
@@ -2131,6 +2133,10 @@ function syncHubTokenToBackend(token: string | null): void {
   request('/settings/hub-token', { method: 'POST', body: JSON.stringify({ token }) }).catch(() => {});
 }
 
+function syncSubscriptionKeyToBackend(subscriptionKey: string, proxyUrl?: string): void {
+  request('/settings/subscription-key', { method: 'POST', body: JSON.stringify({ subscriptionKey, proxyUrl }) }).catch(() => {});
+}
+
 /**
  * Open Hub login/register page as a popup window.
  * Uses a session-based polling mechanism:
@@ -2174,10 +2180,13 @@ export function ensureHubAuth(method?: string): Promise<void> {
       _hubAuthPromise = null;
     };
 
-    const handleReady = (data: { token: string; user: HubUser }) => {
+    const handleReady = (data: { token: string; user: HubUser; subscriptionKey?: string; proxyUrl?: string }) => {
       if (settled) return;
       settled = true;
       saveHubAuth(data.token, data.user);
+      if (data.subscriptionKey) {
+        syncSubscriptionKeyToBackend(data.subscriptionKey, data.proxyUrl);
+      }
       cleanup();
       popup?.close();
       resolve();
@@ -2185,9 +2194,9 @@ export function ensureHubAuth(method?: string): Promise<void> {
 
     const pollStatus = async () => {
       try {
-        const data = await request<{ ready?: boolean; token?: string; user?: HubUser }>(statusUrl());
+        const data = await request<{ ready?: boolean; token?: string; user?: HubUser; subscriptionKey?: string; proxyUrl?: string }>(statusUrl());
         if (data.ready && data.token && data.user) {
-          handleReady(data as { token: string; user: HubUser });
+          handleReady(data as { token: string; user: HubUser; subscriptionKey?: string; proxyUrl?: string });
         }
       } catch { /* Hub might be offline, keep polling */ }
     };
@@ -2340,6 +2349,17 @@ export const hubApi = {
   deleteItem: async (id: string) => {
     await ensureHubAuth();
     return hubRequest<{ ok: boolean }>(`/items/${id}`, { method: 'DELETE' });
+  },
+  user: {
+    plan: () => hubRequest<{
+      planType: string; planStatus: string;
+      monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null;
+      bonusCu: number; windowQuotaCu: number;
+    }>('/user/plan'),
+    cuStats: (days = 30, granularity: 'day' | 'hour' = 'day') =>
+      hubRequest<{ stats: Array<{ period: string; model: string | null; totalCu: number; totalInput: number; totalOutput: number; totalCached: number; requestCount: number }>; granularity: string; days: number }>(
+        `/user/cu/stats?days=${days}&granularity=${granularity}`
+      ),
   },
 };
 

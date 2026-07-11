@@ -122,20 +122,22 @@ describe('MarkusProvider CU tracking', () => {
     vi.useRealTimers();
   });
 
-  it('throws CU_EXCEEDED on 402 and 429', async () => {
+  it('throws CU_EXCEEDED on 402', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       mockResponse({ error: { message: 'quota exceeded' } }, 402),
     );
     await expect(
       provider.chat({ messages: [{ role: 'user', content: 'hi' }] }),
     ).rejects.toThrow('CU_EXCEEDED:');
+  });
 
+  it('throws MARKUS_RATE_LIMITED on 429', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
-      mockResponse('rate limited', 429),
+      mockResponse({ error: { message: 'rate limited' } }, 429),
     );
     await expect(
       provider.chat({ messages: [{ role: 'user', content: 'hi' }] }),
-    ).rejects.toThrow('CU_EXCEEDED:');
+    ).rejects.toThrow('MARKUS_RATE_LIMITED:');
   });
 
   it('extracts CU from streaming response headers', async () => {

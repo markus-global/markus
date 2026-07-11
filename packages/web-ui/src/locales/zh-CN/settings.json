@@ -258,7 +258,10 @@
     },
     "configuredCount": "已配置",
     "groupConfigured": "已配置（{{count}}个）",
-    "groupUnconfigured": "更多提供商"
+    "groupUnconfigured": "更多提供商",
+    "markusHint": "连接到 Markus Cloud AI 服务",
+    "markusSetup": "输入您的 Markus API 密钥进行连接。您可以从 Markus Hub 账户中获取。",
+    "connect": "连接"
   },
   "networkProxy": {
     "title": "网络代理",
