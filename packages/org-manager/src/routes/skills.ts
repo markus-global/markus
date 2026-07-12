@@ -556,17 +556,6 @@ export async function handleSkillsRoutes(
           return true;
         }
 
-        if (type === 'team' && server.licenseService) {
-          const limits = server.licenseService.getLimits();
-          if (limits.maxTeams > 0) {
-            const existingTeams = await server.orgService.listTeams('default');
-            if (existingTeams.length >= limits.maxTeams) {
-              server.json(res, 403, { error: `Team limit reached (${limits.maxTeams}). Upgrade to Enterprise for unlimited teams.` });
-              return true;
-            }
-          }
-        }
-
         try {
           const result = await server.builderService.installArtifact(type, name);
           server.json(res, 201, result);

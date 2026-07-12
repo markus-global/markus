@@ -1304,15 +1304,6 @@ async function startServerCore(
     }
   });
 
-  billingService.setToolCallsTodayProvider(() => {
-    let total = 0;
-    for (const a of agentManager.listAgents()) {
-      try { total += agentManager.getAgent(a.id).getUsageStats().toolCallsToday; } catch { /* not loaded */ }
-    }
-    return total;
-  });
-  agentManager.setToolCallLimitChecker(() => billingService.checkLimit('default', 'tool_call'));
-
   // Wire agent state changes to DB persistence + WS broadcast
   if (storage) {
     agentManager.setStateChangeHandler(async (agentId, state) => {

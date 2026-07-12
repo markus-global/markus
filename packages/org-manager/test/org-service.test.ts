@@ -241,15 +241,14 @@ describe('OrganizationService', () => {
       expect(storage.agentRepo.create).toHaveBeenCalled();
     });
 
-    it('enforces agent limit when maxAgents is set', async () => {
-      const org = service.getOrganization('org-1')!;
-      org.maxAgents = 1;
-      agentManager.listAgents.mockReturnValue([{ id: 'existing' }]);
+    it('allows unlimited agents (no maxAgents limit)', async () => {
+      agentManager.listAgents.mockReturnValue(Array.from({ length: 100 }, (_, i) => ({ id: `agent-${i}` })));
+      agentManager.startAgent.mockResolvedValue({ id: 'new-agent' });
       await expect(service.hireAgent({
         name: 'Extra',
         roleName: 'developer',
         orgId: 'org-1',
-      })).rejects.toThrow(/Agent limit reached/);
+      })).resolves.toBeDefined();
     });
 
     it('fires an agent and clears manager reference', async () => {

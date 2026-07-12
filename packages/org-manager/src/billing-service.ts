@@ -38,24 +38,7 @@ export interface APIKey {
 export interface OrgPlan {
   orgId: string;
   tier: PlanTier;
-  limits: {
-    maxAgents: number;
-    maxTokensPerMonth: number;
-    maxToolCallsPerDay: number;
-    maxMessagesPerDay: number;
-    maxStorageBytes: number;
-  };
 }
-
-const DEFAULT_PLANS: Record<PlanTier, OrgPlan['limits']> = {
-  free:       { maxAgents: 1,   maxTokensPerMonth: -1, maxToolCallsPerDay: 5000,  maxMessagesPerDay: -1, maxStorageBytes: -1 },
-  basic:      { maxAgents: 3,   maxTokensPerMonth: -1, maxToolCallsPerDay: 10000, maxMessagesPerDay: -1, maxStorageBytes: -1 },
-  plus:       { maxAgents: 5,   maxTokensPerMonth: -1, maxToolCallsPerDay: 20000, maxMessagesPerDay: -1, maxStorageBytes: -1 },
-  pro:        { maxAgents: 10,  maxTokensPerMonth: -1, maxToolCallsPerDay: -1,    maxMessagesPerDay: -1, maxStorageBytes: -1 },
-  max:        { maxAgents: 25,  maxTokensPerMonth: -1, maxToolCallsPerDay: -1,    maxMessagesPerDay: -1, maxStorageBytes: -1 },
-  team:       { maxAgents: 50,  maxTokensPerMonth: -1, maxToolCallsPerDay: -1,    maxMessagesPerDay: -1, maxStorageBytes: -1 },
-  enterprise: { maxAgents: -1,  maxTokensPerMonth: -1, maxToolCallsPerDay: -1,    maxMessagesPerDay: -1, maxStorageBytes: -1 },
-};
 
 let keyCounter = 0;
 
@@ -64,31 +47,15 @@ export class BillingService {
   private apiKeys = new Map<string, APIKey>();
   private apiKeysByKey = new Map<string, APIKey>();
   private orgPlans = new Map<string, OrgPlan>();
-  private toolCallsTodayProvider?: () => number;
-
-  setToolCallsTodayProvider(fn: () => number): void {
-    this.toolCallsTodayProvider = fn;
-  }
-
   setOrgPlan(orgId: string, tier: PlanTier): OrgPlan {
-    const plan: OrgPlan = {
-      orgId,
-      tier,
-      limits: { ...DEFAULT_PLANS[tier] },
-    };
+    const plan: OrgPlan = { orgId, tier };
     this.orgPlans.set(orgId, plan);
     log.info(`Plan set for org ${orgId}: ${tier}`);
     return plan;
   }
 
   getOrgPlan(orgId: string): OrgPlan {
-    return (
-      this.orgPlans.get(orgId) ?? {
-        orgId,
-        tier: 'free',
-        limits: { ...DEFAULT_PLANS.free },
-      }
-    );
+    return this.orgPlans.get(orgId) ?? { orgId, tier: 'free' };
   }
 
   recordUsage(record: Omit<UsageRecord, 'timestamp'>): UsageRecord {
@@ -138,64 +105,6 @@ export class BillingService {
       agentId,
       ...data,
     }));
-  }
-
-  checkLimit(
-    orgId: string,
-    type: UsageRecord['type'],
-    additionalAmount = 1
-  ): { allowed: boolean; reason?: string } {
-    const plan = this.getOrgPlan(orgId);
-    if (['max', 'team', 'enterprise'].includes(plan.tier)) return { allowed: true };
-
-    const today = new Date().toISOString().slice(0, 10);
-    const month = new Date().toISOString().slice(0, 7);
-
-    if (type === 'llm_tokens') {
-      const summary = this.getUsageSummary(orgId, month);
-      if (
-        plan.limits.maxTokensPerMonth > 0 &&
-        summary.llmTokens + additionalAmount > plan.limits.maxTokensPerMonth
-      ) {
-        return {
-          allowed: false,
-          reason: `Monthly token limit reached (${plan.limits.maxTokensPerMonth})`,
-        };
-      }
-    }
-
-    if (type === 'tool_call') {
-      const todayCount = this.toolCallsTodayProvider
-        ? this.toolCallsTodayProvider()
-        : this.records.filter(r => r.orgId === orgId && r.type === 'tool_call' && r.timestamp.startsWith(today)).reduce((s, r) => s + r.amount, 0);
-      if (
-        plan.limits.maxToolCallsPerDay > 0 &&
-        todayCount + additionalAmount > plan.limits.maxToolCallsPerDay
-      ) {
-        return {
-          allowed: false,
-          reason: `Daily tool call limit reached (${plan.limits.maxToolCallsPerDay})`,
-        };
-      }
-    }
-
-    if (type === 'message') {
-      const todayRecords = this.records.filter(
-        r => r.orgId === orgId && r.type === 'message' && r.timestamp.startsWith(today)
-      );
-      const todayCount = todayRecords.reduce((s, r) => s + r.amount, 0);
-      if (
-        plan.limits.maxMessagesPerDay > 0 &&
-        todayCount + additionalAmount > plan.limits.maxMessagesPerDay
-      ) {
-        return {
-          allowed: false,
-          reason: `Daily message limit reached (${plan.limits.maxMessagesPerDay})`,
-        };
-      }
-    }
-
-    return { allowed: true };
   }
 
   createAPIKey(

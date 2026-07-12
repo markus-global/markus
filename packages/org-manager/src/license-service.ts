@@ -1,4 +1,4 @@
-import { createLogger, type PlanTier, type PlanLimits, type EnterpriseFeature, type LicenseInfo, type LicenseFilePayload, PLAN_LIMITS, ENTERPRISE_FEATURES, PLAN_FEATURES } from '@markus/shared';
+import { createLogger, type PlanTier, type PlanLimits, type EnterpriseFeature, type LicenseInfo, type LicenseFilePayload, ENTERPRISE_FEATURES } from '@markus/shared';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -72,7 +72,7 @@ export class LicenseService {
     const defaultLicense: LicenseInfo = {
       plan: 'free',
       features: [],
-      limits: { ...PLAN_LIMITS.free },
+      limits: {},
       instanceId: randomUUID(),
     };
     this.saveLicense(defaultLicense);
@@ -124,8 +124,8 @@ export class LicenseService {
           this.license.plan = data.plan;
           this.license.validUntil = data.validUntil;
           if (data.isTrial !== undefined) this.license.isTrial = data.isTrial;
-          this.license.limits = { ...PLAN_LIMITS[data.plan] ?? PLAN_LIMITS.free };
-          this.license.features = [...(PLAN_FEATURES[data.plan] ?? [])];
+          this.license.limits = {};
+          this.license.features = [];
           if (data.orgId) this.license.orgId = data.orgId;
           if (data.orgName) this.license.orgName = data.orgName;
           if (data.maxSeats !== null && data.maxSeats !== undefined) this.license.maxSeats = data.maxSeats;
@@ -152,7 +152,7 @@ export class LicenseService {
     this.license.isTrial = undefined;
     this.license.isOffline = undefined;
     this.license.features = [];
-    this.license.limits = { ...PLAN_LIMITS.free };
+    this.license.limits = {};
     this.license.orgId = undefined;
     this.license.orgName = undefined;
     this.license.maxSeats = undefined;
@@ -194,8 +194,6 @@ export class LicenseService {
   }
 
   canUse(feature: EnterpriseFeature): boolean {
-    const planFeatures = PLAN_FEATURES[this.license.plan];
-    if (planFeatures?.includes(feature)) return true;
     return this.license.features.includes(feature);
   }
 
@@ -234,8 +232,8 @@ export class LicenseService {
         this.license.validUntil = data.validUntil;
         this.license.isTrial = data.isTrial;
         this.license.isOffline = false;
-        this.license.features = data.features ?? [...(PLAN_FEATURES[this.license.plan] ?? [])];
-        this.license.limits = { ...PLAN_LIMITS[this.license.plan] ?? PLAN_LIMITS.free };
+        this.license.features = data.features ?? [];
+        this.license.limits = {};
         this.license.lastValidated = new Date().toISOString();
         this.license.orgId = data.orgId;
         this.license.orgName = data.orgName;
@@ -279,7 +277,7 @@ export class LicenseService {
         this.license.isTrial = true;
         this.license.isOffline = false;
         this.license.features = [...ENTERPRISE_FEATURES];
-        this.license.limits = { ...PLAN_LIMITS.enterprise };
+        this.license.limits = {};
         this.license.lastValidated = new Date().toISOString();
         this.license.orgId = data.orgId;
         this.license.orgName = data.orgName;
@@ -338,7 +336,7 @@ export class LicenseService {
       this.license.isTrial = false;
       this.license.isOffline = true;
       this.license.features = payload.features ?? [...ENTERPRISE_FEATURES];
-      this.license.limits = { ...PLAN_LIMITS.enterprise };
+      this.license.limits = {};
       this.license.lastValidated = new Date().toISOString();
       this.saveLicense(this.license);
       log.info(`Offline license imported: ${payload.licenseId} (valid until ${payload.validUntil})`);
@@ -412,8 +410,8 @@ export class LicenseService {
       this.license.validUntil = data.license.validUntil;
       this.license.isTrial = data.license.isTrial;
       this.license.isOffline = false;
-      this.license.features = data.license.features ?? [...(PLAN_FEATURES[data.license.plan] ?? [])];
-      this.license.limits = { ...(PLAN_LIMITS[data.license.plan] ?? PLAN_LIMITS.free) };
+      this.license.features = data.license.features ?? [];
+      this.license.limits = {};
       this.license.lastValidated = new Date().toISOString();
       if (data.license.orgId) this.license.orgId = data.license.orgId;
       if (data.license.orgName) this.license.orgName = data.license.orgName;

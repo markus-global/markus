@@ -238,8 +238,6 @@ describe('plan-data.json sync', () => {
       expect(ts.priceUsd).toBe(json.priceUsd);
       expect(ts.priceUsdYearly).toBe(json.priceUsdYearly);
       expect(ts.windowQuotas).toEqual(json.windowQuotas);
-      expect(ts.maxTeamMembers).toBe(json.maxTeamMembers);
-      expect(ts.maxAgents).toBe(json.maxAgents);
       expect(ts.name).toBe(json.name);
       expect(ts.displayName).toBe(json.displayName);
       expect(ts.features).toEqual(json.features);

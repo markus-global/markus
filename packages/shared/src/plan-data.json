@@ -4,13 +4,11 @@
     "displayName": "Free",
     "monthlyQuotaCu": 2000,
     "windowQuotas": [
-      { "hours": 5, "maxCu": 200 }
+      { "hours": 5, "maxCu": 0 }
     ],
     "priceUsd": 0,
     "priceUsdYearly": 0,
-    "maxAgents": 1,
-    "maxTeamMembers": 1,
-    "features": ["core-agent", "web-ui", "community-skills"]
+    "features": ["core-agent", "web-ui", "community-skills", "all-models"]
   },
   "basic": {
     "name": "basic",
@@ -21,9 +19,7 @@
     ],
     "priceUsd": 20,
     "priceUsdYearly": 16,
-    "maxAgents": 3,
-    "maxTeamMembers": 3,
-    "features": ["core-agent", "web-ui", "community-skills", "custom-tools", "basic-support"]
+    "features": ["core-agent", "web-ui", "community-skills", "all-models", "custom-tools", "basic-support", "hub-publishing"]
   },
   "plus": {
     "name": "plus",
@@ -34,9 +30,7 @@
     ],
     "priceUsd": 100,
     "priceUsdYearly": 80,
-    "maxAgents": 5,
-    "maxTeamMembers": 5,
-    "features": ["core-agent", "web-ui", "community-skills", "custom-tools", "priority-support", "a2a"]
+    "features": ["core-agent", "web-ui", "community-skills", "all-models", "custom-tools", "priority-support", "a2a", "remote-access"]
   },
   "pro": {
     "name": "pro",
@@ -47,9 +41,7 @@
     ],
     "priceUsd": 200,
     "priceUsdYearly": 160,
-    "maxAgents": 10,
-    "maxTeamMembers": 10,
-    "features": ["core-agent", "web-ui", "community-skills", "custom-tools", "priority-support", "a2a", "custom-llm", "analytics"]
+    "features": ["core-agent", "web-ui", "community-skills", "all-models", "custom-tools", "priority-support", "a2a", "remote-access", "api-access", "analytics"]
   },
   "max": {
     "name": "max",
@@ -60,9 +52,7 @@
     ],
     "priceUsd": 1000,
     "priceUsdYearly": 800,
-    "maxAgents": 25,
-    "maxTeamMembers": 25,
-    "features": ["core-agent", "web-ui", "community-skills", "custom-tools", "priority-support", "a2a", "custom-llm", "analytics", "premium-models", "advanced-workflows"]
+    "features": ["core-agent", "web-ui", "community-skills", "all-models", "custom-tools", "priority-support", "a2a", "remote-access", "api-access", "analytics", "custom-llm"]
   },
   "team": {
     "name": "team",
@@ -73,9 +63,7 @@
     ],
     "priceUsd": 2000,
     "priceUsdYearly": 1600,
-    "maxAgents": 50,
-    "maxTeamMembers": 50,
-    "features": ["core-agent", "web-ui", "community-skills", "custom-tools", "dedicated-support", "a2a", "custom-llm", "analytics", "premium-models", "advanced-workflows", "sso", "audit-logs"]
+    "features": ["core-agent", "web-ui", "community-skills", "all-models", "custom-tools", "dedicated-support", "a2a", "remote-access", "api-access", "analytics", "custom-llm", "sso", "audit-logs"]
   },
   "enterprise": {
     "name": "enterprise",
@@ -86,8 +74,6 @@
     ],
     "priceUsd": -1,
     "priceUsdYearly": -1,
-    "maxAgents": 999,
-    "maxTeamMembers": 999,
-    "features": ["core-agent", "web-ui", "community-skills", "custom-tools", "dedicated-support", "a2a", "custom-llm", "analytics", "premium-models", "advanced-workflows", "sso", "audit-logs", "on-premise", "white-label", "custom-contract"]
+    "features": ["core-agent", "web-ui", "community-skills", "all-models", "custom-tools", "dedicated-support", "a2a", "remote-access", "api-access", "analytics", "custom-llm", "sso", "audit-logs", "on-premise", "white-label", "custom-contract"]
   }
 }

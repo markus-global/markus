@@ -797,15 +797,14 @@ export class SqliteOrgRepo {
     name: string;
     ownerId: string;
     plan?: string;
-    maxAgents?: number;
   }) {
     const ts = now();
     this.db
       .prepare(
-        `INSERT OR IGNORE INTO organizations (id, name, owner_id, plan, max_agents, settings, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, '{}', ?, ?)`
+        `INSERT OR IGNORE INTO organizations (id, name, owner_id, plan, settings, created_at, updated_at)
+       VALUES (?, ?, ?, ?, '{}', ?, ?)`
       )
-      .run(data.id, data.name, data.ownerId, data.plan ?? 'free', data.maxAgents ?? 20, ts, ts);
+      .run(data.id, data.name, data.ownerId, data.plan ?? 'free', ts, ts);
     return this.findOrgById(data.id)!;
   }
 
@@ -854,7 +853,6 @@ export class SqliteOrgRepo {
       name: r['name'] as string,
       ownerId: r['owner_id'] as string,
       plan: r['plan'] as string,
-      maxAgents: r['max_agents'] as number,
       managerAgentId: r['manager_agent_id'] as string | null,
       settings: fromJson(r['settings'] as string),
       createdAt: toDate(r['created_at'] as string),

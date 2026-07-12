@@ -199,7 +199,6 @@ export class OrganizationService {
       name,
       ownerId,
       plan: 'free',
-      maxAgents: 20,
       createdAt: new Date().toISOString(),
     };
 
@@ -580,13 +579,6 @@ export class OrganizationService {
       org = this.getDefaultOrganization();
     }
     if (!org) throw new Error(`Organization not found: ${request.orgId}`);
-
-    if (org.maxAgents > 0) {
-      const currentAgents = this.agentManager.listAgents();
-      if (currentAgents.length >= org.maxAgents) {
-        throw new Error(`Agent limit reached (${org.maxAgents}) for organization ${org.name}`);
-      }
-    }
 
     const agent = await this.agentManager.createAgent(request);
 

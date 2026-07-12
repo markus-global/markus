@@ -3398,17 +3398,6 @@ export class APIServer {
         this.json(res, 400, { error: 'name is required' });
         return;
       }
-      // Feature gating: check team limit
-      if (this.licenseService) {
-        const limits = this.licenseService.getLimits();
-        if (limits.maxTeams > 0) {
-          const existingTeams = await this.orgService.listTeams(orgId);
-          if (existingTeams.length >= limits.maxTeams) {
-            this.json(res, 403, { error: `Team limit reached (${limits.maxTeams}). Upgrade to Enterprise for unlimited teams.` });
-            return;
-          }
-        }
-      }
       const team = await this.orgService.createTeam(
         orgId,
         name,
@@ -4732,18 +4721,6 @@ EXPLANATION_END`;
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
 
-      // Feature gating: check multi-user limit
-      if (this.licenseService && this.storage) {
-        const limits = this.licenseService.getLimits();
-        if (limits.maxUsers > 0) {
-          const existingCount = this.storage.userRepo.countByOrg('default');
-          if (existingCount >= limits.maxUsers) {
-            this.json(res, 403, { error: `User limit reached (${limits.maxUsers}). Upgrade to Enterprise for multi-user support.` });
-            return;
-          }
-        }
-      }
-
       const body = await this.readBody(req);
       const orgId = (body['orgId'] as string) ?? 'default';
       const name = body['name'] as string;
@@ -5757,7 +5734,7 @@ EXPLANATION_END`;
     if (path === '/api/license' && req.method === 'GET') {
       const raw = this.licenseService
         ? this.licenseService.getInfo()
-        : { plan: 'free', features: [], limits: { maxAgents: 20, maxTeams: 5, maxToolCallsPerDay: 5000, maxUsers: 1 } };
+        : { plan: 'free', features: [], limits: {} };
       this.json(res, 200, await this.buildLicenseResponse(raw, req));
       return;
     }

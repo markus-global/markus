@@ -21,12 +21,10 @@ const PLANS: Record<PlanName, PlanConfig> = {
     name: 'free',
     displayName: 'Free',
     monthlyQuotaCu: 2000,
-    windowQuotas: [{ hours: 5, maxCu: 200 }],
+    windowQuotas: [{ hours: 5, maxCu: 0 }],
     priceUsd: 0,
     priceUsdYearly: 0,
-    maxAgents: 1,
-    maxTeamMembers: 1,
-    features: ['core-agent', 'web-ui', 'community-skills'],
+    features: ['core-agent', 'web-ui', 'community-skills', 'all-models'],
   },
   basic: {
     name: 'basic',
@@ -35,9 +33,7 @@ const PLANS: Record<PlanName, PlanConfig> = {
     windowQuotas: [{ hours: 5, maxCu: 1000 }],
     priceUsd: 20,
     priceUsdYearly: 16,
-    maxAgents: 3,
-    maxTeamMembers: 3,
-    features: ['core-agent', 'web-ui', 'community-skills', 'custom-tools', 'basic-support'],
+    features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'basic-support', 'hub-publishing'],
   },
   plus: {
     name: 'plus',
@@ -46,9 +42,7 @@ const PLANS: Record<PlanName, PlanConfig> = {
     windowQuotas: [{ hours: 5, maxCu: 5000 }],
     priceUsd: 100,
     priceUsdYearly: 80,
-    maxAgents: 5,
-    maxTeamMembers: 5,
-    features: ['core-agent', 'web-ui', 'community-skills', 'custom-tools', 'priority-support', 'a2a'],
+    features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'priority-support', 'a2a', 'remote-access'],
   },
   pro: {
     name: 'pro',
@@ -57,9 +51,7 @@ const PLANS: Record<PlanName, PlanConfig> = {
     windowQuotas: [{ hours: 5, maxCu: 10000 }],
     priceUsd: 200,
     priceUsdYearly: 160,
-    maxAgents: 10,
-    maxTeamMembers: 10,
-    features: ['core-agent', 'web-ui', 'community-skills', 'custom-tools', 'priority-support', 'a2a', 'custom-llm', 'analytics'],
+    features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'priority-support', 'a2a', 'remote-access', 'api-access', 'analytics'],
   },
   max: {
     name: 'max',
@@ -68,9 +60,7 @@ const PLANS: Record<PlanName, PlanConfig> = {
     windowQuotas: [{ hours: 5, maxCu: 50_000 }],
     priceUsd: 1000,
     priceUsdYearly: 800,
-    maxAgents: 25,
-    maxTeamMembers: 25,
-    features: ['core-agent', 'web-ui', 'community-skills', 'custom-tools', 'priority-support', 'a2a', 'custom-llm', 'analytics', 'premium-models', 'advanced-workflows'],
+    features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'priority-support', 'a2a', 'remote-access', 'api-access', 'analytics', 'custom-llm'],
   },
   team: {
     name: 'team',
@@ -79,20 +69,16 @@ const PLANS: Record<PlanName, PlanConfig> = {
     windowQuotas: [{ hours: 5, maxCu: 100_000 }],
     priceUsd: 2000,
     priceUsdYearly: 1600,
-    maxAgents: 50,
-    maxTeamMembers: 50,
-    features: ['core-agent', 'web-ui', 'community-skills', 'custom-tools', 'dedicated-support', 'a2a', 'custom-llm', 'analytics', 'premium-models', 'advanced-workflows', 'sso', 'audit-logs'],
+    features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'dedicated-support', 'a2a', 'remote-access', 'api-access', 'analytics', 'custom-llm', 'sso', 'audit-logs'],
   },
   enterprise: {
     name: 'enterprise',
     displayName: 'Enterprise',
     monthlyQuotaCu: 5_000_000,
     windowQuotas: [{ hours: 5, maxCu: 500_000 }],
-    priceUsd: -1, // custom contract — aligned with Hub's PLAN_PRICES
+    priceUsd: -1,
     priceUsdYearly: -1,
-    maxAgents: 999,
-    maxTeamMembers: 999,
-    features: ['core-agent', 'web-ui', 'community-skills', 'custom-tools', 'dedicated-support', 'a2a', 'custom-llm', 'analytics', 'premium-models', 'advanced-workflows', 'sso', 'audit-logs', 'on-premise', 'white-label', 'custom-contract'],
+    features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'dedicated-support', 'a2a', 'remote-access', 'api-access', 'analytics', 'custom-llm', 'sso', 'audit-logs', 'on-premise', 'white-label', 'custom-contract'],
   },
 };
 
@@ -242,7 +228,5 @@ export function validatePlanConfig(config: PlanConfig): string[] {
   }
   if (config.priceUsd < -1) errors.push(`priceUsd must be >= 0 (or -1 for custom), got ${config.priceUsd}`);
   if (config.priceUsdYearly < -1) errors.push(`priceUsdYearly must be >= 0 (or -1 for custom), got ${config.priceUsdYearly}`);
-  if (config.maxAgents <= 0) errors.push(`maxAgents must be > 0, got ${config.maxAgents}`);
-  if (config.maxTeamMembers <= 0) errors.push(`maxTeamMembers must be > 0, got ${config.maxTeamMembers}`);
   return errors;
 }

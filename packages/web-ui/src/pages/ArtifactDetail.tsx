@@ -1336,11 +1336,11 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
       {!readOnly && showShareMode && (
         <ShareModeDialog
           onClose={() => setShowShareMode(false)}
-          onConfirm={(mode, price) => {
+          onConfirm={(mode, priceCents) => {
             setShowShareMode(false);
             void handleShareToHub({
-              donationsEnabled: mode === 'donation',
-              priceCents: mode === 'paid' ? price : undefined,
+              donationsEnabled: false,
+              priceCents: mode === 'paid' ? priceCents : undefined,
             });
           }}
           isUpdate={hubStatus.shared}
@@ -1446,14 +1446,20 @@ function VisibilityDialog({ onClose, onConfirm }: {
   );
 }
 
+const ARTIFACT_PRICE_OPTIONS = [
+  { cents: 0, label: 'Free' },
+  { cents: 100, label: '$1' },
+  { cents: 500, label: '$5' },
+  { cents: 1000, label: '$10' },
+] as const;
+
 function ShareModeDialog({ onClose, onConfirm, isUpdate }: {
   onClose: () => void;
-  onConfirm: (mode: 'free' | 'donation' | 'paid', priceCents: number) => void;
+  onConfirm: (mode: 'free' | 'paid', priceCents: number) => void;
   isUpdate: boolean;
 }) {
   const { t } = useTranslation(['builder', 'common']);
-  const [mode, setMode] = useState<'free' | 'donation' | 'paid'>('free');
-  const [price, setPrice] = useState('');
+  const [selectedPrice, setSelectedPrice] = useState(0);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
@@ -1463,53 +1469,26 @@ function ShareModeDialog({ onClose, onConfirm, isUpdate }: {
         </h3>
 
         <div className="space-y-2 mb-5">
-          <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === 'free' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
-            <input type="radio" name="shareMode" checked={mode === 'free'} onChange={() => setMode('free')} className="accent-brand-500" />
-            <div>
-              <div className="text-sm font-medium text-fg-primary">{t('shareMode.free')}</div>
-              <div className="text-[11px] text-fg-tertiary">{t('shareMode.freeDesc')}</div>
-            </div>
-          </label>
-          <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === 'donation' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
-            <input type="radio" name="shareMode" checked={mode === 'donation'} onChange={() => setMode('donation')} className="accent-brand-500" />
-            <div>
-              <div className="text-sm font-medium text-fg-primary">{t('shareMode.donation')}</div>
-              <div className="text-[11px] text-fg-tertiary">{t('shareMode.donationDesc')}</div>
-            </div>
-          </label>
-          <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === 'paid' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
-            <input type="radio" name="shareMode" checked={mode === 'paid'} onChange={() => setMode('paid')} className="accent-brand-500" />
-            <div>
-              <div className="text-sm font-medium text-fg-primary">{t('shareMode.paid')}</div>
-              <div className="text-[11px] text-fg-tertiary">{t('shareMode.paidDesc')}</div>
-            </div>
-          </label>
+          {ARTIFACT_PRICE_OPTIONS.map(opt => (
+            <label key={opt.cents} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selectedPrice === opt.cents ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
+              <input type="radio" name="sharePrice" checked={selectedPrice === opt.cents} onChange={() => setSelectedPrice(opt.cents)} className="accent-brand-500" />
+              <div>
+                <div className="text-sm font-medium text-fg-primary">{opt.label}</div>
+                <div className="text-[11px] text-fg-tertiary">
+                  {opt.cents === 0 ? t('shareMode.freeDesc') : t('shareMode.paidDesc')}
+                </div>
+              </div>
+            </label>
+          ))}
         </div>
-
-        {mode === 'paid' && (
-          <div className="mb-5">
-            <label className="text-xs text-fg-secondary block mb-1.5">{t('shareMode.priceLabel')}</label>
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-fg-tertiary">$</span>
-              <input
-                type="number" min="0.5" step="0.5" value={price}
-                onChange={e => setPrice(e.target.value)}
-                placeholder={t('shareMode.pricePlaceholder')}
-                className="flex-1 text-sm px-3 py-2 rounded-lg bg-surface-elevated border border-border-default text-fg-primary placeholder:text-fg-muted"
-              />
-            </div>
-          </div>
-        )}
 
         <div className="flex gap-3">
           <button onClick={onClose}
             className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-gray-600 transition-colors">
             {t('common:cancel')}
           </button>
-          <button
-            onClick={() => onConfirm(mode, mode === 'paid' ? Math.round(Number(price) * 100) : 0)}
-            disabled={mode === 'paid' && (!price || Number(price) <= 0)}
-            className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          <button onClick={() => onConfirm(selectedPrice > 0 ? 'paid' : 'free', selectedPrice)}
+            className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">
             {isUpdate ? t('shareMode.update') : t('shareMode.share')}
           </button>
         </div>

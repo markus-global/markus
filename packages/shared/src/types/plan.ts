@@ -31,11 +31,7 @@ export interface PlanConfig {
   priceUsd: number;
   /** Annual price in USD per month (discounted; 0 = free) */
   priceUsdYearly: number;
-  /** Max active agents allowed */
-  maxAgents: number;
-  /** Max team members allowed */
-  maxTeamMembers: number;
-  /** Feature flags / capability labels */
+  /** Marketing feature list for display only (not enforcement) */
   features: string[];
 }
 
