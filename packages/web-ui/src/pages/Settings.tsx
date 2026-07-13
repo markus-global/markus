@@ -3428,7 +3428,7 @@ function AccountOverviewSection() {
   const { t } = useTranslation(['settings', 'common']);
 
   // ── Cloud AI plan state ──
-  const [planInfo, setPlanInfo] = useState<{ planType: string; planStatus: string; monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null; bonusCu: number; windowQuotaCu: number } | null>(null);
+  const [planInfo, setPlanInfo] = useState<{ orgId?: string | null; planType: string; planStatus: string; monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null; bonusCu: number; windowQuotaCu: number } | null>(null);
   const [planLoading, setPlanLoading] = useState(true);
 
   // ── Org state (read-only) ──
@@ -3489,7 +3489,7 @@ function AccountOverviewSection() {
     multi_user: t('license.featureMultiUser'), multi_instance: t('license.featureMultiInstance'),
   };
 
-  const primaryOrg = orgs[0];
+  const primaryOrg = orgs.find(o => o.id === planInfo?.orgId) ?? orgs[0];
 
   if (orgLoading || planLoading) return <div className="text-center py-8 text-fg-tertiary text-sm">{t('common:loading')}</div>;
 
