@@ -13,7 +13,7 @@
     "integrations": "Integrations",
     "license": "License",
     "organization": "Organization",
-    "account": "Organization & License",
+    "account": "Account",
     "group": {
       "general": "General",
       "aiConfig": "AI Configuration",
@@ -502,7 +502,7 @@
   "userManagement": {
     "title": "Local Markus",
     "sharedInstanceDesc": "Manage user accounts on this machine's Markus instance. All accounts share the same workspace, AI agents, and teams. For example: on a shared Linux server, multiple colleagues each log in with their own account to the same Markus.",
-    "orgHint": "If team members each use their own Markus on separate computers, go to the \"Organization & License\" tab to invite members and share an enterprise license.",
+    "orgHint": "If team members each use their own Markus on separate computers, go to the \"Account\" tab to view your organization and manage it on Hub.",
     "orgLink": "",
     "name": "Name",
     "email": "Email",
@@ -616,10 +616,16 @@
     "apiDocs": "API Documentation"
   },
   "account": {
-    "title": "Organization & License",
-    "subtitle": "Manage your organization membership, license, and local Markus users.",
-    "sectionOrgLicense": "Organization & License",
-    "sectionUsers": "Local Markus"
+    "title": "Account",
+    "subtitle": "Manage Cloud AI subscription, organization, and local users.",
+    "cloudAiTitle": "Cloud AI",
+    "currentPlan": "Current Plan",
+    "credits": "Credits",
+    "bonus": "bonus",
+    "manageBilling": "Manage Subscription",
+    "manageOrg": "Manage Organization",
+    "orgSection": "Organization",
+    "memberCount": "Members"
   },
   "org": {
     "title": "My Organization",

@@ -13,7 +13,7 @@
     "integrations": "外部IM集成",
     "license": "许可证",
     "organization": "组织",
-    "account": "组织与许可证",
+    "account": "账户",
     "group": {
       "general": "通用",
       "aiConfig": "AI 配置",
@@ -502,7 +502,7 @@
   "userManagement": {
     "title": "本机的 Markus",
     "sharedInstanceDesc": "管理当前这台机器上的 Markus 用户账号。所有账号共享同一个工作区、相同的 AI Agent 和团队。例如：一台共享的 Linux 服务器上，多位同事各自用不同的账号登录同一个 Markus。",
-    "orgHint": "如果团队成员各自在自己的电脑上使用独立的 Markus，请到「组织与许可证」标签页邀请成员、共享企业许可证。",
+    "orgHint": "如果团队成员各自在自己的电脑上使用独立的 Markus，请到「账户」标签页查看组织信息，并前往 Hub 管理组织。",
     "orgLink": "",
     "name": "姓名",
     "email": "邮箱",
@@ -616,10 +616,16 @@
     "apiDocs": "API 文档"
   },
   "account": {
-    "title": "组织与许可证",
-    "subtitle": "管理组织成员、许可证和本机 Markus 用户。",
-    "sectionOrgLicense": "组织与许可证",
-    "sectionUsers": "本机的 Markus"
+    "title": "账户",
+    "subtitle": "管理 Cloud AI 订阅、组织与本机用户。",
+    "cloudAiTitle": "Cloud AI",
+    "currentPlan": "当前计划",
+    "credits": "积分",
+    "bonus": "额外",
+    "manageBilling": "管理订阅",
+    "manageOrg": "管理组织",
+    "orgSection": "组织",
+    "memberCount": "成员数"
   },
   "org": {
     "title": "我的组织",

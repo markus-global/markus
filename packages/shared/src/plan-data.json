@@ -68,9 +68,9 @@
   "enterprise": {
     "name": "enterprise",
     "displayName": "Enterprise",
-    "monthlyQuotaCu": 5000000,
+    "monthlyQuotaCu": 0,
     "windowQuotas": [
-      { "hours": 5, "maxCu": 500000 }
+      { "hours": 5, "maxCu": 0 }
     ],
     "priceUsd": -1,
     "priceUsdYearly": -1,

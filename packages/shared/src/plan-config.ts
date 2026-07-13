@@ -74,8 +74,8 @@ const PLANS: Record<PlanName, PlanConfig> = {
   enterprise: {
     name: 'enterprise',
     displayName: 'Enterprise',
-    monthlyQuotaCu: 5_000_000,
-    windowQuotas: [{ hours: 5, maxCu: 500_000 }],
+    monthlyQuotaCu: 0,
+    windowQuotas: [{ hours: 5, maxCu: 0 }],
     priceUsd: -1,
     priceUsdYearly: -1,
     features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'dedicated-support', 'a2a', 'remote-access', 'api-access', 'analytics', 'custom-llm', 'sso', 'audit-logs', 'on-premise', 'white-label', 'custom-contract'],
