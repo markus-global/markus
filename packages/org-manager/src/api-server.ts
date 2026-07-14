@@ -5931,7 +5931,14 @@ EXPLANATION_END`;
       return;
     }
 
-    // Settings — Hub Token (frontend pushes token so MCP skill servers can read it)
+    // Settings — Hub Token GET (frontend pulls saved token on init)
+    if (path === '/api/settings/hub-token' && req.method === 'GET') {
+      const token = this.readHubToken();
+      this.json(res, 200, { token: token ?? null });
+      return;
+    }
+
+    // Settings — Hub Token POST (frontend pushes token so MCP skill servers can read it)
     if (path === '/api/settings/hub-token' && req.method === 'POST') {
       const body = await this.readBody(req);
       const authUser = await this.getAuthUser(req);
@@ -10567,7 +10574,7 @@ EXPLANATION_END`;
       exact('/api/license/deactivate', 'POST'),
       exact('/api/settings/telemetry', 'GET', 'POST'),
       exact('/api/settings/hub', 'GET'),
-      exact('/api/settings/hub-token', 'POST'),
+      exact('/api/settings/hub-token', 'GET', 'POST'),
       exact('/api/settings/subscription-key', 'POST'),
       exact('/api/settings/llm', 'GET', 'POST'),
       exact('/api/settings/llm/models', 'GET'),

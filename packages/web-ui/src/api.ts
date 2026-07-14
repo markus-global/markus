@@ -2050,11 +2050,18 @@ let HUB_URL = (window as unknown as Record<string, string>).__MARKUS_HUB_URL__ ?
 // Skip in preview/showcase mode (no backend available).
 if (!(window as unknown as Record<string, boolean>).__MARKUS_PREVIEW__) {
   request<{ hubUrl: string }>('/settings/hub')
-    .then(r => {
+    .then(async r => {
       if (r.hubUrl) HUB_URL = r.hubUrl;
       const existingToken = localStorage.getItem('markus_hub_token');
       if (existingToken) {
         request('/settings/hub-token', { method: 'POST', body: JSON.stringify({ token: existingToken }) }).catch(() => {});
+      } else {
+        try {
+          const saved = await request<{ token: string | null }>('/settings/hub-token');
+          if (saved.token) {
+            localStorage.setItem('markus_hub_token', saved.token);
+          }
+        } catch { /* backend may not support GET yet */ }
       }
     })
     .catch(() => {});
