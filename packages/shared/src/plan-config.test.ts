@@ -42,7 +42,7 @@ describe('getPlanConfig', () => {
   it('should return config for enterprise plan', () => {
     const cfg = getPlanConfig('enterprise');
     expect(cfg.name).toBe('enterprise');
-    expect(cfg.monthlyQuotaCu).toBeGreaterThan(0);
+    expect(cfg.monthlyQuotaCu).toBe(0); // contract-based, uses bonus/purchased CU
     expect(cfg.priceUsd).toBe(-1); // custom contract
   });
 
@@ -52,15 +52,21 @@ describe('getPlanConfig', () => {
       const cfg = getPlanConfig(name);
       expect(cfg.windowQuotas.length).toBeGreaterThan(0);
       expect(cfg.windowQuotas[0].hours).toBeGreaterThan(0);
-      expect(cfg.windowQuotas[0].maxCu).toBeGreaterThan(0);
+      expect(cfg.windowQuotas[0].maxCu).toBeGreaterThanOrEqual(0);
+    }
+    // Paid plans (basic+) have positive window quotas
+    for (const name of ['basic', 'plus', 'pro', 'max', 'team'] as const) {
+      expect(getPlanConfig(name).windowQuotas[0].maxCu).toBeGreaterThan(0);
     }
   });
 
-  it('should have increasing monthly quotas', () => {
-    const quotas = listPlans().map(p => getPlanConfig(p).monthlyQuotaCu);
+  it('should have increasing monthly quotas (enterprise excluded — contract-based)', () => {
+    const plansExclEnterprise = listPlans().filter(p => p !== 'enterprise');
+    const quotas = plansExclEnterprise.map(p => getPlanConfig(p).monthlyQuotaCu);
     for (let i = 1; i < quotas.length; i++) {
       expect(quotas[i]).toBeGreaterThan(quotas[i - 1]);
     }
+    expect(getPlanConfig('enterprise').monthlyQuotaCu).toBe(0);
   });
 
   it('should have increasing prices (excluding enterprise custom)', () => {

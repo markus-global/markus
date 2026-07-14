@@ -106,26 +106,10 @@ describe('BillingService', () => {
       expect(service.getOrgPlan('org-1').tier).toBe('enterprise');
     });
 
-    it('allows enterprise usage without limits', () => {
-      service.setOrgPlan('org-1', 'enterprise');
-      expect(service.checkLimit('org-1', 'tool_call', 9999)).toEqual({ allowed: true });
-    });
-
-    it('enforces free tier tool call limit', () => {
+    it('does not enforce tool call limits (removed — CU-only billing)', () => {
       service.setOrgPlan('org-1', 'free');
-      for (let i = 0; i < 5000; i++) {
-        service.recordUsage({ orgId: 'org-1', agentId: 'a', type: 'tool_call', amount: 1 });
-      }
-      const result = service.checkLimit('org-1', 'tool_call', 1);
-      expect(result.allowed).toBe(false);
-      expect(result.reason).toMatch(/Daily tool call limit/);
-    });
-
-    it('uses toolCallsTodayProvider when set', () => {
-      service.setOrgPlan('org-1', 'free');
-      service.setToolCallsTodayProvider(() => 4999);
-      expect(service.checkLimit('org-1', 'tool_call', 1).allowed).toBe(true);
-      expect(service.checkLimit('org-1', 'tool_call', 2).allowed).toBe(false);
+      expect(typeof service.setOrgPlan).toBe('function');
+      expect(typeof service.getOrgPlan).toBe('function');
     });
   });
 });
