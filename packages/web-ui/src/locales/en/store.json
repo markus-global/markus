@@ -111,7 +111,9 @@
     "upgraded": "Upgraded!",
     "failed": "Failed",
     "purchaseRequired": "Purchase required",
-    "buy": "Buy {{price}}",
+    "buy": "Buy",
+    "waitingPurchase": "Waiting for purchase...",
+    "buyOnHub": "Buy on Hub",
     "view": "View →"
   },
   "installedTab": {

@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { api, hubApi, type HubItem } from '../api.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
-import { installHubItem } from './TemplateMarketplace.tsx';
+import { installHubItem, purchaseAndInstall } from './TemplateMarketplace.tsx';
 import { ArtifactDetail } from './ArtifactDetail.tsx';
 
 interface InstalledSkill {
@@ -98,9 +98,10 @@ const CATEGORY_COLORS: Record<string, string> = {
   '通讯协作': 'bg-green-500/15 text-green-600',
 };
 
-function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
+function HubSkillInstallButton({ item, installedSkills, purchased, onMsg, onRefresh }: {
   item: HubItem;
   installedSkills: InstalledSkill[];
+  purchased?: boolean;
   onMsg: (text: string, type: 'success' | 'error') => void;
   onRefresh: () => void;
 }) {
@@ -113,9 +114,12 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
   const canUpgrade = isInstalled && item.version && matchedSkill?.version && isNewerVersion(item.version, matchedSkill.version);
   const isPaid = (item.priceCents ?? 0) > 0;
 
+  const [status, setStatus] = useState('');
+
   const handleInstall = async () => {
     if (installing) return;
     setInstalling(true);
+    setStatus('');
     try {
       await installHubItem(item);
       onMsg(canUpgrade ? `Upgraded ${item.name}` : `Installed ${item.name}`, 'success');
@@ -127,6 +131,28 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
       } else {
         onMsg(t('card.failed'), 'error');
       }
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  const handleBuy = async () => {
+    if (installing) return;
+    setInstalling(true);
+    setStatus('');
+    try {
+      const result = await purchaseAndInstall(item, (s) => {
+        if (s === 'checkout_opened') setStatus(t('card.waitingPurchase', 'Waiting for purchase...'));
+        else if (s === 'installing') setStatus(t('card.installing'));
+      });
+      if (result === 'installed') {
+        onMsg(`Purchased & installed ${item.name}`, 'success');
+        onRefresh();
+      }
+      setStatus('');
+    } catch (err: unknown) {
+      onMsg(err instanceof Error ? err.message : t('card.failed'), 'error');
+      setStatus('');
     } finally {
       setInstalling(false);
     }
@@ -149,12 +175,15 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
     );
   }
 
-  if (isPaid) {
+  if (isPaid && !purchased) {
+    const priceLabel = `$${((item.priceCents ?? 0) / 100).toFixed(2)}`;
     return (
-      <a href={`${hubApi.getUrl()}/@${encodeURIComponent(item.author?.username ?? '')}/${encodeURIComponent(item.slug ?? item.id)}`}
-        target="_blank" rel="noopener noreferrer"
-        className="px-2.5 py-1 text-[10px] bg-amber-600 hover:bg-amber-500 text-white rounded-lg inline-flex items-center gap-1"
-      >{t('card.buy', { price: `$${((item.priceCents ?? 0) / 100).toFixed(2)}` })}</a>
+      <span className="inline-flex items-center gap-1.5">
+        <button onClick={() => void handleBuy()} disabled={installing}
+          className="px-2.5 py-1 text-[10px] bg-amber-600 hover:bg-amber-500 text-white rounded-lg disabled:opacity-50 inline-flex items-center gap-1">
+          {installing ? (status || t('card.installing')) : <>{t('card.buy', 'Buy')} {priceLabel}</>}
+        </button>
+      </span>
     );
   }
 
@@ -166,9 +195,10 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
   );
 }
 
-function HubSkillCard({ item, installedSkills, onMsg, onRefresh, highlight, onHighlightDone }: {
+function HubSkillCard({ item, installedSkills, purchased, onMsg, onRefresh, highlight, onHighlightDone }: {
   item: HubItem;
   installedSkills: InstalledSkill[];
+  purchased?: boolean;
   onMsg: (text: string, type: 'success' | 'error') => void;
   onRefresh: () => void;
   highlight?: boolean;
@@ -235,7 +265,7 @@ function HubSkillCard({ item, installedSkills, onMsg, onRefresh, highlight, onHi
         </div>
 
         <div className="flex items-center justify-end gap-2 pt-3 border-t border-border-default/50" onClick={e => e.stopPropagation()}>
-          <HubSkillInstallButton item={item} installedSkills={installedSkills} onMsg={onMsg} onRefresh={onRefresh} />
+          <HubSkillInstallButton item={item} installedSkills={installedSkills} purchased={purchased} onMsg={onMsg} onRefresh={onRefresh} />
         </div>
       </div>
     </div>
@@ -270,6 +300,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
   const [loadingSkillssh, setLoadingSkillssh] = useState(false);
 
   const [hubSkills, setHubSkills] = useState<HubItem[]>([]);
+  const [hubPurchasedIds, setHubPurchasedIds] = useState<Set<string>>(new Set());
   const [loadingHub, setLoadingHub] = useState(false);
   const [hubSearch, setHubSearch] = useState('');
 
@@ -333,7 +364,12 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
       const p = !q
         ? (consume<{ items: HubItem[] }>(PREFETCH_KEYS.hubSkills) ?? hubApi.search({ type: 'skill', limit: 50 }))
         : hubApi.search({ type: 'skill', q, limit: 50 });
-      const d = await p;
+      const [d] = await Promise.all([
+        p,
+        hubApi.isAuthenticated()
+          ? hubApi.purchases.mine().then(r => setHubPurchasedIds(new Set(r.purchases.map(pp => pp.itemId)))).catch(() => {})
+          : Promise.resolve(),
+      ]);
       setHubSkills(d?.items ?? []);
     } catch { /* */ }
     setLoadingHub(false);
@@ -831,7 +867,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {hubSkills.map(item => (
-                <HubSkillCard key={item.id} item={item} installedSkills={installed} onMsg={msg} onRefresh={() => void loadInstalled()} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} />
+                <HubSkillCard key={item.id} item={item} installedSkills={installed} purchased={hubPurchasedIds.has(item.id)} onMsg={msg} onRefresh={() => void loadInstalled()} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} />
               ))}
             </div>
           )}

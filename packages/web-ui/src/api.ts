@@ -1620,10 +1620,6 @@ export const api = {
       request<{ success: boolean; error?: string }>('/license/activate', { method: 'POST', body: JSON.stringify({ licenseKey }) }),
     trial: () =>
       request<{ success: boolean; error?: string }>('/license/trial', { method: 'POST' }),
-    import: (fileContent: string) =>
-      request<{ success: boolean; error?: string }>('/license/import', { method: 'POST', body: JSON.stringify({ fileContent }) }),
-    deactivate: () =>
-      request<{ success: boolean; error?: string }>('/license/deactivate', { method: 'POST' }),
   },
   sessions: {
     hasAny: () =>
@@ -2350,11 +2346,24 @@ export const hubApi = {
     await ensureHubAuth();
     return hubRequest<{ ok: boolean }>(`/items/${id}`, { method: 'DELETE' });
   },
+  purchases: {
+    checkout: (itemId: string) =>
+      hubRequest<{ ok?: boolean; checkoutUrl?: string; sessionId?: string; alreadyOwned?: boolean }>('/purchases/checkout', { method: 'POST', body: JSON.stringify({ itemId }) }),
+    payWithEarnings: (itemId: string) =>
+      hubRequest<{ ok?: boolean; purchaseId?: string; alreadyOwned?: boolean }>('/purchases/pay-with-earnings', { method: 'POST', body: JSON.stringify({ itemId }) }),
+    mine: () =>
+      hubRequest<{ purchases: Array<{ id: string; itemId: string; amount: number; createdAt: string }> }>('/purchases/mine'),
+  },
+  creator: {
+    getBalance: () =>
+      hubRequest<{ availableBalance: number; totalEarnings: number }>('/creator/balance'),
+  },
   user: {
     plan: () => hubRequest<{
       planType: string; planStatus: string;
       monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null;
-      bonusCu: number; windowQuotaCu: number;
+      bonusCu: number; purchasedCu: number; windowQuotaCu: number;
+      totalConsumedThisPeriod?: number;
     }>('/user/plan'),
     cuStats: (days = 30, granularity: 'day' | 'hour' = 'day') =>
       hubRequest<{ stats: Array<{ period: string; model: string | null; totalCu: number; totalInput: number; totalOutput: number; totalCached: number; requestCount: number }>; granularity: string; days: number }>(

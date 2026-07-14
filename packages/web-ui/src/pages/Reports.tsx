@@ -22,7 +22,8 @@ interface UsageSummary {
 interface HubPlanInfo {
   planType: string; planStatus: string;
   monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null;
-  bonusCu: number; windowQuotaCu: number;
+  bonusCu: number; purchasedCu: number; windowQuotaCu: number;
+  totalConsumedThisPeriod?: number;
 }
 
 interface HubUsageStat {
@@ -586,8 +587,9 @@ function SubscriptionSection({ hubConnected, hubPlan, hubStats, granularity, day
     );
   }
 
-  const totalQuota = (hubPlan?.monthlyQuotaCu ?? 0) + (hubPlan?.bonusCu ?? 0);
-  const cuUsed = hubPlan?.cuUsed ?? 0;
+  const totalQuota = (hubPlan?.monthlyQuotaCu ?? 0) + (hubPlan?.bonusCu ?? 0) + (hubPlan?.purchasedCu ?? 0);
+  const cuRemaining = Math.max(0, (hubPlan?.monthlyQuotaCu ?? 0) - (hubPlan?.cuUsed ?? 0)) + (hubPlan?.bonusCu ?? 0) + (hubPlan?.purchasedCu ?? 0);
+  const cuUsed = hubPlan?.totalConsumedThisPeriod ?? (totalQuota - cuRemaining);
   const usagePercent = totalQuota > 0 ? Math.min(100, Math.round((cuUsed / totalQuota) * 100)) : 0;
 
   const hubUrl = typeof window !== 'undefined' && window.location.origin.includes('localhost')

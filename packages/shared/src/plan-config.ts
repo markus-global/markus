@@ -7,6 +7,14 @@
 // A standalone JSON copy lives at plan-data.json for CF Workers and other
 // non-TypeScript consumers. Keep both in sync.
 //
+// SYNC STRATEGY:
+// - This file and plan-data.json are the STATIC FALLBACK defaults.
+// - The Hub's hub_plan_config DB table is the RUNTIME source of truth.
+// - The Hub admin panel can override plan quotas/prices dynamically.
+// - The CF Worker fetches plan config from Hub GET /api/internal/plan-config.
+// - The desktop client fetches its plan via Hub GET /api/user/plan at runtime.
+// - Values here must match Hub schema.ts PLAN_QUOTAS & QUOTA_LIMITS.
+//
 // Subscription key format: markus_<48-hex-chars>
 // The key itself does NOT encode the plan; plan is resolved via an async
 // lookup strategy (e.g. Hub API call or local DB query).
@@ -216,15 +224,20 @@ export function validatePlanConfig(config: PlanConfig): string[] {
   if (!PLAN_NAMES_SET.has(config.name)) {
     errors.push(`Invalid plan name: "${config.name}"`);
   }
-  if (config.monthlyQuotaCu <= 0) {
-    errors.push(`monthlyQuotaCu must be > 0, got ${config.monthlyQuotaCu}`);
+  // enterprise/free can have 0 quotas; paid plans must have positive quotas
+  const isSpecialPlan = config.name === 'enterprise' || config.name === 'free';
+  if (!isSpecialPlan && config.monthlyQuotaCu <= 0) {
+    errors.push(`monthlyQuotaCu must be > 0 for paid plans, got ${config.monthlyQuotaCu}`);
+  }
+  if (config.monthlyQuotaCu < 0) {
+    errors.push(`monthlyQuotaCu must be >= 0, got ${config.monthlyQuotaCu}`);
   }
   if (config.windowQuotas.length === 0) {
     errors.push('windowQuotas must not be empty');
   }
   for (const wq of config.windowQuotas) {
     if (wq.hours <= 0) errors.push(`windowQuotas.hours must be > 0, got ${wq.hours}`);
-    if (wq.maxCu <= 0) errors.push(`windowQuotas.maxCu must be > 0, got ${wq.maxCu}`);
+    if (!isSpecialPlan && wq.maxCu <= 0) errors.push(`windowQuotas.maxCu must be > 0 for paid plans, got ${wq.maxCu}`);
   }
   if (config.priceUsd < -1) errors.push(`priceUsd must be >= 0 (or -1 for custom), got ${config.priceUsd}`);
   if (config.priceUsdYearly < -1) errors.push(`priceUsdYearly must be >= 0 (or -1 for custom), got ${config.priceUsdYearly}`);

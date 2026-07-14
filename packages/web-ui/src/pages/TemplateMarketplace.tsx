@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, hubApi, type AuthUser, type HubItem } from '../api.ts';
+import { api, hubApi, kebab, type AuthUser, type HubItem } from '../api.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 import { ArtifactDetail } from './ArtifactDetail.tsx';
 
@@ -87,6 +87,7 @@ export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHi
   const [showHireModal, setShowHireModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [localArtifacts, setLocalArtifacts] = useState<Map<string, LocalArtifactInfo>>(new Map());
+  const [purchasedIds, setPurchasedIds] = useState<Set<string>>(new Set());
   const [detailItem, setDetailItem] = useState<{ type: string; name: string } | null>(null);
 
   useEffect(() => {
@@ -123,6 +124,9 @@ export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHi
         const [res] = await Promise.all([
           hubPromise.catch(() => ({ items: [] as HubItem[], total: 0 })),
           loadLocalStatus(),
+          hubApi.isAuthenticated()
+            ? hubApi.purchases.mine().then(r => setPurchasedIds(new Set(r.purchases.map(p => p.itemId)))).catch(() => {})
+            : Promise.resolve(),
         ]);
         setHubItems(res?.items ?? []);
         setTemplates([]);
@@ -322,7 +326,7 @@ export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHi
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {hubItems.map(item => (
-                <HubAgentCard key={item.id} item={item} localInfo={localArtifacts.get(toSlug(item.name))} onStatusChange={loadLocalStatus} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} onViewDetail={(name) => setDetailItem({ type: 'agent', name })} />
+                <HubAgentCard key={item.id} item={item} localInfo={localArtifacts.get(kebab(item.name, 'hub-pkg'))} purchased={purchasedIds.has(item.id)} onStatusChange={loadLocalStatus} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} onViewDetail={(name) => setDetailItem({ type: 'agent', name })} />
               ))}
             </div>
           )
@@ -367,7 +371,7 @@ export function installHubItem(item: HubItem): Promise<string> {
   return (async () => {
     const data = await hubApi.download(item.id);
     const name = data.name || item.name;
-    const slug = toSlug(name);
+    const slug = kebab(name, 'hub-pkg');
     const mode = (data.itemType === 'team' ? 'team' : data.itemType === 'skill' ? 'skill' : 'agent') as 'agent' | 'team' | 'skill';
     const hubSource = { type: 'hub', hubItemId: item.id };
     if (data.files && Object.keys(data.files).length > 0) {
@@ -382,7 +386,82 @@ export function installHubItem(item: HubItem): Promise<string> {
   })();
 }
 
-function HubAgentCard({ item, localInfo, onStatusChange, highlight, onHighlightDone, onViewDetail }: { item: HubItem; localInfo?: LocalArtifactInfo; onStatusChange: () => void; highlight?: boolean; onHighlightDone?: () => void; onViewDetail?: (name: string) => void }) {
+/**
+ * Purchase a paid Hub item in-place: tries earnings first, falls back to
+ * opening checkout in browser and polling until purchased, then auto-installs.
+ *
+ * @returns 'installed' | 'cancelled' (user closed checkout without completing)
+ */
+export async function purchaseAndInstall(
+  item: HubItem,
+  onStatus: (status: 'checking' | 'checkout_opened' | 'installing') => void,
+): Promise<'installed' | 'cancelled'> {
+  onStatus('checking');
+  await hubApi.ensureAuth();
+
+  // Already owned? Skip straight to install
+  const checkRes = await hubApi.purchases.checkout(item.id);
+  if (checkRes.alreadyOwned) {
+    onStatus('installing');
+    await installHubItem(item);
+    return 'installed';
+  }
+
+  // Try earnings balance first
+  try {
+    const balance = await hubApi.creator.getBalance();
+    if (balance.availableBalance >= (item.priceCents ?? 0)) {
+      const payRes = await hubApi.purchases.payWithEarnings(item.id);
+      if (payRes.ok || payRes.alreadyOwned) {
+        onStatus('installing');
+        await installHubItem(item);
+        return 'installed';
+      }
+    }
+  } catch { /* no earnings or not logged in — continue to card checkout */ }
+
+  // Card checkout: open in browser and poll
+  if (!checkRes.checkoutUrl) throw new Error('No checkout URL');
+
+  onStatus('checkout_opened');
+  const popup = window.open(checkRes.checkoutUrl, '_blank', 'noopener');
+
+  // Poll until purchased or popup closed
+  return new Promise<'installed' | 'cancelled'>((resolve, reject) => {
+    const interval = setInterval(async () => {
+      // Check if popup closed (only for same-origin popups, otherwise check periodically)
+      const popupClosed = popup ? popup.closed : false;
+      try {
+        const poll = await hubApi.purchases.checkout(item.id);
+        if (poll.alreadyOwned) {
+          clearInterval(interval);
+          onStatus('installing');
+          try {
+            await installHubItem(item);
+            resolve('installed');
+          } catch (e) { reject(e); }
+          return;
+        }
+      } catch { /* ignore transient errors */ }
+      if (popupClosed) {
+        clearInterval(interval);
+        // One final check in case purchase completed just as popup closed
+        try {
+          const finalCheck = await hubApi.purchases.checkout(item.id);
+          if (finalCheck.alreadyOwned) {
+            onStatus('installing');
+            await installHubItem(item);
+            resolve('installed');
+            return;
+          }
+        } catch { /* ignore */ }
+        resolve('cancelled');
+      }
+    }, 2000);
+  });
+}
+
+function HubAgentCard({ item, localInfo, purchased, onStatusChange, highlight, onHighlightDone, onViewDetail }: { item: HubItem; localInfo?: LocalArtifactInfo; purchased?: boolean; onStatusChange: () => void; highlight?: boolean; onHighlightDone?: () => void; onViewDetail?: (name: string) => void }) {
   const { t } = useTranslation(['store']);
   const [installing, setInstalling] = useState(false);
   const [status, setStatus] = useState('');
@@ -423,6 +502,29 @@ function HubAgentCard({ item, localInfo, onStatusChange, highlight, onHighlightD
     }
   };
 
+  const handleBuy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (installing) return;
+    setInstalling(true);
+    setStatus('');
+    try {
+      const result = await purchaseAndInstall(item, (s) => {
+        if (s === 'checkout_opened') setStatus(t('card.waitingPurchase', 'Waiting for purchase...'));
+        else if (s === 'installing') setStatus(t('card.installing'));
+      });
+      if (result === 'installed') {
+        setStatus(t('card.installed') + '!');
+        onStatusChange();
+      } else {
+        setStatus('');
+      }
+    } catch (err: unknown) {
+      setStatus(err instanceof Error ? err.message : t('card.failed'));
+    } finally {
+      setInstalling(false);
+    }
+  };
+
   const priceLabel = isPaid ? `$${((item.priceCents ?? 0) / 100).toFixed(2)}` : null;
   const iconIsEmoji = item.icon && !item.icon.startsWith('/') && !item.icon.startsWith('http');
   const iconSrc = item.icon && (item.icon.startsWith('http') ? item.icon : item.icon.startsWith('/') ? `${hubApi.getUrl()}${item.icon}` : null);
@@ -436,7 +538,7 @@ function HubAgentCard({ item, localInfo, onStatusChange, highlight, onHighlightD
 
   const handleCardClick = () => {
     if (isInstalled && onViewDetail) {
-      onViewDetail(toSlug(item.name));
+      onViewDetail(kebab(item.name, 'hub-pkg'));
     } else if (hubDetailUrl) {
       window.open(hubDetailUrl, '_blank', 'noopener,noreferrer');
     }
@@ -495,19 +597,18 @@ function HubAgentCard({ item, localInfo, onStatusChange, highlight, onHighlightD
               <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
               {t('card.installed')}{localInfo?.localVersion ? ` v${localInfo.localVersion}` : ''}
             </span>
-          ) : isPaid ? (
-            <a href={`${hubApi.getUrl()}/@${encodeURIComponent(item.author?.username ?? '')}/${encodeURIComponent(item.slug ?? item.id)}`}
-              target="_blank" rel="noopener noreferrer"
-              className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors inline-flex items-center gap-1">
-              {t('card.buy', { price: priceLabel })}
-            </a>
+          ) : isPaid && !purchased ? (
+            <button onClick={e => void handleBuy(e)} disabled={installing}
+              className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50 inline-flex items-center gap-1">
+              {installing ? (status || t('card.installing')) : <>{t('card.buy', 'Buy')} {priceLabel}</>}
+            </button>
           ) : (
             <button onClick={e => void handleInstall(e)} disabled={installing}
               className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50">
               {installing ? t('card.installing') : t('card.install')}
             </button>
           )}
-          {status && <span className={`text-[10px] ${status === t('card.failed') || status === t('card.purchaseRequired') ? 'text-red-500' : 'text-green-600'}`}>{status}</span>}
+          {status && !(isPaid && !purchased) && <span className={`text-[10px] ${status === t('card.failed') || status === t('card.purchaseRequired') ? 'text-red-500' : 'text-green-600'}`}>{status}</span>}
         </div>
       </div>
     </div>

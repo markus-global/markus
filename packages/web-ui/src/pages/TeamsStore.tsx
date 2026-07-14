@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, hubApi, type TeamTemplateInfo, type HubItem } from '../api.ts';
+import { api, hubApi, kebab, type TeamTemplateInfo, type HubItem } from '../api.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
-import { installHubItem } from './TemplateMarketplace.tsx';
+import { installHubItem, purchaseAndInstall } from './TemplateMarketplace.tsx';
 import { ArtifactDetail } from './ArtifactDetail.tsx';
 
 type FilterId = 'all' | 'hub';
@@ -69,6 +69,7 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
   const [deploying, setDeploying] = useState(false);
   const [deployResult, setDeployResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [localArtifacts, setLocalArtifacts] = useState<Map<string, LocalArtifactInfo>>(new Map());
+  const [purchasedIds, setPurchasedIds] = useState<Set<string>>(new Set());
   const [detailItem, setDetailItem] = useState<{ type: string; name: string } | null>(null);
 
   const loadLocalStatus = useCallback(async () => {
@@ -101,6 +102,9 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
         const [res] = await Promise.all([
           hubPromise.catch(() => ({ items: [] as HubItem[], total: 0 })),
           loadLocalStatus(),
+          hubApi.isAuthenticated()
+            ? hubApi.purchases.mine().then(r => setPurchasedIds(new Set(r.purchases.map(p => p.itemId)))).catch(() => {})
+            : Promise.resolve(),
         ]);
         setHubItems(res?.items ?? []);
         setTemplates([]);
@@ -338,7 +342,7 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {hubItems.map(item => (
-                <HubTeamCard key={item.id} item={item} localInfo={localArtifacts.get(toSlug(item.name))} onStatusChange={loadLocalStatus} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} onViewDetail={(name) => setDetailItem({ type: 'team', name })} />
+                <HubTeamCard key={item.id} item={item} localInfo={localArtifacts.get(kebab(item.name, 'hub-pkg'))} purchased={purchasedIds.has(item.id)} onStatusChange={loadLocalStatus} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} onViewDetail={(name) => setDetailItem({ type: 'team', name })} />
               ))}
             </div>
           )
@@ -370,7 +374,7 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
   );
 }
 
-function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDone, onViewDetail }: { item: HubItem; localInfo?: LocalArtifactInfo; onStatusChange: () => void; highlight?: boolean; onHighlightDone?: () => void; onViewDetail?: (name: string) => void }) {
+function HubTeamCard({ item, localInfo, purchased, onStatusChange, highlight, onHighlightDone, onViewDetail }: { item: HubItem; localInfo?: LocalArtifactInfo; purchased?: boolean; onStatusChange: () => void; highlight?: boolean; onHighlightDone?: () => void; onViewDetail?: (name: string) => void }) {
   const { t } = useTranslation(['store']);
   const [installing, setInstalling] = useState(false);
   const [status, setStatus] = useState('');
@@ -412,6 +416,29 @@ function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDo
     }
   };
 
+  const handleBuy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (installing) return;
+    setInstalling(true);
+    setStatus('');
+    try {
+      const result = await purchaseAndInstall(item, (s) => {
+        if (s === 'checkout_opened') setStatus(t('card.waitingPurchase', 'Waiting for purchase...'));
+        else if (s === 'installing') setStatus(t('card.installing'));
+      });
+      if (result === 'installed') {
+        setStatus(t('card.installed') + '!');
+        onStatusChange();
+      } else {
+        setStatus('');
+      }
+    } catch (err: unknown) {
+      setStatus(err instanceof Error ? err.message : t('card.failed'));
+    } finally {
+      setInstalling(false);
+    }
+  };
+
   const iconIsEmoji = item.icon && !item.icon.startsWith('/') && !item.icon.startsWith('http');
   const iconSrc = item.icon && (item.icon.startsWith('http') ? item.icon : item.icon.startsWith('/') ? `${hubApi.getUrl()}${item.icon}` : null);
   const rating = Math.round(parseFloat(item.avgRating));
@@ -422,7 +449,7 @@ function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDo
 
   const handleCardClick = () => {
     if (isInstalled && onViewDetail) {
-      onViewDetail(toSlug(item.name));
+      onViewDetail(kebab(item.name, 'hub-pkg'));
     } else if (hubDetailUrl) {
       window.open(hubDetailUrl, '_blank', 'noopener,noreferrer');
     }
@@ -476,12 +503,11 @@ function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDo
               <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
               {t('card.installed')}{localInfo?.localVersion ? ` v${localInfo.localVersion}` : ''}
             </span>
-          ) : isPaid ? (
-            <a href={`${hubApi.getUrl()}/@${encodeURIComponent(item.author?.username ?? '')}/${encodeURIComponent(item.slug ?? item.id)}`}
-              target="_blank" rel="noopener noreferrer"
-              className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors inline-flex items-center gap-1">
-              {t('card.buy', { price: priceLabel })}
-            </a>
+          ) : isPaid && !purchased ? (
+            <button onClick={e => void handleBuy(e)} disabled={installing}
+              className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50 inline-flex items-center gap-1">
+              {installing ? (status || t('card.installing')) : <>{t('card.buy', 'Buy')} {priceLabel}</>}
+            </button>
           ) : (
             <button onClick={e => void handleInstall(e)} disabled={installing}
               className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50">

@@ -111,7 +111,9 @@
     "upgraded": "已升级！",
     "failed": "失败",
     "purchaseRequired": "需要购买",
-    "buy": "购买 {{price}}",
+    "buy": "购买",
+    "waitingPurchase": "等待支付完成…",
+    "buyOnHub": "在 Hub 购买",
     "view": "查看 →"
   },
   "installedTab": {
