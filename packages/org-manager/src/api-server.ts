@@ -5565,6 +5565,8 @@ EXPLANATION_END`;
         try {
           const agent = agentManager.getAgent(a.id);
           const stats = agent.getUsageStats();
+          const cfg = agent.config?.llmConfig;
+          const provider = cfg?.modelMode === 'custom' ? (cfg.primary ?? 'unknown') : 'markus';
           return {
             agentId: a.id,
             agentName: a.name,
@@ -5581,6 +5583,7 @@ EXPLANATION_END`;
             costToday: stats.costToday,
             cuUsed: stats.cuUsed,
             cuUsedToday: stats.cuUsedToday,
+            provider,
           };
         } catch {
           return {
@@ -5599,6 +5602,7 @@ EXPLANATION_END`;
             costToday: 0,
             cuUsed: 0,
             cuUsedToday: 0,
+            provider: 'unknown',
           };
         }
       });

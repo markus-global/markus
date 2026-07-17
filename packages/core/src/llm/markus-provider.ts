@@ -70,6 +70,7 @@ const DEFAULT_BASE_URL = 'http://localhost:8787';
 const DEFAULT_MODEL = 'markus-lite';
 const DEFAULT_MAX_TOKENS = 4096;
 const CHAT_TIMEOUT_MS = 90_000;
+const CLIENT_ID = 'markus-desktop/1.0';
 const STREAM_TIMEOUT_MS = 120_000;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 500;
@@ -152,7 +153,7 @@ export class MarkusProvider implements LLMProviderInterface {
 
     const base = this.baseUrl.replace(/\/+$/, '');
     const url = `${base}/v1/models`;
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = { 'X-Markus-Client': CLIENT_ID };
     if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
 
     try {
@@ -261,8 +262,10 @@ export class MarkusProvider implements LLMProviderInterface {
     }
     if (response.status === 429) {
       const errBody = await response.json().catch(() => ({})) as Record<string, unknown>;
+      const errCode = (errBody.error as Record<string, unknown>)?.code as string ?? '';
       const errMsg = ((errBody.error as Record<string, unknown>)?.message as string) ?? 'Rate limit exceeded';
-      throw new Error(`MARKUS_RATE_LIMITED: ${errMsg}`);
+      const prefix = errCode === 'CU_WINDOW_EXCEEDED' ? 'CU_WINDOW_EXCEEDED' : 'MARKUS_RATE_LIMITED';
+      throw new Error(`${prefix}: ${errMsg}`);
     }
 
     if (!response.ok) {
@@ -326,7 +329,8 @@ export class MarkusProvider implements LLMProviderInterface {
         throw new Error(`CU_EXCEEDED: ${errText}`);
       }
       if (res.status === 429) {
-        throw new Error(`MARKUS_RATE_LIMITED: ${errText}`);
+        const prefix = errText.includes('CU_WINDOW_EXCEEDED') ? 'CU_WINDOW_EXCEEDED' : 'MARKUS_RATE_LIMITED';
+        throw new Error(`${prefix}: ${errText}`);
       }
       throw new Error(`Markus proxy error ${res.status}: ${errText}`);
     }
@@ -420,6 +424,7 @@ export class MarkusProvider implements LLMProviderInterface {
   private async buildHeaders(): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      'X-Markus-Client': CLIENT_ID,
     };
     if (this.apiKey) {
       headers['Authorization'] = `Bearer ${this.apiKey}`;

@@ -261,6 +261,10 @@
     "groupUnconfigured": "更多提供商",
     "markusHint": "连接到 Markus Cloud AI 服务",
     "markusSetup": "输入您的 Markus API 密钥进行连接。您可以从 Markus Hub 账户中获取。",
+    "markusSetupLogin": "登录您的 Markus Hub 账户即可自动连接 Markus Cloud AI。",
+    "markusConnected": "已连接",
+    "markusConnectedHint": "您的 Markus Cloud AI 连接通过 Hub 账户管理。前往设置管理您的订阅和积分。",
+    "goToAccount": "前往账户设置",
     "connect": "连接"
   },
   "networkProxy": {
@@ -611,6 +615,7 @@
     "cloudAiTitle": "Cloud AI",
     "currentPlan": "当前计划",
     "credits": "积分",
+    "personalLimit": "个人限额",
     "bonus": "额外",
     "manageBilling": "管理订阅",
     "manageOrg": "管理组织",

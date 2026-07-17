@@ -32,6 +32,7 @@ const PLANS: Record<PlanName, PlanConfig> = {
     windowQuotas: [{ hours: 5, maxCu: 0 }],
     priceUsd: 0,
     priceUsdYearly: 0,
+    maxMembers: 1,
     features: ['core-agent', 'web-ui', 'community-skills', 'all-models'],
   },
   basic: {
@@ -41,6 +42,7 @@ const PLANS: Record<PlanName, PlanConfig> = {
     windowQuotas: [{ hours: 5, maxCu: 1000 }],
     priceUsd: 20,
     priceUsdYearly: 16,
+    maxMembers: 1,
     features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'basic-support', 'hub-publishing'],
   },
   plus: {
@@ -50,7 +52,8 @@ const PLANS: Record<PlanName, PlanConfig> = {
     windowQuotas: [{ hours: 5, maxCu: 5000 }],
     priceUsd: 100,
     priceUsdYearly: 80,
-    features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'priority-support', 'a2a', 'remote-access'],
+    maxMembers: 3,
+    features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'priority-support', 'a2a', 'remote-access', 'collaboration'],
   },
   pro: {
     name: 'pro',
@@ -59,7 +62,8 @@ const PLANS: Record<PlanName, PlanConfig> = {
     windowQuotas: [{ hours: 5, maxCu: 10000 }],
     priceUsd: 200,
     priceUsdYearly: 160,
-    features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'priority-support', 'a2a', 'remote-access', 'api-access', 'analytics'],
+    maxMembers: 5,
+    features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'priority-support', 'a2a', 'remote-access', 'api-access', 'analytics', 'collaboration'],
   },
   max: {
     name: 'max',
@@ -68,16 +72,20 @@ const PLANS: Record<PlanName, PlanConfig> = {
     windowQuotas: [{ hours: 5, maxCu: 50_000 }],
     priceUsd: 1000,
     priceUsdYearly: 800,
-    features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'priority-support', 'a2a', 'remote-access', 'api-access', 'analytics', 'custom-llm'],
+    maxMembers: 5,
+    features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'priority-support', 'a2a', 'remote-access', 'api-access', 'analytics', 'custom-llm', 'collaboration'],
   },
   team: {
     name: 'team',
     displayName: 'Team',
-    monthlyQuotaCu: 1_000_000,
-    windowQuotas: [{ hours: 5, maxCu: 100_000 }],
-    priceUsd: 2000,
-    priceUsdYearly: 1600,
-    features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'dedicated-support', 'a2a', 'remote-access', 'api-access', 'analytics', 'custom-llm', 'sso', 'audit-logs'],
+    monthlyQuotaCu: 200_000,
+    windowQuotas: [{ hours: 5, maxCu: 20_000 }],
+    priceUsd: 50,
+    priceUsdYearly: 40,
+    maxMembers: 0,
+    isPerSeat: true,
+    cuPerSeat: 200_000,
+    features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'dedicated-support', 'a2a', 'remote-access', 'api-access', 'analytics', 'custom-llm', 'sso', 'audit-logs', 'per-seat-cu', 'unlimited-members'],
   },
   enterprise: {
     name: 'enterprise',
@@ -86,7 +94,8 @@ const PLANS: Record<PlanName, PlanConfig> = {
     windowQuotas: [{ hours: 5, maxCu: 0 }],
     priceUsd: -1,
     priceUsdYearly: -1,
-    features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'dedicated-support', 'a2a', 'remote-access', 'api-access', 'analytics', 'custom-llm', 'sso', 'audit-logs', 'on-premise', 'white-label', 'custom-contract'],
+    maxMembers: 0,
+    features: ['core-agent', 'web-ui', 'community-skills', 'all-models', 'custom-tools', 'dedicated-support', 'a2a', 'remote-access', 'api-access', 'analytics', 'custom-llm', 'sso', 'audit-logs', 'on-premise', 'white-label', 'custom-contract', 'unlimited-members'],
   },
 };
 

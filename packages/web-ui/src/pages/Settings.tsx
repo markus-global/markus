@@ -1093,19 +1093,11 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 </div>
                 {expandedProvider === 'markus' && (
                   <div className="px-5 pb-5 space-y-3 border-t border-border-default/50">
-                    <p className="text-xs text-fg-tertiary pt-3">{t('modelProviders.markusSetup')}</p>
-                    <div className="space-y-2">
-                      <label className="text-[10px] text-fg-tertiary uppercase">{t('modelProviders.apiKey')}</label>
-                      <input type="password" value={quickSetupKey} onChange={e => setQuickSetupKey(e.target.value)}
-                        placeholder="markus_..."
-                        className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none" />
-                    </div>
-                    <button onClick={() => quickSetupProvider('markus', { name: 'markus', displayName: 'Markus Cloud AI', configured: false, enabled: false })}
-                      disabled={!quickSetupKey.trim() || quickSetupSaving}
-                      className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                      {quickSetupSaving ? t('common:saving') : t('modelProviders.connect')}
+                    <p className="text-xs text-fg-tertiary pt-3">{t('modelProviders.markusSetupLogin')}</p>
+                    <button onClick={() => navBus.emit('navigate', PAGE.SETTINGS, { tab: 'account' })}
+                      className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition-colors">
+                      {t('modelProviders.goToAccount')}
                     </button>
-                    {quickSetupMsg && <Msg type={quickSetupMsg.type} text={quickSetupMsg.text} />}
                   </div>
                 )}
               </div>
@@ -1162,7 +1154,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                       </div>
                       <div className="text-xs text-fg-tertiary mt-0.5">
                         {info.configured ? (
-                          <>{info.models && info.models.length > 0 ? t('modelProviders.modelsAvailable', { count: info.models.length }) : ''}{info.apiKeyPreview && <> · <code className="text-fg-secondary">{info.apiKeyPreview}</code></>}</>
+                          <>{info.models && info.models.length > 0 ? t('modelProviders.modelsAvailable', { count: info.models.length }) : ''}{name !== 'markus' && info.apiKeyPreview && <> · <code className="text-fg-secondary">{info.apiKeyPreview}</code></>}</>
                         ) : t('modelProviders.notConfigured')}
                       </div>
                     </div>
@@ -1274,29 +1266,14 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                       </>
                     )}
 
-                    {/* ───── Subscription Key (Markus provider) ───── */}
+                    {/* ───── Markus Cloud AI — Connected status ───── */}
                     {name === 'markus' && info.configured && (
-                      <div className="bg-surface-elevated/30 rounded-lg p-4 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <label className="text-[10px] text-fg-tertiary uppercase tracking-wider">Subscription Key</label>
-                          <span className="text-[10px] text-fg-muted">{t('modelProviders.keyReadOnly')}</span>
+                      <div className="bg-green-500/5 border border-green-500/20 rounded-lg p-4">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-green-400 shadow-[0_0_4px_rgba(74,222,128,0.4)]" />
+                          <span className="text-sm font-medium text-green-400">{t('modelProviders.markusConnected')}</span>
                         </div>
-                        <div className="flex gap-2">
-                          <input
-                            type="text"
-                            value={info.apiKeyPreview ?? ''}
-                            readOnly
-                            className="flex-1 px-3 py-2 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary font-mono selection:bg-brand-500/30 cursor-text focus:border-brand-500 outline-none"
-                            onClick={e => (e.target as HTMLInputElement).select()}
-                          />
-                          <button
-                            onClick={() => { navigator.clipboard.writeText(info.apiKeyPreview ?? '').catch(() => {}); }}
-                            className="px-3 py-2 text-xs bg-surface-secondary hover:bg-surface-tertiary border border-border-default rounded-lg text-fg-secondary transition-colors"
-                            title="Copy"
-                          >
-                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" /></svg>
-                          </button>
-                        </div>
+                        <p className="text-xs text-fg-tertiary mt-2">{t('modelProviders.markusConnectedHint')}</p>
                       </div>
                     )}
 
@@ -3428,7 +3405,7 @@ function AccountOverviewSection() {
   const { t } = useTranslation(['settings', 'common']);
 
   // ── Cloud AI plan state ──
-  const [planInfo, setPlanInfo] = useState<{ orgId?: string | null; planType: string; planStatus: string; monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null; bonusCu: number; windowQuotaCu: number } | null>(null);
+  const [planInfo, setPlanInfo] = useState<{ orgId?: string | null; planType: string; planStatus: string; monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null; bonusCu: number; windowQuotaCu: number; memberCuLimit?: number | null; memberCuUsed?: number } | null>(null);
   const [planLoading, setPlanLoading] = useState(true);
 
   // ── Org state (read-only) ──
@@ -3513,11 +3490,15 @@ function AccountOverviewSection() {
                 <span className="text-xs text-fg-tertiary">{t('account.currentPlan')}</span>
                 <span className="px-2 py-0.5 rounded text-xs font-semibold capitalize bg-brand-600/10 text-brand-500 border border-brand-500/15">{planInfo.planType}</span>
               </div>
-              {planInfo.monthlyQuotaCu > 0 && (
+              {(planInfo.monthlyQuotaCu > 0 || (planInfo.memberCuLimit != null && planInfo.memberCuLimit > 0)) && (
                 <div className="flex items-center gap-2 text-xs">
-                  <span className="text-fg-tertiary">{t('account.credits')}</span>
-                  <span className="font-medium text-fg-primary tabular-nums">{Math.round(planInfo.cuUsed).toLocaleString()} / {planInfo.monthlyQuotaCu.toLocaleString()}</span>
-                  {planInfo.bonusCu > 0 && <span className="text-fg-tertiary">(+{planInfo.bonusCu.toLocaleString()} {t('account.bonus')})</span>}
+                  <span className="text-fg-tertiary">{planInfo.memberCuLimit != null && planInfo.memberCuLimit > 0 ? t('account.personalLimit') : t('account.credits')}</span>
+                  <span className="font-medium text-fg-primary tabular-nums">
+                    {planInfo.memberCuLimit != null && planInfo.memberCuLimit > 0
+                      ? `${Math.round(planInfo.memberCuUsed ?? 0).toLocaleString()} / ${planInfo.memberCuLimit.toLocaleString()}`
+                      : `${Math.round(planInfo.cuUsed).toLocaleString()} / ${planInfo.monthlyQuotaCu.toLocaleString()}`}
+                  </span>
+                  {!(planInfo.memberCuLimit != null && planInfo.memberCuLimit > 0) && planInfo.bonusCu > 0 && <span className="text-fg-tertiary">(+{planInfo.bonusCu.toLocaleString()} {t('account.bonus')})</span>}
                 </div>
               )}
             </div>

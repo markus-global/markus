@@ -290,10 +290,10 @@ export class LLMRouter {
     return msg.includes('CU_EXCEEDED:');
   }
 
-  /** Detect Markus-specific rate limit (separate from generic 429). */
+  /** Detect Markus-specific rate limit or 5h window exceeded (separate from generic 429). */
   static isMarkusRateLimited(error: unknown): boolean {
     const msg = error instanceof Error ? error.message : String(error);
-    return msg.includes('MARKUS_RATE_LIMITED:');
+    return msg.includes('MARKUS_RATE_LIMITED:') || msg.includes('CU_WINDOW_EXCEEDED:');
   }
 
   /**

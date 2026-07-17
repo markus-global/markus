@@ -23,14 +23,20 @@ export interface PlanConfig {
   name: PlanName;
   /** Human-readable display name */
   displayName: string;
-  /** Monthly CU entitlement */
+  /** Monthly CU entitlement (for per-seat plans, this is per-seat) */
   monthlyQuotaCu: number;
   /** Short-window rate limits (throttling, not billing) */
   windowQuotas: WindowQuota[];
-  /** Monthly price in USD (0 = free) */
+  /** Monthly price in USD (0 = free; for per-seat plans, this is per-seat) */
   priceUsd: number;
-  /** Annual price in USD per month (discounted; 0 = free) */
+  /** Annual price in USD per month (discounted; 0 = free; for per-seat plans, per-seat) */
   priceUsdYearly: number;
+  /** Max org members (0 = unlimited, 1 = solo only) */
+  maxMembers: number;
+  /** Whether this plan uses per-seat billing */
+  isPerSeat?: boolean;
+  /** CU allocation per seat (only for per-seat plans) */
+  cuPerSeat?: number;
   /** Marketing feature list for display only (not enforcement) */
   features: string[];
 }

@@ -261,6 +261,10 @@
     "groupUnconfigured": "More Providers",
     "markusHint": "Connect to Markus Cloud AI service",
     "markusSetup": "Enter your Markus API key to connect. You can get one from your Markus Hub account.",
+    "markusSetupLogin": "Log in to your Markus Hub account to automatically connect to Markus Cloud AI.",
+    "markusConnected": "Connected",
+    "markusConnectedHint": "Your Markus Cloud AI connection is managed through your Hub account. Visit Settings to manage your subscription and credits.",
+    "goToAccount": "Go to Account",
     "connect": "Connect"
   },
   "networkProxy": {
@@ -611,6 +615,7 @@
     "cloudAiTitle": "Cloud AI",
     "currentPlan": "Current Plan",
     "credits": "Credits",
+    "personalLimit": "Personal Limit",
     "bonus": "bonus",
     "manageBilling": "Manage Subscription",
     "manageOrg": "Manage Organization",

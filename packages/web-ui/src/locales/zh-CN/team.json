@@ -229,7 +229,8 @@
     "defaultTooManyRequests": "请求过于频繁",
     "defaultServiceDown": "服务暂时不可用",
     "markusCuExceeded": "⚠ 您的 Markus Cloud AI 积分已用完。请访问 https://markus.global/settings?tab=billing 购买更多积分或升级订阅计划。",
-    "markusRateLimited": "⚠ Markus Cloud AI 请求频率达到上限，请稍等片刻后重试。升级计划可获得更高限额：https://markus.global/settings?tab=billing",
+    "markusRateLimited": "⚠ Markus Cloud AI 请求频率达到上限（600次/分钟）。通常几秒后即可恢复。如果有大量智能体并发运行，建议错开任务时间。",
+    "markusWindowExceeded": "⚠ 5 小时滑动窗口用量已达上限。您的计划在 5 小时内允许使用的积分有限。请等待窗口滚动后重试，或升级计划以获得更高的 5 小时窗口额度：https://markus.global/settings?tab=billing",
     "creditModalTitle": "积分已用完",
     "creditModalDesc": "您的 Markus Cloud AI 积分已耗尽，请购买更多积分或升级订阅计划以继续使用。",
     "creditModalDismiss": "稍后再说",
@@ -237,8 +238,10 @@
     "ai402": "⚠ AI 服务错误：{{detail}}。请充值 API 余额或联系管理员。",
     "ai401": "⚠ AI 服务认证失败：{{detail}}。请检查配置。",
     "ai429": "⚠ 超出速率限制：{{detail}}。请稍后再试。",
+    "ai502": "⚠ AI 上游服务异常：{{detail}}。LLM 供应商可能暂时宕机，请稍后重试。",
     "ai503": "⚠ AI 服务不可用：{{detail}}。请稍后重试。",
-    "aiGeneric": "⚠ AI 服务错误：{{detail}}"
+    "aiGeneric": "⚠ AI 服务错误：{{detail}}",
+    "defaultUpstreamDown": "LLM 供应商返回 502 Bad Gateway"
   },
   "page": {
     "viewProfileArrow": "查看资料 →",

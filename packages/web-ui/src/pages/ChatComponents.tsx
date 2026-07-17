@@ -207,23 +207,29 @@ export function friendlyAgentError(err: unknown, t: TFunction): string {
     if (colonIdx >= 0) detail = raw.slice(colonIdx + 2).trim();
   }
 
-  // Markus Cloud AI: credits exhausted (402)
+  // All error keys live in the 'team' namespace — use explicit prefix so
+  // this function works regardless of the caller's default namespace.
+  const e = (key: string, opts?: Record<string, unknown>) => t(`team:errors.${key}`, opts);
+
   if (raw.includes('CU_EXCEEDED'))
-    return t('errors.markusCuExceeded');
-  // Markus Cloud AI: rate limited (429 sliding window)
+    return e('markusCuExceeded');
+  if (raw.includes('CU_WINDOW_EXCEEDED'))
+    return e('markusWindowExceeded');
   if (raw.includes('MARKUS_RATE_LIMITED'))
-    return t('errors.markusRateLimited');
+    return e('markusRateLimited');
 
   if (raw.includes('402') || /insufficient.?balance/i.test(raw))
-    return t('errors.ai402', { detail: detail || t('errors.defaultInsufficientCredits') });
+    return e('ai402', { detail: detail || e('defaultInsufficientCredits') });
   if (raw.includes('401') || /unauthorized|invalid.?api.?key/i.test(raw))
-    return t('errors.ai401', { detail: detail || t('errors.defaultInvalidApiKey') });
+    return e('ai401', { detail: detail || e('defaultInvalidApiKey') });
   if (raw.includes('429') || /rate.?limit/i.test(raw))
-    return t('errors.ai429', { detail: detail || t('errors.defaultTooManyRequests') });
+    return e('ai429', { detail: detail || e('defaultTooManyRequests') });
+  if (raw.includes('502') || /bad.?gateway/i.test(raw))
+    return e('ai502', { detail: detail || e('defaultUpstreamDown') });
   if (raw.includes('503') || /service.?unavailable/i.test(raw))
-    return t('errors.ai503', { detail: detail || t('errors.defaultServiceDown') });
+    return e('ai503', { detail: detail || e('defaultServiceDown') });
 
-  return t('errors.aiGeneric', { detail: detail || raw.slice(0, 120) });
+  return e('aiGeneric', { detail: detail || raw.slice(0, 120) });
 }
 
 // ─── MessageActions ───────────────────────────────────────────────────────────

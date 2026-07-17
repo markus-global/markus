@@ -3715,7 +3715,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
           <p className="text-[10px] text-red-500 uppercase font-semibold">{t('page.errorDetails')}</p>
           <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2.5">
             <pre className="text-[10px] text-red-500/80 leading-relaxed whitespace-pre-wrap break-all font-mono line-clamp-6">
-              {agent.lastError || t('page.agentErrorFallback')}
+              {friendlyAgentError(agent.lastError, t) || agent.lastError || t('page.agentErrorFallback')}
             </pre>
             {agent.lastErrorAt && <div className="text-[9px] text-red-500/50 mt-1.5 border-t border-red-500/10 pt-1">{new Date(agent.lastErrorAt).toLocaleString()}</div>}
           </div>
@@ -3733,7 +3733,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
           <p className="text-[10px] text-amber-600 uppercase font-semibold">{t('page.recentErrorDetails')}</p>
           <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5">
             <pre className="text-[10px] text-amber-600/80 leading-relaxed whitespace-pre-wrap break-all font-mono line-clamp-6">
-              {agent.lastError}
+              {friendlyAgentError(agent.lastError, t) || agent.lastError}
             </pre>
             {agent.lastErrorAt && <div className="text-[9px] text-amber-500/50 mt-1.5 border-t border-amber-500/10 pt-1">{new Date(agent.lastErrorAt).toLocaleString()}</div>}
           </div>

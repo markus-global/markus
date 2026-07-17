@@ -1043,6 +1043,7 @@ export interface AgentUsageInfo {
   costToday: number;
   cuUsed?: number;
   cuUsedToday?: number;
+  provider?: string;
 }
 
 export const api = {
@@ -2371,6 +2372,8 @@ export const hubApi = {
       monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null;
       bonusCu: number; purchasedCu: number; windowQuotaCu: number;
       totalConsumedThisPeriod?: number;
+      memberCuLimit?: number | null;
+      memberCuUsed?: number;
     }>('/user/plan'),
     cuStats: (days = 30, granularity: 'day' | 'hour' = 'day') =>
       hubRequest<{ stats: Array<{ period: string; model: string | null; totalCu: number; totalInput: number; totalOutput: number; totalCached: number; requestCount: number }>; granularity: string; days: number }>(

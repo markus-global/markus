@@ -12,6 +12,7 @@ import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+import { friendlyAgentError } from './ChatComponents.tsx';
 
 const LazyMarkdownMessage = lazy(() => import('../components/MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage })));
 
@@ -349,7 +350,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
               {agent.state.lastErrorAt && <span className="text-[10px] text-red-500/50 ml-auto">{new Date(agent.state.lastErrorAt).toLocaleString()}</span>}
             </div>
             <pre className="text-[11px] text-red-500/80 leading-relaxed whitespace-pre-wrap break-all font-mono bg-red-500/5 rounded p-2">
-              {agent.state.lastError || t('agent:profilePage.overview.errorFallback')}
+              {friendlyAgentError(agent.state.lastError, t) || agent.state.lastError || t('agent:profilePage.overview.errorFallback')}
             </pre>
           </div>
         )}
@@ -362,7 +363,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
               <span className="text-[10px] text-amber-500/50 ml-auto">{new Date(agent.state.lastErrorAt).toLocaleString()}</span>
             </div>
             <pre className="text-[11px] text-amber-600/80 leading-relaxed whitespace-pre-wrap break-all font-mono bg-amber-500/5 rounded p-2">
-              {agent.state.lastError}
+              {friendlyAgentError(agent.state.lastError, t) || agent.state.lastError}
             </pre>
           </div>
         )}

@@ -1,35 +1,50 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, hubApi, type ReportInfo, type ReportFeedbackInfo, type AgentUsageInfo, type AuthUser } from '../api.ts';
+import { api, hubApi, type ReportInfo, type ReportFeedbackInfo, type AgentUsageInfo, type AuthUser, type OpsDashboard, type TeamInfo, type TeamMemberInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 
-type Period = 'daily' | 'weekly' | 'monthly';
 interface ReportsPageProps { authUser?: AuthUser }
-
-interface UsageSummary {
-  orgId: string;
-  period: string;
-  llmTokens: number;
-  toolCalls: number;
-  messages: number;
-  storageBytes: number;
-}
 
 interface HubPlanInfo {
   planType: string; planStatus: string;
   monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null;
   bonusCu: number; purchasedCu: number; windowQuotaCu: number;
   totalConsumedThisPeriod?: number;
+  memberCuLimit?: number | null;
+  memberCuUsed?: number;
 }
 
 interface HubUsageStat {
   period: string; model: string | null;
   totalCu: number; totalInput: number; totalOutput: number; totalCached: number;
   requestCount: number;
+}
+
+// Unified contributor type merging agent efficiency + usage data
+interface Contributor {
+  id: string;
+  name: string;
+  type: 'agent' | 'human';
+  role: string;
+  teamId?: string;
+  teamName?: string;
+  status?: string;
+  tasksCompleted: number;
+  tasksFailed: number;
+  cuUsed: number;
+  cuUsedToday: number;
+  totalTokens: number;
+  tokensToday: number;
+  requestCount: number;
+  toolCalls: number;
+  healthScore: number;
+  efficiency: number; // tasks per 1K tokens; higher = better
+  provider?: string; // 'markus' | provider name | 'unknown'
+  avatarUrl?: string;
 }
 
 function formatNumber(n: number): string {
@@ -39,76 +54,51 @@ function formatNumber(n: number): string {
   return n.toLocaleString();
 }
 
-function formatNumberFull(n: number): string {
-  return n.toLocaleString();
-}
-
 function formatCu(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 0 });
-}
-
-function formatBytes(b: number): string {
-  if (b >= 1024 * 1024 * 1024) return `${(b / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  if (b >= 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`;
-  if (b >= 1024) return `${(b / 1024).toFixed(1)} KB`;
-  return `${b} B`;
 }
 
 export function ReportsPage({ authUser }: ReportsPageProps) {
   const { t } = useTranslation(['reports', 'common']);
   const isMobile = useIsMobile();
   const isActive = usePageActive(PAGE.REPORTS);
-  const [period, setPeriod] = useState<Period>('weekly');
-  const [report, setReport] = useState<ReportInfo | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
 
-  const [usageSummary, setUsageSummary] = useState<UsageSummary | null>(null);
+  const [tab, setTab] = useState<'dashboard' | 'history'>('dashboard');
+
+  // Dashboard data
+  const [opsDashboard, setOpsDashboard] = useState<OpsDashboard | null>(null);
   const [agents, setAgents] = useState<AgentUsageInfo[]>([]);
-  const [sortBy, setSortBy] = useState<'totalTokens' | 'tokensUsedToday' | 'requestCount' | 'toolCalls' | 'cuUsed'>('totalTokens');
-  const [sortDesc, setSortDesc] = useState(true);
+  const [teams, setTeams] = useState<TeamInfo[]>([]);
+  const [ungrouped, setUngrouped] = useState<TeamMemberInfo[]>([]);
 
-  const [tab, setTab] = useState<'generate' | 'history'>('generate');
-  const [historyReports, setHistoryReports] = useState<ReportInfo[]>([]);
-  const [selectedReport, setSelectedReport] = useState<ReportInfo | null>(null);
-  const [feedback, setFeedback] = useState<ReportFeedbackInfo[]>([]);
-  const [feedbackContent, setFeedbackContent] = useState('');
-  const [flash, setFlash] = useState('');
-
-  // Hub subscription data
+  // Hub data
   const [hubPlan, setHubPlan] = useState<HubPlanInfo | null>(null);
   const [hubStats, setHubStats] = useState<HubUsageStat[]>([]);
   const [hubGranularity, setHubGranularity] = useState<'day' | 'hour'>('day');
   const [hubDays, setHubDays] = useState(30);
   const [hubConnected, setHubConnected] = useState(hubApi.isAuthenticated());
 
+  // History
+  const [historyReports, setHistoryReports] = useState<ReportInfo[]>([]);
+  const [selectedReport, setSelectedReport] = useState<ReportInfo | null>(null);
+  const [feedback, setFeedback] = useState<ReportFeedbackInfo[]>([]);
+  const [feedbackContent, setFeedbackContent] = useState('');
+  const [flash, setFlash] = useState('');
+
   const showFlash = (m: string) => { setFlash(m); setTimeout(() => setFlash(''), 3000); };
 
-  const fetchReport = useCallback(async (p: Period) => {
-    setLoading(true);
-    setError('');
+  const fetchDashboard = useCallback(async () => {
     try {
-      const { report: r } = await api.reports.generate({ period: p, scope: 'org', orgId: 'default' });
-      setReport(r);
-    } catch (e) {
-      setError(String(e));
-      setReport(null);
-    }
-    setLoading(false);
-  }, []);
-
-  const fetchUsage = useCallback(() => {
-    api.usage.summary().then(d => setUsageSummary(d.usage)).catch(() => {});
-    api.usage.agents().then(d => setAgents(d.agents)).catch(() => {});
-  }, []);
-
-  const fetchHistory = useCallback(async () => {
-    try { const { reports } = await api.reports.list(); setHistoryReports(reports); } catch { /* */ }
-  }, []);
-
-  const openReport = useCallback(async (r: ReportInfo) => {
-    setSelectedReport(r);
-    try { const { feedback: fb } = await api.reports.getFeedback(r.id); setFeedback(fb); } catch { setFeedback([]); }
+      const [dashboard, usage, teamData] = await Promise.all([
+        api.ops.dashboard('24h'),
+        api.usage.agents(),
+        api.teams.list(),
+      ]);
+      setOpsDashboard(dashboard);
+      setAgents(usage.agents);
+      setTeams(teamData.teams);
+      setUngrouped(teamData.ungrouped);
+    } catch { /* */ }
   }, []);
 
   const fetchHubData = useCallback(async () => {
@@ -121,561 +111,616 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
     } catch { /* */ }
   }, [hubDays, hubGranularity]);
 
-  useEffect(() => { fetchReport(period); }, [period, fetchReport]);
+  const fetchHistory = useCallback(async () => {
+    try { const { reports } = await api.reports.list(); setHistoryReports(reports); } catch { /* */ }
+  }, []);
+
   useEffect(() => {
-    if (!isActive) return;
-    fetchUsage();
-    const i = setInterval(fetchUsage, 30000);
+    if (!isActive || tab !== 'dashboard') return;
+    fetchDashboard();
+    fetchHubData();
+    const i = setInterval(fetchDashboard, 30000);
     return () => clearInterval(i);
-  }, [fetchUsage, isActive]);
+  }, [isActive, tab, fetchDashboard, fetchHubData]);
+
   useEffect(() => { if (tab === 'history') fetchHistory(); }, [tab, fetchHistory]);
-  useEffect(() => { if (isActive && tab === 'generate') fetchHubData(); }, [isActive, tab, fetchHubData]);
 
-  const sortedAgents = useMemo(() => {
-    const getVal = (a: AgentUsageInfo, col: typeof sortBy): number => {
-      if (col === 'cuUsed') return a.cuUsed ?? 0;
-      return a[col] as number;
-    };
-    return [...agents].sort((a, b) => {
-      const aVal = getVal(a, sortBy);
-      const bVal = getVal(b, sortBy);
-      return sortDesc ? bVal - aVal : aVal - bVal;
+  // Build unified contributor list
+  const contributors = useMemo(() => {
+    const result: Contributor[] = [];
+    const teamMap = new Map<string, string>();
+    for (const t of teams) {
+      for (const m of t.members) teamMap.set(m.id, t.name);
+    }
+
+    const effMap = new Map(
+      (opsDashboard?.agentEfficiency ?? []).map(e => [e.agentId, e])
+    );
+
+    for (const a of agents) {
+      const eff = effMap.get(a.agentId);
+      const cu = a.cuUsed ?? 0;
+      const tokens = a.totalTokens;
+      const tasksCompleted = eff?.taskMetrics.completed ?? 0;
+      // Efficiency = tasks per 1K tokens (universal, works for all providers)
+      const efficiency = tokens > 0 ? (tasksCompleted / tokens) * 1000 : (tasksCompleted > 0 ? Infinity : 0);
+      result.push({
+        id: a.agentId,
+        name: a.agentName,
+        type: 'agent',
+        role: a.role,
+        teamName: teamMap.get(a.agentId),
+        status: a.status,
+        tasksCompleted,
+        tasksFailed: eff?.taskMetrics.failed ?? 0,
+        cuUsed: cu,
+        cuUsedToday: a.cuUsedToday ?? 0,
+        totalTokens: tokens,
+        tokensToday: a.tokensUsedToday,
+        requestCount: a.requestCount,
+        toolCalls: a.toolCalls,
+        healthScore: eff?.healthScore ?? 0,
+        efficiency,
+        provider: a.provider,
+      });
+    }
+
+    // Add humans from teams + ungrouped
+    const allMembers = [
+      ...teams.flatMap(t => t.members.filter(m => m.type === 'human').map(m => ({ ...m, teamName: t.name }))),
+      ...ungrouped.filter(m => m.type === 'human').map(m => ({ ...m, teamName: undefined })),
+    ];
+    const seenHumans = new Set<string>();
+    for (const m of allMembers) {
+      if (seenHumans.has(m.id)) continue;
+      seenHumans.add(m.id);
+      result.push({
+        id: m.id,
+        name: m.name,
+        type: 'human',
+        role: m.role,
+        teamName: (m as any).teamName,
+        status: undefined,
+        tasksCompleted: 0,
+        tasksFailed: 0,
+        cuUsed: 0,
+        cuUsedToday: 0,
+        totalTokens: 0,
+        tokensToday: 0,
+        requestCount: 0,
+        toolCalls: 0,
+        healthScore: 0,
+        efficiency: 0,
+        avatarUrl: m.avatarUrl,
+      });
+    }
+
+    // Sort: agents by CU used (desc), then humans at bottom
+    result.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'agent' ? -1 : 1;
+      if (a.type === 'agent') return (b.cuUsed + b.tasksCompleted * 100) - (a.cuUsed + a.tasksCompleted * 100) === 0
+        ? b.cuUsed - a.cuUsed
+        : (b.cuUsed + b.tasksCompleted * 100) - (a.cuUsed + a.tasksCompleted * 100);
+      return a.name.localeCompare(b.name);
     });
-  }, [agents, sortBy, sortDesc]);
 
-  const totalCu = agents.reduce((s, a) => s + (a.cuUsed ?? 0), 0);
-  const totalTokensToday = agents.reduce((s, a) => s + a.tokensUsedToday, 0);
-  const maxAgentTokens = Math.max(1, ...agents.map(a => a.totalTokens));
+    return result;
+  }, [agents, opsDashboard, teams, ungrouped]);
 
-  const handleSort = (col: typeof sortBy) => {
-    if (sortBy === col) setSortDesc(!sortDesc);
-    else { setSortBy(col); setSortDesc(true); }
-  };
+  // Aggregate team performance
+  const teamPerformance = useMemo(() => {
+    return teams.map(team => {
+      const agentMembers = team.members.filter(m => m.type === 'agent');
+      const humanMembers = team.members.filter(m => m.type === 'human');
+      const agentContribs = contributors.filter(c => c.type === 'agent' && agentMembers.some(m => m.id === c.id));
+      const totalCu = agentContribs.reduce((s, c) => s + c.cuUsed, 0);
+      const totalTasks = agentContribs.reduce((s, c) => s + c.tasksCompleted, 0);
+      const totalTokens = agentContribs.reduce((s, c) => s + c.totalTokens, 0);
+      return {
+        id: team.id,
+        name: team.name,
+        agentCount: agentMembers.length,
+        humanCount: humanMembers.length,
+        totalCu,
+        totalTasks,
+        totalTokens,
+        managerName: team.managerName,
+      };
+    }).sort((a, b) => b.totalTokens - a.totalTokens);
+  }, [teams, contributors]);
 
-  const periodLabel = useMemo(() => ({
-    daily: t('period.today'),
-    weekly: t('period.thisWeek'),
-    monthly: t('period.thisMonth'),
-  }), [t]);
+  // KPI values
+  const kpis = useMemo(() => {
+    const d = opsDashboard;
+    const totalCu = agents.reduce((s, a) => s + (a.cuUsed ?? 0), 0);
+    const totalCuToday = agents.reduce((s, a) => s + (a.cuUsedToday ?? 0), 0);
+    const totalTokens = agents.reduce((s, a) => s + a.totalTokens, 0);
+    const totalTokensToday = agents.reduce((s, a) => s + a.tokensUsedToday, 0);
+    const hasCu = totalCu > 0;
+    return {
+      tasksCompleted: d?.taskKPI.statusCounts.completed ?? 0,
+      totalTasks: d?.taskKPI.totalTasks ?? 0,
+      successRate: d?.taskKPI.successRate ?? 0,
+      activeAgents: d?.systemHealth.activeAgents ?? 0,
+      totalAgents: d?.systemHealth.totalAgents ?? 0,
+      healthScore: d?.systemHealth.overallScore ?? 0,
+      totalCu,
+      totalCuToday,
+      totalTokens,
+      totalTokensToday,
+      hasCu,
+      humanCount: contributors.filter(c => c.type === 'human').length,
+    };
+  }, [opsDashboard, agents, contributors]);
 
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-5xl mx-auto w-full p-6 space-y-6">
-        {/* Header with tabs */}
+        {/* Header */}
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-4 flex-wrap">
             {isMobile && <MobileMenuButton />}
             <h1 className="text-xl font-semibold text-fg-primary">{t('title')}</h1>
             <div className="flex gap-1 bg-surface-elevated rounded-lg p-0.5">
-              <button onClick={() => setTab('generate')} className={`px-3 py-1.5 text-xs rounded-md transition-colors ${tab === 'generate' ? 'bg-surface-overlay text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'}`}>{t('tabs.generate')}</button>
-              <button onClick={() => setTab('history')} className={`px-3 py-1.5 text-xs rounded-md transition-colors ${tab === 'history' ? 'bg-surface-overlay text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
+              <TabButton active={tab === 'dashboard'} onClick={() => setTab('dashboard')}>{t('tabs.dashboard')}</TabButton>
+              <TabButton active={tab === 'history'} onClick={() => setTab('history')}>
                 {t('tabs.history')}{historyReports.length > 0 ? ` (${historyReports.length})` : ''}
-              </button>
+              </TabButton>
             </div>
           </div>
-          <div className="flex items-center gap-3 flex-wrap">
-            {flash && <span className="px-2.5 py-1 bg-green-500/10 text-green-600 text-xs rounded-lg">{flash}</span>}
-            {tab === 'generate' && (
-              <div className="flex gap-1 bg-surface-elevated rounded-lg p-0.5">
-                {(['daily', 'weekly', 'monthly'] as const).map(p => (
-                  <button key={p} onClick={() => setPeriod(p)} className={`px-3 py-1.5 text-xs rounded-md transition-colors ${period === p ? 'bg-surface-overlay text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'}`}>{t(`period.${p}`)}</button>
-                ))}
-              </div>
-            )}
-          </div>
+          {flash && <span className="px-2.5 py-1 bg-green-500/10 text-green-600 text-xs rounded-lg">{flash}</span>}
         </div>
 
-        {/* ═══ Generate Tab ═══ */}
-        {tab === 'generate' && (
+        {/* ═══ Dashboard Tab ═══ */}
+        {tab === 'dashboard' && (
           <>
-            {/* ── Markus Cloud AI Subscription ── */}
-            <SubscriptionSection
+            {/* KPI Summary */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <KPICard
+                label={t('kpi.tasksCompleted')}
+                value={kpis.tasksCompleted}
+                sub={t('kpi.ofTotal', { total: kpis.totalTasks })}
+                color="text-green-500"
+              />
+              <KPICard
+                label={t('kpi.activeContributors')}
+                value={kpis.activeAgents + kpis.humanCount}
+                sub={t('kpi.agentsAndHumans', { agents: kpis.activeAgents, humans: kpis.humanCount })}
+                color="text-brand-500"
+              />
+              <KPICard
+                label={kpis.hasCu ? t('kpi.cuConsumed') : t('kpi.tokensConsumed')}
+                value={kpis.hasCu ? formatCu(kpis.totalCu) : formatNumber(kpis.totalTokens)}
+                sub={t('kpi.todayAmount', { amount: kpis.hasCu ? formatCu(kpis.totalCuToday) : formatNumber(kpis.totalTokensToday) })}
+                color="text-indigo-500"
+              />
+              <KPICard
+                label={t('kpi.successRate')}
+                value={`${kpis.successRate}%`}
+                sub={t('kpi.healthScore', { score: kpis.healthScore })}
+                color={kpis.successRate >= 80 ? 'text-green-500' : kpis.successRate >= 50 ? 'text-amber-500' : 'text-red-500'}
+              />
+            </div>
+
+            {/* Cloud AI Quota — compact */}
+            <CloudQuotaBar
               hubConnected={hubConnected}
               hubPlan={hubPlan}
-              hubStats={hubStats}
-              granularity={hubGranularity}
-              days={hubDays}
-              onGranularityChange={setHubGranularity}
-              onDaysChange={setHubDays}
               t={t}
             />
 
-            {/* ── Local Usage Summary Cards ── */}
-            {usageSummary && (
-              <div className={`grid gap-4 ${usageSummary.storageBytes > 0 ? 'grid-cols-2 lg:grid-cols-4' : 'grid-cols-3'}`}>
-                <UsageCard label={t('usage.llmTokens')} value={formatNumber(usageSummary.llmTokens)} color="text-brand-500" />
-                <UsageCard label={t('usage.toolCalls')} value={formatNumber(usageSummary.toolCalls)} color="text-blue-600" />
-                <UsageCard label={t('usage.messages')} value={formatNumber(usageSummary.messages)} color="text-green-600" />
-                {usageSummary.storageBytes > 0 && (
-                  <UsageCard label={t('usage.storage')} value={formatBytes(usageSummary.storageBytes)} color="text-amber-600" />
-                )}
-              </div>
+            {/* Agent Rankings */}
+            <ContributorRankings contributors={contributors.filter(c => c.type === 'agent')} t={t} />
+
+            {/* Human Members */}
+            {contributors.some(c => c.type === 'human') && (
+              <HumanMembersList contributors={contributors.filter(c => c.type === 'human')} t={t} />
             )}
 
-            {/* ── Period Report Data ── */}
-            {loading ? (
-              <div className="flex items-center justify-center h-32 text-fg-tertiary text-sm">{t('common:loading')}</div>
-            ) : error ? (
-              <div className="flex items-center justify-center h-32 text-red-500 text-sm">{error}</div>
-            ) : report ? (
-              <>
-                <div className="text-xs text-fg-tertiary">
-                  {periodLabel[period]} · {new Date(report.periodStart).toLocaleDateString()} — {new Date(report.periodEnd).toLocaleDateString()}
+            {/* Team Performance */}
+            {teamPerformance.length > 0 && (
+              <section className="bg-surface-elevated rounded-xl p-5">
+                <h3 className="text-sm font-semibold text-fg-secondary mb-4">{t('teamPerf.title')}</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {teamPerformance.map(team => (
+                    <TeamCard key={team.id} team={team} t={t} />
+                  ))}
                 </div>
+              </section>
+            )}
 
-                {report.metrics && (
-                  <section className="bg-surface-elevated rounded-xl p-5">
-                    <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('taskMetrics.title')}</h3>
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                      <MetricCard label={t('taskMetrics.completed')} value={report.metrics.tasksCompleted} color="text-green-600" />
-                      <MetricCard label={t('taskMetrics.inProgress')} value={report.metrics.tasksInProgress} color="text-brand-500" />
-                      <MetricCard label={t('taskMetrics.created')} value={report.metrics.tasksCreated} color="text-blue-600" />
-                      <MetricCard label={t('taskMetrics.blocked')} value={report.metrics.tasksBlocked} color="text-amber-600" />
-                      <MetricCard label={t('taskMetrics.failed')} value={report.metrics.tasksFailed} color="text-red-500" />
+            {/* Usage Trends */}
+            {hubConnected && (
+              <section className="bg-surface-elevated rounded-xl overflow-hidden">
+                <div className="p-5 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-fg-secondary">{t('trends.title')}</h3>
+                  <div className="flex items-center gap-2">
+                    <div className="flex gap-0.5 bg-surface-overlay rounded-md p-0.5">
+                      <button onClick={() => setHubGranularity('day')}
+                        className={`px-2 py-1 text-[10px] rounded transition-colors ${hubGranularity === 'day' ? 'bg-brand-600 text-white' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
+                        {t('trends.byDay')}
+                      </button>
+                      <button onClick={() => setHubGranularity('hour')}
+                        className={`px-2 py-1 text-[10px] rounded transition-colors ${hubGranularity === 'hour' ? 'bg-brand-600 text-white' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
+                        {t('trends.byHour')}
+                      </button>
                     </div>
-                  </section>
-                )}
-
-                <section className="bg-surface-elevated rounded-xl p-5">
-                  <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('costOverview.title')}</h3>
-                  <div className="grid grid-cols-3 gap-4">
-                    <div>
-                      <div className="text-2xl font-bold text-fg-primary">{formatCu(totalCu)}</div>
-                      <div className="text-xs text-fg-tertiary">CU Used (all time)</div>
-                    </div>
-                    <div>
-                      <div className="text-2xl font-bold text-fg-primary">{formatNumber(totalTokensToday)}</div>
-                      <div className="text-xs text-fg-tertiary">{t('costOverview.tokensToday')}</div>
-                    </div>
-                    <div>
-                      <div className="text-2xl font-bold text-fg-primary">{formatCu(agents.reduce((s, a) => s + (a.cuUsedToday ?? 0), 0))}</div>
-                      <div className="text-xs text-fg-tertiary">CU Used Today</div>
-                    </div>
+                    <select value={hubDays} onChange={e => setHubDays(Number(e.target.value))}
+                      className="text-[10px] bg-surface-overlay border border-border-default rounded-md px-1.5 py-1 text-fg-secondary">
+                      <option value={7}>7 {t('trends.days')}</option>
+                      <option value={14}>14 {t('trends.days')}</option>
+                      <option value={30}>30 {t('trends.days')}</option>
+                    </select>
                   </div>
-                </section>
-
-                {report.taskSummary && (
-                  <section className="bg-surface-elevated rounded-xl p-5">
-                    <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('taskSummary.title')}</h3>
-                    <div className="space-y-4">
-                      {report.taskSummary.completed.length > 0 && (
-                        <TaskSection title={t('taskSummary.completedCount', { count: report.taskSummary.completed.length })} color="emerald" items={report.taskSummary.completed.map(task => ({ id: task.id, label: task.title, sub: task.agent }))} />
-                      )}
-                      {report.taskSummary.inProgress.length > 0 && (
-                        <TaskSection title={t('taskSummary.inProgressCount', { count: report.taskSummary.inProgress.length })} color="indigo" items={report.taskSummary.inProgress.map(task => ({ id: task.id, label: task.title, sub: task.agent }))} />
-                      )}
-                      {report.taskSummary.blocked.length > 0 && (
-                        <TaskSection title={t('taskSummary.blockedCount', { count: report.taskSummary.blocked.length })} color="amber" items={report.taskSummary.blocked.map(task => ({ id: task.id, label: task.title, sub: task.reason || task.agent }))} />
-                      )}
-                      {report.taskSummary.completed.length === 0 && report.taskSummary.inProgress.length === 0 && report.taskSummary.blocked.length === 0 && (
-                        <p className="text-sm text-fg-tertiary">{t('taskSummary.noTasksInPeriod')}</p>
-                      )}
-                    </div>
-                  </section>
-                )}
-              </>
-            ) : null}
-
-            {/* ── Per-Agent Breakdown ── */}
-            <section className="bg-surface-elevated rounded-xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-border-default">
-                <h3 className="text-sm font-semibold text-fg-secondary">{t('perAgentUsage.title')}</h3>
-              </div>
-              {agents.length === 0 ? (
-                <div className="p-8 text-center text-fg-tertiary text-sm">{t('perAgentUsage.noData')}</div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="border-b border-border-default text-xs text-fg-tertiary uppercase tracking-wider">
-                        <th className="px-4 py-3 text-left font-medium">{t('perAgentUsage.agent')}</th>
-                        <SortHeader label={t('perAgentUsage.totalTokens')} col="totalTokens" current={sortBy} desc={sortDesc} onSort={handleSort} />
-                        <SortHeader label={t('perAgentUsage.today')} col="tokensUsedToday" current={sortBy} desc={sortDesc} onSort={handleSort} />
-                        <SortHeader label={t('perAgentUsage.requests')} col="requestCount" current={sortBy} desc={sortDesc} onSort={handleSort} />
-                        <SortHeader label={t('perAgentUsage.toolCalls')} col="toolCalls" current={sortBy} desc={sortDesc} onSort={handleSort} />
-                        <SortHeader label="CU Used" col="cuUsed" current={sortBy} desc={sortDesc} onSort={handleSort} align="right" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sortedAgents.map(agent => (
-                        <AgentRow key={agent.agentId} agent={agent} maxTokens={maxAgentTokens} />
-                      ))}
-                    </tbody>
-                    <tfoot>
-                      <tr className="border-t border-border-default bg-surface-elevated/30">
-                        <td className="px-4 py-3 text-sm font-medium text-fg-secondary">{t('perAgentUsage.totalAgents', { count: agents.length })}</td>
-                        <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">{formatNumberFull(agents.reduce((s, a) => s + a.totalTokens, 0))}</td>
-                        <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">{formatNumberFull(totalTokensToday)}</td>
-                        <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">{agents.reduce((s, a) => s + a.requestCount, 0)}</td>
-                        <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">{agents.reduce((s, a) => s + a.toolCalls, 0)}</td>
-                        <td className="px-4 py-3 text-sm font-medium text-right text-fg-secondary tabular-nums">{formatCu(totalCu)}</td>
-                      </tr>
-                    </tfoot>
-                  </table>
                 </div>
-              )}
-            </section>
+                <div className="px-5 pb-5">
+                  <UsageCharts stats={hubStats} granularity={hubGranularity} t={t} />
+                </div>
+              </section>
+            )}
           </>
         )}
 
         {/* ═══ History Tab ═══ */}
         {tab === 'history' && !selectedReport && (
-          <section className="bg-surface-elevated rounded-xl overflow-hidden">
-            {historyReports.length === 0 ? (
-              <div className="p-8 text-center text-fg-tertiary text-sm">{t('noReportsYet')}</div>
-            ) : (
-              <div className="divide-y divide-border-default/50">
-                {historyReports.map(r => (
-                  <button key={r.id} onClick={() => openReport(r)} className="w-full text-left px-5 py-3 flex items-center gap-4 hover:bg-surface-elevated/30 transition-colors">
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-fg-primary">{t('reportType', { type: r.type })}</div>
-                      <div className="text-xs text-fg-tertiary mt-0.5">
-                        {new Date(r.periodStart).toLocaleDateString()} — {new Date(r.periodEnd).toLocaleDateString()}
-                      </div>
-                    </div>
-                    {r.plan && (
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 ${
-                        r.plan.status === 'approved' ? 'bg-green-500/10 text-green-600' :
-                        r.plan.status === 'rejected' ? 'bg-red-500/10 text-red-500' :
-                        'bg-amber-500/10 text-amber-600'
-                      }`}>{r.plan.status === 'pending' ? t('upcomingPlan.planPending') : t('upcomingPlan.planStatus', { status: r.plan.status })}</span>
-                    )}
-                    <span className="text-[10px] text-fg-tertiary shrink-0">{new Date(r.generatedAt).toLocaleDateString()}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </section>
+          <HistoryList reports={historyReports} t={t} onSelect={async (r) => {
+            setSelectedReport(r);
+            try { const { feedback: fb } = await api.reports.getFeedback(r.id); setFeedback(fb); } catch { setFeedback([]); }
+          }} />
         )}
 
-        {/* Report Detail View */}
         {tab === 'history' && selectedReport && (
-          <>
-            <div className="flex items-center gap-3">
-              <button onClick={() => { setSelectedReport(null); setFeedback([]); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('backToList')}</button>
-              <span className="text-sm font-medium text-fg-primary">{t('reportType', { type: selectedReport.type })}</span>
-              <span className="text-xs text-fg-tertiary">
-                {new Date(selectedReport.periodStart).toLocaleDateString()} — {new Date(selectedReport.periodEnd).toLocaleDateString()}
-              </span>
-            </div>
-
-            {selectedReport.metrics && (
-              <section className="bg-surface-elevated rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('taskMetrics.title')}</h3>
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                  <MetricCard label={t('taskMetrics.completed')} value={selectedReport.metrics.tasksCompleted} color="text-green-600" />
-                  <MetricCard label={t('taskMetrics.inProgress')} value={selectedReport.metrics.tasksInProgress} color="text-brand-500" />
-                  <MetricCard label={t('taskMetrics.created')} value={selectedReport.metrics.tasksCreated} color="text-blue-600" />
-                  <MetricCard label={t('taskMetrics.blocked')} value={selectedReport.metrics.tasksBlocked} color="text-amber-600" />
-                  <MetricCard label={t('taskMetrics.failed')} value={selectedReport.metrics.tasksFailed} color="text-red-500" />
-                </div>
-              </section>
-            )}
-
-            {selectedReport.costSummary && (
-              <section className="bg-surface-elevated rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('costOverview.title')}</h3>
-                <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-                  <div>
-                    <div className="text-2xl font-bold text-fg-primary">{selectedReport.costSummary.totalTokens.toLocaleString()}</div>
-                    <div className="text-xs text-fg-tertiary">{t('costOverview.totalTokens')}</div>
-                  </div>
-                  <div>
-                    <div className="text-2xl font-bold text-fg-primary">{formatCu(selectedReport.costSummary.totalCu ?? 0)}</div>
-                    <div className="text-xs text-fg-tertiary">CU Used</div>
-                  </div>
-                  <div>
-                    <div className={`text-2xl font-bold ${selectedReport.costSummary.trend === 'decreasing' ? 'text-green-600' : selectedReport.costSummary.trend === 'increasing' ? 'text-red-500' : 'text-fg-primary'}`}>
-                      {selectedReport.costSummary.trend === 'decreasing' ? '↓' : selectedReport.costSummary.trend === 'increasing' ? '↑' : '→'} {selectedReport.costSummary.trend}
-                    </div>
-                    <div className="text-xs text-fg-tertiary">{t('costOverview.trend')}</div>
-                  </div>
-                </div>
-                {selectedReport.costSummary.byAgent && selectedReport.costSummary.byAgent.length > 0 && (
-                  <div className="mt-4 pt-3 border-t border-border-default/50 space-y-1.5">
-                    {selectedReport.costSummary.byAgent.map((a, i) => (
-                      <div key={i} className="flex items-center justify-between text-xs">
-                        <span className="text-fg-secondary">{a.agentId}</span>
-                        <span className="text-fg-tertiary tabular-nums">{formatNumberFull(a.tokens)} CU · {formatCu(a.cost)}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </section>
-            )}
-
-            {selectedReport.taskSummary && (
-              <section className="bg-surface-elevated rounded-xl p-5 overflow-hidden">
-                <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('taskSummary.title')}</h3>
-                <div className="space-y-4 min-w-0">
-                  {selectedReport.taskSummary.completed.length > 0 && (
-                    <TaskSection title={t('taskSummary.completedCount', { count: selectedReport.taskSummary.completed.length })} color="emerald" items={selectedReport.taskSummary.completed.map(task => ({ id: task.id, label: task.title, sub: task.agent }))} />
-                  )}
-                  {selectedReport.taskSummary.inProgress.length > 0 && (
-                    <TaskSection title={t('taskSummary.inProgressCount', { count: selectedReport.taskSummary.inProgress.length })} color="indigo" items={selectedReport.taskSummary.inProgress.map(task => ({ id: task.id, label: task.title, sub: task.agent }))} />
-                  )}
-                  {selectedReport.taskSummary.blocked.length > 0 && (
-                    <TaskSection title={t('taskSummary.blockedCount', { count: selectedReport.taskSummary.blocked.length })} color="amber" items={selectedReport.taskSummary.blocked.map(task => ({ id: task.id, label: task.title, sub: task.reason || task.agent }))} />
-                  )}
-                  {selectedReport.taskSummary.completed.length === 0 && selectedReport.taskSummary.inProgress.length === 0 && selectedReport.taskSummary.blocked.length === 0 && (
-                    <p className="text-sm text-fg-tertiary">{t('taskSummary.noTasksInPeriod')}</p>
-                  )}
-                </div>
-              </section>
-            )}
-
-            {selectedReport.highlights && selectedReport.highlights.length > 0 && (
-              <section className="bg-surface-elevated rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-fg-secondary mb-2">{t('highlights')}</h3>
-                <ul className="list-disc list-inside space-y-1 text-sm text-fg-secondary">
-                  {selectedReport.highlights.map((h, i) => <li key={i}>{h}</li>)}
-                </ul>
-              </section>
-            )}
-
-            {selectedReport.blockers && selectedReport.blockers.length > 0 && (
-              <section className="bg-surface-secondary border border-amber-500/20 rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-amber-600 mb-2">{t('blockers')}</h3>
-                <ul className="list-disc list-inside space-y-1 text-sm text-fg-secondary">
-                  {selectedReport.blockers.map((b, i) => <li key={i}>{b}</li>)}
-                </ul>
-              </section>
-            )}
-
-            {selectedReport.plan && (
-              <section className="bg-surface-elevated rounded-xl p-5">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-xs font-semibold text-fg-secondary">
-                    {t('upcomingPlan.title')}
-                    <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                      selectedReport.plan.status === 'approved' ? 'bg-green-500/10 text-green-600' :
-                      selectedReport.plan.status === 'rejected' ? 'bg-red-500/10 text-red-500' :
-                      'bg-amber-500/10 text-amber-600'
-                    }`}>{t(`common:status.${selectedReport.plan.status}`, { defaultValue: selectedReport.plan.status })}</span>
-                  </h3>
-                  {selectedReport.plan.status === 'pending' && (
-                    <div className="flex gap-2">
-                      <button
-                        onClick={async () => {
-                          try {
-                            const { report: r } = await api.reports.approvePlan(selectedReport.id, { approvedBy: authUser?.id ?? 'unknown' });
-                            setSelectedReport(r);
-                            showFlash(t('upcomingPlan.planApproved'));
-                            fetchHistory();
-                          } catch (e) { showFlash(t('common:error', { message: String(e) })); }
-                        }}
-                        className="px-3 py-1.5 text-xs font-medium bg-green-600 text-white rounded-lg hover:bg-green-500 transition-colors"
-                      >{t('upcomingPlan.approvePlan')}</button>
-                      <button
-                        onClick={async () => {
-                          const reason = prompt(t('upcomingPlan.rejectionReason'));
-                          if (!reason) return;
-                          try {
-                            const { report: r } = await api.reports.rejectPlan(selectedReport.id, { rejectedBy: authUser?.id ?? 'unknown', reason });
-                            setSelectedReport(r);
-                            showFlash(t('upcomingPlan.planRejected'));
-                            fetchHistory();
-                          } catch (e) { showFlash(t('common:error', { message: String(e) })); }
-                        }}
-                        className="px-3 py-1.5 text-xs font-medium border border-border-default text-fg-secondary rounded-lg hover:bg-surface-overlay transition-colors"
-                      >{t('upcomingPlan.rejectPlan')}</button>
-                    </div>
-                  )}
-                </div>
-                {selectedReport.plan.items && selectedReport.plan.items.length > 0 && (
-                  <div className="space-y-1.5">
-                    {selectedReport.plan.items.map((item, i) => (
-                      <div key={i} className="flex items-center gap-2 text-sm text-fg-secondary">
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                          item.priority === 'high' ? 'bg-red-500/10 text-red-500' :
-                          item.priority === 'medium' ? 'bg-amber-500/10 text-amber-600' :
-                          'bg-gray-500/10 text-fg-tertiary'
-                        }`}>{item.priority}</span>
-                        <span>{item.title}</span>
-                        {item.assignee && <span className="text-[10px] text-fg-tertiary ml-auto">{item.assignee}</span>}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </section>
-            )}
-
-            {!selectedReport.metrics && !selectedReport.taskSummary && !selectedReport.costSummary && (
-              <section className="bg-surface-elevated rounded-xl p-8 text-center">
-                <p className="text-sm text-fg-tertiary">{t('noDetailedMetrics')}</p>
-              </section>
-            )}
-
-            <section className="bg-surface-elevated rounded-xl p-5">
-              <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('feedback.title', { count: feedback.length })}</h3>
-              {feedback.length > 0 && (
-                <div className="space-y-2 mb-4">
-                  {feedback.map(fb => (
-                    <div key={fb.id} className="p-3 bg-surface-elevated/50 rounded-lg">
-                      <div className="flex items-center gap-2 text-[10px] text-fg-tertiary mb-1">
-                        <span className="font-medium text-fg-secondary">{fb.authorName}</span>
-                        <span>{fb.type}</span>
-                        <span>{new Date(fb.createdAt).toLocaleDateString()}</span>
-                      </div>
-                      <p className="text-xs text-fg-secondary">{fb.content}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="flex gap-2">
-                <input
-                  value={feedbackContent}
-                  onChange={e => setFeedbackContent(e.target.value)}
-                  placeholder={t('feedback.placeholder')}
-                  className="flex-1 px-3 py-2 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder:text-fg-tertiary"
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && feedbackContent.trim()) {
-                      api.reports.addFeedback(selectedReport.id, { author: authUser?.id ?? 'unknown', type: 'comment', content: feedbackContent.trim() })
-                        .then(({ feedback: fb }) => { setFeedback(prev => [...prev, fb]); setFeedbackContent(''); showFlash(t('feedback.added')); })
-                        .catch(err => showFlash(t('common:error', { message: String(err) })));
-                    }
-                  }}
-                />
-                <button
-                  onClick={() => {
-                    if (!feedbackContent.trim()) return;
-                    api.reports.addFeedback(selectedReport.id, { author: authUser?.id ?? 'unknown', type: 'comment', content: feedbackContent.trim() })
-                      .then(({ feedback: fb }) => { setFeedback(prev => [...prev, fb]); setFeedbackContent(''); showFlash(t('feedback.added')); })
-                      .catch(err => showFlash(t('common:error', { message: String(err) })));
-                  }}
-                  disabled={!feedbackContent.trim()}
-                  className="px-3 py-2 text-xs bg-brand-600 text-white rounded-lg hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >{t('common:send')}</button>
-              </div>
-            </section>
-          </>
+          <ReportDetail
+            report={selectedReport}
+            feedback={feedback}
+            feedbackContent={feedbackContent}
+            setFeedbackContent={setFeedbackContent}
+            authUser={authUser}
+            t={t}
+            onBack={() => { setSelectedReport(null); setFeedback([]); }}
+            onFlash={showFlash}
+            onFeedbackAdded={(fb) => setFeedback(prev => [...prev, fb])}
+            onReportUpdated={(r) => { setSelectedReport(r); fetchHistory(); }}
+          />
         )}
-
       </div>
     </div>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Subscription Section — Markus Cloud AI plan info + usage charts
+// KPI Card
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function SubscriptionSection({ hubConnected, hubPlan, hubStats, granularity, days, onGranularityChange, onDaysChange, t }: {
-  hubConnected: boolean;
-  hubPlan: HubPlanInfo | null;
-  hubStats: HubUsageStat[];
-  granularity: 'day' | 'hour';
-  days: number;
-  onGranularityChange: (g: 'day' | 'hour') => void;
-  onDaysChange: (d: number) => void;
+function KPICard({ label, value, sub, color }: { label: string; value: string | number; sub: string; color: string }) {
+  return (
+    <div className="bg-surface-elevated rounded-xl p-4">
+      <div className="text-xs text-fg-tertiary mb-1">{label}</div>
+      <div className={`text-2xl font-bold ${color} tabular-nums`}>{value}</div>
+      <div className="text-[10px] text-fg-tertiary mt-1">{sub}</div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Cloud Quota Bar — compact
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function CloudQuotaBar({ hubConnected, hubPlan, t }: {
+  hubConnected: boolean; hubPlan: HubPlanInfo | null;
   t: (key: string, opts?: Record<string, unknown>) => string;
 }) {
   if (!hubConnected) {
     return (
-      <section className="bg-surface-elevated rounded-xl p-5 border border-border-default/50">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-semibold text-fg-secondary">{t('subscription.title')}</h3>
-            <p className="text-xs text-fg-tertiary mt-1">{t('subscription.connectHint')}</p>
-          </div>
-          <button
-            onClick={() => hubApi.ensureAuth().catch(() => {})}
-            className="px-4 py-2 text-xs font-medium bg-brand-600 text-white rounded-lg hover:bg-brand-500 transition-colors"
-          >{t('subscription.connect')}</button>
+      <div className="bg-surface-elevated rounded-xl px-5 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-2 h-2 rounded-full bg-gray-500" />
+          <span className="text-sm text-fg-tertiary">{t('quota.notConnected')}</span>
         </div>
+        <button onClick={() => hubApi.ensureAuth().catch(() => {})}
+          className="px-3 py-1.5 text-xs font-medium bg-brand-600 text-white rounded-lg hover:bg-brand-500 transition-colors">
+          {t('quota.connect')}
+        </button>
+      </div>
+    );
+  }
+
+  if (!hubPlan) return null;
+
+  const hasMemberLimit = hubPlan.memberCuLimit != null && hubPlan.memberCuLimit > 0;
+  const totalQuota = hasMemberLimit
+    ? hubPlan.memberCuLimit!
+    : (hubPlan.monthlyQuotaCu ?? 0) + (hubPlan.bonusCu ?? 0) + (hubPlan.purchasedCu ?? 0);
+  const cuUsed = hasMemberLimit
+    ? (hubPlan.memberCuUsed ?? 0)
+    : hubPlan.totalConsumedThisPeriod ?? ((hubPlan.monthlyQuotaCu ?? 0) + (hubPlan.bonusCu ?? 0) + (hubPlan.purchasedCu ?? 0) - Math.max(0, (hubPlan.monthlyQuotaCu ?? 0) - (hubPlan.cuUsed ?? 0)) - (hubPlan.bonusCu ?? 0) - (hubPlan.purchasedCu ?? 0));
+  const pct = totalQuota > 0 ? Math.min(100, Math.round((cuUsed / totalQuota) * 100)) : 0;
+  const barColor = pct > 90 ? 'bg-red-500' : pct > 70 ? 'bg-amber-500' : 'bg-brand-500';
+
+  const hubUrl = typeof window !== 'undefined' && window.location.origin.includes('localhost')
+    ? 'http://localhost:5174/settings?tab=billing' : 'https://markus.global/settings?tab=billing';
+
+  return (
+    <div className="bg-surface-elevated rounded-xl px-5 py-3">
+      {hasMemberLimit && (
+        <div className="mb-2 px-3 py-1.5 rounded-lg text-[10px] bg-amber-500/8 text-amber-500/80 border border-amber-500/15">
+          {t('quota.personalLimit')}
+        </div>
+      )}
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-fg-secondary">{hasMemberLimit ? t('quota.personalLimitLabel') : t('quota.title')}</span>
+          <span className="px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-brand-500/10 text-brand-500 uppercase">{hubPlan.planType}</span>
+        </div>
+        <div className="flex items-center gap-3 text-[10px] text-fg-tertiary">
+          {!hasMemberLimit && hubPlan.bonusCu > 0 && <span>{t('quota.bonus', { amount: formatCu(hubPlan.bonusCu) })}</span>}
+          <span>{hubPlan.cuResetAt ? t('quota.resetsAt', { date: new Date(hubPlan.cuResetAt).toLocaleDateString() }) : ''}</span>
+          <a href={hubUrl} target="_blank" rel="noopener noreferrer"
+            className="px-2 py-1 bg-brand-600 text-white rounded hover:bg-brand-500 transition-colors font-medium">
+            {t('quota.topUp')}
+          </a>
+        </div>
+      </div>
+      <div className="flex items-center gap-3">
+        <div className="flex-1 h-2 bg-surface-overlay rounded-full overflow-hidden">
+          <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
+        </div>
+        <span className="text-xs text-fg-secondary tabular-nums shrink-0">
+          {formatCu(cuUsed)} / {formatCu(totalQuota)}
+        </span>
+      </div>
+
+      {/* Limits detail row */}
+      <div className="flex flex-wrap gap-x-5 gap-y-1 mt-2 pt-2 border-t border-border-default/30 text-[10px] text-fg-tertiary">
+        {hubPlan.windowQuotaCu > 0 && (
+          <span>{t('quota.windowQuota', { amount: formatCu(hubPlan.windowQuotaCu) })}</span>
+        )}
+        {hubPlan.windowQuotaCu === 0 && (
+          <span>{t('quota.windowQuotaNone')}</span>
+        )}
+        <span>{t('quota.rateLimit')}</span>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Contributor Rankings
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function ContributorRankings({ contributors, t }: { contributors: Contributor[]; t: (k: string, o?: Record<string, unknown>) => string }) {
+  const [sortBy, setSortBy] = useState<'cuUsed' | 'tasksCompleted' | 'totalTokens' | 'efficiency'>('totalTokens');
+  const [sortDesc, setSortDesc] = useState(true);
+
+  const handleSort = (col: typeof sortBy) => {
+    if (sortBy === col) setSortDesc(!sortDesc);
+    else { setSortBy(col); setSortDesc(true); }
+  };
+
+  const sorted = useMemo(() => {
+    return [...contributors].sort((a, b) => {
+      const aVal = a[sortBy] === Infinity ? 999999 : (a[sortBy] as number);
+      const bVal = b[sortBy] === Infinity ? 999999 : (b[sortBy] as number);
+      return sortDesc ? bVal - aVal : aVal - bVal;
+    });
+  }, [contributors, sortBy, sortDesc]);
+
+  const maxTokens = Math.max(1, ...contributors.map(c => c.totalTokens));
+
+  const hasAnyCu = contributors.some(c => c.cuUsed > 0);
+  const providers = new Set(contributors.filter(c => c.provider).map(c => c.provider));
+  const isMixedProvider = providers.size > 1 || (providers.size === 1 && !providers.has('markus'));
+
+  if (contributors.length === 0) {
+    return (
+      <section className="bg-surface-elevated rounded-xl p-8 text-center">
+        <p className="text-sm text-fg-tertiary">{t('agents.noData')}</p>
       </section>
     );
   }
 
-  const totalQuota = (hubPlan?.monthlyQuotaCu ?? 0) + (hubPlan?.bonusCu ?? 0) + (hubPlan?.purchasedCu ?? 0);
-  const cuRemaining = Math.max(0, (hubPlan?.monthlyQuotaCu ?? 0) - (hubPlan?.cuUsed ?? 0)) + (hubPlan?.bonusCu ?? 0) + (hubPlan?.purchasedCu ?? 0);
-  const cuUsed = hubPlan?.totalConsumedThisPeriod ?? (totalQuota - cuRemaining);
-  const usagePercent = totalQuota > 0 ? Math.min(100, Math.round((cuUsed / totalQuota) * 100)) : 0;
-
-  const hubUrl = typeof window !== 'undefined' && window.location.origin.includes('localhost')
-    ? 'http://localhost:5174/settings?tab=billing'
-    : 'https://markus.global/settings?tab=billing';
-
   return (
     <section className="bg-surface-elevated rounded-xl overflow-hidden">
-      {/* Plan info bar */}
-      <div className="p-5 border-b border-border-default/50">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-3">
-            <h3 className="text-sm font-semibold text-fg-secondary">{t('subscription.title')}</h3>
-            {hubPlan && (
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-brand-500/10 text-brand-500 uppercase">
-                {hubPlan.planType}
-              </span>
-            )}
-          </div>
-          <a href={hubUrl} target="_blank" rel="noopener noreferrer"
-            className="px-3 py-1.5 text-xs font-medium bg-brand-600 text-white rounded-lg hover:bg-brand-500 transition-colors">
-            {t('subscription.topUp')}
-          </a>
+      <div className="px-5 py-4 border-b border-border-default">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-fg-secondary">{t('agents.title')}</h3>
+          {isMixedProvider && (
+            <span className="text-[10px] text-fg-tertiary bg-surface-overlay px-2 py-0.5 rounded">
+              {t('agents.mixedProviders')}
+            </span>
+          )}
         </div>
-
-        {hubPlan && (
-          <div className="space-y-2">
-            {/* Credits bar */}
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-fg-tertiary">{t('subscription.credits')}</span>
-              <span className="text-fg-secondary tabular-nums">
-                {t('subscription.creditsOf', { used: formatCu(cuUsed), total: formatCu(totalQuota) })}
-              </span>
-            </div>
-            <div className="w-full h-2 bg-surface-overlay rounded-full overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all ${usagePercent > 90 ? 'bg-red-500' : usagePercent > 70 ? 'bg-amber-500' : 'bg-brand-500'}`}
-                style={{ width: `${usagePercent}%` }}
-              />
-            </div>
-            <div className="flex items-center justify-between text-[10px] text-fg-tertiary">
-              <span>
-                {hubPlan.bonusCu > 0 && t('subscription.bonus', { amount: formatCu(hubPlan.bonusCu) })}
-              </span>
-              <span>
-                {hubPlan.cuResetAt
-                  ? t('subscription.resetsAt', { date: new Date(hubPlan.cuResetAt).toLocaleDateString() })
-                  : t('subscription.oneTime')}
-              </span>
-            </div>
-          </div>
-        )}
       </div>
-
-      {/* Usage charts */}
-      <div className="p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h4 className="text-xs font-semibold text-fg-secondary">{t('subscription.credits')}</h4>
-          <div className="flex items-center gap-2">
-            <div className="flex gap-0.5 bg-surface-overlay rounded-md p-0.5">
-              <button onClick={() => onGranularityChange('day')}
-                className={`px-2 py-1 text-[10px] rounded transition-colors ${granularity === 'day' ? 'bg-brand-600 text-white' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-                {t('subscription.byDay')}
-              </button>
-              <button onClick={() => onGranularityChange('hour')}
-                className={`px-2 py-1 text-[10px] rounded transition-colors ${granularity === 'hour' ? 'bg-brand-600 text-white' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-                {t('subscription.byHour')}
-              </button>
-            </div>
-            <select value={days} onChange={e => onDaysChange(Number(e.target.value))}
-              className="text-[10px] bg-surface-overlay border border-border-default rounded-md px-1.5 py-1 text-fg-secondary">
-              <option value={7}>7 {t('subscription.days')}</option>
-              <option value={14}>14 {t('subscription.days')}</option>
-              <option value={30}>30 {t('subscription.days')}</option>
-            </select>
-          </div>
-        </div>
-
-        <UsageCharts stats={hubStats} granularity={granularity} t={t} />
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-border-default text-xs text-fg-tertiary uppercase tracking-wider">
+              <th className="px-4 py-3 text-left font-medium w-8">#</th>
+              <th className="px-4 py-3 text-left font-medium">{t('agents.name')}</th>
+              <th className="px-4 py-3 text-left font-medium">{t('agents.team')}</th>
+              <SortTH label={t('agents.tasks')} col="tasksCompleted" current={sortBy} desc={sortDesc} onSort={handleSort} />
+              <SortTH label={t('agents.tokens')} col="totalTokens" current={sortBy} desc={sortDesc} onSort={handleSort} />
+              {hasAnyCu && <SortTH label={t('agents.cuUsed')} col="cuUsed" current={sortBy} desc={sortDesc} onSort={handleSort} />}
+              <SortTH label={t('agents.efficiency')} col="efficiency" current={sortBy} desc={sortDesc} onSort={handleSort} align="right" />
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((c, i) => (
+              <ContributorRow key={c.id} contributor={c} rank={i + 1} maxTokens={maxTokens} showCu={hasAnyCu} t={t} />
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="border-t border-border-default bg-surface-elevated/30">
+              <td colSpan={3} className="px-4 py-3 text-sm font-medium text-fg-secondary">
+                {t('agents.total', { count: contributors.length })}
+              </td>
+              <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">
+                {contributors.reduce((s, c) => s + c.tasksCompleted, 0)}
+              </td>
+              <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">
+                {formatNumber(contributors.reduce((s, c) => s + c.totalTokens, 0))}
+              </td>
+              {hasAnyCu && (
+                <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">
+                  {formatCu(contributors.reduce((s, c) => s + c.cuUsed, 0))}
+                </td>
+              )}
+              <td />
+            </tr>
+          </tfoot>
+        </table>
       </div>
     </section>
   );
 }
 
+function HumanMembersList({ contributors, t }: { contributors: Contributor[]; t: (k: string, o?: Record<string, unknown>) => string }) {
+  return (
+    <section className="bg-surface-elevated rounded-xl overflow-hidden">
+      <div className="px-5 py-4 border-b border-border-default">
+        <h3 className="text-sm font-semibold text-fg-secondary">{t('humans.title')}</h3>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-border-default text-xs text-fg-tertiary uppercase tracking-wider">
+              <th className="px-4 py-3 text-left font-medium">{t('humans.name')}</th>
+              <th className="px-4 py-3 text-left font-medium">{t('humans.role')}</th>
+              <th className="px-4 py-3 text-left font-medium">{t('humans.team')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {contributors.map(c => (
+              <tr key={c.id} className="border-b border-border-default/50 hover:bg-surface-elevated/30 transition-colors">
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-2 h-2 rounded-full bg-indigo-500 shrink-0" />
+                    <span className="text-sm font-medium text-fg-primary">{c.name}</span>
+                  </div>
+                </td>
+                <td className="px-4 py-3 text-sm text-fg-secondary capitalize">{c.role}</td>
+                <td className="px-4 py-3 text-xs text-fg-tertiary">{c.teamName || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function ContributorRow({ contributor: c, rank, maxTokens, showCu, t }: { contributor: Contributor; rank: number; maxTokens: number; showCu: boolean; t: (k: string) => string }) {
+  const barWidth = maxTokens > 0 ? Math.min(100, (c.totalTokens / maxTokens) * 100) : 0;
+
+  const statusColor = c.status === 'working' ? 'bg-blue-500' :
+    c.status === 'idle' ? 'bg-green-500' :
+    c.status === 'error' ? 'bg-red-500' : 'bg-gray-500';
+
+  const effLabel = c.totalTokens > 0
+    ? `${c.efficiency.toFixed(1)}`
+    : c.tasksCompleted > 0 ? '∞' : '—';
+
+  const rankBadge = rank <= 3
+    ? `${rank === 1 ? 'text-amber-500' : rank === 2 ? 'text-gray-400' : 'text-amber-700'} font-bold`
+    : 'text-fg-tertiary';
+
+  const providerLabel = c.provider === 'markus' ? '' : c.provider ?? '';
+
+  return (
+    <tr
+      className="border-b border-border-default/50 hover:bg-surface-elevated/30 transition-colors cursor-pointer"
+      onClick={() => navBus.navigate(PAGE.TEAM, { selectAgent: c.id })}
+    >
+      <td className={`px-4 py-3 text-sm tabular-nums ${rankBadge}`}>{rank}</td>
+      <td className="px-4 py-3">
+        <div className="flex items-center gap-2.5">
+          <div className={`w-2 h-2 rounded-full ${statusColor} shrink-0`} />
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm font-medium text-fg-primary truncate">{c.name}</span>
+              {providerLabel && (
+                <span className="px-1 py-0.5 rounded text-[8px] font-medium bg-surface-overlay text-fg-tertiary shrink-0">{providerLabel}</span>
+              )}
+            </div>
+            <div className="text-[10px] text-fg-tertiary">{c.role}</div>
+          </div>
+        </div>
+      </td>
+      <td className="px-4 py-3 text-xs text-fg-tertiary">{c.teamName || '—'}</td>
+      <td className="px-4 py-3">
+        <div className="flex items-center gap-1.5">
+          <span className="text-sm text-fg-secondary tabular-nums">{c.tasksCompleted}</span>
+          {c.tasksFailed > 0 && (
+            <span className="text-[10px] text-red-500 tabular-nums">({c.tasksFailed})</span>
+          )}
+        </div>
+      </td>
+      <td className="px-4 py-3">
+        <div className="flex items-center gap-2">
+          <div className="flex-1 h-1.5 bg-surface-overlay rounded-full overflow-hidden max-w-[80px]">
+            <div className="h-full bg-indigo-500 rounded-full transition-all" style={{ width: `${barWidth}%` }} />
+          </div>
+          <span className="text-sm text-fg-secondary tabular-nums">{formatNumber(c.totalTokens)}</span>
+        </div>
+      </td>
+      {showCu && (
+        <td className="px-4 py-3 text-sm text-fg-secondary tabular-nums">
+          {c.cuUsed > 0 ? formatCu(c.cuUsed) : <span className="text-fg-tertiary">—</span>}
+        </td>
+      )}
+      <td className="px-4 py-3 text-right">
+        <span className={`text-sm font-medium tabular-nums ${
+          c.efficiency > 5 ? 'text-green-500' : c.efficiency > 1 ? 'text-fg-secondary' : c.totalTokens > 0 ? 'text-amber-500' : 'text-fg-tertiary'
+        }`}>{effLabel}</span>
+      </td>
+    </tr>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
-// Usage Charts — bar charts for credits and tokens by period
+// Team Performance Card
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function TeamCard({ team, t }: {
+  team: { id: string; name: string; agentCount: number; humanCount: number; totalCu: number; totalTasks: number; totalTokens: number; managerName?: string };
+  t: (k: string, o?: Record<string, unknown>) => string;
+}) {
+  return (
+    <div
+      className="bg-surface-overlay rounded-lg p-4 hover:bg-surface-overlay/80 transition-colors cursor-pointer border border-border-default/30"
+      onClick={() => navBus.navigate(PAGE.TEAM, { selectTeam: team.id })}
+    >
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="text-sm font-medium text-fg-primary truncate">{team.name}</h4>
+        <span className="text-[10px] text-fg-tertiary shrink-0">
+          {t('teamPerf.members', { agents: team.agentCount, humans: team.humanCount })}
+        </span>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <div>
+          <div className="text-lg font-bold text-green-500 tabular-nums">{team.totalTasks}</div>
+          <div className="text-[10px] text-fg-tertiary">{t('teamPerf.tasks')}</div>
+        </div>
+        <div>
+          <div className="text-lg font-bold text-brand-500 tabular-nums">{formatCu(team.totalCu)}</div>
+          <div className="text-[10px] text-fg-tertiary">{t('teamPerf.cuUsed')}</div>
+        </div>
+        <div>
+          <div className="text-lg font-bold text-indigo-500 tabular-nums">{formatNumber(team.totalTokens)}</div>
+          <div className="text-[10px] text-fg-tertiary">{t('teamPerf.tokens')}</div>
+        </div>
+      </div>
+      {team.managerName && (
+        <div className="mt-2 pt-2 border-t border-border-default/30 text-[10px] text-fg-tertiary">
+          {t('teamPerf.managedBy', { name: team.managerName })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Usage Charts (Hub CU data)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 interface PeriodData {
@@ -712,7 +757,6 @@ function UsageCharts({ stats, granularity, t }: {
       entry.models[modelName].tokens += s.totalInput + s.totalOutput + s.totalCached;
       entry.models[modelName].requests += s.requestCount;
     }
-
     const sorted = [...periodMap.values()].sort((a, b) => a.period.localeCompare(b.period));
     return {
       periods: sorted,
@@ -726,7 +770,7 @@ function UsageCharts({ stats, granularity, t }: {
   const maxTokens = Math.max(1, ...periods.map(p => p.tokens));
 
   if (periods.length === 0) {
-    return <div className="py-8 text-center text-fg-tertiary text-sm">{t('subscription.noUsageData')}</div>;
+    return <div className="py-8 text-center text-fg-tertiary text-sm">{t('trends.noData')}</div>;
   }
 
   const fmtLabel = (p: string) => {
@@ -740,26 +784,17 @@ function UsageCharts({ stats, granularity, t }: {
 
   return (
     <div className="space-y-5">
-      {/* Summary cards */}
+      {/* Summary row */}
       <div className="grid grid-cols-3 gap-3">
-        <div className="bg-surface-overlay rounded-lg p-3 text-center">
-          <div className="text-lg font-bold text-fg-primary tabular-nums">{formatNumber(totalCredits)}</div>
-          <div className="text-[10px] text-fg-tertiary">{t('subscription.totalCredits')}</div>
-        </div>
-        <div className="bg-surface-overlay rounded-lg p-3 text-center">
-          <div className="text-lg font-bold text-fg-primary tabular-nums">{formatNumber(totalTokens)}</div>
-          <div className="text-[10px] text-fg-tertiary">{t('subscription.totalTokens')}</div>
-        </div>
-        <div className="bg-surface-overlay rounded-lg p-3 text-center">
-          <div className="text-lg font-bold text-fg-primary tabular-nums">{formatNumber(totalRequests)}</div>
-          <div className="text-[10px] text-fg-tertiary">{t('subscription.totalRequests')}</div>
-        </div>
+        <MiniStat label={t('trends.totalCredits')} value={formatNumber(totalCredits)} />
+        <MiniStat label={t('trends.totalTokens')} value={formatNumber(totalTokens)} />
+        <MiniStat label={t('trends.totalRequests')} value={formatNumber(totalRequests)} />
       </div>
 
       {/* Credits chart */}
       <BarChart
-        label={t('subscription.creditsChart')}
-        maxLabel={`${t('subscription.max')}: ${formatNumber(maxCredits)}`}
+        label={t('trends.creditsChart')}
+        maxLabel={`${t('trends.max')}: ${formatNumber(maxCredits)}`}
         periods={periods}
         getValue={p => p.credits}
         maxValue={maxCredits}
@@ -769,13 +804,12 @@ function UsageCharts({ stats, granularity, t }: {
         onHover={setHoverIdx}
         tooltipRef={tooltipRef}
         formatValue={formatNumber}
-        granularity={granularity}
       />
 
       {/* Tokens chart */}
       <BarChart
-        label={t('subscription.tokensChart')}
-        maxLabel={`${t('subscription.max')}: ${formatNumber(maxTokens)}`}
+        label={t('trends.tokensChart')}
+        maxLabel={`${t('trends.max')}: ${formatNumber(maxTokens)}`}
         periods={periods}
         getValue={p => p.tokens}
         maxValue={maxTokens}
@@ -785,7 +819,6 @@ function UsageCharts({ stats, granularity, t }: {
         onHover={setHoverIdx}
         tooltipRef={tooltipRef}
         formatValue={formatNumber}
-        granularity={granularity}
       />
 
       {/* Per-model breakdown */}
@@ -794,19 +827,22 @@ function UsageCharts({ stats, granularity, t }: {
   );
 }
 
-function BarChart({ label, maxLabel, periods, getValue, maxValue, color, fmtLabel, hoverIdx, onHover, tooltipRef, formatValue, granularity }: {
-  label: string;
-  maxLabel: string;
-  periods: PeriodData[];
-  getValue: (p: PeriodData) => number;
-  maxValue: number;
-  color: string;
-  fmtLabel: (p: string) => string;
-  hoverIdx: number | null;
-  onHover: (idx: number | null) => void;
+function MiniStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-surface-overlay rounded-lg p-3 text-center">
+      <div className="text-lg font-bold text-fg-primary tabular-nums">{value}</div>
+      <div className="text-[10px] text-fg-tertiary">{label}</div>
+    </div>
+  );
+}
+
+function BarChart({ label, maxLabel, periods, getValue, maxValue, color, fmtLabel, hoverIdx, onHover, tooltipRef, formatValue }: {
+  label: string; maxLabel: string;
+  periods: PeriodData[]; getValue: (p: PeriodData) => number; maxValue: number;
+  color: string; fmtLabel: (p: string) => string;
+  hoverIdx: number | null; onHover: (idx: number | null) => void;
   tooltipRef: React.RefObject<HTMLDivElement | null>;
   formatValue: (n: number) => string;
-  granularity: 'day' | 'hour';
 }) {
   return (
     <div className="bg-surface-overlay rounded-lg p-4">
@@ -814,7 +850,7 @@ function BarChart({ label, maxLabel, periods, getValue, maxValue, color, fmtLabe
         <span className="text-xs font-medium text-fg-secondary">{label}</span>
         <span className="text-[10px] text-fg-tertiary">{maxLabel}</span>
       </div>
-      <div className="relative h-32 flex items-end gap-px" onMouseLeave={() => onHover(null)}>
+      <div className="relative h-28 flex items-end gap-px" onMouseLeave={() => onHover(null)}>
         {periods.map((p, i) => {
           const val = getValue(p);
           const h = maxValue > 0 ? Math.max(val > 0 ? 2 : 0, (val / maxValue) * 100) : 0;
@@ -835,7 +871,6 @@ function BarChart({ label, maxLabel, periods, getValue, maxValue, color, fmtLabe
           );
         })}
       </div>
-      {/* X-axis labels */}
       <div className="flex justify-between mt-1.5">
         <span className="text-[9px] text-fg-tertiary">{periods.length > 0 ? fmtLabel(periods[0].period) : ''}</span>
         <span className="text-[9px] text-fg-tertiary">{periods.length > 0 ? fmtLabel(periods[periods.length - 1].period) : ''}</span>
@@ -862,14 +897,11 @@ function ModelBreakdown({ periods, t }: { periods: PeriodData[]; t: (key: string
   }, [periods]);
 
   if (modelTotals.length === 0) return null;
-
   const maxCredits = Math.max(1, ...modelTotals.map(m => m.credits));
 
   return (
     <div className="bg-surface-overlay rounded-lg p-4">
-      <div className="text-xs font-medium text-fg-secondary mb-3">
-        Models
-      </div>
+      <div className="text-xs font-medium text-fg-secondary mb-3">{t('trends.models')}</div>
       <div className="space-y-2">
         {modelTotals.map(m => (
           <div key={m.name} className="flex items-center gap-3 text-xs">
@@ -887,29 +919,272 @@ function ModelBreakdown({ periods, t }: { periods: PeriodData[]; t: (key: string
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Shared components
+// History Tab
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function MetricCard({ label, value, color }: { label: string; value: string | number; color: string }) {
+function HistoryList({ reports, t, onSelect }: {
+  reports: ReportInfo[];
+  t: (k: string, o?: Record<string, unknown>) => string;
+  onSelect: (r: ReportInfo) => void;
+}) {
   return (
-    <div className="text-center">
-      <div className={`text-2xl font-bold ${color}`}>{value}</div>
-      <div className="text-[10px] text-fg-tertiary mt-0.5">{label}</div>
-    </div>
+    <section className="bg-surface-elevated rounded-xl overflow-hidden">
+      {reports.length === 0 ? (
+        <div className="p-8 text-center text-fg-tertiary text-sm">{t('noReportsYet')}</div>
+      ) : (
+        <div className="divide-y divide-border-default/50">
+          {reports.map(r => (
+            <button key={r.id} onClick={() => onSelect(r)} className="w-full text-left px-5 py-3 flex items-center gap-4 hover:bg-surface-elevated/30 transition-colors">
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-fg-primary">{t('reportType', { type: r.type })}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">
+                  {new Date(r.periodStart).toLocaleDateString()} — {new Date(r.periodEnd).toLocaleDateString()}
+                </div>
+              </div>
+              {r.plan && (
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 ${
+                  r.plan.status === 'approved' ? 'bg-green-500/10 text-green-600' :
+                  r.plan.status === 'rejected' ? 'bg-red-500/10 text-red-500' :
+                  'bg-amber-500/10 text-amber-600'
+                }`}>{r.plan.status === 'pending' ? t('history.planPending') : t('history.planStatus', { status: r.plan.status })}</span>
+              )}
+              <span className="text-[10px] text-fg-tertiary shrink-0">{new Date(r.generatedAt).toLocaleDateString()}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
-function TaskSection({ title, color, items }: { title: string; color: string; items: Array<{ id?: string; label: string; sub: string }> }) {
+function ReportDetail({ report, feedback, feedbackContent, setFeedbackContent, authUser, t, onBack, onFlash, onFeedbackAdded, onReportUpdated }: {
+  report: ReportInfo;
+  feedback: ReportFeedbackInfo[];
+  feedbackContent: string;
+  setFeedbackContent: (v: string) => void;
+  authUser?: AuthUser;
+  t: (k: string, o?: Record<string, unknown>) => string;
+  onBack: () => void;
+  onFlash: (m: string) => void;
+  onFeedbackAdded: (fb: ReportFeedbackInfo) => void;
+  onReportUpdated: (r: ReportInfo) => void;
+}) {
+  const submitFeedback = async () => {
+    if (!feedbackContent.trim()) return;
+    try {
+      const { feedback: fb } = await api.reports.addFeedback(report.id, { author: authUser?.id ?? 'unknown', type: 'comment', content: feedbackContent.trim() });
+      onFeedbackAdded(fb);
+      setFeedbackContent('');
+      onFlash(t('history.feedbackAdded'));
+    } catch (e) { onFlash(t('common:error', { message: String(e) })); }
+  };
+
+  return (
+    <>
+      <div className="flex items-center gap-3">
+        <button onClick={onBack} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('backToList')}</button>
+        <span className="text-sm font-medium text-fg-primary">{t('reportType', { type: report.type })}</span>
+        <span className="text-xs text-fg-tertiary">
+          {new Date(report.periodStart).toLocaleDateString()} — {new Date(report.periodEnd).toLocaleDateString()}
+        </span>
+      </div>
+
+      {report.metrics && (
+        <section className="bg-surface-elevated rounded-xl p-5">
+          <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('history.taskMetrics')}</h3>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            {(['completed', 'inProgress', 'created', 'blocked', 'failed'] as const).map(key => {
+              const colors = { completed: 'text-green-600', inProgress: 'text-brand-500', created: 'text-blue-600', blocked: 'text-amber-600', failed: 'text-red-500' };
+              const metricKey = `tasks${key.charAt(0).toUpperCase() + key.slice(1)}` as keyof typeof report.metrics;
+              return (
+                <div key={key} className="text-center">
+                  <div className={`text-2xl font-bold ${colors[key]}`}>{(report.metrics as any)[metricKey] ?? 0}</div>
+                  <div className="text-[10px] text-fg-tertiary mt-0.5">{t(`history.metric.${key}`)}</div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {report.costSummary && (
+        <section className="bg-surface-elevated rounded-xl p-5">
+          <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('history.costOverview')}</h3>
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <div className="text-2xl font-bold text-fg-primary">{report.costSummary.totalTokens.toLocaleString()}</div>
+              <div className="text-xs text-fg-tertiary">{t('history.totalTokens')}</div>
+            </div>
+            <div>
+              <div className="text-2xl font-bold text-fg-primary">{formatCu(report.costSummary.totalCu ?? 0)}</div>
+              <div className="text-xs text-fg-tertiary">{t('history.cuUsed')}</div>
+            </div>
+            <div>
+              <div className={`text-2xl font-bold ${report.costSummary.trend === 'decreasing' ? 'text-green-600' : report.costSummary.trend === 'increasing' ? 'text-red-500' : 'text-fg-primary'}`}>
+                {report.costSummary.trend === 'decreasing' ? '↓' : report.costSummary.trend === 'increasing' ? '↑' : '→'} {report.costSummary.trend}
+              </div>
+              <div className="text-xs text-fg-tertiary">{t('history.trend')}</div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {report.taskSummary && (
+        <section className="bg-surface-elevated rounded-xl p-5">
+          <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('history.taskSummary')}</h3>
+          <div className="space-y-4">
+            {report.taskSummary.completed.length > 0 && (
+              <TaskList title={t('history.completedCount', { count: report.taskSummary.completed.length })} color="emerald" items={report.taskSummary.completed.map(task => ({ id: task.id, label: task.title, sub: task.agent }))} />
+            )}
+            {report.taskSummary.inProgress.length > 0 && (
+              <TaskList title={t('history.inProgressCount', { count: report.taskSummary.inProgress.length })} color="indigo" items={report.taskSummary.inProgress.map(task => ({ id: task.id, label: task.title, sub: task.agent }))} />
+            )}
+            {report.taskSummary.blocked.length > 0 && (
+              <TaskList title={t('history.blockedCount', { count: report.taskSummary.blocked.length })} color="amber" items={report.taskSummary.blocked.map(task => ({ id: task.id, label: task.title, sub: task.reason || task.agent }))} />
+            )}
+            {report.taskSummary.completed.length === 0 && report.taskSummary.inProgress.length === 0 && report.taskSummary.blocked.length === 0 && (
+              <p className="text-sm text-fg-tertiary">{t('history.noTasks')}</p>
+            )}
+          </div>
+        </section>
+      )}
+
+      {report.highlights && report.highlights.length > 0 && (
+        <section className="bg-surface-elevated rounded-xl p-5">
+          <h3 className="text-xs font-semibold text-fg-secondary mb-2">{t('history.highlights')}</h3>
+          <ul className="list-disc list-inside space-y-1 text-sm text-fg-secondary">
+            {report.highlights.map((h, i) => <li key={i}>{h}</li>)}
+          </ul>
+        </section>
+      )}
+
+      {report.blockers && report.blockers.length > 0 && (
+        <section className="bg-surface-secondary border border-amber-500/20 rounded-xl p-5">
+          <h3 className="text-xs font-semibold text-amber-600 mb-2">{t('history.blockers')}</h3>
+          <ul className="list-disc list-inside space-y-1 text-sm text-fg-secondary">
+            {report.blockers.map((b, i) => <li key={i}>{b}</li>)}
+          </ul>
+        </section>
+      )}
+
+      {report.plan && (
+        <section className="bg-surface-elevated rounded-xl p-5">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-xs font-semibold text-fg-secondary">
+              {t('history.upcomingPlan')}
+              <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                report.plan.status === 'approved' ? 'bg-green-500/10 text-green-600' :
+                report.plan.status === 'rejected' ? 'bg-red-500/10 text-red-500' :
+                'bg-amber-500/10 text-amber-600'
+              }`}>{t(`common:status.${report.plan.status}`, { defaultValue: report.plan.status })}</span>
+            </h3>
+            {report.plan.status === 'pending' && (
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    try {
+                      const { report: r } = await api.reports.approvePlan(report.id, { approvedBy: authUser?.id ?? 'unknown' });
+                      onReportUpdated(r);
+                      onFlash(t('history.planApproved'));
+                    } catch (e) { onFlash(t('common:error', { message: String(e) })); }
+                  }}
+                  className="px-3 py-1.5 text-xs font-medium bg-green-600 text-white rounded-lg hover:bg-green-500 transition-colors"
+                >{t('history.approvePlan')}</button>
+                <button
+                  onClick={async () => {
+                    const reason = prompt(t('history.rejectionReason'));
+                    if (!reason) return;
+                    try {
+                      const { report: r } = await api.reports.rejectPlan(report.id, { rejectedBy: authUser?.id ?? 'unknown', reason });
+                      onReportUpdated(r);
+                      onFlash(t('history.planRejected'));
+                    } catch (e) { onFlash(t('common:error', { message: String(e) })); }
+                  }}
+                  className="px-3 py-1.5 text-xs font-medium border border-border-default text-fg-secondary rounded-lg hover:bg-surface-overlay transition-colors"
+                >{t('history.rejectPlan')}</button>
+              </div>
+            )}
+          </div>
+          {report.plan.items && report.plan.items.length > 0 && (
+            <div className="space-y-1.5">
+              {report.plan.items.map((item, i) => (
+                <div key={i} className="flex items-center gap-2 text-sm text-fg-secondary">
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                    item.priority === 'high' ? 'bg-red-500/10 text-red-500' :
+                    item.priority === 'medium' ? 'bg-amber-500/10 text-amber-600' :
+                    'bg-gray-500/10 text-fg-tertiary'
+                  }`}>{item.priority}</span>
+                  <span>{item.title}</span>
+                  {item.assignee && <span className="text-[10px] text-fg-tertiary ml-auto">{item.assignee}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {!report.metrics && !report.taskSummary && !report.costSummary && (
+        <section className="bg-surface-elevated rounded-xl p-8 text-center">
+          <p className="text-sm text-fg-tertiary">{t('history.noDetailedMetrics')}</p>
+        </section>
+      )}
+
+      {/* Feedback */}
+      <section className="bg-surface-elevated rounded-xl p-5">
+        <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('history.feedbackTitle', { count: feedback.length })}</h3>
+        {feedback.length > 0 && (
+          <div className="space-y-2 mb-4">
+            {feedback.map(fb => (
+              <div key={fb.id} className="p-3 bg-surface-elevated/50 rounded-lg">
+                <div className="flex items-center gap-2 text-[10px] text-fg-tertiary mb-1">
+                  <span className="font-medium text-fg-secondary">{fb.authorName}</span>
+                  <span>{fb.type}</span>
+                  <span>{new Date(fb.createdAt).toLocaleDateString()}</span>
+                </div>
+                <p className="text-xs text-fg-secondary">{fb.content}</p>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-2">
+          <input
+            value={feedbackContent}
+            onChange={e => setFeedbackContent(e.target.value)}
+            placeholder={t('history.feedbackPlaceholder')}
+            className="flex-1 px-3 py-2 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder:text-fg-tertiary"
+            onKeyDown={e => { if (e.key === 'Enter' && feedbackContent.trim()) submitFeedback(); }}
+          />
+          <button onClick={submitFeedback} disabled={!feedbackContent.trim()}
+            className="px-3 py-2 text-xs bg-brand-600 text-white rounded-lg hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+            {t('common:send')}
+          </button>
+        </div>
+      </section>
+    </>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Shared small components
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button onClick={onClick} className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+      active ? 'bg-surface-overlay text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'
+    }`}>{children}</button>
+  );
+}
+
+function TaskList({ title, color, items }: { title: string; color: string; items: Array<{ id?: string; label: string; sub: string }> }) {
   return (
     <div className="min-w-0 overflow-hidden">
       <div className={`text-xs font-medium text-${color}-400 mb-1.5`}>{title}</div>
       <div className="space-y-1.5">
         {items.map((item, i) => (
-          <div
-            key={item.id ?? i}
+          <div key={item.id ?? i}
             className={`text-sm text-fg-secondary min-w-0 ${item.id ? 'cursor-pointer hover:text-fg-primary group' : ''}`}
-            onClick={item.id ? () => navBus.navigate(PAGE.WORK, { openTask: item.id! }) : undefined}
-          >
+            onClick={item.id ? () => navBus.navigate(PAGE.WORK, { openTask: item.id! }) : undefined}>
             <div className="flex items-center gap-2 min-w-0">
               <span className={`w-1.5 h-1.5 rounded-full bg-${color}-500 shrink-0`} />
               <span className={`truncate min-w-0 ${item.id ? 'group-hover:text-brand-500 transition-colors' : ''}`}>{item.label}</span>
@@ -924,62 +1199,17 @@ function TaskSection({ title, color, items }: { title: string; color: string; it
   );
 }
 
-function UsageCard({ label, value, color }: { label: string; value: string; color: string }) {
-  return (
-    <div className="bg-surface-elevated rounded-xl p-5">
-      <div className="text-sm text-fg-secondary mb-2">{label}</div>
-      <div className={`text-2xl font-bold ${color}`}>{value}</div>
-    </div>
-  );
-}
+type SortCol = 'cuUsed' | 'tasksCompleted' | 'totalTokens' | 'efficiency';
 
-type SortCol = 'totalTokens' | 'tokensUsedToday' | 'requestCount' | 'toolCalls' | 'cuUsed';
-
-function SortHeader({ label, col, current, desc, onSort, align }: {
+function SortTH({ label, col, current, desc, onSort, align }: {
   label: string; col: SortCol; current: SortCol; desc: boolean; onSort: (c: SortCol) => void; align?: string;
 }) {
   const arrow = current === col ? (desc ? '↓' : '↑') : '↕';
   const arrowColor = current === col ? 'text-brand-500' : 'text-fg-muted';
   return (
-    <th
-      className={`px-4 py-3 ${align === 'right' ? 'text-right' : 'text-left'} font-medium cursor-pointer select-none hover:text-fg-secondary`}
-      onClick={() => onSort(col)}
-    >
+    <th className={`px-4 py-3 ${align === 'right' ? 'text-right' : 'text-left'} font-medium cursor-pointer select-none hover:text-fg-secondary`}
+      onClick={() => onSort(col)}>
       {label}<span className={`ml-1 ${arrowColor}`}>{arrow}</span>
     </th>
-  );
-}
-
-function AgentRow({ agent, maxTokens }: { agent: AgentUsageInfo; maxTokens: number }) {
-  const barWidth = maxTokens > 0 ? Math.min(100, (agent.totalTokens / maxTokens) * 100) : 0;
-  const statusColor = agent.status === 'working' ? 'bg-blue-500' :
-    agent.status === 'idle' ? 'bg-green-500' :
-    agent.status === 'error' ? 'bg-red-500' : 'bg-gray-600';
-
-  return (
-    <tr className="border-b border-border-default/50 hover:bg-surface-elevated/30 transition-colors cursor-pointer"
-        onClick={() => navBus.navigate(PAGE.TEAM, { selectAgent: agent.agentId })}>
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-2.5">
-          <div className={`w-2 h-2 rounded-full ${statusColor}`} />
-          <div>
-            <div className="text-sm font-medium text-fg-primary hover:text-brand-500 transition-colors">{agent.agentName}</div>
-            <div className="text-xs text-fg-tertiary">{agent.role}</div>
-          </div>
-        </div>
-      </td>
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-3">
-          <div className="flex-1 bg-surface-elevated rounded-full h-1.5 overflow-hidden max-w-[120px]">
-            <div className="h-full bg-brand-500 rounded-full" style={{ width: `${barWidth}%` }} />
-          </div>
-          <span className="text-sm text-fg-secondary tabular-nums">{formatNumberFull(agent.totalTokens)}</span>
-        </div>
-      </td>
-      <td className="px-4 py-3 text-sm text-fg-secondary tabular-nums">{formatNumberFull(agent.tokensUsedToday)}</td>
-      <td className="px-4 py-3 text-sm text-fg-secondary tabular-nums">{agent.requestCount}</td>
-      <td className="px-4 py-3 text-sm text-fg-secondary tabular-nums">{agent.toolCalls}</td>
-      <td className="px-4 py-3 text-sm text-right text-fg-secondary tabular-nums">{formatCu(agent.cuUsed ?? 0)}</td>
-    </tr>
   );
 }

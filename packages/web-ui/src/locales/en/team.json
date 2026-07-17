@@ -229,7 +229,8 @@
     "defaultTooManyRequests": "Too many requests",
     "defaultServiceDown": "Service temporarily down",
     "markusCuExceeded": "⚠ Your Markus Cloud AI credits have been used up. Please visit https://markus.global/settings?tab=billing to purchase more credits or upgrade your subscription plan.",
-    "markusRateLimited": "⚠ Markus Cloud AI request frequency limit reached. Please wait a moment and try again. Upgrade your plan for higher limits: https://markus.global/settings?tab=billing",
+    "markusRateLimited": "⚠ Markus Cloud AI request frequency limit reached (600 req/min). This usually resolves within a few seconds. If many agents are running concurrently, consider staggering their tasks.",
+    "markusWindowExceeded": "⚠ 5-hour usage window limit reached. Your plan allows a limited amount of CU within any 5-hour period. Please wait for the window to roll over, or upgrade your plan for a higher 5h window quota: https://markus.global/settings?tab=billing",
     "creditModalTitle": "Credits Exhausted",
     "creditModalDesc": "Your Markus Cloud AI credits have been used up. Please purchase more credits or upgrade your subscription to continue.",
     "creditModalDismiss": "Later",
@@ -237,8 +238,10 @@
     "ai402": "⚠ AI service error: {{detail}}. Please top up the API balance or contact your administrator.",
     "ai401": "⚠ AI service authentication failed: {{detail}}. Please check the configuration.",
     "ai429": "⚠ Rate limit exceeded: {{detail}}. Please wait a moment and try again.",
+    "ai502": "⚠ AI upstream service error: {{detail}}. The LLM provider may be temporarily down. Please try again later.",
     "ai503": "⚠ AI service unavailable: {{detail}}. Please try again later.",
-    "aiGeneric": "⚠ AI service error: {{detail}}"
+    "aiGeneric": "⚠ AI service error: {{detail}}",
+    "defaultUpstreamDown": "LLM provider returned 502 Bad Gateway"
   },
   "page": {
     "viewProfileArrow": "View Profile →",
