@@ -6,9 +6,10 @@ import {
   api, wsClient,
   type AgentInfo, type AgentToolEvent, type StreamCommitEvent, type HumanUserInfo, type ExternalAgentInfo,
   type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo, type ChannelMsgMetadata,
-  type TaskInfo, type TeamInfo, type AuthUser,
+  type TaskInfo, type TeamInfo, type AuthUser, type ApprovalInfo, type UserInputAnswer,
 } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { UserInputModal } from '../components/UserInputModal.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import {
   ToolCallRow, ExecEntryRow, ThinkingDots,
@@ -422,6 +423,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [sessions, setSessions] = useState<ChatSessionInfo[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showSessions, setShowSessions] = useState(false);
+  // Pending request_user_input requests raised by the agent during a direct chat.
+  const [userInputApprovals, setUserInputApprovals] = useState<ApprovalInfo[]>([]);
+  const [activeInputModal, setActiveInputModal] = useState<ApprovalInfo | null>(null);
+  const [respondingInputId, setRespondingInputId] = useState<string | null>(null);
   const [openSessionTabs, _setOpenSessionTabs] = useState<ChatSessionInfo[]>([]);
   // Wrapper that deduplicates tabs by ID to prevent duplicate "main session" entries
   const setOpenSessionTabs: typeof _setOpenSessionTabs = (action) => {
@@ -2448,6 +2453,40 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }).catch(() => {});
   }, [previewMode, activeChannel, groupChats]);
 
+  // Load pending request_user_input requests for the agent in the active direct chat.
+  const refreshUserInputs = useCallback(async () => {
+    if (previewMode || chatMode !== 'direct' || !selectedAgent) { setUserInputApprovals([]); return; }
+    try {
+      const { approvals } = await api.approvals.list('pending');
+      setUserInputApprovals(approvals.filter(a =>
+        a.status === 'pending' &&
+        Array.isArray(a.questions) && a.questions.length > 0 &&
+        ((a.details?.agentId as string | undefined) ?? a.agentId) === selectedAgent,
+      ));
+    } catch { /* */ }
+  }, [previewMode, chatMode, selectedAgent]);
+
+  useEffect(() => {
+    refreshUserInputs();
+    const unsubA = wsClient.on('approval:requested', () => refreshUserInputs());
+    const unsubN = wsClient.on('notification', () => refreshUserInputs());
+    return () => { unsubA(); unsubN(); };
+  }, [refreshUserInputs]);
+
+  const handleUserInputSubmit = useCallback(async (
+    approvalId: string,
+    r: { approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[] },
+  ) => {
+    setRespondingInputId(approvalId);
+    try {
+      await api.approvals.respond(approvalId, r.approved, authUser?.id, r.comment, r.selectedOption, r.answers);
+      setUserInputApprovals(prev => prev.filter(a => a.id !== approvalId));
+      setActiveInputModal(null);
+      window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
+    } catch { /* */ }
+    setRespondingInputId(null);
+  }, [authUser?.id]);
+
   const modeTitle =
     chatMode === 'channel' ? (activeGroupChat?.name ?? activeChannel) :
     chatMode === 'direct'  ? (currentAgent?.name ?? t('page.selectAgent')) :
@@ -3470,6 +3509,43 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           <div className="text-center mb-4">
             <h2 className="text-xl font-semibold text-fg-primary">{emptyGreeting}</h2>
           </div>
+        )}
+
+        {/* Pending user-input requests raised by the agent in this direct chat */}
+        {chatMode === 'direct' && userInputApprovals.length > 0 && (
+          <div className={`${isMobile ? 'px-3' : 'px-5'} pb-1 shrink-0 ${isEmptyChat ? '' : '2xl:pr-[280px]'}`}>
+            <div className={`${isMobile ? '' : 'max-w-3xl mx-auto'} flex flex-col gap-1.5`}>
+              {userInputApprovals.map(a => (
+                <button
+                  key={a.id}
+                  onClick={() => setActiveInputModal(a)}
+                  className="w-full text-left px-3.5 py-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15 transition-colors flex items-center gap-3"
+                >
+                  <span className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-500 flex items-center justify-center shrink-0">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z" /><path d="M12 8v4" /><path d="M12 16h.01" /></svg>
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-sm font-medium text-fg-primary truncate">{a.title}</span>
+                    <span className="block text-xs text-fg-tertiary truncate">
+                      {t('page.userInputPrompt', { count: a.questions?.length ?? 1, defaultValue: `${a.questions?.length ?? 1} question(s) awaiting your response` })}
+                    </span>
+                  </span>
+                  <span className="text-xs font-medium text-amber-500 shrink-0 inline-flex items-center gap-1">
+                    {t('page.userInputRespond', { defaultValue: 'Respond' })}
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {activeInputModal && (
+          <UserInputModal
+            approval={activeInputModal}
+            submitting={respondingInputId === activeInputModal.id}
+            onClose={() => setActiveInputModal(null)}
+            onSubmit={(r) => handleUserInputSubmit(activeInputModal.id, r)}
+          />
         )}
 
         {/* Input (only in chat tab) */}

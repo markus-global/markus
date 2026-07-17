@@ -22,6 +22,9 @@ import { copyPlainText, copyAsHtml } from './markdown-copy.ts';
 import { TypographySettings, loadTypographyConfig, resolveTypographyCSS } from './TypographySettings.tsx';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
+import {
+  EntityChip, EntityCard, looksLikeEntityId, chipTypeToEntityType, type EntityType,
+} from './EntityCard.tsx';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const REMARK_PLUGINS: any[] = [remarkGfm, remarkMath, remarkBreaks];
@@ -59,26 +62,45 @@ const MENTION_PREFIX = '#mention:';
 // ─── Entity ID linking ───────────────────────────────────────────────────────
 
 const ENTITY_PREFIX = '#entity:';
-const ENTITY_LINK_CONTENT_RE = /^\[([^\]]+)\]\(#entity:((tsk|req|proj|dlv|agt)_[a-f0-9]{6,})\)$/i;
+const ENTITY_LINK_CONTENT_RE = /^\[([^\]]+)\]\(#entity:((tsk|req|proj|dlv|agt|team)_[a-f0-9]{6,})\)$/i;
+const CHIP_HREF_RE = /^(workflow|task|requirement|project|deliverable|agent|team):(.+)$/;
 
-const ENTITY_META: Record<string, { icon: string; label: string }> = {
-  tsk:  { icon: '📋', label: 'Task' },
-  req:  { icon: '📝', label: 'Requirement' },
-  proj: { icon: '📁', label: 'Project' },
-  dlv:  { icon: '📦', label: 'Deliverable' },
-  agt:  { icon: '🤖', label: 'Agent' },
-};
+// hast helpers for detecting a paragraph that is a single entity reference (→ block card)
+type HastNode = { type: string; tagName?: string; value?: string; properties?: Record<string, unknown>; children?: HastNode[] };
 
-function navigateToEntity(id: string) {
-  if (id.startsWith('tsk_'))  navBus.navigate(PAGE.WORK, { openTask: id });
-  else if (id.startsWith('req_'))  navBus.navigate(PAGE.WORK, { openRequirement: id });
-  else if (id.startsWith('proj_')) navBus.navigate(PAGE.WORK, { projectId: id });
-  else if (id.startsWith('dlv_'))  navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: id });
-  else if (id.startsWith('agt_'))  navBus.navigate(PAGE.TEAM, { agentId: id });
+function hastText(node: HastNode): string {
+  if (node.type === 'text') return node.value ?? '';
+  return (node.children ?? []).map(hastText).join('');
 }
 
-function looksLikeEntityId(text: string): boolean {
-  return /^(tsk|req|proj|dlv|agt)_[a-f0-9]{6,}$/i.test(text);
+function isBlankText(node: HastNode): boolean {
+  return node.type === 'text' && (node.value ?? '').trim() === '';
+}
+
+/** If a paragraph node consists solely of one entity reference, extract it for card rendering. */
+function soleEntityRef(node?: HastNode): { id: string; type?: EntityType; label?: string } | null {
+  if (!node?.children) return null;
+  const kids = node.children.filter(k => !isBlankText(k));
+  if (kids.length !== 1) return null;
+  const only = kids[0]!;
+  if (only.type === 'element' && only.tagName === 'a') {
+    const href = only.properties?.['href'] as string | undefined;
+    if (!href) return null;
+    const label = hastText(only);
+    if (href.startsWith(ENTITY_PREFIX)) return { id: href.slice(ENTITY_PREFIX.length) };
+    const m = href.match(CHIP_HREF_RE);
+    if (m && m[1] !== 'workflow') return { id: m[2]!, type: chipTypeToEntityType(m[1]!), label };
+    return null;
+  }
+  if (only.type === 'element' && only.tagName === 'code') {
+    const txt = hastText(only).trim();
+    if (looksLikeEntityId(txt)) return { id: txt };
+  }
+  if (only.type === 'text') {
+    const txt = (only.value ?? '').trim();
+    if (looksLikeEntityId(txt)) return { id: txt };
+  }
+  return null;
 }
 
 const mdComponents = {
@@ -105,36 +127,11 @@ const mdComponents = {
       return <code className={`${cls} text-fg-secondary font-mono text-xs`}>{children}</code>;
     }
     if (looksLikeEntityId(text)) {
-      const prefix = text.split('_')[0]!;
-      const meta = ENTITY_META[prefix];
-      return (
-        <span
-          data-entity-link={text}
-          className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-brand-500/10 text-brand-500 text-xs font-mono cursor-pointer hover:bg-brand-500/20 transition-colors"
-          onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigateToEntity(text); }}
-          title={meta ? `${meta.label}: ${text}` : text}
-        >
-          {meta && <span className="text-[10px]">{meta.icon}</span>}
-          <span>{text.slice(0, prefix.length + 1 + 8)}…</span>
-        </span>
-      );
+      return <EntityChip id={text.trim()} />;
     }
     const entityLinkMatch = text.match(ENTITY_LINK_CONTENT_RE);
     if (entityLinkMatch) {
-      const id = entityLinkMatch[2];
-      const prefix = id.split('_')[0]!;
-      const meta = ENTITY_META[prefix];
-      return (
-        <span
-          data-entity-link={id}
-          className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-brand-500/10 text-brand-500 text-xs font-mono cursor-pointer hover:bg-brand-500/20 transition-colors"
-          onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigateToEntity(id); }}
-          title={meta ? `${meta.label}: ${id}` : id}
-        >
-          {meta && <span className="text-[10px]">{meta.icon}</span>}
-          <span>{id.slice(0, prefix.length + 1 + 8)}…</span>
-        </span>
-      );
+      return <EntityChip id={entityLinkMatch[2]!} label={entityLinkMatch[1]} />;
     }
     if (looksLikeFilePath(text)) {
       return <FilePathLink path={text} />;
@@ -459,13 +456,15 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
   const contentRef = useRef<HTMLDivElement>(null);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
 
-  const processedRest = useMemo(() => {
-    let t = transformOutsideCode(rest, normalizeMathDelimiters);
+  const preprocess = useCallback((text: string) => {
+    let t = transformOutsideCode(text, normalizeMathDelimiters);
     t = transformOutsideCode(t, preprocessEntityLinksInCode);
     t = transformOutsideCode(t, preprocessEntityIds);
     t = transformOutsideCode(t, s => preprocessMentions(s, knownNames));
     return t;
-  }, [rest, knownNames]);
+  }, [knownNames]);
+
+  const processedRest = useMemo(() => preprocess(rest), [rest, preprocess]);
 
   const components = useMemo(() => {
     return {
@@ -473,6 +472,13 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
       img: ({ src, alt }: { src?: string; alt?: string }) => (
         <MarkdownImage key={src ?? ''} src={src ?? ''} alt={alt} onPreview={setPreviewSrc} basePath={basePath} />
       ),
+      // Render a paragraph consisting solely of one entity reference as a rich block card.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      p: ({ children, node }: { children?: React.ReactNode; node?: any }) => {
+        const ref = soleEntityRef(node as HastNode | undefined);
+        if (ref) return <EntityCard id={ref.id} type={ref.type} label={ref.label} />;
+        return <p className="mb-2 last:mb-0 leading-relaxed text-fg-secondary">{children}</p>;
+      },
       a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
         if (href?.startsWith(MENTION_PREFIX)) {
           const name = decodeURIComponent(href.slice(MENTION_PREFIX.length));
@@ -487,45 +493,27 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
           );
         }
         if (href?.startsWith(ENTITY_PREFIX)) {
-          const id = href.slice(ENTITY_PREFIX.length);
-          const prefix = id.split('_')[0]!;
-          const meta = ENTITY_META[prefix];
-          return (
-            <span
-              data-entity-link={id}
-              className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-brand-500/10 text-brand-500 text-xs font-mono cursor-pointer hover:bg-brand-500/20 transition-colors"
-              onClick={(e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); navigateToEntity(id); }}
-              title={meta ? `${meta.label}: ${id}` : id}
-            >
-              {meta && <span className="text-[10px]">{meta.icon}</span>}
-              <span>{id.slice(0, prefix.length + 1 + 8)}…</span>
-            </span>
-          );
+          return <EntityChip id={href.slice(ENTITY_PREFIX.length)} />;
         }
         {
-          const chipMatch = href?.match(/^(workflow|task|requirement|project|deliverable|agent):(.+)$/);
+          const chipMatch = href?.match(CHIP_HREF_RE);
           if (chipMatch) {
             const [, chipType, chipId] = chipMatch;
-            const chipMeta: Record<string, { icon: string; nav: () => void }> = {
-              workflow:    { icon: '⚙️', nav: () => navBus.navigate(PAGE.WORK, { boardType: 'workflows' }) },
-              task:        { icon: '✅', nav: () => navigateToEntity(chipId!) },
-              requirement: { icon: '📋', nav: () => navigateToEntity(chipId!) },
-              project:     { icon: '📁', nav: () => navigateToEntity(chipId!) },
-              deliverable: { icon: '📦', nav: () => navigateToEntity(chipId!) },
-              agent:       { icon: '🤖', nav: () => navigateToEntity(chipId!) },
-            };
-            const cm = chipMeta[chipType!];
-            if (cm) {
+            if (chipType === 'workflow') {
               return (
                 <span
                   className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-brand-500/10 text-brand-500 text-xs font-medium cursor-pointer hover:bg-brand-500/20 transition-colors"
-                  onClick={(e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); cm.nav(); }}
-                  title={`${chipType}: ${chipId}`}
+                  onClick={(e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); navBus.navigate(PAGE.WORK, { boardType: 'workflows' }); }}
+                  title={`workflow: ${chipId}`}
                 >
-                  <span className="text-[10px]">{cm.icon}</span>
+                  <span className="text-[10px]">⚙️</span>
                   <span>{children}</span>
                 </span>
               );
+            }
+            const entityType = chipTypeToEntityType(chipType!);
+            if (entityType) {
+              return <EntityChip id={chipId!} type={entityType} label={children} />;
             }
           }
         }
@@ -556,8 +544,8 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
                 </summary>
                 <div className="px-3 pb-3 border-t border-border-default/50">
                   <div className="mt-2 pl-3 border-l-2 border-brand-500/40 text-xs text-fg-secondary leading-relaxed">
-                    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={mdComponents}>
-                      {normalizeMathDelimiters(full)}
+                    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components}>
+                      {preprocess(full)}
                     </ReactMarkdown>
                   </div>
                 </div>

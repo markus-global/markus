@@ -2,10 +2,16 @@ import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { api, invalidateApiCache, wsClient, type NotificationInfo, type ApprovalInfo } from '../api.ts';
+import { api, invalidateApiCache, wsClient, type NotificationInfo, type ApprovalInfo, type UserInputAnswer } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
+import { UserInputModal } from './UserInputModal.tsx';
+
+/** A request_user_input carries an explicit multi-question payload. */
+function isUserInputApproval(a: ApprovalInfo): boolean {
+  return Array.isArray(a.questions) && a.questions.length > 0;
+}
 
 interface Props {
   collapsed?: boolean;
@@ -118,6 +124,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const [notifications, setNotifications] = useState<NotificationInfo[]>([]);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
   const [responding, setResponding] = useState<string | null>(null);
+  const [modalApproval, setModalApproval] = useState<ApprovalInfo | null>(null);
   const [adjustingId, setAdjustingId] = useState<string | null>(null);
   const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>({});
   const [unreadCount, setUnreadCount] = useState(0);
@@ -190,8 +197,8 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     window.addEventListener('markus:notifications-changed', onChanged);
     window.addEventListener('markus:mark-read-by-ref', markReadByRef);
     window.addEventListener('markus:open-notifications', onOpenNotifications);
-    const unsubNotif = wsClient.on('notification:created', () => fetchData());
-    const unsubApproval = wsClient.on('approval:created', () => fetchData());
+    const unsubNotif = wsClient.on('notification', () => fetchData());
+    const unsubApproval = wsClient.on('approval:requested', () => fetchData());
     return () => { clearInterval(timer); window.removeEventListener('markus:notifications-changed', onChanged); window.removeEventListener('markus:mark-read-by-ref', markReadByRef); window.removeEventListener('markus:open-notifications', onOpenNotifications); unsubNotif(); unsubApproval(); };
   }, [fetchData, markReadByRef]);
 
@@ -325,6 +332,10 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       case 'approval_request': {
         const approvalId = meta.approvalId as string | undefined;
         const approval = approvalId ? approvals.find(a => a.id === approvalId) : undefined;
+        if (approval && approval.status === 'pending' && isUserInputApproval(approval)) {
+          setModalApproval(approval);
+          break;
+        }
         const taskId = (approval?.details?.taskId ?? meta.taskId) as string | undefined;
         const requirementId = (approval?.details?.requirementId ?? meta.requirementId) as string | undefined;
         const apAgentId = (approval?.details?.agentId ?? approval?.agentId) as string | undefined;
@@ -394,11 +405,12 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     navigateForNotification(n);
   };
 
-  const handleApprovalResponse = async (id: string, approved: boolean, comment?: string, selectedOption?: string) => {
+  const handleApprovalResponse = async (id: string, approved: boolean, comment?: string, selectedOption?: string, answers?: UserInputAnswer[]) => {
     setResponding(id);
     try {
-      const { approval } = await api.approvals.respond(id, approved, userId, comment, selectedOption);
+      const { approval } = await api.approvals.respond(id, approved, userId, comment, selectedOption, answers);
       setApprovals(prev => prev.map(a => a.id === id ? approval : a));
+      setModalApproval(null);
       setAdjustingId(null);
       setFreeformTexts(prev => { const next = { ...prev }; delete next[id]; return next; });
 
@@ -493,6 +505,27 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     onClose?.();
   };
 
+  const renderRespondButton = (a: ApprovalInfo) => (
+    <button
+      disabled={responding === a.id}
+      onClick={() => setModalApproval(a)}
+      className="w-full px-3 py-2 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors inline-flex items-center justify-center gap-1.5"
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+      {t('team:userInput.respond', { defaultValue: 'Respond' })}
+      {a.questions && a.questions.length > 1 ? ` (${a.questions.length})` : ''}
+    </button>
+  );
+
+  const modalEl = modalApproval ? (
+    <UserInputModal
+      approval={modalApproval}
+      submitting={responding === modalApproval.id}
+      onClose={() => setModalApproval(null)}
+      onSubmit={(r) => handleApprovalResponse(modalApproval.id, r.approved, r.comment, r.selectedOption, r.answers)}
+    />
+  ) : null;
+
   const panelContent = (
     <>
       {/* Tabs + Close */}
@@ -572,6 +605,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                         )}
                       </div>
                       {(() => {
+                        if (isUserInputApproval(a)) return renderRespondButton(a);
                         const sub = a.details?.subType as string | undefined;
                         const isStructured = sub === 'task' || sub === 'requirement' || sub === 'requirement_resubmit';
                         const hasOptions = a.options && a.options.length > 0;
@@ -820,6 +854,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
 
     return (
       <div className="flex flex-col h-full overflow-hidden">
+        {modalEl}
         {/* Tabs */}
         <div className="flex border-b border-border-default shrink-0">
           {tabs.map((t_id) => (
@@ -879,6 +914,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                           {cmd && <pre className="text-[11px] text-fg-primary bg-surface-overlay border border-border-default rounded-md px-2.5 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono leading-relaxed mt-2">{cmd}</pre>}
                         </div>
                         {(() => {
+                          if (isUserInputApproval(a)) return renderRespondButton(a);
                           const sub = a.details?.subType as string | undefined;
                           const isStructured = sub === 'task' || sub === 'requirement' || sub === 'requirement_resubmit';
                           const hasOptions = a.options && a.options.length > 0;
@@ -1077,6 +1113,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     const d = iconPath || 'M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9 M13.73 21a2 2 0 0 1-3.46 0';
     return (
       <>
+        {modalEl}
         <button
           ref={btnRef}
           onClick={() => { setOpen(!open); if (!open) fetchData(); }}
@@ -1113,6 +1150,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
 
   return (
     <>
+      {modalEl}
       <button
         ref={btnRef}
         onClick={() => { setOpen(!open); if (!open) fetchData(); }}

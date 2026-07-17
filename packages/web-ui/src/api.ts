@@ -32,6 +32,7 @@ export interface AuthUser {
   role: string;
   orgId: string;
   avatarUrl?: string;
+  preferences?: { locale?: string; timezone?: string; [key: string]: unknown };
 }
 
 export interface ChatSessionInfo {
@@ -169,6 +170,29 @@ export interface ApprovalInfo {
   options?: Array<{ id: string; label: string; description?: string }>;
   allowFreeform?: boolean;
   selectedOption?: string;
+  questions?: UserInputQuestion[];
+  answers?: UserInputAnswer[];
+}
+
+export interface UserInputOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+export interface UserInputQuestion {
+  id: string;
+  prompt: string;
+  inputType: 'choice' | 'text';
+  options?: UserInputOption[];
+  allowMultiple?: boolean;
+  allowFreeform?: boolean;
+}
+
+export interface UserInputAnswer {
+  questionId: string;
+  selectedOptionIds?: string[];
+  text?: string;
 }
 
 export interface CodeReviewCheckInfo {
@@ -1600,6 +1624,8 @@ export const api = {
       request<{ ok: boolean }>('/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
     updateProfile: (name: string, email: string) =>
       request<{ user: AuthUser }>('/auth/profile', { method: 'PUT', body: JSON.stringify({ name, email }) }),
+    updatePreferences: (prefs: { locale?: string; timezone?: string }) =>
+      request<{ ok: boolean; preferences: { locale?: string; timezone?: string } }>('/auth/me/preferences', { method: 'PUT', body: JSON.stringify(prefs) }),
     setup: (token: string, password: string) =>
       request<{ ok: boolean; email: string }>('/auth/setup', { method: 'POST', body: JSON.stringify({ token, password }) }),
     inviteInfo: (token: string) =>
@@ -1669,8 +1695,8 @@ export const api = {
       const qs = status ? `?status=${status}` : '';
       return request<{ approvals: ApprovalInfo[] }>(`/approvals${qs}`);
     },
-    respond: (id: string, approved: boolean, respondedBy?: string, comment?: string, selectedOption?: string) =>
-      request<{ approval: ApprovalInfo }>(`/approvals/${id}`, { method: 'POST', body: JSON.stringify({ approved, respondedBy, comment, selectedOption }) }),
+    respond: (id: string, approved: boolean, respondedBy?: string, comment?: string, selectedOption?: string, answers?: UserInputAnswer[]) =>
+      request<{ approval: ApprovalInfo }>(`/approvals/${id}`, { method: 'POST', body: JSON.stringify({ approved, respondedBy, comment, selectedOption, answers }) }),
   },
   notifications: {
     list: (userId?: string, unread?: boolean, opts?: { type?: string; limit?: number; offset?: number }) => {

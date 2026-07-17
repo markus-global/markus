@@ -201,6 +201,15 @@
     },
     "approvalHistory": "History"
   },
+  "userInput": {
+    "respond": "Respond",
+    "submit": "Submit",
+    "next": "Next",
+    "previous": "Previous",
+    "questionProgress": "Question {{current}} of {{total}}",
+    "textPlaceholder": "Type your answer…",
+    "freeformPlaceholder": "Or write your own answer…"
+  },
   "intro": {
     "secretary": "I just set up Markus. Help me get started — what can I do here?",
     "agent": "Introduce yourself — what can you do?"
@@ -235,6 +244,9 @@
     "aiGeneric": "⚠ AI service error: {{detail}}"
   },
   "page": {
+    "userInputPrompt_one": "{{count}} question awaiting your response",
+    "userInputPrompt_other": "{{count}} questions awaiting your response",
+    "userInputRespond": "Respond",
     "viewProfileArrow": "View Profile →",
     "viewAgentProfileArrow": "View Agent Profile →",
     "viewMindArrow": "View Mind →",

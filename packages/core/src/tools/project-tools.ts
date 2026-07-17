@@ -444,7 +444,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   deliverableStatus: result.status,
                 };
                 if (ctx.webUiBaseUrl) {
-                  resp.accessUrl = `${ctx.webUiBaseUrl}/#deliverables`;
+                  resp.accessUrl = `${ctx.webUiBaseUrl}/#deliverables/${result.id}`;
                 }
                 return JSON.stringify(resp);
               } catch (error) {
@@ -590,7 +590,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 if (!result) return JSON.stringify({ status: 'error', error: 'Deliverable not found' });
                 const resp: Record<string, unknown> = { status: 'success', deliverableId: result.id, deliverableStatus: result.status };
                 if (ctx.webUiBaseUrl) {
-                  resp.accessUrl = `${ctx.webUiBaseUrl}/#deliverables`;
+                  resp.accessUrl = `${ctx.webUiBaseUrl}/#deliverables/${result.id}`;
                 }
                 return JSON.stringify(resp);
               } catch (error) {

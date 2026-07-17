@@ -479,6 +479,22 @@ describe('OrganizationService', () => {
       expect(service.resolveHumanIdentity('unknown')).toBeUndefined();
     });
 
+    it('exposes and merges locale/timezone preferences', () => {
+      const user = service.addHumanUser('org-1', 'Dora', 'member');
+      expect(service.resolveHumanIdentity(user.id)?.locale).toBeUndefined();
+
+      service.updateHumanPreferences(user.id, { locale: 'zh-CN', timezone: 'Asia/Shanghai' });
+      const resolved = service.resolveHumanIdentity(user.id);
+      expect(resolved?.locale).toBe('zh-CN');
+      expect(resolved?.timezone).toBe('Asia/Shanghai');
+
+      // Partial update preserves the untouched field.
+      service.updateHumanPreferences(user.id, { timezone: 'Asia/Tokyo' });
+      const resolved2 = service.resolveHumanIdentity(user.id);
+      expect(resolved2?.locale).toBe('zh-CN');
+      expect(resolved2?.timezone).toBe('Asia/Tokyo');
+    });
+
     it('routes to first org agent when no manager configured', () => {
       const agent = createMockAgent({ id: 'fallback-agent', config: { orgId: 'org-1' } });
       agentManager._agents.set('fallback-agent', agent);

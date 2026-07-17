@@ -17,6 +17,8 @@ import {
   type CodingToolName,
   type CodingToolConfig,
   type GoalConfig,
+  type UserInputQuestion,
+  type UserInputAnswer,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import type { OrgContext } from './context-engine.js';
@@ -327,9 +329,11 @@ export class AgentManager {
   private userApprovalRequester?: (opts: {
     agentId: string; agentName: string; title: string; description: string;
     options?: Array<{ id: string; label: string; description?: string }>;
+    questions?: UserInputQuestion[];
     allowFreeform?: boolean; priority?: string; relatedTaskId?: string;
-  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>;
+  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[] }>;
   private userNotifier?: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void;
+  private runtimeViewerContext?: { locale?: string; timezone?: string };
   private taskService?: TaskServiceBridge;
   private projectService?: ProjectServiceBridge;
   private deliverableService?: DeliverableServiceBridge;
@@ -819,11 +823,24 @@ export class AgentManager {
   setUserApprovalRequester(cb: (opts: {
     agentId: string; agentName: string; title: string; description: string;
     options?: Array<{ id: string; label: string; description?: string }>;
+    questions?: UserInputQuestion[];
     allowFreeform?: boolean; priority?: string; relatedTaskId?: string;
-  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>): void {
+  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[] }>): void {
     this.userApprovalRequester = cb;
     for (const info of this.listAgents()) {
       try { this.getAgent(info.id).setUserApprovalRequester(cb); } catch (err) { log.debug('Failed to set approval requester on agent', { agentId: info.id, error: String(err) }); }
+    }
+  }
+
+  /**
+   * Set the locale/timezone used to localize prompts for autonomous runs
+   * (typically the org owner's preferences). Applies to all current agents
+   * and is remembered for agents created later.
+   */
+  setRuntimeViewerContext(ctx: { locale?: string; timezone?: string } | undefined): void {
+    this.runtimeViewerContext = ctx;
+    for (const info of this.listAgents()) {
+      try { this.getAgent(info.id).setRuntimeViewerContext(ctx); } catch (err) { log.debug('Failed to set runtime viewer context on agent', { agentId: info.id, error: String(err) }); }
     }
   }
 
@@ -1129,6 +1146,7 @@ export class AgentManager {
     if (this.skillInstaller) agent.setSkillInstaller(this.skillInstaller);
     if (this.userApprovalRequester) agent.setUserApprovalRequester(this.userApprovalRequester);
     if (this.userNotifier) agent.setUserNotifier(this.userNotifier);
+    if (this.runtimeViewerContext) agent.setRuntimeViewerContext(this.runtimeViewerContext);
 
     // A2A tools — every agent can message colleagues (all agents visible for cross-team)
     const a2aContext: A2AContext = {
@@ -2032,6 +2050,7 @@ export class AgentManager {
     if (this.skillInstaller) agent.setSkillInstaller(this.skillInstaller);
     if (this.userApprovalRequester) agent.setUserApprovalRequester(this.userApprovalRequester);
     if (this.userNotifier) agent.setUserNotifier(this.userNotifier);
+    if (this.runtimeViewerContext) agent.setRuntimeViewerContext(this.runtimeViewerContext);
 
     const a2aCtx = {
       selfId: id,

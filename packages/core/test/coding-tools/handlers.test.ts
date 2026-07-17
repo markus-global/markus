@@ -247,7 +247,7 @@ describe('invoke_coding_tool handler', () => {
     );
 
     expect(result.error).toBe('approval_required');
-    expect(result.message).toContain('request_user_approval');
+    expect(result.message).toContain('request_user_input');
     expect(mockRuntimeExecute).not.toHaveBeenCalled();
   });
 

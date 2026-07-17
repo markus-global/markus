@@ -56,7 +56,7 @@ function isErrorResult(result: string): boolean {
 
 const BLOCKED_TOOLS = new Set([
   'spawn_subagent', 'spawn_subagents',
-  'notify_user', 'request_user_approval', 'discover_tools',
+  'notify_user', 'request_user_input', 'request_user_approval', 'discover_tools',
 ]);
 
 function buildToolMap(

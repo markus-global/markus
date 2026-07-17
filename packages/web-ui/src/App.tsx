@@ -35,6 +35,20 @@ const HIDDEN_STYLE: React.CSSProperties = {
   zIndex: -1,
 };
 
+/**
+ * Push the browser's current language/timezone to the server if they differ
+ * from what's stored, so the agent can localize prompts (language + timezone).
+ */
+function syncLocalePreferences(user: AuthUser): void {
+  try {
+    const locale = navigator.language;
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const prev = user.preferences ?? {};
+    if (prev.locale === locale && prev.timezone === timezone) return;
+    api.auth.updatePreferences({ locale, timezone }).catch(() => {});
+  } catch { /* Intl / navigator unavailable */ }
+}
+
 function PageFallback() {
   return (
     <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm animate-pulse">
@@ -237,6 +251,7 @@ export function App() {
       .then(({ user }) => {
         setAuthUser(user);
         setSystemInitialized(true);
+        syncLocalePreferences(user);
         wsClient.connect(user.id);
         checkLlmConfig();
         api.health().then(h => {

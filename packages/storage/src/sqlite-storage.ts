@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { createLogger } from '@markus/shared';
+import type { UserInputQuestion, UserInputAnswer } from '@markus/shared';
 
 type SqlParams = SQLInputValue[];
 
@@ -383,6 +384,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT,
   invite_token TEXT,
   invite_expires_at TEXT,
+  preferences TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_login_at TEXT
 );
@@ -534,7 +536,9 @@ CREATE TABLE IF NOT EXISTS approvals (
   allow_freeform INTEGER NOT NULL DEFAULT 0,
   selected_option TEXT,
   approver_user_ids TEXT,
-  target_user_id TEXT
+  target_user_id TEXT,
+  questions TEXT,
+  answers TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at DESC);
 
@@ -719,6 +723,9 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'requirement_comments', column: 'reply_to_id', sql: 'ALTER TABLE requirement_comments ADD COLUMN reply_to_id TEXT' },
     { table: 'tasks', column: 'completion_summary', sql: 'ALTER TABLE tasks ADD COLUMN completion_summary TEXT' },
     { table: 'requirements', column: 'goal_config', sql: 'ALTER TABLE requirements ADD COLUMN goal_config TEXT' },
+    { table: 'approvals', column: 'questions', sql: 'ALTER TABLE approvals ADD COLUMN questions TEXT' },
+    { table: 'approvals', column: 'answers', sql: 'ALTER TABLE approvals ADD COLUMN answers TEXT' },
+    { table: 'users', column: 'preferences', sql: 'ALTER TABLE users ADD COLUMN preferences TEXT' },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -2581,6 +2588,11 @@ export class SqliteUserRepo {
     this.db.prepare('UPDATE users SET avatar_url = ? WHERE id = ?').run(avatarUrl, id);
   }
 
+  updatePreferences(id: string, preferences: Record<string, unknown>) {
+    this.db.prepare('UPDATE users SET preferences = ? WHERE id = ?').run(JSON.stringify(preferences), id);
+    return this.findById(id);
+  }
+
   setInviteToken(id: string, token: string, expiresAt: string) {
     this.db.prepare('UPDATE users SET invite_token = ?, invite_expires_at = ? WHERE id = ?').run(token, expiresAt, id);
   }
@@ -2644,6 +2656,7 @@ export class SqliteUserRepo {
       hubUsername: r['hub_username'] as string | null,
       inviteToken: r['invite_token'] as string | null,
       inviteExpiresAt: r['invite_expires_at'] as string | null,
+      preferences: fromJson<Record<string, unknown>>(r['preferences'] as string) ?? undefined,
       createdAt: toDate(r['created_at'] as string),
       lastLoginAt: toDate(r['last_login_at'] as string),
     };
@@ -4234,6 +4247,8 @@ export interface ApprovalRow {
   options?: Array<{ id: string; label: string; description?: string }>;
   allowFreeform?: boolean;
   selectedOption?: string;
+  questions?: UserInputQuestion[];
+  answers?: UserInputAnswer[];
   approverUserIds?: string[];
   targetUserId?: string;
 }
@@ -4243,14 +4258,15 @@ export class SqliteApprovalRepo {
 
   upsert(a: ApprovalRow): void {
     this.db.prepare(
-      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option, approver_user_ids, target_user_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option, approver_user_ids, target_user_id, questions, answers)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          status = excluded.status,
          responded_at = excluded.responded_at,
          responded_by = excluded.responded_by,
          response_comment = excluded.response_comment,
-         selected_option = excluded.selected_option`
+         selected_option = excluded.selected_option,
+         answers = excluded.answers`
     ).run(
       a.id,
       a.agentId,
@@ -4270,6 +4286,8 @@ export class SqliteApprovalRepo {
       a.selectedOption ?? null,
       a.approverUserIds?.length ? JSON.stringify(a.approverUserIds) : null,
       a.targetUserId ?? null,
+      a.questions?.length ? JSON.stringify(a.questions) : null,
+      a.answers?.length ? JSON.stringify(a.answers) : null,
     );
   }
 
@@ -4308,6 +4326,8 @@ export class SqliteApprovalRepo {
       options: fromJson<Array<{ id: string; label: string; description?: string }>>(r['options'] as string) ?? undefined,
       allowFreeform: !!(r['allow_freeform'] as number),
       selectedOption: r['selected_option'] as string | undefined,
+      questions: fromJson<UserInputQuestion[]>(r['questions'] as string) ?? undefined,
+      answers: fromJson<UserInputAnswer[]>(r['answers'] as string) ?? undefined,
       approverUserIds: fromJson<string[]>(r['approver_user_ids'] as string) ?? undefined,
       targetUserId: (r['target_user_id'] as string) ?? undefined,
     };

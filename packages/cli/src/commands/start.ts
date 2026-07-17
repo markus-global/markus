@@ -868,6 +868,7 @@ async function startServerCore(
       targetUserId: ownerUserId,
       options: opts.options,
       allowFreeform: opts.allowFreeform,
+      questions: opts.questions,
       details: { priority: opts.priority, taskId: opts.relatedTaskId, taskTitle },
     });
   });
@@ -885,6 +886,16 @@ async function startServerCore(
       metadata: opts.metadata,
     });
   });
+
+  // Seed autonomous-run locale/timezone from the owner's stored preferences.
+  try {
+    const ownerIdentity = orgService.resolveHumanIdentity(ownerUserId);
+    if (ownerIdentity && (ownerIdentity.locale || ownerIdentity.timezone)) {
+      agentManager.setRuntimeViewerContext({ locale: ownerIdentity.locale, timezone: ownerIdentity.timezone });
+    }
+  } catch (e) {
+    log.warn('Failed to seed runtime viewer context from owner preferences', { error: String(e) });
+  }
 
   // Ensure every agent has a main session on startup, then persist activity logs to it
   if (storage?.chatSessionRepo) {

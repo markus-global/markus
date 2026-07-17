@@ -39,6 +39,8 @@ import {
   PRIORITY_LABELS,
   safeSlice,
   type GoalConfig,
+  type UserInputQuestion,
+  type UserInputAnswer,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -253,9 +255,12 @@ export class Agent {
   private userApprovalRequester?: (opts: {
     agentId: string; agentName: string; title: string; description: string;
     options?: Array<{ id: string; label: string; description?: string }>;
+    questions?: UserInputQuestion[];
     allowFreeform?: boolean; priority?: string; relatedTaskId?: string;
-  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>;
+  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[] }>;
   private userNotifier?: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void;
+  /** Locale/timezone used for autonomous runs (no interactive sender), typically the org owner's preferences. */
+  private runtimeViewerContext?: { locale?: string; timezone?: string };
   private semanticSearch?: SemanticMemorySearch;
   private currentSessionId?: string;
   private currentInteractingUserId?: string;
@@ -681,7 +686,7 @@ export class Agent {
   sendMessage(
     userMessage: string,
     senderId?: string,
-    senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
+    senderInfo?: { name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string },
     options?: HandleMessageOptions & {
       sourceType?: MailboxItemType;
       priority?: MailboxPriority;
@@ -739,7 +744,7 @@ export class Agent {
   injectFollowUp(
     userMessage: string,
     senderId?: string,
-    senderInfo?: { name: string; role: string },
+    senderInfo?: { name: string; role: string; locale?: string; timezone?: string },
     images?: string[],
   ): void {
     const payload: MailboxPayload = {
@@ -766,7 +771,7 @@ export class Agent {
     userMessage: string,
     onEvent: (event: LLMStreamEvent & { agentEvent?: string }) => void,
     senderId?: string,
-    senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
+    senderInfo?: { name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string },
     cancelToken?: { cancelled: boolean; userStopped?: boolean },
     images?: string[],
     fileNames?: string[],
@@ -854,7 +859,7 @@ export class Agent {
     userMessage: string,
     onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
     senderId?: string,
-    senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
+    senderInfo?: { name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string },
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: userMessage.slice(0, 100),
@@ -2094,13 +2099,19 @@ export class Agent {
   setUserApprovalRequester(cb: (opts: {
     agentId: string; agentName: string; title: string; description: string;
     options?: Array<{ id: string; label: string; description?: string }>;
+    questions?: UserInputQuestion[];
     allowFreeform?: boolean; priority?: string; relatedTaskId?: string;
-  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>): void {
+  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[] }>): void {
     this.userApprovalRequester = cb;
   }
 
   setUserNotifier(cb: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void): void {
     this.userNotifier = cb;
+  }
+
+  /** Set the locale/timezone used to localize prompts for autonomous runs. */
+  setRuntimeViewerContext(ctx: { locale?: string; timezone?: string } | undefined): void {
+    this.runtimeViewerContext = ctx;
   }
 
   /**
@@ -2626,6 +2637,7 @@ export class Agent {
         contextMdPath: this.contextMdPath,
         memory: this.memory,
         scenario: 'chat',
+        viewerContext: this.runtimeViewerContext,
         ...this.getTeamContextParams(),
       });
 
@@ -2948,7 +2960,7 @@ export class Agent {
   async handleMessage(
     userMessage: string,
     senderId?: string,
-    senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
+    senderInfo?: { name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string },
     options?: HandleMessageOptions,
   ): Promise<string> {
     if (this.activeTasks.size === 0) {
@@ -3057,6 +3069,7 @@ export class Agent {
       currentQuery: effectiveMessage,
       identity: this.identityContext,
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
+      viewerContext: this.runtimeViewerContext,
       assignedTasks: isLightweight ? undefined : this.tasksFetcher?.(),
       deliverableContext: isLightweight ? undefined : this.getDeliverableContext(effectiveMessage),
       environment: this.environmentProfile,
@@ -3255,7 +3268,7 @@ export class Agent {
             if (tc.name === 'task_comment' || tc.name === 'requirement_comment') {
               commentToolUsed.add(tc.name);
             }
-            const REQ_ACTION_TOOLS = ['requirement_update_status', 'requirement_comment', 'task_create', 'notify_user', 'request_user_approval'];
+            const REQ_ACTION_TOOLS = ['requirement_update_status', 'requirement_comment', 'task_create', 'notify_user', 'request_user_input', 'request_user_approval'];
             if (REQ_ACTION_TOOLS.includes(tc.name)) {
               requirementActionToolUsed.add(tc.name);
             }
@@ -3633,7 +3646,7 @@ export class Agent {
     userMessage: string,
     onEvent: (event: LLMStreamEvent & { agentEvent?: string }) => void,
     senderId?: string,
-    senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
+    senderInfo?: { name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string },
     cancelToken?: { cancelled: boolean; userStopped?: boolean },
     images?: string[],
     fileNames?: string[],
@@ -3701,6 +3714,7 @@ export class Agent {
       currentQuery: effectiveMessage,
       identity: this.identityContext,
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
+      viewerContext: this.runtimeViewerContext,
       assignedTasks: this.tasksFetcher?.(),
       deliverableContext: this.getDeliverableContext(effectiveMessage),
       environment: this.environmentProfile,
@@ -4353,6 +4367,7 @@ export class Agent {
       memory: this.memory,
       currentQuery: taskPrompt,
       identity: this.identityContext,
+      viewerContext: this.runtimeViewerContext,
       assignedTasks: this.tasksFetcher?.(),
       deliverableContext: this.getDeliverableContext(taskPrompt),
       environment: this.environmentProfile,
@@ -4887,6 +4902,7 @@ export class Agent {
       memory: this.memory,
       currentQuery: userMessage,
       identity: this.identityContext,
+      viewerContext: this.runtimeViewerContext,
       assignedTasks: this.tasksFetcher?.(),
       deliverableContext: this.getDeliverableContext(userMessage),
       environment: this.environmentProfile,
@@ -5536,20 +5552,56 @@ export class Agent {
       }
     }
 
-    // Handle request_user_approval: blocking approval/decision request
-    if (toolCall.name === 'request_user_approval') {
+    // Handle request_user_input (and its deprecated alias request_user_approval):
+    // blocking request for a human decision / approval / input, supporting one or
+    // multiple questions with optional Markdown-rich choice options.
+    if (toolCall.name === 'request_user_input' || toolCall.name === 'request_user_approval') {
       const title = (toolCall.arguments.title as string) ?? '';
       const description = (toolCall.arguments.description as string) ?? '';
-      if (!title || !description) {
-        return JSON.stringify({ status: 'error', message: 'title and description are required' });
+      const rawQuestions = toolCall.arguments.questions as Array<Record<string, unknown>> | undefined;
+      const rawOptions = toolCall.arguments.options as Array<{ id?: string; label: string; description?: string }> | undefined;
+
+      // Normalize into a canonical questions[] array.
+      const normalizeOptions = (opts?: Array<{ id?: string; label: string; description?: string }>) =>
+        opts?.map((o, i) => ({ id: o.id ?? `opt_${i + 1}`, label: o.label, description: o.description }));
+
+      let questions: UserInputQuestion[] | undefined;
+      if (rawQuestions && rawQuestions.length > 0) {
+        questions = rawQuestions.map((q, i) => {
+          const opts = normalizeOptions(q['options'] as Array<{ id?: string; label: string; description?: string }> | undefined);
+          const inputType = (q['input_type'] as 'choice' | 'text' | undefined)
+            ?? (opts && opts.length > 0 ? 'choice' : 'text');
+          return {
+            id: (q['id'] as string) ?? `q_${i + 1}`,
+            prompt: (q['prompt'] as string) ?? '',
+            inputType,
+            options: opts,
+            allowMultiple: (q['allow_multiple'] as boolean) ?? false,
+            allowFreeform: (q['allow_freeform'] as boolean) ?? false,
+          };
+        });
+      } else if (rawOptions && rawOptions.length > 0) {
+        // Single-question shorthand with custom options.
+        questions = [{
+          id: 'q_1',
+          prompt: description || title,
+          inputType: 'choice',
+          options: normalizeOptions(rawOptions),
+          allowMultiple: false,
+          allowFreeform: (toolCall.arguments.allow_freeform as boolean) ?? false,
+        }];
+      }
+
+      // Require enough to render something: either a description, questions, or options.
+      if (!title || (!description && (!questions || questions.length === 0))) {
+        return JSON.stringify({ status: 'error', message: 'title is required, plus either description, questions, or options' });
       }
       if (!this.userApprovalRequester) {
-        return JSON.stringify({ status: 'error', message: 'User approval is not available.' });
+        return JSON.stringify({ status: 'error', message: 'User input is not available.' });
       }
       try {
         const priority = (toolCall.arguments.priority as string) ?? 'normal';
         const relatedTaskId = toolCall.arguments.related_task_id as string | undefined;
-        const options = toolCall.arguments.options as Array<{ id: string; label: string; description?: string }> | undefined;
         const allowFreeform = (toolCall.arguments.allow_freeform as boolean) ?? false;
 
         this.attentionController.setWaitingForApproval(true);
@@ -5559,24 +5611,27 @@ export class Agent {
             agentName: this.config.name,
             title,
             description,
-            options,
+            options: normalizeOptions(rawOptions),
+            questions,
             allowFreeform,
             priority,
             relatedTaskId,
           });
 
-          log.info('User approval response received', { agentId: this.id, title, approved: result.approved, selectedOption: result.selectedOption });
-          return JSON.stringify({
+          log.info('User input response received', { agentId: this.id, title, approved: result.approved, selectedOption: result.selectedOption, answerCount: result.answers?.length ?? 0 });
+          const resp: Record<string, unknown> = {
             status: 'ok',
             approved: result.approved,
             selected_option: result.selectedOption ?? (result.approved ? 'approve' : 'reject'),
             comment: result.comment ?? '',
-          });
+          };
+          if (result.answers && result.answers.length > 0) resp.answers = result.answers;
+          return JSON.stringify(resp);
         } finally {
           this.attentionController.setWaitingForApproval(false);
         }
       } catch (err) {
-        return JSON.stringify({ status: 'error', message: `Failed to get user approval: ${String(err)}` });
+        return JSON.stringify({ status: 'error', message: `Failed to get user input: ${String(err)}` });
       }
     }
 
@@ -6110,7 +6165,7 @@ export class Agent {
       '## What You CAN Do (lightweight actions)',
       '- **Check status**: `task_list`, `task_get`, `team_status` — see what\'s going on',
       '- **Notify user**: `notify_user` — message appears in chat + notification bell',
-      '- **Request user approval**: `request_user_approval` — blocks until user responds',
+      '- **Request user input**: `request_user_input` — blocks until user responds (approval, choice, or answers)',
       '- **Recall history**: `recall_activity` — review your past execution logs',
       '- **Message agents**: `agent_send_message` — coordinate with colleagues',
       '- **Create tasks**: `task_create` — if you spot something that needs doing, create a task for it (assign to yourself or others)',
@@ -6124,7 +6179,7 @@ export class Agent {
       '- **No complex multi-step implementation** — don\'t write code, refactor modules, or do deep analysis in heartbeat',
       '- If you identify something complex that needs doing:',
       '  1. Notify the user via `notify_user` explaining what you found and why it matters',
-      '     (Use `request_user_approval` if you need the user to make a decision or provide input)',
+      '     (Use `request_user_input` if you need the user to make a decision or provide input)',
       '  2. Create a task via `task_create` with clear description and acceptance criteria',
       '  3. The user will approve and the task system handles execution',
       '',
@@ -6148,7 +6203,7 @@ export class Agent {
       'requirement_propose', 'requirement_list', 'requirement_update_status',
       'memory_save', 'memory_search', 'memory_update', 'memory_update_longterm',
       'update_notebook', 'update_working_memory',
-      'discover_tools', 'notify_user', 'request_user_approval', 'recall_activity',
+      'discover_tools', 'notify_user', 'request_user_input', 'request_user_approval', 'recall_activity',
       'package_install', 'package_list',
       'goal_create', 'goal_update', 'goal_status',
     ];

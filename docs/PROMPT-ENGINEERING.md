@@ -203,6 +203,17 @@ Placed at the **end of Tier 2** so the identity/org/memory prefix remains stable
 | `review` | Evaluate deliverable quality against acceptance criteria. | **Not directly visible** | `task_update` for verdict; `notify_user` optionally |
 | `memory_consolidation` | Internal memory management. Purely private. | **Not visible**; internal only | No communication tools needed |
 
+#### Referencing Markus Resources
+
+Placed in **Tier 1 (Stable)** (`## Referencing Markus Resources`, near the Deliverable Output Format section). Teaches agents the link conventions the Web UI markdown renderer understands, so references become clickable in chat/comments/reports:
+
+- **Bare ID** in prose (`tsk_…`, `req_…`, `proj_…`, `dlv_…`, `agt_…`, `team_…`) → inline clickable chip (auto-linked by `preprocessEntityIds` in `markdown-utils.ts`).
+- **Titled link** `[Title](task:tsk_…)` (types: `task`, `requirement`, `project`, `deliverable`, `agent`, `team`) → chip showing the title.
+- **Card**: a reference **alone on its own line/paragraph** renders as a rich block card (icon + title + status + summary) via `EntityCard`. Agents are told to reference a new `dlv_…` on its own line after `deliverable_create` so users get a clickable deliverable card.
+- Agents must NOT paste raw `/api/…` paths or bare `http(s)://` internal URLs — those render as external links, not in-app navigation.
+
+This closes the previous gap where the renderer silently auto-linked IDs but no prompt told agents to emit them.
+
 ### 2.3 Skill Filtering
 
 `filterSkillsByRelevance()` scores each skill against the current query by keyword overlap. Returns top 30. Each entry is one line: `**name** [category]: description`. The filtered skills catalog is placed in **Tier 3 (Dynamic)** because the filter results depend on the current query, which changes per message. This keeps Tier 2 stable and prevents per-message skill filtering from busting the semi-stable cache prefix.
