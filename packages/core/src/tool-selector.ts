@@ -249,33 +249,72 @@ export class ToolSelector {
       },
     });
 
+    // Shared schema for request_user_input (and its deprecated alias request_user_approval).
+    // Supports one OR multiple questions, and Markdown in question prompts and option labels.
+    const userInputSchema = {
+      type: 'object' as const,
+      properties: {
+        title: { type: 'string', description: 'Short headline shown to the user' },
+        description: { type: 'string', description: 'Optional overall context (Markdown supported). For a single simple decision you may put the full prompt here.' },
+        questions: {
+          type: 'array',
+          description: 'One or more questions to ask. When omitted, a single decision derived from title/description (plus options, if any, else Approve/Reject) is shown. The UI lets the user page through all questions and submit once all required ones are answered.',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Stable id used to key this question\'s answer. Auto-generated if omitted.' },
+              prompt: { type: 'string', description: 'The question text. Markdown supported (use it for rich formatting, code, lists).' },
+              input_type: { type: 'string', enum: ['choice', 'text'], description: 'choice = pick from options; text = freeform answer. Defaults to choice when options are given, otherwise text.' },
+              options: {
+                type: 'array',
+                description: 'Choices for a choice question. label and description support Markdown, so options can carry rich content.',
+                items: {
+                  type: 'object',
+                  properties: {
+                    id: { type: 'string' },
+                    label: { type: 'string' },
+                    description: { type: 'string' },
+                  },
+                  required: ['label'],
+                },
+              },
+              allow_multiple: { type: 'boolean', description: 'Allow selecting multiple options for this question. Default: false' },
+              allow_freeform: { type: 'boolean', description: 'Also allow a freeform text answer in addition to the options. Default: false' },
+            },
+            required: ['prompt'],
+          },
+        },
+        options: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              label: { type: 'string' },
+              description: { type: 'string' },
+            },
+            required: ['label'],
+          },
+          description: 'Shorthand for a single choice question (back-compat). Prefer questions[] for anything richer. If omitted and no questions are given, defaults to Approve/Reject.',
+        },
+        allow_freeform: { type: 'boolean', description: 'For the single-question shorthand: allow a custom text response in addition to options. Default: false' },
+        related_task_id: { type: 'string', description: 'If related to a task, include the task ID for deep-linking' },
+        priority: { type: 'string', enum: ['normal', 'high', 'urgent'], description: 'Default: normal' },
+      },
+      required: ['title'],
+    };
+
+    pushUnique({
+      name: 'request_user_input',
+      description: 'Request input, a decision, or approval from a human team member. The tool BLOCKS until the human responds. Use for approvals, choices between options, collecting information, or asking one or more questions (e.g. a short quiz). Supports MULTIPLE questions via questions[], and Markdown in question prompts and option labels for rich content. If neither questions nor options are provided, defaults to a single Approve/Reject decision (reject requires a reason).',
+      inputSchema: userInputSchema,
+    });
+
+    // Deprecated alias — kept so existing prompts/flows referring to the old name keep working.
     pushUnique({
       name: 'request_user_approval',
-      description: 'Request a decision or approval from a human team member. The tool BLOCKS until a human responds. Use when you need human approval, a choice between options, or any user decision/input. Default options: Approve / Reject (reject requires a reason). You can provide custom options and optionally allow freeform text input.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          title: { type: 'string', description: 'Short headline for the approval request' },
-          description: { type: 'string', description: 'Detailed context for the decision' },
-          options: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                id: { type: 'string' },
-                label: { type: 'string' },
-                description: { type: 'string' },
-              },
-              required: ['id', 'label'],
-            },
-            description: 'Custom options. If omitted, defaults to Approve/Reject.',
-          },
-          allow_freeform: { type: 'boolean', description: 'Allow user to type a custom text response in addition to options. Default: false' },
-          related_task_id: { type: 'string', description: 'If related to a task, include the task ID for deep-linking' },
-          priority: { type: 'string', enum: ['normal', 'high', 'urgent'], description: 'Default: normal' },
-        },
-        required: ['title', 'description'],
-      },
+      description: 'DEPRECATED alias of request_user_input. Prefer request_user_input. Request a decision, approval, or input from a human; BLOCKS until they respond. Supports custom options, multiple questions, and freeform text.',
+      inputSchema: userInputSchema,
     });
 
     pushUnique({

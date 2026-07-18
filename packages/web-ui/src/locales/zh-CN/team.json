@@ -201,6 +201,15 @@
     },
     "approvalHistory": "历史记录"
   },
+  "userInput": {
+    "respond": "回复",
+    "submit": "提交",
+    "next": "下一题",
+    "previous": "上一题",
+    "questionProgress": "第 {{current}} / {{total}} 题",
+    "textPlaceholder": "输入你的回答…",
+    "freeformPlaceholder": "或自行填写答案…"
+  },
   "intro": {
     "secretary": "我刚装好 Markus，帮我上手吧——这里能做什么？",
     "agent": "介绍一下你自己——你能做什么？"
@@ -244,6 +253,9 @@
     "defaultUpstreamDown": "LLM 供应商返回 502 Bad Gateway"
   },
   "page": {
+    "userInputPrompt_one": "有 {{count}} 个问题等待你回复",
+    "userInputPrompt_other": "有 {{count}} 个问题等待你回复",
+    "userInputRespond": "回复",
     "viewProfileArrow": "查看资料 →",
     "viewAgentProfileArrow": "查看智能体资料 →",
     "viewMindArrow": "查看 Mind →",

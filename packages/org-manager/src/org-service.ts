@@ -153,11 +153,35 @@ export class OrganizationService {
     }
   }
 
-  resolveHumanIdentity(senderId?: string): { id: string; name: string; role: string } | undefined {
+  resolveHumanIdentity(senderId?: string): { id: string; name: string; role: string; locale?: string; timezone?: string } | undefined {
     if (!senderId) return undefined;
     const user = this.humans.get(senderId);
-    if (user) return { id: user.id, name: user.name, role: user.role };
+    if (user) {
+      const prefs = user.preferences ?? {};
+      return {
+        id: user.id,
+        name: user.name,
+        role: user.role,
+        locale: typeof prefs.locale === 'string' ? prefs.locale : undefined,
+        timezone: typeof prefs.timezone === 'string' ? prefs.timezone : undefined,
+      };
+    }
     return undefined;
+  }
+
+  /**
+   * Persist user preferences (e.g. locale/timezone) both in-memory and in storage.
+   */
+  updateHumanPreferences(userId: string, preferences: Record<string, unknown>): void {
+    const user = this.humans.get(userId);
+    if (user) {
+      user.preferences = { ...(user.preferences ?? {}), ...preferences };
+    }
+    try {
+      this.storage?.userRepo.updatePreferences(userId, this.humans.get(userId)?.preferences ?? preferences);
+    } catch (err) {
+      log.warn('Failed to persist user preferences', { userId, error: String(err) });
+    }
   }
 
   // ─── Message Routing ───
@@ -830,6 +854,7 @@ export class OrganizationService {
           if (row.name) existing.name = row.name;
           if (row.email) existing.email = row.email;
           if (row.role) existing.role = row.role as HumanRole;
+          if (row.preferences) existing.preferences = row.preferences as Record<string, unknown>;
           if (row.teamId) {
             existing.teamId = row.teamId;
             const team = this.teams.get(row.teamId);
@@ -847,6 +872,7 @@ export class OrganizationService {
           role: row.role as HumanRole,
           orgId: row.orgId,
           teamId: row.teamId ?? undefined,
+          preferences: (row.preferences as Record<string, unknown> | undefined) ?? undefined,
           createdAt: row.createdAt.toISOString(),
         };
         this.humans.set(user.id, user);

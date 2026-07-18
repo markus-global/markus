@@ -78,8 +78,8 @@ export function preprocessMentions(text: string, knownNames?: string[]): string 
 }
 
 const ENTITY_PREFIX = '#entity:';
-const ENTITY_ID_RE = /(?<!\[)(?<!#entity:)\b(tsk|req|proj|dlv|agt)_[a-f0-9]{6,}\b(?!\]\(#entity:)/gi;
-const ENTITY_LINK_IN_CODE_RE = /`\[([^\]]+)\]\(#entity:((?:tsk|req|proj|dlv|agt)_[a-f0-9]{6,})\)`/gi;
+const ENTITY_ID_RE = /(?<!\[)(?<!#entity:)\b(tsk|req|proj|dlv|agt|team)_[a-f0-9]{6,}\b(?!\]\(#entity:)/gi;
+const ENTITY_LINK_IN_CODE_RE = /`\[([^\]]+)\]\(#entity:((?:tsk|req|proj|dlv|agt|team)_[a-f0-9]{6,})\)`/gi;
 
 /** Unwrap entity links wrapped in backticks: `[id](#entity:id)` → [id](#entity:id) */
 export function preprocessEntityLinksInCode(text: string): string {

@@ -59,7 +59,7 @@ export function createInvokeCodingToolHandler(options: CodingToolHandlerOptions 
         },
         approved: {
           type: 'boolean',
-          description: 'Set to true after obtaining user approval via request_user_approval (required when approvalRequired is enabled)',
+          description: 'Set to true after obtaining user approval via request_user_input (required when approvalRequired is enabled)',
         },
       },
       required: ['tool', 'prompt', 'workdir'],
@@ -87,7 +87,7 @@ export function createInvokeCodingToolHandler(options: CodingToolHandlerOptions 
       if (config?.approvalRequired && !approved) {
         return JSON.stringify({
           error: 'approval_required',
-          message: `${toolName} requires user approval before use. Call request_user_approval to get permission, then retry with approved: true.`,
+          message: `${toolName} requires user approval before use. Call request_user_input to get permission, then retry with approved: true.`,
         });
       }
 

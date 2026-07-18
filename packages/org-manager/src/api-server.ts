@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, kebab, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, kebab, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -2218,8 +2218,32 @@ export class APIServer {
           role: userRow.role,
           orgId: userRow.orgId,
           avatarUrl: userRow.avatarUrl ?? undefined,
+          preferences: userRow.preferences ?? undefined,
         },
       });
+      return;
+    }
+
+    if (path === '/api/auth/me/preferences' && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const body = await this.readBody(req);
+      const prefs: Record<string, unknown> = {};
+      if (typeof body['locale'] === 'string') prefs.locale = body['locale'];
+      if (typeof body['timezone'] === 'string') prefs.timezone = body['timezone'];
+      if (Object.keys(prefs).length === 0) {
+        this.json(res, 400, { error: 'No supported preference fields provided' });
+        return;
+      }
+      this.orgService.updateHumanPreferences(authUser.userId, prefs);
+      // Owner preferences double as the default locale/timezone for autonomous agent runs.
+      const identity = this.orgService.resolveHumanIdentity(authUser.userId);
+      if (identity?.role === 'owner') {
+        try {
+          this.orgService.getAgentManager().setRuntimeViewerContext({ locale: identity.locale, timezone: identity.timezone });
+        } catch { /* agent manager not ready */ }
+      }
+      this.json(res, 200, { ok: true, preferences: identity ? { locale: identity.locale, timezone: identity.timezone } : prefs });
       return;
     }
 
@@ -4597,7 +4621,7 @@ EXPLANATION_END`;
         const VIRTUAL_TOOLS: Array<{ name: string; description: string }> = [
           { name: 'discover_tools', description: 'Discover and activate additional tools and skills available to this agent' },
           { name: 'notify_user', description: 'Send a notification to a human team member (appears in chat + notification bell)' },
-          { name: 'request_user_approval', description: 'Request a decision or approval from a human (blocks until response)' },
+          { name: 'request_user_input', description: 'Request a decision, approval, or input from a human — one or multiple questions (blocks until response)' },
           { name: 'recall_activity', description: 'Query your own execution history and past activity logs' },
         ];
         for (const vt of VIRTUAL_TOOLS) {
@@ -5258,8 +5282,9 @@ EXPLANATION_END`;
         : (body['respondedBy'] as string) ?? authUser.userId ?? 'anonymous';
       const comment = body['comment'] as string | undefined;
       const selectedOption = body['selectedOption'] as string | undefined;
+      const answers = body['answers'] as UserInputAnswer[] | undefined;
       const result = this.hitlService.respondToApproval(
-        approvalId, approved, respondedBy, comment, selectedOption,
+        approvalId, approved, respondedBy, comment, selectedOption, answers,
       );
       if (!result) {
         this.json(res, 404, { error: 'Approval not found or not pending' });

@@ -8,7 +8,7 @@ import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact
 import { ChatPanel } from '../components/ChatPanel.tsx';
 import { type ContextChip } from '../components/ChatInput.tsx';
 import { navBus } from '../navBus.ts';
-import { PAGE } from '../routes.ts';
+import { PAGE, resolvePageId } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
@@ -289,7 +289,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
   useEffect(() => {
     if (previewMode) return;
-    const navId = localStorage.getItem('markus_nav_openDeliverable');
+    // Support deep links of the form `#deliverables/<id>` (e.g. from a deliverable
+    // tool's accessUrl). The page id is the first hash segment; the second is the id.
+    const hashParts = window.location.hash.slice(1).split('/');
+    const hashId = resolvePageId(hashParts[0]) === PAGE.DELIVERABLES ? hashParts[1] : undefined;
+    const navId = localStorage.getItem('markus_nav_openDeliverable') || hashId;
     if (navId) {
       localStorage.removeItem('markus_nav_openDeliverable');
       if (itemsRef.current.length > 0) {

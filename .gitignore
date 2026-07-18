@@ -29,3 +29,6 @@ markus.json.lock
 # Auto-generated API docs (regenerate via typedoc)
 docs/api/
 docs/api-test/
+
+# Paper — independent repo (paper/.git)
+paper/

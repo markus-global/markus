@@ -179,6 +179,43 @@ describe('buildSystemPrompt', () => {
 
     expect(result.text).toContain('Kubernetes');
   });
+
+  it('appends viewer language and timezone guidance after the timestamp', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_ctx',
+      agentName: 'Ctx Agent',
+      role: MOCK_ROLE,
+      memory,
+      senderIdentity: { id: 'usr_1', name: 'Li', role: 'owner', locale: 'zh-CN', timezone: 'Asia/Shanghai' },
+    });
+
+    expect(result.text).toContain('Current date and time:');
+    expect(result.text).toContain('Asia/Shanghai');
+    expect(result.text).toContain('User locale:');
+    expect(result.text).toContain('Chinese');
+    // The locale block must come after the timestamp (Tier 3 tail, cache-safe).
+    expect(result.text.indexOf('User locale:')).toBeGreaterThan(result.text.indexOf('Current date and time:'));
+  });
+
+  it('falls back to viewerContext for autonomous runs without a sender', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_ctx',
+      agentName: 'Ctx Agent',
+      role: MOCK_ROLE,
+      memory,
+      viewerContext: { locale: 'ja-JP', timezone: 'Asia/Tokyo' },
+    });
+
+    expect(result.text).toContain('Asia/Tokyo');
+    expect(result.text).toContain('User locale:');
+    expect(result.text).toContain('Japanese');
+  });
 });
 
 describe('prepareMessages', () => {

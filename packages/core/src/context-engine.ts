@@ -120,7 +120,9 @@ export class ContextEngine {
     memory: IMemoryStore;
     currentQuery?: string;
     identity?: IdentityContext;
-    senderIdentity?: { id: string; name: string; role: string; isFirstConversation?: boolean };
+    senderIdentity?: { id: string; name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string };
+    /** Fallback locale/timezone for autonomous runs with no interactive sender (e.g. owner preferences). */
+    viewerContext?: { locale?: string; timezone?: string };
     assignedTasks?: Array<{
       id: string;
       title: string;
@@ -282,6 +284,16 @@ export class ContextEngine {
       stable.push('Default to markdown for brevity; escalate to HTML when richness helps comprehension. Always use the correct file extension so the platform can detect and render it properly.');
 
       stable.push('');
+      stable.push('\n## Referencing Markus Resources');
+      stable.push('When you mention a Markus resource (task, requirement, project, deliverable, agent, team) in chat messages, comments, or reports, use these conventions so the UI renders it as a clickable reference:');
+      stable.push('- **Bare ID**: Write the resource ID directly in prose (e.g. `tsk_…`, `req_…`, `proj_…`, `dlv_…`, `agt_…`, `team_…`). It auto-renders as an inline clickable chip.');
+      stable.push('- **Titled link** (preferred when a readable name helps the reader): `[Readable Title](task:tsk_…)`. Supported types: `task`, `requirement`, `project`, `deliverable`, `agent`, `team`. Renders as a chip showing the title.');
+      stable.push('- **Card**: To surface a resource as a rich card (icon + title + status + summary), put the reference **alone on its own line/paragraph** — either a bare ID or a single titled link with nothing else on that line.');
+      stable.push('- After `deliverable_create` (or `task_submit_review`) succeeds, reference the new deliverable ID (`dlv_…`) on its own line so the user sees it as a clickable deliverable card they can open and navigate to.');
+      stable.push('- Do NOT paste raw REST paths (e.g. `/api/tasks/…`) or bare `http(s)://` URLs to internal resources — those open as external links, not in-app navigation. Use IDs or titled links instead.');
+      stable.push('- IDs inside fenced code blocks are shown as-is (not linked); reference them in prose when you want them clickable.');
+
+      stable.push('');
       stable.push('\n## Task & Requirement Workflow');
       stable.push('');
       stable.push('**Requirements** (governance gate):');
@@ -308,7 +320,7 @@ export class ContextEngine {
       stable.push('');
       stable.push('**Communicating with humans**:');
       stable.push('- `notify_user` — proactive message to a human team member: status updates, progress reports, findings, alerts. Appears in chat timeline AND notification bell. The human can reply. Write comprehensive body with full context. **This is the ONLY way to reach humans from non-chat contexts** (heartbeat, autonomous tasks, etc.).');
-      stable.push('- `request_user_approval` — when you need a human decision, approval, or input. BLOCKS until the user responds. Supports custom options and freeform text. Do NOT use for routine updates.');
+      stable.push('- `request_user_input` — when you need a human decision, approval, or input. BLOCKS until the user responds. Supports one or multiple questions, custom options (Markdown-rich), and freeform text. Do NOT use for routine updates.');
       stable.push('- `recall_activity` — query your own past execution logs by task or activity type. Use when you need to review what you did previously (e.g., to answer a follow-up question).');
       stable.push('');
       stable.push('**Communicating with other agents**:');
@@ -668,15 +680,48 @@ export class ContextEngine {
     // churn, but we don't quantize further — Tier 3 has many other per-call
     // varying fields, so coarser buckets risk inaccurate time perception
     // with negligible additional cache benefit.
+    // Resolve the viewer's locale/timezone (interactive sender first, then the
+    // autonomous fallback), so time is shown in their local frame and the agent
+    // is nudged to respond in their language. These live in the volatile Tier 3
+    // tail (after the timestamp), so they never disturb the cached stable prefix.
+    const viewerLocale = opts.senderIdentity?.locale ?? opts.viewerContext?.locale;
+    const viewerTz = opts.senderIdentity?.timezone ?? opts.viewerContext?.timezone;
     const now = new Date();
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const offset = now.getTimezoneOffset();
-    const sign = offset <= 0 ? '+' : '-';
-    const absH = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
-    const absM = String(Math.abs(offset) % 60).padStart(2, '0');
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const localStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
-    dynamic.push(`\n---\nCurrent date and time: ${localStr} (${tz}, UTC${sign}${absH}:${absM})`);
+    const serverTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    let tz = viewerTz || serverTz;
+    let localStr: string;
+    let offsetLabel: string;
+    try {
+      const dtf = new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+      });
+      const parts = Object.fromEntries(dtf.formatToParts(now).map(p => [p.type, p.value]));
+      localStr = `${parts.year}-${parts.month}-${parts.day} ${parts.hour === '24' ? '00' : parts.hour}:${parts.minute}`;
+      const offParts = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(now);
+      offsetLabel = offParts.find(p => p.type === 'timeZoneName')?.value ?? '';
+    } catch {
+      // Invalid timezone string — fall back to the server's local time.
+      tz = serverTz;
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const offset = now.getTimezoneOffset();
+      const sign = offset <= 0 ? '+' : '-';
+      const absH = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
+      const absM = String(Math.abs(offset) % 60).padStart(2, '0');
+      localStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+      offsetLabel = `UTC${sign}${absH}:${absM}`;
+    }
+    dynamic.push(`\n---\nCurrent date and time: ${localStr} (${tz}${offsetLabel ? `, ${offsetLabel}` : ''})`);
+    if (!isDream && (viewerLocale || viewerTz)) {
+      const langName = viewerLocale ? this.describeLocale(viewerLocale) : undefined;
+      const bits: string[] = [];
+      if (langName) bits.push(`Their preferred language is **${langName}** (${viewerLocale}).`);
+      if (viewerTz) bits.push(`Their timezone is **${viewerTz}**.`);
+      dynamic.push(
+        `User locale: ${bits.join(' ')} Reply in their language and think in it too, unless they explicitly ask otherwise or the agent's system prompt mandates a specific language. Use their timezone when stating dates/times.`
+      );
+    }
 
     // Build cache-aware segments: each tier becomes a segment with an
     // optional cache breakpoint. Providers that support explicit cache
@@ -694,6 +739,16 @@ export class ContextEngine {
       text: segments.map(s => s.content).join('\n'),
       segments,
     };
+  }
+
+  /** Human-readable language name for a BCP-47 locale (e.g. 'zh-CN' → 'Chinese (China)'). */
+  private describeLocale(locale: string): string {
+    try {
+      const dn = new Intl.DisplayNames(['en'], { type: 'language' });
+      const name = dn.of(locale);
+      if (name && name !== locale) return name;
+    } catch { /* Intl.DisplayNames unavailable or invalid locale */ }
+    return locale;
   }
 
   private buildMailboxSection(ctx: NonNullable<Parameters<ContextEngine['buildSystemPrompt']>[0]['mailboxContext']>): string {
